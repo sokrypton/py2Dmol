@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='py2Dmol',
-    version='0.1.1',
+    version='0.1.3',
     author='sokrypton',
     author_email='so3@mit.edu',
     description='A Python library for visualizing protein structures in 2D.',
@@ -23,5 +23,6 @@ setup(
     install_requires=[
         'numpy',
         'ipython',
+        'gemmi',
     ],
 )

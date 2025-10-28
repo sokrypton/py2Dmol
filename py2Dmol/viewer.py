@@ -7,6 +7,7 @@ except ImportError:
     IS_COLAB = False
 from IPython.display import display, HTML, Javascript
 import importlib.resources
+import gemmi
 
 def kabsch(a, b, return_v=False):
   """Computes the optimal rotation matrix for aligning a to b."""
@@ -32,7 +33,7 @@ def align_a_to_b(a, b):
 # --- py2Dmol Class ---
 
 class py2Dmol:
-    def __init__(self, size=(500,500), color="plddt"):
+    def __init__(self, size=(500,500), color="rainbow"):
         self.size = size
         self.color = color
         self._initial_data_loaded = False
@@ -137,7 +138,7 @@ class py2Dmol:
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
         display(HTML(final_html))
 
-    def update_data(self, coords, plddts=None, chains=None, atom_types=None):
+    def add(self, coords, plddts=None, chains=None, atom_types=None):
       """Sends a new frame of data to the JavaScript viewer."""
       if self._initial_data_loaded:
         self._update(coords, plddts, chains, atom_types)
@@ -150,3 +151,47 @@ class py2Dmol:
       else:
         # If display() was never called, call it now
         self.display(coords, plddts, chains, atom_types)
+
+    update_data = add
+
+    def from_pdb(self, filepath, chains=None):
+        """Loads a structure from a PDB or CIF file and updates the viewer."""
+        structure = gemmi.read_structure(filepath)
+        self.clear()
+
+        for model in structure:
+            coords = []
+            plddts = []
+            atom_chains = []
+            atom_types = []
+
+            for chain in model:
+                if chains is None or chain.name in chains:
+                    for residue in chain:
+                        if residue.name == 'HOH':
+                            continue
+
+                        is_protein = gemmi.find_tabulated_residue(residue.name).is_polymer()
+
+                        if is_protein:
+                            if 'CA' in residue:
+                                atom = residue['CA'][0]
+                                coords.append(atom.pos.tolist())
+                                plddts.append(atom.b_iso)
+                                atom_chains.append(chain.name)
+                                atom_types.append('P')
+                        else: # Ligand
+                            for atom in residue:
+                                if atom.element.name != 'H':
+                                    coords.append(atom.pos.tolist())
+                                    plddts.append(atom.b_iso)
+                                    atom_chains.append(chain.name)
+                                    atom_types.append('L')
+
+            if coords:
+                coords = np.array(coords)
+                plddts = np.array(plddts)
+                if self._initial_data_loaded:
+                    self.add(coords, plddts, atom_chains, atom_types)
+                else:
+                    self.display(coords, plddts, atom_chains, atom_types)
