@@ -7,6 +7,7 @@ except ImportError:
     IS_COLAB = False
 from IPython.display import display, HTML, Javascript
 import importlib.resources
+from . import resources as py2dmol_resources
 import gemmi
 
 def kabsch(a, b, return_v=False):
@@ -30,9 +31,9 @@ def align_a_to_b(a, b):
   a_aligned = (a_cent @ R) + b_mean
   return a_aligned
 
-# --- py2Dmol Class ---
+# --- view Class ---
 
-class py2Dmol:
+class view:
     def __init__(self, size=(500,500), color="rainbow"):
         self.size = size
         self.color = color
@@ -111,7 +112,7 @@ class py2Dmol:
         self._update(initial_coords, initial_plddts, initial_chains, initial_atom_types)
 
         try:
-            with importlib.resources.open_text('py2Dmol.resources', 'pseudo_3D_viewer.html') as f:
+            with importlib.resources.open_text(py2dmol_resources, 'pseudo_3D_viewer.html') as f:
                 html_template = f.read()
         except FileNotFoundError:
             print("Error: Could not find the HTML template file.")
@@ -171,7 +172,7 @@ class py2Dmol:
                         if residue.name == 'HOH':
                             continue
 
-                        is_protein = gemmi.find_tabulated_residue(residue.name).is_polymer()
+                        is_protein = gemmi.find_tabulated_residue(residue.name).is_amino_acid()
 
                         if is_protein:
                             if 'CA' in residue:

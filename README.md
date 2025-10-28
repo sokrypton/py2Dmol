@@ -16,11 +16,11 @@ Here are a few examples of how to use `py2Dmol`.
 
 ### Basic Usage
 
-To create a viewer, simply import the package and instantiate it:
+To create a viewer, simply import the package and instantiate the `view` class:
 
 ```python
 import py2Dmol
-viewer = py2Dmol()
+viewer = py2Dmol.view()
 ```
 
 ### Loading a Structure from a PDB or CIF File
@@ -29,7 +29,7 @@ You can load a structure directly from a PDB or CIF file using the `from_pdb` me
 
 ```python
 import py2Dmol
-viewer = py2Dmol()
+viewer = py2Dmol.view()
 viewer.from_pdb('my_protein.pdb')
 ```
 
@@ -53,7 +53,7 @@ chains = ['A'] * 50 + ['B'] * 50      # Two chains
 atom_types = ['P'] * 100              # All protein atoms
 
 # Create a viewer and display the initial data
-viewer = py2Dmol()
+viewer = py2Dmol.view()
 viewer.display(coords, plddts, chains, atom_types)
 
 # Update the viewer with new data to create an animation
