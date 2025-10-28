@@ -8,7 +8,7 @@ setup(
     description='A Python library for visualizing protein structures in 2D.',
     long_description='A Python library for visualizing protein structures in 2D.',
     long_description_content_type='text/markdown',
-    url='https://github.com/example/py2Dmol',
+    url='https://github.com/sokrypton/py2Dmol',
     packages=find_packages(),
     include_package_data=True,
     package_data={
