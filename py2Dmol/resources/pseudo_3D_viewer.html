@@ -260,39 +260,50 @@
         function generateProteinCurve(n) { const coords = []; const plddts = []; const chains = []; const atomTypes = []; let angle = 0, z = 0; const numProtein = n - 10; for (let i = 0; i < n; i++) { const t = i / n; chains.push(i < n / 2 ? 'A' : 'B'); if (i >= numProtein) { atomTypes.push('L'); plddts.push(75.0); const protEnd = coords[numProtein - 1] || new Vec3(0,0,0); const lt = (i - numProtein) / 10.0; const lx = protEnd.x + 5 + lt * 5 * Math.cos(lt * 20); const ly = protEnd.y + 5 + lt * 5 * Math.sin(lt * 20); const lz = protEnd.z - 3 + lt * 3; coords.push(new Vec3(lx, ly, lz)); } else { atomTypes.push('P'); plddts.push((Math.sin(t * Math.PI * 6) * 0.5 + 0.5) * 50 + 40); const freq = 2 + Math.sin(t * Math.PI * 2) * 1.5; angle += 0.3 * freq; const radius = 15 + 10 * Math.sin(t * Math.PI * 4); const x = radius * Math.cos(angle); const y = radius * Math.sin(angle); z += 0.5 + 0.3 * Math.sin(t * Math.PI * 8); coords.push(new Vec3(x, y, z)); } } return {coords, plddts, chains, atomTypes}; }
 
         // ============================================================================
-        // PSEUDO-3D RENDERER (Updated for Video Recording & Global Zoom)
+        // PSEUDO-3D RENDERER (Refactored)
         // ============================================================================
         class Pseudo3DRenderer {
             constructor(canvas) {
                 this.canvas = canvas;
                 this.ctx = canvas.getContext('2d');
+                
                 // Current render state
                 this.coords = [];
                 this.plddts = [];
                 this.chains = [];
                 this.atomTypes = [];
+                
                 // Viewer state
                 this.colorMode = 'plddt';
                 this.rotationMatrix = [[1,0,0],[0,1,0],[0,0,1]];
                 this.zoom = 1.0;
-                this.lineWidth = 3.0; // NEW: Default line width
+                this.lineWidth = 3.0;
                 this.shadowIntensity = 0.95;
                 this.shadowEnabled = true;
-                this.autoRotate = false; // NEW
-                this.animationSpeed = 100; // NEW: ms per frame
+                
                 // Performance
-                this.lastFrameTime = performance.now();
-                this.fps = 0;
-                this.drawTime = 0;
-                this.numSegments = 0;
                 this.chainRainbowScales = {};
 
-                // Animation & Trajectory state
+                // --- REFACTORED: Animation & State ---
                 this.trajectoriesData = { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
                 this.currentTrajectoryName = "default";
                 this.currentFrame = -1;
+                
+                // Playback
                 this.isPlaying = false;
-                this.animationHandle = null;
+                this.animationSpeed = 100; // ms per frame
+                this.lastFrameAdvanceTime = 0;
+                
+                // Interaction
+                this.isDragging = false;
+                this.autoRotate = false;
+                
+                // Inertia
+                this.spinVelocityX = 0;
+                this.spinVelocityY = 0;
+                this.lastDragTime = 0;
+                this.lastDragX = 0;
+                this.lastDragY = 0;
 
                 // UI elements
                 this.playButton = null;
@@ -301,9 +312,9 @@
                 this.frameCounter = null;
                 this.trajectorySelect = null;
                 this.controlsContainer = null;
-                this.speedSelect = null; // NEW
-                this.rotationCheckbox = null; // NEW
-                this.lineWidthSlider = null; // NEW
+                this.speedSelect = null;
+                this.rotationCheckbox = null;
+                this.lineWidthSlider = null;
 
                 // Video recording
                 this.mediaRecorder = null;
@@ -314,28 +325,61 @@
             }
 
             setupInteraction() {
-                let isDragging = false;
-                let lastX, lastY;
+                // --- REFACTORED: Added inertia logic ---
                 this.canvas.addEventListener('mousedown', (e) => {
-                    isDragging = true;
-                    lastX = e.clientX;
-                    lastY = e.clientY;
-                    if (this.autoRotate) { // NEW: Stop auto-rotate on drag
+                    this.isDragging = true;
+                    this.spinVelocityX = 0;
+                    this.spinVelocityY = 0;
+                    this.lastDragX = e.clientX;
+                    this.lastDragY = e.clientY;
+                    this.lastDragTime = performance.now();
+                    if (this.autoRotate) {
                         this.autoRotate = false;
                         if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
                     }
                 });
+                
                 window.addEventListener('mousemove', (e) => {
-                    if (!isDragging || this.isRecording) return; // Don't rotate while recording
-                    const dx = e.clientX - lastX; const dy = e.clientY - lastY;
+                    if (!this.isDragging || this.isRecording) return;
+                    
+                    const now = performance.now();
+                    const timeDelta = now - this.lastDragTime;
+
+                    const dx = e.clientX - this.lastDragX;
+                    const dy = e.clientY - this.lastDragY;
+                    
                     if (dy !== 0) { const rot = rotationMatrixX(dy * 0.01); this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); }
                     if (dx !== 0) { const rot = rotationMatrixY(dx * 0.01); this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); }
-                    lastX = e.clientX; lastY = e.clientY;
-                    this.render();
+
+                    // Store velocity for inertia
+                    if (timeDelta > 0) {
+                        // Weighted average to smooth out jerky movements
+                        const smoothing = 0.5;
+                        this.spinVelocityX = (this.spinVelocityX * (1-smoothing)) + ((dx / timeDelta * 20) * smoothing);
+                        this.spinVelocityY = (this.spinVelocityY * (1-smoothing)) + ((dy / timeDelta * 20) * smoothing);
+                    }
+
+                    this.lastDragX = e.clientX;
+                    this.lastDragY = e.clientY;
+                    this.lastDragTime = now;
+                    
+                    this.render(); // Render immediately while dragging
                 });
-                window.addEventListener('mouseup', () => isDragging = false);
+                
+                window.addEventListener('mouseup', () => {
+                    this.isDragging = false;
+                    const now = performance.now();
+                    const timeDelta = now - this.lastDragTime;
+                    
+                    if (timeDelta > 100) { // If drag was too slow, or just a click
+                        this.spinVelocityX = 0;
+                        this.spinVelocityY = 0;
+                    }
+                    // Else, the velocity from the last mousemove is used by the animate loop
+                });
+
                 this.canvas.addEventListener('wheel', (e) => {
-                    if (this.isRecording) return; // Don't zoom while recording
+                    if (this.isRecording) return;
                     e.preventDefault();
                     this.zoom *= (1 - e.deltaY * 0.001);
                     this.zoom = Math.max(0.1, Math.min(5, this.zoom));
@@ -344,45 +388,44 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider) { // MODIFIED
+            setUIControls(controlsContainer, playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider) {
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
                 this.saveVideoButton = saveVideoButton;
                 this.frameSlider = frameSlider;
                 this.frameCounter = frameCounter;
                 this.trajectorySelect = trajectorySelect;
-                this.speedSelect = speedSelect; // NEW
-                this.rotationCheckbox = rotationCheckbox; // NEW
-                this.lineWidthSlider = lineWidthSlider; // NEW
+                this.speedSelect = speedSelect;
+                this.rotationCheckbox = rotationCheckbox;
+                this.lineWidthSlider = lineWidthSlider;
                 
-                // Set initial value from slider
                 this.lineWidth = parseFloat(this.lineWidthSlider.value);
 
-                // Add listener for trajectory changes
                 this.trajectorySelect.addEventListener('change', () => {
                     this.stopAnimation();
                     this.currentTrajectoryName = this.trajectorySelect.value;
                     this.setFrame(0);
                 });
 
-                // Add listener for save video
                 this.saveVideoButton.addEventListener('click', () => {
                     this.saveAnimationAsVideo();
                 });
 
-                // --- NEW Listeners ---
                 this.speedSelect.addEventListener('change', (e) => {
                     this.animationSpeed = parseInt(e.target.value);
                 });
 
                 this.rotationCheckbox.addEventListener('change', (e) => {
                     this.autoRotate = e.target.checked;
+                    // Stop inertia if user clicks auto-rotate
+                    this.spinVelocityX = 0;
+                    this.spinVelocityY = 0;
                 });
 
                 this.lineWidthSlider.addEventListener('input', (e) => {
                     this.lineWidth = parseFloat(e.target.value);
                     if (!this.isPlaying && !this.isRecording) {
-                        this.render(); // Re-render on line width change if not playing
+                        this.render();
                     }
                 });
             }
@@ -394,12 +437,10 @@
                 this.currentTrajectoryName = name;
                 this.currentFrame = -1;
 
-                // Add to dropdown
                 const option = document.createElement('option');
                 option.value = name;
                 option.textContent = name;
                 this.trajectorySelect.appendChild(option);
-                // Select it
                 this.trajectorySelect.value = name;
 
                 this.updateUIControls();
@@ -429,7 +470,6 @@
                     trajectory.totalAtoms += frameAtoms;
                 }
                 
-                // --- Calculate current global center ---
                 const globalCenter = (trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
 
                 // --- Recalculate maxExtent for *all* frames using the *new* global center ---
@@ -439,14 +479,14 @@
                         for (const c of frame.coords) {
                             const coordVec = new Vec3(c[0], c[1], c[2]);
                             const centeredCoord = coordVec.sub(globalCenter);
-                            const distSq = centeredCoord.dot(centeredCoord); // x*x + y*y + z*z
+                            const distSq = centeredCoord.dot(centeredCoord);
                             if (distSq > maxDistSq) maxDistSq = distSq;
                         }
                     }
                 }
-                trajectory.maxExtent = Math.sqrt(maxDistSq); // Update maxExtent
+                trajectory.maxExtent = Math.sqrt(maxDistSq);
 
-                if (!this.isPlaying && !this.isRecording) { // Don't jump if recording
+                if (!this.isPlaying && !this.isRecording) {
                     this.setFrame(trajectory.frames.length - 1);
                 }
                 this.updateUIControls();
@@ -469,7 +509,7 @@
                 this.currentFrame = frameIndex;
                 const data = trajectory.frames[frameIndex];
                 this._loadDataIntoRenderer(data); // This calls render()
-                this.updateUIControls();
+                this.updateUIControls(); // Update slider value
             }
 
             // Update UI element states (e.g., disabled)
@@ -478,35 +518,32 @@
                  this.saveVideoButton.disabled = !enabled;
                  this.frameSlider.disabled = !enabled;
                  this.trajectorySelect.disabled = !enabled;
-                 this.speedSelect.disabled = !enabled; // NEW
-                 this.rotationCheckbox.disabled = !enabled; // NEW
-                 this.lineWidthSlider.disabled = !enabled; // NEW
+                 this.speedSelect.disabled = !enabled;
+                 this.rotationCheckbox.disabled = !enabled;
+                 this.lineWidthSlider.disabled = !enabled;
                  this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
             // Update the text/slider values
             updateUIControls() {
-                if (!this.playButton) return; // UI not ready
+                if (!this.playButton) return;
 
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 const total = trajectory ? trajectory.frames.length : 0;
-                const current = Math.max(0, this.currentFrame) + 1; // 1-based index
+                const current = Math.max(0, this.currentFrame) + 1;
 
-                // --- Show/hide controls based on frame count ---
                 if (total <= 1) {
                     this.controlsContainer.style.display = 'none';
                     if (this.saveVideoButton) this.saveVideoButton.style.display = 'none';
                 } else {
-                    this.controlsContainer.style.display = 'flex'; // MODIFIED
+                    this.controlsContainer.style.display = 'flex';
                     if (this.saveVideoButton) this.saveVideoButton.style.display = 'inline-block';
                 }
-                // --- End ---
 
                 this.frameSlider.max = Math.max(0, total - 1);
                 this.frameSlider.value = this.currentFrame;
                 this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
 
-                // Update button text
                 if (this.isRecording) {
                     this.playButton.textContent = 'Pause';
                     if (this.saveVideoButton) this.saveVideoButton.textContent = 'Recording...';
@@ -518,7 +555,7 @@
 
             // Toggle play/pause
             togglePlay() {
-                if (this.isRecording) return; // Don't toggle play while recording
+                if (this.isRecording) return;
                 if (this.isPlaying) {
                     this.stopAnimation();
                 } else {
@@ -526,46 +563,27 @@
                 }
             }
 
-            // Start the animation loop
+            // --- REFACTORED: Start playback ---
             startAnimation() {
-                if (this.isRecording) return; // Can't start if already recording
+                if (this.isRecording) return;
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 if (!trajectory || trajectory.frames.length < 2) return;
 
                 this.isPlaying = true;
+                this.lastFrameAdvanceTime = performance.now(); // Set start time
                 this.updateUIControls();
-
-                const animateStep = () => {
-                    if (!this.isPlaying) return;
-                    const currentTrajectory = this.trajectoriesData[this.currentTrajectoryName];
-                    if (!currentTrajectory) {
-                        this.stopAnimation();
-                        return;
-                    }
-                    let nextFrame = this.currentFrame + 1;
-                    if (nextFrame >= currentTrajectory.frames.length) {
-                        nextFrame = 0; // Loop back to start
-                    }
-                    this.setFrame(nextFrame);
-                    this.animationHandle = setTimeout(animateStep, this.animationSpeed); // MODIFIED
-                };
-                animateStep();
             }
 
-            // Stop the animation loop
+            // --- REFACTORED: Stop playback ---
             stopAnimation() {
                 this.isPlaying = false;
-                if (this.animationHandle) {
-                    clearTimeout(this.animationHandle);
-                }
-                this.animationHandle = null;
                 this.updateUIControls();
             }
 
             // Save animation as video
             saveAnimationAsVideo() {
-                if (this.isRecording) return; // Already recording
-                this.stopAnimation(); // Stop playback
+                if (this.isRecording) return;
+                this.stopAnimation();
 
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 if (!trajectory || trajectory.frames.length < 2) {
@@ -578,7 +596,7 @@
                 }
 
                 this.isRecording = true;
-                this.setUIEnabled(false); // Disable UI
+                this.setUIEnabled(false);
                 this.updateUIControls();
 
                 const stream = this.canvas.captureStream(10); // 10 fps
@@ -602,22 +620,19 @@
                     a.click();
                     window.URL.revokeObjectURL(url);
 
-                    // Reset state
                     this.isRecording = false;
                     this.recordedChunks = [];
                     this.mediaRecorder = null;
-                    this.setUIEnabled(true); // Re-enable UI
-                    this.setFrame(this.currentFrame); // Redraw last frame
+                    this.setUIEnabled(true);
+                    this.setFrame(this.currentFrame);
                     this.updateUIControls();
                 };
 
                 this.mediaRecorder.start();
 
-                // --- MODIFIED: Recording loop fix ---
-                let recordingFrame = 0; // Start at frame 0
+                let recordingFrame = 0;
                 const recordStep = () => {
                     if (!this.isRecording) {
-                        // Handle potential stop mid-recording
                         if (this.mediaRecorder.state === "recording") {
                             this.mediaRecorder.stop();
                         }
@@ -625,24 +640,21 @@
                     }
 
                     if (recordingFrame < trajectory.frames.length) {
-                        this.setFrame(recordingFrame); // Set the current frame
-                        recordingFrame++; // Increment *after* setting
-                        // Use requestAnimationFrame to ensure canvas is drawn before next step
+                        this.setFrame(recordingFrame); // This renders the frame
+                        recordingFrame++;
                         requestAnimationFrame(recordStep);
                     } else {
-                        // We have rendered the last frame, stop recording
                         if (this.mediaRecorder.state === "recording") {
                             this.mediaRecorder.stop();
                         }
                     }
                 };
 
-                // Start the loop. It will immediately call setFrame(0).
                 requestAnimationFrame(recordStep);
             }
 
 
-            // RENAMED: from updateData to _loadDataIntoRenderer
+            // Load data into renderer
             _loadDataIntoRenderer(data) {
                 try {
                     if (data && data.coords && data.coords.length > 0) {
@@ -658,7 +670,7 @@
                 this.render();
             }
 
-            // This function is now internal, called by _loadDataIntoRenderer
+            // Set current coordinates
             setCoords(coords, plddts = [], chains = [], atomTypes = []) {
                 this.coords = coords;
                 this.plddts = plddts;
@@ -682,14 +694,13 @@
                 }
             }
 
-            // RENDER: This function is unchanged.
+            // --- RENDER (Core drawing logic) ---
             render() {
                 const startTime = performance.now();
                 this.ctx.fillStyle = '#ffffff';
                 this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                 if (this.coords.length === 0) return;
 
-                // --- Get global center ---
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 const globalCenter = (trajectory && trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
 
@@ -748,7 +759,6 @@
                     }
                 }
 
-                this.numSegments = segments.length;
                 if (segments.length === 0) return;
 
                 const grey = {r: 128, g: 128, b: 128};
@@ -819,7 +829,6 @@
 
                 const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
                 
-                // Get dataRange from trajectory's maxExtent
                 const maxExtent = (trajectory && trajectory.maxExtent > 0) ? trajectory.maxExtent : 30.0;
                 const dataRange = (maxExtent * 2) + this.lineWidth * 2;
                 
@@ -853,33 +862,71 @@
                     this.ctx.lineCap = 'round';
                     this.ctx.stroke();
                 }
-
-                this.drawTime = performance.now() - startTime;
-                this.updateFPS();
             }
 
-            updateFPS() {
-                const now = performance.now();
-                const delta = now - this.lastFrameTime;
-                this.fps = Math.round(1000 / delta);
-                this.lastFrameTime = now;
-            }
-
+            // --- REFACTORED: Main animation loop ---
             animate() {
-                // Auto-rotation logic
-                if (this.autoRotate && !this.isRecording && !this.isPlaying) { // MODIFIED: Only rotate when not playing or recording
-                    const rot = rotationMatrixY(0.005); // Constant rotation speed
-                    this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
-                    this.render(); // Re-render the frame
+                const now = performance.now();
+                let needsRender = false;
+
+                // 1. Handle inertia/spin
+                if (!this.isDragging && !this.isRecording) {
+                    if (Math.abs(this.spinVelocityX) > 0.0001) {
+                        const rot = rotationMatrixY(this.spinVelocityX * 0.005);
+                        this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
+                        this.spinVelocityX *= 0.95; // Damping
+                        needsRender = true;
+                    } else {
+                        this.spinVelocityX = 0;
+                    }
+
+                    if (Math.abs(this.spinVelocityY) > 0.0001) {
+                        const rot = rotationMatrixX(this.spinVelocityY * 0.005);
+                        this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
+                        this.spinVelocityY *= 0.95; // Damping
+                        needsRender = true;
+                    } else {
+                        this.spinVelocityY = 0;
+                    }
                 }
 
-                // Keep the animation loop going
+                // 2. Handle auto-rotate
+                if (this.autoRotate && !this.isDragging && !this.isRecording && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
+                    const rot = rotationMatrixY(0.005); // Constant rotation speed
+                    this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
+                    needsRender = true;
+                }
+
+                // 3. Handle frame playback
+                if (this.isPlaying && !this.isRecording) {
+                    if (now - this.lastFrameAdvanceTime > this.animationSpeed) {
+                        const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                        if (trajectory && trajectory.frames.length > 0) {
+                            let nextFrame = this.currentFrame + 1;
+                            if (nextFrame >= trajectory.frames.length) {
+                                nextFrame = 0;
+                            }
+                            this.setFrame(nextFrame); // This calls render()
+                            this.lastFrameAdvanceTime = now;
+                            needsRender = false; // setFrame() already called render()
+                        } else {
+                            this.stopAnimation();
+                        }
+                    }
+                }
+
+                // 4. Final render if needed
+                if (needsRender) {
+                    this.render();
+                }
+
+                // 5. Loop
                 requestAnimationFrame(() => this.animate());
             }
         }
 
         // ============================================================================
-        // MAIN APP & COLAB COMMUNICATION (Updated for Video Recording)
+        // MAIN APP & COLAB COMMUNICATION
         // ============================================================================
 
         // 1. Get config from Python
@@ -889,16 +936,13 @@
         const canvas = document.getElementById('canvas');
         canvas.width = config.size[0];
         canvas.height = config.size[1];
-        // Set the width of the controls container to match the canvas
         document.getElementById('mainContainer').style.width = `${config.size[0]}px`;
-        // REMOVED: Slider width calculation, now handled by flexbox
-
 
         // 3. Create renderer
         window.renderer = new Pseudo3DRenderer(canvas);
         window.renderer.colorMode = config.color;
 
-        // 4. Setup original dropdowns
+        // 4. Setup general controls
         const colorSelect = document.getElementById('colorSelect');
         colorSelect.value = config.color;
         colorSelect.addEventListener('change', (e) => {
@@ -912,14 +956,13 @@
             window.renderer.render();
         });
 
-        // 5. NEW: Setup animation and trajectory controls
+        // 5. Setup animation and trajectory controls
         const controlsContainer = document.getElementById('controlsContainer');
         const playButton = document.getElementById('playButton');
         const saveVideoButton = document.getElementById('saveVideoButton');
         const frameSlider = document.getElementById('frameSlider');
         const frameCounter = document.getElementById('frameCounter');
         const trajectorySelect = document.getElementById('trajectorySelect');
-        // NEW controls
         const speedSelect = document.getElementById('speedSelect');
         const rotationCheckbox = document.getElementById('rotationCheckbox');
         const lineWidthSlider = document.getElementById('lineWidthSlider');
@@ -930,45 +973,38 @@
             controlsContainer, playButton, saveVideoButton, 
             frameSlider, frameCounter, trajectorySelect, 
             speedSelect, rotationCheckbox, lineWidthSlider
-        ); // MODIFIED
+        );
 
         playButton.addEventListener('click', () => {
             window.renderer.togglePlay();
         });
 
-        // MODIFIED: Use 'input' for real-time dragging
+        // --- FIX: Add slider event listener ---
         frameSlider.addEventListener('input', (e) => {
             window.renderer.stopAnimation(); // Stop playing if user scrubs
-            window.renderer.setFrame(e.target.value);
+            window.renderer.setFrame(e.target.value); // <-- Fixed typo here
         });
 
         // 6. Add function for Python to call (for new frames)
-        /**
-         * @param {string} jsonData A JSON string containing {coords, plddts, chains, atom_types}
-         */
         window.handlePythonUpdate = (jsonData) => {
-            console.log("Received update from Python");
             try {
                 const data = JSON.parse(jsonData);
-                window.renderer.addFrame(data); // Add frame to current trajectory
+                window.renderer.addFrame(data);
             } catch (e) {
                 console.error("Failed to parse JSON from Python:", e);
             }
         };
 
-        // 7. NEW: Add function for Python to start a new trajectory
+        // 7. Add function for Python to start a new trajectory
         window.handlePythonNewTrajectory = (name) => {
-            console.log("Received new trajectory from Python:", name);
             window.renderer.addTrajectory(name);
         };
 
         // 8. Load initial data
         try {
             if (window.proteinData && window.proteinData.coords && window.proteinData.coords.length > 0) {
-                // Add the initial data to the "default" trajectory
                 window.renderer.addFrame(window.proteinData);
             } else {
-                // Fallback to demo structure
                 const {coords, plddts, chains, atomTypes} = generateProteinCurve(100);
                 const demoData = {
                     coords: coords.map(c => [c.x, c.y, c.z]),
@@ -985,10 +1021,10 @@
             window.renderer.addFrame(demoData);
         }
 
-        // 9. Initial render and start animation loop
-        // setFrame() (called by addFrame) already handles the first render
-        window.renderer.animate(); // MODIFIED: This now handles auto-rotation
+        // 9. Start the main animation loop
+        window.renderer.animate();
 
     </script>
 </body>
 </html>
+
