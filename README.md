@@ -17,16 +17,21 @@ Here are a few examples of how to use `py2Dmol`.
 
 ### Basic Usage
 
-To create a viewer, simply import the package and instantiate the `view` class:
+To create a viewer, import the package, instantiate the `view` class, and then call `.show()` to display it.
 
 ```python
 import py2Dmol
 viewer = py2Dmol.view()
+viewer.show() # Displays an empty viewer
 ```
 
 ### Loading a Structure from a PDB or CIF File
 
-You can load a structure directly from a PDB or CIF file using the `from_pdb` method. This will automatically extract:
+You can load a structure directly from a PDB or CIF file.
+- **`from_pdb()`**: Creates a new trajectory for the structure.
+- **`add_pdb()`**: Adds the structure as frames to the current trajectory.
+
+Both methods automatically extract:
 - **C-alpha atoms** for proteins
 - **C4' atoms** for DNA and RNA
 - **All heavy atoms** for ligands
@@ -36,13 +41,14 @@ If the file contains multiple models, they will be loaded as an animation.
 ```python
 import py2Dmol
 viewer = py2Dmol.view()
-viewer.from_pdb('my_protein.pdb')
+viewer.from_pdb('my_protein.pdb') # This creates a new trajectory and shows the viewer by default
 ```
 
 You can also specify which chains to display:
 
 ```python
-viewer.from_pdb('my_protein.pdb', chains=['A', 'B'])
+viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
+viewer.show()
 ```
 
 ### Loading DNA/RNA Structures
@@ -65,7 +71,7 @@ viewer.from_pdb('transcription_factor_complex.pdb')
 
 ### Manually Adding Data
 
-You can also add data to the viewer using the `add` method. This is useful for visualizing custom trajectories or molecular data.
+You can also add data to the viewer using the `add` method. This is useful for visualizing custom trajectories or molecular data. The `show=False` parameter prevents the viewer from being displayed after each frame is added.
 
 ```python
 import numpy as np
@@ -114,9 +120,8 @@ plddts = np.linspace(50, 95, 100)
 chains = ['A'] * 100
 atom_types = ['P'] * 100
 
-# Display
 viewer = py2Dmol.view()
-viewer.display(coords, plddts, chains, atom_types)
+viewer.add(coords, plddts, chains, atom_types, show=True) # Add the first frame and show the viewer
 
 # Animate: gradually add superhelical twist
 # Wrapping around a larger cylinder with increasing turns
@@ -126,7 +131,7 @@ for frame in range(1, 21):
     twisted_coords = generate_alpha_helix_on_superhelix(
         100, super_radius=super_radius, super_turns=super_turns
     )
-    viewer.add(twisted_coords, plddts, chains, atom_types)
+    viewer.add(twisted_coords, plddts, chains, atom_types, show=False) # Add subsequent frames without re-displaying
 ```
 
 ### Mixed Structure Example
@@ -203,7 +208,8 @@ all_chains = protein_chains + dna_chains + ligand_chains
 all_types = protein_types + dna_types + ligand_types
 
 viewer = py2Dmol.view(color='chain', size=(600, 600))
-viewer.display(all_coords, all_plddts, all_chains, all_types)
+viewer.add(all_coords, all_plddts, all_chains, all_types)
+viewer.show()
 ```
 
 ## Atom Types
@@ -256,6 +262,16 @@ viewer = py2Dmol.view(color='chain')
 viewer.from_pdb('multi_chain_complex.pdb')
 ```
 
+### Hiding UI Controls
+
+You can hide the control panels for a cleaner look by setting `show_controls=False`:
+
+```python
+viewer = py2Dmol.view(show_controls=False)
+viewer.from_pdb('my_protein.pdb')
+```
+The animation slider and trajectory selector will remain visible if they are needed.
+
 ## Features
 
 - **Interactive 3D-style visualization** with rotation and zoom
@@ -287,15 +303,17 @@ viewer.from_pdb('AF-P12345-F1-model_v4.pdb')
 ### Comparing Multiple Trajectories
 
 ```python
-# Load first trajectory
 viewer = py2Dmol.view()
-viewer.from_pdb('simulation1.pdb')
 
-# Start a new trajectory
-viewer.clear()
-viewer.from_pdb('simulation2.pdb')
+# Load the first simulation, creating a new trajectory
+viewer.add_pdb('simulation1.pdb', new_traj=True)
 
-# Use the dropdown to switch between trajectories
+# Load the second simulation, creating another new trajectory
+viewer.add_pdb('simulation2.pdb', new_traj=True)
+
+viewer.show()
+
+# Use the dropdown in the UI to switch between trajectories
 ```
 
 ### Visualizing DNA-Protein Interactions
