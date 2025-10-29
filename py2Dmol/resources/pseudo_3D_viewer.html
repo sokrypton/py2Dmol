@@ -15,17 +15,18 @@
             text-align: left; /* Aligns the container to the left */
         }
         #mainContainer {
-            display: inline-block; /* Makes the container wrap content */
-            text-align: left;
+            display: flex; /* Use flexbox for layout */
+            align-items: flex-start; /* Align items to the top */
+            gap: 15px; /* Space between canvas and controls */
         }
         #canvasContainer {
-            /* This is the stylized "box" */
             display: inline-block;
             position: relative;
             border: 1px solid #ddd;
             border-radius: 12px;
             overflow: hidden;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            flex-shrink: 0; /* Prevent canvas from shrinking */
         }
         #canvas {
             background: #ffffff;
@@ -35,52 +36,47 @@
         #canvas:active {
             cursor: grabbing;
         }
-
-        /* Style for the floating dropdown */
         #colorSelect {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            z-index: 10;
             font-size: 12px;
             padding: 4px 8px;
             border: 1px solid #ccc;
             border-radius: 4px;
-            background-color: rgba(255, 255, 255, 0.8);
-            -webkit-appearance: none;
-            -moz-appearance: none;
-            appearance: none;
+            background-color: #fff;
             cursor: pointer;
-            background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%2Mxmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23444444%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.6-3.6%205.4-7.8%205.4-12.8%200-5-1.8-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E');
-            background-repeat: no-repeat;
-            background-position: right 8px top 50%;
-            background-size: 8px auto;
-            padding-right: 28px;
+            width: 100%; /* Make it fill the container */
         }
         #colorSelect:focus {
             outline: none;
             border-color: #007bff;
         }
-
-        /* NEW: Style for options container */
         #optionsContainer {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            z-index: 10;
             font-size: 12px;
             color: #333;
-            background-color: rgba(255, 255, 255, 0.8);
-            padding: 4px 8px;
-            border-radius: 4px;
+            padding: 0;
             display: flex;
-            flex-direction: column; /* Stack controls vertically */
-            align-items: flex-start; /* Align to the left */
-            gap: 4px;
+            flex-direction: column;
+            gap: 8px; /* Space between control groups */
+            width: 120px; /* Fixed width for the controls column */
         }
-        .toggle-item { /* NEW: Wrapper for label/input pairs */
+        .control-group {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .control-group-title {
+            font-weight: bold;
+            margin-bottom: 4px;
+            color: #555;
+        }
+        .toggle-item {
             display: flex;
             align-items: center;
+            justify-content: space-between; /* Align label and control */
+            width: 100%;
             gap: 4px;
         }
         .toggle-item label { cursor: pointer; white-space: nowrap; }
@@ -101,12 +97,6 @@
             text-align: left;
             width: 100%;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            font-size: 12px;
-        }
-        /* NEW: Trajectory Controls Container */
-        #trajectoryContainer {
-            padding: 5px 10px 10px 10px; /* Top padding 5px */
-            width: 100%;
             font-size: 12px;
         }
         .controlButton { /* NEW: Shared button style */
@@ -169,54 +159,52 @@
     </style>
 </head>
 <body>
-    <!-- Main container to hold viewer and controls -->
     <div id="mainContainer">
-        <!-- The canvas and dropdown are now siblings in the container -->
-        <div id="canvasContainer">
-            <canvas id="canvas"></canvas>
-            <!-- MODIFIED: Options container -->
-            <div id="optionsContainer">
+        <div>
+            <div id="canvasContainer">
+                <canvas id="canvas"></canvas>
+            </div>
+            <div id="controlsContainer">
+                <button id="playButton" class="controlButton">Play</button>
+                <input type="range" id="frameSlider" min="0" max="0" value="0">
+                <span id="frameCounter">Frame: 0 / 0</span>
+                <select id="speedSelect">
+                    <option value="100">1x</option>
+                    <option value="50">2x</option>
+                    <option value="25">4x</option>
+                </select>
+            </div>
+        </div>
+        <div id="optionsContainer">
+            <div class="control-group" id="trajectoryControlGroup">
+                <div class="control-group-title">Trajectory</div>
+                <select id="trajectorySelect">
+                    <option value="default">0</option>
+                </select>
+            </div>
+            <div class="control-group" id="colorControlGroup">
+                <div class="control-group-title">Color</div>
+                <select id="colorSelect">
+                    <option value="plddt">pLDDT</option>
+                    <option value="rainbow">Rainbow</option>
+                    <option value="chain">Chain</option>
+                </select>
+            </div>
+            <div class="control-group" id="displayControlGroup">
+                <div class="control-group-title">Display</div>
                 <div class="toggle-item">
-                    <input type="checkbox" id="shadowCheckbox" checked>
                     <label for="shadowCheckbox">Shadow</label>
-                </div>
-                <!-- HTML TYPO FIX: class.toggle-item -> class="toggle-item" -->
-                <div class="toggle-item"> 
-                    <input type="checkbox" id="rotationCheckbox">
-                    <label for="rotationCheckbox">Rotate</label>
+                    <input type="checkbox" id="shadowCheckbox" checked>
                 </div>
                 <div class="toggle-item">
-                    <label for="lineWidthSlider">Line:</label>
+                    <label for="rotationCheckbox">Rotate</label>
+                    <input type="checkbox" id="rotationCheckbox">
+                </div>
+                <div class="toggle-item">
+                    <label for="lineWidthSlider">Line</label>
                     <input type="range" id="lineWidthSlider" min="1" max="5" value="3" step="0.5">
                 </div>
             </div>
-            <!-- Floating Dropdown Menu -->
-            <select id="colorSelect">
-                <option value="plddt">pLDDT</option>
-                <option value="rainbow">Rainbow</option>
-                <option value="chain">Chain</option>
-            </select>
-        </div>
-
-        <!-- Animation Controls -->
-        <div id="controlsContainer">
-            <button id="playButton" class="controlButton">Play</button>
-            <input type="range" id="frameSlider" min="0" max="0" value="0">
-            <span id="frameCounter">Frame: 0 / 0</span>
-            <!-- NEW: Speed Select -->
-            <select id="speedSelect">
-                <option value="100">1x</option>
-                <option value="50">2x</option>
-                <option value="25">4x</option>
-            </select>
-        </div>
-        <!-- NEW Trajectory Controls -->
-        <div id="trajectoryContainer">
-            <span id="trajectoryLabel">Trajectory:</span>
-            <select id="trajectorySelect">
-                <option value="default">0</option>
-            </select>
-            <!-- REMOVED Save Video Button -->
         </div>
     </div>
 
@@ -258,11 +246,6 @@
         function getRainbowColor(value, min, max) { if (max - min < 1e-6) return hsvToRgb(0, 1.0, 1.0); let normalized = (value - min) / (max - min); normalized = Math.max(0, Math.min(1, normalized)); const hue = 240 * normalized; return hsvToRgb(hue, 1.0, 1.0); }
         function getPlddtColor(plddt) { return getRainbowColor(plddt, 50, 90); }
         function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
-
-        // ============================================================================
-        // DEMO STRUCTURE GENERATOR (Unchanged)
-        // ============================================================================
-        function generateProteinCurve(n) { const coords = []; const plddts = []; const chains = []; const atomTypes = []; let angle = 0, z = 0; const numProtein = n - 10; for (let i = 0; i < n; i++) { const t = i / n; chains.push(i < n / 2 ? 'A' : 'B'); if (i >= numProtein) { atomTypes.push('L'); plddts.push(75.0); const protEnd = coords[numProtein - 1] || new Vec3(0,0,0); const lt = (i - numProtein) / 10.0; const lx = protEnd.x + 5 + lt * 5 * Math.cos(lt * 20); const ly = protEnd.y + 5 + lt * 5 * Math.sin(lt * 20); const lz = protEnd.z - 3 + lt * 3; coords.push(new Vec3(lx, ly, lz)); } else { atomTypes.push('P'); plddts.push((Math.sin(t * Math.PI * 6) * 0.5 + 0.5) * 50 + 40); const freq = 2 + Math.sin(t * Math.PI * 2) * 1.5; angle += 0.3 * freq; const radius = 15 + 10 * Math.sin(t * Math.PI * 4); const x = radius * Math.cos(angle); const y = radius * Math.sin(angle); z += 0.5 + 0.3 * Math.sin(t * Math.PI * 8); coords.push(new Vec3(x, y, z)); } } return {coords, plddts, chains, atomTypes}; }
 
         // ============================================================================
         // PSEUDO-3D RENDERER (Refactored)
@@ -580,29 +563,49 @@
             }
 
             // Update the text/slider values
+            clearAllTrajectories() {
+                this.stopAnimation();
+                this.trajectoriesData = { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
+                this.currentTrajectoryName = "default";
+                this.currentFrame = -1;
+
+                this.trajectorySelect.innerHTML = '';
+                const option = document.createElement('option');
+                option.value = "default";
+                option.textContent = "0";
+                this.trajectorySelect.appendChild(option);
+
+                this.setFrame(-1);
+            }
+
             updateUIControls() {
                 if (!this.playButton) return;
 
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
-                const total = trajectory ? trajectory.frames.length : 0;
-                const current = Math.max(0, this.currentFrame) + 1;
+                const totalFrames = trajectory ? trajectory.frames.length : 0;
+                const currentFrame = Math.max(0, this.currentFrame) + 1;
+                const totalTrajectories = Object.keys(this.trajectoriesData).length;
 
-                if (total <= 1) { // MODIFIED: Simplified show/hide
+                if (totalFrames <= 1) {
                     this.controlsContainer.style.display = 'none';
                 } else {
                     this.controlsContainer.style.display = 'flex';
                 }
 
-                this.frameSlider.max = Math.max(0, total - 1);
+                const trajectoryControlGroup = document.getElementById('trajectoryControlGroup');
+                if (totalTrajectories <= 1) {
+                    trajectoryControlGroup.style.display = 'none';
+                } else {
+                    trajectoryControlGroup.style.display = 'flex';
+                }
+
+                this.frameSlider.max = Math.max(0, totalFrames - 1);
                 
-                // CRITICAL FIX: Don't update slider value while user is dragging it!
                 if (!this.isSliderDragging) {
                     this.frameSlider.value = this.currentFrame;
                 }
                 
-                this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
-
-                // MODIFIED: Simplified text logic
+                this.frameCounter.textContent = `Frame: ${totalFrames > 0 ? currentFrame : 0} / ${totalFrames}`;
                 this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
             }
 
@@ -1019,27 +1022,32 @@
         // ============================================================================
 
         // 1. Get config from Python
-        const config = window.viewerConfig || { size: [800, 600], color: "plddt" };
+        const config = window.viewerConfig || { size: [800, 600], color: "plddt", show_controls: true };
 
         // 2. Setup Canvas
         const canvas = document.getElementById('canvas');
         canvas.width = config.size[0];
         canvas.height = config.size[1];
-        document.getElementById('mainContainer').style.width = `${config.size[0]}px`;
 
         // 3. Create renderer
         window.renderer = new Pseudo3DRenderer(canvas);
         window.renderer.colorMode = config.color;
 
         // 4. Setup general controls
+        if (!config.show_controls) {
+            document.getElementById('colorControlGroup').style.display = 'none';
+            document.getElementById('displayControlGroup').style.display = 'none';
+        }
+
         const colorSelect = document.getElementById('colorSelect');
         colorSelect.value = config.color;
         colorSelect.addEventListener('change', (e) => {
             window.renderer.colorMode = e.target.value;
             window.renderer.render();
         });
+
         const shadowCheckbox = document.getElementById('shadowCheckbox');
-        window.renderer.shadowCheckbox = shadowCheckbox;  // Store reference
+        window.renderer.shadowCheckbox = shadowCheckbox;
         shadowCheckbox.checked = window.renderer.shadowEnabled;
         shadowCheckbox.addEventListener('change', (e) => {
             window.renderer.shadowEnabled = e.target.checked;
@@ -1081,30 +1089,21 @@
             }
         };
 
-        // 7. Add function for Python to start a new trajectory
         window.handlePythonNewTrajectory = (name) => {
             window.renderer.addTrajectory(name);
         };
 
+        window.handlePythonClear = () => {
+            window.renderer.clearAllTrajectories();
+        };
+
         // 8. Load initial data
         try {
-            if (window.proteinData && window.proteinData.coords && window.proteinData.coords.length > 0) {
+            if (window.proteinData && window.proteinData.coords) {
                 window.renderer.addFrame(window.proteinData);
-            } else {
-                const {coords, plddts, chains, atomTypes} = generateProteinCurve(100);
-                const demoData = {
-                    coords: coords.map(c => [c.x, c.y, c.z]),
-                    plddts: plddts,
-                    chains: chains,
-                    atom_types: atomTypes
-                };
-                window.renderer.addFrame(demoData);
             }
         } catch (error) {
             console.error("Error loading initial data:", error);
-            const {coords, plddts, chains, atomTypes} = generateProteinCurve(100);
-            const demoData = { coords: coords.map(c => [c.x, c.v, c.z]), plddts: plddts, chains: chains, atom_types: atomTypes };
-            window.renderer.addFrame(demoData);
         }
 
         // 9. Start the main animation loop

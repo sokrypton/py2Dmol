@@ -34,23 +34,24 @@ def align_a_to_b(a, b):
 # --- view Class ---
 
 class view:
-    def __init__(self, size=(500,500), color="rainbow"):
+    def __init__(self, size=(500,500), color="rainbow", show_controls=True):
         self.size = size
         self.color = color
+        self.show_controls = show_controls
         self._initial_data_loaded = False
         self._coords = None
         self._plddts = None
         self._chains = None
         self._atom_types = None
-        self._trajectory_counter = 0 # NEW: Counter for trials
+        self._trajectory_counter = 0
 
     def _serialize_data(self):
         """Serializes the current coordinate state to JSON."""
         payload = {
-            "coords": self._coords.tolist(),
-            "plddts": self._plddts.tolist(),
-            "chains": list(self._chains),
-            "atom_types": list(self._atom_types)
+            "coords": self._coords.tolist() if self._coords is not None else [],
+            "plddts": list(self._plddts) if self._plddts is not None else [],
+            "chains": list(self._chains) if self._chains is not None else [],
+            "atom_types": list(self._atom_types) if self._atom_types is not None else []
         }
         return json.dumps(payload)
 
@@ -85,20 +86,14 @@ class view:
           self._atom_types = ["P"] * self._coords.shape[0]
 
     def clear(self):
-        """MODIFIED: Clears the Python state and tells the JS viewer to start a new trajectory."""
-        # Generate a name for the new trajectory
-        trajectory_name = f"{self._trajectory_counter}"
-        self._trajectory_counter += 1
-
-        # Clear Python-side coordinates
+        """Clears all trajectories and resets the viewer state."""
         self._coords = None
         self._plddts = None
         self._chains = None
         self._atom_types = None
-
-        # NEW: Tell JS to create and switch to this new trajectory
+        self._trajectory_counter = 0
         if self._initial_data_loaded:
-            js_code = f"window.handlePythonNewTrajectory('{trajectory_name}');"
+            js_code = "window.handlePythonClear();"
             if IS_COLAB:
                 try:
                     output.eval_js(js_code, ignore_result=True)
@@ -107,10 +102,8 @@ class view:
             else:
                 display(Javascript(js_code))
 
-    def display(self, initial_coords, initial_plddts=None, initial_chains=None, initial_atom_types=None):
-        """Displays the viewer with initial data."""
-        self._update(initial_coords, initial_plddts, initial_chains, initial_atom_types)
-
+    def show(self):
+        """Displays the viewer with the current data."""
         try:
             with importlib.resources.open_text(py2dmol_resources, 'pseudo_3D_viewer.html') as f:
                 html_template = f.read()
@@ -120,14 +113,14 @@ class view:
 
         viewer_config = {
             "size": self.size,
-            "color": self.color
+            "color": self.color,
+            "show_controls": self.show_controls
         }
         config_script = f"""
         <script id="viewer-config">
           window.viewerConfig = {json.dumps(viewer_config)};
         </script>
         """
-        # The data script now provides the *first frame* for the "Initial" trajectory
         data_script = f"""
         <script id="protein-data">
           window.proteinData = {self._serialize_data()};
@@ -139,35 +132,45 @@ class view:
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
         display(HTML(final_html))
 
-    def add(self, coords, plddts=None, chains=None, atom_types=None):
-      """Sends a new frame of data to the JavaScript viewer."""
-      if self._initial_data_loaded:
+    def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False, show=True):
+        """Adds a new frame of data to the viewer."""
+        if new_traj and self._initial_data_loaded:
+            trajectory_name = f"{self._trajectory_counter}"
+            self._trajectory_counter += 1
+            js_code = f"window.handlePythonNewTrajectory('{trajectory_name}');"
+            if IS_COLAB:
+                try:
+                    output.eval_js(js_code, ignore_result=True)
+                except Exception as e:
+                    pass
+            else:
+                display(Javascript(js_code))
+            self._coords = None
+
         self._update(coords, plddts, chains, atom_types)
-        json_data = self._serialize_data()
-        js_code = f"window.handlePythonUpdate(`{json_data}`);"
-        if IS_COLAB:
-            output.eval_js(js_code, ignore_result=True)
-        else:
-            display(Javascript(js_code))
-      else:
-        # If display() was never called, call it now
-        self.display(coords, plddts, chains, atom_types)
+
+        if self._initial_data_loaded:
+            json_data = self._serialize_data()
+            js_code = f"window.handlePythonUpdate(`{json_data}`);"
+            if IS_COLAB:
+                try:
+                    output.eval_js(js_code, ignore_result=True)
+                except Exception as e:
+                    pass
+            else:
+                display(Javascript(js_code))
+        elif show:
+            self.show()
 
     update_data = add
 
-    def from_pdb(self, filepath, chains=None):
-        """Loads a structure from a PDB or CIF file and updates the viewer.
-        
-        Now supports:
-        - Proteins (CA atoms, type 'P')
-        - DNA (C4' atoms, type 'D')
-        - RNA (C4' atoms, type 'R')
-        - Ligands (all heavy atoms, type 'L')
-        """
+    def add_pdb(self, filepath, chains=None, new_traj=False, show=True):
+        """Loads a structure from a PDB or CIF file and updates the viewer."""
         structure = gemmi.read_structure(filepath)
-        self.clear()
 
-        for model in structure:
+        first_model = True
+        num_models = len(structure)
+        for i, model in enumerate(structure):
             coords = []
             plddts = []
             atom_chains = []
@@ -176,17 +179,14 @@ class view:
             for chain in model:
                 if chains is None or chain.name in chains:
                     for residue in chain:
-                        # Skip water
                         if residue.name == 'HOH':
                             continue
 
-                        # Check molecule type
                         residue_info = gemmi.find_tabulated_residue(residue.name)
                         is_protein = residue_info.is_amino_acid()
                         is_nucleic = residue_info.is_nucleic_acid()
 
                         if is_protein:
-                            # Protein: use CA atom
                             if 'CA' in residue:
                                 atom = residue['CA'][0]
                                 coords.append(atom.pos.tolist())
@@ -195,13 +195,9 @@ class view:
                                 atom_types.append('P')
                                 
                         elif is_nucleic:
-                            # DNA/RNA: use C4' atom (sugar carbon)
                             c4_atom = None
-                            
-                            # Try C4' first (standard naming)
                             if "C4'" in residue:
                                 c4_atom = residue["C4'"][0]
-                            # Try C4* (alternative naming in some PDB files)
                             elif "C4*" in residue:
                                 c4_atom = residue["C4*"][0]
                             
@@ -210,9 +206,6 @@ class view:
                                 plddts.append(c4_atom.b_iso)
                                 atom_chains.append(chain.name)
                                 
-                                # Distinguish RNA from DNA
-                                # RNA bases: A, C, G, U (and modified versions starting with R)
-                                # DNA bases: DA, DC, DG, DT (and A, C, G, T in some files)
                                 rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU']
                                 dna_bases = ['DA', 'DC', 'DG', 'DT', 'T']
                                 
@@ -221,11 +214,9 @@ class view:
                                 elif residue.name in dna_bases or residue.name.startswith('D'):
                                     atom_types.append('D')
                                 else:
-                                    # Default to RNA if uncertain (common in crystallography)
                                     atom_types.append('R')
                                     
                         else:
-                            # Ligand: use all heavy atoms
                             for atom in residue:
                                 if atom.element.name != 'H':
                                     coords.append(atom.pos.tolist())
@@ -236,7 +227,16 @@ class view:
             if coords:
                 coords = np.array(coords)
                 plddts = np.array(plddts)
-                if self._initial_data_loaded:
-                    self.add(coords, plddts, atom_chains, atom_types)
-                else:
-                    self.display(coords, plddts, atom_chains, atom_types)
+
+                should_start_new_traj = new_traj and first_model
+
+                show_this_frame = show and (i == num_models - 1)
+
+                self.add(coords, plddts, atom_chains, atom_types,
+                         new_traj=should_start_new_traj,
+                         show=show_this_frame)
+
+                first_model = False
+
+    def from_pdb(self, filepath, chains=None, new_traj=True):
+        self.add_pdb(filepath, chains, new_traj)
