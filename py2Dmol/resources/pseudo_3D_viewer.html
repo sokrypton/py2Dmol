@@ -343,6 +343,11 @@
                 window.addEventListener('mousemove', (e) => {
                     if (!this.isDragging) return; // REMOVED: isRecording check
                     
+                    // SLIDER FIX: Don't interfere with slider or other input controls
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') {
+                        return;
+                    }
+                    
                     const now = performance.now();
                     const timeDelta = now - this.lastDragTime;
 
