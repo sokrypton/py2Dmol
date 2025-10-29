@@ -2,6 +2,9 @@
 
 A Python library for visualizing protein structures in 2D, designed for use in Google Colab and Jupyter environments.
 
+<img width="404" height="349" alt="image" src="https://github.com/user-attachments/assets/874213b7-67d0-4fc9-93ae-ea50160d1f8c" />
+
+
 ## Installation
 
 You can install `py2Dmol` directly from GitHub:
