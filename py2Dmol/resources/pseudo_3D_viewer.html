@@ -328,6 +328,9 @@
             setupInteraction() {
                 // --- REFACTORED: Added inertia logic ---
                 this.canvas.addEventListener('mousedown', (e) => {
+                    // Only start dragging if we clicked directly on the canvas
+                    if (e.target !== this.canvas) return;
+                    
                     this.isDragging = true;
                     this.spinVelocityX = 0;
                     this.spinVelocityY = 0;
@@ -343,8 +346,9 @@
                 window.addEventListener('mousemove', (e) => {
                     if (!this.isDragging) return; // REMOVED: isRecording check
                     
-                    // SLIDER FIX: Don't interfere with slider or other input controls
+                    // SLIDER FIX: Clear isDragging and stop if over a control element
                     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') {
+                        this.isDragging = false;
                         return;
                     }
                     
@@ -436,14 +440,32 @@
                     }
                 });
 
-                // --- SLIDER FIX ---
+                // --- SLIDER FIX: Prevent canvas drag from interfering with slider ---
                 const handleSliderChange = (e) => {
                     this.stopAnimation();
-                    this.setFrame(e.target.value);
+                    this.setFrame(parseInt(e.target.value));
                 };
 
+                // Clear isDragging when interacting with slider
+                this.frameSlider.addEventListener('mousedown', (e) => {
+                    this.isDragging = false;
+                    e.stopPropagation();
+                });
+                
                 this.frameSlider.addEventListener('input', handleSliderChange);
                 this.frameSlider.addEventListener('change', handleSliderChange);
+                
+                // Also prevent canvas drag when interacting with other controls
+                const allControls = [this.playButton, this.trajectorySelect, this.speedSelect, 
+                                     this.rotationCheckbox, this.lineWidthSlider];
+                allControls.forEach(control => {
+                    if (control) {
+                        control.addEventListener('mousedown', (e) => {
+                            this.isDragging = false;
+                            e.stopPropagation();
+                        });
+                    }
+                });
             }
 
             // Add a new trajectory
