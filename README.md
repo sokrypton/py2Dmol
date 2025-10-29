@@ -15,15 +15,6 @@ pip install py2Dmol
 
 Here are a few examples of how to use `py2Dmol`.
 
-### Basic Usage
-
-To create a viewer, simply import the package and instantiate the `view` class:
-
-```python
-import py2Dmol
-viewer = py2Dmol.view()
-```
-
 ### Loading a Structure from a PDB or CIF File
 
 You can load a structure directly from a PDB or CIF file using the `from_pdb` method. This will automatically extract:
