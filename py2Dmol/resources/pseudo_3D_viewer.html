@@ -660,9 +660,13 @@
 
                 this.chainRainbowScales = {};
                 for (let i = 0; i < this.atomTypes.length; i++) {
-                    if (this.atomTypes[i] === 'P') {
+                    const type = this.atomTypes[i];
+                    // Include protein (P), DNA (D), and RNA (R) in rainbow coloring
+                    if (type === 'P' || type === 'D' || type === 'R') {
                         const chainId = this.chains[i] || 'A';
-                        if (!this.chainRainbowScales[chainId]) { this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity }; }
+                        if (!this.chainRainbowScales[chainId]) { 
+                            this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity }; 
+                        }
                         const colorIndex = this.coords.length - 1 - i;
                         const scale = this.chainRainbowScales[chainId];
                         scale.min = Math.min(scale.min, colorIndex);
@@ -684,41 +688,94 @@
                 const rotated = this.coords.map(v => applyMatrix(this.rotationMatrix, v.sub(globalCenter)));
                 const segments = [];
                 const proteinChainbreak = 5.0;
+                const nucleicChainbreak = 7.5; // DNA/RNA C4'-C4' distance
                 const ligandBondCutoff = 2.0;
-                let firstProteinIndex = -1;
-                let lastProteinIndex = -1;
+                let firstPolymerIndex = -1;
+                let lastPolymerIndex = -1;
                 const ligandIndices = [];
 
+                // Helper function to check if atom is polymer (protein or nucleic)
+                const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
+                const getChainbreakDist = (type1, type2) => {
+                    if ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R')) {
+                        return nucleicChainbreak;
+                    }
+                    return proteinChainbreak;
+                };
+
                 for (let i = 0; i < rotated.length; i++) {
-                    if (this.atomTypes[i] === 'L') {
+                    const type = this.atomTypes[i];
+                    
+                    if (type === 'L') {
                         ligandIndices.push(i);
                         continue;
                     }
-                    if (firstProteinIndex === -1) { firstProteinIndex = i; }
-                    lastProteinIndex = i;
-                    if (i < rotated.length - 1) {
-                        const type1 = this.atomTypes[i];
-                        const type2 = this.atomTypes[i+1];
-                        if (type1 === 'P' && type2 === 'P') {
-                            const start = rotated[i];
-                            const end = rotated[i+1];
-                            const dist = start.distanceTo(end);
-                            if (dist < proteinChainbreak) {
-                                segments.push({ start, end, mid: start.add(end).mul(0.5), length: dist, colorIndex: rotated.length - 1 - i, origIndex: i, chainId: this.chains[i] || 'A' });
+                    
+                    if (isPolymer(type)) {
+                        if (firstPolymerIndex === -1) { firstPolymerIndex = i; }
+                        lastPolymerIndex = i;
+                        
+                        if (i < rotated.length - 1) {
+                            const type1 = this.atomTypes[i];
+                            const type2 = this.atomTypes[i+1];
+                            
+                            // Check if both are polymer atoms of compatible types
+                            if (isPolymer(type1) && isPolymer(type2)) {
+                                // Can connect: P-P, D-D, R-R (but not P-D, P-R, D-R)
+                                const samePolymerType = (type1 === type2) || 
+                                    ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
+                                
+                                if (samePolymerType && this.chains[i] === this.chains[i+1]) {
+                                    const start = rotated[i];
+                                    const end = rotated[i+1];
+                                    const dist = start.distanceTo(end);
+                                    const chainbreakDist = getChainbreakDist(type1, type2);
+                                    
+                                    if (dist < chainbreakDist) {
+                                        segments.push({ 
+                                            start, 
+                                            end, 
+                                            mid: start.add(end).mul(0.5), 
+                                            length: dist, 
+                                            colorIndex: rotated.length - 1 - i, 
+                                            origIndex: i, 
+                                            chainId: this.chains[i] || 'A' 
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                if (firstProteinIndex !== -1 && lastProteinIndex !== -1 && firstProteinIndex !== lastProteinIndex) {
-                    const firstProteinChainId = this.chains[firstProteinIndex] || 'A';
-                    const lastProteinChainId = this.chains[lastProteinIndex] || 'A';
-                    if (firstProteinChainId === lastProteinChainId) {
-                        const start = rotated[firstProteinIndex];
-                        const end = rotated[lastProteinIndex];
-                        const dist = start.distanceTo(end);
-                        if (dist < proteinChainbreak) {
-                            segments.push({ start, end, mid: start.add(end).mul(0.5), length: dist, colorIndex: this.chainRainbowScales[firstProteinChainId]?.min || 0, origIndex: firstProteinIndex, chainId: firstProteinChainId });
+                // Close loop for polymer if first and last are same chain and close enough
+                if (firstPolymerIndex !== -1 && lastPolymerIndex !== -1 && firstPolymerIndex !== lastPolymerIndex) {
+                    const firstChainId = this.chains[firstPolymerIndex] || 'A';
+                    const lastChainId = this.chains[lastPolymerIndex] || 'A';
+                    const type1 = this.atomTypes[firstPolymerIndex];
+                    const type2 = this.atomTypes[lastPolymerIndex];
+                    
+                    if (firstChainId === lastChainId && isPolymer(type1) && isPolymer(type2)) {
+                        const samePolymerType = (type1 === type2) || 
+                            ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
+                        
+                        if (samePolymerType) {
+                            const start = rotated[firstPolymerIndex];
+                            const end = rotated[lastPolymerIndex];
+                            const dist = start.distanceTo(end);
+                            const chainbreakDist = getChainbreakDist(type1, type2);
+                            
+                            if (dist < chainbreakDist) {
+                                segments.push({ 
+                                    start, 
+                                    end, 
+                                    mid: start.add(end).mul(0.5), 
+                                    length: dist, 
+                                    colorIndex: this.chainRainbowScales[firstChainId]?.min || 0, 
+                                    origIndex: firstPolymerIndex, 
+                                    chainId: firstChainId 
+                                });
+                            }
                         }
                     }
                 }

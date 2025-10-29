@@ -156,7 +156,14 @@ class view:
     update_data = add
 
     def from_pdb(self, filepath, chains=None):
-        """Loads a structure from a PDB or CIF file and updates the viewer."""
+        """Loads a structure from a PDB or CIF file and updates the viewer.
+        
+        Now supports:
+        - Proteins (CA atoms, type 'P')
+        - DNA (C4' atoms, type 'D')
+        - RNA (C4' atoms, type 'R')
+        - Ligands (all heavy atoms, type 'L')
+        """
         structure = gemmi.read_structure(filepath)
         self.clear()
 
@@ -169,19 +176,56 @@ class view:
             for chain in model:
                 if chains is None or chain.name in chains:
                     for residue in chain:
+                        # Skip water
                         if residue.name == 'HOH':
                             continue
 
-                        is_protein = gemmi.find_tabulated_residue(residue.name).is_amino_acid()
+                        # Check molecule type
+                        residue_info = gemmi.find_tabulated_residue(residue.name)
+                        is_protein = residue_info.is_amino_acid()
+                        is_nucleic = residue_info.is_nucleic_acid()
 
                         if is_protein:
+                            # Protein: use CA atom
                             if 'CA' in residue:
                                 atom = residue['CA'][0]
                                 coords.append(atom.pos.tolist())
                                 plddts.append(atom.b_iso)
                                 atom_chains.append(chain.name)
                                 atom_types.append('P')
-                        else: # Ligand
+                                
+                        elif is_nucleic:
+                            # DNA/RNA: use C4' atom (sugar carbon)
+                            c4_atom = None
+                            
+                            # Try C4' first (standard naming)
+                            if "C4'" in residue:
+                                c4_atom = residue["C4'"][0]
+                            # Try C4* (alternative naming in some PDB files)
+                            elif "C4*" in residue:
+                                c4_atom = residue["C4*"][0]
+                            
+                            if c4_atom:
+                                coords.append(c4_atom.pos.tolist())
+                                plddts.append(c4_atom.b_iso)
+                                atom_chains.append(chain.name)
+                                
+                                # Distinguish RNA from DNA
+                                # RNA bases: A, C, G, U (and modified versions starting with R)
+                                # DNA bases: DA, DC, DG, DT (and A, C, G, T in some files)
+                                rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU']
+                                dna_bases = ['DA', 'DC', 'DG', 'DT', 'T']
+                                
+                                if residue.name in rna_bases or residue.name.startswith('R'):
+                                    atom_types.append('R')
+                                elif residue.name in dna_bases or residue.name.startswith('D'):
+                                    atom_types.append('D')
+                                else:
+                                    # Default to RNA if uncertain (common in crystallography)
+                                    atom_types.append('R')
+                                    
+                        else:
+                            # Ligand: use all heavy atoms
                             for atom in residue:
                                 if atom.element.name != 'H':
                                     coords.append(atom.pos.tolist())
