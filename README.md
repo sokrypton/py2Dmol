@@ -27,13 +27,13 @@ If the file contains multiple models, they will be loaded as an animation.
 ```python
 import py2Dmol
 viewer = py2Dmol.view()
-viewer.from_pdb('my_protein.pdb')
+viewer.add_pdb('my_protein.pdb')
 ```
 
 You can also specify which chains to display:
 
 ```python
-viewer.from_pdb('my_protein.pdb', chains=['A', 'B'])
+viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
 ```
 
 
@@ -90,7 +90,6 @@ atom_types = ['P'] * 100
 
 # Display
 viewer = py2Dmol.view()
-viewer.display(coords, plddts, chains, atom_types)
 
 # Animate: gradually add superhelical twist
 # Wrapping around a larger cylinder with increasing turns
@@ -177,7 +176,7 @@ all_chains = protein_chains + dna_chains + ligand_chains
 all_types = protein_types + dna_types + ligand_types
 
 viewer = py2Dmol.view(color='chain', size=(600, 600))
-viewer.display(all_coords, all_plddts, all_chains, all_types)
+viewer.add(all_coords, all_plddts, all_chains, all_types)
 ```
 
 ### Atom Types and Representative Atoms
@@ -214,11 +213,11 @@ The viewer supports multiple coloring schemes:
 ```python
 # Use pLDDT coloring
 viewer = py2Dmol.view(color='plddt')
-viewer.from_pdb('alphafold_prediction.pdb')
+viewer.add_pdb('alphafold_prediction.pdb')
 
 # Use chain coloring
 viewer = py2Dmol.view(color='chain')
-viewer.from_pdb('multi_chain_complex.pdb')
+viewer.add_pdb('multi_chain_complex.pdb')
 ```
 
 ## Features
@@ -246,10 +245,10 @@ Both formats support multi-model files for animation playback.
 ```python
 # Load first trajectory
 viewer = py2Dmol.view()
-viewer.from_pdb('simulation1.pdb')
+viewer.add_pdb('simulation1.pdb')
 
 # Start a new trajectory
-viewer.from_pdb('simulation2.pdb')
+viewer.add_pdb('simulation2.pdb', new_traj=True)
 
 # Use the dropdown to switch between trajectories
 ```
