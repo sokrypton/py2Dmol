@@ -65,10 +65,12 @@ for _ in range(10):
 
 ## Data Format
 
-The viewer distinguishes between two types of atoms:
+The viewer uses different representative atoms for each molecule type:
 
-*   **P (Protein):** Represents the C-alpha atom of a protein residue.
-*   **L (Ligand):** Represents a heavy atom of a non-protein, non-water molecule.
+*   **P (Protein):** C-alpha atoms (backbone trace)
+*   **D (DNA):** C4' atoms (backbone trace)
+*   **R (RNA):** C4' atoms (backbone trace)
+*   **L (Ligand):** All heavy atoms
 
 ### Chains
 
