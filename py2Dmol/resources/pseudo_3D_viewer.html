@@ -180,7 +180,7 @@
                     <input type="checkbox" id="shadowCheckbox" checked>
                     <label for="shadowCheckbox">Shadow</label>
                 </div>
-                <div class="toggle-item">
+                <div class.toggle-item>
                     <input type="checkbox" id="rotationCheckbox">
                     <label for="rotationCheckbox">Rotate</label>
                 </div>
@@ -215,7 +215,7 @@
             <select id="trajectorySelect">
                 <option value="default">0</option>
             </select>
-            <button id="saveVideoButton" class="controlButton">Save Video</button> <!-- MOVED -->
+            <!-- REMOVED Save Video Button -->
         </div>
     </div>
 
@@ -307,7 +307,7 @@
 
                 // UI elements
                 this.playButton = null;
-                this.saveVideoButton = null;
+                // REMOVED: this.saveVideoButton = null;
                 this.frameSlider = null;
                 this.frameCounter = null;
                 this.trajectorySelect = null;
@@ -316,10 +316,10 @@
                 this.rotationCheckbox = null;
                 this.lineWidthSlider = null;
 
-                // Video recording
-                this.mediaRecorder = null;
-                this.recordedChunks = [];
-                this.isRecording = false;
+                // REMOVED: Video recording properties
+                // this.mediaRecorder = null;
+                // this.recordedChunks = [];
+                // this.isRecording = false;
 
                 this.setupInteraction();
             }
@@ -340,7 +340,7 @@
                 });
                 
                 window.addEventListener('mousemove', (e) => {
-                    if (!this.isDragging || this.isRecording) return;
+                    if (!this.isDragging) return; // REMOVED: isRecording check
                     
                     const now = performance.now();
                     const timeDelta = now - this.lastDragTime;
@@ -379,7 +379,7 @@
                 });
 
                 this.canvas.addEventListener('wheel', (e) => {
-                    if (this.isRecording) return;
+                    // REMOVED: isRecording check
                     e.preventDefault();
                     this.zoom *= (1 - e.deltaY * 0.001);
                     this.zoom = Math.max(0.1, Math.min(5, this.zoom));
@@ -388,10 +388,10 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider) {
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider) { // MODIFIED: removed saveVideoButton
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
-                this.saveVideoButton = saveVideoButton;
+                // REMOVED: this.saveVideoButton = saveVideoButton;
                 this.frameSlider = frameSlider;
                 this.frameCounter = frameCounter;
                 this.trajectorySelect = trajectorySelect;
@@ -407,9 +407,7 @@
                     this.setFrame(0);
                 });
 
-                this.saveVideoButton.addEventListener('click', () => {
-                    this.saveAnimationAsVideo();
-                });
+                // REMOVED: saveVideoButton listener
 
                 this.speedSelect.addEventListener('change', (e) => {
                     this.animationSpeed = parseInt(e.target.value);
@@ -424,7 +422,7 @@
 
                 this.lineWidthSlider.addEventListener('input', (e) => {
                     this.lineWidth = parseFloat(e.target.value);
-                    if (!this.isPlaying && !this.isRecording) {
+                    if (!this.isPlaying) { // REMOVED: isRecording check
                         this.render();
                     }
                 });
@@ -486,7 +484,7 @@
                 }
                 trajectory.maxExtent = Math.sqrt(maxDistSq);
 
-                if (!this.isPlaying && !this.isRecording) {
+                if (!this.isPlaying) { // REMOVED: isRecording check
                     this.setFrame(trajectory.frames.length - 1);
                 }
                 this.updateUIControls();
@@ -515,7 +513,7 @@
             // Update UI element states (e.g., disabled)
             setUIEnabled(enabled) {
                  this.playButton.disabled = !enabled;
-                 this.saveVideoButton.disabled = !enabled;
+                 // REMOVED: this.saveVideoButton.disabled = !enabled;
                  this.frameSlider.disabled = !enabled;
                  this.trajectorySelect.disabled = !enabled;
                  this.speedSelect.disabled = !enabled;
@@ -532,30 +530,23 @@
                 const total = trajectory ? trajectory.frames.length : 0;
                 const current = Math.max(0, this.currentFrame) + 1;
 
-                if (total <= 1) {
+                if (total <= 1) { // MODIFIED: Simplified show/hide
                     this.controlsContainer.style.display = 'none';
-                    if (this.saveVideoButton) this.saveVideoButton.style.display = 'none';
                 } else {
                     this.controlsContainer.style.display = 'flex';
-                    if (this.saveVideoButton) this.saveVideoButton.style.display = 'inline-block';
                 }
 
                 this.frameSlider.max = Math.max(0, total - 1);
                 this.frameSlider.value = this.currentFrame;
                 this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
 
-                if (this.isRecording) {
-                    this.playButton.textContent = 'Pause';
-                    if (this.saveVideoButton) this.saveVideoButton.textContent = 'Recording...';
-                } else {
-                    this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
-                    if (this.saveVideoButton) this.saveVideoButton.textContent = 'Save Video';
-                }
+                // MODIFIED: Simplified text logic
+                this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
             }
 
             // Toggle play/pause
             togglePlay() {
-                if (this.isRecording) return;
+                // REMOVED: isRecording check
                 if (this.isPlaying) {
                     this.stopAnimation();
                 } else {
@@ -565,7 +556,7 @@
 
             // --- REFACTORED: Start playback ---
             startAnimation() {
-                if (this.isRecording) return;
+                // REMOVED: isRecording check
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 if (!trajectory || trajectory.frames.length < 2) return;
 
@@ -580,79 +571,7 @@
                 this.updateUIControls();
             }
 
-            // Save animation as video
-            saveAnimationAsVideo() {
-                if (this.isRecording) return;
-                this.stopAnimation();
-
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
-                if (!trajectory || trajectory.frames.length < 2) {
-                    alert("Not enough frames to record.");
-                    return;
-                }
-                if (typeof MediaRecorder === "undefined") {
-                    alert("Video recording is not supported in this browser.");
-                    return;
-                }
-
-                this.isRecording = true;
-                this.setUIEnabled(false);
-                this.updateUIControls();
-
-                const stream = this.canvas.captureStream(10); // 10 fps
-                this.mediaRecorder = new MediaRecorder(stream, { mimeType: "video/webm" });
-                this.recordedChunks = [];
-
-                this.mediaRecorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) {
-                        this.recordedChunks.push(event.data);
-                    }
-                };
-
-                this.mediaRecorder.onstop = () => {
-                    const blob = new Blob(this.recordedChunks, { type: "video/webm" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    document.body.appendChild(a);
-                    a.style = "display: none";
-                    a.href = url;
-                    a.download = `trajectory_${this.currentTrajectoryName}.webm`;
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-
-                    this.isRecording = false;
-                    this.recordedChunks = [];
-                    this.mediaRecorder = null;
-                    this.setUIEnabled(true);
-                    this.setFrame(this.currentFrame);
-                    this.updateUIControls();
-                };
-
-                this.mediaRecorder.start();
-
-                let recordingFrame = 0;
-                const recordStep = () => {
-                    if (!this.isRecording) {
-                        if (this.mediaRecorder.state === "recording") {
-                            this.mediaRecorder.stop();
-                        }
-                        return;
-                    }
-
-                    if (recordingFrame < trajectory.frames.length) {
-                        this.setFrame(recordingFrame); // This renders the frame
-                        recordingFrame++;
-                        requestAnimationFrame(recordStep);
-                    } else {
-                        if (this.mediaRecorder.state === "recording") {
-                            this.mediaRecorder.stop();
-                        }
-                    }
-                };
-
-                requestAnimationFrame(recordStep);
-            }
-
+            // REMOVED: saveAnimationAsVideo method
 
             // Load data into renderer
             _loadDataIntoRenderer(data) {
@@ -870,7 +789,7 @@
                 let needsRender = false;
 
                 // 1. Handle inertia/spin
-                if (!this.isDragging && !this.isRecording) {
+                if (!this.isDragging) { // REMOVED: isRecording check
                     if (Math.abs(this.spinVelocityX) > 0.0001) {
                         const rot = rotationMatrixY(this.spinVelocityX * 0.005);
                         this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
@@ -891,14 +810,14 @@
                 }
 
                 // 2. Handle auto-rotate
-                if (this.autoRotate && !this.isDragging && !this.isRecording && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
+                if (this.autoRotate && !this.isDragging && this.spinVelocityX === 0 && this.spinVelocityY === 0) { // REMOVED: isRecording check
                     const rot = rotationMatrixY(0.005); // Constant rotation speed
                     this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
                     needsRender = true;
                 }
 
                 // 3. Handle frame playback
-                if (this.isPlaying && !this.isRecording) {
+                if (this.isPlaying) { // REMOVED: isRecording check
                     if (now - this.lastFrameAdvanceTime > this.animationSpeed) {
                         const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                         if (trajectory && trajectory.frames.length > 0) {
@@ -959,7 +878,7 @@
         // 5. Setup animation and trajectory controls
         const controlsContainer = document.getElementById('controlsContainer');
         const playButton = document.getElementById('playButton');
-        const saveVideoButton = document.getElementById('saveVideoButton');
+        // REMOVED: const saveVideoButton = document.getElementById('saveVideoButton');
         const frameSlider = document.getElementById('frameSlider');
         const frameCounter = document.getElementById('frameCounter');
         const trajectorySelect = document.getElementById('trajectorySelect');
@@ -970,10 +889,10 @@
 
         // Pass ALL controls to the renderer
         window.renderer.setUIControls(
-            controlsContainer, playButton, saveVideoButton, 
+            controlsContainer, playButton, 
             frameSlider, frameCounter, trajectorySelect, 
             speedSelect, rotationCheckbox, lineWidthSlider
-        );
+        ); // MODIFIED: removed saveVideoButton
 
         playButton.addEventListener('click', () => {
             window.renderer.togglePlay();
@@ -982,7 +901,12 @@
         // --- FIX: Add slider event listener ---
         frameSlider.addEventListener('input', (e) => {
             window.renderer.stopAnimation(); // Stop playing if user scrubs
-            window.renderer.setFrame(e.target.value); // <-- Fixed typo here
+            window.renderer.setFrame(e.target.value);
+        });
+        // Add 'change' event as well, in case 'input' isn't firing on drag for user
+        frameSlider.addEventListener('change', (e) => {
+            window.renderer.stopAnimation(); 
+            window.renderer.setFrame(e.target.value);
         });
 
         // 6. Add function for Python to call (for new frames)
@@ -1027,4 +951,3 @@
     </script>
 </body>
 </html>
-
