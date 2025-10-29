@@ -36,23 +36,6 @@ You can also specify which chains to display:
 viewer.from_pdb('my_protein.pdb', chains=['A', 'B'])
 ```
 
-### Loading DNA/RNA Structures
-
-The viewer fully supports nucleic acid structures:
-
-```python
-# Load a DNA structure
-viewer = py2Dmol.view()
-viewer.from_pdb('dna_structure.pdb')
-
-# Load a ribosome (protein + RNA)
-viewer = py2Dmol.view()
-viewer.from_pdb('ribosome.pdb')
-
-# Load a DNA-protein complex
-viewer = py2Dmol.view()
-viewer.from_pdb('transcription_factor_complex.pdb')
-```
 
 ### Manually Adding Data
 
@@ -197,15 +180,6 @@ viewer = py2Dmol.view(color='chain', size=(600, 600))
 viewer.display(all_coords, all_plddts, all_chains, all_types)
 ```
 
-## Atom Types
-
-The viewer uses different representative atoms for each molecule type:
-
-*   **P (Protein):** C-alpha atoms (backbone trace)
-*   **D (DNA):** C4' atoms (backbone trace)
-*   **R (RNA):** C4' atoms (backbone trace)
-*   **L (Ligand):** All heavy atoms
-
 ### Atom Types and Representative Atoms
 
 | Molecule Type | Atom Type Code | Representative Atom | Purpose |
@@ -267,14 +241,6 @@ Both formats support multi-model files for animation playback.
 
 ## Examples
 
-### Visualizing AlphaFold Predictions
-
-```python
-# AlphaFold predictions include pLDDT scores in B-factor column
-viewer = py2Dmol.view(color='plddt')
-viewer.from_pdb('AF-P12345-F1-model_v4.pdb')
-```
-
 ### Comparing Multiple Trajectories
 
 ```python
@@ -286,17 +252,6 @@ viewer.from_pdb('simulation1.pdb')
 viewer.from_pdb('simulation2.pdb')
 
 # Use the dropdown to switch between trajectories
-```
-
-### Visualizing DNA-Protein Interactions
-
-```python
-# Load a transcription factor bound to DNA
-viewer = py2Dmol.view(color='chain')
-viewer.from_pdb('transcription_factor_dna.pdb', chains=['A', 'B', 'D'])
-# Chain A: Protein subunit 1
-# Chain B: Protein subunit 2  
-# Chain D: DNA strand
 ```
 
 ## Requirements
