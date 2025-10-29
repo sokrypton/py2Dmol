@@ -35,9 +35,10 @@ def align_a_to_b(a, b):
 # --- view Class ---
 
 class view:
-    def __init__(self, size=(500,500), color="rainbow"):
+    def __init__(self, size=(500,500), color="auto"):
         self.size = size
-        self.color = color
+        self._initial_color_mode = color # Store the user's requested mode
+        self._resolved_color_mode = color # This will become 'rainbow' or 'chain' if 'auto'
         self._initial_data_loaded = False
         self._coords = None
         self._plddts = None
@@ -151,9 +152,10 @@ class view:
             print("Error: Could not find the HTML template file.")
             return
 
+        # Use the resolved color mode for the config sent to HTML
         viewer_config = {
             "size": self.size,
-            "color": self.color,
+            "color": self._resolved_color_mode, # Send 'rainbow' or 'chain'
             "viewer_id": self._viewer_id
         }
         config_script = f"""
@@ -223,13 +225,12 @@ class view:
             </script>
             """
             
-            # MODIFIED: Increased width to account for the new right-hand panel
-            # panel width (160px) + gap (15px) + padding (16px) + buffer (~9px) = +200px
+            # MODIFIED: Width remains at 220px
             iframe_html = f"""
             <iframe 
                 data-viewer-id="{self._viewer_id}"
                 srcdoc="{final_html_escaped}"
-                style="width: {self.size[0] + 200}px; height: {self.size[1] + 80}px; border: none;"
+                style="width: {self.size[0] + 220}px; height: {self.size[1] + 80}px; border: none;"
                 sandbox="allow-scripts allow-same-origin"
             ></iframe>
             {handshake_script}
@@ -269,7 +270,25 @@ class view:
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
         """
         
+        # --- MODIFIED: Auto-color logic ---
+        # If this is the first data being added AND color is 'auto', decide now.
+        if not self._initial_data_loaded and self._initial_color_mode == "auto":
+            if chains is not None:
+                unique_chains = set(c for c in chains if c and c.strip())
+                if len(unique_chains) > 1:
+                    self._resolved_color_mode = "chain"
+                else:
+                    self._resolved_color_mode = "rainbow"
+            else:
+                 # If no chains provided for the first frame, default to rainbow
+                self._resolved_color_mode = "rainbow"
+        elif not self._initial_data_loaded:
+             # If color was specified (not auto), use it directly
+             self._resolved_color_mode = self._initial_color_mode
+        # --- END MODIFIED BLOCK ---
+
         # 1. Display the iframe if this is the very first call
+        # This now uses self._resolved_color_mode which is no longer "auto"
         if not self._initial_data_loaded:
             self._display_viewer()
             self._initial_data_loaded = True
@@ -308,6 +327,9 @@ class view:
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
         """
         structure = gemmi.read_structure(filepath)
+        
+        # --- MODIFIED: Auto-color logic moved to add() ---
+        # The color mode resolution now happens in the first call to add()
         
         first_model_added = False
         for model in structure:
@@ -380,6 +402,8 @@ class view:
                 
                 # Only honor new_traj for the *first* model
                 current_model_new_traj = new_traj and not first_model_added
+                
+                # Call add() - this will handle auto-color on the first call
                 self.add(coords, plddts, atom_chains, atom_types, new_traj=current_model_new_traj)
                 first_model_added = True
 
