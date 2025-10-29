@@ -283,7 +283,6 @@ viewer = py2Dmol.view()
 viewer.from_pdb('simulation1.pdb')
 
 # Start a new trajectory
-viewer.clear()
 viewer.from_pdb('simulation2.pdb')
 
 # Use the dropdown to switch between trajectories
