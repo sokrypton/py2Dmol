@@ -305,6 +305,9 @@
                 this.lastDragTime = 0;
                 this.lastDragX = 0;
                 this.lastDragY = 0;
+                
+                // Track slider interaction
+                this.isSliderDragging = false;
 
                 // UI elements
                 this.playButton = null;
@@ -446,10 +449,20 @@
                     this.setFrame(parseInt(e.target.value));
                 };
 
-                // Clear isDragging when interacting with slider
+                // Track when user is interacting with slider
                 this.frameSlider.addEventListener('mousedown', (e) => {
                     this.isDragging = false;
+                    this.isSliderDragging = true;
                     e.stopPropagation();
+                });
+                
+                this.frameSlider.addEventListener('mouseup', (e) => {
+                    this.isSliderDragging = false;
+                });
+                
+                // Also clear on window mouseup in case user releases outside slider
+                window.addEventListener('mouseup', () => {
+                    this.isSliderDragging = false;
                 });
                 
                 this.frameSlider.addEventListener('input', handleSliderChange);
@@ -577,7 +590,12 @@
                 }
 
                 this.frameSlider.max = Math.max(0, total - 1);
-                this.frameSlider.value = this.currentFrame;
+                
+                // CRITICAL FIX: Don't update slider value while user is dragging it!
+                if (!this.isSliderDragging) {
+                    this.frameSlider.value = this.currentFrame;
+                }
+                
                 this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
 
                 // MODIFIED: Simplified text logic
