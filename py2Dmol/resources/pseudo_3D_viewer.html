@@ -227,8 +227,9 @@
             <!-- MOVED: Trajectory Controls -->
             <div id="trajectoryContainer" class="control-group">
                 <label for="trajectorySelect">Trajectory</label>
+                <!-- MODIFIED: Removed the hardcoded 'default' option -->
                 <select id="trajectorySelect">
-                    <option value="default">0</option>
+                    <!-- Initially empty -->
                 </select>
             </div>
         </div>
@@ -296,8 +297,9 @@
                 this.chainRainbowScales = {};
 
                 // --- REFACTORED: Animation & State ---
-                this.trajectoriesData = { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
-                this.currentTrajectoryName = "default";
+                // MODIFIED: Start with no trajectories
+                this.trajectoriesData = {}; // { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
+                this.currentTrajectoryName = null; // "default";
                 this.currentFrame = -1;
                 
                 // Playback
@@ -501,11 +503,16 @@
 
             // Add a frame (data is raw parsed JSON)
             addFrame(data) {
+                // MODIFIED: If this is the first frame ever, addTrajectory should have been called first by Python.
+                // As a fallback, if no trajectory exists, create one.
                 if (!this.currentTrajectoryName) {
-                    this.currentTrajectoryName = "default";
+                    console.warn("addFrame called before addTrajectory. Creating default trajectory '0'.");
+                    this.addTrajectory("0"); // This will set this.currentTrajectoryName
                 }
+
                 if (!this.trajectoriesData[this.currentTrajectoryName]) {
-                    this.trajectoriesData[this.currentTrajectoryName] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
+                     console.error(`addFrame: Trajectory '${this.currentTrajectoryName}' does not exist.`);
+                    return;
                 }
 
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
@@ -548,7 +555,15 @@
             // Set the current frame and render it
             setFrame(frameIndex) {
                 frameIndex = parseInt(frameIndex);
-                if (!this.currentTrajectoryName) return;
+                // MODIFIED: Handle null trajectory name
+                if (!this.currentTrajectoryName) {
+                    this.currentFrame = -1;
+                    this.ctx.fillStyle = '#ffffff';
+                    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                    this.updateUIControls();
+                    this.setUIEnabled(false); // Disable controls if no trajectory
+                    return;
+                }
 
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 if (!trajectory || frameIndex < 0 || frameIndex >= trajectory.frames.length) {
@@ -556,6 +571,7 @@
                     this.ctx.fillStyle = '#ffffff';
                     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                     this.updateUIControls();
+                    this.setUIEnabled(true); // Enable, even if frame is invalid (so user can change traj)
                     return;
                 }
 
@@ -563,6 +579,7 @@
                 const data = trajectory.frames[frameIndex];
                 this._loadDataIntoRenderer(data); // This calls render()
                 this.updateUIControls(); // Update slider value
+                this.setUIEnabled(true); // Make sure controls are enabled
             }
 
             // Update UI element states (e.g., disabled)
@@ -580,7 +597,8 @@
             updateUIControls() {
                 if (!this.playButton) return;
 
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                // MODIFIED: Handle null trajectory
+                const trajectory = this.currentTrajectoryName ? this.trajectoriesData[this.currentTrajectoryName] : null;
                 const total = trajectory ? trajectory.frames.length : 0;
                 const current = Math.max(0, this.currentFrame) + 1;
 
@@ -612,6 +630,8 @@
 
             // --- REFACTORED: Start playback ---
             startAnimation() {
+                // MODIFIED: Check for null
+                if (!this.currentTrajectoryName) return;
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 if (!trajectory || trajectory.frames.length < 2) return;
 
@@ -631,17 +651,13 @@
                 this.stopAnimation();
                 
                 // Reset data
-                this.trajectoriesData = { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
-                this.currentTrajectoryName = "default";
+                // MODIFIED: Just clear, don't recreate 'default'
+                this.trajectoriesData = {};
+                this.currentTrajectoryName = null;
                 
                 // Reset trajectory dropdown
                 if (this.trajectorySelect) {
                     this.trajectorySelect.innerHTML = ''; // Clear all options
-                    const option = document.createElement('option');
-                    option.value = "default";
-                    option.textContent = "0";
-                    this.trajectorySelect.appendChild(option);
-                    this.trajectorySelect.value = "default";
                 }
                 
                 // Set to empty frame, which clears canvas and updates UI
@@ -705,9 +721,17 @@
                 const startTime = performance.now();
                 this.ctx.fillStyle = '#ffffff';
                 this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-                if (this.coords.length === 0) return;
+                // MODIFIED: Check for null trajectory
+                if (this.coords.length === 0 || !this.currentTrajectoryName) return;
 
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+
+                // MODIFIED: Check if trajectory data actually exists
+                if (!trajectory) {
+                    console.warn("Render called but trajectory data is missing.");
+                    return;
+                }
+
                 const globalCenter = (trajectory && trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
 
                 const rotated = this.coords.map(v => applyMatrix(this.rotationMatrix, v.sub(globalCenter)));
@@ -969,7 +993,8 @@
 
                 // 3. Handle frame playback
                 if (this.isPlaying) {
-                    if (now - this.lastFrameAdvanceTime > this.animationSpeed) {
+                    // MODIFIED: Check for null
+                    if (now - this.lastFrameAdvanceTime > this.animationSpeed && this.currentTrajectoryName) {
                         const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                         if (trajectory && trajectory.frames.length > 0) {
                             let nextFrame = this.currentFrame + 1;
@@ -1068,8 +1093,12 @@
 
         // 9. Load initial data
         try {
+            // MODIFIED: Don't load window.proteinData, as it's empty and
+            // the real data will be sent by Python messages.
+            // Just set the initial frame to -1 (empty).
             if (window.proteinData && window.proteinData.coords && window.proteinData.coords.length > 0) {
-                window.renderer.addFrame(window.proteinData);
+                // window.renderer.addFrame(window.proteinData); // OLD
+                window.renderer.setFrame(-1); // NEW
             } else {
                 // No initial data, start with an empty canvas.
                 window.renderer.setFrame(-1);
