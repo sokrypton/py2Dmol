@@ -658,6 +658,14 @@
                 if (this.chains.length !== this.coords.length) { this.chains = Array(this.coords.length).fill('A'); }
                 if (this.atomTypes.length !== this.coords.length) { this.atomTypes = Array(this.coords.length).fill('P'); }
 
+                // PERFORMANCE: Auto-disable shadows for large structures (>1000 atoms)
+                if (this.coords.length > 1000 && this.shadowEnabled) {
+                    this.shadowEnabled = false;
+                    if (this.shadowCheckbox) {
+                        this.shadowCheckbox.checked = false;
+                    }
+                }
+
                 this.chainRainbowScales = {};
                 for (let i = 0; i < this.atomTypes.length; i++) {
                     const type = this.atomTypes[i];
@@ -795,6 +803,11 @@
 
                 if (segments.length === 0) return;
 
+                // PERFORMANCE: Pre-compute unique chains once for chain coloring mode
+                const uniqueChains = (this.colorMode === 'chain' && this.chains.length > 0) 
+                    ? [...new Set(this.chains)] 
+                    : [];
+
                 const grey = {r: 128, g: 128, b: 128};
                 const colors = segments.map(seg => {
                     const i = seg.origIndex;
@@ -813,9 +826,8 @@
                         return getPlddtColor((plddt1 + plddt2) / 2);
                     }
                     else if (this.colorMode === 'chain') {
-                        if (this.chains.length === 0) return getChainColor(0);
+                        if (uniqueChains.length === 0) return getChainColor(0);
                         const chainId = this.chains[i] || 'A';
-                        const uniqueChains = [...new Set(this.chains)];
                         const chainIndex = uniqueChains.indexOf(chainId);
                         return getChainColor(chainIndex >= 0 ? chainIndex : 0);
                     }
@@ -892,7 +904,14 @@
                     this.ctx.lineTo(x2, y2);
                     this.ctx.strokeStyle = color;
                     const type = this.atomTypes[seg.origIndex];
-                    this.ctx.lineWidth = (type === 'L') ? (baseLineWidthPixels / 2) : baseLineWidthPixels;
+                    // Line width: RNA/DNA = 2x protein, Ligands = 0.5x protein
+                    let widthMultiplier = 1.0;
+                    if (type === 'L') {
+                        widthMultiplier = 0.5;
+                    } else if (type === 'D' || type === 'R') {
+                        widthMultiplier = 2.0;
+                    }
+                    this.ctx.lineWidth = baseLineWidthPixels * widthMultiplier;
                     this.ctx.lineCap = 'round';
                     this.ctx.stroke();
                 }
@@ -984,6 +1003,7 @@
             window.renderer.render();
         });
         const shadowCheckbox = document.getElementById('shadowCheckbox');
+        window.renderer.shadowCheckbox = shadowCheckbox;  // Store reference
         shadowCheckbox.checked = window.renderer.shadowEnabled;
         shadowCheckbox.addEventListener('change', (e) => {
             window.renderer.shadowEnabled = e.target.checked;
