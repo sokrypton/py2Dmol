@@ -10,7 +10,7 @@ A Python library for visualizing protein structures in 2D, designed for use in G
 You can install `py2Dmol` directly from GitHub:
 
 ```bash
-pip install git+https://github.com/sokrypton/py2Dmol.git
+pip install py2Dmol
 ```
 
 ## Usage
