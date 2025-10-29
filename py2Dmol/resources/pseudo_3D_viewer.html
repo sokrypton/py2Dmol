@@ -243,7 +243,8 @@
                 this.chainRainbowScales = {};
 
                 // Animation & Trajectory state
-                this.trajectoriesData = { "default": { maxExtent: 0, frames: [] } }; // MODIFIED
+                // MODIFIED: Added globalCenterSum and totalAtoms
+                this.trajectoriesData = { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
                 this.currentTrajectoryName = "default";
                 this.currentFrame = -1;
                 this.isPlaying = false;
@@ -255,6 +256,7 @@
                 this.frameSlider = null;
                 this.frameCounter = null;
                 this.trajectorySelect = null;
+                this.controlsContainer = null; // NEW
 
                 // NEW: Video recording
                 this.mediaRecorder = null;
@@ -287,7 +289,8 @@
             }
 
             // Set UI controls from main script
-            setUIControls(playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect) {
+            setUIControls(controlsContainer, playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect) { // MODIFIED
+                this.controlsContainer = controlsContainer; // NEW
                 this.playButton = playButton;
                 this.saveVideoButton = saveVideoButton; // NEW
                 this.frameSlider = frameSlider;
@@ -310,7 +313,8 @@
             // Add a new trajectory
             addTrajectory(name) {
                 this.stopAnimation();
-                this.trajectoriesData[name] = { maxExtent: 0, frames: [] }; // MODIFIED
+                // MODIFIED: Added globalCenterSum and totalAtoms
+                this.trajectoriesData[name] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
                 this.currentTrajectoryName = name;
                 this.currentFrame = -1;
 
@@ -332,25 +336,41 @@
                     this.currentTrajectoryName = "default";
                 }
                 if (!this.trajectoriesData[this.currentTrajectoryName]) {
-                    this.trajectoriesData[this.currentTrajectoryName] = { maxExtent: 0, frames: [] };
+                    this.trajectoriesData[this.currentTrajectoryName] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
                 }
 
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 trajectory.frames.push(data);
 
-                // Calculate max extent for this new frame
-                let maxDistSq = 0;
+                // --- NEW: Update global center sum and count ---
+                let frameSum = new Vec3(0,0,0);
+                let frameAtoms = 0;
                 if (data && data.coords) {
+                    frameAtoms = data.coords.length;
                     for (const c of data.coords) {
-                        // Coords are [x, y, z]
-                        const distSq = c[0]*c[0] + c[1]*c[1] + c[2]*c[2];
-                        if (distSq > maxDistSq) maxDistSq = distSq;
+                        frameSum = frameSum.add(new Vec3(c[0], c[1], c[2]));
+                    }
+                    trajectory.globalCenterSum = trajectory.globalCenterSum.add(frameSum);
+                    trajectory.totalAtoms += frameAtoms;
+                }
+                
+                // --- NEW: Calculate current global center ---
+                const globalCenter = (trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
+
+                // --- NEW: Recalculate maxExtent for *all* frames using the *new* global center ---
+                // This is inefficient, but necessary as the center shifts
+                let maxDistSq = 0;
+                for (const frame of trajectory.frames) {
+                    if (frame && frame.coords) {
+                        for (const c of frame.coords) {
+                            const coordVec = new Vec3(c[0], c[1], c[2]);
+                            const centeredCoord = coordVec.sub(globalCenter);
+                            const distSq = centeredCoord.dot(centeredCoord); // x*x + y*y + z*z
+                            if (distSq > maxDistSq) maxDistSq = distSq;
+                        }
                     }
                 }
-                const frameMaxExtent = Math.sqrt(maxDistSq);
-
-                // Update the trajectory's overall max extent
-                trajectory.maxExtent = Math.max(trajectory.maxExtent, frameMaxExtent);
+                trajectory.maxExtent = Math.sqrt(maxDistSq); // Update maxExtent
 
                 if (!this.isPlaying && !this.isRecording) { // Don't jump if recording
                     this.setFrame(trajectory.frames.length - 1);
@@ -395,6 +415,16 @@
                 const total = trajectory ? trajectory.frames.length : 0; // MODIFIED
                 const current = Math.max(0, this.currentFrame) + 1; // 1-based index
 
+                // --- NEW: Show/hide controls based on frame count ---
+                if (total <= 1) {
+                    this.controlsContainer.style.display = 'none';
+                    if (this.saveVideoButton) this.saveVideoButton.style.display = 'none';
+                } else {
+                    this.controlsContainer.style.display = 'block';
+                    if (this.saveVideoButton) this.saveVideoButton.style.display = 'inline-block';
+                }
+                // --- End NEW ---
+
                 this.frameSlider.max = Math.max(0, total - 1);
                 this.frameSlider.value = this.currentFrame;
                 this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
@@ -402,10 +432,10 @@
                 // Update button text
                 if (this.isRecording) {
                     this.playButton.textContent = 'Pause';
-                    this.saveVideoButton.textContent = 'Recording...';
+                    if (this.saveVideoButton) this.saveVideoButton.textContent = 'Recording...';
                 } else {
                     this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
-                    this.saveVideoButton.textContent = 'Save Video';
+                    if (this.saveVideoButton) this.saveVideoButton.textContent = 'Save Video';
                 }
             }
 
@@ -582,7 +612,11 @@
                 this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                 if (this.coords.length === 0) return;
 
-                const rotated = this.coords.map(v => applyMatrix(this.rotationMatrix, v));
+                // --- NEW: Get global center ---
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                const globalCenter = (trajectory && trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
+
+                const rotated = this.coords.map(v => applyMatrix(this.rotationMatrix, v.sub(globalCenter)));
                 const segments = [];
                 const proteinChainbreak = 5.0;
                 const ligandBondCutoff = 2.0;
@@ -709,7 +743,7 @@
                 const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
                 
                 // MODIFIED: Get dataRange from trajectory's maxExtent
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                // const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // Already defined above
                 // Use 30.0 as a fallback if extent is 0 (e.g., single atom or no data)
                 const maxExtent = (trajectory && trajectory.maxExtent > 0) ? trajectory.maxExtent : 30.0;
                 const dataRange = (maxExtent * 2) + this.lineWidth * 2;
@@ -798,6 +832,7 @@
         });
 
         // 5. NEW: Setup animation and trajectory controls
+        const controlsContainer = document.getElementById('controlsContainer'); // NEW
         const playButton = document.getElementById('playButton');
         const saveVideoButton = document.getElementById('saveVideoButton'); // NEW
         const frameSlider = document.getElementById('frameSlider');
@@ -805,7 +840,7 @@
         const trajectorySelect = document.getElementById('trajectorySelect');
 
         // Pass ALL controls to the renderer
-        window.renderer.setUIControls(playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect);
+        window.renderer.setUIControls(controlsContainer, playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect); // MODIFIED
 
         playButton.addEventListener('click', () => {
             window.renderer.togglePlay();
