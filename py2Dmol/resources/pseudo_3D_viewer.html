@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -217,7 +216,7 @@
         function generateProteinCurve(n) { const coords = []; const plddts = []; const chains = []; const atomTypes = []; let angle = 0, z = 0; const numProtein = n - 10; for (let i = 0; i < n; i++) { const t = i / n; chains.push(i < n / 2 ? 'A' : 'B'); if (i >= numProtein) { atomTypes.push('L'); plddts.push(75.0); const protEnd = coords[numProtein - 1] || new Vec3(0,0,0); const lt = (i - numProtein) / 10.0; const lx = protEnd.x + 5 + lt * 5 * Math.cos(lt * 20); const ly = protEnd.y + 5 + lt * 5 * Math.sin(lt * 20); const lz = protEnd.z - 3 + lt * 3; coords.push(new Vec3(lx, ly, lz)); } else { atomTypes.push('P'); plddts.push((Math.sin(t * Math.PI * 6) * 0.5 + 0.5) * 50 + 40); const freq = 2 + Math.sin(t * Math.PI * 2) * 1.5; angle += 0.3 * freq; const radius = 15 + 10 * Math.sin(t * Math.PI * 4); const x = radius * Math.cos(angle); const y = radius * Math.sin(angle); z += 0.5 + 0.3 * Math.sin(t * Math.PI * 8); coords.push(new Vec3(x, y, z)); } } return {coords, plddts, chains, atomTypes}; }
 
         // ============================================================================
-        // PSEUDO-3D RENDERER (Updated for Video Recording)
+        // PSEUDO-3D RENDERER (Updated for Video Recording & Global Zoom)
         // ============================================================================
         class Pseudo3DRenderer {
             constructor(canvas) {
@@ -235,7 +234,7 @@
                 this.lineWidth = 3.0;
                 this.shadowIntensity = 0.95;
                 this.shadowEnabled = true;
-                this.fixedBounds = null;
+                // REMOVED: this.fixedBounds = null;
                 // Performance
                 this.lastFrameTime = performance.now();
                 this.fps = 0;
@@ -244,7 +243,7 @@
                 this.chainRainbowScales = {};
 
                 // Animation & Trajectory state
-                this.trajectories = { "default": [] };
+                this.trajectoriesData = { "default": { maxExtent: 0, frames: [] } }; // MODIFIED
                 this.currentTrajectoryName = "default";
                 this.currentFrame = -1;
                 this.isPlaying = false;
@@ -311,7 +310,7 @@
             // Add a new trajectory
             addTrajectory(name) {
                 this.stopAnimation();
-                this.trajectories[name] = [];
+                this.trajectoriesData[name] = { maxExtent: 0, frames: [] }; // MODIFIED
                 this.currentTrajectoryName = name;
                 this.currentFrame = -1;
 
@@ -328,18 +327,33 @@
 
             // Add a frame (data is raw parsed JSON)
             addFrame(data) {
+                // MODIFIED: This function is completely updated
                 if (!this.currentTrajectoryName) {
                     this.currentTrajectoryName = "default";
                 }
-                if (!this.trajectories[this.currentTrajectoryName]) {
-                    this.trajectories[this.currentTrajectoryName] = [];
+                if (!this.trajectoriesData[this.currentTrajectoryName]) {
+                    this.trajectoriesData[this.currentTrajectoryName] = { maxExtent: 0, frames: [] };
                 }
 
-                const trajectory = this.trajectories[this.currentTrajectoryName];
-                trajectory.push(data);
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                trajectory.frames.push(data);
+
+                // Calculate max extent for this new frame
+                let maxDistSq = 0;
+                if (data && data.coords) {
+                    for (const c of data.coords) {
+                        // Coords are [x, y, z]
+                        const distSq = c[0]*c[0] + c[1]*c[1] + c[2]*c[2];
+                        if (distSq > maxDistSq) maxDistSq = distSq;
+                    }
+                }
+                const frameMaxExtent = Math.sqrt(maxDistSq);
+
+                // Update the trajectory's overall max extent
+                trajectory.maxExtent = Math.max(trajectory.maxExtent, frameMaxExtent);
 
                 if (!this.isPlaying && !this.isRecording) { // Don't jump if recording
-                    this.setFrame(trajectory.length - 1);
+                    this.setFrame(trajectory.frames.length - 1);
                 }
                 this.updateUIControls();
             }
@@ -349,8 +363,8 @@
                 frameIndex = parseInt(frameIndex);
                 if (!this.currentTrajectoryName) return;
 
-                const trajectory = this.trajectories[this.currentTrajectoryName];
-                if (!trajectory || frameIndex < 0 || frameIndex >= trajectory.length) {
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
+                if (!trajectory || frameIndex < 0 || frameIndex >= trajectory.frames.length) { // MODIFIED
                     this.currentFrame = -1;
                     this.ctx.fillStyle = '#ffffff';
                     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -359,7 +373,7 @@
                 }
 
                 this.currentFrame = frameIndex;
-                const data = trajectory[frameIndex];
+                const data = trajectory.frames[frameIndex]; // MODIFIED
                 this._loadDataIntoRenderer(data); // This calls render()
                 this.updateUIControls();
             }
@@ -377,8 +391,8 @@
             updateUIControls() {
                 if (!this.playButton) return; // UI not ready
 
-                const trajectory = this.trajectories[this.currentTrajectoryName];
-                const total = trajectory ? trajectory.length : 0;
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
+                const total = trajectory ? trajectory.frames.length : 0; // MODIFIED
                 const current = Math.max(0, this.currentFrame) + 1; // 1-based index
 
                 this.frameSlider.max = Math.max(0, total - 1);
@@ -408,21 +422,21 @@
             // Start the animation loop
             startAnimation() {
                 if (this.isRecording) return; // Can't start if already recording
-                const trajectory = this.trajectories[this.currentTrajectoryName];
-                if (!trajectory || trajectory.length < 2) return;
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
+                if (!trajectory || trajectory.frames.length < 2) return; // MODIFIED
 
                 this.isPlaying = true;
                 this.updateUIControls();
 
                 const animateStep = () => {
                     if (!this.isPlaying) return;
-                    const currentTrajectory = this.trajectories[this.currentTrajectoryName];
+                    const currentTrajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
                     if (!currentTrajectory) {
                         this.stopAnimation();
                         return;
                     }
                     let nextFrame = this.currentFrame + 1;
-                    if (nextFrame >= currentTrajectory.length) {
+                    if (nextFrame >= currentTrajectory.frames.length) { // MODIFIED
                         nextFrame = 0; // Loop back to start
                     }
                     this.setFrame(nextFrame);
@@ -446,8 +460,8 @@
                 if (this.isRecording) return; // Already recording
                 this.stopAnimation(); // Stop playback
 
-                const trajectory = this.trajectories[this.currentTrajectoryName];
-                if (!trajectory || trajectory.length < 2) {
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
+                if (!trajectory || trajectory.frames.length < 2) { // MODIFIED
                     alert("Not enough frames to record.");
                     return;
                 }
@@ -500,7 +514,7 @@
                     if (!this.isRecording) return;
 
                     recordingFrame++;
-                    if (recordingFrame < trajectory.length) {
+                    if (recordingFrame < trajectory.frames.length) { // MODIFIED
                         this.setFrame(recordingFrame);
                         // Use requestAnimationFrame to ensure canvas is drawn before next step
                         requestAnimationFrame(recordStep);
@@ -533,6 +547,7 @@
 
             // This function is now internal, called by _loadDataIntoRenderer
             setCoords(coords, plddts = [], chains = [], atomTypes = []) {
+                // MODIFIED: Removed centering and bounds calculation
                 this.coords = coords;
                 this.plddts = plddts;
                 this.chains = chains;
@@ -553,26 +568,12 @@
                         scale.max = Math.max(scale.max, colorIndex);
                     }
                 }
-                this.centerCoords();
-                this.calculateFixedBounds();
+                // REMOVED: this.centerCoords();
+                // REMOVED: this.calculateFixedBounds();
             }
 
-            centerCoords() {
-                if (this.coords.length === 0) return;
-                const sum = this.coords.reduce((acc, v) => acc.add(v), new Vec3(0,0,0));
-                const center = sum.mul(1 / this.coords.length);
-                this.coords = this.coords.map(v => v.sub(center));
-            }
-
-            calculateFixedBounds() {
-                if (this.coords.length === 0) return;
-                let maxExtent = 0;
-                for (const coord of this.coords) {
-                    const dist = Math.sqrt(coord.x*coord.x + coord.y*coord.y + coord.z*coord.z);
-                    maxExtent = Math.max(maxExtent, dist);
-                }
-                this.fixedRange = (maxExtent * 2) + this.lineWidth * 2;
-            }
+            // REMOVED: centerCoords() function
+            // REMOVED: calculateFixedBounds() function
 
             // RENDER: This function is unchanged.
             render() {
@@ -706,7 +707,13 @@
                 }
 
                 const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
-                const dataRange = this.fixedRange || 50;
+                
+                // MODIFIED: Get dataRange from trajectory's maxExtent
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                // Use 30.0 as a fallback if extent is 0 (e.g., single atom or no data)
+                const maxExtent = (trajectory && trajectory.maxExtent > 0) ? trajectory.maxExtent : 30.0;
+                const dataRange = (maxExtent * 2) + this.lineWidth * 2;
+                
                 const canvasSize = Math.min(this.canvas.width, this.canvas.height);
                 const scale = (canvasSize / dataRange) * this.zoom;
                 const pyFigWidthPixels = 480.0;
