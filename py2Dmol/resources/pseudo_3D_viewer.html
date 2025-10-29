@@ -187,7 +187,7 @@
                 </div>
                 <div class="toggle-item">
                     <label for="lineWidthSlider">Line:</label>
-                    <input type="range" id="lineWidthSlider" min="1" max="5" value="3" step="0.5">
+                    <input type="range" id="lineWidthSlider" min="1" max="10" value="3" step="0.5">
                 </div>
             </div>
             <!-- Floating Dropdown Menu -->
@@ -238,6 +238,10 @@
             dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z; }
             length() { return Math.sqrt(this.dot(this)); }
             distanceTo(v) { return this.sub(v).length(); }
+            normalize() { 
+                const len = this.length(); 
+                return len > 0 ? this.mul(1 / len) : new Vec3(0, 0, 1); 
+            }
         }
         function rotationMatrixX(angle) { const c = Math.cos(angle), s = Math.sin(angle); return [[1,0,0], [0,c,-s], [0,s,c]]; }
         function rotationMatrixY(angle) { const c = Math.cos(angle), s = Math.sin(angle); return [[c,0,s], [0,1,0], [-s,0,c]]; }
@@ -843,10 +847,33 @@
                 const zMax = Math.max(...zValues);
                 const zNorm = zValues.map(z => zMax - zMin > 1e-6 ? (z - zMin) / (zMax - zMin) : 0);
                 const n = segments.length;
+                
+                // PERFORMANCE: Use fast lighting for large structures (>1000 atoms)
+                const useFastLighting = (this.coords.length > 1000) || !this.shadowEnabled;
+                
                 const shadows = new Float32Array(n);
                 const tints = new Float32Array(n);
+                const lighting = new Float32Array(n);  // For directional lighting
 
-                if (this.shadowEnabled) {
+                if (useFastLighting) {
+                    // FAST PATH: Directional lighting (O(N))
+                    // Light direction: from upper-right-front
+                    const lightDir = new Vec3(0.5, 0.3, 1.0).normalize();
+                    
+                    for (let i = 0; i < n; i++) {
+                        const seg = segments[i];
+                        // Calculate segment direction
+                        const segDir = seg.end.sub(seg.start).normalize();
+                        
+                        // Simple diffuse lighting based on segment orientation
+                        const diffuse = Math.abs(segDir.dot(lightDir));
+                        lighting[i] = 0.5 + 0.5 * diffuse;  // Range: 0.5 to 1.0
+                    }
+                    
+                    shadows.fill(1.0);
+                    tints.fill(1.0);
+                } else {
+                    // QUALITY PATH: Complex shadow calculations (O(N²))
                     for (let i = 0; i < n; i++) {
                         let shadowSum = 0; let maxTint = 0;
                         const seg1 = segments[i];
@@ -868,9 +895,7 @@
                         shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
                         tints[i] = 1 - maxTint;
                     }
-                } else {
-                    shadows.fill(1.0);
-                    tints.fill(1.0);
+                    lighting.fill(1.0);  // Not used in quality mode
                 }
 
                 const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
@@ -890,12 +915,24 @@
                     const seg = segments[idx];
                     let {r, g, b} = colors[idx];
                     r /= 255; g /= 255; b /= 255;
-                    const tintFactor = (0.50 * zNorm[idx] + 0.50 * tints[idx]) / 3;
-                    r = r + (1 - r) * tintFactor;
-                    g = g + (1 - g) * tintFactor;
-                    b = b + (1 - b) * tintFactor;
-                    const shadowFactor = 0.20 + 0.25 * zNorm[idx] + 0.55 * shadows[idx];
-                    r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
+                    
+                    if (useFastLighting) {
+                        // FAST MODE: Enhanced z-depth + directional lighting
+                        // Brightened for better visibility
+                        const depthFactor = 0.70 + 0.30 * zNorm[idx];  // 0.7 to 1.0
+                        const lightFactor = 0.80 + 0.20 * lighting[idx];  // 0.8 to 1.0
+                        const totalFactor = depthFactor * lightFactor;  // 0.56 to 1.0
+                        r *= totalFactor; g *= totalFactor; b *= totalFactor;
+                    } else {
+                        // QUALITY MODE: Original shadow system
+                        const tintFactor = (0.50 * zNorm[idx] + 0.50 * tints[idx]) / 3;
+                        r = r + (1 - r) * tintFactor;
+                        g = g + (1 - g) * tintFactor;
+                        b = b + (1 - b) * tintFactor;
+                        const shadowFactor = 0.20 + 0.25 * zNorm[idx] + 0.55 * shadows[idx];
+                        r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
+                    }
+                    
                     const color = `rgb(${r*255|0},${g*255|0},${b*255|0})`;
                     const x1 = centerX + seg.start.x * scale; const y1 = centerY - seg.start.y * scale;
                     const x2 = centerX + seg.end.x * scale; const y2 = centerY - seg.end.y * scale;
