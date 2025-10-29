@@ -257,7 +257,18 @@ class view:
         self._atom_types = None
         self._trajectory_counter = 0
 
-    def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False):
+    def new_traj(self, trajectory_name=None):
+        # This is a new trajectory, reset the alignment reference
+        self._coords = None 
+        if trajectory_name is None:
+            trajectory_name = f"{self._trajectory_counter}"
+        self._trajectory_counter += 1
+        self._send_message({
+            "type": "py2DmolNewTrajectory",
+            "name": trajectory_name
+        })
+
+    def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False, trajectory_name=None):
         """
         Adds a new frame of data to the viewer.
         If this is the first time 'add' is called, it will display the viewer.
@@ -296,14 +307,7 @@ class view:
 
         # 2. Handle new trajectory creation
         if new_traj:
-            # This is a new trajectory, reset the alignment reference
-            self._coords = None 
-            trajectory_name = f"{self._trajectory_counter}"
-            self._trajectory_counter += 1
-            self._send_message({
-                "type": "py2DmolNewTrajectory",
-                "name": trajectory_name
-            })
+            self.new_traj(trajectory_name)
 
         # 3. Update Python-side state (aligns to self._coords)
         # If new_traj was true, self._coords was None, so this just sets self._coords = coords
@@ -316,7 +320,7 @@ class view:
             "payload": self._get_data_dict() # _get_data_dict uses self._coords, which is now aligned
         })
 
-    def add_pdb(self, filepath, chains=None, new_traj=False):
+    def add_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None):
         """
         Loads a structure from a PDB or CIF file and adds it to the viewer.
         Multi-model files are added as a single trajectory.
@@ -404,17 +408,8 @@ class view:
                 current_model_new_traj = new_traj and not first_model_added
                 
                 # Call add() - this will handle auto-color on the first call
-                self.add(coords, plddts, atom_chains, atom_types, new_traj=current_model_new_traj)
+                self.add(coords, plddts, atom_chains, atom_types,
+                    new_traj=current_model_new_traj, trajectory_name=trajectory_name)
                 first_model_added = True
 
-    def from_pdb(self, filepath, chains=None, new_traj=True):
-        """
-        Loads a structure from a PDB or CIF file and starts a new trajectory.
-        This is a convenience wrapper for add_pdb(..., new_traj=True).
-        
-        Args:
-            filepath (str): Path to the PDB or CIF file.
-            chains (list, optional): Specific chains to load. Defaults to all.
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to True.
-        """
-        self.add_pdb(filepath, chains=chains, new_traj=new_traj)
+    from_pdb = add_pdb
