@@ -6,22 +6,31 @@
     <title>Protein Pseudo-3D Viewer</title>
     <style>
         * { box-sizing: border-box; }
-        /* Remove all margins for a clean embed */
         body {
             margin: 0;
-            padding: 0;
+            padding: 8px; /* Add some padding around the whole thing */
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: #fff;
-            text-align: left; /* Aligns the container to the left */
         }
+        
+        /* NEW: Main flex container */
         #mainContainer {
-            display: inline-block; /* Makes the container wrap content */
-            text-align: left;
+            display: flex;
+            flex-direction: row;
+            align-items: flex-start; /* Align tops */
+            gap: 15px; /* Space between canvas column and controls column */
         }
+        
+        /* NEW: Left column for viewer and anim controls */
+        #viewerColumn {
+            display: flex;
+            flex-direction: column;
+            gap: 10px; /* Space between canvas and anim controls */
+        }
+
         #canvasContainer {
-            /* This is the stylized "box" */
             display: inline-block;
-            position: relative;
+            /* MOVED: position: relative; */
             border: 1px solid #ddd;
             border-radius: 12px;
             overflow: hidden;
@@ -36,49 +45,24 @@
             cursor: grabbing;
         }
 
-        /* Style for the floating dropdown */
+        /* MOVED: colorSelect and optionsContainer styles are now static */
         #colorSelect {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            z-index: 10;
             font-size: 12px;
             padding: 4px 8px;
             border: 1px solid #ccc;
             border-radius: 4px;
-            background-color: rgba(255, 255, 255, 0.8);
-            -webkit-appearance: none;
-            -moz-appearance: none;
-            appearance: none;
-            cursor: pointer;
-            background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%2Mxmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23444444%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.6-3.6%205.4-7.8%205.4-12.8%200-5-1.8-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E');
-            background-repeat: no-repeat;
-            background-position: right 8px top 50%;
-            background-size: 8px auto;
-            padding-right: 28px;
-        }
-        #colorSelect:focus {
-            outline: none;
-            border-color: #007bff;
+            width: 100%; /* Make it fill its new container */
         }
 
-        /* NEW: Style for options container */
         #optionsContainer {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            z-index: 10;
             font-size: 12px;
             color: #333;
-            background-color: rgba(255, 255, 255, 0.8);
-            padding: 4px 8px;
-            border-radius: 4px;
             display: flex;
-            flex-direction: column; /* Stack controls vertically */
-            align-items: flex-start; /* Align to the left */
-            gap: 4px;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 8px; /* Increased gap for clarity */
         }
-        .toggle-item { /* NEW: Wrapper for label/input pairs */
+        .toggle-item {
             display: flex;
             align-items: center;
             gap: 4px;
@@ -87,29 +71,26 @@
         .toggle-item input[type="checkbox"] { cursor: pointer; margin: 0; }
         .toggle-item input[type="range"] {
             cursor: pointer;
-            width: 80px; /* Short slider for linewidth */
+            width: 100%; /* Make slider fill */
         }
-
 
         /* Animation Controls Container */
         #controlsContainer {
-            /* MODIFIED: Use flex for better alignment */
             display: flex;
             flex-wrap: nowrap;
             align-items: center;
-            padding: 10px 10px 0 10px;
-            text-align: left;
+            padding: 0 10px; /* Simplified padding */
             width: 100%;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             font-size: 12px;
         }
-        /* NEW: Trajectory Controls Container */
+        
+        /* MOVED: trajectoryContainer is now in the right panel */
         #trajectoryContainer {
-            padding: 5px 10px 10px 10px; /* Top padding 5px */
-            width: 100%;
             font-size: 12px;
         }
-        .controlButton { /* NEW: Shared button style */
+        
+        .controlButton {
             padding: 5px 10px;
             border-radius: 4px;
             border: 1px solid #ccc;
@@ -119,7 +100,7 @@
             font-size: 12px;
             vertical-align: middle;
             margin-right: 5px;
-            flex-shrink: 0; /* Don't let buttons shrink */
+            flex-shrink: 0;
         }
         .controlButton:disabled {
             cursor: not-allowed;
@@ -127,9 +108,8 @@
             color: #999;
         }
         #frameSlider {
-            /* MODIFIED: Let it flex */
             flex-grow: 1; 
-            width: auto; /* Remove fixed/js width */
+            width: auto;
             margin: 0 10px;
             vertical-align: middle;
         }
@@ -138,32 +118,54 @@
             vertical-align: middle;
             min-width: 80px;
             display: inline-block;
-            flex-shrink: 0; /* Don't let it shrink */
+            flex-shrink: 0;
         }
-        #speedSelect { /* NEW */
+        #speedSelect {
             font-size: 12px;
             padding: 4px 8px;
             border: 1px solid #ccc;
             border-radius: 4px;
             vertical-align: middle;
             margin-left: 10px;
-            flex-shrink: 0; /* Don't let it shrink */
+            flex-shrink: 0;
         }
-        /* NEW: Trajectory Select */
+        
         #trajectorySelect {
             font-size: 12px;
             padding: 4px 8px;
             border: 1px solid #ccc;
             border-radius: 4px;
             vertical-align: middle;
-            margin-left: 5px;
+            width: 100%; /* Make it fill */
         }
         #trajectorySelect:disabled {
              cursor: not-allowed;
             background: #eee;
         }
-        #trajectoryLabel {
-            vertical-align: middle;
+
+        /* NEW: Right panel for all other controls */
+        #rightPanelContainer {
+            display: flex;
+            flex-direction: column;
+            gap: 15px; /* Space between control groups */
+            width: 160px; /* Give it a fixed width */
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 12px;
+            background: #fdfdfd;
+            flex-shrink: 0; /* Don't let it shrink */
+        }
+        
+        /* NEW: Styling for groups in the right panel */
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .control-group > label {
+            font-weight: 600;
+            font-size: 12px;
+            color: #333;
         }
 
     </style>
@@ -171,16 +173,47 @@
 <body>
     <!-- Main container to hold viewer and controls -->
     <div id="mainContainer">
-        <!-- The canvas and dropdown are now siblings in the container -->
-        <div id="canvasContainer">
-            <canvas id="canvas"></canvas>
-            <!-- MODIFIED: Options container -->
-            <div id="optionsContainer">
+        
+        <!-- NEW: Left Column -->
+        <div id="viewerColumn">
+            <!-- The canvas and dropdown are now siblings in the container -->
+            <div id="canvasContainer">
+                <canvas id="canvas"></canvas>
+                <!-- MOVED optionsContainer and colorSelect to rightPanelContainer -->
+            </div>
+
+            <!-- Animation Controls -->
+            <div id="controlsContainer">
+                <button id="playButton" class="controlButton">Play</button>
+                <input type="range" id="frameSlider" min="0" max="0" value="0">
+                <span id="frameCounter">Frame: 0 / 0</span>
+                <select id="speedSelect">
+                    <option value="100">1x</option>
+                    <option value="50">2x</option>
+                    <option value="25">4x</option>
+                </select>
+            </div>
+        </div>
+        
+        <!-- NEW: Right Column -->
+        <div id="rightPanelContainer">
+            
+            <!-- MOVED: Color Select -->
+            <div class="control-group">
+                <label for="colorSelect">Color</label>
+                <select id="colorSelect">
+                    <option value="plddt">pLDDT</option>
+                    <option value="rainbow">Rainbow</option>
+                    <option value="chain">Chain</option>
+                </select>
+            </div>
+
+            <!-- MOVED: Options Container -->
+            <div id="optionsContainer" class="control-group">
                 <div class="toggle-item">
                     <input type="checkbox" id="shadowCheckbox" checked>
                     <label for="shadowCheckbox">Shadow</label>
                 </div>
-                <!-- HTML TYPO FIX: class.toggle-item -> class="toggle-item" -->
                 <div class="toggle-item"> 
                     <input type="checkbox" id="rotationCheckbox">
                     <label for="rotationCheckbox">Rotate</label>
@@ -190,40 +223,18 @@
                     <input type="range" id="lineWidthSlider" min="1" max="5" value="3" step="0.5">
                 </div>
             </div>
-            <!-- Floating Dropdown Menu -->
-            <select id="colorSelect">
-                <option value="plddt">pLDDT</option>
-                <option value="rainbow">Rainbow</option>
-                <option value="chain">Chain</option>
-            </select>
-        </div>
 
-        <!-- Animation Controls -->
-        <div id="controlsContainer">
-            <button id="playButton" class="controlButton">Play</button>
-            <input type="range" id="frameSlider" min="0" max="0" value="0">
-            <span id="frameCounter">Frame: 0 / 0</span>
-            <!-- NEW: Speed Select -->
-            <select id="speedSelect">
-                <option value="100">1x</option>
-                <option value="50">2x</option>
-                <option value="25">4x</option>
-            </select>
-        </div>
-        <!-- NEW Trajectory Controls -->
-        <div id="trajectoryContainer">
-            <span id="trajectoryLabel">Trajectory:</span>
-            <select id="trajectorySelect">
-                <option value="default">0</option>
-            </select>
-            <!-- REMOVED Save Video Button -->
+            <!-- MOVED: Trajectory Controls -->
+            <div id="trajectoryContainer" class="control-group">
+                <label for="trajectorySelect">Trajectory</label>
+                <select id="trajectorySelect">
+                    <option value="default">0</option>
+                </select>
+            </div>
         </div>
     </div>
 
-    <!--
-      This single point will be replaced by the Python script
-      with viewer config AND initial data.
-    -->
+    <!-- ... existing data injection point ... -->
     <!-- DATA_INJECTION_POINT -->
 
     <script>
@@ -256,12 +267,11 @@
         function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
 
         // ============================================================================
-        // DEMO STRUCTURE GENERATOR (Unchanged)
+        // REMOVED: DEMO STRUCTURE GENERATOR
         // ============================================================================
-        function generateProteinCurve(n) { const coords = []; const plddts = []; const chains = []; const atomTypes = []; let angle = 0, z = 0; const numProtein = n - 10; for (let i = 0; i < n; i++) { const t = i / n; chains.push(i < n / 2 ? 'A' : 'B'); if (i >= numProtein) { atomTypes.push('L'); plddts.push(75.0); const protEnd = coords[numProtein - 1] || new Vec3(0,0,0); const lt = (i - numProtein) / 10.0; const lx = protEnd.x + 5 + lt * 5 * Math.cos(lt * 20); const ly = protEnd.y + 5 + lt * 5 * Math.sin(lt * 20); const lz = protEnd.z - 3 + lt * 3; coords.push(new Vec3(lx, ly, lz)); } else { atomTypes.push('P'); plddts.push((Math.sin(t * Math.PI * 6) * 0.5 + 0.5) * 50 + 40); const freq = 2 + Math.sin(t * Math.PI * 2) * 1.5; angle += 0.3 * freq; const radius = 15 + 10 * Math.sin(t * Math.PI * 4); const x = radius * Math.cos(angle); const y = radius * Math.sin(angle); z += 0.5 + 0.3 * Math.sin(t * Math.PI * 8); coords.push(new Vec3(x, y, z)); } } return {coords, plddts, chains, atomTypes}; }
 
         // ============================================================================
-        // PSEUDO-3D RENDERER (Refactored)
+        // PSEUDO-3D RENDERER (Unchanged logic)
         // ============================================================================
         class Pseudo3DRenderer {
             constructor(canvas) {
@@ -311,7 +321,6 @@
 
                 // UI elements
                 this.playButton = null;
-                // REMOVED: this.saveVideoButton = null;
                 this.frameSlider = null;
                 this.frameCounter = null;
                 this.trajectorySelect = null;
@@ -319,11 +328,6 @@
                 this.speedSelect = null;
                 this.rotationCheckbox = null;
                 this.lineWidthSlider = null;
-
-                // REMOVED: Video recording properties
-                // this.mediaRecorder = null;
-                // this.recordedChunks = [];
-                // this.isRecording = false;
 
                 this.setupInteraction();
             }
@@ -347,7 +351,7 @@
                 });
                 
                 window.addEventListener('mousemove', (e) => {
-                    if (!this.isDragging) return; // REMOVED: isRecording check
+                    if (!this.isDragging) return;
                     
                     // SLIDER FIX: Clear isDragging and stop if over a control element
                     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') {
@@ -392,7 +396,6 @@
                 });
 
                 this.canvas.addEventListener('wheel', (e) => {
-                    // REMOVED: isRecording check
                     e.preventDefault();
                     this.zoom *= (1 - e.deltaY * 0.001);
                     this.zoom = Math.max(0.1, Math.min(5, this.zoom));
@@ -401,10 +404,9 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider) { // MODIFIED: removed saveVideoButton
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider) {
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
-                // REMOVED: this.saveVideoButton = saveVideoButton;
                 this.frameSlider = frameSlider;
                 this.frameCounter = frameCounter;
                 this.trajectorySelect = trajectorySelect;
@@ -438,7 +440,7 @@
 
                 this.lineWidthSlider.addEventListener('input', (e) => {
                     this.lineWidth = parseFloat(e.target.value);
-                    if (!this.isPlaying) { // REMOVED: isRecording check
+                    if (!this.isPlaying) {
                         this.render();
                     }
                 });
@@ -537,7 +539,7 @@
                 }
                 trajectory.maxExtent = Math.sqrt(maxDistSq);
 
-                if (!this.isPlaying) { // REMOVED: isRecording check
+                if (!this.isPlaying) {
                     this.setFrame(trajectory.frames.length - 1);
                 }
                 this.updateUIControls();
@@ -566,7 +568,6 @@
             // Update UI element states (e.g., disabled)
             setUIEnabled(enabled) {
                  this.playButton.disabled = !enabled;
-                 // REMOVED: this.saveVideoButton.disabled = !enabled;
                  this.frameSlider.disabled = !enabled;
                  this.trajectorySelect.disabled = !enabled;
                  this.speedSelect.disabled = !enabled;
@@ -583,7 +584,7 @@
                 const total = trajectory ? trajectory.frames.length : 0;
                 const current = Math.max(0, this.currentFrame) + 1;
 
-                if (total <= 1) { // MODIFIED: Simplified show/hide
+                if (total <= 1) {
                     this.controlsContainer.style.display = 'none';
                 } else {
                     this.controlsContainer.style.display = 'flex';
@@ -597,14 +598,11 @@
                 }
                 
                 this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
-
-                // MODIFIED: Simplified text logic
                 this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
             }
 
             // Toggle play/pause
             togglePlay() {
-                // REMOVED: isRecording check
                 if (this.isPlaying) {
                     this.stopAnimation();
                 } else {
@@ -614,7 +612,6 @@
 
             // --- REFACTORED: Start playback ---
             startAnimation() {
-                // REMOVED: isRecording check
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 if (!trajectory || trajectory.frames.length < 2) return;
 
@@ -629,7 +626,27 @@
                 this.updateUIControls();
             }
 
-            // REMOVED: saveAnimationAsVideo method
+            // NEW: Clear all trajectories
+            clearAllTrajectories() {
+                this.stopAnimation();
+                
+                // Reset data
+                this.trajectoriesData = { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
+                this.currentTrajectoryName = "default";
+                
+                // Reset trajectory dropdown
+                if (this.trajectorySelect) {
+                    this.trajectorySelect.innerHTML = ''; // Clear all options
+                    const option = document.createElement('option');
+                    option.value = "default";
+                    option.textContent = "0";
+                    this.trajectorySelect.appendChild(option);
+                    this.trajectorySelect.value = "default";
+                }
+                
+                // Set to empty frame, which clears canvas and updates UI
+                this.setFrame(-1);
+            }
 
             // Load data into renderer
             _loadDataIntoRenderer(data) {
@@ -923,7 +940,7 @@
                 let needsRender = false;
 
                 // 1. Handle inertia/spin
-                if (!this.isDragging) { // REMOVED: isRecording check
+                if (!this.isDragging) {
                     if (Math.abs(this.spinVelocityX) > 0.0001) {
                         const rot = rotationMatrixY(this.spinVelocityX * 0.005);
                         this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
@@ -944,14 +961,14 @@
                 }
 
                 // 2. Handle auto-rotate
-                if (this.autoRotate && !this.isDragging && this.spinVelocityX === 0 && this.spinVelocityY === 0) { // REMOVED: isRecording check
+                if (this.autoRotate && !this.isDragging && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
                     const rot = rotationMatrixY(0.005); // Constant rotation speed
                     this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
                     needsRender = true;
                 }
 
                 // 3. Handle frame playback
-                if (this.isPlaying) { // REMOVED: isRecording check
+                if (this.isPlaying) {
                     if (now - this.lastFrameAdvanceTime > this.animationSpeed) {
                         const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                         if (trajectory && trajectory.frames.length > 0) {
@@ -989,13 +1006,14 @@
         const canvas = document.getElementById('canvas');
         canvas.width = config.size[0];
         canvas.height = config.size[1];
-        document.getElementById('mainContainer').style.width = `${config.size[0]}px`;
+        // Set column width, not main container
+        document.getElementById('viewerColumn').style.width = `${config.size[0]}px`; 
 
         // 3. Create renderer
         window.renderer = new Pseudo3DRenderer(canvas);
         window.renderer.colorMode = config.color;
 
-        // 4. Setup general controls
+        // 4. Setup general controls (now in right panel)
         const colorSelect = document.getElementById('colorSelect');
         colorSelect.value = config.color;
         colorSelect.addEventListener('change', (e) => {
@@ -1013,7 +1031,6 @@
         // 5. Setup animation and trajectory controls
         const controlsContainer = document.getElementById('controlsContainer');
         const playButton = document.getElementById('playButton');
-        // REMOVED: const saveVideoButton = document.getElementById('saveVideoButton');
         const frameSlider = document.getElementById('frameSlider');
         const frameCounter = document.getElementById('frameCounter');
         const trajectorySelect = document.getElementById('trajectorySelect');
@@ -1027,13 +1044,7 @@
             controlsContainer, playButton, 
             frameSlider, frameCounter, trajectorySelect, 
             speedSelect, rotationCheckbox, lineWidthSlider
-        ); // MODIFIED: removed saveVideoButton
-
-        // REFACTORED: All event listeners are now bound inside setUIControls
-        // playButton.addEventListener('click', ...);
-        // frameSlider.addEventListener('input', ...);
-        // frameSlider.addEventListener('change', ...);
-
+        );
 
         // 6. Add function for Python to call (for new frames)
         window.handlePythonUpdate = (jsonData) => {
@@ -1050,29 +1061,64 @@
             window.renderer.addTrajectory(name);
         };
 
-        // 8. Load initial data
+        // 8. Add function for Python to clear everything
+        window.handlePythonClearAll = () => {
+            window.renderer.clearAllTrajectories();
+        };
+
+        // 9. Load initial data
         try {
             if (window.proteinData && window.proteinData.coords && window.proteinData.coords.length > 0) {
                 window.renderer.addFrame(window.proteinData);
             } else {
-                const {coords, plddts, chains, atomTypes} = generateProteinCurve(100);
-                const demoData = {
-                    coords: coords.map(c => [c.x, c.y, c.z]),
-                    plddts: plddts,
-                    chains: chains,
-                    atom_types: atomTypes
-                };
-                window.renderer.addFrame(demoData);
+                // No initial data, start with an empty canvas.
+                window.renderer.setFrame(-1);
             }
         } catch (error) {
             console.error("Error loading initial data:", error);
-            const {coords, plddts, chains, atomTypes} = generateProteinCurve(100);
-            const demoData = { coords: coords.map(c => [c.x, c.y, c.z]), plddts: plddts, chains: chains, atom_types: atomTypes };
-            window.renderer.addFrame(demoData);
+            window.renderer.setFrame(-1);
         }
 
-        // 9. Start the main animation loop
+        // 10. NEW: Add postMessage listener for Jupyter/iframe communication
+        window.addEventListener('message', (event) => {
+            // No origin check, but check message type for basic security
+            if (event.data && event.data.type) {
+                if (event.data.type === 'py2DmolUpdate') {
+                    // The payload is already a JS object from Python.
+                    // Stringify it to pass to the existing handler which expects a JSON string.
+                    try {
+                        window.handlePythonUpdate(JSON.stringify(event.data.payload));
+                    } catch (e) {
+                         console.error("Failed to handle postMessage (update):", e, event.data.payload);
+                    }
+                } else if (event.data.type === 'py2DmolNewTrajectory') {
+                    // The name is a string, which is what the handler expects.
+                    try {
+                        window.handlePythonNewTrajectory(event.data.name);
+                    } catch (e) {
+                         console.error("Failed to handle postMessage (new trajectory):", e, event.data.name);
+                    }
+                } else if (event.data.type === 'py2DmolClearAll') {
+                    // New handler for clearing
+                    try {
+                        window.handlePythonClearAll();
+                    } catch (e) {
+                         console.error("Failed to handle postMessage (clear all):", e);
+                    }
+                }
+            }
+        });
+
+        // 11. Start the main animation loop
         window.renderer.animate();
+        
+        // 12. NEW: Notify the parent window that the iframe is loaded and ready
+        if (window.parent) {
+            window.parent.postMessage({ 
+                type: "py2dmol_ready", 
+                viewer_id: config.viewer_id 
+            }, "*");
+        }
 
     </script>
 </body>
