@@ -180,7 +180,8 @@
                     <input type="checkbox" id="shadowCheckbox" checked>
                     <label for="shadowCheckbox">Shadow</label>
                 </div>
-                <div class.toggle-item>
+                <!-- HTML TYPO FIX: class.toggle-item -> class="toggle-item" -->
+                <div class="toggle-item"> 
                     <input type="checkbox" id="rotationCheckbox">
                     <label for="rotationCheckbox">Rotate</label>
                 </div>
@@ -401,13 +402,16 @@
                 
                 this.lineWidth = parseFloat(this.lineWidthSlider.value);
 
+                // --- BIND ALL EVENT LISTENERS HERE ---
+                this.playButton.addEventListener('click', () => {
+                    this.togglePlay();
+                });
+
                 this.trajectorySelect.addEventListener('change', () => {
                     this.stopAnimation();
                     this.currentTrajectoryName = this.trajectorySelect.value;
                     this.setFrame(0);
                 });
-
-                // REMOVED: saveVideoButton listener
 
                 this.speedSelect.addEventListener('change', (e) => {
                     this.animationSpeed = parseInt(e.target.value);
@@ -426,6 +430,15 @@
                         this.render();
                     }
                 });
+
+                // --- SLIDER FIX ---
+                const handleSliderChange = (e) => {
+                    this.stopAnimation();
+                    this.setFrame(e.target.value);
+                };
+
+                this.frameSlider.addEventListener('input', handleSliderChange);
+                this.frameSlider.addEventListener('change', handleSliderChange);
             }
 
             // Add a new trajectory
@@ -894,20 +907,11 @@
             speedSelect, rotationCheckbox, lineWidthSlider
         ); // MODIFIED: removed saveVideoButton
 
-        playButton.addEventListener('click', () => {
-            window.renderer.togglePlay();
-        });
+        // REFACTORED: All event listeners are now bound inside setUIControls
+        // playButton.addEventListener('click', ...);
+        // frameSlider.addEventListener('input', ...);
+        // frameSlider.addEventListener('change', ...);
 
-        // --- FIX: Add slider event listener ---
-        frameSlider.addEventListener('input', (e) => {
-            window.renderer.stopAnimation(); // Stop playing if user scrubs
-            window.renderer.setFrame(e.target.value);
-        });
-        // Add 'change' event as well, in case 'input' isn't firing on drag for user
-        frameSlider.addEventListener('change', (e) => {
-            window.renderer.stopAnimation(); 
-            window.renderer.setFrame(e.target.value);
-        });
 
         // 6. Add function for Python to call (for new frames)
         window.handlePythonUpdate = (jsonData) => {
@@ -941,7 +945,7 @@
         } catch (error) {
             console.error("Error loading initial data:", error);
             const {coords, plddts, chains, atomTypes} = generateProteinCurve(100);
-            const demoData = { coords: coords.map(c => [c.x, c.y, c.z]), plddts: plddts, chains: chains, atom_types: atomTypes };
+            const demoData = { coords: coords.map(c => [c.x, c.v, c.z]), plddts: plddts, chains: chains, atom_types: atomTypes };
             window.renderer.addFrame(demoData);
         }
 
