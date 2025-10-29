@@ -62,8 +62,8 @@
             border-color: #007bff;
         }
 
-        /* Style for shadow toggle */
-        #shadowToggle {
+        /* NEW: Style for options container */
+        #optionsContainer {
             position: absolute;
             top: 10px;
             left: 10px;
@@ -74,15 +74,30 @@
             padding: 4px 8px;
             border-radius: 4px;
             display: flex;
+            flex-direction: column; /* Stack controls vertically */
+            align-items: flex-start; /* Align to the left */
+            gap: 4px;
+        }
+        .toggle-item { /* NEW: Wrapper for label/input pairs */
+            display: flex;
             align-items: center;
             gap: 4px;
         }
-        #shadowToggle label { cursor: pointer; }
-        #shadowCheckbox { cursor: pointer; margin: 0; }
+        .toggle-item label { cursor: pointer; white-space: nowrap; }
+        .toggle-item input[type="checkbox"] { cursor: pointer; margin: 0; }
+        .toggle-item input[type="range"] {
+            cursor: pointer;
+            width: 80px; /* Short slider for linewidth */
+        }
+
 
         /* Animation Controls Container */
         #controlsContainer {
-            padding: 10px 10px 0 10px; /* Reduced bottom padding */
+            /* MODIFIED: Use flex for better alignment */
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            padding: 10px 10px 0 10px;
             text-align: left;
             width: 100%;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -104,6 +119,7 @@
             font-size: 12px;
             vertical-align: middle;
             margin-right: 5px;
+            flex-shrink: 0; /* Don't let buttons shrink */
         }
         .controlButton:disabled {
             cursor: not-allowed;
@@ -111,7 +127,9 @@
             color: #999;
         }
         #frameSlider {
-            width: 300px;
+            /* MODIFIED: Let it flex */
+            flex-grow: 1; 
+            width: auto; /* Remove fixed/js width */
             margin: 0 10px;
             vertical-align: middle;
         }
@@ -120,6 +138,16 @@
             vertical-align: middle;
             min-width: 80px;
             display: inline-block;
+            flex-shrink: 0; /* Don't let it shrink */
+        }
+        #speedSelect { /* NEW */
+            font-size: 12px;
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            vertical-align: middle;
+            margin-left: 10px;
+            flex-shrink: 0; /* Don't let it shrink */
         }
         /* NEW: Trajectory Select */
         #trajectorySelect {
@@ -146,10 +174,20 @@
         <!-- The canvas and dropdown are now siblings in the container -->
         <div id="canvasContainer">
             <canvas id="canvas"></canvas>
-            <!-- Shadow Toggle Checkbox -->
-            <div id="shadowToggle">
-                <input type="checkbox" id="shadowCheckbox" checked>
-                <label for="shadowCheckbox">Shadow</label>
+            <!-- MODIFIED: Options container -->
+            <div id="optionsContainer">
+                <div class="toggle-item">
+                    <input type="checkbox" id="shadowCheckbox" checked>
+                    <label for="shadowCheckbox">Shadow</label>
+                </div>
+                <div class="toggle-item">
+                    <input type="checkbox" id="rotationCheckbox">
+                    <label for="rotationCheckbox">Rotate</label>
+                </div>
+                <div class="toggle-item">
+                    <label for="lineWidthSlider">Line:</label>
+                    <input type="range" id="lineWidthSlider" min="1" max="10" value="3" step="0.5">
+                </div>
             </div>
             <!-- Floating Dropdown Menu -->
             <select id="colorSelect">
@@ -164,6 +202,12 @@
             <button id="playButton" class="controlButton">Play</button>
             <input type="range" id="frameSlider" min="0" max="0" value="0">
             <span id="frameCounter">Frame: 0 / 0</span>
+            <!-- NEW: Speed Select -->
+            <select id="speedSelect">
+                <option value="100">1x</option>
+                <option value="50">2x</option>
+                <option value="25">4x</option>
+            </select>
         </div>
         <!-- NEW Trajectory Controls -->
         <div id="trajectoryContainer">
@@ -231,10 +275,11 @@
                 this.colorMode = 'plddt';
                 this.rotationMatrix = [[1,0,0],[0,1,0],[0,0,1]];
                 this.zoom = 1.0;
-                this.lineWidth = 3.0;
+                this.lineWidth = 3.0; // NEW: Default line width
                 this.shadowIntensity = 0.95;
                 this.shadowEnabled = true;
-                // REMOVED: this.fixedBounds = null;
+                this.autoRotate = false; // NEW
+                this.animationSpeed = 100; // NEW: ms per frame
                 // Performance
                 this.lastFrameTime = performance.now();
                 this.fps = 0;
@@ -243,7 +288,6 @@
                 this.chainRainbowScales = {};
 
                 // Animation & Trajectory state
-                // MODIFIED: Added globalCenterSum and totalAtoms
                 this.trajectoriesData = { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
                 this.currentTrajectoryName = "default";
                 this.currentFrame = -1;
@@ -252,13 +296,16 @@
 
                 // UI elements
                 this.playButton = null;
-                this.saveVideoButton = null; // NEW
+                this.saveVideoButton = null;
                 this.frameSlider = null;
                 this.frameCounter = null;
                 this.trajectorySelect = null;
-                this.controlsContainer = null; // NEW
+                this.controlsContainer = null;
+                this.speedSelect = null; // NEW
+                this.rotationCheckbox = null; // NEW
+                this.lineWidthSlider = null; // NEW
 
-                // NEW: Video recording
+                // Video recording
                 this.mediaRecorder = null;
                 this.recordedChunks = [];
                 this.isRecording = false;
@@ -269,7 +316,15 @@
             setupInteraction() {
                 let isDragging = false;
                 let lastX, lastY;
-                this.canvas.addEventListener('mousedown', (e) => { isDragging = true; lastX = e.clientX; lastY = e.clientY; });
+                this.canvas.addEventListener('mousedown', (e) => {
+                    isDragging = true;
+                    lastX = e.clientX;
+                    lastY = e.clientY;
+                    if (this.autoRotate) { // NEW: Stop auto-rotate on drag
+                        this.autoRotate = false;
+                        if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
+                    }
+                });
                 window.addEventListener('mousemove', (e) => {
                     if (!isDragging || this.isRecording) return; // Don't rotate while recording
                     const dx = e.clientX - lastX; const dy = e.clientY - lastY;
@@ -289,13 +344,19 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect) { // MODIFIED
-                this.controlsContainer = controlsContainer; // NEW
+            setUIControls(controlsContainer, playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider) { // MODIFIED
+                this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
-                this.saveVideoButton = saveVideoButton; // NEW
+                this.saveVideoButton = saveVideoButton;
                 this.frameSlider = frameSlider;
                 this.frameCounter = frameCounter;
                 this.trajectorySelect = trajectorySelect;
+                this.speedSelect = speedSelect; // NEW
+                this.rotationCheckbox = rotationCheckbox; // NEW
+                this.lineWidthSlider = lineWidthSlider; // NEW
+                
+                // Set initial value from slider
+                this.lineWidth = parseFloat(this.lineWidthSlider.value);
 
                 // Add listener for trajectory changes
                 this.trajectorySelect.addEventListener('change', () => {
@@ -304,16 +365,31 @@
                     this.setFrame(0);
                 });
 
-                // NEW: Add listener for save video
+                // Add listener for save video
                 this.saveVideoButton.addEventListener('click', () => {
                     this.saveAnimationAsVideo();
+                });
+
+                // --- NEW Listeners ---
+                this.speedSelect.addEventListener('change', (e) => {
+                    this.animationSpeed = parseInt(e.target.value);
+                });
+
+                this.rotationCheckbox.addEventListener('change', (e) => {
+                    this.autoRotate = e.target.checked;
+                });
+
+                this.lineWidthSlider.addEventListener('input', (e) => {
+                    this.lineWidth = parseFloat(e.target.value);
+                    if (!this.isPlaying && !this.isRecording) {
+                        this.render(); // Re-render on line width change if not playing
+                    }
                 });
             }
 
             // Add a new trajectory
             addTrajectory(name) {
                 this.stopAnimation();
-                // MODIFIED: Added globalCenterSum and totalAtoms
                 this.trajectoriesData[name] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
                 this.currentTrajectoryName = name;
                 this.currentFrame = -1;
@@ -331,7 +407,6 @@
 
             // Add a frame (data is raw parsed JSON)
             addFrame(data) {
-                // MODIFIED: This function is completely updated
                 if (!this.currentTrajectoryName) {
                     this.currentTrajectoryName = "default";
                 }
@@ -342,7 +417,7 @@
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 trajectory.frames.push(data);
 
-                // --- NEW: Update global center sum and count ---
+                // --- Update global center sum and count ---
                 let frameSum = new Vec3(0,0,0);
                 let frameAtoms = 0;
                 if (data && data.coords) {
@@ -354,11 +429,10 @@
                     trajectory.totalAtoms += frameAtoms;
                 }
                 
-                // --- NEW: Calculate current global center ---
+                // --- Calculate current global center ---
                 const globalCenter = (trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
 
-                // --- NEW: Recalculate maxExtent for *all* frames using the *new* global center ---
-                // This is inefficient, but necessary as the center shifts
+                // --- Recalculate maxExtent for *all* frames using the *new* global center ---
                 let maxDistSq = 0;
                 for (const frame of trajectory.frames) {
                     if (frame && frame.coords) {
@@ -383,8 +457,8 @@
                 frameIndex = parseInt(frameIndex);
                 if (!this.currentTrajectoryName) return;
 
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
-                if (!trajectory || frameIndex < 0 || frameIndex >= trajectory.frames.length) { // MODIFIED
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                if (!trajectory || frameIndex < 0 || frameIndex >= trajectory.frames.length) {
                     this.currentFrame = -1;
                     this.ctx.fillStyle = '#ffffff';
                     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -393,17 +467,20 @@
                 }
 
                 this.currentFrame = frameIndex;
-                const data = trajectory.frames[frameIndex]; // MODIFIED
+                const data = trajectory.frames[frameIndex];
                 this._loadDataIntoRenderer(data); // This calls render()
                 this.updateUIControls();
             }
 
-            // NEW: Update UI element states (e.g., disabled)
+            // Update UI element states (e.g., disabled)
             setUIEnabled(enabled) {
                  this.playButton.disabled = !enabled;
                  this.saveVideoButton.disabled = !enabled;
                  this.frameSlider.disabled = !enabled;
                  this.trajectorySelect.disabled = !enabled;
+                 this.speedSelect.disabled = !enabled; // NEW
+                 this.rotationCheckbox.disabled = !enabled; // NEW
+                 this.lineWidthSlider.disabled = !enabled; // NEW
                  this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
@@ -411,19 +488,19 @@
             updateUIControls() {
                 if (!this.playButton) return; // UI not ready
 
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
-                const total = trajectory ? trajectory.frames.length : 0; // MODIFIED
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                const total = trajectory ? trajectory.frames.length : 0;
                 const current = Math.max(0, this.currentFrame) + 1; // 1-based index
 
-                // --- NEW: Show/hide controls based on frame count ---
+                // --- Show/hide controls based on frame count ---
                 if (total <= 1) {
                     this.controlsContainer.style.display = 'none';
                     if (this.saveVideoButton) this.saveVideoButton.style.display = 'none';
                 } else {
-                    this.controlsContainer.style.display = 'block';
+                    this.controlsContainer.style.display = 'flex'; // MODIFIED
                     if (this.saveVideoButton) this.saveVideoButton.style.display = 'inline-block';
                 }
-                // --- End NEW ---
+                // --- End ---
 
                 this.frameSlider.max = Math.max(0, total - 1);
                 this.frameSlider.value = this.currentFrame;
@@ -452,25 +529,25 @@
             // Start the animation loop
             startAnimation() {
                 if (this.isRecording) return; // Can't start if already recording
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
-                if (!trajectory || trajectory.frames.length < 2) return; // MODIFIED
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                if (!trajectory || trajectory.frames.length < 2) return;
 
                 this.isPlaying = true;
                 this.updateUIControls();
 
                 const animateStep = () => {
                     if (!this.isPlaying) return;
-                    const currentTrajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
+                    const currentTrajectory = this.trajectoriesData[this.currentTrajectoryName];
                     if (!currentTrajectory) {
                         this.stopAnimation();
                         return;
                     }
                     let nextFrame = this.currentFrame + 1;
-                    if (nextFrame >= currentTrajectory.frames.length) { // MODIFIED
+                    if (nextFrame >= currentTrajectory.frames.length) {
                         nextFrame = 0; // Loop back to start
                     }
                     this.setFrame(nextFrame);
-                    this.animationHandle = setTimeout(animateStep, 100); // 10 fps
+                    this.animationHandle = setTimeout(animateStep, this.animationSpeed); // MODIFIED
                 };
                 animateStep();
             }
@@ -485,13 +562,13 @@
                 this.updateUIControls();
             }
 
-            // NEW: Save animation as video
+            // Save animation as video
             saveAnimationAsVideo() {
                 if (this.isRecording) return; // Already recording
                 this.stopAnimation(); // Stop playback
 
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // MODIFIED
-                if (!trajectory || trajectory.frames.length < 2) { // MODIFIED
+                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                if (!trajectory || trajectory.frames.length < 2) {
                     alert("Not enough frames to record.");
                     return;
                 }
@@ -504,7 +581,7 @@
                 this.setUIEnabled(false); // Disable UI
                 this.updateUIControls();
 
-                const stream = this.canvas.captureStream(10); // 10 fps, matches player
+                const stream = this.canvas.captureStream(10); // 10 fps
                 this.mediaRecorder = new MediaRecorder(stream, { mimeType: "video/webm" });
                 this.recordedChunks = [];
 
@@ -536,25 +613,31 @@
 
                 this.mediaRecorder.start();
 
-                // Go to first frame and start recording loop
-                this.setFrame(0);
-
-                let recordingFrame = 0;
+                // --- MODIFIED: Recording loop fix ---
+                let recordingFrame = 0; // Start at frame 0
                 const recordStep = () => {
-                    if (!this.isRecording) return;
+                    if (!this.isRecording) {
+                        // Handle potential stop mid-recording
+                        if (this.mediaRecorder.state === "recording") {
+                            this.mediaRecorder.stop();
+                        }
+                        return;
+                    }
 
-                    recordingFrame++;
-                    if (recordingFrame < trajectory.frames.length) { // MODIFIED
-                        this.setFrame(recordingFrame);
+                    if (recordingFrame < trajectory.frames.length) {
+                        this.setFrame(recordingFrame); // Set the current frame
+                        recordingFrame++; // Increment *after* setting
                         // Use requestAnimationFrame to ensure canvas is drawn before next step
                         requestAnimationFrame(recordStep);
                     } else {
                         // We have rendered the last frame, stop recording
-                        this.mediaRecorder.stop();
+                        if (this.mediaRecorder.state === "recording") {
+                            this.mediaRecorder.stop();
+                        }
                     }
                 };
 
-                // Start the loop after a short delay to let frame 0 render
+                // Start the loop. It will immediately call setFrame(0).
                 requestAnimationFrame(recordStep);
             }
 
@@ -577,7 +660,6 @@
 
             // This function is now internal, called by _loadDataIntoRenderer
             setCoords(coords, plddts = [], chains = [], atomTypes = []) {
-                // MODIFIED: Removed centering and bounds calculation
                 this.coords = coords;
                 this.plddts = plddts;
                 this.chains = chains;
@@ -598,12 +680,7 @@
                         scale.max = Math.max(scale.max, colorIndex);
                     }
                 }
-                // REMOVED: this.centerCoords();
-                // REMOVED: this.calculateFixedBounds();
             }
-
-            // REMOVED: centerCoords() function
-            // REMOVED: calculateFixedBounds() function
 
             // RENDER: This function is unchanged.
             render() {
@@ -612,7 +689,7 @@
                 this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                 if (this.coords.length === 0) return;
 
-                // --- NEW: Get global center ---
+                // --- Get global center ---
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 const globalCenter = (trajectory && trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
 
@@ -742,9 +819,7 @@
 
                 const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
                 
-                // MODIFIED: Get dataRange from trajectory's maxExtent
-                // const trajectory = this.trajectoriesData[this.currentTrajectoryName]; // Already defined above
-                // Use 30.0 as a fallback if extent is 0 (e.g., single atom or no data)
+                // Get dataRange from trajectory's maxExtent
                 const maxExtent = (trajectory && trajectory.maxExtent > 0) ? trajectory.maxExtent : 30.0;
                 const dataRange = (maxExtent * 2) + this.lineWidth * 2;
                 
@@ -791,8 +866,14 @@
             }
 
             animate() {
-                // This is the original empty animate function.
-                // We are using setTimeout for our own animation loop, so this is fine.
+                // Auto-rotation logic
+                if (this.autoRotate && !this.isRecording && !this.isPlaying) { // MODIFIED: Only rotate when not playing or recording
+                    const rot = rotationMatrixY(0.005); // Constant rotation speed
+                    this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
+                    this.render(); // Re-render the frame
+                }
+
+                // Keep the animation loop going
                 requestAnimationFrame(() => this.animate());
             }
         }
@@ -810,7 +891,7 @@
         canvas.height = config.size[1];
         // Set the width of the controls container to match the canvas
         document.getElementById('mainContainer').style.width = `${config.size[0]}px`;
-        document.getElementById('frameSlider').style.width = `${config.size[0] - 220}px`; // Adjusted for button move
+        // REMOVED: Slider width calculation, now handled by flexbox
 
 
         // 3. Create renderer
@@ -832,20 +913,30 @@
         });
 
         // 5. NEW: Setup animation and trajectory controls
-        const controlsContainer = document.getElementById('controlsContainer'); // NEW
+        const controlsContainer = document.getElementById('controlsContainer');
         const playButton = document.getElementById('playButton');
-        const saveVideoButton = document.getElementById('saveVideoButton'); // NEW
+        const saveVideoButton = document.getElementById('saveVideoButton');
         const frameSlider = document.getElementById('frameSlider');
         const frameCounter = document.getElementById('frameCounter');
         const trajectorySelect = document.getElementById('trajectorySelect');
+        // NEW controls
+        const speedSelect = document.getElementById('speedSelect');
+        const rotationCheckbox = document.getElementById('rotationCheckbox');
+        const lineWidthSlider = document.getElementById('lineWidthSlider');
+
 
         // Pass ALL controls to the renderer
-        window.renderer.setUIControls(controlsContainer, playButton, saveVideoButton, frameSlider, frameCounter, trajectorySelect); // MODIFIED
+        window.renderer.setUIControls(
+            controlsContainer, playButton, saveVideoButton, 
+            frameSlider, frameCounter, trajectorySelect, 
+            speedSelect, rotationCheckbox, lineWidthSlider
+        ); // MODIFIED
 
         playButton.addEventListener('click', () => {
             window.renderer.togglePlay();
         });
 
+        // MODIFIED: Use 'input' for real-time dragging
         frameSlider.addEventListener('input', (e) => {
             window.renderer.stopAnimation(); // Stop playing if user scrubs
             window.renderer.setFrame(e.target.value);
@@ -896,7 +987,7 @@
 
         // 9. Initial render and start animation loop
         // setFrame() (called by addFrame) already handles the first render
-        window.renderer.animate(); // Keep this as it was
+        window.renderer.animate(); // MODIFIED: This now handles auto-rotation
 
     </script>
 </body>
