@@ -26,9 +26,9 @@ jobs:
       - name: Install dependencies and run checks
         run: |
           source .venv/bin/activate
-          uv pip install .[dev]
+          uv pip install -e . --group dev
           ruff check .
-          pyright
+          basedpyright
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -50,8 +50,8 @@ jobs:
       - name: Install dependencies and run tests
         run: |
           source .venv/bin/activate
-          uv pip install .[tests]
-          python -m pytest --cov=py2Dmol --cov-report=xml --cov-report=term
+          uv pip install -e . --group dev
+          python -m pytest --cov=py2dmol --cov-report=xml --cov-report=term
       - name: Upload coverage to Codecov
         if: github.ref == 'refs/heads/main'
         uses: codecov/codecov-action@v4
@@ -82,7 +82,7 @@ jobs:
       - name: Install dependencies and build docs
         run: |
           source .venv/bin/activate
-          uv pip install .[docs]
+          uv pip install -e . --group dev
           cd docs/
           make html
       - name: Deploy to GitHub Pages

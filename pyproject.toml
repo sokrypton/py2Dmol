@@ -28,14 +28,13 @@ where = ["."]
 include-package-data = true
 
 [tool.setuptools.package-data]
-py2Dmol = ["resources/pseudo_3D_viewer.html"]
+py2dmol = ["resources/pseudo_3D_viewer.html"]
 
 [tool.ruff]
 line-length = 100
 fix = true
 indent-width = 2
 exclude = [".venv", "venv", "build", "dist", "__pycache__", "tests", "examples"]
-per-file-ignores = { "*.ipynb" = ["ERA001"] }
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -44,6 +43,7 @@ ignore = [
 "D203",
 "D213",
 ]
+per-file-ignores = { "*.ipynb" = ["ERA001"] }
 pylint.max-args = 15
 
 
