@@ -4,7 +4,7 @@ version = "1.1.4"
 description = "A Python library for visualizing protein structures in 2D."
 authors = [{ name = "sokrypton", email = "so3@mit.edu" }, { name = "maraxen"} ]
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { text = "BEER-WARE" }
 classifiers = [
     'Programming Language :: Python :: 3',
@@ -42,6 +42,8 @@ ignore = [
 "PD",
 "D203",
 "D213",
+"COM812",  # Conflicts with formatter
+"ISC001",  # Conflicts with formatter
 ]
 per-file-ignores = { "*.ipynb" = ["ERA001"] }
 pylint.max-args = 15
@@ -49,10 +51,18 @@ pylint.max-args = 15
 
 [tool.basedpyright]
 reportMissingImports = "none"
+reportImportCycles = "none"
+reportUnknownVariableType = "none"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownParameterType = "none"
+reportAny = "none"
+exclude = ["tests", "example", ".venv", "venv", "build", "dist"]
 
 [dependency-groups]
 dev = [
     "basedpyright>=1.32.1",
+    "pre-commit>=4.0.0",
 ]
 tests = [
     "pytest>=7.0.1",

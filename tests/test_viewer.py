@@ -216,16 +216,16 @@ def test_view_length_mismatch_warnings(mock_js: MagicMock, mock_html: MagicMock,
     """Test length mismatch warnings."""
     view = View()
     coords = np.random.rand(10, 3)
-    
+
     # Add first frame
     view.add(coords)
-    
+
     # Add second frame with mismatched plddts
     coords2 = np.random.rand(10, 3)
     plddts2 = np.array([50.0, 60.0])  # Wrong length
     chains2 = ["A", "B"]  # Wrong length
     atom_types2 = ["P", "P"]  # Wrong length
-    
+
     with patch("py2dmol.viewer.logger") as mock_logger:
         view.add(coords2, plddts=plddts2, chains=chains2, atom_types=atom_types2)
         assert mock_logger.warning.call_count == 3
@@ -238,10 +238,10 @@ def test_view_new_traj(mock_js: MagicMock, mock_html: MagicMock, mock_display: M
     """Test new_traj method."""
     view = View()
     coords = np.random.rand(10, 3)
-    
+
     # Add first trajectory
     view.add(coords)
-    
+
     # Start new trajectory
     view.new_traj("trajectory_1")
     assert view._current_trajectory_name == "trajectory_1"
@@ -256,10 +256,10 @@ def test_view_add_with_new_traj(mock_js: MagicMock, mock_html: MagicMock, mock_d
     view = View()
     coords1 = np.random.rand(10, 3)
     coords2 = np.random.rand(10, 3)
-    
+
     # Add first trajectory
     view.add(coords1)
-    
+
     # Add second trajectory with custom name
     view.add(coords2, new_traj=True, trajectory_name="custom_traj")
     assert view._current_trajectory_name == "custom_traj"
@@ -273,10 +273,10 @@ def test_view_add_with_new_traj_no_name(mock_js: MagicMock, mock_html: MagicMock
     view = View()
     coords1 = np.random.rand(10, 3)
     coords2 = np.random.rand(10, 3)
-    
+
     # Add first trajectory
     view.add(coords1)
-    
+
     # Add second trajectory without custom name
     view.add(coords2, new_traj=True)
     assert view._current_trajectory_name == "1"
@@ -339,12 +339,12 @@ def test_view_add_pdb_with_specific_chains(
     mock_residue.name = "ALA"
     mock_residue.__contains__.return_value = True
     mock_residue.__getitem__.return_value = [mock_atom]
-    
+
     mock_chain_a.name = "A"
     mock_chain_a.__iter__.return_value = [mock_residue]
     mock_chain_b.name = "B"
     mock_chain_b.__iter__.return_value = [mock_residue]
-    
+
     mock_model.__iter__.return_value = [mock_chain_a, mock_chain_b]
     mock_structure.__iter__.return_value = [mock_model]
     mock_read_structure.return_value = mock_structure
@@ -427,11 +427,11 @@ def test_process_nucleic_residue_c4star() -> None:
     atom = MagicMock()
     atom.pos.tolist.return_value = [0, 0, 0]
     atom.b_iso = 0
-    
+
     # Test with C4*
     residue.__contains__.side_effect = lambda x: x == "C4*"
     residue.__getitem__.return_value = [atom]
-    
+
     result = view._process_nucleic_residue(residue, "A")
     assert result is not None
     assert result["atom_type"] == "D"
@@ -444,12 +444,12 @@ def test_process_nucleic_residue_rna() -> None:
     atom = MagicMock()
     atom.pos.tolist.return_value = [0, 0, 0]
     atom.b_iso = 0
-    
+
     # Test with RNA base
     residue.name = "RA"
     residue.__contains__.side_effect = lambda x: x == "C4'"
     residue.__getitem__.return_value = [atom]
-    
+
     result = view._process_nucleic_residue(residue, "A")
     assert result is not None
     assert result["atom_type"] == "R"
@@ -461,7 +461,7 @@ def test_process_protein_residue_no_ca() -> None:
     residue = MagicMock(spec=Residue)
     residue.name = "ALA"
     residue.__contains__.return_value = False
-    
+
     result = view._process_protein_residue(residue, "A")
     assert result is None
 
@@ -472,7 +472,7 @@ def test_process_nucleic_residue_no_c4() -> None:
     residue = MagicMock(spec=Residue)
     residue.name = "DA"
     residue.__contains__.return_value = False
-    
+
     result = view._process_nucleic_residue(residue, "A")
     assert result is None
 
@@ -486,13 +486,13 @@ def test_process_residue_nucleic_acid(mock_find_tabulated_residue: MagicMock) ->
     atom = MagicMock()
     atom.pos.tolist.return_value = [0, 0, 0]
     atom.b_iso = 0
-    
+
     residue.__contains__.side_effect = lambda x: x == "C4'"
     residue.__getitem__.return_value = [atom]
-    
+
     mock_find_tabulated_residue.return_value.is_amino_acid.return_value = False
     mock_find_tabulated_residue.return_value.is_nucleic_acid.return_value = True
-    
+
     result = view._process_residue(residue, "A")
     assert result is not None
     assert result["atom_type"] == "D" # pyright: ignore[reportArgumentType, reportCallIssue]
@@ -509,10 +509,10 @@ def test_process_residue_ligand(mock_find_tabulated_residue: MagicMock) -> None:
     atom.pos.tolist.return_value = [0, 0, 0]
     atom.b_iso = 0
     residue.__iter__.return_value = [atom]
-    
+
     mock_find_tabulated_residue.return_value.is_amino_acid.return_value = False
     mock_find_tabulated_residue.return_value.is_nucleic_acid.return_value = False
-    
+
     result = view._process_residue(residue, "A")
     assert isinstance(result, list)
     assert len(result) > 0
@@ -539,13 +539,13 @@ def test_view_add_pdb_skips_water(
 
     mock_atom.pos.tolist.return_value = [0, 0, 0]
     mock_atom.b_iso = 0
-    
+
     mock_residue_water.name = "HOH"
-    
+
     mock_residue_protein.name = "ALA"
     mock_residue_protein.__contains__.return_value = True
     mock_residue_protein.__getitem__.return_value = [mock_atom]
-    
+
     mock_chain.name = "A"
     mock_chain.__iter__.return_value = [mock_residue_water, mock_residue_protein]
     mock_model.__iter__.return_value = [mock_chain]
@@ -572,7 +572,7 @@ def test_display_viewer_file_not_found(
 ) -> None:
     """Test _display_viewer handles FileNotFoundError."""
     mock_open_text.side_effect = FileNotFoundError("Template not found")
-    
+
     view = View()
     with patch("py2dmol.viewer.logger") as mock_logger:
         view._display_viewer()
@@ -583,15 +583,15 @@ def test_display_viewer_file_not_found(
 def test_send_colab_message_exception() -> None:
     """Test _send_colab_message handles exceptions."""
     importlib.reload(viewer)
-    
+
     view = viewer.View()
     coords = np.random.rand(10, 3)
     view.add(coords)
-    
+
     # Mock colab_output to raise an exception
     if viewer.colab_output:
         viewer.colab_output.eval_js.side_effect = Exception("Colab error")
-        
+
         with patch("py2dmol.viewer.logger") as mock_logger:
             view._send_colab_message({"type": "py2DmolUpdate", "payload": {}})
             mock_logger.exception.assert_called()
@@ -601,18 +601,18 @@ def test_send_colab_message_exception() -> None:
 def test_colab_message_types() -> None:
     """Test different message types in Colab environment."""
     importlib.reload(viewer)
-    
+
     if viewer.colab_output:
         view = viewer.View()
         coords = np.random.rand(5, 3)
         view.add(coords)
-        
+
         # Test py2DmolNewTrajectory message
         view._send_colab_message({"type": "py2DmolNewTrajectory", "name": "test_traj"})
-        
+
         # Test py2DmolClearAll message
         view._send_colab_message({"type": "py2DmolClearAll"})
-        
+
         # Verify eval_js was called
         assert viewer.colab_output.eval_js.called
 
@@ -631,7 +631,7 @@ def test_view_add_pdb_mixed_residues(
     mock_structure = MagicMock()
     mock_model = MagicMock()
     mock_chain = MagicMock()
-    
+
     # Protein residue
     mock_residue_protein = MagicMock()
     mock_atom_ca = MagicMock()
@@ -640,7 +640,7 @@ def test_view_add_pdb_mixed_residues(
     mock_residue_protein.name = "ALA"
     mock_residue_protein.__contains__.return_value = True
     mock_residue_protein.__getitem__.return_value = [mock_atom_ca]
-    
+
     # Ligand residue (returns list)
     mock_residue_ligand = MagicMock()
     mock_atom_ligand = MagicMock()
@@ -649,7 +649,7 @@ def test_view_add_pdb_mixed_residues(
     mock_atom_ligand.b_iso = 60
     mock_residue_ligand.name = "HEM"
     mock_residue_ligand.__iter__.return_value = [mock_atom_ligand]
-    
+
     mock_chain.name = "A"
     mock_chain.__iter__.return_value = [mock_residue_protein, mock_residue_ligand]
     mock_model.__iter__.return_value = [mock_chain]
@@ -657,7 +657,7 @@ def test_view_add_pdb_mixed_residues(
     mock_read_structure.return_value = mock_structure
 
     view = View()
-    
+
     # Mock the _process_residue to return correct types
     with patch.object(view, "_process_residue") as mock_process:
         # First call returns dict (protein), second returns list (ligand)
@@ -665,9 +665,9 @@ def test_view_add_pdb_mixed_residues(
             {"coord": [1, 1, 1], "plddt": 80, "chain": "A", "atom_type": "P"},
             [{"coord": [2, 2, 2], "plddt": 60, "chain": "A", "atom_type": "L"}]
         ]
-        
+
         view.add_pdb("fake.pdb")
-        
+
         # Should have 2 coordinates (1 protein + 1 ligand)
         assert view._coords is not None
         assert len(view._coords) == 2

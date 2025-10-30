@@ -78,7 +78,7 @@ import numpy as np
 def generate_alpha_helix_on_superhelix(n_residues=50, super_radius=0, super_turns=0):
     """
     Generate alpha helix wrapped around a cylinder (superhelix).
-    
+
     Parameters:
     - n_residues: number of residues
     - super_radius: radius of the superhelix (0 = straight helix)
@@ -88,29 +88,29 @@ def generate_alpha_helix_on_superhelix(n_residues=50, super_radius=0, super_turn
     helix_radius = 2.3  # Å from helix axis to CA
     rise_per_residue = 1.5  # Å along helix axis
     rotation_per_residue = 100 * np.pi / 180  # 100 degrees
-    
+
     helix_length = (n_residues - 1) * rise_per_residue
-    
+
     for i in range(n_residues):
         # Alpha helix coordinates
         helix_angle = i * rotation_per_residue
         local_x = helix_radius * np.cos(helix_angle)
         local_y = helix_radius * np.sin(helix_angle)
         z = i * rise_per_residue
-        
+
         if super_radius == 0:
             # Straight helix
             x, y = local_x, local_y
         else:
             # Wrap around superhelix
             super_angle = (z / helix_length) * 2 * np.pi * super_turns
-            
+
             # Transform: local helix coordinates → superhelix
             x = (super_radius + local_x) * np.cos(super_angle) - local_y * np.sin(super_angle)
             y = (super_radius + local_x) * np.sin(super_angle) + local_y * np.cos(super_angle)
-        
+
         coords.append([x, y, z])
-    
+
     return np.array(coords)
 
 # Create initial straight helix
@@ -146,7 +146,7 @@ def generate_alpha_helix(n_residues, offset=np.array([0, 0, 0])):
     radius = 2.3
     rise_per_residue = 1.5
     rotation_per_residue = 100 * np.pi / 180
-    
+
     for i in range(n_residues):
         angle = i * rotation_per_residue
         x = radius * np.cos(angle) + offset[0]
@@ -161,7 +161,7 @@ def generate_dna_strand(n_bases, offset=np.array([0, 0, 0])):
     radius = 10.0  # Distance from helix axis to C4'
     rise_per_base = 3.4  # B-DNA rise
     rotation_per_base = 36 * np.pi / 180  # 10 bases per turn
-    
+
     for i in range(n_bases):
         angle = i * rotation_per_base
         x = radius * np.cos(angle) + offset[0]
@@ -207,9 +207,9 @@ all_chains = protein_chains + dna_chains + ligand_chains
 all_types = protein_types + dna_types + ligand_types
 
 viewer = py2dmol.view(
-    color='chain', 
-    size=(600, 600), 
-    width=2.5, 
+    color='chain',
+    size=(600, 600),
+    width=2.5,
     outline=False
 )
 viewer.add(all_coords, all_plddts, all_chains, all_types)
@@ -293,7 +293,7 @@ viewer.add_pdb('simulation2.pdb', new_traj=True)
 
 ## Requirements
 
-- Python 3.6+
+- Python 3.9+
 - NumPy
 - gemmi (for PDB/CIF parsing)
 - IPython (for display in notebooks)

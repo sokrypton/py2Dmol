@@ -6,23 +6,34 @@ import importlib.resources
 import json
 import logging
 import uuid
-from typing import Literal
+from typing import Literal, TypedDict
 
 import gemmi
 import numpy as np
 from IPython.display import HTML, Javascript, display
 
-try:
-  from google.colab import output as colab_output  # pyright: ignore[reportMissingImports]
+from py2dmol import resources as py2dmol_resources
 
-  IS_COLAB = True
+try:
+  from google.colab import output as colab_output  # type: ignore[import-not-found]
+
+  _is_colab = True
 except Exception:  # pragma: no cover - optional runtime  # noqa: BLE001
   colab_output = None
-  IS_COLAB = False
+  _is_colab = False
 
-from . import resources as py2dmol_resources
+IS_COLAB = _is_colab
 
 logger = logging.getLogger(__name__)
+
+
+class AtomData(TypedDict):
+  """Type for atom data dictionary."""
+
+  coord: list[float]
+  plddt: float
+  chain: str
+  atom_type: str
 
 
 def kabsch(*, a: np.ndarray, b: np.ndarray, return_v: bool = False) -> np.ndarray:
@@ -37,13 +48,13 @@ def kabsch(*, a: np.ndarray, b: np.ndarray, return_v: bool = False) -> np.ndarra
       The optimal rotation matrix.
 
   """
-  ab = a.swapaxes(-1, -2) @ b
+  ab: np.ndarray = a.swapaxes(-1, -2) @ b
   u, _, vh = np.linalg.svd(ab, full_matrices=False)
-  flip = np.linalg.det(u @ vh) < 0
-  flip_b = flip[..., None]
-  u_last_col_flipped = np.where(flip_b, -u[..., -1], u[..., -1])
+  flip: np.ndarray = np.linalg.det(u @ vh) < 0
+  flip_b: np.ndarray = flip[..., None]
+  u_last_col_flipped: np.ndarray = np.where(flip_b, -u[..., -1], u[..., -1])
   u[..., -1] = u_last_col_flipped
-  rotation_matrix = u @ vh
+  rotation_matrix: np.ndarray = u @ vh
   return u if return_v else rotation_matrix
 
 
@@ -58,11 +69,11 @@ def align_a_to_b(a: np.ndarray, b: np.ndarray) -> np.ndarray:
       The aligned coordinates.
 
   """
-  a_mean = a.mean(-2, keepdims=True)
-  a_cent = a - a_mean
-  b_mean = b.mean(-2, keepdims=True)
-  b_cent = b - b_mean
-  rotation_matrix = kabsch(a=a_cent, b=b_cent)
+  a_mean: np.ndarray = a.mean(-2, keepdims=True)
+  a_cent: np.ndarray = a - a_mean
+  b_mean: np.ndarray = b.mean(-2, keepdims=True)
+  b_cent: np.ndarray = b - b_mean
+  rotation_matrix: np.ndarray = kabsch(a=a_cent, b=b_cent)
   return (a_cent @ rotation_matrix) + b_mean
 
 
@@ -90,7 +101,7 @@ class View:
         rotate: Whether to enable rotation. Defaults to False.
 
     """
-    self.size = size
+    self.size: tuple[int, int] = size
     self._initial_color_mode: Literal["auto", "rainbow", "chain"] = color
     self._resolved_color_mode: Literal["auto", "rainbow", "chain"] = color
 
@@ -111,7 +122,7 @@ class View:
     # Track current trajectory name on Python side
     self._current_trajectory_name: str | None = None
 
-  def _get_data_dict(self) -> dict:
+  def _get_data_dict(self) -> dict[str, list[float] | list[str]]:
     """Serialize the current coordinate state to a dict.
 
     Returns:
@@ -167,7 +178,7 @@ class View:
       logger.warning("Atom types length mismatch. Resetting to default.")
       self._atom_types = ["P"] * self._coords.shape[0]
 
-  def _send_message(self, message_dict: dict) -> None:
+  def _send_message(self, message_dict: dict[str, object]) -> None:
     """Robustly send a message to the viewer, queuing if not ready.
 
     Args:
@@ -182,7 +193,7 @@ class View:
     else:
       self._send_jupyter_message(viewer_id, message_json)
 
-  def _send_colab_message(self, message_dict: dict) -> None:
+  def _send_colab_message(self, message_dict: dict[str, object]) -> None:
     """Send a message to the viewer in a Colab environment.
 
     Args:
@@ -236,7 +247,7 @@ class View:
             }}
         }})();
         """
-    display(Javascript(js_code))
+    _ = display(Javascript(js_code))
 
   def _display_viewer(self) -> None:
     """Render the iframe and handshake script for the first time."""
@@ -253,7 +264,7 @@ class View:
     # Ensure color mode is never "auto" when sending to HTML
     # Fall back to "rainbow" if somehow still "auto"
     color_mode = self._resolved_color_mode if self._resolved_color_mode != "auto" else "rainbow"
-    
+
     # Use the resolved color mode for the config sent to HTML
     viewer_config = {
       "size": self.size,
@@ -343,7 +354,7 @@ class View:
         ></iframe>
         {handshake_script}
         """
-    display(HTML(iframe_html))
+    _ = display(HTML(iframe_html))
 
   def _display_colab_viewer(self, html_template: str, injection_scripts: str) -> None:
     """Display the viewer in a Colab environment.
@@ -354,7 +365,7 @@ class View:
 
     """
     final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
-    display(HTML(final_html))
+    _ = display(HTML(final_html))
 
   def clear(self) -> None:
     """Clear all trajectories and frames from the viewer."""
@@ -468,7 +479,7 @@ class View:
     self,
     residue: gemmi.Residue,
     chain_name: str,
-  ) -> dict | list[dict] | None:
+  ) -> AtomData | list[AtomData] | None:
     """Process a single residue and extract its data.
 
     Args:
@@ -494,7 +505,7 @@ class View:
     self,
     residue: gemmi.Residue,
     chain_name: str,
-  ) -> dict | None:
+  ) -> AtomData | None:
     """Process a protein residue.
 
     Args:
@@ -507,19 +518,20 @@ class View:
     """
     if "CA" in residue:
       atom = residue["CA"][0]
-      return {
+      atom_data: AtomData = {
         "coord": atom.pos.tolist(),
         "plddt": atom.b_iso,
         "chain": chain_name,
         "atom_type": "P",
       }
+      return atom_data
     return None
 
   def _process_nucleic_residue(
     self,
     residue: gemmi.Residue,
     chain_name: str,
-  ) -> dict | None:
+  ) -> AtomData | None:
     """Process a nucleic acid residue.
 
     Args:
@@ -546,19 +558,20 @@ class View:
       elif residue.name in dna_bases or residue.name.startswith("D"):
         atom_type = "D"
 
-      return {
+      atom_data: AtomData = {
         "coord": c4_atom.pos.tolist(),
         "plddt": c4_atom.b_iso,
         "chain": chain_name,
         "atom_type": atom_type,
       }
+      return atom_data
     return None
 
   def _process_ligand_residue(
     self,
     residue: gemmi.Residue,
     chain_name: str,
-  ) -> list[dict]:
+  ) -> list[AtomData]:
     """Process a ligand residue.
 
     Args:
@@ -569,16 +582,17 @@ class View:
         A list of dictionaries containing the residue's data.
 
     """
-    return [
-      {
-        "coord": atom.pos.tolist(),
-        "plddt": atom.b_iso,
-        "chain": chain_name,
-        "atom_type": "L",
-      }
-      for atom in residue
-      if atom.element.name != "H"
-    ]
+    result: list[AtomData] = []
+    for atom in residue:
+      if atom.element.name != "H":
+        atom_data: AtomData = {
+          "coord": atom.pos.tolist(),
+          "plddt": atom.b_iso,
+          "chain": chain_name,
+          "atom_type": "L",
+        }
+        result.append(atom_data)
+    return result
 
   def add_pdb(
     self,
@@ -606,10 +620,10 @@ class View:
       # Default behavior: process the model from the file directly
       model_to_process = model
 
-      coords: list = []
-      plddts: list = []
-      atom_chains: list = []
-      atom_types: list = []
+      coords: list[list[float]] = []
+      plddts: list[float] = []
+      atom_chains: list[str] = []
+      atom_types: list[str] = []
 
       # Iterate over the chains in the processed model
       for chain in model_to_process:
