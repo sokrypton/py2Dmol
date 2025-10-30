@@ -1,0 +1,31 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install uv
+          uv pip install --system .[dev]
+      - name: Lint with ruff
+        run: |
+          uv run ruff check .
+      - name: Type check with pyright
+        run: |
+          uv run pyright .
+      - name: Test with pytest
+        run: |
+          export PYTHONPATH=$PYTHONPATH:.
+          uv run pytest --cov=py2Dmol

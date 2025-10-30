@@ -1,396 +1,561 @@
+"""A Python library for visualizing protein structures in 2D."""
+
 import json
+import importlib.resources
+import logging
+import uuid
+from typing import List, Optional, Tuple, Union
+
+import gemmi
 import numpy as np
+from IPython.display import HTML, Javascript, display
+
 try:
-    from google.colab import output
+    from google.colab import output as colab_output
+
     IS_COLAB = True
 except ImportError:
+    colab_output = None
     IS_COLAB = False
-from IPython.display import display, HTML, Javascript
-import importlib.resources
+
 from . import resources as py2dmol_resources
-import gemmi
-import uuid
 
-def kabsch(a, b, return_v=False):
-  """Computes the optimal rotation matrix for aligning a to b."""
-  ab = a.swapaxes(-1, -2) @ b
-  u, s, vh = np.linalg.svd(ab, full_matrices=False)
-  flip = np.linalg.det(u @ vh) < 0
-  flip_b = flip[..., None]
-  u_last_col_flipped = np.where(flip_b, -u[..., -1], u[..., -1])
-  u[..., -1] = u_last_col_flipped
-  R = u @ vh
-  return u if return_v else R
+logger = logging.getLogger(__name__)
 
-def align_a_to_b(a, b):
-  """Aligns coordinate set 'a' to 'b' using Kabsch algorithm."""
-  a_mean = a.mean(-2, keepdims=True)
-  a_cent = a - a_mean
-  b_mean = b.mean(-2, keepdims=True)
-  b_cent = b - b_mean
-  R = kabsch(a_cent, b_cent)
-  a_aligned = (a_cent @ R) + b_mean
-  return a_aligned
 
-# --- view Class ---
+def kabsch(*, a: np.ndarray, b: np.ndarray, return_v: bool = False) -> np.ndarray:
+    """
+    Compute the optimal rotation matrix for aligning a to b.
 
-class view:
-    def __init__(self, size=(500,500), color="rainbow"):
+    Args:
+        a: The first set of coordinates.
+        b: The second set of coordinates.
+        return_v: Whether to return the v matrix.
+
+    Returns:
+        The optimal rotation matrix.
+    """
+    ab = a.swapaxes(-1, -2) @ b
+    u, _, vh = np.linalg.svd(ab, full_matrices=False)
+    flip = np.linalg.det(u @ vh) < 0
+    flip_b = flip[..., None]
+    u_last_col_flipped = np.where(flip_b, -u[..., -1], u[..., -1])
+    u[..., -1] = u_last_col_flipped
+    rotation_matrix = u @ vh
+    return u if return_v else rotation_matrix
+
+
+def align_a_to_b(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """
+    Align coordinate set 'a' to 'b' using Kabsch algorithm.
+
+    Args:
+        a: The first set of coordinates.
+        b: The second set of coordinates.
+
+    Returns:
+        The aligned coordinates.
+    """
+    a_mean = a.mean(-2, keepdims=True)
+    a_cent = a - a_mean
+    b_mean = b.mean(-2, keepdims=True)
+    b_cent = b - b_mean
+    rotation_matrix = kabsch(a=a_cent, b=b_cent)
+    return (a_cent @ rotation_matrix) + b_mean
+
+
+class View:
+    """A class for visualizing protein structures in 2D."""
+
+    def __init__(self, size: Tuple[int, int] = (500, 500), color: str = "rainbow") -> None:
+        """
+        Initialize the viewer.
+
+        Args:
+            size: The size of the viewer.
+            color: The color scheme to use.
+        """
         self.size = size
         self.color = color
         self._initial_data_loaded = False
-        self._coords = None
-        self._plddts = None
-        self._chains = None
-        self._atom_types = None
+        self._coords: Optional[np.ndarray] = None
+        self._plddts: Optional[np.ndarray] = None
+        self._chains: Optional[List[str]] = None
+        self._atom_types: Optional[List[str]] = None
         self._trajectory_counter = 0
         self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
 
-    def _get_data_dict(self):
-        """Serializes the current coordinate state to a dict."""
-        payload = {
+    def _get_data_dict(self) -> dict:
+        """
+        Serialize the current coordinate state to a dict.
+
+        Returns:
+            A dictionary containing the coordinate data.
+        """
+        if (
+            self._coords is None
+            or self._plddts is None
+            or self._chains is None
+            or self._atom_types is None
+        ):
+            return {"coords": [], "plddts": [], "chains": [], "atom_types": []}
+        return {
             "coords": self._coords.tolist(),
             "plddts": self._plddts.tolist(),
             "chains": list(self._chains),
-            "atom_types": list(self._atom_types)
+            "atom_types": list(self._atom_types),
         }
-        return payload
 
-    def _update(self, coords, plddts=None, chains=None, atom_types=None):
-      """Updates the internal state with new data, aligning coords."""
-      if self._coords is None:
-        self._coords = coords
-      else:
-        # Align new coords to old coords
-        # This prevents the structure from "jumping" if the center moves
-        self._coords = align_a_to_b(coords, self._coords)
+    def _update(
+        self,
+        coords: np.ndarray,
+        plddts: Optional[np.ndarray] = None,
+        chains: Optional[List[str]] = None,
+        atom_types: Optional[List[str]] = None,
+    ) -> None:
+        """
+        Update the internal state with new data, aligning coords.
 
-      # Set defaults if not provided
-      if self._plddts is None: self._plddts = np.full(self._coords.shape[0], 50.0)
-      if self._chains is None: self._chains = ["A"] * self._coords.shape[0]
-      if self._atom_types is None: self._atom_types = ["P"] * self._coords.shape[0]
+        Args:
+            coords: The new coordinates.
+            plddts: The new pLDDT scores.
+            chains: The new chain identifiers.
+            atom_types: The new atom types.
+        """
+        if self._coords is None:
+            self._coords = coords
+        else:
+            self._coords = align_a_to_b(coords, self._coords)
 
-      # Update with new data if provided
-      if plddts is not None: self._plddts = plddts
-      if chains is not None: self._chains = chains
-      if atom_types is not None: self._atom_types = atom_types
+        self._plddts = (
+            plddts
+            if plddts is not None
+            else np.full(self._coords.shape[0], 50.0)
+        )
+        self._chains = (
+            chains
+            if chains is not None
+            else ["A"] * self._coords.shape[0]
+        )
+        self._atom_types = (
+            atom_types
+            if atom_types is not None
+            else ["P"] * self._coords.shape[0]
+        )
 
-      # Ensure all arrays have the same length as coords
-      if len(self._plddts) != len(self._coords):
-          print(f"Warning: pLDDT length mismatch. Resetting to default.")
-          self._plddts = np.full(self._coords.shape[0], 50.0)
-      if len(self._chains) != len(self._coords):
-          print(f"Warning: Chains length mismatch. Resetting to default.")
-          self._chains = ["A"] * self._coords.shape[0]
-      if len(self._atom_types) != len(self._coords):
-          print(f"Warning: Atom types length mismatch. Resetting to default.")
-          self._atom_types = ["P"] * self._coords.shape[0]
+        if len(self._plddts) != len(self._coords):
+            logger.warning("pLDDT length mismatch. Resetting to default.")
+            self._plddts = np.full(self._coords.shape[0], 50.0)
+        if self._chains and len(self._chains) != len(self._coords):
+            logger.warning("Chains length mismatch. Resetting to default.")
+            self._chains = ["A"] * self._coords.shape[0]
+        if self._atom_types and len(self._atom_types) != len(self._coords):
+            logger.warning("Atom types length mismatch. Resetting to default.")
+            self._atom_types = ["P"] * self._coords.shape[0]
 
-    def _send_message(self, message_dict):
-        """Robustly send a message to the viewer, queuing if not ready."""
+    def _send_message(self, message_dict: dict) -> None:
+        """
+        Robustly send a message to the viewer, queuing if not ready.
+
+        Args:
+            message_dict: The message to send.
+        """
         viewer_id = self._viewer_id
         message_json = json.dumps(message_dict)
 
         if IS_COLAB:
-            # Colab logic is simple: just execute the JS
-            js_code = ""
-            if message_dict['type'] == 'py2DmolUpdate':
-                json_data = json.dumps(message_dict['payload'])
-                json_data_escaped = json_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
-                js_code = f"window.handlePythonUpdate(`{json_data_escaped}`);"
-            elif message_dict['type'] == 'py2DmolNewTrajectory':
-                js_code = f"window.handlePythonNewTrajectory('{message_dict['name']}');"
-            elif message_dict['type'] == 'py2DmolClearAll':
-                js_code = "window.handlePythonClearAll();"
-            
-            if js_code:
-                try:
-                    output.eval_js(js_code, ignore_result=True)
-                except Exception as e:
-                    print(f"Error sending message (Colab): {e}")
-
+            self._send_colab_message(message_dict)
         else:
-            # Jupyter logic: queue or send
-            js_code = f"""
-            (function() {{
-                // 1. Ensure global queue and ready flags exist
-                if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
-                if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
-                
-                // 2. Ensure queue exists for this *specific* viewer
-                if (!window.py2dmol_queue['{viewer_id}']) {{
-                    window.py2dmol_queue['{viewer_id}'] = [];
-                }}
+            self._send_jupyter_message(viewer_id, message_json)
 
-                let msg = {message_json};
-                
-                // 3. Check if this iframe is ready
-                if (window.py2dmol_ready_flags['{viewer_id}'] === true) {{
-                    // Ready: find iframe and send immediately
-                    let iframe = document.querySelector('iframe[data-viewer-id="{viewer_id}"]');
-                    if (iframe && iframe.contentWindow) {{
-                        iframe.contentWindow.postMessage(msg, '*');
-                    }} else {{
-                         console.error('py2Dmol: iframe {viewer_id} was ready but not found. Re-queuing.');
-                         window.py2dmol_queue['{viewer_id}'].push(msg);
-                    }}
+    def _send_colab_message(self, message_dict: dict) -> None:
+        """
+        Send a message to the viewer in a Colab environment.
+
+        Args:
+            message_dict: The message to send.
+        """
+        js_code = ""
+        if message_dict["type"] == "py2DmolUpdate":
+            json_data = json.dumps(message_dict["payload"])
+            json_data_escaped = (
+                json_data.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+            )
+            js_code = f"window.handlePythonUpdate(`{json_data_escaped}`);"
+        elif message_dict["type"] == "py2DmolNewTrajectory":
+            js_code = f"window.handlePythonNewTrajectory('{message_dict['name']}');"
+        elif message_dict["type"] == "py2DmolClearAll":
+            js_code = "window.handlePythonClearAll();"
+
+        if js_code and colab_output:
+            try:
+                colab_output.eval_js(js_code, ignore_result=True)
+            except Exception:
+                logger.exception("Error sending message to Colab")
+
+    def _send_jupyter_message(self, viewer_id: str, message_json: str) -> None:
+        """
+        Send a message to the viewer in a Jupyter environment.
+
+        Args:
+            viewer_id: The ID of the viewer.
+            message_json: The message to send, as a JSON string.
+        """
+        js_code = f"""
+        (function() {{
+            if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
+            if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
+            if (!window.py2dmol_queue['{viewer_id}']) {{
+                window.py2dmol_queue['{viewer_id}'] = [];
+            }}
+            let msg = {message_json};
+            if (window.py2dmol_ready_flags['{viewer_id}'] === true) {{
+                let iframe = document.querySelector('iframe[data-viewer-id="{viewer_id}"]');
+                if (iframe && iframe.contentWindow) {{
+                    iframe.contentWindow.postMessage(msg, '*');
                 }} else {{
-                    // Not ready: push to queue
-                    window.py2dmol_queue['{viewer_id}'].push(msg);
+                     console.error(
+                        'py2Dmol: iframe {viewer_id} was ready but not found. Re-queuing.'
+                     );
+                     window.py2dmol_queue['{viewer_id}'].push(msg);
                 }}
-            }})();
-            """
-            display(Javascript(js_code))
+            }} else {{
+                window.py2dmol_queue['{viewer_id}'].push(msg);
+            }}
+        }})();
+        """
+        display(Javascript(js_code))
 
-    def _display_viewer(self):
-        """Internal: Renders the iframe and handshake script for the first time."""
+    def _display_viewer(self) -> None:
+        """Render the iframe and handshake script for the first time."""
         try:
-            with importlib.resources.open_text(py2dmol_resources, 'pseudo_3D_viewer.html') as f:
+            with importlib.resources.open_text(
+                py2dmol_resources, "pseudo_3D_viewer.html"
+            ) as f:
                 html_template = f.read()
         except FileNotFoundError:
-            print("Error: Could not find the HTML template file.")
+            logger.exception("Could not find the HTML template file.")
             return
 
         viewer_config = {
             "size": self.size,
             "color": self.color,
-            "viewer_id": self._viewer_id
+            "viewer_id": self._viewer_id,
         }
         config_script = f"""
         <script id="viewer-config">
           window.viewerConfig = {json.dumps(viewer_config)};
         </script>
         """
-        
-        # NOTE: Initial data is now sent via an 'add' message, so proteinData is empty.
-        data_script = f"""
+        data_script = """
         <script id="protein-data">
-          window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "atom_types": [] }};
+          window.proteinData = { "coords": [], "plddts": [], "chains": [], "atom_types": [] };
         </script>
         """
-        
-        injection_scripts = config_script + "\n" + data_script
-        
-        if not IS_COLAB:
-            # For Jupyter: wrap in iframe with srcdoc
-            final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
-            # Escape for srcdoc attribute
-            final_html_escaped = final_html.replace('"', '&quot;').replace("'", '&#39;')
-            
-            # Add the queueing and handshake listener script
-            handshake_script = f"""
-            <script>
-                // 1. Setup global queue and iframe readiness state
-                if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
-                if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
-                
-                // 2. Initialize queue and flag for this *specific* viewer
-                if (!window.py2dmol_queue['{self._viewer_id}']) {{
-                    window.py2dmol_queue['{self._viewer_id}'] = [];
-                }}
-                window.py2dmol_ready_flags['{self._viewer_id}'] = false;
-            
-                // 3. Define the 'message' listener (do this only once)
-                if (!window.py2dmol_message_listener_added) {{
-                    window.addEventListener('message', (event) => {{
-                        // Check for our specific "ready" message
-                        if (event.data && event.data.type === 'py2dmol_ready' && event.data.viewer_id) {{
-                            let viewerId = event.data.viewer_id;
-                            
-                            // 3a. Mark this viewer as ready
-                            window.py2dmol_ready_flags[viewerId] = true;
-                            
-                            // 3b. Find the correct iframe
-                            let iframe = document.querySelector(`iframe[data-viewer-id="${{viewerId}}"]`);
-                            if (!iframe || !iframe.contentWindow) {{
-                                console.error(`py2Dmol: Received ready signal from ${{viewerId}} but cannot find iframe.`);
-                                return;
-                            }}
+        injection_scripts = f"{config_script}\n{data_script}"
 
-                            // 3c. Process any pending messages for this viewer
-                            let queue = window.py2dmol_queue[viewerId];
-                            if (queue) {{
-                                while (queue.length > 0) {{
-                                    let msg = queue.shift();
-                                    iframe.contentWindow.postMessage(msg, '*');
-                                }}
+        if not IS_COLAB:
+            self._display_jupyter_viewer(html_template, injection_scripts)
+        else:
+            self._display_colab_viewer(html_template, injection_scripts)
+
+    def _display_jupyter_viewer(self, html_template: str, injection_scripts: str) -> None:
+        """
+        Display the viewer in a Jupyter environment.
+
+        Args:
+            html_template: The HTML template for the viewer.
+            injection_scripts: The scripts to inject into the HTML.
+        """
+        final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
+        final_html_escaped = final_html.replace('"', "&quot;").replace("'", "&#39;")
+        handshake_script = f"""
+        <script>
+            if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
+            if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
+            if (!window.py2dmol_queue['{self._viewer_id}']) {{
+                window.py2dmol_queue['{self._viewer_id}'] = [];
+            }}
+            window.py2dmol_ready_flags['{self._viewer_id}'] = false;
+            if (!window.py2dmol_message_listener_added) {{
+                window.addEventListener('message', (event) => {{
+                    if (
+                        event.data &&
+                        event.data.type === 'py2dmol_ready' &&
+                        event.data.viewer_id
+                    ) {{
+                        let viewerId = event.data.viewer_id;
+                        window.py2dmol_ready_flags[viewerId] = true;
+                        let iframe = document.querySelector(
+                            `iframe[data-viewer-id="${{viewerId}}"]`
+                        );
+                        if (!iframe || !iframe.contentWindow) {{
+                            console.error(
+                                `py2Dmol: Received ready signal from ${{viewerId}} ` +
+                                `but cannot find iframe.`
+                            );
+                            return;
+                        }}
+                        let queue = window.py2dmol_queue[viewerId];
+                        if (queue) {{
+                            while (queue.length > 0) {{
+                                let msg = queue.shift();
+                                iframe.contentWindow.postMessage(msg, '*');
                             }}
                         }}
-                    }});
-                    // Mark listener as added so we don't add it multiple times
-                    window.py2dmol_message_listener_added = true;
-                }}
-            </script>
-            """
-            
-            # MODIFIED: Increased width to account for the new right-hand panel
-            # panel width (160px) + gap (15px) + padding (16px) + buffer (~9px) = +200px
-            iframe_html = f"""
-            <iframe 
-                data-viewer-id="{self._viewer_id}"
-                srcdoc="{final_html_escaped}"
-                style="width: {self.size[0] + 200}px; height: {self.size[1] + 80}px; border: none;"
-                sandbox="allow-scripts allow-same-origin"
-            ></iframe>
-            {handshake_script}
-            """
-            display(HTML(iframe_html))
-        else:
-            # For Colab: use direct HTML
-            final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
-            display(HTML(final_html))
+                    }}
+                }});
+                window.py2dmol_message_listener_added = true;
+            }}
+        </script>
+        """
+        iframe_html = f"""
+        <iframe
+            data-viewer-id="{self._viewer_id}"
+            srcdoc="{final_html_escaped}"
+            style="width: {self.size[0] + 200}px; height: {self.size[1] + 80}px; border: none;"
+            sandbox="allow-scripts allow-same-origin"
+        ></iframe>
+        {handshake_script}
+        """
+        display(HTML(iframe_html))
 
+    def _display_colab_viewer(self, html_template: str, injection_scripts: str) -> None:
+        """
+        Display the viewer in a Colab environment.
 
-    def clear(self):
-        """Clears all trajectories and frames from the viewer."""
+        Args:
+            html_template: The HTML template for the viewer.
+            injection_scripts: The scripts to inject into the HTML.
+        """
+        final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
+        display(HTML(final_html))
+
+    def clear(self) -> None:
+        """Clear all trajectories and frames from the viewer."""
         if self._initial_data_loaded:
-            self._send_message({
-                "type": "py2DmolClearAll"
-            })
-        
-        # Reset Python-side state
-        self._initial_data_loaded = False # Next call to add() will need to re-display
+            self._send_message(
+                {
+                    "type": "py2DmolClearAll",
+                }
+            )
+        self._initial_data_loaded = False
         self._coords = None
         self._plddts = None
         self._chains = None
         self._atom_types = None
         self._trajectory_counter = 0
 
-    def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False):
+    def add(
+        self,
+        coords: np.ndarray,
+        plddts: Optional[np.ndarray] = None,
+        chains: Optional[List[str]] = None,
+        atom_types: Optional[List[str]] = None,
+        *,
+        new_traj: bool = False,
+    ) -> None:
         """
-        Adds a new frame of data to the viewer.
+        Add a new frame of data to the viewer.
+
         If this is the first time 'add' is called, it will display the viewer.
-        
+
         Args:
-            coords (np.array): Nx3 array of coordinates.
-            plddts (np.array, optional): N-length array of pLDDT scores.
-            chains (list, optional): N-length list of chain identifiers.
-            atom_types (list, optional): N-length list of atom types ('P', 'D', 'R', 'L').
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
+            coords: Nx3 array of coordinates.
+            plddts: N-length array of pLDDT scores.
+            chains: N-length list of chain identifiers.
+            atom_types: N-length list of atom types ('P', 'D', 'R', 'L').
+            new_traj: If True, starts a new trajectory. Defaults to False.
         """
-        
-        # 1. Display the iframe if this is the very first call
         if not self._initial_data_loaded:
             self._display_viewer()
             self._initial_data_loaded = True
-            new_traj = True # First call always starts a new trajectory
+            new_traj = True
 
-        # 2. Handle new trajectory creation
         if new_traj:
-            # This is a new trajectory, reset the alignment reference
-            self._coords = None 
+            self._coords = None
             trajectory_name = f"{self._trajectory_counter}"
             self._trajectory_counter += 1
-            self._send_message({
-                "type": "py2DmolNewTrajectory",
-                "name": trajectory_name
-            })
-
-        # 3. Update Python-side state (aligns to self._coords)
-        # If new_traj was true, self._coords was None, so this just sets self._coords = coords
-        # If new_traj was false, this aligns coords to the previous frame in this trajectory
+            self._send_message(
+                {
+                    "type": "py2DmolNewTrajectory",
+                    "name": trajectory_name,
+                }
+            )
         self._update(coords, plddts, chains, atom_types)
+        self._send_message(
+            {
+                "type": "py2DmolUpdate",
+                "payload": self._get_data_dict(),
+            }
+        )
 
-        # 4. Send the frame data
-        self._send_message({
-            "type": "py2DmolUpdate",
-            "payload": self._get_data_dict() # _get_data_dict uses self._coords, which is now aligned
-        })
-
-    def add_pdb(self, filepath, chains=None, new_traj=False):
+    def _process_residue(
+        self, residue: gemmi.Residue, chain_name: str
+    ) -> Optional[Union[dict, List[dict]]]:
         """
-        Loads a structure from a PDB or CIF file and adds it to the viewer.
-        Multi-model files are added as a single trajectory.
-        
+        Process a single residue and extract its data.
+
         Args:
-            filepath (str): Path to the PDB or CIF file.
-            chains (list, optional): Specific chains to load. Defaults to all.
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
+            residue: The residue to process.
+            chain_name: The name of the chain the residue belongs to.
+
+        Returns:
+            A dictionary or list of dictionaries containing the residue's data,
+            or None if the residue should be skipped.
+        """
+        if residue.name == "HOH":
+            return None
+
+        residue_info = gemmi.find_tabulated_residue(residue.name)
+        if residue_info.is_amino_acid():
+            return self._process_protein_residue(residue, chain_name)
+        if residue_info.is_nucleic_acid():
+            return self._process_nucleic_residue(residue, chain_name)
+        return self._process_ligand_residue(residue, chain_name)
+
+    def _process_protein_residue(
+        self, residue: gemmi.Residue, chain_name: str
+    ) -> Optional[dict]:
+        """
+        Process a protein residue.
+
+        Args:
+            residue: The residue to process.
+            chain_name: The name of the chain the residue belongs to.
+
+        Returns:
+            A dictionary containing the residue's data, or None if the residue should be skipped.
+        """
+        if "CA" in residue:
+            atom = residue["CA"][0]
+            return {
+                "coord": atom.pos.tolist(),
+                "plddt": atom.b_iso,
+                "chain": chain_name,
+                "atom_type": "P",
+            }
+        return None
+
+    def _process_nucleic_residue(
+        self, residue: gemmi.Residue, chain_name: str
+    ) -> Optional[dict]:
+        """
+        Process a nucleic acid residue.
+
+        Args:
+            residue: The residue to process.
+            chain_name: The name of the chain the residue belongs to.
+
+        Returns:
+            A dictionary containing the residue's data, or None if the residue should be skipped.
+        """
+        c4_atom = None
+        if "C4'" in residue:
+            c4_atom = residue["C4'"][0]
+        elif "C4*" in residue:
+            c4_atom = residue["C4*"][0]
+
+        if c4_atom:
+            rna_bases = ["A", "C", "G", "U", "RA", "RC", "RG", "RU"]
+            dna_bases = ["DA", "DC", "DG", "DT", "T"]
+
+            atom_type = "R"
+            if residue.name in rna_bases or residue.name.startswith("R"):
+                atom_type = "R"
+            elif residue.name in dna_bases or residue.name.startswith("D"):
+                atom_type = "D"
+
+            return {
+                "coord": c4_atom.pos.tolist(),
+                "plddt": c4_atom.b_iso,
+                "chain": chain_name,
+                "atom_type": atom_type,
+            }
+        return None
+
+    def _process_ligand_residue(
+        self, residue: gemmi.Residue, chain_name: str
+    ) -> List[dict]:
+        """
+        Process a ligand residue.
+
+        Args:
+            residue: The residue to process.
+            chain_name: The name of the chain the residue belongs to.
+
+        Returns:
+            A list of dictionaries containing the residue's data.
+        """
+        return [
+            {
+                "coord": atom.pos.tolist(),
+                "plddt": atom.b_iso,
+                "chain": chain_name,
+                "atom_type": "L",
+            }
+            for atom in residue
+            if atom.element.name != "H"
+        ]
+
+    def add_pdb(
+        self, filepath: str, chains: Optional[List[str]] = None, *, new_traj: bool = False
+    ) -> None:
+        """
+        Load a structure from a PDB or CIF file and add it to the viewer.
+
+        Multi-model files are added as a single trajectory.
+
+        Args:
+            filepath: Path to the PDB or CIF file.
+            chains: Specific chains to load. Defaults to all.
+            new_traj: If True, starts a new trajectory. Defaults to False.
         """
         structure = gemmi.read_structure(filepath)
-        
         first_model_added = False
         for model in structure:
-            coords = []
-            plddts = []
-            atom_chains = []
-            atom_types = []
-
+            coords, plddts, atom_chains, atom_types = [], [], [], []
             for chain in model:
                 if chains is None or chain.name in chains:
                     for residue in chain:
-                        # Skip water
-                        if residue.name == 'HOH':
-                            continue
-
-                        # Check molecule type
-                        residue_info = gemmi.find_tabulated_residue(residue.name)
-                        is_protein = residue_info.is_amino_acid()
-                        is_nucleic = residue_info.is_nucleic_acid()
-
-                        if is_protein:
-                            # Protein: use CA atom
-                            if 'CA' in residue:
-                                atom = residue['CA'][0]
-                                coords.append(atom.pos.tolist())
-                                plddts.append(atom.b_iso)
-                                atom_chains.append(chain.name)
-                                atom_types.append('P')
-                                
-                        elif is_nucleic:
-                            # DNA/RNA: use C4' atom (sugar carbon)
-                            c4_atom = None
-                            
-                            # Try C4' first (standard naming)
-                            if "C4'" in residue:
-                                c4_atom = residue["C4'"][0]
-                            # Try C4* (alternative naming in some PDB files)
-                            elif "C4*" in residue:
-                                c4_atom = residue["C4*"][0]
-                            
-                            if c4_atom:
-                                coords.append(c4_atom.pos.tolist())
-                                plddts.append(c4_atom.b_iso)
-                                atom_chains.append(chain.name)
-                                
-                                # Distinguish RNA from DNA
-                                rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU']
-                                dna_bases = ['DA', 'DC', 'DG', 'DT', 'T']
-                                
-                                if residue.name in rna_bases or residue.name.startswith('R'):
-                                    atom_types.append('R')
-                                elif residue.name in dna_bases or residue.name.startswith('D'):
-                                    atom_types.append('D')
-                                else:
-                                    # Default to RNA if uncertain
-                                    atom_types.append('R')
-                                    
-                        else:
-                            # Ligand: use all heavy atoms
-                            for atom in residue:
-                                if atom.element.name != 'H':
-                                    coords.append(atom.pos.tolist())
-                                    plddts.append(atom.b_iso)
-                                    atom_chains.append(chain.name)
-                                    atom_types.append('L')
+                        residue_data = self._process_residue(residue, chain.name)
+                        if residue_data:
+                            if isinstance(residue_data, list):
+                                for atom_data in residue_data:
+                                    coords.append(atom_data["coord"])
+                                    plddts.append(atom_data["plddt"])
+                                    atom_chains.append(atom_data["chain"])
+                                    atom_types.append(atom_data["atom_type"])
+                            else:
+                                coords.append(residue_data["coord"])
+                                plddts.append(residue_data["plddt"])
+                                atom_chains.append(residue_data["chain"])
+                                atom_types.append(residue_data["atom_type"])
 
             if coords:
-                coords = np.array(coords)
-                plddts = np.array(plddts)
-                
-                # Only honor new_traj for the *first* model
+                coords_arr = np.array(coords)
+                plddts_arr = np.array(plddts)
                 current_model_new_traj = new_traj and not first_model_added
-                self.add(coords, plddts, atom_chains, atom_types, new_traj=current_model_new_traj)
+                self.add(
+                    coords_arr,
+                    plddts_arr,
+                    atom_chains,
+                    atom_types,
+                    new_traj=current_model_new_traj,
+                )
                 first_model_added = True
 
-    def from_pdb(self, filepath, chains=None, new_traj=True):
+    def from_pdb(
+        self, filepath: str, chains: Optional[List[str]] = None, *, new_traj: bool = True
+    ) -> None:
         """
-        Loads a structure from a PDB or CIF file and starts a new trajectory.
+        Load a structure from a PDB or CIF file and start a new trajectory.
+
         This is a convenience wrapper for add_pdb(..., new_traj=True).
-        
+
         Args:
-            filepath (str): Path to the PDB or CIF file.
-            chains (list, optional): Specific chains to load. Defaults to all.
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to True.
+            filepath: Path to the PDB or CIF file.
+            chains: Specific chains to load. Defaults to all.
+            new_traj: If True, starts a new trajectory. Defaults to True.
         """
         self.add_pdb(filepath, chains=chains, new_traj=new_traj)

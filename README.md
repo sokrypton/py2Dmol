@@ -1,5 +1,9 @@
 # py2Dmol
 
+[![][github-actions-shield]][github-actions-link]
+[![][coverage-shield]][coverage-link]
+[![][colab-shield]][colab-link]
+
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for use in Google Colab and Jupyter environments.
 
 <img width="404" height="349" alt="image" src="https://github.com/user-attachments/assets/874213b7-67d0-4fc9-93ae-ea50160d1f8c" />
@@ -8,7 +12,7 @@ A Python library for visualizing protein, DNA, and RNA structures in 2D, designe
 ## Installation
 
 ```bash
-pip install py2Dmol
+uv pip install py2Dmol
 ```
 
 ## Usage
@@ -259,3 +263,10 @@ viewer.add_pdb('simulation2.pdb', new_traj=True)
 - NumPy
 - gemmi (for PDB/CIF parsing)
 - IPython (for display in notebooks)
+
+[github-actions-shield]: https://github.com/sokrypton/py2Dmol/actions/workflows/ci.yml/badge.svg
+[github-actions-link]: https://github.com/sokrypton/py2Dmol/actions/workflows/ci.yml
+[coverage-shield]: https://codecov.io/gh/sokrypton/py2Dmol/branch/main/graph/badge.svg
+[coverage-link]: https://codecov.io/gh/sokrypton/py2Dmol
+[colab-shield]: https://colab.research.google.com/assets/colab-badge.svg
+[colab-link]: https://colab.research.google.com/github/sokrypton/py2Dmol/blob/main/example/example.ipynb
