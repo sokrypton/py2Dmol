@@ -44,12 +44,15 @@ ignore = [
 ]
 pylint.max-args = 15
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "basedpyright>=1.32.1",
+]
+tests = [
     "pytest>=7.0.1",
     "pytest-cov>=4.0.0",
 ]
+docs = []
 
 [tool.basedpyright]
-reportMissingImports = none
+reportMissingImports = "none"
