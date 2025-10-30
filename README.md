@@ -1,13 +1,12 @@
 # py2Dmol
 
-[![][github-actions-shield]][github-actions-link]
-[![][coverage-shield]][coverage-link]
-[![][colab-shield]][colab-link]
+[![Build status][github-actions-shield]][github-actions-link]
+[![Coverage status][coverage-shield]][coverage-link]
+[![Open in Colab][colab-shield]][colab-link]
 
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for use in Google Colab and Jupyter environments.
 
-<img width="404" height="349" alt="image" src="https://github.com/user-attachments/assets/874213b7-67d0-4fc9-93ae-ea50160d1f8c" />
-
+![image](https://github.com/user-attachments/assets/874213b7-67d0-4fc9-93ae-ea50160d1f8c)
 
 ## Installation
 
@@ -22,6 +21,7 @@ Here are a few examples of how to use `py2Dmol`.
 ### Loading a Structure from a PDB or CIF File
 
 You can load a structure directly from a PDB or CIF file using the `from_pdb` method. This will automatically extract:
+
 - **C-alpha atoms** for proteins
 - **C4' atoms** for DNA and RNA
 - **All heavy atoms** for ligands
@@ -39,7 +39,6 @@ You can also specify which chains to display:
 ```python
 viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
 ```
-
 
 ### Manually Adding Data
 
@@ -264,9 +263,9 @@ viewer.add_pdb('simulation2.pdb', new_traj=True)
 - gemmi (for PDB/CIF parsing)
 - IPython (for display in notebooks)
 
-[github-actions-shield]: https://github.com/sokrypton/py2Dmol/actions/workflows/ci.yml/badge.svg
-[github-actions-link]: https://github.com/sokrypton/py2Dmol/actions/workflows/ci.yml
-[coverage-shield]: https://codecov.io/gh/sokrypton/py2Dmol/branch/main/graph/badge.svg
-[coverage-link]: https://codecov.io/gh/sokrypton/py2Dmol
+[github-actions-shield]: https://github.com/maraxen/py2Dmol/actions/workflows/ci.yml/badge.svg
+[github-actions-link]: https://github.com/maraxen/py2Dmol/actions/workflows/ci.yml
+[coverage-shield]: https://codecov.io/gh/maraxen/py2Dmol/branch/main/graph/badge.svg
+[coverage-link]: https://codecov.io/gh/maraxen/py2Dmol
 [colab-shield]: https://colab.research.google.com/assets/colab-badge.svg
-[colab-link]: https://colab.research.google.com/github/sokrypton/py2Dmol/blob/main/example/example.ipynb
+[colab-link]: https://colab.research.google.com/github/maraxen/py2Dmol/blob/main/example/example.ipynb
