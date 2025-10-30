@@ -1,14 +1,26 @@
 # py2Dmol
 
+[![Build status][github-actions-shield]][github-actions-link]
+[![Coverage status][coverage-shield]][coverage-link]
+[![Open in Colab][colab-shield]][colab-link]
+
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for use in Google Colab and Jupyter environments.
 
-<img width="322" height="349" alt="image" src="https://github.com/user-attachments/assets/5f043fa8-99d6-4988-aaa1-68d1bc48660b" />
-<img width="462" height="349" alt="image" src="https://github.com/user-attachments/assets/3b52d584-1d7e-45cc-a620-77377f0a0c01" />
-
+```html
+<img src="https://github.com/user-attachments/assets/5f043fa8-99d6-4988-aaa1-68d1bc48660b" width="300"/>
+<img src="https://github.com/user-attachments/assets/3b52d584-1d7e-45cc-a620-77377f0a0c01" width="300"/>
+```
 
 ## Installation
+
 ```bash
-pip install py2Dmol
+uv pip install py2Dmol
+```
+
+or for cutting edge releases
+
+```bash
+uv pip install git+https://github.com/sokrypton/py2Dmol
 ```
 
 ## Usage
@@ -18,14 +30,15 @@ Here are a few examples of how to use py2Dmol.
 ### Initializing the Viewer
 
 You can initialize the viewer with several options:
+
 ```python
-import py2Dmol
+import py2dmol
 
 # Default viewer
-viewer = py2Dmol.view()
+viewer = py2dmol.view()
 
 # Customized viewer
-viewer = py2Dmol.view(
+viewer = py2dmol.view(
     size=(600, 600),   # Set canvas size (width, height)
     color='chain',     # Set initial color mode
     shadow=True,       # Enable shadows by default
@@ -39,18 +52,20 @@ viewer = py2Dmol.view(
 
 You can load a structure directly from a PDB or CIF file using the `from_pdb` method. This will automatically extract:
 
-- C-alpha atoms for proteins
-- C4' atoms for DNA and RNA
-- All heavy atoms for ligands
+- **C-alpha atoms** for proteins
+- **C4' atoms** for DNA and RNA
+- **All heavy atoms** for ligands
 
 If the file contains multiple models, they will be loaded as an animation.
+
 ```python
-import py2Dmol
-viewer = py2Dmol.view()
+import py2dmol
+viewer = py2dmol.view()
 viewer.add_pdb('my_protein.pdb')
 ```
 
 You can also specify which chains to display:
+
 ```python
 viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
 ```
@@ -58,13 +73,14 @@ viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
 ### Manually Adding Data
 
 You can also add data to the viewer using the `add` method. This is useful for visualizing custom trajectories or molecular data.
+
 ```python
 import numpy as np
 
 def generate_alpha_helix_on_superhelix(n_residues=50, super_radius=0, super_turns=0):
     """
     Generate alpha helix wrapped around a cylinder (superhelix).
-    
+
     Parameters:
     - n_residues: number of residues
     - super_radius: radius of the superhelix (0 = straight helix)
@@ -74,29 +90,29 @@ def generate_alpha_helix_on_superhelix(n_residues=50, super_radius=0, super_turn
     helix_radius = 2.3  # Å from helix axis to CA
     rise_per_residue = 1.5  # Å along helix axis
     rotation_per_residue = 100 * np.pi / 180  # 100 degrees
-    
+
     helix_length = (n_residues - 1) * rise_per_residue
-    
+
     for i in range(n_residues):
         # Alpha helix coordinates
         helix_angle = i * rotation_per_residue
         local_x = helix_radius * np.cos(helix_angle)
         local_y = helix_radius * np.sin(helix_angle)
         z = i * rise_per_residue
-        
+
         if super_radius == 0:
             # Straight helix
             x, y = local_x, local_y
         else:
             # Wrap around superhelix
             super_angle = (z / helix_length) * 2 * np.pi * super_turns
-            
+
             # Transform: local helix coordinates → superhelix
             x = (super_radius + local_x) * np.cos(super_angle) - local_y * np.sin(super_angle)
             y = (super_radius + local_x) * np.sin(super_angle) + local_y * np.cos(super_angle)
-        
+
         coords.append([x, y, z])
-    
+
     return np.array(coords)
 
 # Create initial straight helix
@@ -106,7 +122,7 @@ chains = ['A'] * 100
 atom_types = ['P'] * 100
 
 # Display
-viewer = py2Dmol.view()
+viewer = py2dmol.view()
 
 # Animate: gradually add superhelical twist
 # Wrapping around a larger cylinder with increasing turns
@@ -122,6 +138,7 @@ for frame in range(1, 21):
 ### Mixed Structure Example
 
 You can create custom visualizations with multiple molecule types:
+
 ```python
 import numpy as np
 
@@ -131,7 +148,7 @@ def generate_alpha_helix(n_residues, offset=np.array([0, 0, 0])):
     radius = 2.3
     rise_per_residue = 1.5
     rotation_per_residue = 100 * np.pi / 180
-    
+
     for i in range(n_residues):
         angle = i * rotation_per_residue
         x = radius * np.cos(angle) + offset[0]
@@ -146,7 +163,7 @@ def generate_dna_strand(n_bases, offset=np.array([0, 0, 0])):
     radius = 10.0  # Distance from helix axis to C4'
     rise_per_base = 3.4  # B-DNA rise
     rotation_per_base = 36 * np.pi / 180  # 10 bases per turn
-    
+
     for i in range(n_bases):
         angle = i * rotation_per_base
         x = radius * np.cos(angle) + offset[0]
@@ -191,10 +208,10 @@ all_plddts = np.concatenate([protein_plddts, ligand_plddts, ligand_plddts])
 all_chains = protein_chains + dna_chains + ligand_chains
 all_types = protein_types + dna_types + ligand_types
 
-viewer = py2Dmol.view(
-    color='chain', 
-    size=(600, 600), 
-    width=2.5, 
+viewer = py2dmol.view(
+    color='chain',
+    size=(600, 600),
+    width=2.5,
     outline=False
 )
 viewer.add(all_coords, all_plddts, all_chains, all_types)
@@ -231,13 +248,14 @@ The viewer supports multiple coloring schemes:
 - **rainbow**: Colors atoms sequentially from N-terminus to C-terminus (or 5' to 3' for nucleic acids)
 - **plddt**: Colors based on B-factor/pLDDT scores (useful for AlphaFold predictions)
 - **chain**: Each chain receives a distinct color
+
 ```python
 # Use pLDDT coloring
-viewer = py2Dmol.view(color='plddt')
+viewer = py2dmol.view(color='plddt')
 viewer.add_pdb('alphafold_prediction.pdb')
 
 # Use chain coloring
-viewer = py2Dmol.view(color='chain')
+viewer = py2dmol.view(color='chain')
 viewer.add_pdb('multi_chain_complex.pdb')
 ```
 
@@ -263,9 +281,10 @@ Both formats support multi-model files for animation playback.
 ## Examples
 
 ### Comparing Multiple Trajectories
+
 ```python
 # Load first trajectory
-viewer = py2Dmol.view()
+viewer = py2dmol.view()
 viewer.add_pdb('simulation1.pdb')
 
 # Start a new trajectory
@@ -276,7 +295,14 @@ viewer.add_pdb('simulation2.pdb', new_traj=True)
 
 ## Requirements
 
-- Python 3.6+
+- Python 3.9+
 - NumPy
 - gemmi (for PDB/CIF parsing)
 - IPython (for display in notebooks)
+
+[github-actions-shield]: https://github.com/maraxen/py2Dmol/actions/workflows/ci.yml/badge.svg
+[github-actions-link]: https://github.com/maraxen/py2Dmol/actions/workflows/ci.yml
+[coverage-shield]: https://codecov.io/gh/maraxen/py2Dmol/branch/main/graph/badge.svg
+[coverage-link]: https://codecov.io/gh/maraxen/py2Dmol
+[colab-shield]: https://colab.research.google.com/assets/colab-badge.svg
+[colab-link]: https://colab.research.google.com/github/maraxen/py2Dmol/blob/main/example/example.ipynb
