@@ -6,7 +6,8 @@
 
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for use in Google Colab and Jupyter environments.
 
-![image](https://github.com/user-attachments/assets/874213b7-67d0-4fc9-93ae-ea50160d1f8c)
+![image](https://github.com/user-attachments/assets/5f043fa8-99d6-4988-aaa1-68d1bc48660b)
+![image](https://github.com/user-attachments/assets/3b52d584-1d7e-45cc-a620-77377f0a0c01)
 
 ## Installation
 
@@ -16,7 +17,28 @@ uv pip install py2Dmol
 
 ## Usage
 
-Here are a few examples of how to use `py2Dmol`.
+Here are a few examples of how to use py2Dmol.
+
+### Initializing the Viewer
+
+You can initialize the viewer with several options:
+
+```python
+import py2Dmol
+
+# Default viewer
+viewer = py2Dmol.view()
+
+# Customized viewer
+viewer = py2Dmol.view(
+    size=(600, 600),   # Set canvas size (width, height)
+    color='chain',     # Set initial color mode
+    shadow=True,       # Enable shadows by default
+    outline=True,      # Enable outlines by default
+    width=3.0,         # Set initial line width
+    rotate=False       # Disable auto-rotation by default
+)
+```
 
 ### Loading a Structure from a PDB or CIF File
 
@@ -174,44 +196,50 @@ ligand_types = ['L'] * 6
 
 # Combine all components
 all_coords = np.vstack([protein_coords, dna_coords, ligand_coords])
-all_plddts = np.concatenate([protein_plddts, dna_plddts, ligand_plddts])
+all_plddts = np.concatenate([protein_plddts, ligand_plddts, ligand_plddts])
 all_chains = protein_chains + dna_chains + ligand_chains
 all_types = protein_types + dna_types + ligand_types
 
-viewer = py2Dmol.view(color='chain', size=(600, 600))
+viewer = py2Dmol.view(
+    color='chain', 
+    size=(600, 600), 
+    width=2.5, 
+    outline=False
+)
 viewer.add(all_coords, all_plddts, all_chains, all_types)
 ```
 
-### Atom Types and Representative Atoms
+## Atom Types and Representative Atoms
 
 | Molecule Type | Atom Type Code | Representative Atom | Purpose |
-|---------------|----------------|-------------------|---------|
-| Protein | `P` | CA (C-alpha) | Backbone trace |
-| DNA | `D` | C4' (sugar carbon) | Backbone trace |
-| RNA | `R` | C4' (sugar carbon) | Backbone trace |
-| Ligand | `L` | All heavy atoms | Full structure |
+|---------------|----------------|---------------------|---------|
+| Protein | P | CA (C-alpha) | Backbone trace |
+| DNA | D | C4' (sugar carbon) | Backbone trace |
+| RNA | R | C4' (sugar carbon) | Backbone trace |
+| Ligand | L | All heavy atoms | Full structure |
 
-### Distance Thresholds
+## Distance Thresholds
 
 The viewer uses different distance thresholds for creating bonds:
 
-- **Protein (CA-CA):** 5.0 Å
-- **DNA/RNA (C4'-C4'):** 7.5 Å  
-- **Ligand bonds:** 2.0 Å
+- Protein (CA-CA): 5.0 Å
+- DNA/RNA (C4'-C4'): 7.5 Å
+- Ligand bonds: 2.0 Å
 
 These thresholds are optimized for their respective molecular structures and ensure proper connectivity visualization.
 
-### Chains
+## Chains
 
 Chains are automatically extracted from the PDB or CIF file. When loading a structure, you can choose to display all chains or specify a subset of chains to visualize.
 
-### Color Modes
+## Color Modes
 
 The viewer supports multiple coloring schemes:
 
-- **`rainbow`** (default): Colors atoms sequentially from N-terminus to C-terminus (or 5' to 3' for nucleic acids)
-- **`plddt`**: Colors based on B-factor/pLDDT scores (useful for AlphaFold predictions)
-- **`chain`**: Each chain receives a distinct color
+- **auto** (default): Automatically chooses 'chain' if multiple chains are present, otherwise 'rainbow'.
+- **rainbow**: Colors atoms sequentially from N-terminus to C-terminus (or 5' to 3' for nucleic acids)
+- **plddt**: Colors based on B-factor/pLDDT scores (useful for AlphaFold predictions)
+- **chain**: Each chain receives a distinct color
 
 ```python
 # Use pLDDT coloring
@@ -225,19 +253,20 @@ viewer.add_pdb('multi_chain_complex.pdb')
 
 ## Features
 
-- **Interactive 3D-style visualization** with rotation and zoom
-- **Animation support** for trajectories and multiple models
-- **Automatic structure detection** for proteins, DNA, and RNA
-- **Multiple color schemes** (rainbow, pLDDT, chain)
-- **Ligand visualization** with automatic bond detection
-- **Shadow effects** for depth perception
-- **Real-time rotation** and interactive controls
-- **Trajectory management** for comparing multiple simulations
+- Interactive 3D-style visualization with rotation and zoom
+- Animation support for trajectories and multiple models
+- Automatic structure detection for proteins, DNA, and RNA
+- Multiple color schemes (auto, rainbow, pLDDT, chain)
+- Ligand visualization with automatic bond detection
+- Toggleable effects for depth perception (shadow, outline)
+- Adjustable line width
+- Real-time auto-rotation (toggleable)
+- Trajectory management for comparing multiple simulations
 
 ## Supported File Formats
 
-- PDB (`.pdb`)
-- mmCIF (`.cif`)
+- PDB (.pdb)
+- mmCIF (.cif)
 
 Both formats support multi-model files for animation playback.
 

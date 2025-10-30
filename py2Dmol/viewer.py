@@ -6,6 +6,7 @@ import importlib.resources
 import json
 import logging
 import uuid
+from typing import Literal
 
 import gemmi
 import numpy as np
@@ -15,7 +16,7 @@ try:
   from google.colab import output as colab_output  # pyright: ignore[reportMissingImports]
 
   IS_COLAB = True
-except ImportError:
+except Exception:  # pragma: no cover - optional runtime  # noqa: BLE001
   colab_output = None
   IS_COLAB = False
 
@@ -68,23 +69,47 @@ def align_a_to_b(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 class View:
   """A class for visualizing protein structures in 2D."""
 
-  def __init__(self, size: tuple[int, int] = (500, 500), color: str = "rainbow") -> None:
-    """Initialize the viewer.
+  def __init__(
+    self,
+    size: tuple[int, int] = (500, 500),
+    color: Literal["auto", "rainbow", "chain"] = "auto",
+    *,
+    shadow: bool = True,
+    outline: bool = True,
+    width: float = 3.0,
+    rotate: bool = False,
+  ) -> None:
+    """Initialize a protein structure viewer.
 
     Args:
-        size: The size of the viewer.
-        color: The color scheme to use.
+        size: Width and height of the viewer in pixels. Defaults to (500, 500).
+        color: Color mode - "auto" (chooses based on chains), "rainbow", or "chain".
+        shadow: Whether to enable shadow effect. Defaults to True.
+        outline: Whether to enable outline effect. Defaults to True.
+        width: Line width for rendering. Defaults to 3.0.
+        rotate: Whether to enable rotation. Defaults to False.
 
     """
     self.size = size
-    self.color = color
-    self._initial_data_loaded = False
+    self._initial_color_mode: Literal["auto", "rainbow", "chain"] = color
+    self._resolved_color_mode: Literal["auto", "rainbow", "chain"] = color
+
+    # Store default states
+    self._initial_shadow_enabled: bool = shadow
+    self._initial_outline_enabled: bool = outline
+    self._initial_width: float = width
+    self._initial_rotate: bool = rotate
+
+    self._initial_data_loaded: bool = False
     self._coords: np.ndarray | None = None
     self._plddts: np.ndarray | None = None
     self._chains: list[str] | None = None
     self._atom_types: list[str] | None = None
-    self._trajectory_counter = 0
-    self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
+    self._trajectory_counter: int = 0
+    self._viewer_id: str = str(uuid.uuid4())  # Unique ID for this viewer instance
+
+    # Track current trajectory name on Python side
+    self._current_trajectory_name: str | None = None
 
   def _get_data_dict(self) -> dict:
     """Serialize the current coordinate state to a dict.
@@ -225,10 +250,15 @@ class View:
       logger.exception("Could not find the HTML template file.")
       return
 
+    # Use the resolved color mode for the config sent to HTML
     viewer_config = {
       "size": self.size,
-      "color": self.color,
+      "color": self._resolved_color_mode,  # Send 'rainbow' or 'chain'
       "viewer_id": self._viewer_id,
+      "default_shadow": self._initial_shadow_enabled,
+      "default_outline": self._initial_outline_enabled,
+      "default_width": self._initial_width,
+      "default_rotate": self._initial_rotate,
     }
     config_script = f"""
         <script id="viewer-config">
@@ -291,17 +321,19 @@ class View:
                                 iframe.contentWindow.postMessage(msg, '*');
                             }}
                         }}
-                    }}
-                }});
-                window.py2dmol_message_listener_added = true;
-            }}
-        </script>
-        """
+                    }});
+                    // Mark listener as added so we don't add it multiple times
+                    window.py2dmol_message_listener_added = true;
+                }}
+            </script>
+            """
+
+    # Modified: Width remains at 220px
     iframe_html = f"""
         <iframe
             data-viewer-id="{self._viewer_id}"
             srcdoc="{final_html_escaped}"
-            style="width: {self.size[0] + 200}px; height: {self.size[1] + 80}px; border: none;"
+            style="width: {self.size[0] + 220}px; height: {self.size[1] + 80}px; border: none;"
             sandbox="allow-scripts allow-same-origin"
         ></iframe>
         {handshake_script}
@@ -327,12 +359,42 @@ class View:
           "type": "py2DmolClearAll",
         },
       )
-    self._initial_data_loaded = False
+
+    # Reset Python-side state
+    self._initial_data_loaded = False  # Next call to add() will need to re-display
     self._coords = None
     self._plddts = None
     self._chains = None
     self._atom_types = None
     self._trajectory_counter = 0
+    self._current_trajectory_name = None
+
+  def new_traj(self, trajectory_name: str | None = None) -> None:
+    """Start a new trajectory.
+
+    Args:
+        trajectory_name: Name for the new trajectory. If None, generates a default name.
+
+    """
+    # This is a new trajectory, reset the alignment reference
+    self._coords = None
+    self._plddts = None
+    self._chains = None
+    self._atom_types = None
+
+    if trajectory_name is None:
+      trajectory_name = f"{self._trajectory_counter}"
+    self._trajectory_counter += 1
+
+    # Set Python-side trajectory name
+    self._current_trajectory_name = trajectory_name
+
+    self._send_message(
+      {
+        "type": "py2DmolNewTrajectory",
+        "name": trajectory_name,
+      },
+    )
 
   def add(
     self,
@@ -342,6 +404,7 @@ class View:
     atom_types: list[str] | None = None,
     *,
     new_traj: bool = False,
+    trajectory_name: str | None = None,
   ) -> None:
     """Add a new frame of data to the viewer.
 
@@ -353,28 +416,46 @@ class View:
         chains: N-length list of chain identifiers.
         atom_types: N-length list of atom types ('P', 'D', 'R', 'L').
         new_traj: If True, starts a new trajectory. Defaults to False.
+        trajectory_name: Name for the new trajectory. Only used if new_traj=True.
 
     """
+    # Auto-color logic
+    # If this is the first data being added AND color is 'auto', decide now.
+    if not self._initial_data_loaded and self._initial_color_mode == "auto":
+      if chains is not None:
+        unique_chains = {c for c in chains if c and c.strip()}
+        if len(unique_chains) > 1:
+          self._resolved_color_mode = "chain"
+        else:
+          self._resolved_color_mode = "rainbow"
+      else:
+        # If no chains provided for the first frame, default to rainbow
+        self._resolved_color_mode = "rainbow"
+    elif not self._initial_data_loaded:
+      # If color was specified (not auto), use it directly
+      self._resolved_color_mode = self._initial_color_mode
+
+    # 1. Display the iframe if this is the very first call
+    # This now uses self._resolved_color_mode which is no longer "auto"
     if not self._initial_data_loaded:
       self._display_viewer()
       self._initial_data_loaded = True
-      new_traj = True
+      new_traj = True  # First call always starts a new trajectory
 
+    # 2. Handle new trajectory creation
+    # This will now also set self._current_trajectory_name
     if new_traj:
-      self._coords = None
-      trajectory_name = f"{self._trajectory_counter}"
-      self._trajectory_counter += 1
-      self._send_message(
-        {
-          "type": "py2DmolNewTrajectory",
-          "name": trajectory_name,
-        },
-      )
+      self.new_traj(trajectory_name)
+
+    # 3. Update internal state with new coordinates (aligned)
     self._update(coords, plddts, chains, atom_types)
+
+    # 4. Send the frame data
     self._send_message(
       {
         "type": "py2DmolUpdate",
-        "payload": self._get_data_dict(),
+        "trajectoryName": self._current_trajectory_name,
+        "payload": self._get_data_dict(),  # _get_data_dict uses self._coords, which is now aligned
       },
     )
 
@@ -500,6 +581,7 @@ class View:
     chains: list[str] | None = None,
     *,
     new_traj: bool = False,
+    trajectory_name: str | None = None,
   ) -> None:
     """Load a structure from a PDB or CIF file and add it to the viewer.
 
@@ -509,15 +591,29 @@ class View:
         filepath: Path to the PDB or CIF file.
         chains: Specific chains to load. Defaults to all.
         new_traj: If True, starts a new trajectory. Defaults to False.
+        trajectory_name: Name for the new trajectory. Only used if new_traj=True.
 
     """
     structure = gemmi.read_structure(filepath)
+
     first_model_added = False
     for model in structure:
-      coords, plddts, atom_chains, atom_types = [], [], [], []
-      for chain in model:
+      # Default behavior: process the model from the file directly
+      model_to_process = model
+
+      coords: list = []
+      plddts: list = []
+      atom_chains: list = []
+      atom_types: list = []
+
+      # Iterate over the chains in the processed model
+      for chain in model_to_process:
         if chains is None or chain.name in chains:
           for residue in chain:
+            # Skip water
+            if residue.name == "HOH":
+              continue
+
             residue_data = self._process_residue(residue, chain.name)
             if residue_data:
               if isinstance(residue_data, list):
@@ -535,13 +631,19 @@ class View:
       if coords:
         coords_arr = np.array(coords)
         plddts_arr = np.array(plddts)
+
+        # Only honor new_traj for the *first* model
         current_model_new_traj = new_traj and not first_model_added
+
+        # Call add() - this will handle auto-color on the first call
+        # and pass the trajectory name
         self.add(
           coords_arr,
           plddts_arr,
           atom_chains,
           atom_types,
           new_traj=current_model_new_traj,
+          trajectory_name=trajectory_name,
         )
         first_model_added = True
 

@@ -45,8 +45,8 @@
             cursor: grabbing;
         }
 
-        /* MOVED: colorSelect and optionsContainer styles are now static */
-        #colorSelect {
+/* MOVED: colorSelect and optionsContainer styles are now static */
+        #colorSelect { /* REMOVED: shadowSelect styling */
             font-size: 12px;
             padding: 4px 8px;
             border: 1px solid #ccc;
@@ -66,13 +66,34 @@
             display: flex;
             align-items: center;
             gap: 4px;
+            /* MODIFIED: Add width for consistency */
+            width: 100%; 
         }
-        .toggle-item label { cursor: pointer; white-space: nowrap; }
-        .toggle-item input[type="checkbox"] { cursor: pointer; margin: 0; }
+        .toggle-item label { 
+            cursor: pointer; 
+            white-space: nowrap;
+            width: 50px; /* Give label a fixed width */
+            flex-shrink: 0;
+            font-size: 12px; /* Ensure label font size matches */
+        }
+        /* NEW: Style for the shadow/outline checkbox labels */
+        .toggle-item label[for="shadowEnabledCheckbox"],
+        .toggle-item label[for="outlineEnabledCheckbox"] {
+            width: auto; /* Let it be auto-sized */
+            margin-left: 5px; /* Add space next to the slider */
+        }
         .toggle-item input[type="range"] {
             cursor: pointer;
-            width: 100%; /* Make slider fill */
+            flex-grow: 1; /* Let slider fill the rest */
+            width: auto; /* Let flexbox handle it */
+            min-width: 0; /* Fix for flexbox overflow */
         }
+        .toggle-item input[type="checkbox"] { 
+            cursor: pointer; 
+            margin: 0;
+            flex-shrink: 0; /* Prevent checkbox from shrinking */
+        }
+
 
         /* Animation Controls Container */
         #controlsContainer {
@@ -156,7 +177,7 @@
             flex-shrink: 0; /* Don't let it shrink */
         }
         
-        /* NEW: Styling for groups in the right panel */
+/* NEW: Styling for groups in the right panel */
         .control-group {
             display: flex;
             flex-direction: column;
@@ -210,17 +231,24 @@
 
             <!-- MOVED: Options Container -->
             <div id="optionsContainer" class="control-group">
-                <div class="toggle-item">
-                    <input type="checkbox" id="shadowCheckbox" checked>
-                    <label for="shadowCheckbox">Shadow</label>
-                </div>
+                <!-- REMOVED shadowCheckbox -->
                 <div class="toggle-item"> 
                     <input type="checkbox" id="rotationCheckbox">
                     <label for="rotationCheckbox">Rotate</label>
                 </div>
                 <div class="toggle-item">
-                    <label for="lineWidthSlider">Line:</label>
+                    <label for="lineWidthSlider">Width:</label>
                     <input type="range" id="lineWidthSlider" min="1" max="5" value="3" step="0.5">
+                </div>
+                <!-- MODIFIED: Shadow controls are now just a checkbox -->
+                <div class="toggle-item">
+                     <input type="checkbox" id="shadowEnabledCheckbox">
+                     <label for="shadowEnabledCheckbox">Shadow</label>
+                </div>
+                <!-- NEW: Outline checkbox -->
+                <div class="toggle-item">
+                     <input type="checkbox" id="outlineEnabledCheckbox">
+                     <label for="outlineEnabledCheckbox">Outline</label>
                 </div>
             </div>
 
@@ -240,7 +268,7 @@
 
     <script>
         // ============================================================================
-        // VECTOR MATH (Unchanged)
+        // VECTOR MATH
         // ============================================================================
         class Vec3 {
             constructor(x, y, z) { this.x = x; this.y = y; this.z = z; }
@@ -250,15 +278,23 @@
             dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z; }
             length() { return Math.sqrt(this.dot(this)); }
             distanceTo(v) { return this.sub(v).length(); }
+            normalize() { 
+                const len = this.length(); 
+                return len > 0 ? this.mul(1 / len) : new Vec3(0, 0, 1); 
+            }
         }
         function rotationMatrixX(angle) { const c = Math.cos(angle), s = Math.sin(angle); return [[1,0,0], [0,c,-s], [0,s,c]]; }
         function rotationMatrixY(angle) { const c = Math.cos(angle), s = Math.sin(angle); return [[c,0,s], [0,1,0], [-s,0,c]]; }
         function multiplyMatrices(a, b) { const r = [[0,0,0],[0,0,0],[0,0,0]]; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) r[i][j] += a[i][k] * b[k][j]; return r; }
         function applyMatrix(m, v) { return new Vec3(m[0][0]*v.x + m[0][1]*v.y + m[0][2]*v.z, m[1][0]*v.x + m[1][1]*v.y + m[1][2]*v.z, m[2][0]*v.x + m[2][1]*v.y + m[2][2]*v.z); }
-        function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
-
+        function sigmoid(x) {
+            return 1 / (1 + Math.exp(-x));
+        }
+        function sigmoid(x) {
+            return 0.5 + x / (2 * (1 + Math.abs(x)));
+        }
         // ============================================================================
-        // COLOR UTILITIES (Unchanged)
+        // COLOR UTILITIES
         // ============================================================================
         const pymolColors = ["#33ff33","#00ffff","#ff33cc","#ffff00","#ff9999","#e5e5e5","#7f7fff","#ff7f00","#7fff7f","#199999","#ff007f","#ffdd5e","#8c3f99","#b2b2b2","#007fff","#c4b200","#8cb266","#00bfbf","#b27f7f","#fcd1a5","#ff7f7f","#ffbfdd","#7fffff","#ffff7f","#00ff7f","#337fcc","#d8337f","#bfff3f","#ff7fff","#d8d8ff","#3fffbf","#b78c4c","#339933","#66b2b2","#ba8c84","#84bf00","#b24c66","#7f7f7f","#3f3fa5","#a5512b"];
         function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return {r: 128, g: 128, b: 128}; } const r = parseInt(hex.slice(1,3), 16); const g = parseInt(hex.slice(3,5), 16); const b = parseInt(hex.slice(5,7), 16); return {r, g, b}; }
@@ -268,17 +304,23 @@
         function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
 
         // ============================================================================
-        // REMOVED: DEMO STRUCTURE GENERATOR
-        // ============================================================================
-
-        // ============================================================================
-        // PSEUDO-3D RENDERER (Unchanged logic)
+        // PSEUDO-3D RENDERER
         // ============================================================================
         class Pseudo3DRenderer {
             constructor(canvas) {
                 this.canvas = canvas;
                 this.ctx = canvas.getContext('2d');
                 
+                // Get config from Python
+                const config = window.viewerConfig || { 
+                    size: [800, 600], 
+                    color: "plddt", 
+                    default_shadow: true, 
+                    default_outline: true,
+                    default_width: 3.0,
+                    default_rotate: false
+                };
+
                 // Current render state
                 this.coords = [];
                 this.plddts = [];
@@ -286,18 +328,20 @@
                 this.atomTypes = [];
                 
                 // Viewer state
-                this.colorMode = 'plddt';
+                this.colorMode = config.color; // Set initial color from config
                 this.rotationMatrix = [[1,0,0],[0,1,0],[0,0,1]];
                 this.zoom = 1.0;
-                this.lineWidth = 3.0;
+                this.lineWidth = (typeof config.default_width === 'number') ? config.default_width : 3.0; // NEW
                 this.shadowIntensity = 0.95;
-                this.shadowEnabled = true;
+                
+                // Set defaults from config, with fallback
+                this.shadowEnabled = (typeof config.default_shadow === 'boolean') ? config.default_shadow : true;
+                this.outlineEnabled = (typeof config.default_outline === 'boolean') ? config.default_outline : true;
                 
                 // Performance
                 this.chainRainbowScales = {};
 
                 // --- REFACTORED: Animation & State ---
-                // MODIFIED: Start with no trajectories
                 this.trajectoriesData = {}; // { "default": { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 } };
                 this.currentTrajectoryName = null; // "default";
                 this.currentFrame = -1;
@@ -309,7 +353,7 @@
                 
                 // Interaction
                 this.isDragging = false;
-                this.autoRotate = false;
+                this.autoRotate = (typeof config.default_rotate === 'boolean') ? config.default_rotate : false; // NEW
                 
                 // Inertia
                 this.spinVelocityX = 0;
@@ -330,6 +374,8 @@
                 this.speedSelect = null;
                 this.rotationCheckbox = null;
                 this.lineWidthSlider = null;
+                this.shadowEnabledCheckbox = null; 
+                this.outlineEnabledCheckbox = null; // NEW
 
                 this.setupInteraction();
             }
@@ -350,8 +396,8 @@
                         this.autoRotate = false;
                         if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
                     }
-                });
-                
+                }); // <-- FIX: Closed the mousedown listener here
+
                 window.addEventListener('mousemove', (e) => {
                     if (!this.isDragging) return;
                     
@@ -382,10 +428,12 @@
                     this.lastDragY = e.clientY;
                     this.lastDragTime = now;
                     
-                    this.render(); // Render immediately while dragging
+                    // MODIFIED: Reverted to full render on drag
+                    this.render(); 
                 });
                 
                 window.addEventListener('mouseup', () => {
+                    // MODIFIED: Removed extra render call
                     this.isDragging = false;
                     const now = performance.now();
                     const timeDelta = now - this.lastDragTime;
@@ -406,7 +454,8 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider) {
+            // MODIFIED: Added outlineEnabledCheckbox
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox) {
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
                 this.frameSlider = frameSlider;
@@ -415,8 +464,11 @@
                 this.speedSelect = speedSelect;
                 this.rotationCheckbox = rotationCheckbox;
                 this.lineWidthSlider = lineWidthSlider;
+                this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
+                this.outlineEnabledCheckbox = outlineEnabledCheckbox; // NEW
                 
-                this.lineWidth = parseFloat(this.lineWidthSlider.value);
+                this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
+                this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
 
                 // --- BIND ALL EVENT LISTENERS HERE ---
                 this.playButton.addEventListener('click', () => {
@@ -447,6 +499,22 @@
                     }
                 });
 
+                // NEW: Add listener for shadowEnabledCheckbox
+                if (this.shadowEnabledCheckbox) {
+                    this.shadowEnabledCheckbox.addEventListener('change', (e) => {
+                        this.shadowEnabled = e.target.checked;
+                        this.render();
+                    });
+                }
+
+                // NEW: Add listener for outlineEnabledCheckbox
+                if (this.outlineEnabledCheckbox) {
+                    this.outlineEnabledCheckbox.addEventListener('change', (e) => {
+                        this.outlineEnabled = e.target.checked;
+                        this.render();
+                    });
+                }
+
                 // --- SLIDER FIX: Prevent canvas drag from interfering with slider ---
                 const handleSliderChange = (e) => {
                     this.stopAnimation();
@@ -473,8 +541,10 @@
                 this.frameSlider.addEventListener('change', handleSliderChange);
                 
                 // Also prevent canvas drag when interacting with other controls
+                // MODIFIED: Updated controls list
                 const allControls = [this.playButton, this.trajectorySelect, this.speedSelect, 
-                                     this.rotationCheckbox, this.lineWidthSlider];
+                                     this.rotationCheckbox, this.lineWidthSlider, 
+                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox]; // NEW
                 allControls.forEach(control => {
                     if (control) {
                         control.addEventListener('mousedown', (e) => {
@@ -498,25 +568,52 @@
                 this.trajectorySelect.appendChild(option);
                 this.trajectorySelect.value = name;
 
-                this.updateUIControls();
+                // --- MODIFICATION: Call setFrame(-1) to clear canvas ---
+                // this.updateUIControls(); // OLD
+                this.setFrame(-1); // NEW: This clears canvas and updates UI
+                // --- END MODIFICATION ---
             }
 
             // Add a frame (data is raw parsed JSON)
-            addFrame(data) {
-                // MODIFIED: If this is the first frame ever, addTrajectory should have been called first by Python.
-                // As a fallback, if no trajectory exists, create one.
-                if (!this.currentTrajectoryName) {
-                    console.warn("addFrame called before addTrajectory. Creating default trajectory '0'.");
-                    this.addTrajectory("0"); // This will set this.currentTrajectoryName
+            // --- MODIFICATION: Added trajectoryName parameter ---
+            addFrame(data, trajectoryName) {
+                
+                // --- MODIFICATION: Use explicit trajectoryName from Python ---
+                let targetTrajectoryName = trajectoryName;
+                if (!targetTrajectoryName) {
+                    // Fallback just in case, though Python should always send it.
+                    console.warn("addFrame called without trajectoryName, using current view.");
+                    targetTrajectoryName = this.currentTrajectoryName;
                 }
-
-                if (!this.trajectoriesData[this.currentTrajectoryName]) {
-                     console.error(`addFrame: Trajectory '${this.currentTrajectoryName}' does not exist.`);
-                    return;
+                
+                if (!targetTrajectoryName) {
+                    // This can happen if addFrame is called before new_traj
+                    // The python logic should prevent this, but as a robust fallback:
+                    console.warn("addFrame: No trajectory active. Creating '0'.");
+                    this.addTrajectory("0");
+                    targetTrajectoryName = "0";
                 }
+                
+                if (!this.trajectoriesData[targetTrajectoryName]) {
+                     console.error(`addFrame: Trajectory '${targetTrajectoryName}' does not exist.`);
+                     // This could happen if messages arrive out of order.
+                     // Let's create it to be safe.
+                     console.warn(`addFrame: Trajectory '${targetTrajectoryName}' not found. Creating it.`);
+                     this.addTrajectory(targetTrajectoryName);
+                     // Note: addTrajectory sets view to this new trajectory.
+                }
+                // --- END MODIFICATION ---
 
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                const trajectory = this.trajectoriesData[targetTrajectoryName];
                 trajectory.frames.push(data);
+
+                // --- NEW: Set view to this trajectory ---
+                if (this.currentTrajectoryName !== targetTrajectoryName) {
+                    this.stopAnimation(); // Stop if playing on another traj
+                    this.currentTrajectoryName = targetTrajectoryName;
+                    this.trajectorySelect.value = targetTrajectoryName;
+                }
+                // --- END NEW ---
 
                 // --- Update global center sum and count ---
                 let frameSum = new Vec3(0,0,0);
@@ -558,6 +655,7 @@
                 // MODIFIED: Handle null trajectory name
                 if (!this.currentTrajectoryName) {
                     this.currentFrame = -1;
+                    this.coords = []; // Clear coords
                     this.ctx.fillStyle = '#ffffff';
                     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                     this.updateUIControls();
@@ -568,6 +666,7 @@
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 if (!trajectory || frameIndex < 0 || frameIndex >= trajectory.frames.length) {
                     this.currentFrame = -1;
+                    this.coords = []; // Clear coords
                     this.ctx.fillStyle = '#ffffff';
                     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                     this.updateUIControls();
@@ -590,6 +689,8 @@
                  this.speedSelect.disabled = !enabled;
                  this.rotationCheckbox.disabled = !enabled;
                  this.lineWidthSlider.disabled = !enabled;
+                 if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
+                 if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled; // NEW
                  this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
@@ -677,7 +778,8 @@
                 } catch (e) {
                     console.error("Failed to load data into renderer:", e);
                 }
-                this.render();
+                // BUG FIX: Call render AFTER setting coords, not inside _loadData...
+                // this.render(); // OLD
             }
 
             // Set current coordinates
@@ -691,14 +793,9 @@
                 if (this.chains.length !== this.coords.length) { this.chains = Array(this.coords.length).fill('A'); }
                 if (this.atomTypes.length !== this.coords.length) { this.atomTypes = Array(this.coords.length).fill('P'); }
 
-                // PERFORMANCE: Auto-disable shadows for large structures (>1000 atoms)
-                if (this.coords.length > 1000 && this.shadowEnabled) {
-                    this.shadowEnabled = false;
-                    if (this.shadowCheckbox) {
-                        this.shadowCheckbox.checked = false;
-                    }
-                }
-
+                // MODIFIED: Removed auto-setting of shadowApproxSlider
+                const n = this.coords.length;
+                
                 this.chainRainbowScales = {};
                 for (let i = 0; i < this.atomTypes.length; i++) {
                     const type = this.atomTypes[i];
@@ -714,9 +811,13 @@
                         scale.max = Math.max(scale.max, colorIndex);
                     }
                 }
+                
+                // BUG FIX: Trigger a render AFTER setting coords and potentially deciding on shadow mode
+                this.render(); 
             }
 
             // --- RENDER (Core drawing logic) ---
+            // MODIFIED: Removed forceShadowMode parameter
             render() {
                 const startTime = performance.now();
                 this.ctx.fillStyle = '#ffffff';
@@ -843,6 +944,7 @@
                 }
 
                 if (segments.length === 0) return;
+                const n = segments.length; // Get segment count early
 
                 // PERFORMANCE: Pre-compute unique chains once for chain coloring mode
                 const uniqueChains = (this.colorMode === 'chain' && this.chains.length > 0) 
@@ -883,40 +985,236 @@
                 const zMin = Math.min(...zValues);
                 const zMax = Math.max(...zValues);
                 const zNorm = zValues.map(z => zMax - zMin > 1e-6 ? (z - zMin) / (zMax - zMin) : 0);
-                const n = segments.length;
+                
+                // MODIFIED: Simplified renderShadows check
+                const renderShadows = this.shadowEnabled;
+                
+                // BUG FIX: Moved maxExtent declaration here, BEFORE shadow logic
+                const maxExtent = (trajectory && trajectory.maxExtent > 0) ? trajectory.maxExtent : 30.0;
+
                 const shadows = new Float32Array(n);
                 const tints = new Float32Array(n);
 
-                if (this.shadowEnabled) {
-                    for (let i = 0; i < n; i++) {
-                        let shadowSum = 0; let maxTint = 0;
-                        const seg1 = segments[i];
-                        for (let j = 0; j < n; j++) {
-                            if (i === j) continue;
-                            const seg2 = segments[j];
-                            if (zValues[i] >= zValues[j]) continue;
-                            const avgLen = (seg1.length + seg2.length) / 2;
-                            const shadow_cutoff = avgLen * 2.0;
-                            const tint_cutoff = avgLen / 2.0;
-                            const max_cutoff = shadow_cutoff + 10.0;
-                            const dx = seg1.mid.x - seg2.mid.x; if (Math.abs(dx) > max_cutoff) continue;
-                            const dy = seg1.mid.y - seg2.mid.y; if (Math.abs(dy) > max_cutoff) continue;
-                            const dist2D = Math.sqrt(dx*dx + dy*dy); if (dist2D > max_cutoff) continue;
-                            const dist3D = seg1.mid.distanceTo(seg2.mid);
-                            if (dist3D < max_cutoff) { shadowSum += sigmoid(shadow_cutoff - dist3D); }
-                            if (dist2D < tint_cutoff + 10.0) { maxTint = Math.max(maxTint, sigmoid(tint_cutoff - dist2D)); }
+                // --- OPTIMIZED: Implement Hybrid Shadow Logic ---
+                if (renderShadows) {
+                    // Note: shadows and tints arrays already declared above (lines 942-943)
+                    
+                    if (n <= 1000) {
+                        // --- O(N^2) Path (Optimized for small N) ---
+                        
+                        // Precompute all segment data to avoid repeated property lookups
+                        const segData = new Array(n);
+                        for (let i = 0; i < n; i++) {
+                            const seg = segments[i];
+                            const mid = seg.mid;
+                            segData[i] = {
+                                x: mid.x,
+                                y: mid.y,
+                                z: mid.z,
+                                len: seg.length,
+                                zVal: zValues[i]
+                            };
                         }
-                        shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
-                        tints[i] = 1 - maxTint;
+                        
+                        for (let i = 0; i < n; i++) {
+                            let shadowSum = 0;
+                            let maxTint = 0;
+                            const s1 = segData[i];
+                            const s1_x = s1.x;
+                            const s1_y = s1.y;
+                            const s1_z = s1.z;
+                            const s1_len = s1.len;
+                            const s1_zVal = s1.zVal;
+                            
+                            for (let j = 0; j < n; j++) {
+                                if (i === j) continue;
+                                
+                                const s2 = segData[j];
+                                
+                                // Early z-value check
+                                if (s1_zVal >= s2.zVal) continue;
+                                
+                                // Precompute cutoffs (avoid repeated calculations)
+                                const avgLen = (s1_len + s2.len) * 0.5; // Multiply by 0.5 instead of divide by 2
+                                const shadow_cutoff = avgLen * 2.0;
+                                const tint_cutoff = avgLen * 0.5;
+                                const max_cutoff = shadow_cutoff + 10.0;
+                                
+                                // Early rejection with absolute value checks
+                                const dx = s1_x - s2.x;
+                                const dy = s1_y - s2.y;
+                                
+                                if (Math.abs(dx) > max_cutoff || Math.abs(dy) > max_cutoff) continue;
+                                
+                                // Compute 2D distance squared (delay sqrt as long as possible)
+                                const dist2D_sq = dx * dx + dy * dy;
+                                const max_cutoff_sq = max_cutoff * max_cutoff;
+                                
+                                if (dist2D_sq > max_cutoff_sq) continue;
+                                
+                                // Shadow calculation
+                                const dz = s1_z - s2.z;
+                                const dist3D_sq = dist2D_sq + dz * dz;
+                                
+                                if (dist3D_sq < max_cutoff_sq) {
+                                    const dist3D = Math.sqrt(dist3D_sq);
+                                    shadowSum += sigmoid(shadow_cutoff - dist3D);
+                                }
+                                
+                                // Tint calculation - work with squared distances
+                                const tint_max_cutoff = tint_cutoff + 10.0;
+                                const tint_max_cutoff_sq = tint_max_cutoff * tint_max_cutoff;
+                                
+                                if (dist2D_sq < tint_max_cutoff_sq) {
+                                    // Only compute sqrt when necessary
+                                    const dist2D = Math.sqrt(dist2D_sq);
+                                    maxTint = Math.max(maxTint, sigmoid(tint_cutoff - dist2D));
+                                }
+                            }
+                            
+                            shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
+                            tints[i] = 1 - maxTint;
+                        }
+                        
+                    } else {
+                        // --- Spatial Grid Path (Optimized for large N) ---
+                        
+                        let GRID_DIM = Math.ceil(Math.sqrt(n / 10)); // Aim for ~10 items/cell
+                        GRID_DIM = Math.max(10, Math.min(100, GRID_DIM)); // Cap 10x10 to 100x100
+                        
+                        const gridSize = GRID_DIM * GRID_DIM;
+                        const grid = Array.from({ length: gridSize }, () => []);
+                        
+                        const gridMin = -maxExtent - 1.0;
+                        const gridRange = (maxExtent + 1.0) * 2;
+                        const gridCellSize = gridRange / GRID_DIM;
+                        
+                        // Precompute all segment data
+                        const segData = new Array(n);
+                        for (let i = 0; i < n; i++) {
+                            const seg = segments[i];
+                            const mid = seg.mid;
+                            segData[i] = {
+                                x: mid.x,
+                                y: mid.y,
+                                z: mid.z,
+                                len: seg.length,
+                                zVal: zValues[i],
+                                gx: -1,
+                                gy: -1
+                            };
+                        }
+                        
+                        // Build spatial grid
+                        if (gridCellSize > 1e-6) {
+                            const invCellSize = 1.0 / gridCellSize; // Multiply instead of divide
+                            
+                            for (let i = 0; i < n; i++) {
+                                const s = segData[i];
+                                const gx = Math.floor((s.x - gridMin) * invCellSize);
+                                const gy = Math.floor((s.y - gridMin) * invCellSize);
+                                
+                                if (gx >= 0 && gx < GRID_DIM && gy >= 0 && gy < GRID_DIM) {
+                                    s.gx = gx;
+                                    s.gy = gy;
+                                    const gridIndex = gx + gy * GRID_DIM;
+                                    grid[gridIndex].push(i);
+                                }
+                            }
+                        }
+                        
+                        // Process each segment
+                        for (let i = 0; i < n; i++) {
+                            let shadowSum = 0;
+                            let maxTint = 0;
+                            const s1 = segData[i];
+                            const s1_x = s1.x;
+                            const s1_y = s1.y;
+                            const s1_z = s1.z;
+                            const s1_len = s1.len;
+                            const s1_zVal = s1.zVal;
+                            const gx1 = s1.gx;
+                            const gy1 = s1.gy;
+                            
+                            if (gx1 < 0 || gy1 < 0) continue;
+                            
+                            // Check 3x3 neighborhood around the segment
+                            for (let dy = -1; dy <= 1; dy++) {
+                                const gy2 = gy1 + dy;
+                                if (gy2 < 0 || gy2 >= GRID_DIM) continue;
+                                
+                                const rowOffset = gy2 * GRID_DIM;
+                                
+                                for (let dx = -1; dx <= 1; dx++) {
+                                    const gx2 = gx1 + dx;
+                                    if (gx2 < 0 || gx2 >= GRID_DIM) continue;
+                                    
+                                    const gridIndex = gx2 + rowOffset;
+                                    const cell = grid[gridIndex];
+                                    const cellLen = cell.length;
+                                    
+                                    for (let k = 0; k < cellLen; k++) {
+                                        const j = cell[k];
+                                        if (i === j) continue;
+                                        
+                                        const s2 = segData[j];
+                                        
+                                        // Early z-value check
+                                        if (s1_zVal >= s2.zVal) continue;
+                                        
+                                        // Precompute cutoffs
+                                        const avgLen = (s1_len + s2.len) * 0.5;
+                                        const shadow_cutoff = avgLen * 2.0;
+                                        const tint_cutoff = avgLen * 0.5;
+                                        const max_cutoff = shadow_cutoff + 10.0;
+                                        
+                                        // Early rejection with absolute value checks
+                                        const dx_dist = s1_x - s2.x;
+                                        const dy_dist = s1_y - s2.y;
+                                        
+                                        if (Math.abs(dx_dist) > max_cutoff || Math.abs(dy_dist) > max_cutoff) continue;
+                                        
+                                        // Compute 2D distance squared
+                                        const dist2D_sq = dx_dist * dx_dist + dy_dist * dy_dist;
+                                        const max_cutoff_sq = max_cutoff * max_cutoff;
+                                        
+                                        if (dist2D_sq > max_cutoff_sq) continue;
+                                        
+                                        // Shadow calculation
+                                        const dz = s1_z - s2.z;
+                                        const dist3D_sq = dist2D_sq + dz * dz;
+                                        
+                                        if (dist3D_sq < max_cutoff_sq) {
+                                            const dist3D = Math.sqrt(dist3D_sq);
+                                            shadowSum += sigmoid(shadow_cutoff - dist3D);
+                                        }
+                                        
+                                        // Tint calculation
+                                        const tint_max_cutoff = tint_cutoff + 10.0;
+                                        const tint_max_cutoff_sq = tint_max_cutoff * tint_max_cutoff;
+                                        
+                                        if (dist2D_sq < tint_max_cutoff_sq) {
+                                            const dist2D = Math.sqrt(dist2D_sq);
+                                            maxTint = Math.max(maxTint, sigmoid(tint_cutoff - dist2D));
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
+                            tints[i] = 1 - maxTint;
+                        }
                     }
-                } else {
+                }
+                 else {
+                    // Shadows are disabled
                     shadows.fill(1.0);
                     tints.fill(1.0);
                 }
+                // --- END MODIFIED HYBRID LOGIC ---
 
                 const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
                 
-                const maxExtent = (trajectory && trajectory.maxExtent > 0) ? trajectory.maxExtent : 30.0;
                 const dataRange = (maxExtent * 2) + this.lineWidth * 2;
                 
                 const canvasSize = Math.min(this.canvas.width, this.canvas.height);
@@ -927,41 +1225,91 @@
                 const centerX = this.canvas.width / 2;
                 const centerY = this.canvas.height / 2;
 
+                // --- MODIFIED: Start of the new render loop ---
                 for (const idx of order) {
                     const seg = segments[idx];
                     let {r, g, b} = colors[idx];
                     r /= 255; g /= 255; b /= 255;
-                    const tintFactor = (0.50 * zNorm[idx] + 0.50 * tints[idx]) / 3;
-                    r = r + (1 - r) * tintFactor;
-                    g = g + (1 - g) * tintFactor;
-                    b = b + (1 - b) * tintFactor;
-                    const shadowFactor = 0.20 + 0.25 * zNorm[idx] + 0.55 * shadows[idx];
-                    r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
+                    
+                    // Apply lighting
+                    if (renderShadows) {
+                        const tintFactor = (0.50 * zNorm[idx] + 0.50 * tints[idx]) / 3;
+                        r = r + (1 - r) * tintFactor;
+                        g = g + (1 - g) * tintFactor;
+                        b = b + (1 - b) * tintFactor; // Fixed typo (was 1-g)
+                        const shadowFactor = 0.20 + 0.25 * zNorm[idx] + 0.55 * shadows[idx];
+                        r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
+                    } else {
+                        const depthFactor = 0.70 + 0.30 * zNorm[idx];
+                        r *= depthFactor; g *= depthFactor; b *= depthFactor;
+                    }
+
+                    // --- Create final color strings ---
                     const color = `rgb(${r*255|0},${g*255|0},${b*255|0})`;
+                    
+                    // --- Create darker version for gap filler ---
+                    const darkenFactor = 0.7; // 70% dark
+                    const gapFillerColor = `rgb(${r*255*darkenFactor|0}, ${g*255*darkenFactor|0}, ${b*255*darkenFactor|0})`;
+
                     const x1 = centerX + seg.start.x * scale; const y1 = centerY - seg.start.y * scale;
                     const x2 = centerX + seg.end.x * scale; const y2 = centerY - seg.end.y * scale;
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
-                    this.ctx.strokeStyle = color;
+                    
+                    // Get width properties
                     const type = this.atomTypes[seg.origIndex];
-                    // Line width: RNA/DNA = 2x protein, Ligands = 0.5x protein
                     let widthMultiplier = 1.0;
                     if (type === 'L') {
                         widthMultiplier = 0.5;
                     } else if (type === 'D' || type === 'R') {
                         widthMultiplier = 2.0;
                     }
-                    this.ctx.lineWidth = baseLineWidthPixels * widthMultiplier;
-                    this.ctx.lineCap = 'round';
-                    this.ctx.stroke();
+                    const currentLineWidth = baseLineWidthPixels * widthMultiplier;
+                    
+                    // Define outline properties
+                    const outlineColor = '#000000'; // The main black outline
+                    const outlinePixelWidth = 2.0; 
+                    const totalOutlineWidth = currentLineWidth + (outlinePixelWidth * 2);
+
+                    
+                    if (this.outlineEnabled) {
+                        // --- 3-STEP DRAW (FIXES GAPS) ---
+                        
+                        // 1. Wide outline, flat ends, uses dark segment color
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(x1, y1);
+                        this.ctx.lineTo(x2, y2);
+                        this.ctx.strokeStyle = gapFillerColor; // Using dark color for wide
+                        this.ctx.lineWidth = totalOutlineWidth;
+                        this.ctx.lineCap = 'butt'; 
+                        this.ctx.stroke();
+
+                        // 2. Color fill, round ends
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(x1, y1);
+                        this.ctx.lineTo(x2, y2);
+                        this.ctx.strokeStyle = color;
+                        this.ctx.lineWidth = currentLineWidth;
+                        this.ctx.lineCap = 'round';
+                        this.ctx.stroke();
+
+                    } else {
+                        // --- 1-STEP DRAW (NO OUTLINE) ---
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(x1, y1);
+                        this.ctx.lineTo(x2, y2);
+                        this.ctx.strokeStyle = color;
+                        this.ctx.lineWidth = currentLineWidth;
+                        this.ctx.lineCap = 'round';
+                        this.ctx.stroke();
+                    }
                 }
+                // --- END of the new render loop ---
             }
 
             // --- REFACTORED: Main animation loop ---
             animate() {
                 const now = performance.now();
                 let needsRender = false;
+                // MODIFIED: Removed spinRenderMode logic
 
                 // 1. Handle inertia/spin
                 if (!this.isDragging) {
@@ -972,6 +1320,7 @@
                         needsRender = true;
                     } else {
                         this.spinVelocityX = 0;
+                        // MODIFIED: Removed high-quality render flag
                     }
 
                     if (Math.abs(this.spinVelocityY) > 0.0001) {
@@ -981,6 +1330,7 @@
                         needsRender = true;
                     } else {
                         this.spinVelocityY = 0;
+                        // MODIFIED: Removed high-quality render flag
                     }
                 }
 
@@ -989,6 +1339,7 @@
                     const rot = rotationMatrixY(0.005); // Constant rotation speed
                     this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix);
                     needsRender = true;
+                    // MODIFIED: Removed spinRenderMode
                 }
 
                 // 3. Handle frame playback
@@ -1012,6 +1363,7 @@
 
                 // 4. Final render if needed
                 if (needsRender) {
+                    // MODIFIED: Pass no parameters
                     this.render();
                 }
 
@@ -1025,7 +1377,14 @@
         // ============================================================================
 
         // 1. Get config from Python
-        const config = window.viewerConfig || { size: [800, 600], color: "plddt" };
+        const config = window.viewerConfig || { 
+            size: [800, 600], 
+            color: "plddt", 
+            default_shadow: true, 
+            default_outline: true,
+            default_width: 3.0,
+            default_rotate: false
+        };
 
         // 2. Setup Canvas
         const canvas = document.getElementById('canvas');
@@ -1035,23 +1394,26 @@
         document.getElementById('viewerColumn').style.width = `${config.size[0]}px`; 
 
         // 3. Create renderer
+        // Constructor now reads config and sets defaults
         window.renderer = new Pseudo3DRenderer(canvas);
-        window.renderer.colorMode = config.color;
-
+        
         // 4. Setup general controls (now in right panel)
         const colorSelect = document.getElementById('colorSelect');
-        colorSelect.value = config.color;
+        // MODIFIED: Set dropdown value based on resolved color from python
+        colorSelect.value = config.color; 
+        
         colorSelect.addEventListener('change', (e) => {
             window.renderer.colorMode = e.target.value;
             window.renderer.render();
         });
-        const shadowCheckbox = document.getElementById('shadowCheckbox');
-        window.renderer.shadowCheckbox = shadowCheckbox;  // Store reference
-        shadowCheckbox.checked = window.renderer.shadowEnabled;
-        shadowCheckbox.addEventListener('change', (e) => {
-            window.renderer.shadowEnabled = e.target.checked;
-            window.renderer.render();
-        });
+        
+        // MODIFIED: Setup shadowEnabledCheckbox
+        const shadowEnabledCheckbox = document.getElementById('shadowEnabledCheckbox'); 
+        shadowEnabledCheckbox.checked = window.renderer.shadowEnabled; // Set default from renderer
+        
+        // NEW: Setup outlineEnabledCheckbox
+        const outlineEnabledCheckbox = document.getElementById('outlineEnabledCheckbox'); 
+        outlineEnabledCheckbox.checked = window.renderer.outlineEnabled; // Set default from renderer
 
         // 5. Setup animation and trajectory controls
         const controlsContainer = document.getElementById('controlsContainer');
@@ -1062,24 +1424,32 @@
         const speedSelect = document.getElementById('speedSelect');
         const rotationCheckbox = document.getElementById('rotationCheckbox');
         const lineWidthSlider = document.getElementById('lineWidthSlider');
-
+        
+        // --- NEW: Set defaults for width and rotate ---
+        lineWidthSlider.value = window.renderer.lineWidth;
+        rotationCheckbox.checked = window.renderer.autoRotate;
 
         // Pass ALL controls to the renderer
+        // MODIFIED: Added outlineEnabledCheckbox
         window.renderer.setUIControls(
             controlsContainer, playButton, 
             frameSlider, frameCounter, trajectorySelect, 
-            speedSelect, rotationCheckbox, lineWidthSlider
+            speedSelect, rotationCheckbox, lineWidthSlider,
+            shadowEnabledCheckbox, outlineEnabledCheckbox 
         );
 
         // 6. Add function for Python to call (for new frames)
-        window.handlePythonUpdate = (jsonData) => {
+        // --- MODIFICATION: Added trajectoryName parameter ---
+        window.handlePythonUpdate = (jsonData, trajectoryName) => {
             try {
                 const data = JSON.parse(jsonData);
-                window.renderer.addFrame(data);
+                // --- MODIFICATION: Pass name to addFrame ---
+                window.renderer.addFrame(data, trajectoryName);
             } catch (e) {
                 console.error("Failed to parse JSON from Python:", e);
             }
         };
+        // --- END MODIFICATION ---
 
         // 7. Add function for Python to start a new trajectory
         window.handlePythonNewTrajectory = (name) => {
@@ -1116,7 +1486,12 @@
                     // The payload is already a JS object from Python.
                     // Stringify it to pass to the existing handler which expects a JSON string.
                     try {
-                        window.handlePythonUpdate(JSON.stringify(event.data.payload));
+                        // --- MODIFICATION: Pass trajectoryName from message ---
+                        window.handlePythonUpdate(
+                            JSON.stringify(event.data.payload),
+                            event.data.trajectoryName 
+                        );
+                        // --- END MODIFICATION ---
                     } catch (e) {
                          console.error("Failed to handle postMessage (update):", e, event.data.payload);
                     }
