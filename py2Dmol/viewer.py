@@ -53,6 +53,9 @@ class view:
         self._atom_types = None
         self._trajectory_counter = 0
         self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
+        
+        # --- MODIFICATION: Track current trajectory name on Python side ---
+        self._current_trajectory_name = None
 
     def _get_data_dict(self):
         """Serializes the current coordinate state to a dict."""
@@ -103,9 +106,13 @@ class view:
             # Colab logic is simple: just execute the JS
             js_code = ""
             if message_dict['type'] == 'py2DmolUpdate':
+                # --- MODIFICATION: Pass payload AND trajectoryName ---
                 json_data = json.dumps(message_dict['payload'])
                 json_data_escaped = json_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
-                js_code = f"window.handlePythonUpdate(`{json_data_escaped}`);"
+                # Escape trajectory name for JS string
+                traj_name_escaped = message_dict['trajectoryName'].replace("'", "\\'")
+                js_code = f"window.handlePythonUpdate(`{json_data_escaped}`, '{traj_name_escaped}');"
+                # --- END MODIFICATION ---
             elif message_dict['type'] == 'py2DmolNewTrajectory':
                 js_code = f"window.handlePythonNewTrajectory('{message_dict['name']}');"
             elif message_dict['type'] == 'py2DmolClearAll':
@@ -267,6 +274,7 @@ class view:
         self._chains = None
         self._atom_types = None
         self._trajectory_counter = 0
+        self._current_trajectory_name = None # MODIFICATION
 
     def new_traj(self, trajectory_name=None):
         # This is a new trajectory, reset the alignment reference
@@ -274,6 +282,11 @@ class view:
         if trajectory_name is None:
             trajectory_name = f"{self._trajectory_counter}"
         self._trajectory_counter += 1
+        
+        # --- MODIFICATION: Set Python-side trajectory name ---
+        self._current_trajectory_name = trajectory_name
+        # --- END MODIFICATION ---
+        
         self._send_message({
             "type": "py2DmolNewTrajectory",
             "name": trajectory_name
@@ -317,6 +330,7 @@ class view:
             new_traj = True # First call always starts a new trajectory
 
         # 2. Handle new trajectory creation
+        # MODIFICATION: This will now also set self._current_trajectory_name
         if new_traj:
             self.new_traj(trajectory_name)
 
@@ -328,6 +342,9 @@ class view:
         # 4. Send the frame data
         self._send_message({
             "type": "py2DmolUpdate",
+            # --- MODIFICATION: Send the current trajectory name ---
+            "trajectoryName": self._current_trajectory_name,
+            # --- END MODIFICATION ---
             "payload": self._get_data_dict() # _get_data_dict uses self._coords, which is now aligned
         })
 
@@ -422,6 +439,7 @@ class view:
                 current_model_new_traj = new_traj and not first_model_added
                 
                 # Call add() - this will handle auto-color on the first call
+                # and pass the trajectory name
                 self.add(coords, plddts, atom_chains, atom_types,
                     new_traj=current_model_new_traj, trajectory_name=trajectory_name)
                 first_model_added = True

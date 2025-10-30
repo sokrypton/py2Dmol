@@ -568,25 +568,52 @@
                 this.trajectorySelect.appendChild(option);
                 this.trajectorySelect.value = name;
 
-                this.updateUIControls();
+                // --- MODIFICATION: Call setFrame(-1) to clear canvas ---
+                // this.updateUIControls(); // OLD
+                this.setFrame(-1); // NEW: This clears canvas and updates UI
+                // --- END MODIFICATION ---
             }
 
             // Add a frame (data is raw parsed JSON)
-            addFrame(data) {
-                // MODIFIED: If this is the first frame ever, addTrajectory should have been called first by Python.
-                // As a fallback, if no trajectory exists, create one.
-                if (!this.currentTrajectoryName) {
-                    console.warn("addFrame called before addTrajectory. Creating default trajectory '0'.");
-                    this.addTrajectory("0"); // This will set this.currentTrajectoryName
+            // --- MODIFICATION: Added trajectoryName parameter ---
+            addFrame(data, trajectoryName) {
+                
+                // --- MODIFICATION: Use explicit trajectoryName from Python ---
+                let targetTrajectoryName = trajectoryName;
+                if (!targetTrajectoryName) {
+                    // Fallback just in case, though Python should always send it.
+                    console.warn("addFrame called without trajectoryName, using current view.");
+                    targetTrajectoryName = this.currentTrajectoryName;
                 }
-
-                if (!this.trajectoriesData[this.currentTrajectoryName]) {
-                     console.error(`addFrame: Trajectory '${this.currentTrajectoryName}' does not exist.`);
-                    return;
+                
+                if (!targetTrajectoryName) {
+                    // This can happen if addFrame is called before new_traj
+                    // The python logic should prevent this, but as a robust fallback:
+                    console.warn("addFrame: No trajectory active. Creating '0'.");
+                    this.addTrajectory("0");
+                    targetTrajectoryName = "0";
                 }
+                
+                if (!this.trajectoriesData[targetTrajectoryName]) {
+                     console.error(`addFrame: Trajectory '${targetTrajectoryName}' does not exist.`);
+                     // This could happen if messages arrive out of order.
+                     // Let's create it to be safe.
+                     console.warn(`addFrame: Trajectory '${targetTrajectoryName}' not found. Creating it.`);
+                     this.addTrajectory(targetTrajectoryName);
+                     // Note: addTrajectory sets view to this new trajectory.
+                }
+                // --- END MODIFICATION ---
 
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
+                const trajectory = this.trajectoriesData[targetTrajectoryName];
                 trajectory.frames.push(data);
+
+                // --- NEW: Set view to this trajectory ---
+                if (this.currentTrajectoryName !== targetTrajectoryName) {
+                    this.stopAnimation(); // Stop if playing on another traj
+                    this.currentTrajectoryName = targetTrajectoryName;
+                    this.trajectorySelect.value = targetTrajectoryName;
+                }
+                // --- END NEW ---
 
                 // --- Update global center sum and count ---
                 let frameSum = new Vec3(0,0,0);
@@ -628,6 +655,7 @@
                 // MODIFIED: Handle null trajectory name
                 if (!this.currentTrajectoryName) {
                     this.currentFrame = -1;
+                    this.coords = []; // Clear coords
                     this.ctx.fillStyle = '#ffffff';
                     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                     this.updateUIControls();
@@ -638,6 +666,7 @@
                 const trajectory = this.trajectoriesData[this.currentTrajectoryName];
                 if (!trajectory || frameIndex < 0 || frameIndex >= trajectory.frames.length) {
                     this.currentFrame = -1;
+                    this.coords = []; // Clear coords
                     this.ctx.fillStyle = '#ffffff';
                     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                     this.updateUIControls();
@@ -1410,14 +1439,17 @@
         );
 
         // 6. Add function for Python to call (for new frames)
-        window.handlePythonUpdate = (jsonData) => {
+        // --- MODIFICATION: Added trajectoryName parameter ---
+        window.handlePythonUpdate = (jsonData, trajectoryName) => {
             try {
                 const data = JSON.parse(jsonData);
-                window.renderer.addFrame(data);
+                // --- MODIFICATION: Pass name to addFrame ---
+                window.renderer.addFrame(data, trajectoryName);
             } catch (e) {
                 console.error("Failed to parse JSON from Python:", e);
             }
         };
+        // --- END MODIFICATION ---
 
         // 7. Add function for Python to start a new trajectory
         window.handlePythonNewTrajectory = (name) => {
@@ -1454,7 +1486,12 @@
                     // The payload is already a JS object from Python.
                     // Stringify it to pass to the existing handler which expects a JSON string.
                     try {
-                        window.handlePythonUpdate(JSON.stringify(event.data.payload));
+                        // --- MODIFICATION: Pass trajectoryName from message ---
+                        window.handlePythonUpdate(
+                            JSON.stringify(event.data.payload),
+                            event.data.trajectoryName 
+                        );
+                        // --- END MODIFICATION ---
                     } catch (e) {
                          console.error("Failed to handle postMessage (update):", e, event.data.payload);
                     }
