@@ -5,3 +5,7 @@ build/
 dist/
 .coverage
 *.egg-info
+
+# Documentation
+docs/build/
+docs/source/_build/
