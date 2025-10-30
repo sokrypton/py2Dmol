@@ -279,6 +279,12 @@ class view:
     def new_traj(self, trajectory_name=None):
         # This is a new trajectory, reset the alignment reference
         self._coords = None 
+        # --- MODIFICATION: Clear other state variables ---
+        self._plddts = None
+        self._chains = None
+        self._atom_types = None
+        # --- END MODIFICATION ---
+
         if trajectory_name is None:
             trajectory_name = f"{self._trajectory_counter}"
         self._trajectory_counter += 1
