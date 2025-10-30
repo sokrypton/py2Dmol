@@ -76,8 +76,9 @@
             flex-shrink: 0;
             font-size: 12px; /* Ensure label font size matches */
         }
-        /* NEW: Style for the shadow checkbox label */
-        .toggle-item label[for="shadowEnabledCheckbox"] {
+        /* NEW: Style for the shadow/outline checkbox labels */
+        .toggle-item label[for="shadowEnabledCheckbox"],
+        .toggle-item label[for="outlineEnabledCheckbox"] {
             width: auto; /* Let it be auto-sized */
             margin-left: 5px; /* Add space next to the slider */
         }
@@ -236,13 +237,18 @@
                     <label for="rotationCheckbox">Rotate</label>
                 </div>
                 <div class="toggle-item">
-                    <label for="lineWidthSlider">Line:</label>
+                    <label for="lineWidthSlider">Width:</label>
                     <input type="range" id="lineWidthSlider" min="1" max="5" value="3" step="0.5">
                 </div>
                 <!-- MODIFIED: Shadow controls are now just a checkbox -->
                 <div class="toggle-item">
-                     <input type="checkbox" id="shadowEnabledCheckbox" checked>
+                     <input type="checkbox" id="shadowEnabledCheckbox">
                      <label for="shadowEnabledCheckbox">Shadow</label>
+                </div>
+                <!-- NEW: Outline checkbox -->
+                <div class="toggle-item">
+                     <input type="checkbox" id="outlineEnabledCheckbox">
+                     <label for="outlineEnabledCheckbox">Outline</label>
                 </div>
             </div>
 
@@ -305,6 +311,16 @@
                 this.canvas = canvas;
                 this.ctx = canvas.getContext('2d');
                 
+                // Get config from Python
+                const config = window.viewerConfig || { 
+                    size: [800, 600], 
+                    color: "plddt", 
+                    default_shadow: true, 
+                    default_outline: true,
+                    default_width: 3.0,
+                    default_rotate: false
+                };
+
                 // Current render state
                 this.coords = [];
                 this.plddts = [];
@@ -312,14 +328,15 @@
                 this.atomTypes = [];
                 
                 // Viewer state
-                this.colorMode = 'plddt';
+                this.colorMode = config.color; // Set initial color from config
                 this.rotationMatrix = [[1,0,0],[0,1,0],[0,0,1]];
                 this.zoom = 1.0;
-                this.lineWidth = 3.0;
+                this.lineWidth = (typeof config.default_width === 'number') ? config.default_width : 3.0; // NEW
                 this.shadowIntensity = 0.95;
                 
-                // MODIFIED: Removed shadowApprox. Just shadowEnabled boolean.
-                this.shadowEnabled = true; // Default to on
+                // Set defaults from config, with fallback
+                this.shadowEnabled = (typeof config.default_shadow === 'boolean') ? config.default_shadow : true;
+                this.outlineEnabled = (typeof config.default_outline === 'boolean') ? config.default_outline : true;
                 
                 // Performance
                 this.chainRainbowScales = {};
@@ -336,7 +353,7 @@
                 
                 // Interaction
                 this.isDragging = false;
-                this.autoRotate = false;
+                this.autoRotate = (typeof config.default_rotate === 'boolean') ? config.default_rotate : false; // NEW
                 
                 // Inertia
                 this.spinVelocityX = 0;
@@ -357,8 +374,8 @@
                 this.speedSelect = null;
                 this.rotationCheckbox = null;
                 this.lineWidthSlider = null;
-                // MODIFIED: Removed shadowApproxSlider. Kept shadowEnabledCheckbox.
                 this.shadowEnabledCheckbox = null; 
+                this.outlineEnabledCheckbox = null; // NEW
 
                 this.setupInteraction();
             }
@@ -437,8 +454,8 @@
             }
 
             // Set UI controls from main script
-            // MODIFIED: Removed shadowApproxSlider
-            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox) {
+            // MODIFIED: Added outlineEnabledCheckbox
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox) {
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
                 this.frameSlider = frameSlider;
@@ -447,10 +464,11 @@
                 this.speedSelect = speedSelect;
                 this.rotationCheckbox = rotationCheckbox;
                 this.lineWidthSlider = lineWidthSlider;
-                // REMOVED: this.shadowApproxSlider = shadowApproxSlider;
                 this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
+                this.outlineEnabledCheckbox = outlineEnabledCheckbox; // NEW
                 
-                this.lineWidth = parseFloat(this.lineWidthSlider.value);
+                this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
+                this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
 
                 // --- BIND ALL EVENT LISTENERS HERE ---
                 this.playButton.addEventListener('click', () => {
@@ -481,13 +499,18 @@
                     }
                 });
 
-                // MODIFIED: Removed listener for shadowApproxSlider
-                
                 // NEW: Add listener for shadowEnabledCheckbox
                 if (this.shadowEnabledCheckbox) {
                     this.shadowEnabledCheckbox.addEventListener('change', (e) => {
                         this.shadowEnabled = e.target.checked;
-                        // REMOVED: Logic to disable slider
+                        this.render();
+                    });
+                }
+
+                // NEW: Add listener for outlineEnabledCheckbox
+                if (this.outlineEnabledCheckbox) {
+                    this.outlineEnabledCheckbox.addEventListener('change', (e) => {
+                        this.outlineEnabled = e.target.checked;
                         this.render();
                     });
                 }
@@ -520,7 +543,8 @@
                 // Also prevent canvas drag when interacting with other controls
                 // MODIFIED: Updated controls list
                 const allControls = [this.playButton, this.trajectorySelect, this.speedSelect, 
-                                     this.rotationCheckbox, this.lineWidthSlider, this.shadowEnabledCheckbox]; 
+                                     this.rotationCheckbox, this.lineWidthSlider, 
+                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox]; // NEW
                 allControls.forEach(control => {
                     if (control) {
                         control.addEventListener('mousedown', (e) => {
@@ -636,8 +660,8 @@
                  this.speedSelect.disabled = !enabled;
                  this.rotationCheckbox.disabled = !enabled;
                  this.lineWidthSlider.disabled = !enabled;
-                 // MODIFIED: Removed shadowApproxSlider logic
                  if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
+                 if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled; // NEW
                  this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
@@ -1172,46 +1196,84 @@
                 const centerX = this.canvas.width / 2;
                 const centerY = this.canvas.height / 2;
 
+                // --- MODIFIED: Start of the new render loop ---
                 for (const idx of order) {
                     const seg = segments[idx];
                     let {r, g, b} = colors[idx];
                     r /= 255; g /= 255; b /= 255;
                     
-                    // MODIFIED: Apply lighting based on renderShadows
+                    // Apply lighting
                     if (renderShadows) {
-                        // QUALITY MODE: Original shadow system
                         const tintFactor = (0.50 * zNorm[idx] + 0.50 * tints[idx]) / 3;
                         r = r + (1 - r) * tintFactor;
                         g = g + (1 - g) * tintFactor;
-                        b = b + (1 - g) * tintFactor;
+                        b = b + (1 - b) * tintFactor; // Fixed typo (was 1-g)
                         const shadowFactor = 0.20 + 0.25 * zNorm[idx] + 0.55 * shadows[idx];
                         r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
                     } else {
-                        // SHADOWS DISABLED: Just z-depth tint
                         const depthFactor = 0.70 + 0.30 * zNorm[idx];
                         r *= depthFactor; g *= depthFactor; b *= depthFactor;
                     }
-                    // END MODIFIED BLOCK
 
+                    // --- Create final color strings ---
                     const color = `rgb(${r*255|0},${g*255|0},${b*255|0})`;
+                    
+                    // --- Create darker version for gap filler ---
+                    const darkenFactor = 0.7; // 70% dark
+                    const gapFillerColor = `rgb(${r*255*darkenFactor|0}, ${g*255*darkenFactor|0}, ${b*255*darkenFactor|0})`;
+
                     const x1 = centerX + seg.start.x * scale; const y1 = centerY - seg.start.y * scale;
                     const x2 = centerX + seg.end.x * scale; const y2 = centerY - seg.end.y * scale;
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
-                    this.ctx.strokeStyle = color;
+                    
+                    // Get width properties
                     const type = this.atomTypes[seg.origIndex];
-                    // Line width: RNA/DNA = 2x protein, Ligands = 0.5x protein
                     let widthMultiplier = 1.0;
                     if (type === 'L') {
                         widthMultiplier = 0.5;
                     } else if (type === 'D' || type === 'R') {
                         widthMultiplier = 2.0;
                     }
-                    this.ctx.lineWidth = baseLineWidthPixels * widthMultiplier;
-                    this.ctx.lineCap = 'round';
-                    this.ctx.stroke();
+                    const currentLineWidth = baseLineWidthPixels * widthMultiplier;
+                    
+                    // Define outline properties
+                    const outlineColor = '#000000'; // The main black outline
+                    const outlinePixelWidth = 2.0; 
+                    const totalOutlineWidth = currentLineWidth + (outlinePixelWidth * 2);
+
+                    
+                    if (this.outlineEnabled) {
+                        // --- 3-STEP DRAW (FIXES GAPS) ---
+                        
+                        // 1. Wide outline, flat ends, uses dark segment color
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(x1, y1);
+                        this.ctx.lineTo(x2, y2);
+                        this.ctx.strokeStyle = gapFillerColor; // Using dark color for wide
+                        this.ctx.lineWidth = totalOutlineWidth;
+                        this.ctx.lineCap = 'butt'; 
+                        this.ctx.stroke();
+
+                        // 2. Color fill, round ends
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(x1, y1);
+                        this.ctx.lineTo(x2, y2);
+                        this.ctx.strokeStyle = color;
+                        this.ctx.lineWidth = currentLineWidth;
+                        this.ctx.lineCap = 'round';
+                        this.ctx.stroke();
+
+                    } else {
+                        // --- 1-STEP DRAW (NO OUTLINE) ---
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(x1, y1);
+                        this.ctx.lineTo(x2, y2);
+                        this.ctx.strokeStyle = color;
+                        this.ctx.lineWidth = currentLineWidth;
+                        this.ctx.lineCap = 'round';
+                        this.ctx.stroke();
+                    }
                 }
+                // --- END of the new render loop ---
             }
 
             // --- REFACTORED: Main animation loop ---
@@ -1286,8 +1348,14 @@
         // ============================================================================
 
         // 1. Get config from Python
-        // MODIFIED: Removed shadow default, will be set based on size
-        const config = window.viewerConfig || { size: [800, 600], color: "plddt" };
+        const config = window.viewerConfig || { 
+            size: [800, 600], 
+            color: "plddt", 
+            default_shadow: true, 
+            default_outline: true,
+            default_width: 3.0,
+            default_rotate: false
+        };
 
         // 2. Setup Canvas
         const canvas = document.getElementById('canvas');
@@ -1297,10 +1365,9 @@
         document.getElementById('viewerColumn').style.width = `${config.size[0]}px`; 
 
         // 3. Create renderer
+        // Constructor now reads config and sets defaults
         window.renderer = new Pseudo3DRenderer(canvas);
-        window.renderer.colorMode = config.color; // Set initial color from config
-        // window.renderer.shadowEnabled = true; // Default is set in constructor
-
+        
         // 4. Setup general controls (now in right panel)
         const colorSelect = document.getElementById('colorSelect');
         // MODIFIED: Set dropdown value based on resolved color from python
@@ -1313,8 +1380,11 @@
         
         // MODIFIED: Setup shadowEnabledCheckbox
         const shadowEnabledCheckbox = document.getElementById('shadowEnabledCheckbox'); 
-        shadowEnabledCheckbox.checked = window.renderer.shadowEnabled; 
-        // Event listener is set inside setUIControls
+        shadowEnabledCheckbox.checked = window.renderer.shadowEnabled; // Set default from renderer
+        
+        // NEW: Setup outlineEnabledCheckbox
+        const outlineEnabledCheckbox = document.getElementById('outlineEnabledCheckbox'); 
+        outlineEnabledCheckbox.checked = window.renderer.outlineEnabled; // Set default from renderer
 
         // 5. Setup animation and trajectory controls
         const controlsContainer = document.getElementById('controlsContainer');
@@ -1325,15 +1395,18 @@
         const speedSelect = document.getElementById('speedSelect');
         const rotationCheckbox = document.getElementById('rotationCheckbox');
         const lineWidthSlider = document.getElementById('lineWidthSlider');
-        // MODIFIED: Removed shadowApproxSlider
+        
+        // --- NEW: Set defaults for width and rotate ---
+        lineWidthSlider.value = window.renderer.lineWidth;
+        rotationCheckbox.checked = window.renderer.autoRotate;
 
         // Pass ALL controls to the renderer
-        // MODIFIED: Removed shadowApproxSlider
+        // MODIFIED: Added outlineEnabledCheckbox
         window.renderer.setUIControls(
             controlsContainer, playButton, 
             frameSlider, frameCounter, trajectorySelect, 
             speedSelect, rotationCheckbox, lineWidthSlider,
-            shadowEnabledCheckbox 
+            shadowEnabledCheckbox, outlineEnabledCheckbox 
         );
 
         // 6. Add function for Python to call (for new frames)

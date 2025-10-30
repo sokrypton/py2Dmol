@@ -35,10 +35,17 @@ def align_a_to_b(a, b):
 # --- view Class ---
 
 class view:
-    def __init__(self, size=(500,500), color="auto"):
+    def __init__(self, size=(500,500), color="auto", shadow=True, outline=True, width=3.0, rotate=False):
         self.size = size
         self._initial_color_mode = color # Store the user's requested mode
         self._resolved_color_mode = color # This will become 'rainbow' or 'chain' if 'auto'
+        
+        # --- NEW: Store default states ---
+        self._initial_shadow_enabled = shadow
+        self._initial_outline_enabled = outline
+        self._initial_width = width
+        self._initial_rotate = rotate
+        
         self._initial_data_loaded = False
         self._coords = None
         self._plddts = None
@@ -156,7 +163,11 @@ class view:
         viewer_config = {
             "size": self.size,
             "color": self._resolved_color_mode, # Send 'rainbow' or 'chain'
-            "viewer_id": self._viewer_id
+            "viewer_id": self._viewer_id,
+            "default_shadow": self._initial_shadow_enabled,
+            "default_outline": self._initial_outline_enabled,
+            "default_width": self._initial_width,
+            "default_rotate": self._initial_rotate
         }
         config_script = f"""
         <script id="viewer-config">
@@ -329,20 +340,23 @@ class view:
             filepath (str): Path to the PDB or CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
+            trajectory_name (str, optional): Name for the new trajectory.
         """
         structure = gemmi.read_structure(filepath)
         
-        # --- MODIFIED: Auto-color logic moved to add() ---
-        # The color mode resolution now happens in the first call to add()
-        
         first_model_added = False
         for model in structure:
+            
+            # Default behavior: process the model from the file directly
+            model_to_process = model
+
             coords = []
             plddts = []
             atom_chains = []
             atom_types = []
 
-            for chain in model:
+            # Now, iterate over the chains in the *processed* model (either ASU or biounit)
+            for chain in model_to_process:
                 if chains is None or chain.name in chains:
                     for residue in chain:
                         # Skip water
