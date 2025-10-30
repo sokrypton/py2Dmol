@@ -21,14 +21,11 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - name: Create virtual environment
-        run: uv venv
       - name: Install dependencies and run checks
         run: |
-          source .venv/bin/activate
-          uv pip install -e . --group dev
-          ruff check .
-          basedpyright
+          uv sync --group dev
+          uv run ruff check .
+          uv run basedpyright
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -45,13 +42,10 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - name: Create virtual environment
-        run: uv venv
       - name: Install dependencies and run tests
         run: |
-          source .venv/bin/activate
-          uv pip install -e . --group dev
-          python -m pytest --cov=py2dmol --cov-report=xml --cov-report=term
+          uv sync --group tests
+          uv run pytest --cov=py2dmol --cov-report=xml --cov-report=term
       - name: Upload coverage to Codecov
         if: github.ref == 'refs/heads/main'
         uses: codecov/codecov-action@v4
@@ -76,15 +70,12 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - name: Create virtual environment
-        run: uv venv
       # This job is expected to fail because there is no docs directory.
       - name: Install dependencies and build docs
         run: |
-          source .venv/bin/activate
-          uv pip install -e . --group dev
+          uv sync --group docs
           cd docs/
-          make html
+          uv run make html
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
