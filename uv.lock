@@ -2562,24 +2562,18 @@ dependencies = [
     { name = "ruff" },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "basedpyright" },
-]
-tests = [
-    { name = "pytest", version = "8.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
-    { name = "pytest", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
-    { name = "pytest-cov", version = "5.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
-    { name = "pytest-cov", version = "7.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
-]
-
 [package.dev-dependencies]
 dev = [
+    { name = "basedpyright" },
     { name = "myst-nb", version = "0.17.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
     { name = "myst-nb", version = "1.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "myst-parser", version = "0.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
     { name = "myst-parser", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.9.*'" },
     { name = "myst-parser", version = "4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "pytest", version = "8.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "pytest", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
+    { name = "pytest-cov", version = "5.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
+    { name = "pytest-cov", version = "7.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
     { name = "sphinx", version = "5.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
     { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.9.*'" },
     { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
@@ -2604,21 +2598,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "basedpyright", marker = "extra == 'dev'", specifier = ">=1.32.1" },
     { name = "gemmi" },
     { name = "ipython" },
     { name = "numpy" },
-    { name = "pytest", marker = "extra == 'tests'", specifier = ">=7.0.1" },
-    { name = "pytest-cov", marker = "extra == 'tests'", specifier = ">=4.0.0" },
     { name = "requests", specifier = ">=2.32.4" },
     { name = "ruff" },
 ]
-provides-extras = ["dev", "tests"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "basedpyright", specifier = ">=1.32.1" },
     { name = "myst-nb", specifier = ">=0.17.2" },
     { name = "myst-parser", specifier = ">=0.18.1" },
+    { name = "pytest", specifier = ">=7.0.1" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "sphinx", specifier = ">=5.3.0" },
     { name = "sphinx-autobuild", specifier = ">=2021.3.14" },
     { name = "sphinx-autodoc-typehints", specifier = ">=1.23.0" },

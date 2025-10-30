@@ -250,10 +250,14 @@ class View:
       logger.exception("Could not find the HTML template file.")
       return
 
+    # Ensure color mode is never "auto" when sending to HTML
+    # Fall back to "rainbow" if somehow still "auto"
+    color_mode = self._resolved_color_mode if self._resolved_color_mode != "auto" else "rainbow"
+    
     # Use the resolved color mode for the config sent to HTML
     viewer_config = {
       "size": self.size,
-      "color": self._resolved_color_mode,  # Send 'rainbow' or 'chain'
+      "color": color_mode,  # Send 'rainbow' or 'chain', never 'auto'
       "viewer_id": self._viewer_id,
       "default_shadow": self._initial_shadow_enabled,
       "default_outline": self._initial_outline_enabled,
@@ -321,12 +325,13 @@ class View:
                                 iframe.contentWindow.postMessage(msg, '*');
                             }}
                         }}
-                    }});
-                    // Mark listener as added so we don't add it multiple times
-                    window.py2dmol_message_listener_added = true;
-                }}
-            </script>
-            """
+                    }}
+                }});
+                // Mark listener as added so we don't add it multiple times
+                window.py2dmol_message_listener_added = true;
+            }}
+        </script>
+        """
 
     # Modified: Width remains at 220px
     iframe_html = f"""

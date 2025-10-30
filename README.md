@@ -15,6 +15,12 @@ A Python library for visualizing protein, DNA, and RNA structures in 2D, designe
 uv pip install py2Dmol
 ```
 
+or for cutting edge releases
+
+```bash
+uv pip install git+https://github.com/sokrypton/py2Dmol
+```
+
 ## Usage
 
 Here are a few examples of how to use py2Dmol.
@@ -24,13 +30,13 @@ Here are a few examples of how to use py2Dmol.
 You can initialize the viewer with several options:
 
 ```python
-import py2Dmol
+import py2dmol
 
 # Default viewer
-viewer = py2Dmol.view()
+viewer = py2dmol.view()
 
 # Customized viewer
-viewer = py2Dmol.view(
+viewer = py2dmol.view(
     size=(600, 600),   # Set canvas size (width, height)
     color='chain',     # Set initial color mode
     shadow=True,       # Enable shadows by default
@@ -51,8 +57,8 @@ You can load a structure directly from a PDB or CIF file using the `from_pdb` me
 If the file contains multiple models, they will be loaded as an animation.
 
 ```python
-import py2Dmol
-viewer = py2Dmol.view()
+import py2dmol
+viewer = py2dmol.view()
 viewer.add_pdb('my_protein.pdb')
 ```
 
@@ -114,7 +120,7 @@ chains = ['A'] * 100
 atom_types = ['P'] * 100
 
 # Display
-viewer = py2Dmol.view()
+viewer = py2dmol.view()
 
 # Animate: gradually add superhelical twist
 # Wrapping around a larger cylinder with increasing turns
@@ -200,7 +206,7 @@ all_plddts = np.concatenate([protein_plddts, ligand_plddts, ligand_plddts])
 all_chains = protein_chains + dna_chains + ligand_chains
 all_types = protein_types + dna_types + ligand_types
 
-viewer = py2Dmol.view(
+viewer = py2dmol.view(
     color='chain', 
     size=(600, 600), 
     width=2.5, 
@@ -243,11 +249,11 @@ The viewer supports multiple coloring schemes:
 
 ```python
 # Use pLDDT coloring
-viewer = py2Dmol.view(color='plddt')
+viewer = py2dmol.view(color='plddt')
 viewer.add_pdb('alphafold_prediction.pdb')
 
 # Use chain coloring
-viewer = py2Dmol.view(color='chain')
+viewer = py2dmol.view(color='chain')
 viewer.add_pdb('multi_chain_complex.pdb')
 ```
 
@@ -276,7 +282,7 @@ Both formats support multi-model files for animation playback.
 
 ```python
 # Load first trajectory
-viewer = py2Dmol.view()
+viewer = py2dmol.view()
 viewer.add_pdb('simulation1.pdb')
 
 # Start a new trajectory

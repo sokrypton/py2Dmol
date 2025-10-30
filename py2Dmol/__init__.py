@@ -1,4 +1,4 @@
-"""py2Dmol is a Python library for visualizing protein structures in 2D."""
+"""A Python library for visualizing protein structures in 2D."""  # noqa: N999
 
 from .viewer import View
 
