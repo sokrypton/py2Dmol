@@ -2,7 +2,9 @@
 
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for use in Google Colab and Jupyter environments.
 
+<img width="322" height="349" alt="image" src="https://github.com/user-attachments/assets/5f043fa8-99d6-4988-aaa1-68d1bc48660b" />
 <img width="462" height="349" alt="image" src="https://github.com/user-attachments/assets/3b52d584-1d7e-45cc-a620-77377f0a0c01" />
+
 
 ## Installation
 ```bash
