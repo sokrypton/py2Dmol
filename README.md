@@ -173,10 +173,7 @@ viewer = py2Dmol.view()
 
 # 2. Show the viewer *before* adding data to enter "Live Mode"
 viewer.show()
-```
 
-**Then in another cell (or same):**
-```python
 # 3. Now, add frames in a loop
 for frame in range(60):
     w = np.sin(frame * np.pi / 15)
@@ -190,7 +187,7 @@ for frame in range(60):
                new_traj=(frame == 0)) # Start a new traj on frame 0
     
     # Wait a bit so you can see the animation
-    time.sleep(0.05)
+    time.sleep(0.1)
 ```
 
 ---
