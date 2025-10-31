@@ -1573,55 +1573,89 @@
         };
 
 
-        // 9. Load initial data
-        try {
-            // Don't load window.proteinData, real data is sent by Python messages.
-            // Just set the initial frame to -1 (empty).
-            if (window.proteinData && window.proteinData.coords && window.proteinData.coords.length > 0) {
+        // 9. Load initial data (NEW LOGIC)
+        let isStaticViewer = false;
+
+        if (window.staticTrajectoryData && window.staticTrajectoryData.length > 0) {
+            // === STATIC MODE (from show()) ===
+            isStaticViewer = true;
+            try {
+                // Loop over all trajectories
+                for (const traj of window.staticTrajectoryData) {
+                    if (traj.name && traj.frames && traj.frames.length > 0) {
+                        // Add the first frame, which creates the trajectory
+                        window.renderer.addFrame(traj.frames[0], traj.name);
+                        
+                        // Add any remaining frames
+                        for (let i = 1; i < traj.frames.length; i++) {
+                            window.renderer.addFrame(traj.frames[i], traj.name);
+                        }
+                    }
+                }
+                // Set view to the first frame of the first trajectory
+                if (window.staticTrajectoryData.length > 0) {
+                    window.renderer.currentTrajectoryName = window.staticTrajectoryData[0].name;
+                    window.renderer.trajectorySelect.value = window.staticTrajectoryData[0].name;
+                    window.renderer.setFrame(0);
+                }
+            } catch (error) {
+                console.error("Error loading static trajectory data:", error);
+                window.renderer.setFrame(-1); // Start empty on error
+            }
+            
+        } else if (window.proteinData && window.proteinData.coords && window.proteinData.coords.length > 0) {
+            // === HYBRID MODE (first frame) ===
+            try {
+                // Load the single, statically-injected frame into "0"
                 window.renderer.addFrame(window.proteinData, "0"); 
-            } else {
-                // No initial data, start with an empty canvas.
+            } catch (error) {
+                console.error("Error loading initial data:", error);
                 window.renderer.setFrame(-1);
             }
-        } catch (error) {
-            console.error("Error loading initial data:", error);
+        } else {
+            // === EMPTY DYNAMIC MODE ===
+            // No initial data, start with an empty canvas.
             window.renderer.setFrame(-1);
         }
 
-        // 10. Add postMessage listener for Jupyter/iframe communication
-        window.addEventListener('message', (event) => {
-            if (event.data && event.data.type) {
-                if (event.data.type === 'py2DmolUpdate') {
-                    try {
-                        // Pass trajectoryName from message
-                        window.handlePythonUpdate(
-                            JSON.stringify(event.data.payload),
-                            event.data.trajectoryName 
-                        );
-                    } catch (e) {
-                         console.error("Failed to handle postMessage (update):", e, event.data.payload);
-                    }
-                } else if (event.data.type === 'py2DmolNewTrajectory') {
-                    try {
-                        window.handlePythonNewTrajectory(event.data.name);
-                    } catch (e) {
-                         console.error("Failed to handle postMessage (new trajectory):", e, event.data.name);
-                    }
-                } else if (event.data.type === 'py2DmolClearAll') {
-                    try {
-                        window.handlePythonClearAll();
-                    } catch (e) {
-                         console.error("Failed to handle postMessage (clear all):", e);
+        // 10. Add postMessage listener (MODIFIED)
+        // Only listen for messages if this is NOT a static viewer
+        if (!isStaticViewer) {
+            window.addEventListener('message', (event) => {
+                if (event.data && event.data.type) {
+                    if (event.data.type === 'py2DmolUpdate') {
+                        try {
+                            // Pass trajectoryName from message
+                            window.handlePythonUpdate(
+                                JSON.stringify(event.data.payload),
+                                event.data.trajectoryName 
+                            );
+                        } catch (e) {
+                             console.error("Failed to handle postMessage (update):", e, event.data.payload);
+                        }
+                    } else if (event.data.type === 'py2DmolNewTrajectory') {
+                        try {
+                            window.handlePythonNewTrajectory(event.data.name);
+                        } catch (e) {
+                             console.error("Failed to handle postMessage (new trajectory):", e, event.data.name);
+                        }
+                    } else if (event.data.type === 'py2DmolClearAll') {
+                        try {
+                            window.handlePythonClearAll();
+                        } catch (e) {
+                             console.error("Failed to handle postMessage (clear all):", e);
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         // 11. Start the main animation loop
         window.renderer.animate();
         
-        // 12. Notify the parent window that the iframe is loaded and ready
-        if (window.parent) {
+        // 12. Notify the parent window that the iframe is loaded and ready (MODIFIED)
+        // Only notify if not static (i.e., we are a dynamic/hybrid viewer)
+        if (window.parent && !isStaticViewer) {
             window.parent.postMessage({ 
                 type: "py2dmol_ready", 
                 viewer_id: config.viewer_id 

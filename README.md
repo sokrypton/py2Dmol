@@ -4,89 +4,85 @@ A Python library for visualizing protein, DNA, and RNA structures in 2D, designe
 
 <img width="462" height="349" alt="image" src="https://github.com/user-attachments/assets/3b52d584-1d7e-45cc-a620-77377f0a0c01" />
 
-
 ## Installation
 ```bash
 pip install py2Dmol
 ```
 
-## Usage
+## Basic Usage (Static Mode)
 
-Here are a few examples of how to use py2Dmol.
+The recommended way to use `py2Dmol` is in "Static Mode." You create a viewer, add all your data, and then call `viewer.show()` at the end. This creates a 100% persistent and shareable visualization in your notebook.
 
-### Initializing the Viewer
+### Example: Loading a PDB File
 
-You can initialize the viewer with several options:
+This will load the PDB, including all its models as frames, and display it.
+
+**In one cell:**
 ```python
 import py2Dmol
 
-# Default viewer
-viewer = py2Dmol.view()
+# 1. Create a viewer object
+viewer = py2Dmol.view(size=(600, 600))
 
-# Customized viewer
-viewer = py2Dmol.view(
-    size=(600, 600),   # Set canvas size (width, height)
-    color='chain',     # Set initial color mode
-    shadow=True,       # Enable shadows by default
-    outline=True,      # Enable outlines by default
-    width=3.0,         # Set initial line width
-    rotate=False       # Disable auto-rotation by default
-)
-```
-
-### Loading a Structure from a PDB or CIF File
-
-You can load a structure directly from a PDB or CIF file using the `from_pdb` method. This will automatically extract:
-
-- C-alpha atoms for proteins
-- C4' atoms for DNA and RNA
-- All heavy atoms for ligands
-
-If the file contains multiple models, they will be loaded as an animation.
-```python
-import py2Dmol
-viewer = py2Dmol.view()
-viewer.add_pdb('my_protein.pdb')
-```
-
-You can also specify which chains to display:
-```python
+# 2. Add one or more structures
 viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
+
+# 3. Show the final, static viewer
+viewer.show()
+
 ```
 
-### Manually Adding Data
+### Example: Comparing Multiple Trajectories
 
-You can also add data to the viewer using the `add` method. This is useful for visualizing custom trajectories or molecular data.
+You can add multiple PDB files as separate, switchable trajectories.
+
+**In one cell:**
 ```python
-import numpy as np
+import py2Dmol
 
-def circle_morph(n=20, wave=0):
-    """n points, constant ~3.8Å bonds, wavy deformation."""
-    # Target bond length
-    bond = 3.8
-    perimeter = n * bond
-    radius = perimeter / (2 * np.pi)
-    
-    angles = np.linspace(0, 2*np.pi, n, endpoint=False)
-    r = radius * (1 + wave * 0.2 * np.sin(4 * angles))
-    
-    return np.column_stack([
-        r * np.cos(angles),
-        r * np.sin(angles),
-        wave * 3 * np.cos(angles)
-    ])
-
-# Animate
 viewer = py2Dmol.view()
-for frame in range(30):
-    w = np.sin(frame * np.pi / 15)
-    viewer.add(circle_morph(20, w), np.full((20,),80.0), ['A']*20, ['P']*20)
+# Load first trajectory
+viewer.add_pdb('simulation1.pdb')
+
+# Start a new trajectory
+viewer.add_pdb('simulation2.pdb', new_traj=True)
+
+# Use the dropdown to switch between "0" and "1"
+viewer.show()
 ```
 
-### Mixed Structure Example
+### Example: Customizing the View
 
-You can create custom visualizations with multiple molecule types:
+You can pass several options to the `view` constructor.
+
 ```python
+import py2Dmol
+
+viewer = py2Dmol.view(
+    size=(600, 600),     # Set canvas size (width, height)
+    color='auto',        # Set initial color mode: ["auto","rainbow","chain","plddt"]
+    shadow=True,         # Enable shadows by default
+    outline=True,        # Enable outlines by default
+    width=3.0,           # Set initial line width
+    rotate=False,        # Disable auto-rotation by default
+    autoplay=False,      # Disable auto-play (if trajectory or multiple models)
+    hide_box=False,      # hide box around molecule
+    hide_controls=False, # hide all controls
+)
+
+viewer.add_pdb("my_complex.cif")
+viewer.show()
+```
+
+---
+
+### Example: Mixed Structure (Protein, DNA, Ligand)
+
+You can manually add coordinates for different molecule types (P, D, R, L).
+
+**In one cell:**
+```python
+import py2Dmol
 import numpy as np
 
 def helix(n, radius=2.3, rise=1.5, rotation=100):
@@ -122,9 +118,86 @@ types = ['P']*50 + ['D']*30 + ['L']*6
 
 viewer = py2Dmol.view(color='chain', size=(600, 600), width=2.5, outline=False)
 viewer.add(coords, plddts, chains, types)
+
+# Show the final static viewer
+viewer.show()
 ```
 
-## Atom Types and Representative Atoms
+---
+
+## Advanced: Static vs. Live Mode
+
+`py2Dmol` has two modes, determined by *when* you call `viewer.show()`.
+
+### Mode 1: Static (Batch) Mode (Default & Recommended)
+
+This is the mode shown above. You call `add()` or `add_pdb()` first to load all your data, and then call `show()` at the end.
+
+* **Workflow:** `viewer.add*()` ➔ `viewer.show()`
+* **Result:** Creates a single, 100% persistent viewer that contains all your data. This is ideal for saving, sharing, and reloading notebooks.
+
+### Mode 2: Live (Dynamic) Mode
+
+This mode is for live, dynamic updates (e.g., in a loop). You call `show()` *before* you add any data.
+
+* **Workflow:** `viewer.show()` ➔ `viewer.add*()`
+* **Result:** `show()` creates an empty, live viewer. Subsequent `add()` calls send data to it one by one.
+* **Warning:** This mode is **not persistent**. The viewer will be blank when you close and reopen the notebook, as the data is not saved.
+
+#### Live Mode Example (Wiggle Animation)
+
+This example only works when run in a notebook. It will dynamically add frames to the viewer one at a time.
+
+**In the first cell:**
+```python
+import py2Dmol
+import numpy as np
+import time
+
+# Define the wiggle function
+def circle_morph(n=20, wave=0):
+    """n points, constant ~3.8Å bonds, wavy deformation."""
+    bond = 3.8
+    perimeter = n * bond
+    radius = perimeter / (2 * np.pi)
+    angles = np.linspace(0, 2*np.pi, n, endpoint=False)
+    r = radius * (1 + wave * 0.2 * np.sin(4 * angles))
+    return np.column_stack([
+        r * np.cos(angles),
+        r * np.sin(angles),
+        wave * 3 * np.cos(angles)
+    ])
+
+# 1. Create the viewer object
+viewer = py2Dmol.view()
+
+# 2. Show the viewer *before* adding data to enter "Live Mode"
+viewer.show()
+```
+
+**Then in another cell (or same):**
+```python
+# 3. Now, add frames in a loop
+for frame in range(60):
+    w = np.sin(frame * np.pi / 15)
+    coords = circle_morph(20, w)
+    plddts = np.full((20,), 80.0)
+    chains = ['A'] * 20
+    atom_types = ['P'] * 20
+    
+    # Send the new frame to the live viewer
+    viewer.add(coords, plddts, chains, atom_types, 
+               new_traj=(frame == 0)) # Start a new traj on frame 0
+    
+    # Wait a bit so you can see the animation
+    time.sleep(0.05)
+```
+
+---
+
+## Reference
+
+### Atom Types and Representative Atoms
 
 | Molecule Type | Atom Type Code | Representative Atom | Purpose |
 |---------------|----------------|---------------------|---------|
@@ -133,7 +206,7 @@ viewer.add(coords, plddts, chains, types)
 | RNA | R | C4' (sugar carbon) | Backbone trace |
 | Ligand | L | All heavy atoms | Full structure |
 
-## Distance Thresholds
+### Distance Thresholds
 
 The viewer uses different distance thresholds for creating bonds:
 
@@ -141,13 +214,7 @@ The viewer uses different distance thresholds for creating bonds:
 - DNA/RNA (C4'-C4'): 7.5 Å
 - Ligand bonds: 2.0 Å
 
-These thresholds are optimized for their respective molecular structures and ensure proper connectivity visualization.
-
-## Chains
-
-Chains are automatically extracted from the PDB or CIF file. When loading a structure, you can choose to display all chains or specify a subset of chains to visualize.
-
-## Color Modes
+### Color Modes
 
 The viewer supports multiple coloring schemes:
 
@@ -155,52 +222,10 @@ The viewer supports multiple coloring schemes:
 - **rainbow**: Colors atoms sequentially from N-terminus to C-terminus (or 5' to 3' for nucleic acids)
 - **plddt**: Colors based on B-factor/pLDDT scores (useful for AlphaFold predictions)
 - **chain**: Each chain receives a distinct color
-```python
-# Use pLDDT coloring
-viewer = py2Dmol.view(color='plddt')
-viewer.add_pdb('alphafold_prediction.pdb')
 
-# Use chain coloring
-viewer = py2Dmol.view(color='chain')
-viewer.add_pdb('multi_chain_complex.pdb')
-```
-
-## Features
-
-- Interactive 3D-style visualization with rotation and zoom
-- Animation support for trajectories and multiple models
-- Automatic structure detection for proteins, DNA, and RNA
-- Multiple color schemes (auto, rainbow, pLDDT, chain)
-- Ligand visualization with automatic bond detection
-- Toggleable effects for depth perception (shadow, outline)
-- Adjustable line width
-- Real-time auto-rotation (toggleable)
-- Trajectory management for comparing multiple simulations
-
-## Supported File Formats
+### Supported File Formats
 
 - PDB (.pdb)
 - mmCIF (.cif)
 
-Both formats support multi-model files for animation playback.
-
-## Examples
-
-### Comparing Multiple Trajectories
-```python
-# Load first trajectory
-viewer = py2Dmol.view()
-viewer.add_pdb('simulation1.pdb')
-
-# Start a new trajectory
-viewer.add_pdb('simulation2.pdb', new_traj=True)
-
-# Use the dropdown to switch between trajectories
-```
-
-## Requirements
-
-- Python 3.6+
-- NumPy
-- gemmi (for PDB/CIF parsing)
-- IPython (for display in notebooks)
+Both formats support multi-model files, which are loaded as frames in a single trajectory.

@@ -5,7 +5,9 @@ try:
     IS_COLAB = True
 except ImportError:
     IS_COLAB = False
+
 from IPython.display import display, HTML, Javascript
+    
 import importlib.resources
 from . import resources as py2dmol_resources
 import gemmi
@@ -49,15 +51,19 @@ class view:
         self._initial_autoplay = autoplay
         self._initial_hide_box = hide_box
         
-        self._initial_data_loaded = False
+        self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
+        
+        # --- NEW STATE ---
+        # The viewer's mode is determined by when .show() is called.
+        self.trajectories = []               # Store all data
+        self._current_trajectory_data = None # List to hold frames for current trajectory
+        self._is_live = False                # True if .show() was called *before* .add()
+        
+        # --- Alignment/Dynamic State ---
         self._coords = None
         self._plddts = None
         self._chains = None
         self._atom_types = None
-        self._trajectory_counter = 0
-        self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
-        
-        self._current_trajectory_name = None
 
     def _get_data_dict(self):
         """Serializes the current coordinate state to a dict."""
@@ -173,14 +179,26 @@ class view:
             """
             display(Javascript(js_code))
 
-    def _display_viewer(self):
-        """Internal: Renders the iframe and handshake script for the first time."""
+    def _display_viewer(self, static_data=None, pure_static=False):
+        """
+        Internal: Renders the iframe and handshake script.
+        
+        Args:
+            static_data (list, optional):
+                - A list of trajectories (for static 'show()' or hybrid modes).
+            pure_static (bool, optional):
+                - If True, this is a final static viewer (from .show())
+                - If False, this is a dynamic viewer that needs listeners.
+                
+        Returns:
+            str: The complete HTML string to be displayed.
+        """
         try:
             with importlib.resources.open_text(py2dmol_resources, 'pseudo_3D_viewer.html') as f:
                 html_template = f.read()
         except FileNotFoundError:
             print("Error: Could not find the HTML template file.")
-            return
+            return "" # Return empty string on error
 
         # Use the resolved color mode for the config sent to HTML
         viewer_config = {
@@ -201,74 +219,83 @@ class view:
         </script>
         """
         
-        # NOTE: Initial data is now sent via an 'add' message, so proteinData is empty.
-        data_script = f"""
-        <script id="protein-data">
-          window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "atom_types": [] }};
-        </script>
-        """
+        data_script = ""
+        # A "pure static" viewer (from .show(after_add)) doesn't need the handshake.
+        # A "dynamic" viewer (from .show(before_add)) DOES.
+        is_dynamic_viewer = not pure_static
+        
+        if static_data and isinstance(static_data, list):
+            # Static 'show()' or 'Hybrid' mode: inject all trajectories
+            data_json = json.dumps(static_data)
+            data_script = f'<script id="static-data">window.staticTrajectoryData = {data_json};</script>'
+        else:
+            # Pure Dynamic mode: inject empty data, will be populated by messages
+            data_script = '<script id="protein-data">window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "atom_types": [] }};</script>'
         
         injection_scripts = config_script + "\n" + data_script
         
+        final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
+            
+        iframe_width = self.size[0]
+        if not self._initial_hide_controls:
+            iframe_width += 180 # Width of side panel
+        
+        iframe_height = self.size[1]
+        if not self._initial_hide_controls:
+             iframe_height += 80 # Height for anim controls
+
         if not IS_COLAB:
             # For Jupyter: wrap in iframe with srcdoc
-            final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
             # Escape for srcdoc attribute
             final_html_escaped = final_html.replace('"', '&quot;').replace("'", '&#39;')
             
-            # Add the queueing and handshake listener script
-            handshake_script = f"""
-            <script>
-                // 1. Setup global queue and iframe readiness state
-                if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
-                if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
+            # --- Only add handshake script if it's a DYNAMIC viewer ---
+            handshake_script = ""
+            if is_dynamic_viewer:
+                handshake_script = f"""
+                <script>
+                    // 1. Setup global queue and iframe readiness state
+                    if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
+                    if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
+                    
+                    // 2. Initialize queue and flag for this *specific* viewer
+                    if (!window.py2dmol_queue['{self._viewer_id}']) {{
+                        window.py2dmol_queue['{self._viewer_id}'] = [];
+                    }}
+                    window.py2dmol_ready_flags['{self._viewer_id}'] = false;
                 
-                // 2. Initialize queue and flag for this *specific* viewer
-                if (!window.py2dmol_queue['{self._viewer_id}']) {{
-                    window.py2dmol_queue['{self._viewer_id}'] = [];
-                }}
-                window.py2dmol_ready_flags['{self._viewer_id}'] = false;
-            
-                // 3. Define the 'message' listener (do this only once)
-                if (!window.py2dmol_message_listener_added) {{
-                    window.addEventListener('message', (event) => {{
-                        // Check for our specific "ready" message
-                        if (event.data && event.data.type === 'py2dmol_ready' && event.data.viewer_id) {{
-                            let viewerId = event.data.viewer_id;
-                            
-                            // 3a. Mark this viewer as ready
-                            window.py2dmol_ready_flags[viewerId] = true;
-                            
-                            // 3b. Find the correct iframe
-                            let iframe = document.querySelector(`iframe[data-viewer-id="${{viewerId}}"]`);
-                            if (!iframe || !iframe.contentWindow) {{
-                                console.error(`py2Dmol: Received ready signal from ${{viewerId}} but cannot find iframe.`);
-                                return;
-                            }}
+                    // 3. Define the 'message' listener (do this only once)
+                    if (!window.py2dmol_message_listener_added) {{
+                        window.addEventListener('message', (event) => {{
+                            // Check for our specific "ready" message
+                            if (event.data && event.data.type === 'py2dmol_ready' && event.data.viewer_id) {{
+                                let viewerId = event.data.viewer_id;
+                                
+                                // 3a. Mark this viewer as ready
+                                window.py2dmol_ready_flags[viewerId] = true;
+                                
+                                // 3b. Find the correct iframe
+                                let iframe = document.querySelector(`iframe[data-viewer-id="${{viewerId}}"]`);
+                                if (!iframe || !iframe.contentWindow) {{
+                                    console.error(`py2Dmol: Received ready signal from ${{viewerId}} but cannot find iframe.`);
+                                    return;
+                                }}
 
-                            // 3c. Process any pending messages for this viewer
-                            let queue = window.py2dmol_queue[viewerId];
-                            if (queue) {{
-                                while (queue.length > 0) {{
-                                    let msg = queue.shift();
-                                    iframe.contentWindow.postMessage(msg, '*');
+                                // 3c. Process any pending messages for this viewer
+                                let queue = window.py2dmol_queue[viewerId];
+                                if (queue) {{
+                                    while (queue.length > 0) {{
+                                        let msg = queue.shift();
+                                        iframe.contentWindow.postMessage(msg, '*');
+                                    }}
                                 }}
                             }}
-                        }}
-                    }});
-                    // Mark listener as added so we don't add it multiple times
-                    window.py2dmol_message_listener_added = true;
-                }}
-            </script>
-            """
-            
-            iframe_width = self.size[0]
-            if not self._initial_hide_controls:
-                iframe_width += 180 # Width of side panel
-            
-            iframe_height = self.size[1]
-            if not self._initial_hide_controls:
-                 iframe_height += 80 # Height for anim controls
+                        }});
+                        // Mark listener as added so we don't add it multiple times
+                        window.py2dmol_message_listener_added = true;
+                    }}
+                </script>
+                """
             
             iframe_html = f"""
             <iframe 
@@ -279,36 +306,50 @@ class view:
             ></iframe>
             {handshake_script}
             """
-            display(HTML(iframe_html))
+            return iframe_html
         else:
             # For Colab: use direct HTML
-            final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
-            display(HTML(final_html))
+            # Wrap Colab output in a div for widget clearing
+            colab_html = f"""
+            <div data-viewer-id="{self._viewer_id}" style="width: {iframe_width}px; height: {iframe_height}px; position: relative;">
+                {final_html}
+            </div>
+            """
+            return colab_html
 
+    def _display_html(self, html_string):
+        """Displays the HTML simply, without widgets."""
+        # We no longer use ipywidgets, just display directly.
+        # The .show() method will now print a *new* cell.
+        display(HTML(html_string))
 
     def clear(self):
         """Clears all trajectories and frames from the viewer."""
-        if self._initial_data_loaded:
+        # Clear python data
+        self.trajectories = []
+        self._current_trajectory_data = None
+            
+        # Dynamic mode: send clear message if viewer is active
+        if self._is_live:
             self._send_message({
                 "type": "py2DmolClearAll"
             })
-        
-        # Reset Python-side state
-        self._initial_data_loaded = False # Next call to add() will need to re-display
+            
+        # Reset python state
         self._coords = None
         self._plddts = None
         self._chains = None
         self._atom_types = None
-        self._trajectory_counter = 0
-        self._current_trajectory_name = None
+        self._is_live = False
+        
+        # We can't clear the output cell, so we just reset state
+        # and the user can clear the cell manually if needed.
+        print("py2dmol: Viewer state cleared. Re-run .add() or .show() to display again.")
+
 
     def new_traj(self, trajectory_name=None):
-        if not self._initial_data_loaded:
-            # If no data has ever been added, the viewer isn't visible.
-            # The first call to add() will *automatically* create
-            # the first trajectory, so we don't need to do anything here.
-            return
-
+        """Starts a new trajectory for subsequent 'add' calls."""
+        
         # This is a new trajectory, reset the alignment reference
         self._coords = None 
         self._plddts = None
@@ -316,20 +357,27 @@ class view:
         self._atom_types = None
 
         if trajectory_name is None:
-            trajectory_name = f"{self._trajectory_counter}"
-        self._trajectory_counter += 1
-        
-        self._current_trajectory_name = trajectory_name
-        
-        self._send_message({
-            "type": "py2DmolNewTrajectory",
-            "name": trajectory_name
+            trajectory_name = f"{len(self.trajectories)}"
+            
+        # Always update the python-side data
+        self._current_trajectory_data = [] # List to hold frames
+        self.trajectories.append({
+            "name": trajectory_name,
+            "frames": self._current_trajectory_data
         })
-
+        
+        # Send message *only if* in dynamic/hybrid mode and already displayed
+        if self._is_live:
+            self._send_message({
+                "type": "py2DmolNewTrajectory",
+                "name": trajectory_name
+            })
+                
     def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False, trajectory_name=None):
         """
         Adds a new frame of data to the viewer.
-        If this is the first time 'add' is called, it will display the viewer.
+        
+        Behavior depends on when .show() is called.
         
         Args:
             coords (np.array): Nx3 array of coordinates.
@@ -339,8 +387,8 @@ class view:
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
         """
         
-        # If this is the first data being added AND color is 'auto', decide now.
-        if not self._initial_data_loaded and self._initial_color_mode == "auto":
+        # --- Step 1: Handle "Auto-Color" Resolution (if first add call) ---
+        if not self._is_live and not self.trajectories and self._initial_color_mode == "auto":
             if chains is not None:
                 unique_chains = set(c for c in chains if c and c.strip())
                 if len(unique_chains) > 1:
@@ -348,34 +396,32 @@ class view:
                 else:
                     self._resolved_color_mode = "rainbow"
             else:
-                 # If no chains provided for the first frame, default to rainbow
                 self._resolved_color_mode = "rainbow"
-        elif not self._initial_data_loaded:
-             # If color was specified (not auto), use it directly
+        elif not self._is_live and not self.trajectories:
              self._resolved_color_mode = self._initial_color_mode
 
-        # 1. Display the iframe if this is the very first call
-        # This now uses self._resolved_color_mode which is no longer "auto"
-        if not self._initial_data_loaded:
-            self._display_viewer()
-            self._initial_data_loaded = True
-            new_traj = True # First call always starts a new trajectory
-
-        # 2. Handle new trajectory creation
-        if new_traj:
-            self.new_traj(trajectory_name)
-
-        # 3. Update Python-side state (aligns to self._coords)
-        # If new_traj was true, self._coords was None, so this just sets self._coords = coords
-        # If new_traj was false, this aligns coords to the previous frame in this trajectory
+        # --- Step 2: Update Python-side state (aligns to self._coords) ---
         self._update(coords, plddts, chains, atom_types)
+        data_dict = self._get_data_dict() # Uses self._coords, which is now aligned
 
-        # 4. Send the frame data
-        self._send_message({
-            "type": "py2DmolUpdate",
-            "trajectoryName": self._current_trajectory_name,
-            "payload": self._get_data_dict() # _get_data_dict uses self._coords, which is now aligned
-        })
+        # --- Step 3: Handle trajectory creation ---
+        if new_traj or not self.trajectories:
+            self.new_traj(trajectory_name)
+        
+        # Safeguard: ensure _current_trajectory_data exists
+        if self._current_trajectory_data is None:
+            self.new_traj(trajectory_name)
+            
+        # --- Step 4: Always save data to Python list ---
+        self._current_trajectory_data.append(data_dict)
+
+        # --- Step 5: Send message if in "live" mode ---
+        if self._is_live:
+            self._send_message({
+                "type": "py2DmolUpdate",
+                "trajectoryName": self.trajectories[-1]["name"],
+                "payload": data_dict
+            })
 
     def add_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None):
         """
@@ -388,92 +434,143 @@ class view:
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
             trajectory_name (str, optional): Name for the new trajectory.
         """
+        
+        # --- Handle Auto-Color Resolution (if first add call) ---
+        # We need to parse the first model *before* displaying
+        # to decide on 'chain' or 'rainbow'
+        if not self._is_live and not self.trajectories and self._initial_color_mode == "auto":
+            try:
+                # Peek at the first model's chains
+                structure_peek = gemmi.read_structure(filepath)
+                first_model_chains = set()
+                for chain in structure_peek.first_model():
+                    if chains is None or chain.name in chains:
+                        first_model_chains.add(chain.name)
+                
+                if len(first_model_chains) > 1:
+                    self._resolved_color_mode = "chain"
+                else:
+                    self._resolved_color_mode = "rainbow"
+            except Exception:
+                self._resolved_color_mode = "rainbow" # Default on error
+        elif not self._is_live and not self.trajectories:
+             self._resolved_color_mode = self._initial_color_mode
+
+        # --- Now, process the file ---
         structure = gemmi.read_structure(filepath)
         
-        first_model_added = False
+        # --- Handle new_traj logic ---
+        if new_traj or not self.trajectories:
+             # This call will set up the trajectory in python
+             # AND send a message if in "live" mode
+             self.new_traj(trajectory_name)
+        
+        current_traj_name = self.trajectories[-1]["name"]
+
+        # --- Simplified Logic ---
+        # Just call .add() for each model.
+        # .add() will automatically handle batching vs. sending.
         for model in structure:
-            
-            # Default behavior: process the model from the file directly
             model_to_process = model
-
-            coords = []
-            plddts = []
-            atom_chains = []
-            atom_types = []
-
-            # Now, iterate over the chains in the *processed* model (either ASU or biounit)
-            for chain in model_to_process:
-                if chains is None or chain.name in chains:
-                    for residue in chain:
-                        # Skip water
-                        if residue.name == 'HOH':
-                            continue
-
-                        # Check molecule type
-                        residue_info = gemmi.find_tabulated_residue(residue.name)
-                        is_protein = residue_info.is_amino_acid()
-                        is_nucleic = residue_info.is_nucleic_acid()
-
-                        if is_protein:
-                            # Protein: use CA atom
-                            if 'CA' in residue:
-                                atom = residue['CA'][0]
-                                coords.append(atom.pos.tolist())
-                                plddts.append(atom.b_iso)
-                                atom_chains.append(chain.name)
-                                atom_types.append('P')
-                                
-                        elif is_nucleic:
-                            # DNA/RNA: use C4' atom (sugar carbon)
-                            c4_atom = None
-                            
-                            # Try C4' first (standard naming)
-                            if "C4'" in residue:
-                                c4_atom = residue["C4'"][0]
-                            # Try C4* (alternative naming in some PDB files)
-                            elif "C4*" in residue:
-                                c4_atom = residue["C4*"][0]
-                            
-                            if c4_atom:
-                                coords.append(c4_atom.pos.tolist())
-                                plddts.append(c4_atom.b_iso)
-                                atom_chains.append(chain.name)
-                                
-                                # Distinguish RNA from DNA
-                                rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU']
-                                dna_bases = ['DA', 'DC', 'DG', 'DT', 'T']
-                                
-                                if residue.name in rna_bases or residue.name.startswith('R'):
-                                    atom_types.append('R')
-                                elif residue.name in dna_bases or residue.name.startswith('D'):
-                                    atom_types.append('D')
-                                else:
-                                    # Default to RNA if uncertain
-                                    atom_types.append('R')
-                                    
-                        else:
-                            # Ligand: use all heavy atoms
-                            for atom in residue:
-                                if atom.element.name != 'H':
-                                    coords.append(atom.pos.tolist())
-                                    plddts.append(atom.b_iso)
-                                    atom_chains.append(chain.name)
-                                    atom_types.append('L')
+            coords, plddts, atom_chains, atom_types = self._parse_model(model_to_process, chains)
 
             if coords:
                 coords_np = np.array(coords)
                 plddts_np = np.array(plddts) if plddts else np.full(len(coords), 50.0)
-                
                 if len(coords_np) > 0 and len(plddts_np) == 0:
                     plddts_np = np.full(len(coords_np), 50.0)
 
-                # Only honor new_traj for the *first* model
-                current_model_new_traj = new_traj and not first_model_added
-                
-                # Call add() - this will handle auto-color on the first call
-                # and pass the trajectory name
+                # Call add() - this will handle batch vs. live
                 self.add(coords_np, plddts_np, atom_chains, atom_types,
-                    new_traj=current_model_new_traj, trajectory_name=trajectory_name)
-                first_model_added = True
+                    new_traj=False, trajectory_name=current_traj_name)
 
-    from_pdb = add_pdb
+    def _parse_model(self, model, chains_filter):
+        """Helper function to parse a gemmi.Model object."""
+        coords = []
+        plddts = []
+        atom_chains = []
+        atom_types = []
+
+        for chain in model:
+            if chains_filter is None or chain.name in chains_filter:
+                for residue in chain:
+                    if residue.name == 'HOH':
+                        continue
+
+                    residue_info = gemmi.find_tabulated_residue(residue.name)
+                    is_protein = residue_info.is_amino_acid()
+                    is_nucleic = residue_info.is_nucleic_acid()
+
+                    if is_protein:
+                        if 'CA' in residue:
+                            atom = residue['CA'][0]
+                            coords.append(atom.pos.tolist())
+                            plddts.append(atom.b_iso)
+                            atom_chains.append(chain.name)
+                            atom_types.append('P')
+                            
+                    elif is_nucleic:
+                        c4_atom = None
+                        if "C4'" in residue:
+                            c4_atom = residue["C4'"][0]
+                        elif "C4*" in residue:
+                            c4_atom = residue["C4*"][0]
+                        
+                        if c4_atom:
+                            coords.append(c4_atom.pos.tolist())
+                            plddts.append(c.b_iso)
+                            atom_chains.append(chain.name)
+                            rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU']
+                            dna_bases = ['DA', 'DC', 'DG', 'DT', 'T']
+                            if residue.name in rna_bases or residue.name.startswith('R'):
+                                atom_types.append('R')
+                            elif residue.name in dna_bases or residue.name.startswith('D'):
+                                atom_types.append('D')
+                            else:
+                                atom_types.append('R') # Default to RNA
+                                
+                    else:
+                        # Ligand: use all heavy atoms
+                        for atom in residue:
+                            if atom.element.name != 'H':
+                                coords.append(atom.pos.tolist())
+                                plddts.append(atom.b_iso)
+                                atom_chains.append(chain.name)
+                                atom_types.append('L')
+        return coords, plddts, atom_chains, atom_types
+
+    def from_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None):
+        """
+        [DEPRECATED] Loads a PDB/CIF file and immediately displays it statically.
+        
+        This method is for backward compatibility.
+        It is recommended to use:
+            viewer.add_pdb(...)
+            viewer.show()
+        """
+        self.add_pdb(filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name)
+        self.show()
+
+    def show(self):
+        """
+        Displays the viewer.
+        
+        - If called *before* adding data, it creates an empty "live" viewer
+          that will be dynamically updated.
+        
+        - If called *after* adding data, it creates a final, 100% static
+          viewer that is persistent in the notebook.
+        """
+        
+        if not self.trajectories:
+            # --- "Go Live" Mode ---
+            # .show() was called *before* .add()
+            html_to_display = self._display_viewer(static_data=None, pure_static=False)
+            self._display_html(html_to_display)
+            self._is_live = True
+        else:
+            # --- "Publish Static" Mode ---
+            # .show() was called *after* .add()
+            html_to_display = self._display_viewer(static_data=self.trajectories, pure_static=True)
+            self._display_html(html_to_display)
+            self._is_live = False # Lock the viewer
