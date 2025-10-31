@@ -2,7 +2,6 @@
 
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for use in Google Colab and Jupyter environments.
 
-<img width="322" height="349" alt="image" src="https://github.com/user-attachments/assets/5f043fa8-99d6-4988-aaa1-68d1bc48660b" />
 <img width="462" height="349" alt="image" src="https://github.com/user-attachments/assets/3b52d584-1d7e-45cc-a620-77377f0a0c01" />
 
 
@@ -61,62 +60,27 @@ You can also add data to the viewer using the `add` method. This is useful for v
 ```python
 import numpy as np
 
-def generate_alpha_helix_on_superhelix(n_residues=50, super_radius=0, super_turns=0):
-    """
-    Generate alpha helix wrapped around a cylinder (superhelix).
+def circle_morph(n=20, wave=0):
+    """n points, constant ~3.8Å bonds, wavy deformation."""
+    # Target bond length
+    bond = 3.8
+    perimeter = n * bond
+    radius = perimeter / (2 * np.pi)
     
-    Parameters:
-    - n_residues: number of residues
-    - super_radius: radius of the superhelix (0 = straight helix)
-    - super_turns: number of superhelical turns
-    """
-    coords = []
-    helix_radius = 2.3  # Å from helix axis to CA
-    rise_per_residue = 1.5  # Å along helix axis
-    rotation_per_residue = 100 * np.pi / 180  # 100 degrees
+    angles = np.linspace(0, 2*np.pi, n, endpoint=False)
+    r = radius * (1 + wave * 0.2 * np.sin(4 * angles))
     
-    helix_length = (n_residues - 1) * rise_per_residue
-    
-    for i in range(n_residues):
-        # Alpha helix coordinates
-        helix_angle = i * rotation_per_residue
-        local_x = helix_radius * np.cos(helix_angle)
-        local_y = helix_radius * np.sin(helix_angle)
-        z = i * rise_per_residue
-        
-        if super_radius == 0:
-            # Straight helix
-            x, y = local_x, local_y
-        else:
-            # Wrap around superhelix
-            super_angle = (z / helix_length) * 2 * np.pi * super_turns
-            
-            # Transform: local helix coordinates → superhelix
-            x = (super_radius + local_x) * np.cos(super_angle) - local_y * np.sin(super_angle)
-            y = (super_radius + local_x) * np.sin(super_angle) + local_y * np.cos(super_angle)
-        
-        coords.append([x, y, z])
-    
-    return np.array(coords)
+    return np.column_stack([
+        r * np.cos(angles),
+        r * np.sin(angles),
+        wave * 3 * np.cos(angles)
+    ])
 
-# Create initial straight helix
-coords = generate_alpha_helix_on_superhelix(100, super_radius=0, super_turns=0)
-plddts = np.linspace(50, 95, 100)
-chains = ['A'] * 100
-atom_types = ['P'] * 100
-
-# Display
+# Animate
 viewer = py2Dmol.view()
-
-# Animate: gradually add superhelical twist
-# Wrapping around a larger cylinder with increasing turns
-for frame in range(1, 21):
-    super_radius = 10.0  # Radius of the "pole"
-    super_turns = frame * 0.075  # Gradually increase from 0 to 1.5 turns
-    twisted_coords = generate_alpha_helix_on_superhelix(
-        100, super_radius=super_radius, super_turns=super_turns
-    )
-    viewer.add(twisted_coords, plddts, chains, atom_types)
+for frame in range(30):
+    w = np.sin(frame * np.pi / 15)
+    viewer.add(circle_morph(20, w), np.full((20,),80.0), ['A']*20, ['P']*20)
 ```
 
 ### Mixed Structure Example
@@ -125,79 +89,39 @@ You can create custom visualizations with multiple molecule types:
 ```python
 import numpy as np
 
-def generate_alpha_helix(n_residues, offset=np.array([0, 0, 0])):
-    """Generate ideal alpha helix (CA-CA ~3.8 Å)."""
-    coords = []
-    radius = 2.3
-    rise_per_residue = 1.5
-    rotation_per_residue = 100 * np.pi / 180
-    
-    for i in range(n_residues):
-        angle = i * rotation_per_residue
-        x = radius * np.cos(angle) + offset[0]
-        y = radius * np.sin(angle) + offset[1]
-        z = i * rise_per_residue + offset[2]
-        coords.append([x, y, z])
-    return np.array(coords)
+def helix(n, radius=2.3, rise=1.5, rotation=100):
+    """Generate helical coordinates."""
+    angles = np.radians(rotation) * np.arange(n)
+    return np.column_stack([
+        radius * np.cos(angles),
+        radius * np.sin(angles),
+        rise * np.arange(n)
+    ])
 
-def generate_dna_strand(n_bases, offset=np.array([0, 0, 0])):
-    """Generate B-DNA backbone (C4'-C4' ~7.0 Å)."""
-    coords = []
-    radius = 10.0  # Distance from helix axis to C4'
-    rise_per_base = 3.4  # B-DNA rise
-    rotation_per_base = 36 * np.pi / 180  # 10 bases per turn
-    
-    for i in range(n_bases):
-        angle = i * rotation_per_base
-        x = radius * np.cos(angle) + offset[0]
-        y = radius * np.sin(angle) + offset[1]
-        z = i * rise_per_base + offset[2]
-        coords.append([x, y, z])
-    return np.array(coords)
+# Protein helix (50 residues)
+protein = helix(50)
+protein[:, 0] += 15  # offset x
 
-def generate_benzene_ring(center):
-    """Generate benzene-like small molecule (C-C 1.4 Å)."""
-    coords = []
-    bond_length = 1.4
-    for i in range(6):
-        angle = i * np.pi / 3  # 60 degrees between carbons
-        x = center[0] + bond_length * np.cos(angle)
-        y = center[1] + bond_length * np.sin(angle)
-        z = center[2]
-        coords.append([x, y, z])
-    return np.array(coords)
+# DNA strand (30 bases)
+dna = helix(30, radius=10, rise=3.4, rotation=36)
+dna[:, 0] -= 15  # offset x
 
-# Create protein helix
-protein_coords = generate_alpha_helix(50, offset=np.array([15, 0, 0]))
-protein_plddts = np.full(50, 90.0)
-protein_chains = ['A'] * 50
-protein_types = ['P'] * 50
+# Ligand ring (6 atoms)
+angles = np.linspace(0, 2*np.pi, 6, endpoint=False)
+ligand = np.column_stack([
+    1.4 * np.cos(angles),
+    1.4 * np.sin(angles),
+    np.full(6, 40)
+])
 
-# Create DNA strand
-dna_coords = generate_dna_strand(30, offset=np.array([-15, 0, 0]))
-dna_plddts = np.full(30, 85.0)
-dna_chains = ['B'] * 30
-dna_types = ['D'] * 30
+# Combine everything (86 atoms total)
+coords = np.vstack([protein, dna, ligand])
+plddts = np.concatenate([np.full(50, 90), np.full(30, 85), np.full(6, 70)])
+chains = ['A']*50 + ['B']*30 + ['L']*6
+types = ['P']*50 + ['D']*30 + ['L']*6
 
-# Add a small molecule ligand
-ligand_coords = generate_benzene_ring(center=np.array([0, 0, 40]))
-ligand_plddts = np.full(6, 70.0)
-ligand_chains = ['L'] * 6
-ligand_types = ['L'] * 6
-
-# Combine all components
-all_coords = np.vstack([protein_coords, dna_coords, ligand_coords])
-all_plddts = np.concatenate([protein_plddts, ligand_plddts, ligand_plddts])
-all_chains = protein_chains + dna_chains + ligand_chains
-all_types = protein_types + dna_types + ligand_types
-
-viewer = py2Dmol.view(
-    color='chain', 
-    size=(600, 600), 
-    width=2.5, 
-    outline=False
-)
-viewer.add(all_coords, all_plddts, all_chains, all_types)
+viewer = py2Dmol.view(color='chain', size=(600, 600), width=2.5, outline=False)
+viewer.add(coords, plddts, chains, types)
 ```
 
 ## Atom Types and Representative Atoms
