@@ -372,22 +372,12 @@ class view:
                 "type": "py2DmolNewTrajectory",
                 "name": trajectory_name
             })
-                
-    def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False, trajectory_name=None):
+    
+    def _resolve_auto_color(self, chains=None):
         """
-        Adds a new frame of data to the viewer.
-        
-        Behavior depends on when .show() is called.
-        
-        Args:
-            coords (np.array): Nx3 array of coordinates.
-            plddts (np.array, optional): N-length array of pLDDT scores.
-            chains (list, optional): N-length list of chain identifiers.
-            atom_types (list, optional): N-length list of atom types ('P', 'D', 'R', 'L').
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
+        Internal: Resolves 'auto' color mode if this is the first
+        time data is being added.
         """
-        
-        # --- Step 1: Handle "Auto-Color" Resolution (if first add call) ---
         if not self._is_live and not self.trajectories and self._initial_color_mode == "auto":
             if chains is not None:
                 unique_chains = set(c for c in chains if c and c.strip())
@@ -399,10 +389,29 @@ class view:
                 self._resolved_color_mode = "rainbow"
         elif not self._is_live and not self.trajectories:
              self._resolved_color_mode = self._initial_color_mode
+                
+    def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False, trajectory_name=None):
+        """
+        Adds a new *frame* of data to the viewer.
+        
+        Behavior depends on when .show() is called.
+        
+        Args:
+            coords (np.array): Nx3 array of coordinates.
+            plddts (np.array, optional): N-length array of pLDDT scores.
+            chains (list, optional): N-length list of chain identifiers.
+            atom_types (list, optional): N-length list of atom types ('P', 'D', 'R', 'L').
+            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
+        """
+        
+        # --- Step 1: Handle "Auto-Color" Resolution ---
+        self._resolve_auto_color(chains)
 
-        # --- Step 2: Update Python-side state (aligns to self._coords) ---
-        self._update(coords, plddts, chains, atom_types)
-        data_dict = self._get_data_dict() # Uses self._coords, which is now aligned
+        # --- Step 2: Update Python-side alignment state ---
+        # .add() *resets* the alignment state to this new frame.
+        self._coords = coords # This is the new alignment reference
+        self._update(coords, plddts, chains, atom_types) # This handles defaults
+        data_dict = self._get_data_dict() # This reads the full, correct data
 
         # --- Step 3: Handle trajectory creation ---
         if new_traj or not self.trajectories:
@@ -423,9 +432,86 @@ class view:
                 "payload": data_dict
             })
 
+    def append(self, coords, plddts=None, chains=None, atom_types=None):
+        """
+        Appends coordinates to the *current frame*.
+        This is for building a single frame from multiple components.
+        
+        NOTE: This only works reliably in "batch" mode (before .show() is called).
+        """
+        
+        if self._is_live:
+            print("Warning: .append() is not supported in 'live' mode. Use .add() to add new frames.")
+            self.add(coords, plddts, chains, atom_types) # Fallback
+            return
+
+        # --- Batch Mode Logic ---
+        
+        # --- Step 1: Handle "Auto-Color" Resolution ---
+        self._resolve_auto_color(chains)
+        
+        # --- Step 2: Ensure a trajectory exists ---
+        if not self.trajectories: self.new_traj()
+        if self._current_trajectory_data is None: self.new_traj()
+            
+        # --- Step 3: Prepare new data (defaults) ---
+        n_new = coords.shape[0]
+        new_coords = coords
+        new_plddts = plddts if plddts is not None else np.full(n_new, 50.0)
+        new_chains = chains if chains is not None else ["A"] * n_new
+        new_atom_types = atom_types if atom_types is not None else ["P"] * n_new
+        
+        # --- Step 4: Align new coords ---
+        # We align the *new* coords to the *last* coords added
+        if self._coords is None:
+            aligned_new_coords = new_coords
+        else:
+            # Only align if shapes are compatible for alignment
+            if self._coords.shape == new_coords.shape:
+                aligned_new_coords = align_a_to_b(new_coords, self._coords)
+            else:
+                # If not, try aligning to the mean
+                try:
+                    new_mean = new_coords.mean(-2, keepdims=True)
+                    ref_mean = self._coords.mean(-2, keepdims=True)
+                    aligned_new_coords = new_coords - new_mean + ref_mean
+                except Exception:
+                    aligned_new_coords = new_coords # Can't align, just use original
+        
+        # --- Step 5: Update the alignment reference for next time ---
+        # The reference is *only* the last component.
+        self._coords = aligned_new_coords 
+        
+        # --- Step 6: Get or create current frame ---
+        if not self._current_trajectory_data:
+            # This is the first component of the frame
+            data_dict = {
+                "coords": aligned_new_coords.tolist(),
+                "plddts": new_plddts.tolist(),
+                "chains": list(new_chains),
+                "atom_types": list(new_atom_types)
+            }
+            self._current_trajectory_data.append(data_dict)
+        else:
+            # Pop the last frame to modify it
+            last_frame_data = self._current_trajectory_data.pop()
+            
+            # Combine old and new (aligned) data
+            combined_data = {
+                "coords": last_frame_data['coords'] + aligned_new_coords.tolist(),
+                "plddts": last_frame_data['plddts'] + new_plddts.tolist(),
+                "chains": last_frame_data['chains'] + list(new_chains),
+                "atom_types": last_frame_data['atom_types'] + list(new_atom_types)
+            }
+            
+            # Push the modified frame back
+            self._current_trajectory_data.append(combined_data)
+
     def add_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None):
         """
-        Loads a structure from a PDB or CIF file and adds it to the viewer.
+        Loads a structure from a PDB or CIF file and adds it to the viewer
+        as a new frame (or trajectory).
+        
         Multi-model files are added as a single trajectory.
         
         Args:
@@ -435,27 +521,6 @@ class view:
             trajectory_name (str, optional): Name for the new trajectory.
         """
         
-        # --- Handle Auto-Color Resolution (if first add call) ---
-        # We need to parse the first model *before* displaying
-        # to decide on 'chain' or 'rainbow'
-        if not self._is_live and not self.trajectories and self._initial_color_mode == "auto":
-            try:
-                # Peek at the first model's chains
-                structure_peek = gemmi.read_structure(filepath)
-                first_model_chains = set()
-                for chain in structure_peek.first_model():
-                    if chains is None or chain.name in chains:
-                        first_model_chains.add(chain.name)
-                
-                if len(first_model_chains) > 1:
-                    self._resolved_color_mode = "chain"
-                else:
-                    self._resolved_color_mode = "rainbow"
-            except Exception:
-                self._resolved_color_mode = "rainbow" # Default on error
-        elif not self._is_live and not self.trajectories:
-             self._resolved_color_mode = self._initial_color_mode
-
         # --- Now, process the file ---
         structure = gemmi.read_structure(filepath)
         
@@ -483,6 +548,39 @@ class view:
                 # Call add() - this will handle batch vs. live
                 self.add(coords_np, plddts_np, atom_chains, atom_types,
                     new_traj=False, trajectory_name=current_traj_name)
+
+    def append_pdb(self, filepath, chains=None):
+        """
+        Loads a structure from a PDB or CIF file and *appends* it
+        to the current frame.
+        
+        NOTE: This only works reliably in "batch" mode (before .show() is called).
+        
+        Args:
+            filepath (str): Path to the PDB or CIF file.
+            chains (list, optional): Specific chains to load. Defaults to all.
+        """
+        if self._is_live:
+            print("Warning: .append_pdb() is not supported in 'live' mode. Use .add_pdb() to add new frames.")
+            self.add_pdb(filepath, chains=chains) # Fallback
+            return
+
+        # --- Batch Mode Logic ---
+        structure = gemmi.read_structure(filepath)
+        
+        # Append each model's data to the current frame
+        for model in structure:
+            model_to_process = model
+            coords, plddts, atom_chains, atom_types = self._parse_model(model_to_process, chains)
+
+            if coords:
+                coords_np = np.array(coords)
+                plddts_np = np.array(plddts) if plddts else np.full(len(coords), 50.0)
+                if len(coords_np) > 0 and len(plddts_np) == 0:
+                    plddts_np = np.full(len(coords_np), 50.0)
+
+                # Call append() - this will handle batch vs. live
+                self.append(coords_np, plddts_np, atom_chains, atom_types)
 
     def _parse_model(self, model, chains_filter):
         """Helper function to parse a gemmi.Model object."""
@@ -520,7 +618,7 @@ class view:
                             coords.append(c4_atom.pos.tolist())
                             plddts.append(c4_atom.b_iso)
                             atom_chains.append(chain.name)
-                            rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU']
+                            rna_bases = ['A', 'C','G', 'U', 'RA', 'RC', 'RG', 'RU']
                             dna_bases = ['DA', 'DC', 'DG', 'DT', 'T']
                             if residue.name in rna_bases or residue.name.startswith('R'):
                                 atom_types.append('R')
@@ -571,6 +669,6 @@ class view:
         else:
             # --- "Publish Static" Mode ---
             # .show() was called *after* .add()
-            html_to_display = self._display_viewer(static_data=self.trajectories, pure_static=True)
+            html_to_display = self._display_viewer(static_data=self.trajectories, pure_static=False)
             self._display_html(html_to_display)
-            self._is_live = False # Lock the viewer
+            self._is_live = True
