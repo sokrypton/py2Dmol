@@ -408,8 +408,6 @@ class view:
         self._resolve_auto_color(chains)
 
         # --- Step 2: Update Python-side alignment state ---
-        # .add() *resets* the alignment state to this new frame.
-        self._coords = coords # This is the new alignment reference
         self._update(coords, plddts, chains, atom_types) # This handles defaults
         data_dict = self._get_data_dict() # This reads the full, correct data
 
