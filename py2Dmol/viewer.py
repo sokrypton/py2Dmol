@@ -35,16 +35,19 @@ def align_a_to_b(a, b):
 # --- view Class ---
 
 class view:
-    def __init__(self, size=(500,500), color="auto", shadow=True, outline=True, width=3.0, rotate=False):
+    def __init__(self, size=(500,500), color="auto", shadow=True, outline=True, width=3.0, rotate=False,
+                 hide_controls=False, autoplay=False, hide_box=False):
         self.size = size
         self._initial_color_mode = color # Store the user's requested mode
         self._resolved_color_mode = color # This will become 'rainbow' or 'chain' if 'auto'
         
-        # --- NEW: Store default states ---
         self._initial_shadow_enabled = shadow
         self._initial_outline_enabled = outline
         self._initial_width = width
         self._initial_rotate = rotate
+        self._initial_hide_controls = hide_controls
+        self._initial_autoplay = autoplay
+        self._initial_hide_box = hide_box
         
         self._initial_data_loaded = False
         self._coords = None
@@ -54,7 +57,6 @@ class view:
         self._trajectory_counter = 0
         self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
         
-        # --- MODIFICATION: Track current trajectory name on Python side ---
         self._current_trajectory_name = None
 
     def _get_data_dict(self):
@@ -72,30 +74,46 @@ class view:
       if self._coords is None:
         self._coords = coords
       else:
-        # Align new coords to old coords
-        # This prevents the structure from "jumping" if the center moves
-        self._coords = align_a_to_b(coords, self._coords)
+        if self._coords.shape == coords.shape:
+            self._coords = align_a_to_b(coords, self._coords)
+        else:
+            # Atom counts differ, just use the new coords without aligning
+            # This can happen in multi-model PDBs
+            self._coords = coords
+      
+      n_atoms = self._coords.shape[0]
 
-      # Set defaults if not provided
-      if self._plddts is None: self._plddts = np.full(self._coords.shape[0], 50.0)
-      if self._chains is None: self._chains = ["A"] * self._coords.shape[0]
-      if self._atom_types is None: self._atom_types = ["P"] * self._coords.shape[0]
+      # 1. Handle pLDDTs
+      if plddts is not None:
+          # New data is provided, use it
+          self._plddts = plddts
+      elif self._plddts is None or len(self._plddts) != n_atoms:
+          # No new data, and old data is missing or wrong size, create default
+          self._plddts = np.full(n_atoms, 50.0)
+      # Else: plddts is None, but self._plddts is valid and correct size, so keep it.
 
-      # Update with new data if provided
-      if plddts is not None: self._plddts = plddts
-      if chains is not None: self._chains = chains
-      if atom_types is not None: self._atom_types = atom_types
+      # 2. Handle Chains
+      if chains is not None:
+          self._chains = chains
+      elif self._chains is None or len(self._chains) != n_atoms:
+          self._chains = ["A"] * n_atoms
+      
+      # 3. Handle Atom Types
+      if atom_types is not None:
+          self._atom_types = atom_types
+      elif self._atom_types is None or len(self._atom_types) != n_atoms:
+          self._atom_types = ["P"] * n_atoms
 
-      # Ensure all arrays have the same length as coords
-      if len(self._plddts) != len(self._coords):
+      # Ensure all arrays have the same length as coords (final safety check)
+      if len(self._plddts) != n_atoms:
           print(f"Warning: pLDDT length mismatch. Resetting to default.")
-          self._plddts = np.full(self._coords.shape[0], 50.0)
-      if len(self._chains) != len(self._coords):
+          self._plddts = np.full(n_atoms, 50.0)
+      if len(self._chains) != n_atoms:
           print(f"Warning: Chains length mismatch. Resetting to default.")
-          self._chains = ["A"] * self._coords.shape[0]
-      if len(self._atom_types) != len(self._coords):
+          self._chains = ["A"] * n_atoms
+      if len(self._atom_types) != n_atoms:
           print(f"Warning: Atom types length mismatch. Resetting to default.")
-          self._atom_types = ["P"] * self._coords.shape[0]
+          self._atom_types = ["P"] * n_atoms
 
     def _send_message(self, message_dict):
         """Robustly send a message to the viewer, queuing if not ready."""
@@ -106,13 +124,11 @@ class view:
             # Colab logic is simple: just execute the JS
             js_code = ""
             if message_dict['type'] == 'py2DmolUpdate':
-                # --- MODIFICATION: Pass payload AND trajectoryName ---
                 json_data = json.dumps(message_dict['payload'])
                 json_data_escaped = json_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
                 # Escape trajectory name for JS string
                 traj_name_escaped = message_dict['trajectoryName'].replace("'", "\\'")
                 js_code = f"window.handlePythonUpdate(`{json_data_escaped}`, '{traj_name_escaped}');"
-                # --- END MODIFICATION ---
             elif message_dict['type'] == 'py2DmolNewTrajectory':
                 js_code = f"window.handlePythonNewTrajectory('{message_dict['name']}');"
             elif message_dict['type'] == 'py2DmolClearAll':
@@ -174,7 +190,10 @@ class view:
             "default_shadow": self._initial_shadow_enabled,
             "default_outline": self._initial_outline_enabled,
             "default_width": self._initial_width,
-            "default_rotate": self._initial_rotate
+            "default_rotate": self._initial_rotate,
+            "hide_controls": self._initial_hide_controls,
+            "autoplay": self._initial_autoplay,
+            "hide_box": self._initial_hide_box
         }
         config_script = f"""
         <script id="viewer-config">
@@ -243,12 +262,19 @@ class view:
             </script>
             """
             
-            # MODIFIED: Width remains at 220px
+            iframe_width = self.size[0]
+            if not self._initial_hide_controls:
+                iframe_width += 180 # Width of side panel
+            
+            iframe_height = self.size[1]
+            if not self._initial_hide_controls:
+                 iframe_height += 80 # Height for anim controls
+            
             iframe_html = f"""
             <iframe 
                 data-viewer-id="{self._viewer_id}"
                 srcdoc="{final_html_escaped}"
-                style="width: {self.size[0] + 220}px; height: {self.size[1] + 80}px; border: none;"
+                style="width: {iframe_width}px; height: {iframe_height}px; border: none;"
                 sandbox="allow-scripts allow-same-origin"
             ></iframe>
             {handshake_script}
@@ -274,24 +300,26 @@ class view:
         self._chains = None
         self._atom_types = None
         self._trajectory_counter = 0
-        self._current_trajectory_name = None # MODIFICATION
+        self._current_trajectory_name = None
 
     def new_traj(self, trajectory_name=None):
+        if not self._initial_data_loaded:
+            # If no data has ever been added, the viewer isn't visible.
+            # The first call to add() will *automatically* create
+            # the first trajectory, so we don't need to do anything here.
+            return
+
         # This is a new trajectory, reset the alignment reference
         self._coords = None 
-        # --- MODIFICATION: Clear other state variables ---
         self._plddts = None
         self._chains = None
         self._atom_types = None
-        # --- END MODIFICATION ---
 
         if trajectory_name is None:
             trajectory_name = f"{self._trajectory_counter}"
         self._trajectory_counter += 1
         
-        # --- MODIFICATION: Set Python-side trajectory name ---
         self._current_trajectory_name = trajectory_name
-        # --- END MODIFICATION ---
         
         self._send_message({
             "type": "py2DmolNewTrajectory",
@@ -311,7 +339,6 @@ class view:
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
         """
         
-        # --- MODIFIED: Auto-color logic ---
         # If this is the first data being added AND color is 'auto', decide now.
         if not self._initial_data_loaded and self._initial_color_mode == "auto":
             if chains is not None:
@@ -326,7 +353,6 @@ class view:
         elif not self._initial_data_loaded:
              # If color was specified (not auto), use it directly
              self._resolved_color_mode = self._initial_color_mode
-        # --- END MODIFIED BLOCK ---
 
         # 1. Display the iframe if this is the very first call
         # This now uses self._resolved_color_mode which is no longer "auto"
@@ -336,7 +362,6 @@ class view:
             new_traj = True # First call always starts a new trajectory
 
         # 2. Handle new trajectory creation
-        # MODIFICATION: This will now also set self._current_trajectory_name
         if new_traj:
             self.new_traj(trajectory_name)
 
@@ -348,9 +373,7 @@ class view:
         # 4. Send the frame data
         self._send_message({
             "type": "py2DmolUpdate",
-            # --- MODIFICATION: Send the current trajectory name ---
             "trajectoryName": self._current_trajectory_name,
-            # --- END MODIFICATION ---
             "payload": self._get_data_dict() # _get_data_dict uses self._coords, which is now aligned
         })
 
@@ -438,15 +461,18 @@ class view:
                                     atom_types.append('L')
 
             if coords:
-                coords = np.array(coords)
-                plddts = np.array(plddts)
+                coords_np = np.array(coords)
+                plddts_np = np.array(plddts) if plddts else np.full(len(coords), 50.0)
                 
+                if len(coords_np) > 0 and len(plddts_np) == 0:
+                    plddts_np = np.full(len(coords_np), 50.0)
+
                 # Only honor new_traj for the *first* model
                 current_model_new_traj = new_traj and not first_model_added
                 
                 # Call add() - this will handle auto-color on the first call
                 # and pass the trajectory name
-                self.add(coords, plddts, atom_chains, atom_types,
+                self.add(coords_np, plddts_np, atom_chains, atom_types,
                     new_traj=current_model_new_traj, trajectory_name=trajectory_name)
                 first_model_added = True
 
