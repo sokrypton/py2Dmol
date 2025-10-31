@@ -17,7 +17,6 @@ The recommended way to use `py2Dmol` is in "Static Mode." You create a viewer, a
 
 This will load the PDB, including all its models as frames, and display it.
 
-**In one cell:**
 ```python
 import py2Dmol
 
@@ -36,7 +35,6 @@ viewer.show()
 
 You can add multiple PDB files as separate, switchable trajectories.
 
-**In one cell:**
 ```python
 import py2Dmol
 
@@ -80,7 +78,6 @@ viewer.show()
 
 You can manually add coordinates for different molecule types (P, D, R, L).
 
-**In one cell:**
 ```python
 import py2Dmol
 import numpy as np
@@ -148,7 +145,6 @@ This mode is for live, dynamic updates (e.g., in a loop). You call `show()` *bef
 
 This example only works when run in a notebook. It will dynamically add frames to the viewer one at a time.
 
-**In the first cell:**
 ```python
 import py2Dmol
 import numpy as np
