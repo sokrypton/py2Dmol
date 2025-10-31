@@ -332,6 +332,7 @@
                 
                 // Performance
                 this.chainRainbowScales = {};
+                this.perChainIndices = []; // <-- ADDED FOR RAINBOW FIX
                 this.rotatedCoords = []; 
                 this.segmentIndices = []; 
                 this.segData = []; 
@@ -800,6 +801,25 @@
                 if (this.chains.length !== n) { this.chains = Array(n).fill('A'); }
                 if (this.atomTypes.length !== n) { this.atomTypes = Array(n).fill('P'); }
 
+                // --- FIX 1 START ---
+                // Pre-calculate per-chain indices for rainbow coloring (N-to-C)
+                this.perChainIndices = new Array(n);
+                const chainIndices = {}; // Temporary tracker
+                for (let i = 0; i < n; i++) {
+                    const type = this.atomTypes[i];
+                    if (type === 'P' || type === 'D' || type === 'R') {
+                        const chainId = this.chains[i] || 'A';
+                        if (chainIndices[chainId] === undefined) {
+                            chainIndices[chainId] = 0;
+                        }
+                        this.perChainIndices[i] = chainIndices[chainId];
+                        chainIndices[chainId]++;
+                    } else {
+                        this.perChainIndices[i] = 0; // Default for ligands
+                    }
+                }
+                // --- FIX 1 END ---
+
                 // Pre-calculate rainbow scales
                 this.chainRainbowScales = {};
                 for (let i = 0; i < this.atomTypes.length; i++) {
@@ -809,7 +829,8 @@
                         if (!this.chainRainbowScales[chainId]) { 
                             this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity }; 
                         }
-                        const colorIndex = this.coords.length - 1 - i;
+                        // --- FIX 2: Use per-chain N-to-C index ---
+                        const colorIndex = this.perChainIndices[i]; 
                         const scale = this.chainRainbowScales[chainId];
                         scale.min = Math.min(scale.min, colorIndex);
                         scale.max = Math.max(scale.max, colorIndex);
@@ -867,7 +888,8 @@
                                         this.segmentIndices.push({ 
                                             idx1: i, 
                                             idx2: i+1, 
-                                            colorIndex: n - 1 - i, 
+                                            // --- FIX 3: Use per-chain N-to-C index ---
+                                            colorIndex: this.perChainIndices[i], 
                                             origIndex: i, 
                                             chainId: this.chains[i] || 'A',
                                             type: type1,
@@ -902,7 +924,8 @@
                                 this.segmentIndices.push({ 
                                     idx1: firstPolymerIndex, 
                                     idx2: lastPolymerIndex,
-                                    colorIndex: this.chainRainbowScales[firstChainId]?.min || 0, 
+                                    // --- FIX 4: Use per-chain N-to-C index ---
+                                    colorIndex: this.perChainIndices[firstPolymerIndex],
                                     origIndex: firstPolymerIndex, 
                                     chainId: firstChainId,
                                     type: type1,
@@ -1107,7 +1130,11 @@
                 if (this.colorMode === 'plddt') {
                     colors = this.plddtColors; // Use pre-calculated array
                 } else {
-                    colors = this.colors; // Use pre-calculated colors
+                    // --- FIX: Re-calculate rainbow/chain colors if mode changed ---
+                    if (!this.colors || this.colors.length !== n) {
+                        this.colors = this._calculateSegmentColors();
+                    }
+                    colors = this.colors;
                 }
                 if (!colors || colors.length !== n) { // Safety check
                     colors = this.plddtColors.length === n ? this.plddtColors : (this.colors.length === n ? this.colors : []);
@@ -1473,6 +1500,8 @@
         
         colorSelect.addEventListener('change', (e) => {
             window.renderer.colorMode = e.target.value;
+            // --- FIX: Force recalculation of colors when mode changes ---
+            window.renderer.colors = window.renderer._calculateSegmentColors();
             window.renderer.render();
         });
         
