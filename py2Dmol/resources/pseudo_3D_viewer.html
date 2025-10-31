@@ -43,9 +43,7 @@
         #canvas:active {
             cursor: grabbing;
         }
-        #canvas.recording {
-            cursor: wait; /* Show wait cursor during recording */
-        }
+        /* Removed #canvas.recording */
 
         #colorSelect {
             font-size: 12px;
@@ -188,28 +186,7 @@
             color: #333;
         }
         
-        /* New styles for save button */
-        #saveAnimationButton {
-            width: 100%;
-            background-color: #007bff;
-            color: white;
-            border: none;
-            font-weight: 600;
-        }
-        #saveAnimationButton:hover:not(:disabled) {
-            background-color: #0056b3;
-        }
-        #saveAnimationButton:disabled {
-            background-color: #a0cfff;
-            color: #f0f0f0;
-        }
-        
-        #saveStatusMessage {
-            font-size: 11px;
-            color: #333;
-            text-align: center;
-            min-height: 14px; /* Reserve space */
-        }
+        /* Removed styles for save button and status message */
 
     </style>
 </head>
@@ -279,12 +256,8 @@
                 </select>
             </div>
             
-            <!-- NEW: Save Animation -->
-            <div id="saveAnimationContainer" class="control-group">
-                <label>Export</label>
-                <button id="saveAnimationButton" class="controlButton">Save Animation</button>
-                <span id="saveStatusMessage"></span>
-            </div>
+            <!-- REMOVED: Save Animation Container -->
+
         </div>
     </div>
 
@@ -398,12 +371,7 @@
                 // Track slider interaction
                 this.isSliderDragging = false;
                 
-                // NEW: Recording state
-                this.isRecording = false;
-                // this.recordingFrame = 0; // REMOVED
-                this.recorder = null;
-                this.recorderChunks = [];
-                this.recorderOriginalState = {};
+                // REMOVED: Recording state
                 
                 // NEW: Touch zoom state
                 this.lastTouchDistance = 0;
@@ -419,8 +387,7 @@
                 this.lineWidthSlider = null;
                 this.shadowEnabledCheckbox = null; 
                 this.outlineEnabledCheckbox = null; 
-                this.saveAnimationButton = null; // NEW
-                this.saveStatusMessage = null; // NEW
+                // REMOVED: saveAnimationButton, saveStatusMessage
 
                 this.setupInteraction();
             }
@@ -435,8 +402,7 @@
                 this.canvas.addEventListener('mousedown', (e) => {
                     // Only start dragging if we clicked directly on the canvas
                     if (e.target !== this.canvas) return;
-                    // NEW: Don't drag if recording
-                    if (this.isRecording) return;
+                    // REMOVED: isRecording check
                     
                     this.isDragging = true;
                     this.spinVelocityX = 0;
@@ -451,7 +417,7 @@
                 });
 
                 window.addEventListener('mousemove', (e) => {
-                    if (!this.isDragging) return; // Also handles isRecording, since isDragging won't be set
+                    if (!this.isDragging) return; 
                     
                     // Stop canvas drag if interacting with controls
                     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') {
@@ -484,8 +450,7 @@
                 });
                 
                 window.addEventListener('mouseup', () => {
-                    // NEW: Don't stop drag if recording (though it shouldn't start)
-                    if (this.isRecording) return;
+                    // REMOVED: isRecording check
                     
                     this.isDragging = false;
                     const now = performance.now();
@@ -499,8 +464,7 @@
                 });
 
                 this.canvas.addEventListener('wheel', (e) => {
-                    // NEW: Don't zoom if recording
-                    if (this.isRecording) return;
+                    // REMOVED: isRecording check
                     
                     e.preventDefault();
                     this.zoom *= (1 - e.deltaY * 0.001);
@@ -513,8 +477,7 @@
                 this.canvas.addEventListener('touchstart', (e) => {
                     // Only start dragging if we clicked directly on the canvas
                     if (e.target !== this.canvas) return;
-                    // Don't drag if recording
-                    if (this.isRecording) return;
+                    // REMOVED: isRecording check
                     
                     // Prevent page scroll
                     e.preventDefault();
@@ -566,7 +529,7 @@
                         this.lastDragTime = now;
                         
                         this.render(); 
-                    } else if (e.touches.length === 2 && !this.isRecording) { // NEW: Handle 2-finger pinch-to-zoom
+                    } else if (e.touches.length === 2) { // REMOVED: isRecording check
                         const t1 = e.touches[0];
                         const t2 = e.touches[1];
                         const dx = t1.clientX - t2.clientX;
@@ -585,8 +548,7 @@
                 }, { passive: false }); // Need passive: false to allow preventDefault
 
                 this.canvas.addEventListener('touchend', (e) => {
-                    // Don't stop drag if recording
-                    if (this.isRecording) return;
+                    // REMOVED: isRecording check
                     
                     this.isDragging = false;
                     const now = performance.now();
@@ -606,7 +568,7 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, saveAnimationButton, saveStatusMessage) {
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox) { // REMOVED: save buttons
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
                 this.frameSlider = frameSlider;
@@ -617,8 +579,7 @@
                 this.lineWidthSlider = lineWidthSlider;
                 this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
                 this.outlineEnabledCheckbox = outlineEnabledCheckbox;
-                this.saveAnimationButton = saveAnimationButton; // NEW
-                this.saveStatusMessage = saveStatusMessage; // NEW
+                // REMOVED: saveAnimationButton, saveStatusMessage
                 
                 this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
                 this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
@@ -628,10 +589,7 @@
                     this.togglePlay();
                 });
                 
-                // NEW: Save button listener
-                this.saveAnimationButton.addEventListener('click', () => {
-                    this.saveAnimation();
-                });
+                // REMOVED: Save button listener
 
                 this.trajectorySelect.addEventListener('change', () => {
                     this.stopAnimation();
@@ -679,8 +637,7 @@
 
                 // Track when user is interacting with slider
                 this.frameSlider.addEventListener('mousedown', (e) => {
-                    // NEW: Check for recording
-                    if (this.isRecording) return;
+                    // REMOVED: isRecording check
                     
                     this.isDragging = false;
                     this.isSliderDragging = true;
@@ -702,13 +659,11 @@
                 // Also prevent canvas drag when interacting with other controls
                 const allControls = [this.playButton, this.trajectorySelect, this.speedSelect, 
                                      this.rotationCheckbox, this.lineWidthSlider, 
-                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox,
-                                     this.saveAnimationButton]; // NEW
+                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox]; // REMOVED: saveAnimationButton
                 allControls.forEach(control => {
                     if (control) {
                         control.addEventListener('mousedown', (e) => {
-                            // NEW: Check for recording
-                            if (this.isRecording) return;
+                            // REMOVED: isRecording check
                             
                             this.isDragging = false;
                             e.stopPropagation();
@@ -717,134 +672,7 @@
                 });
             }
             
-            // NEW: saveAnimation method (Refactored)
-            saveAnimation() {
-                if (this.isRecording) return; // Already recording
-                
-                if (typeof window.MediaRecorder === 'undefined') {
-                    this.saveStatusMessage.textContent = "Recording not supported.";
-                    setTimeout(() => { this.saveStatusMessage.textContent = ""; }, 3000);
-                    return;
-                }
-                
-                if (!this.currentTrajectoryName) {
-                    this.saveStatusMessage.textContent = "No trajectory loaded.";
-                     setTimeout(() => { this.saveStatusMessage.textContent = ""; }, 3000);
-                    return;
-                }
-                
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
-                if (!trajectory || trajectory.frames.length < 2) {
-                     this.saveStatusMessage.textContent = "Need >1 frame to save.";
-                     setTimeout(() => { this.saveStatusMessage.textContent = ""; }, 3000);
-                    return;
-                }
-                
-                this.isRecording = true;
-                this.canvas.classList.add('recording');
-                
-                // Store original state
-                this.recorderOriginalState = {
-                    frame: this.currentFrame,
-                    playing: this.isPlaying,
-                    rotating: this.autoRotate
-                };
-                
-                // Set to known state for recording
-                this.stopAnimation();
-                this.autoRotate = false;
-                this.spinVelocityX = 0;
-                this.spinVelocityY = 0;
-                this.setUIEnabled(false); // Disable all controls
-                this.saveStatusMessage.textContent = "Starting recorder...";
-                
-                this.recorderChunks = [];
-                let recorder;
-                
-                // Request 50 Mbps bitrate (50 * 1024 * 1024)
-                const targetBitrate = 50 * 1024 * 1024;
-                
-                // Calculate FPS from selected speed
-                const fps = 1000 / this.animationSpeed;
-                
-                // Restore state function (callable on error or stop)
-                const restoreState = (message) => {
-                    this.saveStatusMessage.textContent = message;
-                    
-                    this.isRecording = false;
-                    // this.recordingFrame = 0; // REMOVED
-                    this.recorder = null;
-                    this.recorderChunks = [];
-                    this.canvas.classList.remove('recording');
-                    
-                    // Restore original state
-                    this.setFrame(this.recorderOriginalState.frame);
-                    if (this.recorderOriginalState.playing) this.startAnimation();
-                    this.autoRotate = this.recorderOriginalState.rotating;
-                    this.setUIEnabled(true); // Re-enable controls
-                    
-                    setTimeout(() => { this.saveStatusMessage.textContent = ""; }, 3000);
-                };
-                
-                // Try to get a high-quality vp9 stream first
-                try {
-                    const stream = this.canvas.captureStream(fps);
-                    const options = { mimeType: 'video/webm; codecs=vp9', bitsPerSecond: targetBitrate };
-                    recorder = new MediaRecorder(stream, options);
-                } catch (e1) {
-                    console.warn(`VP9 @ ${fps}fps/50Mbps failed, trying VP8...`, e1);
-                    try {
-                        const stream = this.canvas.captureStream(fps);
-                        const options = { mimeType: 'video/webm; codecs=vp8', bitsPerSecond: targetBitrate };
-                        recorder = new MediaRecorder(stream, options);
-                    } catch (e2) {
-                        console.error(`VP8 @ ${fps}fps/50Mbps failed, trying default...`, e2);
-                        try {
-                            // Fallback to default (might not respect bitrate)
-                            const stream = this.canvas.captureStream(fps);
-                            recorder = new MediaRecorder(stream, { mimeType: 'video/webm', bitsPerSecond: targetBitrate });
-                        } catch (e3) {
-                             console.error("Failed to create MediaRecorder:", e3);
-                             restoreState("Recorder failed.");
-                             return;
-                        }
-                    }
-                }
-
-                this.recorder = recorder; // Store instance
-
-                recorder.ondataavailable = e => {
-                    if (e.data.size > 0) {
-                        this.recorderChunks.push(e.data);
-                    }
-                };
-
-                recorder.onstop = () => {
-                    const blob = new Blob(this.recorderChunks, { type: 'video/webm' });
-                    const url = URL.createObjectURL(blob);
-                    
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${this.currentTrajectoryName}.webm`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    
-                    restoreState("Save complete!");
-                };
-                
-                recorder.start();
-                
-                // --- Start the recording process ---
-                // Set to frame 0 and start the player.
-                // The animate() loop will catch the 'isRecording' flag
-                // and stop the recorder when the animation loops.
-                this.setFrame(0); // Render the first frame (index 0)
-                this.saveStatusMessage.textContent = `Recording... 1 / ${trajectory.frames.length}`;
-                this.startAnimation(); // This will drive the frame-by-frame rendering
-            }
-
+            // REMOVED: saveAnimation method
 
             // Add a new trajectory
             addTrajectory(name) {
@@ -979,16 +807,13 @@
                 this._loadDataIntoRenderer(data); // This calls render()
                 this.updateUIControls(); // Update slider value
                 
-                // NEW: Only enable UI if not recording
-                if (!this.isRecording) {
-                    this.setUIEnabled(true); // Make sure controls are enabled
-                }
+                // REMOVED: isRecording check
+                this.setUIEnabled(true); // Make sure controls are enabled
             }
 
             // Update UI element states (e.g., disabled)
             setUIEnabled(enabled) {
-                 // NEW: Don't re-enable if we are in a recording state
-                 if (this.isRecording && enabled) return;
+                 // REMOVED: isRecording check
                  
                  this.playButton.disabled = !enabled;
                  this.frameSlider.disabled = !enabled;
@@ -998,14 +823,10 @@
                  this.lineWidthSlider.disabled = !enabled;
                  if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
                  if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled;
-                 if (this.saveAnimationButton) this.saveAnimationButton.disabled = !enabled; // NEW
+                 // REMOVED: saveAnimationButton
                  
-                 // Update cursor based on recording state OR enabled state
-                 if (this.isRecording) {
-                    this.canvas.style.cursor = 'wait';
-                 } else {
-                    this.canvas.style.cursor = enabled ? 'grab' : 'wait';
-                 }
+                 // REMOVED: isRecording check from cursor style
+                 this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
             // Update the text/slider values
@@ -1021,16 +842,10 @@
                 const config = window.viewerConfig || {};
                 if (total <= 1 || config.hide_controls) {
                     this.controlsContainer.style.display = 'none';
-                    // NEW: Hide save button if not a trajectory
-                    if (this.saveAnimationButton) {
-                        this.saveAnimationButton.parentElement.style.display = 'none';
-                    }
+                    // REMOVED: Hide save button
                 } else {
                     this.controlsContainer.style.display = 'flex';
-                     // NEW: Show save button if it's a trajectory
-                    if (this.saveAnimationButton) {
-                         this.saveAnimationButton.parentElement.style.display = 'flex';
-                    }
+                    // REMOVED: Show save button
                 }
 
                 this.frameSlider.max = Math.max(0, total - 1);
@@ -1725,7 +1540,7 @@
 
             // Main animation loop
             animate() {
-                // REMOVED: The entire 'if (this.isRecording)' block that was here.
+                // REMOVED: Recording check
                 
                 const now = performance.now();
                 let needsRender = false;
@@ -1766,37 +1581,18 @@
                         if (trajectory && trajectory.frames.length > 0) {
                             let nextFrame = this.currentFrame + 1;
 
-                            // NEW: Check if we are recording and just finished the last frame
-                            if (this.isRecording && nextFrame >= trajectory.frames.length) {
-                                // We are on the last frame (this.currentFrame) and about to loop.
-                                // Stop the recorder *now* to capture the last frame.
-                                if (this.recorder && this.recorder.state === "recording") {
-                                    this.recorder.stop(); // This triggers 'onstop' which restores state
-                                }
-                                
-                                // We must also stop the playback.
-                                this.stopAnimation(); // Sets isPlaying = false
-                                
-                                // Update status
-                                this.saveStatusMessage.textContent = `Finishing...`;
-                                
-                                // Don't advance the frame, let 'onstop' handle restore
-                                needsRender = false; 
+                            // REMOVED: Recording check block
                             
-                            } else {
-                                // Normal playback/recording logic
-                                if (nextFrame >= trajectory.frames.length) {
-                                    nextFrame = 0;
-                                }
-                                this.setFrame(nextFrame); // This calls render()
-                                this.lastFrameAdvanceTime = now;
-                                needsRender = false; // setFrame() already called render()
-                                
-                                // NEW: Update recording status
-                                if (this.isRecording) {
-                                    this.saveStatusMessage.textContent = `Recording... ${nextFrame + 1} / ${trajectory.frames.length}`;
-                                }
+                            // Normal playback/recording logic
+                            if (nextFrame >= trajectory.frames.length) {
+                                nextFrame = 0;
                             }
+                            this.setFrame(nextFrame); // This calls render()
+                            this.lastFrameAdvanceTime = now;
+                            needsRender = false; // setFrame() already called render()
+                            
+                            // REMOVED: Recording status update
+                            
                         } else {
                             this.stopAnimation();
                         }
@@ -1868,9 +1664,7 @@
         const rotationCheckbox = document.getElementById('rotationCheckbox');
         const lineWidthSlider = document.getElementById('lineWidthSlider');
         
-        // NEW: Get save button and status
-        const saveAnimationButton = document.getElementById('saveAnimationButton');
-        const saveStatusMessage = document.getElementById('saveStatusMessage');
+        // REMOVED: saveAnimationButton, saveStatusMessage
         
         // Set defaults for width and rotate
         lineWidthSlider.value = window.renderer.lineWidth;
@@ -1881,8 +1675,8 @@
             controlsContainer, playButton, 
             frameSlider, frameCounter, trajectorySelect, 
             speedSelect, rotationCheckbox, lineWidthSlider,
-            shadowEnabledCheckbox, outlineEnabledCheckbox,
-            saveAnimationButton, saveStatusMessage // NEW
+            shadowEnabledCheckbox, outlineEnabledCheckbox
+            // REMOVED: saveAnimationButton, saveStatusMessage
         );
 
         // Handle new UI config options
