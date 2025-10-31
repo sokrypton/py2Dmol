@@ -518,7 +518,7 @@ class view:
                         
                         if c4_atom:
                             coords.append(c4_atom.pos.tolist())
-                            plddts.append(c.b_iso)
+                            plddts.append(c4_atom.b_iso)
                             atom_chains.append(chain.name)
                             rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU']
                             dna_bases = ['DA', 'DC', 'DG', 'DT', 'T']
