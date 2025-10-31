@@ -9,9 +9,7 @@ A Python library for visualizing protein, DNA, and RNA structures in 2D, designe
 pip install py2Dmol
 ```
 
-## Basic Usage (Static Mode)
-
-The recommended way to use `py2Dmol` is in "Static Mode." You create a viewer, add all your data, and then call `viewer.show()` at the end. This creates a 100% persistent and shareable visualization in your notebook.
+## Basic Usage
 
 ### Example: Loading a PDB File
 
@@ -23,7 +21,7 @@ import py2Dmol
 # 1. Create a viewer object
 viewer = py2Dmol.view(size=(600, 600))
 
-# 2. Add one or more structures
+# 2. Add pdb
 viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
 
 # 3. Show the final, static viewer
@@ -126,9 +124,9 @@ viewer.show()
 
 `py2Dmol` has two modes, determined by *when* you call `viewer.show()`.
 
-### Mode 1: Static (Batch) Mode (Default & Recommended)
+### Mode 1: Static Mode
 
-This is the mode shown above. You call `add()` or `add_pdb()` first to load all your data, and then call `show()` at the end.
+You call `add()` or `add_pdb()` first to load all your data, and then call `show()` at the end.
 
 * **Workflow:** `viewer.add*()` ➔ `viewer.show()`
 * **Result:** Creates a single, 100% persistent viewer that contains all your data. This is ideal for saving, sharing, and reloading notebooks.
