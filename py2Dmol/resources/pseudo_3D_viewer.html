@@ -797,29 +797,6 @@
                     });
                 }
                 
-                // if (this.pastelSlider) { // Removed
-                //     this.pastelSlider.addEventListener('input', (e) => {
-                //         this.pastelLevel = parseFloat(e.target.value);
-                //         // Force-recalculate both color arrays
-                //         this.colors = this._calculateSegmentColors();
-                //         this.plddtColors = this._calculatePlddtColors();
-                //         if (!this.isPlaying) { // Only render if not playing
-                //             this.render();
-                //         }
-                //     });
-                // }
-                
-                // if (this.colorblindCheckbox) { // Removed
-                //     this.colorblindCheckbox.addEventListener('change', (e) => {
-                //         this.colorblindMode = e.target.checked;
-                //         // Force-recalculate both color arrays
-                //         this.colors = this._calculateSegmentColors();
-                //         this.plddtColors = this._calculatePlddtColors();
-                //         if (!this.isPlaying) { // Only render if not playing
-                //             this.render();
-                //         }
-                //     });
-                // }
 
                 // Prevent canvas drag from interfering with slider
                 const handleSliderChange = (e) => {
@@ -1744,7 +1721,7 @@
                         
                         let widthMultiplier = 1.0;
                         if (type === 'L') {
-                            widthMultiplier = 0.5;
+                            widthMultiplier = 0.25;
                         } else if (type === 'D' || type === 'R') {
                             widthMultiplier = 2.0;
                         }
@@ -1804,7 +1781,7 @@
                         
                         let widthMultiplier = 1.0;
                         if (type === 'L') {
-                            widthMultiplier = 0.5;
+                            widthMultiplier = 0.25;
                         } else if (type === 'D' || type === 'R') {
                             widthMultiplier = 2.0;
                         }
