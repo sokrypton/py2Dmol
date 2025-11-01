@@ -78,8 +78,7 @@
         /* Style for the shadow/outline/pastel checkbox labels */
         .toggle-item label[for="shadowEnabledCheckbox"],
         .toggle-item label[for="outlineEnabledCheckbox"],
-        .toggle-item label[for="rotationCheckbox"],
-        .toggle-item label[for="colorblindCheckbox"] {
+        .toggle-item label[for="rotationCheckbox"] {
             width: auto; /* Let it be auto-sized */
             margin-left: 5px; /* Add space next to the slider */
         }
@@ -249,11 +248,6 @@
                         <option value="chain">Chain</option>
                     </select>
                 </div>
-                <!-- Pastel -->
-                <div class="toggle-item">
-                    <label for="pastelSlider" style="width: 50px;">Pastel:</label>
-                    <input type="range" id="pastelSlider" min="0" max="1" value="0.25" step="0.05">
-                </div>
                 <!-- Width -->
                 <div class="toggle-item">
                     <label for="lineWidthSlider" style="width: 50px;">Width:</label>
@@ -268,11 +262,6 @@
                 <div class="toggle-item">
                      <input type="checkbox" id="outlineEnabledCheckbox">
                      <label for="outlineEnabledCheckbox">Outline</label>
-                </div>
-                <!-- Colorblind Mode -->
-                <div class="toggle-item">
-                     <input type="checkbox" id="colorblindCheckbox">
-                     <label for="colorblindCheckbox">Colorblind</label>
                 </div>
             </div>
 
@@ -520,8 +509,8 @@
                 this.lineWidthSlider = null;
                 this.shadowEnabledCheckbox = null; 
                 this.outlineEnabledCheckbox = null; 
-                this.pastelSlider = null;
-                this.colorblindCheckbox = null; // Added
+                // this.pastelSlider = null; // Removed
+                // this.colorblindCheckbox = null; // Removed
 
                 this.setupInteraction();
             }
@@ -748,7 +737,7 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, pastelSlider, colorblindCheckbox) {
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox) {
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
                 this.frameSlider = frameSlider;
@@ -759,8 +748,8 @@
                 this.lineWidthSlider = lineWidthSlider;
                 this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
                 this.outlineEnabledCheckbox = outlineEnabledCheckbox;
-                this.pastelSlider = pastelSlider;
-                this.colorblindCheckbox = colorblindCheckbox; // Added
+                // this.pastelSlider = pastelSlider; // Removed
+                // this.colorblindCheckbox = colorblindCheckbox; // Removed
                 
                 this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
                 this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
@@ -808,29 +797,29 @@
                     });
                 }
                 
-                if (this.pastelSlider) {
-                    this.pastelSlider.addEventListener('input', (e) => {
-                        this.pastelLevel = parseFloat(e.target.value);
-                        // Force-recalculate both color arrays
-                        this.colors = this._calculateSegmentColors();
-                        this.plddtColors = this._calculatePlddtColors();
-                        if (!this.isPlaying) { // Only render if not playing
-                            this.render();
-                        }
-                    });
-                }
+                // if (this.pastelSlider) { // Removed
+                //     this.pastelSlider.addEventListener('input', (e) => {
+                //         this.pastelLevel = parseFloat(e.target.value);
+                //         // Force-recalculate both color arrays
+                //         this.colors = this._calculateSegmentColors();
+                //         this.plddtColors = this._calculatePlddtColors();
+                //         if (!this.isPlaying) { // Only render if not playing
+                //             this.render();
+                //         }
+                //     });
+                // }
                 
-                if (this.colorblindCheckbox) { // Added
-                    this.colorblindCheckbox.addEventListener('change', (e) => {
-                        this.colorblindMode = e.target.checked;
-                        // Force-recalculate both color arrays
-                        this.colors = this._calculateSegmentColors();
-                        this.plddtColors = this._calculatePlddtColors();
-                        if (!this.isPlaying) { // Only render if not playing
-                            this.render();
-                        }
-                    });
-                }
+                // if (this.colorblindCheckbox) { // Removed
+                //     this.colorblindCheckbox.addEventListener('change', (e) => {
+                //         this.colorblindMode = e.target.checked;
+                //         // Force-recalculate both color arrays
+                //         this.colors = this._calculateSegmentColors();
+                //         this.plddtColors = this._calculatePlddtColors();
+                //         if (!this.isPlaying) { // Only render if not playing
+                //             this.render();
+                //         }
+                //     });
+                // }
 
                 // Prevent canvas drag from interfering with slider
                 const handleSliderChange = (e) => {
@@ -860,8 +849,7 @@
                 // Also prevent canvas drag when interacting with other controls
                 const allControls = [this.playButton, this.objectSelect, this.speedSelect, // Renamed
                                      this.rotationCheckbox, this.lineWidthSlider, 
-                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox, this.pastelSlider,
-                                     this.colorblindCheckbox]; // Added
+                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox]; // Removed pastel/colorblind
                 allControls.forEach(control => {
                     if (control) {
                         control.addEventListener('mousedown', (e) => {
@@ -1027,8 +1015,8 @@
                  this.lineWidthSlider.disabled = !enabled;
                  if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
                  if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled;
-                 if (this.pastelSlider) this.pastelSlider.disabled = !enabled;
-                 if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled; // Added
+                 // if (this.pastelSlider) this.pastelSlider.disabled = !enabled; // Removed
+                 // if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled; // Removed
                  this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
@@ -2147,8 +2135,8 @@
         outlineEnabledCheckbox.checked = window.renderer.outlineEnabled; // Set default from renderer
         
         // Setup colorblindCheckbox
-        const colorblindCheckbox = document.getElementById('colorblindCheckbox'); // Added
-        colorblindCheckbox.checked = window.renderer.colorblindMode; // Added
+        // const colorblindCheckbox = document.getElementById('colorblindCheckbox'); // Removed
+        // colorblindCheckbox.checked = window.renderer.colorblindMode; // Removed
 
         // 6. Setup animation and object controls
         const controlsContainer = document.getElementById('controlsContainer');
@@ -2159,21 +2147,21 @@
         const speedSelect = document.getElementById('speedSelect');
         const rotationCheckbox = document.getElementById('rotationCheckbox');
         const lineWidthSlider = document.getElementById('lineWidthSlider');
-        const pastelSlider = document.getElementById('pastelSlider');
+        // const pastelSlider = document.getElementById('pastelSlider'); // Removed
         
         // Set defaults for width, rotate, and pastel
         lineWidthSlider.value = window.renderer.lineWidth;
         rotationCheckbox.checked = window.renderer.autoRotate;
-        pastelSlider.value = window.renderer.pastelLevel; // Set default from renderer
+        // pastelSlider.value = window.renderer.pastelLevel; // Removed
 
         // Pass ALL controls to the renderer
         window.renderer.setUIControls(
             controlsContainer, playButton, 
             frameSlider, frameCounter, objectSelect, // Renamed
             speedSelect, rotationCheckbox, lineWidthSlider,
-            shadowEnabledCheckbox, outlineEnabledCheckbox,
-            pastelSlider,
-            colorblindCheckbox // Added
+            shadowEnabledCheckbox, outlineEnabledCheckbox
+            // pastelSlider, // Removed
+            // colorblindCheckbox // Removed
         );
 
         // Handle new UI config options
