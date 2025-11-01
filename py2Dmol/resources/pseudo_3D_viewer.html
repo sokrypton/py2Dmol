@@ -75,9 +75,10 @@
             flex-shrink: 0;
             font-size: 12px; /* Ensure label font size matches */
         }
-        /* Style for the shadow/outline checkbox labels */
+        /* Style for the shadow/outline/pastel checkbox labels */
         .toggle-item label[for="shadowEnabledCheckbox"],
-        .toggle-item label[for="outlineEnabledCheckbox"] {
+        .toggle-item label[for="outlineEnabledCheckbox"],
+        .toggle-item label[for="rotationCheckbox"] {
             width: auto; /* Let it be auto-sized */
             margin-left: 5px; /* Add space next to the slider */
         }
@@ -216,27 +217,30 @@
         <!-- Right Column -->
         <div id="rightPanelContainer">
             
-            <!-- Color Select -->
-            <div class="control-group">
-                <label for="colorSelect">Color</label>
-                <select id="colorSelect">
-                    <option value="auto">Auto</option>
-                    <option value="plddt">pLDDT</option>
-                    <option value="rainbow">Rainbow</option>
-                    <option value="chain">Chain</option>
-                </select>
-            </div>
-
-            <!-- Options -->
-            <div id="optionsContainer" class="control-group">
-                <div class="toggle-item"> 
-                    <input type="checkbox" id="rotationCheckbox">
-                    <label for="rotationCheckbox">Rotate</label>
-                </div>
+            <!-- Style Group -->
+            <div id="styleAppearanceContainer" class="control-group">
+                <label>Style</label>
+                <!-- Color Select -->
                 <div class="toggle-item">
-                    <label for="lineWidthSlider">Width:</label>
+                    <label for="colorSelect" style="width: 50px;">Color:</label>
+                    <select id="colorSelect" style="flex-grow: 1;">
+                        <option value="auto">Auto</option>
+                        <option value="plddt">pLDDT</option>
+                        <option value="rainbow">Rainbow</option>
+                        <option value="chain">Chain</option>
+                    </select>
+                </div>
+                <!-- Pastel -->
+                <div class="toggle-item">
+                    <label for="pastelSlider" style="width: 50px;">Pastel:</label>
+                    <input type="range" id="pastelSlider" min="0" max="1" value="0.25" step="0.05">
+                </div>
+                <!-- Width -->
+                <div class="toggle-item">
+                    <label for="lineWidthSlider" style="width: 50px;">Width:</label>
                     <input type="range" id="lineWidthSlider" min="1" max="5" value="3" step="0.5">
                 </div>
+                <!-- Shadow -->
                 <div class="toggle-item">
                      <input type="checkbox" id="shadowEnabledCheckbox">
                      <label for="shadowEnabledCheckbox">Shadow</label>
@@ -248,7 +252,16 @@
                 </div>
             </div>
 
-            <!-- Trajectory -->
+            <!-- View Group -->
+            <div id="viewContainer" class="control-group">
+                <label>View</label>
+                <div class="toggle-item"> 
+                    <input type="checkbox" id="rotationCheckbox">
+                    <label for="rotationCheckbox">Rotate</label>
+                </div>
+            </div>
+
+            <!-- Trajectory Group -->
             <div id="trajectoryContainer" class="control-group">
                 <label for="trajectorySelect">Trajectory</label>
                 <select id="trajectorySelect">
@@ -289,19 +302,30 @@
         const pymolColors = ["#33ff33","#00ffff","#ff33cc","#ffff00","#ff9999","#e5e5e5","#7f7fff","#ff7f00","#7fff7f","#199999","#ff007f","#ffdd5e","#8c3f99","#b2b2b2","#007fff","#c4b200","#8cb266","#00bfbf","#b27f7f","#fcd1a5","#ff7f7f","#ffbfdd","#7fffff","#ffff7f","#00ff7f","#337fcc","#d8337f","#bfff3f","#ff7fff","#d8d8ff","#3fffbf","#b78c4c","#339933","#66b2b2","#ba8c84","#84bf00","#b24c66","#7f7f7f","#3f3fa5","#a5512b"];
         function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return {r: 128, g: 128, b: 128}; } const r = parseInt(hex.slice(1,3), 16); const g = parseInt(hex.slice(3,5), 16); const b = parseInt(hex.slice(5,7), 16); return {r, g, b}; }
         function hsvToRgb(h, s, v) { const c = v * s; const x = c * (1 - Math.abs((h / 60) % 2 - 1)); const m = v - c; let r, g, b; if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; } else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; } else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; } return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) }; }
+        
+        // N-term (blue) to C-term (red)
         function getRainbowColor(value, min, max) { 
             if (max - min < 1e-6) return hsvToRgb(240, 1.0, 1.0); // Default to blue
             let normalized = (value - min) / (max - min); 
             normalized = Math.max(0, Math.min(1, normalized)); 
-            const hue = 240 * (1 - normalized); // Reversed: 0 -> 240 (blue), 1 -> 0 (red)
+            const hue = 240 * (1 - normalized); // 0 -> 240 (blue), 1 -> 0 (red)
             return hsvToRgb(hue, 1.0, 1.0); 
         }
-        function getPlddtColor(plddt) { return getRainbowColor(plddt, 50, 90); }
+
+        // 50 (red) to 90 (blue)
+        function getPlddtRainbowColor(value, min, max) {
+            if (max - min < 1e-6) return hsvToRgb(0, 1.0, 1.0); // Default to red
+            let normalized = (value - min) / (max - min);
+            normalized = Math.max(0, Math.min(1, normalized));
+            const hue = 240 * normalized; // 0 -> 0 (red), 1 -> 240 (blue)
+            return hsvToRgb(hue, 1.0, 1.0);
+        }
+
+        function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
         function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
 
         // ============================================================================
         // PSEUDO-3D RENDERER
-        // ============================================================================
         class Pseudo3DRenderer {
             constructor(canvas) {
                 this.canvas = canvas;
@@ -317,7 +341,8 @@
                     default_rotate: false,
                     hide_controls: false,
                     autoplay: false,
-                    hide_box: false
+                    hide_box: false,
+                    default_pastel: 0.25
                 };
 
                 // Current render state
@@ -336,6 +361,7 @@
                 // Set defaults from config, with fallback
                 this.shadowEnabled = (typeof config.default_shadow === 'boolean') ? config.default_shadow : true;
                 this.outlineEnabled = (typeof config.default_outline === 'boolean') ? config.default_outline : true;
+                this.pastelLevel = (typeof config.default_pastel === 'number') ? config.default_pastel : 0.25;
                 
                 this.isTransparent = false; // Default to white background
                 this.resolvedAutoColor = 'rainbow'; // Default 'auto' to rainbow
@@ -389,6 +415,7 @@
                 this.lineWidthSlider = null;
                 this.shadowEnabledCheckbox = null; 
                 this.outlineEnabledCheckbox = null; 
+                this.pastelSlider = null;
 
                 this.setupInteraction();
             }
@@ -402,6 +429,19 @@
                 const dx = touch1.clientX - touch2.clientX;
                 const dy = touch1.clientY - touch2.clientY;
                 return Math.sqrt(dx * dx + dy * dy);
+            }
+            
+            _applyPastel(rgb) {
+                if (this.pastelLevel <= 0) {
+                    return rgb;
+                }
+                // Apply pastel transformation (mix with white)
+                const mix = this.pastelLevel; 
+                return {
+                    r: Math.round(rgb.r * (1 - mix) + 255 * mix),
+                    g: Math.round(rgb.g * (1 - mix) + 255 * mix),
+                    b: Math.round(rgb.b * (1 - mix) + 255 * mix)
+                };
             }
 
             setupInteraction() {
@@ -568,7 +608,7 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox) {
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, pastelSlider) {
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
                 this.frameSlider = frameSlider;
@@ -579,6 +619,7 @@
                 this.lineWidthSlider = lineWidthSlider;
                 this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
                 this.outlineEnabledCheckbox = outlineEnabledCheckbox;
+                this.pastelSlider = pastelSlider;
                 
                 this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
                 this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
@@ -625,6 +666,18 @@
                         this.render();
                     });
                 }
+                
+                if (this.pastelSlider) {
+                    this.pastelSlider.addEventListener('input', (e) => {
+                        this.pastelLevel = parseFloat(e.target.value);
+                        // Force-recalculate both color arrays
+                        this.colors = this._calculateSegmentColors();
+                        this.plddtColors = this._calculatePlddtColors();
+                        if (!this.isPlaying) { // Only render if not playing
+                            this.render();
+                        }
+                    });
+                }
 
                 // Prevent canvas drag from interfering with slider
                 const handleSliderChange = (e) => {
@@ -654,7 +707,7 @@
                 // Also prevent canvas drag when interacting with other controls
                 const allControls = [this.playButton, this.trajectorySelect, this.speedSelect, 
                                      this.rotationCheckbox, this.lineWidthSlider, 
-                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox];
+                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox, this.pastelSlider];
                 allControls.forEach(control => {
                     if (control) {
                         control.addEventListener('mousedown', (e) => {
@@ -810,6 +863,7 @@
                  this.lineWidthSlider.disabled = !enabled;
                  if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
                  if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled;
+                 if (this.pastelSlider) this.pastelSlider.disabled = !enabled;
                  this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
@@ -1109,27 +1163,28 @@
                     }
                 }
                 
-                const grey = {r: 128, g: 128, b: 128};
-                
                 return this.segmentIndices.map(segInfo => {
+                    const grey = {r: 128, g: 128, b: 128};
+                    let color;
                     const i = segInfo.origIndex;
                     const type = segInfo.type;
                     
                     if (type === 'L') {
                         // Ligands are grey unless in plddt mode
-                        return grey;
+                        color = grey;
                     }
                     // plddt mode is handled in render()
-                    if (effectiveColorMode === 'chain') {
+                    else if (effectiveColorMode === 'chain') {
                         const chainId = this.chains[i] || 'A';
                         const chainIndex = chainIndexMap.get(chainId);
-                        return getChainColor(chainIndex !== undefined ? chainIndex : 0);
+                        color = getChainColor(chainIndex !== undefined ? chainIndex : 0);
                     }
                     else { // rainbow
                         const scale = this.chainRainbowScales[segInfo.chainId];
-                        if (scale) { return getRainbowColor(segInfo.colorIndex, scale.min, scale.max); }
-                        else { return grey; }
+                        if (scale) { color = getRainbowColor(segInfo.colorIndex, scale.min, scale.max); }
+                        else { color = grey; }
                     }
+                    return this._applyPastel(color);
                 });
             }
 
@@ -1138,23 +1193,24 @@
                 const m = this.segmentIndices.length;
                 if (m === 0) return [];
                 
-                const grey = {r: 128, g: 128, b: 128};
                 const colors = new Array(m);
                 
                 for (let i = 0; i < m; i++) {
                     const segInfo = this.segmentIndices[i];
                     const atomIdx = segInfo.origIndex;
                     const type = segInfo.type;
+                    let color;
                     
                     if (type === 'L') {
                         const plddt1 = (this.plddts[atomIdx] !== null && this.plddts[atomIdx] !== undefined) ? this.plddts[atomIdx] : 50;
-                        colors[i] = getPlddtColor(plddt1);
+                        color = getPlddtColor(plddt1);
                     } else {
                         const plddt1 = (this.plddts[atomIdx] !== null && this.plddts[atomIdx] !== undefined) ? this.plddts[atomIdx] : 50;
                         const plddt2_idx = (segInfo.idx2 < this.coords.length) ? segInfo.idx2 : segInfo.idx1;
                         const plddt2 = (this.plddts[plddt2_idx] !== null && this.plddts[plddt2_idx] !== undefined) ? this.plddts[plddt2_idx] : 50;
-                        colors[i] = getPlddtColor((plddt1 + plddt2) / 2);
+                        color = getPlddtColor((plddt1 + plddt2) / 2);
                     }
+                    colors[i] = this._applyPastel(color);
                 }
                 return colors;
             }
@@ -1602,11 +1658,12 @@
             default_shadow: true, 
             default_outline: true,
             default_width: 3.0,
-            default_rotate: false,
-            hide_controls: false,
-            autoplay: false,
-            hide_box: false
-        };
+                    default_rotate: false,
+                    hide_controls: false,
+                    autoplay: false,
+                    hide_box: false,
+                    default_pastel: 0.25
+                };
 
         // 2. Setup Canvas
         const canvas = document.getElementById('canvas');
@@ -1645,17 +1702,20 @@
         const speedSelect = document.getElementById('speedSelect');
         const rotationCheckbox = document.getElementById('rotationCheckbox');
         const lineWidthSlider = document.getElementById('lineWidthSlider');
+        const pastelSlider = document.getElementById('pastelSlider');
         
-        // Set defaults for width and rotate
+        // Set defaults for width, rotate, and pastel
         lineWidthSlider.value = window.renderer.lineWidth;
         rotationCheckbox.checked = window.renderer.autoRotate;
+        pastelSlider.value = window.renderer.pastelLevel; // Set default from renderer
 
         // Pass ALL controls to the renderer
         window.renderer.setUIControls(
             controlsContainer, playButton, 
             frameSlider, frameCounter, trajectorySelect, 
             speedSelect, rotationCheckbox, lineWidthSlider,
-            shadowEnabledCheckbox, outlineEnabledCheckbox 
+            shadowEnabledCheckbox, outlineEnabledCheckbox,
+            pastelSlider
         );
 
         // Handle new UI config options

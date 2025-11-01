@@ -12,6 +12,8 @@ import importlib.resources
 from . import resources as py2dmol_resources
 import gemmi
 import uuid
+import os
+import urllib.request
 
 def kabsch(a, b, return_v=False):
   """Computes the optimal rotation matrix for aligning a to b."""
@@ -38,7 +40,7 @@ def align_a_to_b(a, b):
 
 class view:
     def __init__(self, size=(500,500), color="auto", shadow=True, outline=True, width=3.0, rotate=False,
-                 hide_controls=False, autoplay=False, hide_box=False):
+                 hide_controls=False, autoplay=False, hide_box=False, pastel=0.25):
         self.size = size
         self._initial_color_mode = color # Store the user's requested mode
         
@@ -46,9 +48,11 @@ class view:
         self._initial_outline_enabled = outline
         self._initial_width = width
         self._initial_rotate = rotate
+        self._initial_pastel = pastel
         self._initial_hide_controls = hide_controls
         self._initial_autoplay = autoplay
         self._initial_hide_box = hide_box
+        self._initial_pastel_level = pastel # Store pastel level (0.0 to 1.0)
         
         self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
         
@@ -137,6 +141,8 @@ class view:
                 js_code = f"window.handlePythonNewTrajectory('{message_dict['name']}');"
             elif message_dict['type'] == 'py2DmolClearAll':
                 js_code = "window.handlePythonClearAll();"
+            elif message_dict['type'] == 'py2DmolSetColor':
+                js_code = f"window.handlePythonSetColor('{message_dict['color']}');"
             
             if js_code:
                 try:
@@ -208,7 +214,8 @@ class view:
             "default_rotate": self._initial_rotate,
             "hide_controls": self._initial_hide_controls,
             "autoplay": self._initial_autoplay,
-            "hide_box": self._initial_hide_box
+            "hide_box": self._initial_hide_box,
+            "default_pastel": self._initial_pastel
         }
         config_script = f"""
         <script id="viewer-config">
@@ -481,8 +488,10 @@ class view:
 
     def add_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None):
         """
-        Loads a structure from a PDB or CIF file and adds it to the viewer
+        Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or trajectory).
+        
+        This method does *not* call .show().
         
         Multi-model files are added as a single trajectory.
         
@@ -609,17 +618,118 @@ class view:
                                 atom_types.append('L')
         return coords, plddts, atom_chains, atom_types
 
-    def from_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None):
+    def _get_filepath_from_pdb_id(self, pdb_id):
         """
-        [DEPRECATED] Loads a PDB/CIF file and immediately displays it statically.
+        Checks if a PDB ID is a file. If not, and it's a 4-char code, downloads it.
+        Returns the filepath.
+        """
+        # Check if it's a filepath that already exists
+        if os.path.exists(pdb_id):
+            return pdb_id
+
+        # Check if it's a 4-character PDB code
+        if len(pdb_id) == 4 and pdb_id.isalnum():
+            # Try to download the CIF file from RCSB
+            pdb_code = pdb_id.upper()
+            url = f"https://files.rcsb.org/download/{pdb_code}.cif"
+            filepath = f"{pdb_code}.cif"
+            
+            # Download only if it doesn't already exist
+            if not os.path.exists(filepath):
+                try:
+                    # print(f"Downloading {pdb_code} from RCSB...")
+                    urllib.request.urlretrieve(url, filepath)
+                    # print(f"Saved to {filepath}")
+                    return filepath
+                except urllib.error.HTTPError:
+                    print(f"Error: Could not download PDB ID {pdb_code} from RCSB (URL: {url}).")
+                    return None
+                except Exception as e:
+                    print(f"An error occurred during download: {e}")
+                    return None
+            else:
+                # File already exists, just use it
+                return filepath
         
-        This method is for backward compatibility.
-        It is recommended to use:
-            viewer.add_pdb(...)
-            viewer.show()
+        # If it's not an existing file and not a 4-char code, it's invalid
+        print(f"Error: File or PDB ID '{pdb_id}' not found.")
+        return None
+
+    def _get_filepath_from_afdb_id(self, uniprot_id):
         """
-        self.add_pdb(filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name)
-        self.show()
+        Downloads a structure from AlphaFold DB given a UniProt ID.
+        Returns the filepath.
+        """
+        uniprot_code = uniprot_id.upper()
+        url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_code}-F1-model_v6.cif"
+        filepath = f"AF-{uniprot_code}.cif" # Simplified filename
+
+        # Download only if it doesn't already exist
+        if not os.path.exists(filepath):
+            try:
+                # print(f"Downloading {uniprot_code} from AlphaFold DB...")
+                urllib.request.urlretrieve(url, filepath)
+                # print(f"Saved to {filepath}")
+                return filepath
+            except urllib.error.HTTPError:
+                print(f"Error: Could not download UniProt ID {uniprot_code} from AlphaFold DB (URL: {url}).")
+                return None
+            except Exception as e:
+                print(f"An error occurred during download: {e}")
+                return None
+        else:
+            # File already exists
+            return filepath
+
+    def from_pdb(self, pdb_id, chains=None, new_traj=False, trajectory_name=None):
+        """
+        Loads a structure from a PDB code (downloads from RCSB if not found locally)
+        and displays the viewer.
+        
+        Args:
+            pdb_id (str): 4-character PDB code or a path to a local PDB/CIF file.
+            chains (list, optional): Specific chains to load. Defaults to all.
+            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
+            trajectory_name (str, optional): Name for the new trajectory.
+        """
+        filepath = self._get_filepath_from_pdb_id(pdb_id)
+        
+        if filepath:
+            self.add_pdb(filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name)
+            if not self._is_live: # Only call show() if it hasn't been called
+                self.show()
+        else:
+            print(f"Could not load structure for '{pdb_id}'.")
+
+    def from_afdb(self, uniprot_id, chains=None, new_traj=False, trajectory_name=None):
+        """
+        Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
+        and displays the viewer.
+        
+        Args:
+            uniprot_id (str): UniProt accession code (e.g., "P0A8I3").
+            chains (list, optional): Specific chains to load. Defaults to all.
+            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
+            trajectory_name (str, optional): Name for the new trajectory.
+        """
+        # Set color to plddt if it's currently 'auto'
+        if self._initial_color_mode == "auto":
+            self._initial_color_mode = "plddt"
+            # If we are already live, send a message to update the viewer's color dropdown
+            if self._is_live:
+                self._send_message({
+                    "type": "py2DmolSetColor",
+                    "color": "plddt"
+                })
+
+        filepath = self._get_filepath_from_afdb_id(uniprot_id)
+        
+        if filepath:
+            self.add_pdb(filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name)
+            if not self._is_live: # Only call show() if it hasn't been called
+                self.show()
+        else:
+            print(f"Could not load structure for '{uniprot_id}'.")
 
     def show(self):
         """
