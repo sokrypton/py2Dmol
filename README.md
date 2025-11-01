@@ -81,19 +81,15 @@ viewer.show()
 ### Example: Load structure from PDB
 ```python
 import py2Dmol
-
-viewer = py2Dmol.view()
-viewer.from_pdb('1YNE')
+py2Dmol.view().from_pdb('1YNE')
 ```
 
 ---
 
-### Example: Load structure from AlphaFold DB
+### Example: Load structure from AlphaFold DB, show pAE
 ```python
 import py2Dmol
-
-viewer = py2Dmol.view(show_pae=True)
-viewer.from_afdb('Q5VSL9')
+py2Dmol.view(show_pae=True).from_afdb('Q5VSL9')
 ```
 
 ---
