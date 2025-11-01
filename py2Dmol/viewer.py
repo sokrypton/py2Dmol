@@ -41,7 +41,6 @@ class view:
                  hide_controls=False, autoplay=False, hide_box=False):
         self.size = size
         self._initial_color_mode = color # Store the user's requested mode
-        self._resolved_color_mode = color # This will become 'rainbow' or 'chain' if 'auto'
         
         self._initial_shadow_enabled = shadow
         self._initial_outline_enabled = outline
@@ -53,7 +52,6 @@ class view:
         
         self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
         
-        # --- NEW STATE ---
         # The viewer's mode is determined by when .show() is called.
         self.trajectories = []               # Store all data
         self._current_trajectory_data = None # List to hold frames for current trajectory
@@ -200,10 +198,9 @@ class view:
             print("Error: Could not find the HTML template file.")
             return "" # Return empty string on error
 
-        # Use the resolved color mode for the config sent to HTML
         viewer_config = {
             "size": self.size,
-            "color": self._resolved_color_mode, # Send 'rainbow' or 'chain'
+            "color": self._initial_color_mode, # Send 'auto', 'chain', 'plddt', etc.
             "viewer_id": self._viewer_id,
             "default_shadow": self._initial_shadow_enabled,
             "default_outline": self._initial_outline_enabled,
@@ -373,23 +370,6 @@ class view:
                 "name": trajectory_name
             })
     
-    def _resolve_auto_color(self, chains=None):
-        """
-        Internal: Resolves 'auto' color mode if this is the first
-        time data is being added.
-        """
-        if not self._is_live and not self.trajectories and self._initial_color_mode == "auto":
-            if chains is not None:
-                unique_chains = set(c for c in chains if c and c.strip())
-                if len(unique_chains) > 1:
-                    self._resolved_color_mode = "chain"
-                else:
-                    self._resolved_color_mode = "rainbow"
-            else:
-                self._resolved_color_mode = "rainbow"
-        elif not self._is_live and not self.trajectories:
-             self._resolved_color_mode = self._initial_color_mode
-                
     def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False, trajectory_name=None):
         """
         Adds a new *frame* of data to the viewer.
@@ -404,14 +384,11 @@ class view:
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
         """
         
-        # --- Step 1: Handle "Auto-Color" Resolution ---
-        self._resolve_auto_color(chains)
-
-        # --- Step 2: Update Python-side alignment state ---
+        # --- Step 1: Update Python-side alignment state ---
         self._update(coords, plddts, chains, atom_types) # This handles defaults
         data_dict = self._get_data_dict() # This reads the full, correct data
 
-        # --- Step 3: Handle trajectory creation ---
+        # --- Step 2: Handle trajectory creation ---
         if new_traj or not self.trajectories:
             self.new_traj(trajectory_name)
         
@@ -419,10 +396,10 @@ class view:
         if self._current_trajectory_data is None:
             self.new_traj(trajectory_name)
             
-        # --- Step 4: Always save data to Python list ---
+        # --- Step 3: Always save data to Python list ---
         self._current_trajectory_data.append(data_dict)
 
-        # --- Step 5: Send message if in "live" mode ---
+        # --- Step 4: Send message if in "live" mode ---
         if self._is_live:
             self._send_message({
                 "type": "py2DmolUpdate",
@@ -445,21 +422,18 @@ class view:
 
         # --- Batch Mode Logic ---
         
-        # --- Step 1: Handle "Auto-Color" Resolution ---
-        self._resolve_auto_color(chains)
-        
-        # --- Step 2: Ensure a trajectory exists ---
+        # --- Step 1: Ensure a trajectory exists ---
         if not self.trajectories: self.new_traj()
         if self._current_trajectory_data is None: self.new_traj()
             
-        # --- Step 3: Prepare new data (defaults) ---
+        # --- Step 2: Prepare new data (defaults) ---
         n_new = coords.shape[0]
         new_coords = coords
         new_plddts = plddts if plddts is not None else np.full(n_new, 50.0)
         new_chains = chains if chains is not None else ["A"] * n_new
         new_atom_types = atom_types if atom_types is not None else ["P"] * n_new
         
-        # --- Step 4: Align new coords ---
+        # --- Step 3: Align new coords ---
         # We align the *new* coords to the *last* coords added
         if self._coords is None:
             aligned_new_coords = new_coords
@@ -476,11 +450,11 @@ class view:
                 except Exception:
                     aligned_new_coords = new_coords # Can't align, just use original
         
-        # --- Step 5: Update the alignment reference for next time ---
+        # --- Step 4: Update the alignment reference for next time ---
         # The reference is *only* the last component.
         self._coords = aligned_new_coords 
         
-        # --- Step 6: Get or create current frame ---
+        # --- Step 5: Get or create current frame ---
         if not self._current_trajectory_data:
             # This is the first component of the frame
             data_dict = {

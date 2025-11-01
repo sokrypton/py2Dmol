@@ -220,6 +220,7 @@
             <div class="control-group">
                 <label for="colorSelect">Color</label>
                 <select id="colorSelect">
+                    <option value="auto">Auto</option>
                     <option value="plddt">pLDDT</option>
                     <option value="rainbow">Rainbow</option>
                     <option value="chain">Chain</option>
@@ -288,7 +289,13 @@
         const pymolColors = ["#33ff33","#00ffff","#ff33cc","#ffff00","#ff9999","#e5e5e5","#7f7fff","#ff7f00","#7fff7f","#199999","#ff007f","#ffdd5e","#8c3f99","#b2b2b2","#007fff","#c4b200","#8cb266","#00bfbf","#b27f7f","#fcd1a5","#ff7f7f","#ffbfdd","#7fffff","#ffff7f","#00ff7f","#337fcc","#d8337f","#bfff3f","#ff7fff","#d8d8ff","#3fffbf","#b78c4c","#339933","#66b2b2","#ba8c84","#84bf00","#b24c66","#7f7f7f","#3f3fa5","#a5512b"];
         function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return {r: 128, g: 128, b: 128}; } const r = parseInt(hex.slice(1,3), 16); const g = parseInt(hex.slice(3,5), 16); const b = parseInt(hex.slice(5,7), 16); return {r, g, b}; }
         function hsvToRgb(h, s, v) { const c = v * s; const x = c * (1 - Math.abs((h / 60) % 2 - 1)); const m = v - c; let r, g, b; if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; } else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; } else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; } return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) }; }
-        function getRainbowColor(value, min, max) { if (max - min < 1e-6) return hsvToRgb(0, 1.0, 1.0); let normalized = (value - min) / (max - min); normalized = Math.max(0, Math.min(1, normalized)); const hue = 240 * normalized; return hsvToRgb(hue, 1.0, 1.0); }
+        function getRainbowColor(value, min, max) { 
+            if (max - min < 1e-6) return hsvToRgb(240, 1.0, 1.0); // Default to blue
+            let normalized = (value - min) / (max - min); 
+            normalized = Math.max(0, Math.min(1, normalized)); 
+            const hue = 240 * (1 - normalized); // Reversed: 0 -> 240 (blue), 1 -> 0 (red)
+            return hsvToRgb(hue, 1.0, 1.0); 
+        }
         function getPlddtColor(plddt) { return getRainbowColor(plddt, 50, 90); }
         function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
 
@@ -303,7 +310,7 @@
                 // Get config from Python
                 const config = window.viewerConfig || { 
                     size: [800, 600], 
-                    color: "plddt", 
+                    color: "auto", 
                     default_shadow: true, 
                     default_outline: true,
                     default_width: 3.0,
@@ -331,10 +338,11 @@
                 this.outlineEnabled = (typeof config.default_outline === 'boolean') ? config.default_outline : true;
                 
                 this.isTransparent = false; // Default to white background
+                this.resolvedAutoColor = 'rainbow'; // Default 'auto' to rainbow
                 
                 // Performance
                 this.chainRainbowScales = {};
-                this.perChainIndices = []; // <-- ADDED FOR RAINBOW FIX
+                this.perChainIndices = [];
                 this.rotatedCoords = []; 
                 this.segmentIndices = []; 
                 this.segData = []; 
@@ -364,7 +372,7 @@
                 this.lastDragX = 0;
                 this.lastDragY = 0;
                 
-                // --- ADDED FOR TOUCH ---
+                // Touch
                 this.initialPinchDistance = 0;
 
                 // Track slider interaction
@@ -390,7 +398,6 @@
                 this.render(); // Re-render with new clear color
             }
 
-            // --- ADDED: Helper for touch zoom ---
             getTouchDistance(touch1, touch2) {
                 const dx = touch1.clientX - touch2.clientX;
                 const dy = touch1.clientY - touch2.clientY;
@@ -468,7 +475,7 @@
                 }, { passive: false });
 
 
-                // --- ADDED TOUCH LISTENERS ---
+                // Touch Listeners
                 
                 this.canvas.addEventListener('touchstart', (e) => {
                     e.preventDefault(); // Prevent page scroll
@@ -496,7 +503,7 @@
                     e.preventDefault(); // Prevent page scroll
 
                     if (e.touches.length === 1 && this.isDragging) {
-                        // --- Rotation/Drag ---
+                        // Rotation/Drag
                         const now = performance.now();
                         const timeDelta = now - this.lastDragTime;
                         const touch = e.touches[0];
@@ -520,7 +527,7 @@
                         
                         this.render(); 
                     } else if (e.touches.length === 2) {
-                        // --- Zoom/Pinch ---
+                        // Zoom/Pinch
                         if (this.initialPinchDistance <= 0) return; // Not initialized
                         
                         const currentPinchDistance = this.getTouchDistance(e.touches[0], e.touches[1]);
@@ -546,7 +553,6 @@
                             this.spinVelocityX = 0;
                             this.spinVelocityY = 0;
                         }
-                        // Else, the velocity from the last touchmove is used by the animate loop
                     }
                     
                     // Handle end of pinch
@@ -559,7 +565,6 @@
                         this.isDragging = false;
                     }
                 });
-                // --- END OF TOUCH LISTENERS ---
             }
 
             // Set UI controls from main script
@@ -900,28 +905,14 @@
                 this.chains = chains;
                 this.atomTypes = atomTypes;
                 
-                // --- NEW FIX: Resolve "auto" color mode on first data load ---
-                // This logic runs only once when colorMode is 'auto' (from 'live' mode)
-                const isAuto = (this.colorMode === 'auto');
-                if (isAuto) {
-                    if (this.chains && this.chains.length > 0) {
-                        const uniqueChains = new Set(this.chains.filter(c => c && c.trim()));
-                        if (uniqueChains.size > 1) {
-                            this.colorMode = 'chain';
-                        } else {
-                            this.colorMode = 'rainbow';
-                        }
-                    } else {
-                        this.colorMode = 'rainbow'; // Default for no chain info
-                    }
-                    
-                    // --- NEW FIX: Update dropdown to match resolved color ---
-                    const colorSelect = document.getElementById('colorSelect');
-                    if (colorSelect) {
-                        colorSelect.value = this.colorMode;
-                    }
+                // "auto" logic:
+                // Always calculate what 'auto' *should* be
+                if (this.chains && this.chains.length > 0) {
+                    const uniqueChains = new Set(this.chains.filter(c => c && c.trim()));
+                    this.resolvedAutoColor = (uniqueChains.size > 1) ? 'chain' : 'rainbow';
+                } else {
+                    this.resolvedAutoColor = 'rainbow';
                 }
-                // --- END OF FIX ---
                 
                 const n = this.coords.length;
 
@@ -930,7 +921,6 @@
                 if (this.chains.length !== n) { this.chains = Array(n).fill('A'); }
                 if (this.atomTypes.length !== n) { this.atomTypes = Array(n).fill('P'); }
 
-                // --- FIX 1 START ---
                 // Pre-calculate per-chain indices for rainbow coloring (N-to-C)
                 this.perChainIndices = new Array(n);
                 const chainIndices = {}; // Temporary tracker
@@ -947,7 +937,6 @@
                         this.perChainIndices[i] = 0; // Default for ligands
                     }
                 }
-                // --- FIX 1 END ---
 
                 // Pre-calculate rainbow scales
                 this.chainRainbowScales = {};
@@ -958,7 +947,6 @@
                         if (!this.chainRainbowScales[chainId]) { 
                             this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity }; 
                         }
-                        // --- FIX 2: Use per-chain N-to-C index ---
                         const colorIndex = this.perChainIndices[i]; 
                         const scale = this.chainRainbowScales[chainId];
                         scale.min = Math.min(scale.min, colorIndex);
@@ -1017,7 +1005,6 @@
                                         this.segmentIndices.push({ 
                                             idx1: i, 
                                             idx2: i+1, 
-                                            // --- FIX 3: Use per-chain N-to-C index ---
                                             colorIndex: this.perChainIndices[i], 
                                             origIndex: i, 
                                             chainId: this.chains[i] || 'A',
@@ -1053,7 +1040,6 @@
                                 this.segmentIndices.push({ 
                                     idx1: firstPolymerIndex, 
                                     idx2: lastPolymerIndex,
-                                    // --- FIX 4: Use per-chain N-to-C index ---
                                     colorIndex: this.perChainIndices[firstPolymerIndex],
                                     origIndex: firstPolymerIndex, 
                                     chainId: firstChainId,
@@ -1109,8 +1095,13 @@
                 const n = this.coords.length;
                 const m = this.segmentIndices.length;
                 
+                let effectiveColorMode = this.colorMode;
+                if (effectiveColorMode === 'auto') {
+                    effectiveColorMode = this.resolvedAutoColor || 'rainbow';
+                }
+                
                 const chainIndexMap = new Map();
-                if (this.colorMode === 'chain' && this.chains.length > 0) {
+                if (effectiveColorMode === 'chain' && this.chains.length > 0) {
                     for (const chainId of this.chains) {
                         if (chainId && !chainIndexMap.has(chainId)) {
                             chainIndexMap.set(chainId, chainIndexMap.size);
@@ -1129,7 +1120,7 @@
                         return grey;
                     }
                     // plddt mode is handled in render()
-                    if (this.colorMode === 'chain') {
+                    if (effectiveColorMode === 'chain') {
                         const chainId = this.chains[i] || 'A';
                         const chainIndex = chainIndexMap.get(chainId);
                         return getChainColor(chainIndex !== undefined ? chainIndex : 0);
@@ -1259,7 +1250,8 @@
                 if (this.colorMode === 'plddt') {
                     colors = this.plddtColors; // Use pre-calculated array
                 } else {
-                    // --- FIX: Re-calculate rainbow/chain colors if mode changed ---
+                    // This works because this.colors is recalculated
+                    // when the mode changes or when new coords are set.
                     if (!this.colors || this.colors.length !== n) {
                         this.colors = this._calculateSegmentColors();
                     }
@@ -1427,7 +1419,9 @@
                 const scale = (canvasSize / dataRange) * this.zoom;
                 const pyFigWidthPixels = 480.0;
                 const pyPixelsPerData = pyFigWidthPixels / dataRange;
-                const baseLineWidthPixels = (this.lineWidth * pyPixelsPerData) * this.zoom;
+                
+                const baseLineWidthPixels = (this.lineWidth * pyPixelsPerData) * this.zoom; 
+                
                 const centerX = this.canvas.width / 2;
                 const centerY = this.canvas.height / 2;
 
@@ -1604,7 +1598,7 @@
         // 1. Get config from Python
         const config = window.viewerConfig || { 
             size: [800, 600], 
-            color: "plddt", 
+            color: "auto", 
             default_shadow: true, 
             default_outline: true,
             default_width: 3.0,
@@ -1626,18 +1620,10 @@
         // 4. Setup general controls
         const colorSelect = document.getElementById('colorSelect');
         
-        // --- MODIFIED: Handle 'auto' from config ---
-        // If config.color is 'auto', don't set dropdown.
-        // It will be set by setCoords() when data arrives.
-        // Otherwise, set it to the specific color.
-        if (config.color !== 'auto') {
-             colorSelect.value = config.color; // Set dropdown value from config
-        }
-        // --- END OF MODIFICATION ---
+        colorSelect.value = config.color; // Set dropdown value from config
         
         colorSelect.addEventListener('change', (e) => {
             window.renderer.colorMode = e.target.value;
-            // --- FIX: Force recalculation of colors when mode changes ---
             window.renderer.colors = window.renderer._calculateSegmentColors();
             window.renderer.render();
         });
