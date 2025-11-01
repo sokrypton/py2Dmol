@@ -187,6 +187,18 @@
             font-size: 12px;
             color: #333;
         }
+        
+        /* --- NEW --- Style for PAE container */
+        #paeContainer {
+            display: none; /* JS will manage visibility */
+            flex-shrink: 0;
+            /* Copied from #canvasContainer */
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            background: #ffffff;
+        }
 
     </style>
 </head>
@@ -214,7 +226,13 @@
             </div>
         </div>
         
-        <!-- Right Column -->
+        <!-- PAE Plot Container (MOVED) -->
+        <div id="paeContainer">
+             <!-- (MOVED) Style removed from canvas, now on container -->
+             <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair; display: block;"></canvas>
+        </div>
+        
+        <!-- Right Column (MOVED to end) -->
         <div id="rightPanelContainer">
             
             <!-- Style Group -->
@@ -269,6 +287,7 @@
                 </select>
             </div>
         </div>
+
     </div>
 
     <!-- DATA_INJECTION_POINT -->
@@ -323,6 +342,29 @@
 
         function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
         function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
+        
+        // --- MODIFIED ---
+        function getPAEColor(value) {
+            // 0 (blue) to 15 (white) to 30 (red)
+            const v = Math.max(0, Math.min(30, (value || 0)));
+            
+            if (v <= 15.0) {
+                // 0 (blue) -> 15 (white)
+                // Hue is 240 (blue)
+                // Saturation goes from 1.0 down to 0.0
+                const norm_blue = v / 15.0; // 0 to 1
+                const saturation = 1.0 - norm_blue;
+                return hsvToRgb(240, saturation, 1.0);
+            } else {
+                // 15 (white) -> 30 (red)
+                // Hue is 0 (red)
+                // Saturation goes from 0.0 up to 1.0
+                const norm_red = (v - 15.0) / 15.0; // 0 to 1
+                const saturation = norm_red;
+                return hsvToRgb(0, saturation, 1.0);
+            }
+        }
+        // --- END MODIFICATION ---
 
         // ============================================================================
         // PSEUDO-3D RENDERER
@@ -342,7 +384,8 @@
                     hide_controls: false,
                     autoplay: false,
                     hide_box: false,
-                    default_pastel: 0.25
+                    default_pastel: 0.25,
+                    pae: false
                 };
 
                 // Current render state
@@ -403,6 +446,11 @@
 
                 // Track slider interaction
                 this.isSliderDragging = false;
+                
+                // PAE and Visibility
+                this.paeRenderer = null;
+                this.visibilityMask = null; // Set of atom indices to *show*
+                this.polymerAtomIndices = []; // Map residue index -> atom index
 
                 // UI elements
                 this.playButton = null;
@@ -423,6 +471,40 @@
             setClearColor(isTransparent) {
                 this.isTransparent = isTransparent;
                 this.render(); // Re-render with new clear color
+            }
+            
+            // --- PAE / Visibility ---
+            setPAERenderer(paeRenderer) {
+                this.paeRenderer = paeRenderer;
+            }
+            
+            setResidueVisibility(selection) {
+                if (selection === null) {
+                    this.visibilityMask = null;
+                } else {
+                    const { i_start, i_end, j_start, j_end } = selection;
+                    this.visibilityMask = new Set();
+                    
+                    // Add all ligands
+                    for (let i = 0; i < this.atomTypes.length; i++) {
+                        if (this.atomTypes[i] === 'L') {
+                            this.visibilityMask.add(i);
+                        }
+                    }
+                    
+                    // Add selected residues (mapping from residue index to atom index)
+                    for (let res_idx = i_start; res_idx <= i_end; res_idx++) {
+                        if (res_idx < this.polymerAtomIndices.length) {
+                            this.visibilityMask.add(this.polymerAtomIndices[res_idx]);
+                        }
+                    }
+                    for (let res_idx = j_start; res_idx <= j_end; res_idx++) {
+                        if (res_idx < this.polymerAtomIndices.length) {
+                            this.visibilityMask.add(this.polymerAtomIndices[res_idx]);
+                        }
+                    }
+                }
+                this.render(); // Trigger re-render of 3D view
             }
 
             getTouchDistance(touch1, touch2) {
@@ -830,6 +912,7 @@
                     this.currentFrame = -1;
                     this.coords = [];
                     clearCanvas();
+                    if (this.paeRenderer) { this.paeRenderer.setData(null); }
                     this.updateUIControls();
                     // Prevent "spinning wheel" on reload
                     this.setUIEnabled(true); 
@@ -841,6 +924,7 @@
                     this.currentFrame = -1;
                     this.coords = [];
                     clearCanvas();
+                    if (this.paeRenderer) { this.paeRenderer.setData(null); }
                     this.updateUIControls();
                     this.setUIEnabled(true); // Enable, even if frame is invalid (so user can change traj)
                     return;
@@ -848,7 +932,15 @@
 
                 this.currentFrame = frameIndex;
                 const data = trajectory.frames[frameIndex];
+                
+                // Load 3D data
                 this._loadDataIntoRenderer(data); // This calls render()
+                
+                // Load PAE data
+                if (this.paeRenderer) {
+                    this.paeRenderer.setData(data.pae || null);
+                }
+                
                 this.updateUIControls(); // Update slider value
                 this.setUIEnabled(true); // Make sure controls are enabled
             }
@@ -935,6 +1027,11 @@
                     this.trajectorySelect.innerHTML = ''; // Clear all options
                 }
                 
+                // Clear PAE
+                if (this.paeRenderer) {
+                    this.paeRenderer.setData(null);
+                }
+                
                 // Set to empty frame, which clears canvas and updates UI
                 this.setFrame(-1);
             }
@@ -974,6 +1071,15 @@
                 if (this.plddts.length !== n) { this.plddts = Array(n).fill(50.0); }
                 if (this.chains.length !== n) { this.chains = Array(n).fill('A'); }
                 if (this.atomTypes.length !== n) { this.atomTypes = Array(n).fill('P'); }
+                
+                // Map polymer atoms to residue indices for PAE selection
+                this.polymerAtomIndices = [];
+                const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
+                for (let i = 0; i < n; i++) {
+                    if (isPolymer(this.atomTypes[i])) {
+                        this.polymerAtomIndices.push(i);
+                    }
+                }
 
                 // Pre-calculate per-chain indices for rainbow coloring (N-to-C)
                 this.perChainIndices = new Array(n);
@@ -1026,7 +1132,7 @@
                 let lastPolymerIndex = -1;
                 const ligandIndices = [];
                 
-                const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
+                // const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R'); // Already defined
                 const isPolymerArr = this.atomTypes.map(isPolymer);
                 
                 const getChainbreakDistSq = (type1, type2) => {
@@ -1480,11 +1586,19 @@
                 
                 const centerX = this.canvas.width / 2;
                 const centerY = this.canvas.height / 2;
+                
+                const visibilityMask = this.visibilityMask; // Cache for performance
 
                 if (this.outlineEnabled) {
                     // 3-STEP DRAW (Outline) - Fixes gaps
                     for (const idx of order) {
                         const segInfo = segments[idx];
+                        
+                        // Visibility Check
+                        if (visibilityMask && (!visibilityMask.has(segInfo.idx1) || !visibilityMask.has(segInfo.idx2))) {
+                            continue;
+                        }
+                        
                         let {r, g, b} = colors[idx];
                         r /= 255; g /= 255; b /= 255;
                         
@@ -1541,6 +1655,12 @@
                     // 1-STEP DRAW (No Outline)
                     for (const idx of order) {
                         const segInfo = segments[idx];
+                        
+                        // Visibility Check
+                        if (visibilityMask && (!visibilityMask.has(segInfo.idx1) || !visibilityMask.has(segInfo.idx2))) {
+                            continue;
+                        }
+                        
                         let {r, g, b} = colors[idx];
                         r /= 255; g /= 255; b /= 255;
                         
@@ -1646,6 +1766,188 @@
                 requestAnimationFrame(() => this.animate());
             }
         }
+        
+        // ============================================================================
+        // PAE RENDERER
+        // ============================================================================
+        class PAERenderer {
+            constructor(canvas, mainRenderer) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.mainRenderer = mainRenderer; // Reference to Pseudo3DRenderer
+                
+                this.paeData = null;
+                this.size = canvas.width;
+                
+                this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                this.isDragging = false;
+                
+                this.setupInteraction();
+            }
+
+            getMousePos(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                return { 
+                    x: e.clientX - rect.left, 
+                    y: e.clientY - rect.top 
+                };
+            }
+            
+            getCellIndices(e) {
+                const { x, y } = this.getMousePos(e);
+                if (!this.paeData) return { i: -1, j: -1 };
+                
+                const n = this.paeData.length;
+                if (n === 0) return { i: -1, j: -1 };
+                
+                const cellSize = this.size / n;
+                
+                const i = Math.floor(y / cellSize);
+                const j = Math.floor(x / cellSize);
+                
+                return { i, j };
+            }
+
+            setupInteraction() {
+                this.canvas.addEventListener('mousedown', (e) => {
+                    if (e.button !== 0) return; // Only left click
+                    if (!this.paeData) return; // No data to select
+                    
+                    this.isDragging = true;
+                    const { i, j } = this.getCellIndices(e);
+                    this.selection.x1 = j;
+                    this.selection.y1 = i;
+                    this.selection.x2 = j;
+                    this.selection.y2 = i;
+                    this.render(); // Re-render to show start of selection
+                });
+                
+                window.addEventListener('mousemove', (e) => {
+                    if (!this.isDragging) return;
+                    
+                    const { i, j } = this.getCellIndices(e);
+                    
+                    // Clamp selection to canvas bounds
+                    const n = this.paeData.length;
+                    this.selection.x2 = Math.max(0, Math.min(n - 1, j));
+                    this.selection.y2 = Math.max(0, Math.min(n - 1, i));
+                    
+                    this.render(); // Re-render to show selection box
+                });
+                
+                window.addEventListener('mouseup', (e) => {
+                    if (!this.isDragging) return;
+                    this.isDragging = false;
+                    
+                    const i_start = Math.min(this.selection.y1, this.selection.y2);
+                    const i_end = Math.max(this.selection.y1, this.selection.y2);
+                    const j_start = Math.min(this.selection.x1, this.selection.x2);
+                    const j_end = Math.max(this.selection.x1, this.selection.x2);
+                    
+                    if (i_start < 0 || j_start < 0) { // Dragged off canvas
+                         this.mainRenderer.setResidueVisibility(null);
+                         this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                         this.render();
+                         return;
+                    }
+
+                    // Check for a single-click
+                    const isClick = (i_start === i_end && j_start === j_end);
+                    
+                    if (isClick && this.mainRenderer.visibilityMask) {
+                        // Clicked, and something is already selected -> Clear selection
+                        this.mainRenderer.setResidueVisibility(null);
+                        this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                    } else {
+                        // New selection (drag or first click)
+                        this.mainRenderer.setResidueVisibility({ i_start, i_end, j_start, j_end });
+                    }
+                    
+                    this.render(); // Re-render PAE (with or without selection box)
+                });
+            }
+
+            setData(paeData) {
+                this.paeData = paeData;
+                // Clear selection when data changes
+                this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                if (this.mainRenderer.visibilityMask) {
+                     this.mainRenderer.setResidueVisibility(null);
+                }
+                this.render();
+            }
+
+            render() {
+                this.ctx.clearRect(0, 0, this.size, this.size);
+                
+                if (!this.paeData || this.paeData.length === 0) {
+                    this.ctx.fillStyle = '#f9f9f9';
+                    this.ctx.fillRect(0, 0, this.size, this.size);
+                    this.ctx.fillStyle = '#999';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.textBaseline = 'middle';
+                    this.ctx.font = '14px sans-serif';
+                    this.ctx.fillText('No PAE Data', this.size / 2, this.size / 2);
+                    return;
+                }
+
+                const n = this.paeData.length;
+                if (n === 0) return;
+                
+                const cellSize = this.size / n;
+                
+                // Use createImageData for faster rendering
+                const imageData = this.ctx.createImageData(this.size, this.size);
+                const data = imageData.data;
+                
+                for (let i = 0; i < n; i++) { // y
+                    for (let j = 0; j < n; j++) { // x
+                        const value = this.paeData[i][j];
+                        const { r, g, b } = getPAEColor(value);
+                        
+                        // Fill all pixels in the cell
+                        const startX = Math.floor(j * cellSize);
+                        const endX = Math.floor((j + 1) * cellSize);
+                        const startY = Math.floor(i * cellSize);
+                        const endY = Math.floor((i + 1) * cellSize);
+
+                        for (let y = startY; y < endY && y < this.size; y++) {
+                            for (let x = startX; x < endX && x < this.size; x++) {
+                                const idx = (y * this.size + x) * 4;
+                                data[idx]     = r;
+                                data[idx + 1] = g;
+                                data[idx + 2] = b;
+                                data[idx + 3] = 255; // alpha
+                            }
+                        }
+                    }
+                }
+                this.ctx.putImageData(imageData, 0, 0);
+                
+                // Draw selection box if one is active
+                if (this.mainRenderer.visibilityMask && this.selection.x1 !== -1) {
+                     const i_start = Math.min(this.selection.y1, this.selection.y2);
+                     const i_end = Math.max(this.selection.y1, this.selection.y2);
+                     const j_start = Math.min(this.selection.x1, this.selection.x2);
+                     const j_end = Math.max(this.selection.x1, this.selection.x2);
+                     
+                     if (i_start < 0 || j_start < 0) return; // Invalid selection
+
+                     const x = j_start * cellSize;
+                     const y = i_start * cellSize;
+                     const w = (j_end - j_start + 1) * cellSize;
+                     const h = (i_end - i_start + 1) * cellSize;
+                     
+                     this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+                     this.ctx.lineWidth = 4;
+                     this.ctx.strokeRect(x, y, w, h);
+                     
+                     this.ctx.strokeStyle = 'rgba(255, 255, 255, 1.0)';
+                     this.ctx.lineWidth = 2;
+                     this.ctx.strokeRect(x, y, w, h);
+                }
+            }
+        }
 
         // ============================================================================
         // MAIN APP & COLAB COMMUNICATION
@@ -1658,12 +1960,13 @@
             default_shadow: true, 
             default_outline: true,
             default_width: 3.0,
-                    default_rotate: false,
-                    hide_controls: false,
-                    autoplay: false,
-                    hide_box: false,
-                    default_pastel: 0.25
-                };
+            default_rotate: false,
+            hide_controls: false,
+            autoplay: false,
+            hide_box: false,
+            default_pastel: 0.25,
+            pae: false
+        };
 
         // 2. Setup Canvas
         const canvas = document.getElementById('canvas');
@@ -1674,7 +1977,20 @@
         // 3. Create renderer
         window.renderer = new Pseudo3DRenderer(canvas);
         
-        // 4. Setup general controls
+        // 4. Setup PAE Renderer (if enabled)
+        if (config.pae) {
+            try {
+                document.getElementById('paeContainer').style.display = 'block';
+                const paeCanvas = document.getElementById('paeCanvas');
+                // This class is defined right after Pseudo3DRenderer
+                window.paeRenderer = new PAERenderer(paeCanvas, window.renderer); 
+                window.renderer.setPAERenderer(window.paeRenderer);
+            } catch (e) {
+                console.error("Failed to initialize PAE renderer:", e);
+            }
+        }
+        
+        // 5. Setup general controls
         const colorSelect = document.getElementById('colorSelect');
         
         colorSelect.value = config.color; // Set dropdown value from config
@@ -1693,7 +2009,7 @@
         const outlineEnabledCheckbox = document.getElementById('outlineEnabledCheckbox'); 
         outlineEnabledCheckbox.checked = window.renderer.outlineEnabled; // Set default from renderer
 
-        // 5. Setup animation and trajectory controls
+        // 6. Setup animation and trajectory controls
         const controlsContainer = document.getElementById('controlsContainer');
         const playButton = document.getElementById('playButton');
         const frameSlider = document.getElementById('frameSlider');
@@ -1731,10 +2047,17 @@
             document.getElementById('canvasContainer').style.background = 'transparent';
             document.getElementById('canvas').style.background = 'transparent';
             
+            // Also update PAE container if it exists
+            if (config.pae) {
+                document.getElementById('paeContainer').style.border = 'none';
+                document.getElementById('paeContainer').style.boxShadow = 'none';
+                document.getElementById('paeContainer').style.background = 'transparent';
+            }
+            
             window.renderer.setClearColor(true); 
         }
 
-        // 6. Add function for Python to call (for new frames)
+        // 7. Add function for Python to call (for new frames)
         window.handlePythonUpdate = (jsonData, trajectoryName) => {
             try {
                 const data = JSON.parse(jsonData);
@@ -1745,18 +2068,27 @@
             }
         };
 
-        // 7. Add function for Python to start a new trajectory
+        // 8. Add function for Python to start a new trajectory
         window.handlePythonNewTrajectory = (name) => {
             window.renderer.addTrajectory(name);
         };
 
-        // 8. Add function for Python to clear everything
+        // 9. Add function for Python to clear everything
         window.handlePythonClearAll = () => {
             window.renderer.clearAllTrajectories();
         };
+        
+        // 10. Add function for Python to set color mode (e.g., for from_afdb)
+        window.handlePythonSetColor = (colorMode) => {
+            if (colorSelect) {
+                colorSelect.value = colorMode;
+                // Manually trigger the change event
+                colorSelect.dispatchEvent(new Event('change'));
+            }
+        };
 
 
-        // 9. Load initial data (NEW LOGIC)
+        // 11. Load initial data (NEW LOGIC)
         let isStaticViewer = false;
 
         if (window.staticTrajectoryData && window.staticTrajectoryData.length > 0) {
@@ -1801,7 +2133,7 @@
             window.renderer.setFrame(-1);
         }
 
-        // 10. Add postMessage listener (MODIFIED)
+        // 12. Add postMessage listener (MODIFIED)
         // Only listen for messages if this is NOT a static viewer
         if (!isStaticViewer) {
             window.addEventListener('message', (event) => {
@@ -1828,15 +2160,21 @@
                         } catch (e) {
                              console.error("Failed to handle postMessage (clear all):", e);
                         }
+                    } else if (event.data.type === 'py2DmolSetColor') {
+                         try {
+                            window.handlePythonSetColor(event.data.color);
+                        } catch (e) {
+                             console.error("Failed to handle postMessage (set color):", e);
+                        }
                     }
                 }
             });
         }
 
-        // 11. Start the main animation loop
+        // 13. Start the main animation loop
         window.renderer.animate();
         
-        // 12. Notify the parent window that the iframe is loaded and ready (MODIFIED)
+        // 14. Notify the parent window that the iframe is loaded and ready (MODIFIED)
         // Only notify if not static (i.e., we are a dynamic/hybrid viewer)
         if (window.parent && !isStaticViewer) {
             window.parent.postMessage({ 

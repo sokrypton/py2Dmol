@@ -40,7 +40,7 @@ def align_a_to_b(a, b):
 
 class view:
     def __init__(self, size=(500,500), color="auto", shadow=True, outline=True, width=3.0, rotate=False,
-                 hide_controls=False, autoplay=False, hide_box=False, pastel=0.25):
+                 hide_controls=False, autoplay=False, hide_box=False, pastel=0.25, pae=False):
         self.size = size
         self._initial_color_mode = color # Store the user's requested mode
         
@@ -53,6 +53,7 @@ class view:
         self._initial_autoplay = autoplay
         self._initial_hide_box = hide_box
         self._initial_pastel_level = pastel # Store pastel level (0.0 to 1.0)
+        self._initial_pae = pae # Store PAE enabled/disabled
         
         self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
         
@@ -66,6 +67,7 @@ class view:
         self._plddts = None
         self._chains = None
         self._atom_types = None
+        self._pae = None # Store PAE matrix for the current frame
 
     def _get_data_dict(self):
         """Serializes the current coordinate state to a dict."""
@@ -73,11 +75,12 @@ class view:
             "coords": self._coords.tolist(),
             "plddts": self._plddts.tolist(),
             "chains": list(self._chains),
-            "atom_types": list(self._atom_types)
+            "atom_types": list(self._atom_types),
+            "pae": self._pae.tolist() if self._pae is not None else None
         }
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, atom_types=None):
+    def _update(self, coords, plddts=None, chains=None, atom_types=None, pae=None):
       """Updates the internal state with new data, aligning coords."""
       if self._coords is None:
         self._coords = coords
@@ -111,6 +114,9 @@ class view:
           self._atom_types = atom_types
       elif self._atom_types is None or len(self._atom_types) != n_atoms:
           self._atom_types = ["P"] * n_atoms
+          
+      # 4. Handle PAE
+      self._pae = pae # Store PAE matrix (or None)
 
       # Ensure all arrays have the same length as coords (final safety check)
       if len(self._plddts) != n_atoms:
@@ -201,8 +207,14 @@ class view:
             with importlib.resources.open_text(py2dmol_resources, 'pseudo_3D_viewer.html') as f:
                 html_template = f.read()
         except FileNotFoundError:
-            print("Error: Could not find the HTML template file.")
-            return "" # Return empty string on error
+            # Fallback for when py2dmol_resources is not correctly set up (e.g., dev)
+            # Try to read from the user's uploaded file name
+            try:
+                with open('pseudo_3D_viewer (6).html', 'r') as f:
+                    html_template = f.read()
+            except FileNotFoundError:
+                print("Error: Could not find the HTML template file (pseudo_3D_viewer.html or pseudo_3D_viewer (6).html).")
+                return "" # Return empty string on error
 
         viewer_config = {
             "size": self.size,
@@ -215,7 +227,8 @@ class view:
             "hide_controls": self._initial_hide_controls,
             "autoplay": self._initial_autoplay,
             "hide_box": self._initial_hide_box,
-            "default_pastel": self._initial_pastel
+            "default_pastel": self._initial_pastel,
+            "pae": self._initial_pae # Add PAE config
         }
         config_script = f"""
         <script id="viewer-config">
@@ -234,7 +247,7 @@ class view:
             data_script = f'<script id="static-data">window.staticTrajectoryData = {data_json};</script>'
         else:
             # Pure Dynamic mode: inject empty data, will be populated by messages
-            data_script = '<script id="protein-data">window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "atom_types": [] }};</script>'
+            data_script = '<script id="protein-data">window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "atom_types": [], "pae": null }};</script>'
         
         injection_scripts = config_script + "\n" + data_script
         
@@ -243,6 +256,9 @@ class view:
         iframe_width = self.size[0]
         if not self._initial_hide_controls:
             iframe_width += 180 # Width of side panel
+            
+        if self._initial_pae:
+            iframe_width += 315 # Width of PAE plot + margin
         
         iframe_height = self.size[1]
         if not self._initial_hide_controls:
@@ -344,6 +360,7 @@ class view:
         self._plddts = None
         self._chains = None
         self._atom_types = None
+        self._pae = None
         self._is_live = False
         
         # We can't clear the output cell, so we just reset state
@@ -359,6 +376,7 @@ class view:
         self._plddts = None
         self._chains = None
         self._atom_types = None
+        self._pae = None
 
         if trajectory_name is None:
             trajectory_name = f"{len(self.trajectories)}"
@@ -377,7 +395,7 @@ class view:
                 "name": trajectory_name
             })
     
-    def add(self, coords, plddts=None, chains=None, atom_types=None, new_traj=False, trajectory_name=None):
+    def add(self, coords, plddts=None, chains=None, atom_types=None, pae=None, new_traj=False, trajectory_name=None):
         """
         Adds a new *frame* of data to the viewer.
         
@@ -388,11 +406,12 @@ class view:
             plddts (np.array, optional): N-length array of pLDDT scores.
             chains (list, optional): N-length list of chain identifiers.
             atom_types (list, optional): N-length list of atom types ('P', 'D', 'R', 'L').
+            pae (np.array, optional): LxL PAE matrix.
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
         """
         
         # --- Step 1: Update Python-side alignment state ---
-        self._update(coords, plddts, chains, atom_types) # This handles defaults
+        self._update(coords, plddts, chains, atom_types, pae) # This handles defaults
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         # --- Step 2: Handle trajectory creation ---
@@ -414,17 +433,18 @@ class view:
                 "payload": data_dict
             })
 
-    def append(self, coords, plddts=None, chains=None, atom_types=None):
+    def append(self, coords, plddts=None, chains=None, atom_types=None, pae=None):
         """
         Appends coordinates to the *current frame*.
         This is for building a single frame from multiple components.
         
         NOTE: This only works reliably in "batch" mode (before .show() is called).
+        PAE matrices are *not* combined and should only be added with the first component.
         """
         
         if self._is_live:
             print("Warning: .append() is not supported in 'live' mode. Use .add() to add new frames.")
-            self.add(coords, plddts, chains, atom_types) # Fallback
+            self.add(coords, plddts, chains, atom_types, pae) # Fallback
             return
 
         # --- Batch Mode Logic ---
@@ -468,7 +488,8 @@ class view:
                 "coords": aligned_new_coords.tolist(),
                 "plddts": new_plddts.tolist(),
                 "chains": list(new_chains),
-                "atom_types": list(new_atom_types)
+                "atom_types": list(new_atom_types),
+                "pae": pae.tolist() if pae is not None else None # Add PAE
             }
             self._current_trajectory_data.append(data_dict)
         else:
@@ -480,13 +501,15 @@ class view:
                 "coords": last_frame_data['coords'] + aligned_new_coords.tolist(),
                 "plddts": last_frame_data['plddts'] + new_plddts.tolist(),
                 "chains": last_frame_data['chains'] + list(new_chains),
-                "atom_types": last_frame_data['atom_types'] + list(new_atom_types)
+                "atom_types": last_frame_data['atom_types'] + list(new_atom_types),
+                # PAE is only taken from the *first* component
+                "pae": last_frame_data['pae'] if last_frame_data['pae'] is not None else (pae.tolist() if pae is not None else None)
             }
             
             # Push the modified frame back
             self._current_trajectory_data.append(combined_data)
 
-    def add_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None):
+    def add_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None, pae=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or trajectory).
@@ -500,6 +523,7 @@ class view:
             chains (list, optional): Specific chains to load. Defaults to all.
             new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
             trajectory_name (str, optional): Name for the new trajectory.
+            pae (np.array, optional): PAE matrix to associate with the *first* model.
         """
         
         # --- Now, process the file ---
@@ -516,6 +540,7 @@ class view:
         # --- Simplified Logic ---
         # Just call .add() for each model.
         # .add() will automatically handle batching vs. sending.
+        is_first_model = True
         for model in structure:
             model_to_process = model
             coords, plddts, atom_chains, atom_types = self._parse_model(model_to_process, chains)
@@ -525,12 +550,18 @@ class view:
                 plddts_np = np.array(plddts) if plddts else np.full(len(coords), 50.0)
                 if len(coords_np) > 0 and len(plddts_np) == 0:
                     plddts_np = np.full(len(coords_np), 50.0)
+                
+                # Only add PAE matrix to the first model
+                pae_to_add = pae if is_first_model else None
 
                 # Call add() - this will handle batch vs. live
                 self.add(coords_np, plddts_np, atom_chains, atom_types,
+                    pae=pae_to_add,
                     new_traj=False, trajectory_name=current_traj_name)
+                
+                is_first_model = False # Clear flag after first model
 
-    def append_pdb(self, filepath, chains=None):
+    def append_pdb(self, filepath, chains=None, pae=None):
         """
         Loads a structure from a PDB or CIF file and *appends* it
         to the current frame.
@@ -540,16 +571,18 @@ class view:
         Args:
             filepath (str): Path to the PDB or CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
+            pae (np.array, optional): PAE matrix (only applied if this is the first component).
         """
         if self._is_live:
             print("Warning: .append_pdb() is not supported in 'live' mode. Use .add_pdb() to add new frames.")
-            self.add_pdb(filepath, chains=chains) # Fallback
+            self.add_pdb(filepath, chains=chains, pae=pae) # Fallback
             return
 
         # --- Batch Mode Logic ---
         structure = gemmi.read_structure(filepath)
         
         # Append each model's data to the current frame
+        is_first_model = True
         for model in structure:
             model_to_process = model
             coords, plddts, atom_chains, atom_types = self._parse_model(model_to_process, chains)
@@ -559,9 +592,14 @@ class view:
                 plddts_np = np.array(plddts) if plddts else np.full(len(coords), 50.0)
                 if len(coords_np) > 0 and len(plddts_np) == 0:
                     plddts_np = np.full(len(coords_np), 50.0)
+                
+                # Only add PAE if this is the very first model
+                pae_to_add = pae if is_first_model else None
 
                 # Call append() - this will handle batch vs. live
-                self.append(coords_np, plddts_np, atom_chains, atom_types)
+                self.append(coords_np, plddts_np, atom_chains, atom_types, pae=pae_to_add)
+                
+                is_first_model = False # Clear flag
 
     def _parse_model(self, model, chains_filter):
         """Helper function to parse a gemmi.Model object."""
@@ -655,31 +693,45 @@ class view:
         print(f"Error: File or PDB ID '{pdb_id}' not found.")
         return None
 
-    def _get_filepath_from_afdb_id(self, uniprot_id):
+    def _get_filepath_from_afdb_id(self, uniprot_id, download_pae=False):
         """
         Downloads a structure from AlphaFold DB given a UniProt ID.
-        Returns the filepath.
+        Returns the (structure_filepath, pae_filepath)
         """
         uniprot_code = uniprot_id.upper()
-        url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_code}-F1-model_v6.cif"
-        filepath = f"AF-{uniprot_code}.cif" # Simplified filename
+        
+        # 1. Download Structure
+        struct_url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_code}-F1-model_v6.cif"
+        struct_filepath = f"AF-{uniprot_code}.cif" 
 
-        # Download only if it doesn't already exist
-        if not os.path.exists(filepath):
+        if not os.path.exists(struct_filepath):
             try:
-                # print(f"Downloading {uniprot_code} from AlphaFold DB...")
-                urllib.request.urlretrieve(url, filepath)
-                # print(f"Saved to {filepath}")
-                return filepath
+                urllib.request.urlretrieve(struct_url, struct_filepath)
             except urllib.error.HTTPError:
-                print(f"Error: Could not download UniProt ID {uniprot_code} from AlphaFold DB (URL: {url}).")
-                return None
+                print(f"Error: Could not download UniProt ID {uniprot_code} from AlphaFold DB (URL: {struct_url}).")
+                return None, None
             except Exception as e:
-                print(f"An error occurred during download: {e}")
-                return None
-        else:
-            # File already exists
-            return filepath
+                print(f"An error occurred during structure download: {e}")
+                return None, None
+        
+        # 2. Download PAE (if requested)
+        pae_filepath = None
+        if download_pae:
+            pae_url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_code}-F1-predicted_aligned_error_v6.json"
+            pae_filepath = f"AF-{uniprot_code}-pae.json"
+            
+            if not os.path.exists(pae_filepath):
+                try:
+                    urllib.request.urlretrieve(pae_url, pae_filepath)
+                except urllib.error.HTTPError:
+                    print(f"Warning: Could not download PAE data for {uniprot_code}. (URL: {pae_url})")
+                    pae_filepath = None
+                except Exception as e:
+                    print(f"An error occurred during PAE download: {e}")
+                    pae_filepath = None
+                    
+        return struct_filepath, pae_filepath
+
 
     def from_pdb(self, pdb_id, chains=None, new_traj=False, trajectory_name=None):
         """
@@ -695,7 +747,7 @@ class view:
         filepath = self._get_filepath_from_pdb_id(pdb_id)
         
         if filepath:
-            self.add_pdb(filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name)
+            self.add_pdb(filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name, pae=None)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         else:
@@ -705,6 +757,9 @@ class view:
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and displays the viewer.
+        
+        If `pae=True` was set in the `view()` constructor, this will also
+        download and display the PAE matrix.
         
         Args:
             uniprot_id (str): UniProt accession code (e.g., "P0A8I3").
@@ -722,14 +777,37 @@ class view:
                     "color": "plddt"
                 })
 
-        filepath = self._get_filepath_from_afdb_id(uniprot_id)
+        # --- Download structure and (maybe) PAE ---
+        struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self._initial_pae)
         
-        if filepath:
-            self.add_pdb(filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name)
+        if not struct_filepath:
+             print(f"Could not load structure for '{uniprot_id}'.")
+             return
+
+        # --- Parse PAE if downloaded ---
+        pae_matrix = None
+        if pae_filepath:
+            try:
+                with open(pae_filepath, 'r') as f:
+                    pae_data = json.load(f)
+                    # AFDB PAE JSON is a list containing one dict
+                    # --- FIX ---
+                    # Was: 'pae' in pae_data[0]
+                    # Was: np.array(pae_data[0]['pae'])
+                    if isinstance(pae_data, list) and len(pae_data) > 0 and 'predicted_aligned_error' in pae_data[0]:
+                        pae_matrix = np.array(pae_data[0]['predicted_aligned_error'])
+                    # --- END FIX ---
+                    else:
+                        print(f"Warning: PAE JSON file '{pae_filepath}' has an unexpected format. Expected list with dict containing 'predicted_aligned_error'.")
+            except Exception as e:
+                print(f"Error parsing PAE JSON '{pae_filepath}': {e}")
+        
+        # --- Add PDB (and PAE if loaded) ---
+        if struct_filepath:
+            self.add_pdb(struct_filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name, pae=pae_matrix)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
-        else:
-            print(f"Could not load structure for '{uniprot_id}'.")
+        
 
     def show(self):
         """
@@ -751,6 +829,7 @@ class view:
         else:
             # --- "Publish Static" Mode ---
             # .show() was called *after* .add()
+            # We set pure_static=False to enable hybrid mode (static + live)
             html_to_display = self._display_viewer(static_data=self.trajectories, pure_static=False)
             self._display_html(html_to_display)
             self._is_live = True
