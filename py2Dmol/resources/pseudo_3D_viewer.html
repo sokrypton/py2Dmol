@@ -32,7 +32,7 @@
             border: 1px solid #ddd;
             border-radius: 12px;
             overflow: hidden;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            /* box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); */ /* Removed shadow */
             background: #ffffff;
         }
         #canvas {
@@ -106,7 +106,7 @@
             font-size: 12px;
         }
         
-        #trajectoryContainer {
+        #objectContainer { /* Renamed from #trajectoryContainer */
             font-size: 12px;
         }
         
@@ -150,7 +150,7 @@
             flex-shrink: 0;
         }
         
-        #trajectorySelect {
+        #objectSelect { /* Renamed from #trajectorySelect */
             font-size: 12px;
             padding: 4px 8px;
             border: 1px solid #ccc;
@@ -158,7 +158,7 @@
             vertical-align: middle;
             width: 100%;
         }
-        #trajectorySelect:disabled {
+        #objectSelect:disabled { /* Renamed from #trajectorySelect:disabled */
              cursor: not-allowed;
             background: #eee;
         }
@@ -170,7 +170,7 @@
             gap: 15px; /* Space between control groups */
             width: 160px; /* Give it a fixed width */
             border: 1px solid #e0e0e0;
-            border-radius: 8px;
+            border-radius: 12px; /* Changed from 8px */
             padding: 12px;
             background: #fdfdfd;
             flex-shrink: 0; /* Don't let it shrink */
@@ -196,7 +196,7 @@
             border: 1px solid #ddd;
             border-radius: 12px;
             overflow: hidden;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            /* box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); */ /* Removed shadow */
             background: #ffffff;
         }
 
@@ -228,7 +228,7 @@
         
         <!-- PAE Plot Container (MOVED) -->
         <div id="paeContainer">
-             <!-- (MOVED) Style removed from canvas, now on container -->
+             <!-- Canvas size will be set from config -->
              <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair; display: block;"></canvas>
         </div>
         
@@ -279,10 +279,10 @@
                 </div>
             </div>
 
-            <!-- Trajectory Group -->
-            <div id="trajectoryContainer" class="control-group">
-                <label for="trajectorySelect">Trajectory</label>
-                <select id="trajectorySelect">
+            <!-- Object Group -->
+            <div id="objectContainer" class="control-group"> <!-- Renamed from #trajectoryContainer -->
+                <label for="objectSelect">Object</label> <!-- Renamed text and for attribute -->
+                <select id="objectSelect"> <!-- Renamed from #trajectorySelect -->
                     <!-- Initially empty -->
                 </select>
             </div>
@@ -375,7 +375,8 @@
                 
                 // Get config from Python
                 const config = window.viewerConfig || { 
-                    size: [800, 600], 
+                    size: [300, 300], 
+                    pae_size: [300, 300],
                     color: "auto", 
                     default_shadow: true, 
                     default_outline: true,
@@ -385,7 +386,7 @@
                     autoplay: false,
                     hide_box: false,
                     default_pastel: 0.25,
-                    pae: false
+                    show_pae: false
                 };
 
                 // Current render state
@@ -419,8 +420,8 @@
                 this.plddtColors = []; 
 
                 // Animation & State
-                this.trajectoriesData = {}; 
-                this.currentTrajectoryName = null; 
+                this.objectsData = {}; // Renamed from trajectoriesData
+                this.currentObjectName = null; // Renamed from currentTrajectoryName
                 this.currentFrame = -1;
                 
                 // Playback
@@ -456,7 +457,7 @@
                 this.playButton = null;
                 this.frameSlider = null;
                 this.frameCounter = null;
-                this.trajectorySelect = null;
+                this.objectSelect = null; // Renamed from trajectorySelect
                 this.controlsContainer = null;
                 this.speedSelect = null;
                 this.rotationCheckbox = null;
@@ -690,12 +691,12 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, trajectorySelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, pastelSlider) {
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, pastelSlider) {
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
                 this.frameSlider = frameSlider;
                 this.frameCounter = frameCounter;
-                this.trajectorySelect = trajectorySelect;
+                this.objectSelect = objectSelect; // Renamed
                 this.speedSelect = speedSelect;
                 this.rotationCheckbox = rotationCheckbox;
                 this.lineWidthSlider = lineWidthSlider;
@@ -711,9 +712,9 @@
                     this.togglePlay();
                 });
 
-                this.trajectorySelect.addEventListener('change', () => {
+                this.objectSelect.addEventListener('change', () => { // Renamed
                     this.stopAnimation();
-                    this.currentTrajectoryName = this.trajectorySelect.value;
+                    this.currentObjectName = this.objectSelect.value; // Renamed
                     this.setFrame(0);
                 });
 
@@ -787,7 +788,7 @@
                 this.frameSlider.addEventListener('change', handleSliderChange);
                 
                 // Also prevent canvas drag when interacting with other controls
-                const allControls = [this.playButton, this.trajectorySelect, this.speedSelect, 
+                const allControls = [this.playButton, this.objectSelect, this.speedSelect, // Renamed
                                      this.rotationCheckbox, this.lineWidthSlider, 
                                      this.shadowEnabledCheckbox, this.outlineEnabledCheckbox, this.pastelSlider];
                 allControls.forEach(control => {
@@ -800,52 +801,52 @@
                 });
             }
 
-            // Add a new trajectory
-            addTrajectory(name) {
+            // Add a new object
+            addObject(name) { // Renamed
                 this.stopAnimation();
-                this.trajectoriesData[name] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
-                this.currentTrajectoryName = name;
+                this.objectsData[name] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 }; // Renamed
+                this.currentObjectName = name; // Renamed
                 this.currentFrame = -1;
 
                 const option = document.createElement('option');
                 option.value = name;
                 option.textContent = name;
-                this.trajectorySelect.appendChild(option);
-                this.trajectorySelect.value = name;
+                this.objectSelect.appendChild(option); // Renamed
+                this.objectSelect.value = name; // Renamed
 
                 this.setFrame(-1);
             }
 
             // Add a frame (data is raw parsed JSON)
-            addFrame(data, trajectoryName) {
+            addFrame(data, objectName) { // Renamed
                 
-                let targetTrajectoryName = trajectoryName;
-                if (!targetTrajectoryName) {
-                    console.warn("addFrame called without trajectoryName, using current view.");
-                    targetTrajectoryName = this.currentTrajectoryName;
+                let targetObjectName = objectName; // Renamed
+                if (!targetObjectName) { // Renamed
+                    console.warn("addFrame called without objectName, using current view.");
+                    targetObjectName = this.currentObjectName; // Renamed
                 }
                 
-                if (!targetTrajectoryName) {
-                    // This can happen if addFrame is called before new_traj
-                    console.warn("addFrame: No trajectory active. Creating '0'.");
-                    this.addTrajectory("0");
-                    targetTrajectoryName = "0";
+                if (!targetObjectName) { // Renamed
+                    // This can happen if addFrame is called before new_obj
+                    console.warn("addFrame: No object active. Creating '0'.");
+                    this.addObject("0"); // Renamed
+                    targetObjectName = "0"; // Renamed
                 }
                 
-                if (!this.trajectoriesData[targetTrajectoryName]) {
-                     console.error(`addFrame: Trajectory '${targetTrajectoryName}' does not exist.`);
-                     console.warn(`addFrame: Trajectory '${targetTrajectoryName}' not found. Creating it.`);
-                     this.addTrajectory(targetTrajectoryName);
+                if (!this.objectsData[targetObjectName]) { // Renamed
+                     console.error(`addFrame: Object '${targetObjectName}' does not exist.`); // Renamed
+                     console.warn(`addFrame: Object '${targetObjectName}' not found. Creating it.`); // Renamed
+                     this.addObject(targetObjectName); // Renamed
                 }
 
-                const trajectory = this.trajectoriesData[targetTrajectoryName];
-                trajectory.frames.push(data);
+                const object = this.objectsData[targetObjectName]; // Renamed
+                object.frames.push(data); // Renamed
 
-                // Set view to this trajectory
-                if (this.currentTrajectoryName !== targetTrajectoryName) {
-                    this.stopAnimation(); // Stop if playing on another traj
-                    this.currentTrajectoryName = targetTrajectoryName;
-                    this.trajectorySelect.value = targetTrajectoryName;
+                // Set view to this object
+                if (this.currentObjectName !== targetObjectName) { // Renamed
+                    this.stopAnimation(); // Stop if playing on another obj
+                    this.currentObjectName = targetObjectName; // Renamed
+                    this.objectSelect.value = targetObjectName; // Renamed
                 }
 
                 // Update global center sum and count
@@ -857,15 +858,15 @@
                         const c = data.coords[i];
                         frameSum = frameSum.add(new Vec3(c[0], c[1], c[2]));
                     }
-                    trajectory.globalCenterSum = trajectory.globalCenterSum.add(frameSum);
-                    trajectory.totalAtoms += frameAtoms;
+                    object.globalCenterSum = object.globalCenterSum.add(frameSum); // Renamed
+                    object.totalAtoms += frameAtoms; // Renamed
                 }
                 
-                const globalCenter = (trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
+                const globalCenter = (object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0); // Renamed
 
                 // Recalculate maxExtent for all frames using the new global center
                 let maxDistSq = 0;
-                for (const frame of trajectory.frames) {
+                for (const frame of object.frames) { // Renamed
                     if (frame && frame.coords) {
                         for (let i = 0; i < frame.coords.length; i++) {
                             const c = frame.coords[i];
@@ -876,18 +877,18 @@
                         }
                     }
                 }
-                trajectory.maxExtent = Math.sqrt(maxDistSq);
+                object.maxExtent = Math.sqrt(maxDistSq); // Renamed
 
                 if (!this.isPlaying) {
-                    this.setFrame(trajectory.frames.length - 1);
+                    this.setFrame(object.frames.length - 1); // Renamed
                 }
                 this.updateUIControls();
 
                 // Handle autoplay
-                if (this.autoplay && !this.isPlaying && this.currentTrajectoryName) {
-                    // Check if the current trajectory now has multiple frames
-                    const traj = this.trajectoriesData[this.currentTrajectoryName];
-                    if (traj && traj.frames.length > 1) {
+                if (this.autoplay && !this.isPlaying && this.currentObjectName) { // Renamed
+                    // Check if the current object now has multiple frames
+                    const obj = this.objectsData[this.currentObjectName]; // Renamed
+                    if (obj && obj.frames.length > 1) { // Renamed
                         this.startAnimation();
                     }
                 }
@@ -907,8 +908,8 @@
                     }
                 };
                 
-                // Handle null trajectory name
-                if (!this.currentTrajectoryName) {
+                // Handle null object name
+                if (!this.currentObjectName) { // Renamed
                     this.currentFrame = -1;
                     this.coords = [];
                     clearCanvas();
@@ -919,19 +920,19 @@
                     return;
                 }
 
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
-                if (!trajectory || frameIndex < 0 || frameIndex >= trajectory.frames.length) {
+                const object = this.objectsData[this.currentObjectName]; // Renamed
+                if (!object || frameIndex < 0 || frameIndex >= object.frames.length) { // Renamed
                     this.currentFrame = -1;
                     this.coords = [];
                     clearCanvas();
                     if (this.paeRenderer) { this.paeRenderer.setData(null); }
                     this.updateUIControls();
-                    this.setUIEnabled(true); // Enable, even if frame is invalid (so user can change traj)
+                    this.setUIEnabled(true); // Enable, even if frame is invalid (so user can change obj)
                     return;
                 }
 
                 this.currentFrame = frameIndex;
-                const data = trajectory.frames[frameIndex];
+                const data = object.frames[frameIndex]; // Renamed
                 
                 // Load 3D data
                 this._loadDataIntoRenderer(data); // This calls render()
@@ -949,7 +950,7 @@
             setUIEnabled(enabled) {
                  this.playButton.disabled = !enabled;
                  this.frameSlider.disabled = !enabled;
-                 this.trajectorySelect.disabled = !enabled;
+                 this.objectSelect.disabled = !enabled; // Renamed
                  this.speedSelect.disabled = !enabled;
                  this.rotationCheckbox.disabled = !enabled;
                  this.lineWidthSlider.disabled = !enabled;
@@ -963,9 +964,9 @@
             updateUIControls() {
                 if (!this.playButton) return;
 
-                // Handle null trajectory
-                const trajectory = this.currentTrajectoryName ? this.trajectoriesData[this.currentTrajectoryName] : null;
-                const total = trajectory ? trajectory.frames.length : 0;
+                // Handle null object
+                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null; // Renamed
+                const total = object ? object.frames.length : 0; // Renamed
                 const current = Math.max(0, this.currentFrame) + 1;
 
                 // Check config.hide_controls before showing
@@ -974,6 +975,16 @@
                     this.controlsContainer.style.display = 'none';
                 } else {
                     this.controlsContainer.style.display = 'flex';
+                }
+                
+                // Handle object selection dropdown visibility
+                if (this.objectSelect) {
+                    const totalObjects = this.objectSelect.options.length;
+                    const objectContainer = document.getElementById('objectContainer');
+                    if (objectContainer) {
+                        // Show if more than 1 object AND controls are not hidden
+                        objectContainer.style.display = (totalObjects > 1 && !config.hide_controls) ? 'flex' : 'none';
+                    }
                 }
 
                 this.frameSlider.max = Math.max(0, total - 1);
@@ -999,9 +1010,9 @@
             // Start playback
             startAnimation() {
                 // Check for null
-                if (!this.currentTrajectoryName) return;
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
-                if (!trajectory || trajectory.frames.length < 2) return;
+                if (!this.currentObjectName) return; // Renamed
+                const object = this.objectsData[this.currentObjectName]; // Renamed
+                if (!object || object.frames.length < 2) return; // Renamed
 
                 this.isPlaying = true;
                 this.lastFrameAdvanceTime = performance.now(); // Set start time
@@ -1014,17 +1025,17 @@
                 this.updateUIControls();
             }
 
-            // Clear all trajectories
-            clearAllTrajectories() {
+            // Clear all objects
+            clearAllObjects() { // Renamed
                 this.stopAnimation();
                 
                 // Reset data
-                this.trajectoriesData = {};
-                this.currentTrajectoryName = null;
+                this.objectsData = {}; // Renamed
+                this.currentObjectName = null; // Renamed
                 
-                // Reset trajectory dropdown
-                if (this.trajectorySelect) {
-                    this.trajectorySelect.innerHTML = ''; // Clear all options
+                // Reset object dropdown
+                if (this.objectSelect) { // Renamed
+                    this.objectSelect.innerHTML = ''; // Clear all options // Renamed
                 }
                 
                 // Clear PAE
@@ -1380,15 +1391,15 @@
                 }
                 
                 // Check segment length
-                if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentTrajectoryName) return;
+                if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) return; // Renamed
 
-                const trajectory = this.trajectoriesData[this.currentTrajectoryName];
-                if (!trajectory) {
-                    console.warn("Render called but trajectory data is missing.");
+                const object = this.objectsData[this.currentObjectName]; // Renamed
+                if (!object) { // Renamed
+                    console.warn("Render called but object data is missing."); // Renamed
                     return;
                 }
 
-                const globalCenter = (trajectory && trajectory.totalAtoms > 0) ? trajectory.globalCenterSum.mul(1 / trajectory.totalAtoms) : new Vec3(0,0,0);
+                const globalCenter = (object && object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0); // Renamed
                 
                 // Update pre-allocated rotatedCoords
                 const m = this.rotationMatrix;
@@ -1465,11 +1476,13 @@
                 }
                 
                 const renderShadows = this.shadowEnabled;
-                const maxExtent = (trajectory && trajectory.maxExtent > 0) ? trajectory.maxExtent : 30.0;
+                const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0; // Renamed
 
                 const shadows = new Float32Array(n);
                 const tints = new Float32Array(n);
                 const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
+                
+                const visibilityMask = this.visibilityMask; // Cache for performance
 
                 if (renderShadows) {
                     if (n <= 1000) {
@@ -1481,6 +1494,15 @@
 
                             for (let j_idx = i_idx + 1; j_idx < n; j_idx++) {
                                 const j = order[j_idx];
+                                // --- NEW VISIBILITY CHECK ---
+                                if (visibilityMask) {
+                                    const segInfoJ = segments[j];
+                                    if (!visibilityMask.has(segInfoJ.idx1) || !visibilityMask.has(segInfoJ.idx2)) {
+                                        continue; // This segment is hidden, it can't cast a shadow
+                                    }
+                                }
+                                // --- END CHECK ---
+                                
                                 const s2 = segData[j];
                                 
                                 // Call helper function
@@ -1524,6 +1546,7 @@
                                 let shadowSum = 0;
                                 let maxTint = 0;
                                 const s1 = segData[i];
+                                const segInfoI = segments[i]; // Get segment info for visibility check
                                 const gx1 = s1.gx;
                                 const gy1 = s1.gy;
 
@@ -1548,6 +1571,8 @@
                                         
                                         for (let k = 0; k < cellLen; k++) {
                                             const j = cell[k]; 
+                                            // Visibility check is implicitly handled
+                                            // because only visible segments are pushed to the grid
                                             const s2 = segData[j];
                                             
                                             // Call helper function
@@ -1562,7 +1587,12 @@
                                 tints[i] = 1 - maxTint;
 
                                 const gridIndex = gx1 + gy1 * GRID_DIM;
-                                grid[gridIndex].push(i);
+                                // --- NEW VISIBILITY CHECK ---
+                                // Only add segment to grid if it's visible
+                                if (!visibilityMask || (visibilityMask.has(segInfoI.idx1) && visibilityMask.has(segInfoI.idx2))) {
+                                    grid[gridIndex].push(i);
+                                }
+                                // --- END CHECK ---
                             }
                         } else {
                              shadows.fill(1.0);
@@ -1587,7 +1617,7 @@
                 const centerX = this.canvas.width / 2;
                 const centerY = this.canvas.height / 2;
                 
-                const visibilityMask = this.visibilityMask; // Cache for performance
+                // const visibilityMask = this.visibilityMask; // Already cached
 
                 if (this.outlineEnabled) {
                     // 3-STEP DRAW (Outline) - Fixes gaps
@@ -1741,11 +1771,11 @@
                 // 3. Handle frame playback
                 if (this.isPlaying) {
                     // Check for null
-                    if (now - this.lastFrameAdvanceTime > this.animationSpeed && this.currentTrajectoryName) {
-                        const trajectory = this.trajectoriesData[this.currentTrajectoryName];
-                        if (trajectory && trajectory.frames.length > 0) {
+                    if (now - this.lastFrameAdvanceTime > this.animationSpeed && this.currentObjectName) { // Renamed
+                        const object = this.objectsData[this.currentObjectName]; // Renamed
+                        if (object && object.frames.length > 0) { // Renamed
                             let nextFrame = this.currentFrame + 1;
-                            if (nextFrame >= trajectory.frames.length) {
+                            if (nextFrame >= object.frames.length) { // Renamed
                                 nextFrame = 0;
                             }
                             this.setFrame(nextFrame); // This calls render()
@@ -1955,7 +1985,8 @@
 
         // 1. Get config from Python
         const config = window.viewerConfig || { 
-            size: [800, 600], 
+            size: [300, 300], 
+            pae_size: [300, 300],
             color: "auto", 
             default_shadow: true, 
             default_outline: true,
@@ -1965,7 +1996,7 @@
             autoplay: false,
             hide_box: false,
             default_pastel: 0.25,
-            pae: false
+            show_pae: false
         };
 
         // 2. Setup Canvas
@@ -1978,10 +2009,14 @@
         window.renderer = new Pseudo3DRenderer(canvas);
         
         // 4. Setup PAE Renderer (if enabled)
-        if (config.pae) {
+        if (config.show_pae) { // Renamed from config.pae
             try {
                 document.getElementById('paeContainer').style.display = 'block';
                 const paeCanvas = document.getElementById('paeCanvas');
+                // Set canvas size from config
+                paeCanvas.width = config.pae_size[0];
+                paeCanvas.height = config.pae_size[1];
+                
                 // This class is defined right after Pseudo3DRenderer
                 window.paeRenderer = new PAERenderer(paeCanvas, window.renderer); 
                 window.renderer.setPAERenderer(window.paeRenderer);
@@ -2009,12 +2044,12 @@
         const outlineEnabledCheckbox = document.getElementById('outlineEnabledCheckbox'); 
         outlineEnabledCheckbox.checked = window.renderer.outlineEnabled; // Set default from renderer
 
-        // 6. Setup animation and trajectory controls
+        // 6. Setup animation and object controls
         const controlsContainer = document.getElementById('controlsContainer');
         const playButton = document.getElementById('playButton');
         const frameSlider = document.getElementById('frameSlider');
         const frameCounter = document.getElementById('frameCounter');
-        const trajectorySelect = document.getElementById('trajectorySelect');
+        const objectSelect = document.getElementById('objectSelect'); // Renamed
         const speedSelect = document.getElementById('speedSelect');
         const rotationCheckbox = document.getElementById('rotationCheckbox');
         const lineWidthSlider = document.getElementById('lineWidthSlider');
@@ -2028,7 +2063,7 @@
         // Pass ALL controls to the renderer
         window.renderer.setUIControls(
             controlsContainer, playButton, 
-            frameSlider, frameCounter, trajectorySelect, 
+            frameSlider, frameCounter, objectSelect, // Renamed
             speedSelect, rotationCheckbox, lineWidthSlider,
             shadowEnabledCheckbox, outlineEnabledCheckbox,
             pastelSlider
@@ -2043,14 +2078,14 @@
         // Handle hide_box
         if (config.hide_box) {
             document.getElementById('canvasContainer').style.border = 'none';
-            document.getElementById('canvasContainer').style.boxShadow = 'none';
+            // document.getElementById('canvasContainer').style.boxShadow = 'none'; // Already removed
             document.getElementById('canvasContainer').style.background = 'transparent';
             document.getElementById('canvas').style.background = 'transparent';
             
             // Also update PAE container if it exists
-            if (config.pae) {
+            if (config.show_pae) { // Renamed from config.pae
                 document.getElementById('paeContainer').style.border = 'none';
-                document.getElementById('paeContainer').style.boxShadow = 'none';
+                // document.getElementById('paeContainer').style.boxShadow = 'none'; // Already removed
                 document.getElementById('paeContainer').style.background = 'transparent';
             }
             
@@ -2058,24 +2093,24 @@
         }
 
         // 7. Add function for Python to call (for new frames)
-        window.handlePythonUpdate = (jsonData, trajectoryName) => {
+        window.handlePythonUpdate = (jsonData, objectName) => { // Renamed
             try {
                 const data = JSON.parse(jsonData);
                 // Pass name to addFrame
-                window.renderer.addFrame(data, trajectoryName);
+                window.renderer.addFrame(data, objectName); // Renamed
             } catch (e) {
                 console.error("Failed to parse JSON from Python:", e);
             }
         };
 
-        // 8. Add function for Python to start a new trajectory
-        window.handlePythonNewTrajectory = (name) => {
-            window.renderer.addTrajectory(name);
+        // 8. Add function for Python to start a new object
+        window.handlePythonNewObject = (name) => { // Renamed
+            window.renderer.addObject(name); // Renamed
         };
 
         // 9. Add function for Python to clear everything
         window.handlePythonClearAll = () => {
-            window.renderer.clearAllTrajectories();
+            window.renderer.clearAllObjects(); // Renamed
         };
         
         // 10. Add function for Python to set color mode (e.g., for from_afdb)
@@ -2091,30 +2126,30 @@
         // 11. Load initial data (NEW LOGIC)
         let isStaticViewer = false;
 
-        if (window.staticTrajectoryData && window.staticTrajectoryData.length > 0) {
+        if (window.staticObjectData && window.staticObjectData.length > 0) { // Renamed
             // === STATIC MODE (from show()) ===
             isStaticViewer = true;
             try {
-                // Loop over all trajectories
-                for (const traj of window.staticTrajectoryData) {
-                    if (traj.name && traj.frames && traj.frames.length > 0) {
-                        // Add the first frame, which creates the trajectory
-                        window.renderer.addFrame(traj.frames[0], traj.name);
+                // Loop over all objects
+                for (const obj of window.staticObjectData) { // Renamed
+                    if (obj.name && obj.frames && obj.frames.length > 0) { // Renamed
+                        // Add the first frame, which creates the object
+                        window.renderer.addFrame(obj.frames[0], obj.name); // Renamed
                         
                         // Add any remaining frames
-                        for (let i = 1; i < traj.frames.length; i++) {
-                            window.renderer.addFrame(traj.frames[i], traj.name);
+                        for (let i = 1; i < obj.frames.length; i++) { // Renamed
+                            window.renderer.addFrame(obj.frames[i], obj.name); // Renamed
                         }
                     }
                 }
-                // Set view to the first frame of the first trajectory
-                if (window.staticTrajectoryData.length > 0) {
-                    window.renderer.currentTrajectoryName = window.staticTrajectoryData[0].name;
-                    window.renderer.trajectorySelect.value = window.staticTrajectoryData[0].name;
+                // Set view to the first frame of the first object
+                if (window.staticObjectData.length > 0) { // Renamed
+                    window.renderer.currentObjectName = window.staticObjectData[0].name; // Renamed
+                    window.renderer.objectSelect.value = window.staticObjectData[0].name; // Renamed
                     window.renderer.setFrame(0);
                 }
             } catch (error) {
-                console.error("Error loading static trajectory data:", error);
+                console.error("Error loading static object data:", error); // Renamed
                 window.renderer.setFrame(-1); // Start empty on error
             }
             
@@ -2140,19 +2175,19 @@
                 if (event.data && event.data.type) {
                     if (event.data.type === 'py2DmolUpdate') {
                         try {
-                            // Pass trajectoryName from message
+                            // Pass objectName from message
                             window.handlePythonUpdate(
                                 JSON.stringify(event.data.payload),
-                                event.data.trajectoryName 
+                                event.data.objectName // Renamed
                             );
                         } catch (e) {
                              console.error("Failed to handle postMessage (update):", e, event.data.payload);
                         }
-                    } else if (event.data.type === 'py2DmolNewTrajectory') {
+                    } else if (event.data.type === 'py2DmolNewObject') { // Renamed
                         try {
-                            window.handlePythonNewTrajectory(event.data.name);
+                            window.handlePythonNewObject(event.data.name); // Renamed
                         } catch (e) {
-                             console.error("Failed to handle postMessage (new trajectory):", e, event.data.name);
+                             console.error("Failed to handle postMessage (new object):", e, event.data.name); // Renamed
                         }
                     } else if (event.data.type === 'py2DmolClearAll') {
                         try {

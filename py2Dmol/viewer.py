@@ -39,9 +39,10 @@ def align_a_to_b(a, b):
 # --- view Class ---
 
 class view:
-    def __init__(self, size=(500,500), color="auto", shadow=True, outline=True, width=3.0, rotate=False,
-                 hide_controls=False, autoplay=False, hide_box=False, pastel=0.25, pae=False):
+    def __init__(self, size=(300,300), pae_size=(300,300), color="auto", shadow=True, outline=True, width=3.0, rotate=False,
+                 hide_controls=False, autoplay=False, hide_box=False, pastel=0.25, show_pae=False):
         self.size = size
+        self.pae_size = pae_size # Store PAE canvas size
         self._initial_color_mode = color # Store the user's requested mode
         
         self._initial_shadow_enabled = shadow
@@ -53,13 +54,13 @@ class view:
         self._initial_autoplay = autoplay
         self._initial_hide_box = hide_box
         self._initial_pastel_level = pastel # Store pastel level (0.0 to 1.0)
-        self._initial_pae = pae # Store PAE enabled/disabled
+        self._initial_pae = show_pae # Store PAE enabled/disabled
         
         self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
         
         # The viewer's mode is determined by when .show() is called.
-        self.trajectories = []               # Store all data
-        self._current_trajectory_data = None # List to hold frames for current trajectory
+        self.objects = []               # Store all data
+        self._current_object_data = None # List to hold frames for current object
         self._is_live = False                # True if .show() was called *before* .add()
         
         # --- Alignment/Dynamic State ---
@@ -140,11 +141,11 @@ class view:
             if message_dict['type'] == 'py2DmolUpdate':
                 json_data = json.dumps(message_dict['payload'])
                 json_data_escaped = json_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
-                # Escape trajectory name for JS string
-                traj_name_escaped = message_dict['trajectoryName'].replace("'", "\\'")
-                js_code = f"window.handlePythonUpdate(`{json_data_escaped}`, '{traj_name_escaped}');"
-            elif message_dict['type'] == 'py2DmolNewTrajectory':
-                js_code = f"window.handlePythonNewTrajectory('{message_dict['name']}');"
+                # Escape object name for JS string
+                obj_name_escaped = message_dict['objectName'].replace("'", "\\'")
+                js_code = f"window.handlePythonUpdate(`{json_data_escaped}`, '{obj_name_escaped}');"
+            elif message_dict['type'] == 'py2DmolNewObject':
+                js_code = f"window.handlePythonNewObject('{message_dict['name']}');"
             elif message_dict['type'] == 'py2DmolClearAll':
                 js_code = "window.handlePythonClearAll();"
             elif message_dict['type'] == 'py2DmolSetColor':
@@ -195,7 +196,7 @@ class view:
         
         Args:
             static_data (list, optional):
-                - A list of trajectories (for static 'show()' or hybrid modes).
+                - A list of objects (for static 'show()' or hybrid modes).
             pure_static (bool, optional):
                 - If True, this is a final static viewer (from .show())
                 - If False, this is a dynamic viewer that needs listeners.
@@ -208,16 +209,12 @@ class view:
                 html_template = f.read()
         except FileNotFoundError:
             # Fallback for when py2dmol_resources is not correctly set up (e.g., dev)
-            # Try to read from the user's uploaded file name
-            try:
-                with open('pseudo_3D_viewer (6).html', 'r') as f:
-                    html_template = f.read()
-            except FileNotFoundError:
-                print("Error: Could not find the HTML template file (pseudo_3D_viewer.html or pseudo_3D_viewer (6).html).")
-                return "" # Return empty string on error
+            print("Error: Could not find the HTML template file (pseudo_3D_viewer.html).")
+            return "" # Return empty string on error
 
         viewer_config = {
             "size": self.size,
+            "pae_size": self.pae_size, # Pass PAE size
             "color": self._initial_color_mode, # Send 'auto', 'chain', 'plddt', etc.
             "viewer_id": self._viewer_id,
             "default_shadow": self._initial_shadow_enabled,
@@ -228,7 +225,7 @@ class view:
             "autoplay": self._initial_autoplay,
             "hide_box": self._initial_hide_box,
             "default_pastel": self._initial_pastel,
-            "pae": self._initial_pae # Add PAE config
+            "show_pae": self._initial_pae # Add PAE config
         }
         config_script = f"""
         <script id="viewer-config">
@@ -242,9 +239,9 @@ class view:
         is_dynamic_viewer = not pure_static
         
         if static_data and isinstance(static_data, list):
-            # Static 'show()' or 'Hybrid' mode: inject all trajectories
+            # Static 'show()' or 'Hybrid' mode: inject all objects
             data_json = json.dumps(static_data)
-            data_script = f'<script id="static-data">window.staticTrajectoryData = {data_json};</script>'
+            data_script = f'<script id="static-data">window.staticObjectData = {data_json};</script>'
         else:
             # Pure Dynamic mode: inject empty data, will be populated by messages
             data_script = '<script id="protein-data">window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "atom_types": [], "pae": null }};</script>'
@@ -258,10 +255,11 @@ class view:
             iframe_width += 180 # Width of side panel
             
         if self._initial_pae:
-            iframe_width += 315 # Width of PAE plot + margin
+            iframe_width += self.pae_size[0] + 15 # Width of PAE plot + margin
         
         iframe_height = self.size[1]
         if not self._initial_hide_controls:
+             iframe_height = max(iframe_height, self.pae_size[1] if self._initial_pae else 0) # Ensure height matches PAE
              iframe_height += 80 # Height for anim controls
 
         if not IS_COLAB:
@@ -344,10 +342,10 @@ class view:
         display(HTML(html_string))
 
     def clear(self):
-        """Clears all trajectories and frames from the viewer."""
+        """Clears all objects and frames from the viewer."""
         # Clear python data
-        self.trajectories = []
-        self._current_trajectory_data = None
+        self.objects = []
+        self._current_object_data = None
             
         # Dynamic mode: send clear message if viewer is active
         if self._is_live:
@@ -368,34 +366,34 @@ class view:
         print("py2dmol: Viewer state cleared. Re-run .add() or .show() to display again.")
 
 
-    def new_traj(self, trajectory_name=None):
-        """Starts a new trajectory for subsequent 'add' calls."""
+    def new_obj(self, object_name=None):
+        """Starts a new object for subsequent 'add' calls."""
         
-        # This is a new trajectory, reset the alignment reference
+        # This is a new object, reset the alignment reference
         self._coords = None 
         self._plddts = None
         self._chains = None
         self._atom_types = None
         self._pae = None
 
-        if trajectory_name is None:
-            trajectory_name = f"{len(self.trajectories)}"
+        if object_name is None:
+            object_name = f"{len(self.objects)}"
             
         # Always update the python-side data
-        self._current_trajectory_data = [] # List to hold frames
-        self.trajectories.append({
-            "name": trajectory_name,
-            "frames": self._current_trajectory_data
+        self._current_object_data = [] # List to hold frames
+        self.objects.append({
+            "name": object_name,
+            "frames": self._current_object_data
         })
         
         # Send message *only if* in dynamic/hybrid mode and already displayed
         if self._is_live:
             self._send_message({
-                "type": "py2DmolNewTrajectory",
-                "name": trajectory_name
+                "type": "py2DmolNewObject",
+                "name": object_name
             })
     
-    def add(self, coords, plddts=None, chains=None, atom_types=None, pae=None, new_traj=False, trajectory_name=None):
+    def add(self, coords, plddts=None, chains=None, atom_types=None, pae=None, new_obj=False, object_name=None):
         """
         Adds a new *frame* of data to the viewer.
         
@@ -407,29 +405,30 @@ class view:
             chains (list, optional): N-length list of chain identifiers.
             atom_types (list, optional): N-length list of atom types ('P', 'D', 'R', 'L').
             pae (np.array, optional): LxL PAE matrix.
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
+            new_obj (bool, optional): If True, starts a new object. Defaults to False.
+            object_name (str, optional): Name for the new object.
         """
         
         # --- Step 1: Update Python-side alignment state ---
         self._update(coords, plddts, chains, atom_types, pae) # This handles defaults
         data_dict = self._get_data_dict() # This reads the full, correct data
 
-        # --- Step 2: Handle trajectory creation ---
-        if new_traj or not self.trajectories:
-            self.new_traj(trajectory_name)
+        # --- Step 2: Handle object creation ---
+        if new_obj or not self.objects:
+            self.new_obj(object_name)
         
-        # Safeguard: ensure _current_trajectory_data exists
-        if self._current_trajectory_data is None:
-            self.new_traj(trajectory_name)
+        # Safeguard: ensure _current_object_data exists
+        if self._current_object_data is None:
+            self.new_obj(object_name)
             
         # --- Step 3: Always save data to Python list ---
-        self._current_trajectory_data.append(data_dict)
+        self._current_object_data.append(data_dict)
 
         # --- Step 4: Send message if in "live" mode ---
         if self._is_live:
             self._send_message({
                 "type": "py2DmolUpdate",
-                "trajectoryName": self.trajectories[-1]["name"],
+                "objectName": self.objects[-1]["name"],
                 "payload": data_dict
             })
 
@@ -449,9 +448,9 @@ class view:
 
         # --- Batch Mode Logic ---
         
-        # --- Step 1: Ensure a trajectory exists ---
-        if not self.trajectories: self.new_traj()
-        if self._current_trajectory_data is None: self.new_traj()
+        # --- Step 1: Ensure an object exists ---
+        if not self.objects: self.new_obj()
+        if self._current_object_data is None: self.new_obj()
             
         # --- Step 2: Prepare new data (defaults) ---
         n_new = coords.shape[0]
@@ -482,7 +481,7 @@ class view:
         self._coords = aligned_new_coords 
         
         # --- Step 5: Get or create current frame ---
-        if not self._current_trajectory_data:
+        if not self._current_object_data:
             # This is the first component of the frame
             data_dict = {
                 "coords": aligned_new_coords.tolist(),
@@ -491,10 +490,10 @@ class view:
                 "atom_types": list(new_atom_types),
                 "pae": pae.tolist() if pae is not None else None # Add PAE
             }
-            self._current_trajectory_data.append(data_dict)
+            self._current_object_data.append(data_dict)
         else:
             # Pop the last frame to modify it
-            last_frame_data = self._current_trajectory_data.pop()
+            last_frame_data = self._current_object_data.pop()
             
             # Combine old and new (aligned) data
             combined_data = {
@@ -507,35 +506,35 @@ class view:
             }
             
             # Push the modified frame back
-            self._current_trajectory_data.append(combined_data)
+            self._current_object_data.append(combined_data)
 
-    def add_pdb(self, filepath, chains=None, new_traj=False, trajectory_name=None, pae=None):
+    def add_pdb(self, filepath, chains=None, new_obj=False, object_name=None, pae=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
-        as a new frame (or trajectory).
+        as a new frame (or object).
         
         This method does *not* call .show().
         
-        Multi-model files are added as a single trajectory.
+        Multi-model files are added as a single object.
         
         Args:
             filepath (str): Path to the PDB or CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
-            trajectory_name (str, optional): Name for the new trajectory.
+            new_obj (bool, optional): If True, starts a new object. Defaults to False.
+            object_name (str, optional): Name for the new object.
             pae (np.array, optional): PAE matrix to associate with the *first* model.
         """
         
         # --- Now, process the file ---
         structure = gemmi.read_structure(filepath)
         
-        # --- Handle new_traj logic ---
-        if new_traj or not self.trajectories:
-             # This call will set up the trajectory in python
+        # --- Handle new_obj logic ---
+        if new_obj or not self.objects:
+             # This call will set up the object in python
              # AND send a message if in "live" mode
-             self.new_traj(trajectory_name)
+             self.new_obj(object_name)
         
-        current_traj_name = self.trajectories[-1]["name"]
+        current_obj_name = self.objects[-1]["name"]
 
         # --- Simplified Logic ---
         # Just call .add() for each model.
@@ -557,7 +556,7 @@ class view:
                 # Call add() - this will handle batch vs. live
                 self.add(coords_np, plddts_np, atom_chains, atom_types,
                     pae=pae_to_add,
-                    new_traj=False, trajectory_name=current_traj_name)
+                    new_obj=False, object_name=current_obj_name)
                 
                 is_first_model = False # Clear flag after first model
 
@@ -733,7 +732,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_traj=False, trajectory_name=None):
+    def from_pdb(self, pdb_id, chains=None, new_obj=False, object_name=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and displays the viewer.
@@ -741,31 +740,31 @@ class view:
         Args:
             pdb_id (str): 4-character PDB code or a path to a local PDB/CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
-            trajectory_name (str, optional): Name for the new trajectory.
+            new_obj (bool, optional): If True, starts a new object. Defaults to False.
+            object_name (str, optional): Name for the new object.
         """
         filepath = self._get_filepath_from_pdb_id(pdb_id)
         
         if filepath:
-            self.add_pdb(filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name, pae=None)
+            self.add_pdb(filepath, chains=chains, new_obj=new_obj, object_name=object_name, pae=None)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, new_traj=False, trajectory_name=None):
+    def from_afdb(self, uniprot_id, chains=None, new_obj=False, object_name=None):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and displays the viewer.
         
-        If `pae=True` was set in the `view()` constructor, this will also
+        If `show_pae=True` was set in the `view()` constructor, this will also
         download and display the PAE matrix.
         
         Args:
             uniprot_id (str): UniProt accession code (e.g., "P0A8I3").
             chains (list, optional): Specific chains to load. Defaults to all.
-            new_traj (bool, optional): If True, starts a new trajectory. Defaults to False.
-            trajectory_name (str, optional): Name for the new trajectory.
+            new_obj (bool, optional): If True, starts a new object. Defaults to False.
+            object_name (str, optional): Name for the new object.
         """
         # Set color to plddt if it's currently 'auto'
         if self._initial_color_mode == "auto":
@@ -791,12 +790,8 @@ class view:
                 with open(pae_filepath, 'r') as f:
                     pae_data = json.load(f)
                     # AFDB PAE JSON is a list containing one dict
-                    # --- FIX ---
-                    # Was: 'pae' in pae_data[0]
-                    # Was: np.array(pae_data[0]['pae'])
                     if isinstance(pae_data, list) and len(pae_data) > 0 and 'predicted_aligned_error' in pae_data[0]:
                         pae_matrix = np.array(pae_data[0]['predicted_aligned_error'])
-                    # --- END FIX ---
                     else:
                         print(f"Warning: PAE JSON file '{pae_filepath}' has an unexpected format. Expected list with dict containing 'predicted_aligned_error'.")
             except Exception as e:
@@ -804,7 +799,7 @@ class view:
         
         # --- Add PDB (and PAE if loaded) ---
         if struct_filepath:
-            self.add_pdb(struct_filepath, chains=chains, new_traj=new_traj, trajectory_name=trajectory_name, pae=pae_matrix)
+            self.add_pdb(struct_filepath, chains=chains, new_obj=new_obj, object_name=object_name, pae=pae_matrix)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         
@@ -820,7 +815,7 @@ class view:
           viewer that is persistent in the notebook.
         """
         
-        if not self.trajectories:
+        if not self.objects:
             # --- "Go Live" Mode ---
             # .show() was called *before* .add()
             html_to_display = self._display_viewer(static_data=None, pure_static=False)
@@ -830,6 +825,6 @@ class view:
             # --- "Publish Static" Mode ---
             # .show() was called *after* .add()
             # We set pure_static=False to enable hybrid mode (static + live)
-            html_to_display = self._display_viewer(static_data=self.trajectories, pure_static=False)
+            html_to_display = self._display_viewer(static_data=self.objects, pure_static=False)
             self._display_html(html_to_display)
             self._is_live = True

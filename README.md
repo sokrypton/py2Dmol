@@ -41,7 +41,7 @@ viewer = py2Dmol.view()
 viewer.add_pdb('simulation1.pdb')
 
 # Start a new trajectory
-viewer.add_pdb('simulation2.pdb', new_traj=True)
+viewer.add_pdb('simulation2.pdb', new_obj=True)
 
 # Use the dropdown to switch between "0" and "1"
 viewer.show()
@@ -55,15 +55,18 @@ You can pass several options to the `view` constructor.
 import py2Dmol
 
 viewer = py2Dmol.view(
-    size=(600, 600),     # Set canvas size (width, height)
+    size=(300, 300),     # Set canvas size (width, height)
     color='auto',        # Set initial color mode: ["auto","rainbow","chain","plddt"]
+    pastel=0.25,         # Lighten the colors
     shadow=True,         # Enable shadows by default
     outline=True,        # Enable outlines by default
     width=3.0,           # Set initial line width
-    rotate=False,        # Disable auto-rotation by default
-    autoplay=False,      # Disable auto-play (if trajectory or multiple models)
+    rotate=False,        # Enable auto-rotation
+    autoplay=False,      # Enable auto-play (if trajectory or multiple models)
     hide_box=False,      # hide box around molecule
     hide_controls=False, # hide all controls
+    show_pae=False,      # enable pae
+    pae_size=False,      # set pae canvas size (width, height)
 )
 
 viewer.add_pdb("my_complex.cif")
@@ -116,6 +119,28 @@ viewer.add(coords, plddts, chains, types)
 
 # Show the final static viewer
 viewer.show()
+```
+
+---
+
+## Helper functions
+
+### Example: Load structure from PDB
+```python
+import py2Dmol
+
+viewer = py2Dmol.view()
+viewer.from_pdb('1YNE')
+```
+
+---
+
+### Example: Load structure from AlphaFold DB
+```python
+import py2Dmol
+
+viewer = py2Dmol.view(show_pae=True)
+viewer.from_afdb('Q5VSL9')
 ```
 
 ---
