@@ -78,7 +78,8 @@
         /* Style for the shadow/outline/pastel checkbox labels */
         .toggle-item label[for="shadowEnabledCheckbox"],
         .toggle-item label[for="outlineEnabledCheckbox"],
-        .toggle-item label[for="rotationCheckbox"] {
+        .toggle-item label[for="rotationCheckbox"],
+        .toggle-item label[for="colorblindCheckbox"] {
             width: auto; /* Let it be auto-sized */
             margin-left: 5px; /* Add space next to the slider */
         }
@@ -268,6 +269,11 @@
                      <input type="checkbox" id="outlineEnabledCheckbox">
                      <label for="outlineEnabledCheckbox">Outline</label>
                 </div>
+                <!-- Colorblind Mode -->
+                <div class="toggle-item">
+                     <input type="checkbox" id="colorblindCheckbox">
+                     <label for="colorblindCheckbox">Colorblind</label>
+                </div>
             </div>
 
             <!-- View Group -->
@@ -319,6 +325,7 @@
         // COLOR UTILITIES
         // ============================================================================
         const pymolColors = ["#33ff33","#00ffff","#ff33cc","#ffff00","#ff9999","#e5e5e5","#7f7fff","#ff7f00","#7fff7f","#199999","#ff007f","#ffdd5e","#8c3f99","#b2b2b2","#007fff","#c4b200","#8cb266","#00bfbf","#b27f7f","#fcd1a5","#ff7f7f","#ffbfdd","#7fffff","#ffff7f","#00ff7f","#337fcc","#d8337f","#bfff3f","#ff7fff","#d8d8ff","#3fffbf","#b78c4c","#339933","#66b2b2","#ba8c84","#84bf00","#b24c66","#7f7f7f","#3f3fa5","#a5512b"];
+        const colorblindSafeChainColors = ["#4e79a7", "#f28e2c", "#e15759", "#76b7b2", "#59a14f", "#edc949", "#af7aa1", "#ff9da7", "#9c755f", "#bab0ab"]; // Tableau 10
         function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return {r: 128, g: 128, b: 128}; } const r = parseInt(hex.slice(1,3), 16); const g = parseInt(hex.slice(3,5), 16); const b = parseInt(hex.slice(5,7), 16); return {r, g, b}; }
         function hsvToRgb(h, s, v) { const c = v * s; const x = c * (1 - Math.abs((h / 60) % 2 - 1)); const m = v - c; let r, g, b; if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; } else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; } else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; } return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) }; }
         
@@ -340,7 +347,31 @@
             return hsvToRgb(hue, 1.0, 1.0);
         }
 
+        // --- NEW COLORBLIND-SAFE FUNCTIONS ---
+        // Cividis-like: N-term (yellow) to C-term (blue)
+        function getRainbowColor_Colorblind(value, min, max) {
+            if (max - min < 1e-6) return hsvToRgb(60, 1.0, 1.0); // Default to yellow
+            let normalized = (value - min) / (max - min);
+            normalized = Math.max(0, Math.min(1, normalized));
+            // Interpolate hue from 60 (Yellow) to 240 (Blue)
+            const hue = 60 + normalized * 180;
+            return hsvToRgb(hue, 1.0, 1.0);
+        }
+        
+        // Cividis-like: 50 (yellow) to 90 (blue)
+        function getPlddtRainbowColor_Colorblind(value, min, max) {
+            if (max - min < 1e-6) return hsvToRgb(60, 1.0, 1.0); // Default to yellow
+            let normalized = (value - min) / (max - min);
+            normalized = Math.max(0, Math.min(1, normalized));
+            // Interpolate hue from 60 (Yellow) to 240 (Blue)
+            const hue = 60 + normalized * 180;
+            return hsvToRgb(hue, 1.0, 1.0);
+        }
+        
         function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
+        function getPlddtColor_Colorblind(plddt) { return getPlddtRainbowColor_Colorblind(plddt, 50, 90); }
+        // --- END NEW FUNCTIONS ---
+
         function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
         
         // --- MODIFIED ---
@@ -364,10 +395,33 @@
                 return hsvToRgb(0, saturation, 1.0);
             }
         }
+        
+        // --- NEW ---
+        function getPAEColor_Colorblind(value) {
+            // 0 (blue) to 15 (white) to 30 (orange)
+            const v = Math.max(0, Math.min(30, (value || 0)));
+            
+            if (v <= 15.0) {
+                // 0 (blue) -> 15 (white)
+                // Hue is 240 (blue)
+                // Saturation goes from 1.0 down to 0.0
+                const norm_blue = v / 15.0; // 0 to 1
+                const saturation = 1.0 - norm_blue;
+                return hsvToRgb(240, saturation, 1.0);
+            } else {
+                // 15 (white) -> 30 (orange)
+                // Hue is 30 (orange)
+                // Saturation goes from 0.0 up to 1.0
+                const norm_red = (v - 15.0) / 15.0; // 0 to 1
+                const saturation = norm_red;
+                return hsvToRgb(30, saturation, 1.0); // Use 30 for Orange
+            }
+        }
         // --- END MODIFICATION ---
 
         // ============================================================================
         // PSEUDO-3D RENDERER
+        // ============================================================================
         class Pseudo3DRenderer {
             constructor(canvas) {
                 this.canvas = canvas;
@@ -386,7 +440,8 @@
                     autoplay: false,
                     hide_box: false,
                     default_pastel: 0.25,
-                    show_pae: false
+                    show_pae: false,
+                    colorblind: false // Added fallback
                 };
 
                 // Current render state
@@ -406,6 +461,7 @@
                 this.shadowEnabled = (typeof config.default_shadow === 'boolean') ? config.default_shadow : true;
                 this.outlineEnabled = (typeof config.default_outline === 'boolean') ? config.default_outline : true;
                 this.pastelLevel = (typeof config.default_pastel === 'number') ? config.default_pastel : 0.25;
+                this.colorblindMode = (typeof config.colorblind === 'boolean') ? config.colorblind : false; // Added
                 
                 this.isTransparent = false; // Default to white background
                 this.resolvedAutoColor = 'rainbow'; // Default 'auto' to rainbow
@@ -465,6 +521,7 @@
                 this.shadowEnabledCheckbox = null; 
                 this.outlineEnabledCheckbox = null; 
                 this.pastelSlider = null;
+                this.colorblindCheckbox = null; // Added
 
                 this.setupInteraction();
             }
@@ -691,7 +748,7 @@
             }
 
             // Set UI controls from main script
-            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, pastelSlider) {
+            setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, pastelSlider, colorblindCheckbox) {
                 this.controlsContainer = controlsContainer;
                 this.playButton = playButton;
                 this.frameSlider = frameSlider;
@@ -703,6 +760,7 @@
                 this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
                 this.outlineEnabledCheckbox = outlineEnabledCheckbox;
                 this.pastelSlider = pastelSlider;
+                this.colorblindCheckbox = colorblindCheckbox; // Added
                 
                 this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
                 this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
@@ -761,6 +819,18 @@
                         }
                     });
                 }
+                
+                if (this.colorblindCheckbox) { // Added
+                    this.colorblindCheckbox.addEventListener('change', (e) => {
+                        this.colorblindMode = e.target.checked;
+                        // Force-recalculate both color arrays
+                        this.colors = this._calculateSegmentColors();
+                        this.plddtColors = this._calculatePlddtColors();
+                        if (!this.isPlaying) { // Only render if not playing
+                            this.render();
+                        }
+                    });
+                }
 
                 // Prevent canvas drag from interfering with slider
                 const handleSliderChange = (e) => {
@@ -790,7 +860,8 @@
                 // Also prevent canvas drag when interacting with other controls
                 const allControls = [this.playButton, this.objectSelect, this.speedSelect, // Renamed
                                      this.rotationCheckbox, this.lineWidthSlider, 
-                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox, this.pastelSlider];
+                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox, this.pastelSlider,
+                                     this.colorblindCheckbox]; // Added
                 allControls.forEach(control => {
                     if (control) {
                         control.addEventListener('mousedown', (e) => {
@@ -957,6 +1028,7 @@
                  if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
                  if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled;
                  if (this.pastelSlider) this.pastelSlider.disabled = !enabled;
+                 if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled; // Added
                  this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
@@ -1280,6 +1352,9 @@
                     }
                 }
                 
+                // --- MODIFIED ---
+                const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
+                
                 return this.segmentIndices.map(segInfo => {
                     const grey = {r: 128, g: 128, b: 128};
                     let color;
@@ -1293,12 +1368,21 @@
                     // plddt mode is handled in render()
                     else if (effectiveColorMode === 'chain') {
                         const chainId = this.chains[i] || 'A';
-                        const chainIndex = chainIndexMap.get(chainId);
-                        color = getChainColor(chainIndex !== undefined ? chainIndex : 0);
+                        const chainIndex = chainIndexMap.get(chainId) || 0;
+                        
+                        // --- MODIFIED ---
+                        // Select color array based on colorblind mode
+                        const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
+                        const hex = colorArray[chainIndex % colorArray.length];
+                        color = hexToRgb(hex);
+                        // --- END MODIFICATION ---
                     }
                     else { // rainbow
                         const scale = this.chainRainbowScales[segInfo.chainId];
-                        if (scale) { color = getRainbowColor(segInfo.colorIndex, scale.min, scale.max); }
+                        if (scale) { 
+                            // Use the selected rainbow function
+                            color = rainbowFunc(segInfo.colorIndex, scale.min, scale.max); 
+                        }
                         else { color = grey; }
                     }
                     return this._applyPastel(color);
@@ -1312,6 +1396,9 @@
                 
                 const colors = new Array(m);
                 
+                // --- MODIFIED ---
+                const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
+                
                 for (let i = 0; i < m; i++) {
                     const segInfo = this.segmentIndices[i];
                     const atomIdx = segInfo.origIndex;
@@ -1320,12 +1407,12 @@
                     
                     if (type === 'L') {
                         const plddt1 = (this.plddts[atomIdx] !== null && this.plddts[atomIdx] !== undefined) ? this.plddts[atomIdx] : 50;
-                        color = getPlddtColor(plddt1);
+                        color = plddtFunc(plddt1); // Use selected plddt function
                     } else {
                         const plddt1 = (this.plddts[atomIdx] !== null && this.plddts[atomIdx] !== undefined) ? this.plddts[atomIdx] : 50;
                         const plddt2_idx = (segInfo.idx2 < this.coords.length) ? segInfo.idx2 : segInfo.idx1;
                         const plddt2 = (this.plddts[plddt2_idx] !== null && this.plddts[plddt2_idx] !== undefined) ? this.plddts[plddt2_idx] : 50;
-                        color = getPlddtColor((plddt1 + plddt2) / 2);
+                        color = plddtFunc((plddt1 + plddt2) / 2); // Use selected plddt function
                     }
                     colors[i] = this._applyPastel(color);
                 }
@@ -1421,18 +1508,29 @@
                 // Select pre-calculated color array
                 let colors;
                 if (this.colorMode === 'plddt') {
-                    colors = this.plddtColors; // Use pre-calculated array
+                    // --- MODIFIED ---
+                    // Re-calculate plddtColors if they don't exist or mode changed
+                    if (!this.plddtColors || this.plddtColors.length !== n) {
+                        this.plddtColors = this._calculatePlddtColors();
+                    }
+                    colors = this.plddtColors;
                 } else {
-                    // This works because this.colors is recalculated
-                    // when the mode changes or when new coords are set.
+                    // --- MODIFIED ---
+                    // Re-calculate segment colors if they don't exist or mode changed
                     if (!this.colors || this.colors.length !== n) {
                         this.colors = this._calculateSegmentColors();
                     }
                     colors = this.colors;
                 }
                 if (!colors || colors.length !== n) { // Safety check
-                    colors = this.plddtColors.length === n ? this.plddtColors : (this.colors.length === n ? this.colors : []);
-                    if (colors.length !== n) return; // Still bad, abort render
+                    console.warn("Color array mismatch, recalculating.");
+                    this.colors = this._calculateSegmentColors();
+                    this.plddtColors = this._calculatePlddtColors();
+                    colors = (this.colorMode === 'plddt') ? this.plddtColors : this.colors;
+                    if (colors.length !== n) {
+                         console.error("Color array mismatch even after recalculation. Aborting render.");
+                         return; // Still bad, abort render
+                    }
                 }
                 
                 // Combine Z-value/norm and update segData
@@ -1933,7 +2031,10 @@
                 for (let i = 0; i < n; i++) { // y
                     for (let j = 0; j < n; j++) { // x
                         const value = this.paeData[i][j];
-                        const { r, g, b } = getPAEColor(value);
+                        // --- MODIFIED ---
+                        const paeFunc = this.mainRenderer.colorblindMode ? getPAEColor_Colorblind : getPAEColor;
+                        const { r, g, b } = paeFunc(value);
+                        // --- END MODIFICATION ---
                         
                         // Fill all pixels in the cell
                         const startX = Math.floor(j * cellSize);
@@ -1996,7 +2097,8 @@
             autoplay: false,
             hide_box: false,
             default_pastel: 0.25,
-            show_pae: false
+            show_pae: false,
+            colorblind: false // Added fallback
         };
 
         // 2. Setup Canvas
@@ -2043,6 +2145,10 @@
         // Setup outlineEnabledCheckbox
         const outlineEnabledCheckbox = document.getElementById('outlineEnabledCheckbox'); 
         outlineEnabledCheckbox.checked = window.renderer.outlineEnabled; // Set default from renderer
+        
+        // Setup colorblindCheckbox
+        const colorblindCheckbox = document.getElementById('colorblindCheckbox'); // Added
+        colorblindCheckbox.checked = window.renderer.colorblindMode; // Added
 
         // 6. Setup animation and object controls
         const controlsContainer = document.getElementById('controlsContainer');
@@ -2066,7 +2172,8 @@
             frameSlider, frameCounter, objectSelect, // Renamed
             speedSelect, rotationCheckbox, lineWidthSlider,
             shadowEnabledCheckbox, outlineEnabledCheckbox,
-            pastelSlider
+            pastelSlider,
+            colorblindCheckbox // Added
         );
 
         // Handle new UI config options

@@ -40,7 +40,7 @@ def align_a_to_b(a, b):
 
 class view:
     def __init__(self, size=(300,300), pae_size=(300,300), color="auto", shadow=True, outline=True, width=3.0, rotate=False,
-                 hide_controls=False, autoplay=False, hide_box=False, pastel=0.25, show_pae=False):
+                 hide_controls=False, autoplay=False, hide_box=False, pastel=0.25, show_pae=False, colorblind=False):
         self.size = size
         self.pae_size = pae_size # Store PAE canvas size
         self._initial_color_mode = color # Store the user's requested mode
@@ -55,6 +55,7 @@ class view:
         self._initial_hide_box = hide_box
         self._initial_pastel_level = pastel # Store pastel level (0.0 to 1.0)
         self._initial_pae = show_pae # Store PAE enabled/disabled
+        self._initial_colorblind = colorblind # Store colorblind mode
         
         self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
         
@@ -225,7 +226,8 @@ class view:
             "autoplay": self._initial_autoplay,
             "hide_box": self._initial_hide_box,
             "default_pastel": self._initial_pastel,
-            "show_pae": self._initial_pae # Add PAE config
+            "show_pae": self._initial_pae, # Add PAE config
+            "colorblind": self._initial_colorblind # Add colorblind config
         }
         config_script = f"""
         <script id="viewer-config">

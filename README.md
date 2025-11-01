@@ -78,13 +78,17 @@ viewer.show()
 
 ## Helper functions
 
-### Example: Load structure from PDB
+### Example: Load structure from PDB w/ ensemble
 ```python
 import py2Dmol
 py2Dmol.view().from_pdb('1YNE')
 ```
 
----
+### Example: Load structure from PDB w/ multiple chains + DNA
+```python
+import py2Dmol
+py2Dmol.view().from_pdb('9D2J')
+```
 
 ### Example: Load structure from AlphaFold DB, show pAE
 ```python
