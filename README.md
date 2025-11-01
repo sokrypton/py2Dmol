@@ -73,53 +73,6 @@ viewer.add_pdb("my_complex.cif")
 viewer.show()
 ```
 
----
-
-### Example: Mixed Structure (Protein, DNA, Ligand)
-
-You can manually add coordinates for different molecule types (P, D, R, L).
-
-```python
-import py2Dmol
-import numpy as np
-
-def helix(n, radius=2.3, rise=1.5, rotation=100):
-    """Generate helical coordinates."""
-    angles = np.radians(rotation) * np.arange(n)
-    return np.column_stack([
-        radius * np.cos(angles),
-        radius * np.sin(angles),
-        rise * np.arange(n)
-    ])
-
-# Protein helix (50 residues)
-protein = helix(50)
-protein[:, 0] += 15  # offset x
-
-# DNA strand (30 bases)
-dna = helix(30, radius=10, rise=3.4, rotation=36)
-dna[:, 0] -= 15  # offset x
-
-# Ligand ring (6 atoms)
-angles = np.linspace(0, 2*np.pi, 6, endpoint=False)
-ligand = np.column_stack([
-    1.4 * np.cos(angles),
-    1.4 * np.sin(angles),
-    np.full(6, 40)
-])
-
-# Combine everything (86 atoms total)
-coords = np.vstack([protein, dna, ligand])
-plddts = np.concatenate([np.full(50, 90), np.full(30, 85), np.full(6, 70)])
-chains = ['A']*50 + ['B']*30 + ['L']*6
-types = ['P']*50 + ['D']*30 + ['L']*6
-
-viewer = py2Dmol.view(color='chain', size=(600, 600), width=2.5, outline=False)
-viewer.add(coords, plddts, chains, types)
-
-# Show the final static viewer
-viewer.show()
-```
 
 ---
 
@@ -209,6 +162,53 @@ for frame in range(60):
     time.sleep(0.1)
 ```
 
+---
+
+### Example: Mixed Structure (Protein, DNA, Ligand)
+
+You can manually add coordinates for different molecule types (P, D, R, L).
+
+```python
+import py2Dmol
+import numpy as np
+
+def helix(n, radius=2.3, rise=1.5, rotation=100):
+    """Generate helical coordinates."""
+    angles = np.radians(rotation) * np.arange(n)
+    return np.column_stack([
+        radius * np.cos(angles),
+        radius * np.sin(angles),
+        rise * np.arange(n)
+    ])
+
+# Protein helix (50 residues)
+protein = helix(50)
+protein[:, 0] += 15  # offset x
+
+# DNA strand (30 bases)
+dna = helix(30, radius=10, rise=3.4, rotation=36)
+dna[:, 0] -= 15  # offset x
+
+# Ligand ring (6 atoms)
+angles = np.linspace(0, 2*np.pi, 6, endpoint=False)
+ligand = np.column_stack([
+    1.4 * np.cos(angles),
+    1.4 * np.sin(angles),
+    np.full(6, 40)
+])
+
+# Combine everything (86 atoms total)
+coords = np.vstack([protein, dna, ligand])
+plddts = np.concatenate([np.full(50, 90), np.full(30, 85), np.full(6, 70)])
+chains = ['A']*50 + ['B']*30 + ['L']*6
+types = ['P']*50 + ['D']*30 + ['L']*6
+
+viewer = py2Dmol.view(color='chain', size=(600, 600), width=2.5, outline=False)
+viewer.add(coords, plddts, chains, types)
+
+# Show the final static viewer
+viewer.show()
+```
 ---
 
 ## Reference
