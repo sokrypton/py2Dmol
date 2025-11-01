@@ -58,6 +58,7 @@ viewer = py2Dmol.view(
     size=(300, 300),     # Set canvas size (width, height)
     color='auto',        # Set initial color mode: ["auto","rainbow","chain","plddt"]
     pastel=0.25,         # Lighten the colors
+    colorblind=False,    # Use colorbind friendly colors
     shadow=True,         # Enable shadows by default
     outline=True,        # Enable outlines by default
     width=3.0,           # Set initial line width
