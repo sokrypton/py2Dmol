@@ -39,6 +39,8 @@
             background: #ffffff;
             cursor: grab;
             display: block;
+            /* Prevent touch actions like scrolling on the canvas */
+            touch-action: none;
         }
         #canvas:active {
             cursor: grabbing;
@@ -362,6 +364,9 @@
                 this.lastDragX = 0;
                 this.lastDragY = 0;
                 
+                // --- ADDED FOR TOUCH ---
+                this.initialPinchDistance = 0;
+
                 // Track slider interaction
                 this.isSliderDragging = false;
 
@@ -383,6 +388,13 @@
             setClearColor(isTransparent) {
                 this.isTransparent = isTransparent;
                 this.render(); // Re-render with new clear color
+            }
+
+            // --- ADDED: Helper for touch zoom ---
+            getTouchDistance(touch1, touch2) {
+                const dx = touch1.clientX - touch2.clientX;
+                const dy = touch1.clientY - touch2.clientY;
+                return Math.sqrt(dx * dx + dy * dy);
             }
 
             setupInteraction() {
@@ -454,6 +466,100 @@
                     this.zoom = Math.max(0.1, Math.min(5, this.zoom));
                     this.render();
                 }, { passive: false });
+
+
+                // --- ADDED TOUCH LISTENERS ---
+                
+                this.canvas.addEventListener('touchstart', (e) => {
+                    e.preventDefault(); // Prevent page scroll
+                    
+                    if (e.touches.length === 1) {
+                        // Start of a drag
+                        this.isDragging = true;
+                        this.spinVelocityX = 0;
+                        this.spinVelocityY = 0;
+                        this.lastDragX = e.touches[0].clientX;
+                        this.lastDragY = e.touches[0].clientY;
+                        this.lastDragTime = performance.now();
+                        if (this.autoRotate) {
+                            this.autoRotate = false;
+                            if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
+                        }
+                    } else if (e.touches.length === 2) {
+                        // Start of a pinch-zoom
+                        this.isDragging = false; // Stop dragging
+                        this.initialPinchDistance = this.getTouchDistance(e.touches[0], e.touches[1]);
+                    }
+                }, { passive: false });
+                
+                this.canvas.addEventListener('touchmove', (e) => {
+                    e.preventDefault(); // Prevent page scroll
+
+                    if (e.touches.length === 1 && this.isDragging) {
+                        // --- Rotation/Drag ---
+                        const now = performance.now();
+                        const timeDelta = now - this.lastDragTime;
+                        const touch = e.touches[0];
+
+                        const dx = touch.clientX - this.lastDragX;
+                        const dy = touch.clientY - this.lastDragY;
+                        
+                        if (dy !== 0) { const rot = rotationMatrixX(dy * 0.01); this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); }
+                        if (dx !== 0) { const rot = rotationMatrixY(dx * 0.01); this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); }
+
+                        // Store velocity for inertia
+                        if (timeDelta > 0) {
+                            const smoothing = 0.5;
+                            this.spinVelocityX = (this.spinVelocityX * (1-smoothing)) + ((dx / timeDelta * 20) * smoothing);
+                            this.spinVelocityY = (this.spinVelocityY * (1-smoothing)) + ((dy / timeDelta * 20) * smoothing);
+                        }
+
+                        this.lastDragX = touch.clientX;
+                        this.lastDragY = touch.clientY;
+                        this.lastDragTime = now;
+                        
+                        this.render(); 
+                    } else if (e.touches.length === 2) {
+                        // --- Zoom/Pinch ---
+                        if (this.initialPinchDistance <= 0) return; // Not initialized
+                        
+                        const currentPinchDistance = this.getTouchDistance(e.touches[0], e.touches[1]);
+                        const scale = currentPinchDistance / this.initialPinchDistance;
+                        
+                        this.zoom *= scale;
+                        this.zoom = Math.max(0.1, Math.min(5, this.zoom));
+                        this.render();
+                        
+                        // Reset for next move event
+                        this.initialPinchDistance = currentPinchDistance;
+                    }
+                }, { passive: false });
+                
+                this.canvas.addEventListener('touchend', (e) => {
+                    // Handle inertia for drag
+                    if (e.touches.length === 0 && this.isDragging) {
+                        this.isDragging = false;
+                        const now = performance.now();
+                        const timeDelta = now - this.lastDragTime;
+                        
+                        if (timeDelta > 100) { // If drag was too slow, or just a tap
+                            this.spinVelocityX = 0;
+                            this.spinVelocityY = 0;
+                        }
+                        // Else, the velocity from the last touchmove is used by the animate loop
+                    }
+                    
+                    // Handle end of pinch
+                    if (e.touches.length < 2) {
+                        this.initialPinchDistance = 0;
+                    }
+                    
+                    // If all touches are up, reset dragging
+                    if (e.touches.length === 0) {
+                        this.isDragging = false;
+                    }
+                });
+                // --- END OF TOUCH LISTENERS ---
             }
 
             // Set UI controls from main script
@@ -793,6 +899,29 @@
                 this.plddts = plddts;
                 this.chains = chains;
                 this.atomTypes = atomTypes;
+                
+                // --- NEW FIX: Resolve "auto" color mode on first data load ---
+                // This logic runs only once when colorMode is 'auto' (from 'live' mode)
+                const isAuto = (this.colorMode === 'auto');
+                if (isAuto) {
+                    if (this.chains && this.chains.length > 0) {
+                        const uniqueChains = new Set(this.chains.filter(c => c && c.trim()));
+                        if (uniqueChains.size > 1) {
+                            this.colorMode = 'chain';
+                        } else {
+                            this.colorMode = 'rainbow';
+                        }
+                    } else {
+                        this.colorMode = 'rainbow'; // Default for no chain info
+                    }
+                    
+                    // --- NEW FIX: Update dropdown to match resolved color ---
+                    const colorSelect = document.getElementById('colorSelect');
+                    if (colorSelect) {
+                        colorSelect.value = this.colorMode;
+                    }
+                }
+                // --- END OF FIX ---
                 
                 const n = this.coords.length;
 
@@ -1496,7 +1625,15 @@
         
         // 4. Setup general controls
         const colorSelect = document.getElementById('colorSelect');
-        colorSelect.value = config.color; // Set dropdown value from config
+        
+        // --- MODIFIED: Handle 'auto' from config ---
+        // If config.color is 'auto', don't set dropdown.
+        // It will be set by setCoords() when data arrives.
+        // Otherwise, set it to the specific color.
+        if (config.color !== 'auto') {
+             colorSelect.value = config.color; // Set dropdown value from config
+        }
+        // --- END OF MODIFICATION ---
         
         colorSelect.addEventListener('change', (e) => {
             window.renderer.colorMode = e.target.value;
