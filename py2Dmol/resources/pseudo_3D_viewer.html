@@ -2237,14 +2237,38 @@
         // 13. Start the main animation loop
         window.renderer.animate();
         
+
         // 14. Notify the parent window that the iframe is loaded and ready
-        // Only notify if not static (i.e., we are a dynamic/hybrid viewer)
         if (window.parent && !isStaticViewer) {
             window.parent.postMessage({ 
                 type: "py2dmol_ready", 
                 viewer_id: config.viewer_id 
             }, "*");
         }
+
+        // 15. Setup auto-resizing
+        function sendResize() {
+            // Use scrollHeight/scrollWidth to get the *full* size of the content
+            const width = document.body.scrollWidth;
+            const height = document.body.scrollHeight;
+            
+            if (window.parent) {
+                window.parent.postMessage({
+                    type: "py2dmol_resize", // The new message type viewer.py is listening for
+                    viewer_id: config.viewer_id,
+                    width: width,
+                    height: height
+                }, "*");
+            }
+        }
+
+        // Use a ResizeObserver to automatically send new dimensions
+        // if the content size ever changes (e.g., controls appear/disappear).
+        const resizeObserver = new ResizeObserver(sendResize);
+        resizeObserver.observe(document.body);
+
+        // Also send the initial size on load
+        sendResize();
 
     </script>
 </body>

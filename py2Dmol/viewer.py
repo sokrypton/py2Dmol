@@ -21,8 +21,17 @@ def kabsch(a, b, return_v=False):
   flip_b = flip[..., None]
   u_last_col_flipped = np.where(flip_b, -u[..., -1], u[..., -1])
   u[..., -1] = u_last_col_flipped
-  R = u @ vh
-  return u if return_v else R
+  if return_v:
+    return u
+  else:
+    return u @ vh
+
+def best_view(a):
+  a_mean = a.mean(-2, keepdims=True)
+  a_cent = a - a_mean
+  v = kabsch(a_cent, a_cent, return_v=True)
+  a_aligned = (a_cent @ v) + a_mean
+  return a_aligned
 
 def align_a_to_b(a, b):
   """Aligns coordinate set 'a' to 'b' using Kabsch algorithm."""
@@ -85,7 +94,7 @@ class view:
     def _update(self, coords, plddts=None, chains=None, atom_types=None, pae=None, align=True):
       """Updates the internal state with new data, aligning coords."""
       if self._coords is None:
-        self._coords = coords
+        self._coords = best_view(coords) if align else coords
       else:
         if align and self._coords.shape == coords.shape:
             self._coords = align_a_to_b(coords, self._coords)
@@ -215,33 +224,8 @@ class view:
         
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
             
-        # Calculate content width
-        content_width = self.config["size"][0]
-        if self.config["pae"]:
-            content_width += 15 # gap
-            content_width += self.config["pae_size"][0]
-        if self.config["controls"]:
-            content_width += 15 # gap
-            content_width += 184 # panel width (160 + 12*2)
-        
-        # Add 16px for body padding (8px * 2)
-        iframe_width = content_width + 16
-
-        # Calculate content height
-        viewer_column_height = self.config["size"][1]
-        pae_container_height = 0
-        
-        if self.config["controls"]:
-            # Add height for animation controls (10px gap + ~24px controls)
-            viewer_column_height += 34 
-            
-        if self.config["pae"]:
-            pae_container_height = self.config["pae_size"][1]
-            
-        content_height = max(viewer_column_height, pae_container_height)
-        
-        # Add 16px for body padding (8px * 2)
-        iframe_height = content_height + 16
+        # --- MODIFICATION: REMOVED ALL PYTHON-SIDE SIZE CALCULATIONS ---
+        # All size logic is now deferred to the iframe's internal JS
 
         # For Jupyter: wrap in iframe with srcdoc
         # Escape for srcdoc attribute
@@ -289,6 +273,24 @@ class view:
                                 }}
                             }}
                         }}
+
+                        // --- MODIFICATION: ADDED RESIZE LISTENER ---
+                        // Check for our new "resize" message from the iframe
+                        if (event.data && event.data.type === 'py2dmol_resize' && event.data.viewer_id) {{
+                            let viewerId = event.data.viewer_id;
+                            let iframe = document.querySelector(`iframe[data-viewer-id="${{viewerId}}"]`);
+                            if (iframe) {{
+                                // Set the iframe size dynamically based on content
+                                // Add a small buffer to height to prevent scrollbars
+                                iframe.style.height = (event.data.height + 5) + 'px'; 
+                                // Set a max-width of 100% to be responsive to cell
+                                iframe.style.maxWidth = '100%';
+                                // Set the explicit width from the content
+                                iframe.style.width = event.data.width + 'px';
+                            }}
+                        }}
+                        // --- END MODIFICATION ---
+
                     }});
                     // Mark listener as added so we don't add it multiple times
                     window.py2dmol_message_listener_added = true;
@@ -296,11 +298,14 @@ class view:
             </script>
             """
         
+        # --- MODIFICATION: UPDATED IFRAME STYLE ---
+        # Start with a small, generic placeholder size.
+        # The 'py2dmol_resize' message will fix it almost instantly.
         iframe_html = f"""
         <iframe 
             data-viewer-id="{viewer_id}"
             srcdoc="{final_html_escaped}"
-            style="width: {iframe_width}px; height: {iframe_height}px; border: none;"
+            style="width: 300px; height: 150px; border: none;"
             sandbox="allow-scripts allow-same-origin"
         ></iframe>
         {handshake_script}
