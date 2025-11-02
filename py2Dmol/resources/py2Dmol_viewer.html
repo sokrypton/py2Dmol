@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>py2Dmol_viewer</title>
+    <style>
+        * { box-sizing: border-box; }
+        /* Make the container relative to position the init-error message */
+        .py2dmol-container {
+            position: relative;
+        }
+        body {
+            margin: 0;
+            padding: 8px; /* Add some padding around the whole thing */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: transparent;
+        }
+        
+        #mainContainer {
+            display: flex;
+            flex-direction: row;
+            align-items: flex-start; /* Align tops */
+            gap: 15px; /* Space between canvas column and controls column */
+            background: transparent;
+        }
+        
+        #viewerColumn {
+            display: flex;
+            flex-direction: column;
+            gap: 10px; /* Space between canvas and anim controls */
+        }
+
+        #canvasContainer {
+            display: inline-block;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #ffffff;
+        }
+        #canvas {
+            background: #ffffff;
+            cursor: grab;
+            display: block;
+            /* Prevent touch actions like scrolling on the canvas */
+            touch-action: none;
+        }
+        #canvas:active {
+            cursor: grabbing;
+        }
+
+        #colorSelect {
+            font-size: 12px;
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            width: 100%; /* Make it fill its new container */
+        }
+
+        #optionsContainer {
+            font-size: 12px;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 8px; /* Increased gap for clarity */
+        }
+        .toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            width: 100%; 
+        }
+        .toggle-item label { 
+            cursor: pointer; 
+            white-space: nowrap;
+            width: 50px; /* Give label a fixed width */
+            flex-shrink: 0;
+            font-size: 12px; /* Ensure label font size matches */
+        }
+        /* Style for the shadow/outline/pastel checkbox labels */
+        .toggle-item label[for="shadowEnabledCheckbox"],
+        .toggle-item label[for="outlineEnabledCheckbox"],
+        .toggle-item label[for="rotationCheckbox"] {
+            width: auto; /* Let it be auto-sized */
+            margin-left: 5px; /* Add space next to the slider */
+        }
+        .toggle-item input[type="range"] {
+            cursor: pointer;
+            flex-grow: 1; /* Let slider fill the rest */
+            width: auto; /* Let flexbox handle it */
+            min-width: 0; /* Fix for flexbox overflow */
+        }
+        .toggle-item input[type="checkbox"] { 
+            cursor: pointer; 
+            margin: 0;
+            flex-shrink: 0; /* Prevent checkbox from shrinking */
+        }
+
+
+        /* Animation Controls Container */
+        #controlsContainer {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            padding: 0 10px;
+            width: 100%;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 12px;
+        }
+        
+        #objectContainer {
+            font-size: 12px;
+        }
+        
+        .controlButton {
+            padding: 5px 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            background: #f0f0f0;
+            cursor: pointer;
+            min-width: 60px;
+            font-size: 12px;
+            vertical-align: middle;
+            margin-right: 5px;
+            flex-shrink: 0;
+        }
+        .controlButton:disabled {
+            cursor: not-allowed;
+            background: #eee;
+            color: #999;
+        }
+        #frameSlider {
+            flex-grow: 1; 
+            width: auto;
+            margin: 0 10px;
+            vertical-align: middle;
+        }
+        #frameCounter {
+            color: #333;
+            vertical-align: middle;
+            min-width: 80px;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+        #speedSelect {
+            font-size: 12px;
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            vertical-align: middle;
+            margin-left: 10px;
+            flex-shrink: 0;
+        }
+        
+        #objectSelect {
+            font-size: 12px;
+            padding: 4px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            vertical-align: middle;
+            width: 100%;
+        }
+        #objectSelect:disabled {
+             cursor: not-allowed;
+            background: #eee;
+        }
+
+        /* Right panel for all other controls */
+        #rightPanelContainer {
+            display: flex;
+            flex-direction: column;
+            gap: 15px; /* Space between control groups */
+            width: 160px; /* Give it a fixed width */
+            border: 1px solid #e0e0e0;
+            border-radius: 12px; /* Changed from 8px */
+            padding: 12px;
+            background: #fdfdfd;
+            flex-shrink: 0; /* Don't let it shrink */
+        }
+        
+        /* Styling for groups in the right panel */
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .control-group > label {
+            font-weight: 600;
+            font-size: 12px;
+            color: #333;
+        }
+        
+        #paeContainer {
+            display: none; /* JS will manage visibility */
+            flex-shrink: 0;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #ffffff;
+        }
+        
+        /* Style for the initialization error message */
+        .py2dmol-init-error {
+            display: none; /* Hidden by default */
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.9);
+            color: #b91c1c; /* Red text */
+            padding: 20px;
+            text-align: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            border: 2px dashed #f87171; /* Red dashed border */
+            border-radius: 12px;
+            z-index: 100;
+        }
+        .py2dmol-init-error p {
+            margin: 0;
+            font-weight: 500;
+        }
+        .py2dmol-init-error code {
+            background: #fee2e2;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-family: Consolas, 'Courier New', monospace;
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Main container to hold viewer and controls -->
+    <div id="mainContainer">
+        
+        <!-- Left Column -->
+        <div id="viewerColumn">
+            <!-- Canvas -->
+            <div id="canvasContainer">
+                <canvas id="canvas"></canvas>
+            </div>
+
+            <!-- Animation Controls -->
+            <div id="controlsContainer">
+                <button id="playButton" class="controlButton">Play</button>
+                <input type="range" id="frameSlider" min="0" max="0" value="0">
+                <span id="frameCounter">Frame: 0 / 0</span>
+                <select id="speedSelect">
+                    <option value="100">1x</option>
+                    <option value="50">2x</option>
+                    <option value="25">4x</option>
+                </select>
+            </div>
+        </div>
+        
+        <!-- PAE Plot Container -->
+        <div id="paeContainer">
+             <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair; display: block;"></canvas>
+        </div>
+        
+        <!-- Right Column -->
+        <div id="rightPanelContainer">
+            
+            <!-- Style Group -->
+            <div id="styleAppearanceContainer" class="control-group">
+                <label>Style</label>
+                <!-- Color Select -->
+                <div class="toggle-item">
+                    <label for="colorSelect" style="width: 50px;">Color:</label>
+                    <select id="colorSelect" style="flex-grow: 1;">
+                        <option value="auto">Auto</option>
+                        <option value="plddt">pLDDT</option>
+                        <option value="rainbow">Rainbow</option>
+                        <option value="chain">Chain</option>
+                    </select>
+                </div>
+                <!-- Width -->
+                <div class="toggle-item">
+                    <label for="lineWidthSlider" style="width: 50px;">Width:</label>
+                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
+                </div>
+                <!-- Shadow -->
+                <div class="toggle-item">
+                     <input type="checkbox" id="shadowEnabledCheckbox">
+                     <label for="shadowEnabledCheckbox">Shadow</label>
+                </div>
+                <!-- Outline -->
+                <div class="toggle-item">
+                     <input type="checkbox" id="outlineEnabledCheckbox">
+                     <label for="outlineEnabledCheckbox">Outline</label>
+                </div>
+            </div>
+
+            <!-- View Group -->
+            <div id="viewContainer" class="control-group">
+                <label>View</label>
+                <div class="toggle-item"> 
+                    <input type="checkbox" id="rotationCheckbox">
+                    <label for="rotationCheckbox">Rotate</label>
+                </div>
+            </div>
+
+            <!-- Object Group -->
+            <div id="objectContainer" class="control-group">
+                <label for="objectSelect">Object</label>
+                <select id="objectSelect">
+                    <!-- Initially empty -->
+                </select>
+            </div>
+        </div>
+
+    </div>    
+    <!-- DATA_INJECTION_POINT -->
+
+</body>
+</html>

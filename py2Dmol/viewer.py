@@ -3,11 +3,7 @@ import numpy as np
 from IPython.display import display, HTML, Javascript
     
 import importlib.resources
-try:
-    from . import resources as py2dmol_resources
-except ImportError:
-    # Fallback for environments where . is not recognized
-    import resources as py2dmol_resources
+from . import resources as py2dmol_resources
 import gemmi
 import uuid
 import os
@@ -139,52 +135,53 @@ class view:
           self._atom_types = ["P"] * n_atoms
 
     def _send_message(self, message_dict):
-        """Robustly send a message to the viewer, queuing if not ready."""
+        """Generates JS to directly call the viewer's API."""
         viewer_id = self.config["viewer_id"]
-        message_json = json.dumps(message_dict)
-
-        # Jupyter logic: queue or send
-        js_code = f"""
-        (function() {{
-            // 1. Ensure global queue and ready flags exist
-            if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
-            if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
+        msg_type = message_dict.get("type")
+        
+        js_code_inner = "" # The specific call
+        
+        if msg_type == "py2DmolUpdate":
+            payload = message_dict.get("payload")
+            # Create a Python string containing JSON
+            payload_json_string = json.dumps(payload) 
+            # Create a JavaScript string literal *from* that JSON string
+            payload_js_literal = json.dumps(payload_json_string) 
             
-            // 2. Ensure queue exists for this *specific* viewer
-            if (!window.py2dmol_queue['{viewer_id}']) {{
-                window.py2dmol_queue['{viewer_id}'] = [];
-            }}
-
-            let msg = {message_json};
+            object_name = message_dict.get("objectName", "")
+            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonUpdate({payload_js_literal}, '{object_name}');"
+        
+        elif msg_type == "py2DmolNewObject":
+            name = message_dict.get("name", "")
+            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonNewObject('{name}');"
+        
+        elif msg_type == "py2DmolClearAll":
+            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonClearAll();"
             
-            // 3. Check if this iframe is ready
-            if (window.py2dmol_ready_flags['{viewer_id}'] === true) {{
-                // Ready: find iframe and send immediately
-                let iframe = document.querySelector('iframe[data-viewer-id="{viewer_id}"]');
-                if (iframe && iframe.contentWindow) {{
-                    iframe.contentWindow.postMessage(msg, '*');
+        elif msg_type == "py2DmolSetColor":
+            color = message_dict.get("color", "auto")
+            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetColor('{color}');"
+            
+        if js_code_inner:
+            # Wrap in a check for safety
+            js_code = f"""
+            (function() {{
+                if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
+                    {js_code_inner}
                 }} else {{
-                     console.error('py2Dmol: iframe {viewer_id} was ready but not found. Re-queuing.');
-                     window.py2dmol_queue['{viewer_id}'].push(msg);
+                    console.error("py2dmol: Viewer '{viewer_id}' not found.");
                 }}
-            }} else {{
-                // Not ready: push to queue
-                window.py2dmol_queue['{viewer_id}'].push(msg);
-            }}
-        }})();
-        """
-        display(Javascript(js_code))
+            }})();
+            """
+            display(Javascript(js_code))
 
-    def _display_viewer(self, static_data=None, pure_static=False):
+    def _display_viewer(self, static_data=None):
         """
-        Internal: Renders the iframe and handshake script.
+        Internal: Renders the viewer's HTML directly into a div.
         
         Args:
             static_data (list, optional):
                 - A list of objects (for static 'show()' or hybrid modes).
-            pure_static (bool, optional):
-                - If True, this is a final static viewer (from .show())
-                - If False, this is a dynamic viewer that needs listeners.
                 
         Returns:
             str: The complete HTML string to be displayed.
@@ -208,9 +205,6 @@ class view:
         """
         
         data_script = ""
-        # A "pure static" viewer (from .show(after_add)) doesn't need the handshake.
-        # A "dynamic" viewer (from .show(before_add)) DOES.
-        is_dynamic_viewer = not pure_static
         
         if static_data and isinstance(static_data, list):
             # Static 'show()' or 'Hybrid' mode: inject all objects
@@ -222,95 +216,35 @@ class view:
         
         injection_scripts = config_script + "\n" + data_script
         
+        # Inject config and data into the raw HTML template
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
             
-        # --- MODIFICATION: REMOVED ALL PYTHON-SIDE SIZE CALCULATIONS ---
-        # All size logic is now deferred to the iframe's internal JS
-
-        # For Jupyter: wrap in iframe with srcdoc
-        # Escape for srcdoc attribute
-        final_html_escaped = final_html.replace('"', '&quot;').replace("'", '&#39;')
-        
-        # --- Only add handshake script if it's a DYNAMIC viewer ---
-        handshake_script = ""
         viewer_id = self.config["viewer_id"]
-        if is_dynamic_viewer:
-            handshake_script = f"""
-            <script>
-                // 1. Setup global queue and iframe readiness state
-                if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
-                if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
-                
-                // 2. Initialize queue and flag for this *specific* viewer
-                if (!window.py2dmol_queue['{viewer_id}']) {{
-                    window.py2dmol_queue['{viewer_id}'] = [];
-                }}
-                window.py2dmol_ready_flags['{viewer_id}'] = false;
-            
-                // 3. Define the 'message' listener (do this only once)
-                if (!window.py2dmol_message_listener_added) {{
-                    window.addEventListener('message', (event) => {{
-                        // Check for our specific "ready" message
-                        if (event.data && event.data.type === 'py2dmol_ready' && event.data.viewer_id) {{
-                            let viewerId = event.data.viewer_id;
-                            
-                            // 3a. Mark this viewer as ready
-                            window.py2dmol_ready_flags[viewerId] = true;
-                            
-                            // 3b. Find the correct iframe
-                            let iframe = document.querySelector(`iframe[data-viewer-id="${{viewerId}}"]`);
-                            if (!iframe || !iframe.contentWindow) {{
-                                console.error(`py2Dmol: Received ready signal from ${{viewerId}} but cannot find iframe.`);
-                                return;
-                            }}
-
-                            // 3c. Process any pending messages for this viewer
-                            let queue = window.py2dmol_queue[viewerId];
-                            if (queue) {{
-                                while (queue.length > 0) {{
-                                    let msg = queue.shift();
-                                    iframe.contentWindow.postMessage(msg, '*');
-                                }}
-                            }}
-                        }}
-
-                        // --- MODIFICATION: ADDED RESIZE LISTENER ---
-                        // Check for our new "resize" message from the iframe
-                        if (event.data && event.data.type === 'py2dmol_resize' && event.data.viewer_id) {{
-                            let viewerId = event.data.viewer_id;
-                            let iframe = document.querySelector(`iframe[data-viewer-id="${{viewerId}}"]`);
-                            if (iframe) {{
-                                // Set the iframe size dynamically based on content
-                                // Add a small buffer to height to prevent scrollbars
-                                iframe.style.height = (event.data.height + 5) + 'px'; 
-                                // Set a max-width of 100% to be responsive to cell
-                                iframe.style.maxWidth = '100%';
-                                // Set the explicit width from the content
-                                iframe.style.width = event.data.width + 'px';
-                            }}
-                        }}
-                        // --- END MODIFICATION ---
-
-                    }});
-                    // Mark listener as added so we don't add it multiple times
-                    window.py2dmol_message_listener_added = true;
-                }}
-            </script>
-            """
         
-        # --- MODIFICATION: UPDATED IFRAME STYLE ---
-        # Start with a small, generic placeholder size.
-        # The 'py2dmol_resize' message will fix it almost instantly.
-        iframe_html = f"""
-        <iframe 
-            data-viewer-id="{viewer_id}"
-            srcdoc="{final_html_escaped}"
-            style="width: 300px; height: 150px; border: none;"
-            sandbox="allow-scripts allow-same-origin"
-        ></iframe>
-        {handshake_script}
+        # NEW: Create a container div and a script to initialize the viewer
+        # We add style="position: relative;" to help with any potential
+        # absolute positioning inside the component, and inline-block to fit content.
+        container_html = f"""
+        <div id="{viewer_id}" style="position: relative; display: inline-block; line-height: 0;">
+            {final_html}
+        </div>
+        <script>
+            (function() {{
+                // Find the container we just rendered
+                const container = document.getElementById("{viewer_id}");
+                
+                // Call the initialization function (which is defined *inside* final_html)
+                if (container && typeof initializePy2DmolViewer === 'function') {{
+                    initializePy2DmolViewer(container);
+                }} else if (!container) {{
+                    console.error("py2dmol: Failed to find container div #{viewer_id}.");
+                }} else {{
+                    console.error("py2dmol: Failed to find initializePy2DmolViewer function.");
+                }}
+            }})();
+        </script>
         """
-        return iframe_html
+        return container_html
 
     def _display_html(self, html_string):
         """Displays the HTML simply, without widgets."""
@@ -731,13 +665,13 @@ class view:
         if not self.objects:
             # --- "Go Live" Mode ---
             # .show() was called *before* .add()
-            html_to_display = self._display_viewer(static_data=None, pure_static=False)
+            html_to_display = self._display_viewer(static_data=None)
             self._display_html(html_to_display)
             self._is_live = True
         else:
             # --- "Publish Static" Mode ---
             # .show() was called *after* .add()
             # We set pure_static=False to enable hybrid mode (static + live)
-            html_to_display = self._display_viewer(static_data=self.objects, pure_static=False)
+            html_to_display = self._display_viewer(static_data=self.objects)
             self._display_html(html_to_display)
             self._is_live = True
