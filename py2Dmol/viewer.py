@@ -1,11 +1,5 @@
 import json
 import numpy as np
-try:
-    from google.colab import output
-    IS_COLAB = True
-except ImportError:
-    IS_COLAB = False
-
 from IPython.display import display, HTML, Javascript
     
 import importlib.resources
@@ -43,37 +37,39 @@ def align_a_to_b(a, b):
 # --- view Class ---
 
 class view:
-    def __init__(self, size=(300,300), pae_size=(300,300), color="auto", shadow=True, outline=True, width=3.0, rotate=False,
-                 hide_controls=False, autoplay=False, hide_box=False, pastel=0.25, show_pae=False, colorblind=False):
-        self.size = size
-        self.pae_size = pae_size # Store PAE canvas size
-        self._initial_color_mode = color # Store the user's requested mode
-        
-        self._initial_shadow_enabled = shadow
-        self._initial_outline_enabled = outline
-        self._initial_width = width
-        self._initial_rotate = rotate
-        self._initial_pastel = pastel
-        self._initial_hide_controls = hide_controls
-        self._initial_autoplay = autoplay
-        self._initial_hide_box = hide_box
-        self._initial_pastel_level = pastel # Store pastel level (0.0 to 1.0)
-        self._initial_pae = show_pae # Store PAE enabled/disabled
-        self._initial_colorblind = colorblind # Store colorblind mode
-        
-        self._viewer_id = str(uuid.uuid4())  # Unique ID for this viewer instance
+    def __init__(self, size=(300,300), controls=True, box=True,
+        color="auto", colorblind=False, pastel=0.25, shadow=True,
+        outline=True, width=3.0, rotate=False, autoplay=False,
+        pae=False, pae_size=(300,300),
+    ):
+        self.config = {
+            "size": size,
+            "controls": controls,
+            "box": box,
+            "color": color,
+            "colorblind": colorblind,
+            "pastel": pastel,
+            "shadow": shadow,
+            "outline": outline,
+            "width": width,
+            "rotate": rotate,
+            "autoplay": autoplay,
+            "pae": pae,
+            "pae_size": pae_size,
+            "viewer_id": str(uuid.uuid4()),
+        }
         
         # The viewer's mode is determined by when .show() is called.
-        self.objects = []               # Store all data
-        self._current_object_data = None # List to hold frames for current object
-        self._is_live = False                # True if .show() was called *before* .add()
+        self.objects = []                 # Store all data
+        self._current_object_data = None  # List to hold frames for current object
+        self._is_live = False             # True if .show() was called *before* .add()
         
         # --- Alignment/Dynamic State ---
         self._coords = None
         self._plddts = None
         self._chains = None
         self._atom_types = None
-        self._pae = None # Store PAE matrix for the current frame
+        self._pae = None
 
     def _get_data_dict(self):
         """Serializes the current coordinate state to a dict."""
@@ -135,63 +131,40 @@ class view:
 
     def _send_message(self, message_dict):
         """Robustly send a message to the viewer, queuing if not ready."""
-        viewer_id = self._viewer_id
+        viewer_id = self.config["viewer_id"]
         message_json = json.dumps(message_dict)
 
-        if IS_COLAB:
-            # Colab logic is simple: just execute the JS
-            js_code = ""
-            if message_dict['type'] == 'py2DmolUpdate':
-                json_data = json.dumps(message_dict['payload'])
-                json_data_escaped = json_data.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
-                # Escape object name for JS string
-                obj_name_escaped = message_dict['objectName'].replace("'", "\\'")
-                js_code = f"window.handlePythonUpdate(`{json_data_escaped}`, '{obj_name_escaped}');"
-            elif message_dict['type'] == 'py2DmolNewObject':
-                js_code = f"window.handlePythonNewObject('{message_dict['name']}');"
-            elif message_dict['type'] == 'py2DmolClearAll':
-                js_code = "window.handlePythonClearAll();"
-            elif message_dict['type'] == 'py2DmolSetColor':
-                js_code = f"window.handlePythonSetColor('{message_dict['color']}');"
+        # Jupyter logic: queue or send
+        js_code = f"""
+        (function() {{
+            // 1. Ensure global queue and ready flags exist
+            if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
+            if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
             
-            if js_code:
-                try:
-                    output.eval_js(js_code, ignore_result=True)
-                except Exception as e:
-                    print(f"Error sending message (Colab): {e}")
+            // 2. Ensure queue exists for this *specific* viewer
+            if (!window.py2dmol_queue['{viewer_id}']) {{
+                window.py2dmol_queue['{viewer_id}'] = [];
+            }}
 
-        else:
-            # Jupyter logic: queue or send
-            js_code = f"""
-            (function() {{
-                // 1. Ensure global queue and ready flags exist
-                if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
-                if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
-                
-                // 2. Ensure queue exists for this *specific* viewer
-                if (!window.py2dmol_queue['{viewer_id}']) {{
-                    window.py2dmol_queue['{viewer_id}'] = [];
-                }}
-
-                let msg = {message_json};
-                
-                // 3. Check if this iframe is ready
-                if (window.py2dmol_ready_flags['{viewer_id}'] === true) {{
-                    // Ready: find iframe and send immediately
-                    let iframe = document.querySelector('iframe[data-viewer-id="{viewer_id}"]');
-                    if (iframe && iframe.contentWindow) {{
-                        iframe.contentWindow.postMessage(msg, '*');
-                    }} else {{
-                         console.error('py2Dmol: iframe {viewer_id} was ready but not found. Re-queuing.');
-                         window.py2dmol_queue['{viewer_id}'].push(msg);
-                    }}
+            let msg = {message_json};
+            
+            // 3. Check if this iframe is ready
+            if (window.py2dmol_ready_flags['{viewer_id}'] === true) {{
+                // Ready: find iframe and send immediately
+                let iframe = document.querySelector('iframe[data-viewer-id="{viewer_id}"]');
+                if (iframe && iframe.contentWindow) {{
+                    iframe.contentWindow.postMessage(msg, '*');
                 }} else {{
-                    // Not ready: push to queue
-                    window.py2dmol_queue['{viewer_id}'].push(msg);
+                     console.error('py2Dmol: iframe {viewer_id} was ready but not found. Re-queuing.');
+                     window.py2dmol_queue['{viewer_id}'].push(msg);
                 }}
-            }})();
-            """
-            display(Javascript(js_code))
+            }} else {{
+                // Not ready: push to queue
+                window.py2dmol_queue['{viewer_id}'].push(msg);
+            }}
+        }})();
+        """
+        display(Javascript(js_code))
 
     def _display_viewer(self, static_data=None, pure_static=False):
         """
@@ -219,25 +192,9 @@ class view:
             print(f"Error loading HTML template: {e}")
             return ""
 
-        viewer_config = {
-            "size": self.size,
-            "pae_size": self.pae_size, # Pass PAE size
-            "color": self._initial_color_mode, # Send 'auto', 'chain', 'plddt', etc.
-            "viewer_id": self._viewer_id,
-            "default_shadow": self._initial_shadow_enabled,
-            "default_outline": self._initial_outline_enabled,
-            "default_width": self._initial_width,
-            "default_rotate": self._initial_rotate,
-            "hide_controls": self._initial_hide_controls,
-            "autoplay": self._initial_autoplay,
-            "hide_box": self._initial_hide_box,
-            "default_pastel": self._initial_pastel,
-            "show_pae": self._initial_pae, # Add PAE config
-            "colorblind": self._initial_colorblind # Add colorblind config
-        }
         config_script = f"""
         <script id="viewer-config">
-          window.viewerConfig = {json.dumps(viewer_config)};
+          window.viewerConfig = {json.dumps(self.config)};
         </script>
         """
         
@@ -259,11 +216,11 @@ class view:
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
             
         # Calculate content width
-        content_width = self.size[0]
-        if self._initial_pae:
+        content_width = self.config["size"][0]
+        if self.config["pae"]:
             content_width += 15 # gap
-            content_width += self.pae_size[0]
-        if not self._initial_hide_controls:
+            content_width += self.config["pae_size"][0]
+        if self.config["controls"]:
             content_width += 15 # gap
             content_width += 184 # panel width (160 + 12*2)
         
@@ -271,93 +228,84 @@ class view:
         iframe_width = content_width + 16
 
         # Calculate content height
-        viewer_column_height = self.size[1]
+        viewer_column_height = self.config["size"][1]
         pae_container_height = 0
         
-        if not self._initial_hide_controls:
+        if self.config["controls"]:
             # Add height for animation controls (10px gap + ~24px controls)
             viewer_column_height += 34 
             
-        if self._initial_pae:
-            pae_container_height = self.pae_size[1]
+        if self.config["pae"]:
+            pae_container_height = self.config["pae_size"][1]
             
         content_height = max(viewer_column_height, pae_container_height)
         
         # Add 16px for body padding (8px * 2)
         iframe_height = content_height + 16
 
-        if not IS_COLAB:
-            # For Jupyter: wrap in iframe with srcdoc
-            # Escape for srcdoc attribute
-            final_html_escaped = final_html.replace('"', '&quot;').replace("'", '&#39;')
-            
-            # --- Only add handshake script if it's a DYNAMIC viewer ---
-            handshake_script = ""
-            if is_dynamic_viewer:
-                handshake_script = f"""
-                <script>
-                    // 1. Setup global queue and iframe readiness state
-                    if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
-                    if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
-                    
-                    // 2. Initialize queue and flag for this *specific* viewer
-                    if (!window.py2dmol_queue['{self._viewer_id}']) {{
-                        window.py2dmol_queue['{self._viewer_id}'] = [];
-                    }}
-                    window.py2dmol_ready_flags['{self._viewer_id}'] = false;
+        # For Jupyter: wrap in iframe with srcdoc
+        # Escape for srcdoc attribute
+        final_html_escaped = final_html.replace('"', '&quot;').replace("'", '&#39;')
+        
+        # --- Only add handshake script if it's a DYNAMIC viewer ---
+        handshake_script = ""
+        viewer_id = self.config["viewer_id"]
+        if is_dynamic_viewer:
+            handshake_script = f"""
+            <script>
+                // 1. Setup global queue and iframe readiness state
+                if (!window.py2dmol_queue) window.py2dmol_queue = {{}};
+                if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {{}};
                 
-                    // 3. Define the 'message' listener (do this only once)
-                    if (!window.py2dmol_message_listener_added) {{
-                        window.addEventListener('message', (event) => {{
-                            // Check for our specific "ready" message
-                            if (event.data && event.data.type === 'py2dmol_ready' && event.data.viewer_id) {{
-                                let viewerId = event.data.viewer_id;
-                                
-                                // 3a. Mark this viewer as ready
-                                window.py2dmol_ready_flags[viewerId] = true;
-                                
-                                // 3b. Find the correct iframe
-                                let iframe = document.querySelector(`iframe[data-viewer-id="${{viewerId}}"]`);
-                                if (!iframe || !iframe.contentWindow) {{
-                                    console.error(`py2Dmol: Received ready signal from ${{viewerId}} but cannot find iframe.`);
-                                    return;
-                                }}
+                // 2. Initialize queue and flag for this *specific* viewer
+                if (!window.py2dmol_queue['{viewer_id}']) {{
+                    window.py2dmol_queue['{viewer_id}'] = [];
+                }}
+                window.py2dmol_ready_flags['{viewer_id}'] = false;
+            
+                // 3. Define the 'message' listener (do this only once)
+                if (!window.py2dmol_message_listener_added) {{
+                    window.addEventListener('message', (event) => {{
+                        // Check for our specific "ready" message
+                        if (event.data && event.data.type === 'py2dmol_ready' && event.data.viewer_id) {{
+                            let viewerId = event.data.viewer_id;
+                            
+                            // 3a. Mark this viewer as ready
+                            window.py2dmol_ready_flags[viewerId] = true;
+                            
+                            // 3b. Find the correct iframe
+                            let iframe = document.querySelector(`iframe[data-viewer-id="${{viewerId}}"]`);
+                            if (!iframe || !iframe.contentWindow) {{
+                                console.error(`py2Dmol: Received ready signal from ${{viewerId}} but cannot find iframe.`);
+                                return;
+                            }}
 
-                                // 3c. Process any pending messages for this viewer
-                                let queue = window.py2dmol_queue[viewerId];
-                                if (queue) {{
-                                    while (queue.length > 0) {{
-                                        let msg = queue.shift();
-                                        iframe.contentWindow.postMessage(msg, '*');
-                                    }}
+                            // 3c. Process any pending messages for this viewer
+                            let queue = window.py2dmol_queue[viewerId];
+                            if (queue) {{
+                                while (queue.length > 0) {{
+                                    let msg = queue.shift();
+                                    iframe.contentWindow.postMessage(msg, '*');
                                 }}
                             }}
-                        }});
-                        // Mark listener as added so we don't add it multiple times
-                        window.py2dmol_message_listener_added = true;
-                    }}
-                </script>
-                """
-            
-            iframe_html = f"""
-            <iframe 
-                data-viewer-id="{self._viewer_id}"
-                srcdoc="{final_html_escaped}"
-                style="width: {iframe_width}px; height: {iframe_height}px; border: none;"
-                sandbox="allow-scripts allow-same-origin"
-            ></iframe>
-            {handshake_script}
+                        }}
+                    }});
+                    // Mark listener as added so we don't add it multiple times
+                    window.py2dmol_message_listener_added = true;
+                }}
+            </script>
             """
-            return iframe_html
-        else:
-            # For Colab: use direct HTML
-            # Wrap Colab output in a div for widget clearing
-            colab_html = f"""
-            <div data-viewer-id="{self._viewer_id}" style="width: {iframe_width}px; height: {iframe_height}px; position: relative;">
-                {final_html}
-            </div>
-            """
-            return colab_html
+        
+        iframe_html = f"""
+        <iframe 
+            data-viewer-id="{viewer_id}"
+            srcdoc="{final_html_escaped}"
+            style="width: {iframe_width}px; height: {iframe_height}px; border: none;"
+            sandbox="allow-scripts allow-same-origin"
+        ></iframe>
+        {handshake_script}
+        """
+        return iframe_html
 
     def _display_html(self, html_string):
         """Displays the HTML simply, without widgets."""
@@ -384,11 +332,6 @@ class view:
         self._atom_types = None
         self._pae = None
         self._is_live = False
-        
-        # We can't clear the output cell, so we just reset state
-        # and the user can clear the cell manually if needed.
-        print("py2dmol: Viewer state cleared. Re-run .add() or .show() to display again.")
-
 
     def new_obj(self, object_name=None):
         """Starts a new object for subsequent 'add' calls."""
@@ -729,8 +672,8 @@ class view:
             ignore_ligands (bool): If True, skips loading ligand atoms.
         """
         # Set color to plddt if it's currently 'auto'
-        if self._initial_color_mode == "auto":
-            self._initial_color_mode = "plddt"
+        if self.config["color"] == "auto":
+            self.config["color"] = "plddt"
             # If we are already live, send a message to update the viewer's color dropdown
             if self._is_live:
                 self._send_message({
@@ -739,7 +682,7 @@ class view:
                 })
 
         # --- Download structure and (maybe) PAE ---
-        struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self._initial_pae)
+        struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self.config["pae"])
         
         if not struct_filepath:
              print(f"Could not load structure for '{uniprot_id}'.")

@@ -411,15 +411,15 @@
                     size: [300, 300], 
                     pae_size: [300, 300],
                     color: "auto", 
-                    default_shadow: true, 
-                    default_outline: true,
-                    default_width: 3.0,
-                    default_rotate: false,
-                    hide_controls: false,
+                    shadow: true, 
+                    outline: true,
+                    width: 3.0,
+                    rotate: false,
+                    controls: true,
                     autoplay: false,
-                    hide_box: false,
-                    default_pastel: 0.25,
-                    show_pae: false,
+                    box: true,
+                    pastel: 0.25,
+                    pae: false,
                     colorblind: false
                 };
 
@@ -433,13 +433,13 @@
                 this.colorMode = config.color; // Set initial color from config
                 this.rotationMatrix = [[1,0,0],[0,1,0],[0,0,1]];
                 this.zoom = 1.0;
-                this.lineWidth = (typeof config.default_width === 'number') ? config.default_width : 3.0;
+                this.lineWidth = (typeof config.width === 'number') ? config.width : 3.0;
                 this.shadowIntensity = 0.95;
                 
                 // Set defaults from config, with fallback
-                this.shadowEnabled = (typeof config.default_shadow === 'boolean') ? config.default_shadow : true;
-                this.outlineEnabled = (typeof config.default_outline === 'boolean') ? config.default_outline : true;
-                this.pastelLevel = (typeof config.default_pastel === 'number') ? config.default_pastel : 0.25;
+                this.shadowEnabled = (typeof config.shadow === 'boolean') ? config.shadow : true;
+                this.outlineEnabled = (typeof config.outline === 'boolean') ? config.outline : true;
+                this.pastelLevel = (typeof config.pastel === 'number') ? config.pastel : 0.25;
                 this.colorblindMode = (typeof config.colorblind === 'boolean') ? config.colorblind : false;
                 
                 this.isTransparent = false; // Default to white background
@@ -466,7 +466,7 @@
                 
                 // Interaction
                 this.isDragging = false;
-                this.autoRotate = (typeof config.default_rotate === 'boolean') ? config.default_rotate : false; 
+                this.autoRotate = (typeof config.rotate === 'boolean') ? config.rotate : false; 
                 
                 this.autoplay = (typeof config.autoplay === 'boolean') ? config.autoplay : false; 
                 
@@ -990,9 +990,9 @@
                 const total = object ? object.frames.length : 0;
                 const current = Math.max(0, this.currentFrame) + 1;
 
-                // Check config.hide_controls before showing
+                // Check config.controls before showing
                 const config = window.viewerConfig || {};
-                if (total <= 1 || config.hide_controls) {
+                if (total <= 1 || !config.controls) {
                     this.controlsContainer.style.display = 'none';
                 } else {
                     this.controlsContainer.style.display = 'flex';
@@ -1004,7 +1004,7 @@
                     const objectContainer = document.getElementById('objectContainer');
                     if (objectContainer) {
                         // Show if more than 1 object AND controls are not hidden
-                        objectContainer.style.display = (totalObjects > 1 && !config.hide_controls) ? 'flex' : 'none';
+                        objectContainer.style.display = (totalObjects > 1 && config.controls) ? 'flex' : 'none';
                     }
                 }
 
@@ -2021,15 +2021,15 @@
             size: [300, 300], 
             pae_size: [300, 300],
             color: "auto", 
-            default_shadow: true, 
-            default_outline: true,
-            default_width: 3.0,
-            default_rotate: false,
-            hide_controls: false,
+            shadow: true, 
+            outline: true,
+            width: 3.0,
+            rotate: false,
+            controls: true,
             autoplay: false,
-            hide_box: false,
-            default_pastel: 0.25,
-            show_pae: false,
+            box: true,
+            pastel: 0.25,
+            pae: false,
             colorblind: false
         };
 
@@ -2043,7 +2043,7 @@
         window.renderer = new Pseudo3DRenderer(canvas);
         
         // 4. Setup PAE Renderer (if enabled)
-        if (config.show_pae) {
+        if (config.pae) {
             try {
                 document.getElementById('paeContainer').style.display = 'block';
                 const paeCanvas = document.getElementById('paeCanvas');
@@ -2100,19 +2100,19 @@
         );
 
         // Handle new UI config options
-        if (config.hide_controls) {
+        if (!config.controls) {
             document.getElementById('rightPanelContainer').style.display = 'none';
             // controlsContainer is handled by updateUIControls
         }
 
-        // Handle hide_box
-        if (config.hide_box) {
+        // Handle box
+        if (!config.box) {
             document.getElementById('canvasContainer').style.border = 'none';
             document.getElementById('canvasContainer').style.background = 'transparent';
             document.getElementById('canvas').style.background = 'transparent';
             
             // Also update PAE container if it exists
-            if (config.show_pae) {
+            if (config.pae) {
                 document.getElementById('paeContainer').style.border = 'none';
                 document.getElementById('paeContainer').style.background = 'transparent';
             }
