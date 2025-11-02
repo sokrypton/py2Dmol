@@ -79,12 +79,25 @@ class view:
 
     def _get_data_dict(self):
         """Serializes the current coordinate state to a dict."""
+        
+        # Round arrays before converting to list
+        # Coords to 3 decimal places (float)
+        rounded_coords = np.round(self._coords, 2)
+        
+        # pLDDTs to 0 decimal places (integer)
+        rounded_plddts = np.round(self._plddts, 0).astype(int)
+        
+        rounded_pae = None
+        if self._pae is not None:
+            # PAE to 0 decimal places (integer)
+            rounded_pae = np.round(self._pae, 0).astype(int).tolist()
+
         payload = {
-            "coords": self._coords.tolist(),
-            "plddts": self._plddts.tolist(),
+            "coords": rounded_coords.tolist(),
+            "plddts": rounded_plddts.tolist(),
             "chains": list(self._chains),
             "atom_types": list(self._atom_types),
-            "pae": self._pae.tolist() if self._pae is not None else None
+            "pae": rounded_pae
         }
         return payload
 
@@ -199,8 +212,41 @@ class view:
         data_script = ""
         
         if static_data and isinstance(static_data, list):
-            # Static 'show()' or 'Hybrid' mode: inject all objects
-            data_json = json.dumps(static_data)
+            # --- START NEW LOGIC (Plan 2, Corrected) ---
+            # Create a new, lighter list for serialization
+            serialized_objects = []
+            for py_obj in static_data: # static_data is self.objects
+                if not py_obj.get("frames"):
+                    continue
+                    
+                # Take static data from the *first* frame
+                first_frame = py_obj["frames"][0]
+                static_chains = first_frame.get("chains", [])
+                static_atom_types = first_frame.get("atom_types", [])
+                
+                # Find the first non-None PAE matrix to store - NO, PAE is per-frame
+                # static_pae = None ... (REMOVED)
+                
+                # Create a list of frames containing coords, plddts, AND pae
+                light_frames = [
+                    {
+                        "coords": frame.get("coords"),
+                        "plddts": frame.get("plddts"),
+                        "pae": frame.get("pae") # PAE is per-frame
+                    } for frame in py_obj["frames"]
+                ]
+                
+                serialized_objects.append({
+                    "name": py_obj.get("name"),
+                    "chains": static_chains,
+                    "atom_types": static_atom_types,
+                    # "pae": None, # (REMOVED)
+                    "frames": light_frames # This list is much smaller
+                })
+
+            data_json = json.dumps(serialized_objects)
+            # --- END NEW LOGIC (Plan 2, Corrected) ---
+            
             data_script = f'<script id="static-data">window.staticObjectData = {data_json};</script>'
         else:
             # Pure Dynamic mode: inject empty data, will be populated by messages

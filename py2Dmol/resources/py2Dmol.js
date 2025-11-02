@@ -1904,15 +1904,29 @@ function initializePy2DmolViewer(containerElement) {
     if (window.staticObjectData && window.staticObjectData.length > 0) {
         <!-- === STATIC MODE (from show()) ===
         try {
-            <!-- Loop over all objects
+            <!-- Loop over all objects (NEW STRUCTURE)
             for (const obj of window.staticObjectData) {
                 if (obj.name && obj.frames && obj.frames.length > 0) {
-                    // Add the first frame, which creates the object
-                    renderer.addFrame(obj.frames[0], obj.name);
                     
-                    // Add any remaining frames
-                    for (let i = 1; i < obj.frames.length; i++) {
-                        renderer.addFrame(obj.frames[i], obj.name);
+                    // Get the static data from the *object* level
+                    const staticChains = obj.chains;
+                    const staticAtomTypes = obj.atom_types;
+                    
+                    // Loop through the "light" frames
+                    for (let i = 0; i < obj.frames.length; i++) {
+                        const lightFrame = obj.frames[i]; // This only has coords/plddts/pae
+                        
+                        // Re-construct the full frame data expected by addFrame
+                        const fullFrameData = {
+                            coords: lightFrame.coords,
+                            plddts: lightFrame.plddts,
+                            pae: lightFrame.pae, // PAE is per-frame
+                            chains: staticChains,
+                            atom_types: staticAtomTypes
+                        };
+                        
+                        // Pass the re-hydrated frame to the renderer
+                        renderer.addFrame(fullFrameData, obj.name);
                     }
                 }
             }
