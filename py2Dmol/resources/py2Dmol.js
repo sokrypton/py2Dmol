@@ -61,13 +61,13 @@ function initializePy2DmolViewer(containerElement) {
         return hsvToRgb(hue, 1.0, 1.0);
     }
 
-    // Cividis-like: N-term (yellow) to C-term (blue)
+    // Cividis-like: N-term (blue) to C-term (yellow)
     function getRainbowColor_Colorblind(value, min, max) {
-        if (max - min < 1e-6) return hsvToRgb(60, 1.0, 1.0); // Default to yellow
+        if (max - min < 1e-6) return hsvToRgb(240, 1.0, 1.0); // Default to blue
         let normalized = (value - min) / (max - min);
         normalized = Math.max(0, Math.min(1, normalized));
-        // Interpolate hue from 60 (Yellow) to 240 (Blue)
-        const hue = 60 + normalized * 180;
+        // Interpolate hue from 240 (Blue) down to 60 (Yellow)
+        const hue = 240 - normalized * 180;
         return hsvToRgb(hue, 1.0, 1.0);
     }
     
@@ -230,6 +230,7 @@ function initializePy2DmolViewer(containerElement) {
             this.lineWidthSlider = null;
             this.shadowEnabledCheckbox = null; 
             this.outlineEnabledCheckbox = null; 
+            this.colorblindCheckbox = null;
 
             this.setupInteraction();
         }
@@ -456,7 +457,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox) {
+        setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, colorblindCheckbox) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.frameSlider = frameSlider;
@@ -467,6 +468,7 @@ function initializePy2DmolViewer(containerElement) {
             this.lineWidthSlider = lineWidthSlider;
             this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
             this.outlineEnabledCheckbox = outlineEnabledCheckbox;
+            this.colorblindCheckbox = colorblindCheckbox;
             
             this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
             this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
@@ -514,6 +516,21 @@ function initializePy2DmolViewer(containerElement) {
                 });
             }
             
+            if (this.colorblindCheckbox) {
+                this.colorblindCheckbox.addEventListener('change', (e) => {
+                    this.colorblindMode = e.target.checked;
+                    // Recalculate all colors
+                    this.colors = this._calculateSegmentColors();
+                    this.plddtColors = this._calculatePlddtColors();
+                    // Re-render main canvas
+                    this.render();
+                    // Re-render PAE canvas
+                    if (this.paeRenderer) {
+                        this.paeRenderer.render();
+                    }
+                });
+            }
+            
 
             // Prevent canvas drag from interfering with slider
             const handleSliderChange = (e) => {
@@ -543,7 +560,8 @@ function initializePy2DmolViewer(containerElement) {
             // Also prevent canvas drag when interacting with other controls
             const allControls = [this.playButton, this.objectSelect, this.speedSelect,
                                  this.rotationCheckbox, this.lineWidthSlider, 
-                                 this.shadowEnabledCheckbox, this.outlineEnabledCheckbox];
+                                 this.shadowEnabledCheckbox, this.outlineEnabledCheckbox,
+                                 this.colorblindCheckbox];
             allControls.forEach(control => {
                 if (control) {
                     control.addEventListener('mousedown', (e) => {
@@ -709,6 +727,7 @@ function initializePy2DmolViewer(containerElement) {
              this.lineWidthSlider.disabled = !enabled;
              if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
              if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled;
+             if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled;
              this.canvas.style.cursor = enabled ? 'grab' : 'wait';
         }
 
@@ -1620,7 +1639,7 @@ function initializePy2DmolViewer(containerElement) {
                 if (!this.isDragging) return;
                 
                 const { i, j } = this.getCellIndices(e);
-                
+
                 // Clamp selection to canvas bounds
                 const n = this.paeData.length;
                 this.selection.x2 = Math.max(0, Math.min(n - 1, j));
@@ -1775,12 +1794,42 @@ function initializePy2DmolViewer(containerElement) {
     canvas.width = config.size[0];
     canvas.height = config.size[1];
     const viewerColumn = containerElement.querySelector('#viewerColumn');
-    if (viewerColumn) {
-        viewerColumn.style.width = `${config.size[0]}px`; 
-    }
+    
+    // We no longer set a fixed width on viewerColumn, to allow resizing.
 
     // 3. Create renderer
     const renderer = new Pseudo3DRenderer(canvas);
+    
+    // ADDED: ResizeObserver to handle canvas resizing
+    const canvasContainer = containerElement.querySelector('#canvasContainer');
+    if (canvasContainer && window.ResizeObserver) {
+        const resizeObserver = new ResizeObserver(entries => {
+            for (let entry of entries) {
+                // Get new dimensions from the container
+                let newWidth = entry.contentRect.width;
+                let newHeight = entry.contentRect.height;
+
+                // Ensure non-zero dimensions which can break canvas
+                newWidth = Math.max(newWidth, 1);
+                newHeight = Math.max(newHeight, 1);
+
+                // 1. Update canvas resolution. This is the critical step
+                // to prevent stretching/blurring.
+                if (canvas.width !== newWidth || canvas.height !== newHeight) {
+                    canvas.width = newWidth;
+                    canvas.height = newHeight;
+
+                    // 2. Re-render the scene
+                    renderer.render();
+                }
+            }
+        });
+
+        // Start observing the canvas container
+        resizeObserver.observe(canvasContainer);
+    } else if (!window.ResizeObserver) {
+        console.warn("py2dmol: ResizeObserver not supported. Canvas resizing will not work.");
+    }
     
     // 4. Setup PAE Renderer (if enabled)
     if (config.pae) {
@@ -1818,6 +1867,10 @@ function initializePy2DmolViewer(containerElement) {
     const outlineEnabledCheckbox = containerElement.querySelector('#outlineEnabledCheckbox'); 
     outlineEnabledCheckbox.checked = renderer.outlineEnabled; // Set default from renderer
     
+    // Setup colorblindCheckbox
+    const colorblindCheckbox = containerElement.querySelector('#colorblindCheckbox');
+    colorblindCheckbox.checked = renderer.colorblindMode; // Set default from renderer
+    
     // 6. Setup animation and object controls
     const controlsContainer = containerElement.querySelector('#controlsContainer');
     const playButton = containerElement.querySelector('#playButton');
@@ -1837,7 +1890,8 @@ function initializePy2DmolViewer(containerElement) {
         controlsContainer, playButton, 
         frameSlider, frameCounter, objectSelect,
         speedSelect, rotationCheckbox, lineWidthSlider,
-        shadowEnabledCheckbox, outlineEnabledCheckbox
+        shadowEnabledCheckbox, outlineEnabledCheckbox,
+        colorblindCheckbox
     );
 
     // Handle new UI config options

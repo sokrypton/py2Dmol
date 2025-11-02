@@ -35,8 +35,12 @@
             display: inline-block;
             border: 1px solid #ddd;
             border-radius: 12px;
-            overflow: hidden;
+            overflow: auto; /* REQUIRED for resize to work. Was 'hidden' */
             background: #ffffff;
+            resize: both; /* ADDED: This enables the resize handle */
+            /* ADDED: Set a minimum size so it doesn't disappear */
+            min-width: 150px; 
+            min-height: 150px;
         }
         #canvas {
             background: #ffffff;
@@ -81,6 +85,7 @@
         /* Style for the shadow/outline/pastel checkbox labels */
         .toggle-item label[for="shadowEnabledCheckbox"],
         .toggle-item label[for="outlineEnabledCheckbox"],
+        .toggle-item label[for="colorblindCheckbox"],
         .toggle-item label[for="rotationCheckbox"] {
             width: auto; /* Let it be auto-sized */
             margin-left: 5px; /* Add space next to the slider */
@@ -288,6 +293,11 @@
                 <div class="toggle-item">
                      <input type="checkbox" id="outlineEnabledCheckbox">
                      <label for="outlineEnabledCheckbox">Outline</label>
+                </div>
+                <!-- ADDED: Colorblind Checkbox -->
+                <div class="toggle-item">
+                     <input type="checkbox" id="colorblindCheckbox">
+                     <label for="colorblindCheckbox">Colorblind</label>
                 </div>
                 <div class="toggle-item"> 
                     <input type="checkbox" id="rotationCheckbox">
