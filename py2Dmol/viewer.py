@@ -82,16 +82,14 @@ class view:
         }
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, atom_types=None, pae=None):
+    def _update(self, coords, plddts=None, chains=None, atom_types=None, pae=None, align=True):
       """Updates the internal state with new data, aligning coords."""
       if self._coords is None:
         self._coords = coords
       else:
-        if self._coords.shape == coords.shape:
+        if align and self._coords.shape == coords.shape:
             self._coords = align_a_to_b(coords, self._coords)
         else:
-            # Atom counts differ, just use the new coords without aligning
-            # This can happen in multi-model PDBs
             self._coords = coords
       
       n_atoms = self._coords.shape[0]
@@ -395,7 +393,8 @@ class view:
                 "name": object_name
             })
     
-    def add(self, coords, plddts=None, chains=None, atom_types=None, pae=None, new_obj=False, object_name=None):
+    def add(self, coords, plddts=None, chains=None, atom_types=None, pae=None,
+            new_obj=False, object_name=None, align=True):
         """
         Adds a new *frame* of data to the viewer.
         
@@ -412,7 +411,7 @@ class view:
         """
         
         # --- Step 1: Update Python-side alignment state ---
-        self._update(coords, plddts, chains, atom_types, pae) # This handles defaults
+        self._update(coords, plddts, chains, atom_types, pae, align=align) # This handles defaults
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         # --- Step 2: Handle object creation ---
@@ -435,7 +434,7 @@ class view:
             })
 
 
-    def add_pdb(self, filepath, chains=None, new_obj=False, object_name=None, pae=None):
+    def add_pdb(self, filepath, chains=None, new_obj=False, object_name=None, pae=None, align=True):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -483,7 +482,8 @@ class view:
                 # Call add() - this will handle batch vs. live
                 self.add(coords_np, plddts_np, atom_chains, atom_types,
                     pae=pae_to_add,
-                    new_obj=False, object_name=current_obj_name)
+                    new_obj=False, object_name=current_obj_name,
+                    align=align)
                 
                 is_first_model = False # Clear flag after first model
 
@@ -619,7 +619,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_obj=False, object_name=None):
+    def from_pdb(self, pdb_id, chains=None, new_obj=False, object_name=None, align=True):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and displays the viewer.
@@ -633,13 +633,13 @@ class view:
         filepath = self._get_filepath_from_pdb_id(pdb_id)
         
         if filepath:
-            self.add_pdb(filepath, chains=chains, new_obj=new_obj, object_name=object_name, pae=None)
+            self.add_pdb(filepath, chains=chains, new_obj=new_obj, object_name=object_name, pae=None, align=align)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, new_obj=False, object_name=None):
+    def from_afdb(self, uniprot_id, chains=None, new_obj=False, object_name=None, align=True):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and displays the viewer.
@@ -686,7 +686,8 @@ class view:
         
         # --- Add PDB (and PAE if loaded) ---
         if struct_filepath:
-            self.add_pdb(struct_filepath, chains=chains, new_obj=new_obj, object_name=object_name, pae=pae_matrix)
+            self.add_pdb(struct_filepath, chains=chains, new_obj=new_obj,
+                object_name=object_name, pae=pae_matrix, align=align)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         
