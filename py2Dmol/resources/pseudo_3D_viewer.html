@@ -32,7 +32,6 @@
             border: 1px solid #ddd;
             border-radius: 12px;
             overflow: hidden;
-            /* box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); */ /* Removed shadow */
             background: #ffffff;
         }
         #canvas {
@@ -106,7 +105,7 @@
             font-size: 12px;
         }
         
-        #objectContainer { /* Renamed from #trajectoryContainer */
+        #objectContainer {
             font-size: 12px;
         }
         
@@ -150,7 +149,7 @@
             flex-shrink: 0;
         }
         
-        #objectSelect { /* Renamed from #trajectorySelect */
+        #objectSelect {
             font-size: 12px;
             padding: 4px 8px;
             border: 1px solid #ccc;
@@ -158,7 +157,7 @@
             vertical-align: middle;
             width: 100%;
         }
-        #objectSelect:disabled { /* Renamed from #trajectorySelect:disabled */
+        #objectSelect:disabled {
              cursor: not-allowed;
             background: #eee;
         }
@@ -188,15 +187,12 @@
             color: #333;
         }
         
-        /* --- NEW --- Style for PAE container */
         #paeContainer {
             display: none; /* JS will manage visibility */
             flex-shrink: 0;
-            /* Copied from #canvasContainer */
             border: 1px solid #ddd;
             border-radius: 12px;
             overflow: hidden;
-            /* box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); */ /* Removed shadow */
             background: #ffffff;
         }
 
@@ -226,13 +222,12 @@
             </div>
         </div>
         
-        <!-- PAE Plot Container (MOVED) -->
+        <!-- PAE Plot Container -->
         <div id="paeContainer">
-             <!-- Canvas size will be set from config -->
              <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair; display: block;"></canvas>
         </div>
         
-        <!-- Right Column (MOVED to end) -->
+        <!-- Right Column -->
         <div id="rightPanelContainer">
             
             <!-- Style Group -->
@@ -251,7 +246,7 @@
                 <!-- Width -->
                 <div class="toggle-item">
                     <label for="lineWidthSlider" style="width: 50px;">Width:</label>
-                    <input type="range" id="lineWidthSlider" min="1" max="5" value="3" step="0.5">
+                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
                 </div>
                 <!-- Shadow -->
                 <div class="toggle-item">
@@ -275,9 +270,9 @@
             </div>
 
             <!-- Object Group -->
-            <div id="objectContainer" class="control-group"> <!-- Renamed from #trajectoryContainer -->
-                <label for="objectSelect">Object</label> <!-- Renamed text and for attribute -->
-                <select id="objectSelect"> <!-- Renamed from #trajectorySelect -->
+            <div id="objectContainer" class="control-group">
+                <label for="objectSelect">Object</label>
+                <select id="objectSelect">
                     <!-- Initially empty -->
                 </select>
             </div>
@@ -336,7 +331,6 @@
             return hsvToRgb(hue, 1.0, 1.0);
         }
 
-        // --- NEW COLORBLIND-SAFE FUNCTIONS ---
         // Cividis-like: N-term (yellow) to C-term (blue)
         function getRainbowColor_Colorblind(value, min, max) {
             if (max - min < 1e-6) return hsvToRgb(60, 1.0, 1.0); // Default to yellow
@@ -359,11 +353,9 @@
         
         function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
         function getPlddtColor_Colorblind(plddt) { return getPlddtRainbowColor_Colorblind(plddt, 50, 90); }
-        // --- END NEW FUNCTIONS ---
 
         function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
         
-        // --- MODIFIED ---
         function getPAEColor(value) {
             // 0 (blue) to 15 (white) to 30 (red)
             const v = Math.max(0, Math.min(30, (value || 0)));
@@ -385,7 +377,6 @@
             }
         }
         
-        // --- NEW ---
         function getPAEColor_Colorblind(value) {
             // 0 (blue) to 15 (white) to 30 (orange)
             const v = Math.max(0, Math.min(30, (value || 0)));
@@ -406,7 +397,6 @@
                 return hsvToRgb(30, saturation, 1.0); // Use 30 for Orange
             }
         }
-        // --- END MODIFICATION ---
 
         // ============================================================================
         // PSEUDO-3D RENDERER
@@ -430,7 +420,7 @@
                     hide_box: false,
                     default_pastel: 0.25,
                     show_pae: false,
-                    colorblind: false // Added fallback
+                    colorblind: false
                 };
 
                 // Current render state
@@ -450,7 +440,7 @@
                 this.shadowEnabled = (typeof config.default_shadow === 'boolean') ? config.default_shadow : true;
                 this.outlineEnabled = (typeof config.default_outline === 'boolean') ? config.default_outline : true;
                 this.pastelLevel = (typeof config.default_pastel === 'number') ? config.default_pastel : 0.25;
-                this.colorblindMode = (typeof config.colorblind === 'boolean') ? config.colorblind : false; // Added
+                this.colorblindMode = (typeof config.colorblind === 'boolean') ? config.colorblind : false;
                 
                 this.isTransparent = false; // Default to white background
                 this.resolvedAutoColor = 'rainbow'; // Default 'auto' to rainbow
@@ -465,8 +455,8 @@
                 this.plddtColors = []; 
 
                 // Animation & State
-                this.objectsData = {}; // Renamed from trajectoriesData
-                this.currentObjectName = null; // Renamed from currentTrajectoryName
+                this.objectsData = {};
+                this.currentObjectName = null;
                 this.currentFrame = -1;
                 
                 // Playback
@@ -502,15 +492,13 @@
                 this.playButton = null;
                 this.frameSlider = null;
                 this.frameCounter = null;
-                this.objectSelect = null; // Renamed from trajectorySelect
+                this.objectSelect = null;
                 this.controlsContainer = null;
                 this.speedSelect = null;
                 this.rotationCheckbox = null;
                 this.lineWidthSlider = null;
                 this.shadowEnabledCheckbox = null; 
                 this.outlineEnabledCheckbox = null; 
-                // this.pastelSlider = null; // Removed
-                // this.colorblindCheckbox = null; // Removed
 
                 this.setupInteraction();
             }
@@ -742,14 +730,12 @@
                 this.playButton = playButton;
                 this.frameSlider = frameSlider;
                 this.frameCounter = frameCounter;
-                this.objectSelect = objectSelect; // Renamed
+                this.objectSelect = objectSelect;
                 this.speedSelect = speedSelect;
                 this.rotationCheckbox = rotationCheckbox;
                 this.lineWidthSlider = lineWidthSlider;
                 this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
                 this.outlineEnabledCheckbox = outlineEnabledCheckbox;
-                // this.pastelSlider = pastelSlider; // Removed
-                // this.colorblindCheckbox = colorblindCheckbox; // Removed
                 
                 this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
                 this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
@@ -759,9 +745,9 @@
                     this.togglePlay();
                 });
 
-                this.objectSelect.addEventListener('change', () => { // Renamed
+                this.objectSelect.addEventListener('change', () => {
                     this.stopAnimation();
-                    this.currentObjectName = this.objectSelect.value; // Renamed
+                    this.currentObjectName = this.objectSelect.value;
                     this.setFrame(0);
                 });
 
@@ -824,9 +810,9 @@
                 this.frameSlider.addEventListener('change', handleSliderChange);
                 
                 // Also prevent canvas drag when interacting with other controls
-                const allControls = [this.playButton, this.objectSelect, this.speedSelect, // Renamed
+                const allControls = [this.playButton, this.objectSelect, this.speedSelect,
                                      this.rotationCheckbox, this.lineWidthSlider, 
-                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox]; // Removed pastel/colorblind
+                                     this.shadowEnabledCheckbox, this.outlineEnabledCheckbox];
                 allControls.forEach(control => {
                     if (control) {
                         control.addEventListener('mousedown', (e) => {
@@ -838,51 +824,51 @@
             }
 
             // Add a new object
-            addObject(name) { // Renamed
+            addObject(name) {
                 this.stopAnimation();
-                this.objectsData[name] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 }; // Renamed
-                this.currentObjectName = name; // Renamed
+                this.objectsData[name] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
+                this.currentObjectName = name;
                 this.currentFrame = -1;
 
                 const option = document.createElement('option');
                 option.value = name;
                 option.textContent = name;
-                this.objectSelect.appendChild(option); // Renamed
-                this.objectSelect.value = name; // Renamed
+                this.objectSelect.appendChild(option);
+                this.objectSelect.value = name;
 
                 this.setFrame(-1);
             }
 
             // Add a frame (data is raw parsed JSON)
-            addFrame(data, objectName) { // Renamed
+            addFrame(data, objectName) {
                 
-                let targetObjectName = objectName; // Renamed
-                if (!targetObjectName) { // Renamed
+                let targetObjectName = objectName;
+                if (!targetObjectName) {
                     console.warn("addFrame called without objectName, using current view.");
-                    targetObjectName = this.currentObjectName; // Renamed
+                    targetObjectName = this.currentObjectName;
                 }
                 
-                if (!targetObjectName) { // Renamed
+                if (!targetObjectName) {
                     // This can happen if addFrame is called before new_obj
                     console.warn("addFrame: No object active. Creating '0'.");
-                    this.addObject("0"); // Renamed
-                    targetObjectName = "0"; // Renamed
+                    this.addObject("0");
+                    targetObjectName = "0";
                 }
                 
-                if (!this.objectsData[targetObjectName]) { // Renamed
-                     console.error(`addFrame: Object '${targetObjectName}' does not exist.`); // Renamed
-                     console.warn(`addFrame: Object '${targetObjectName}' not found. Creating it.`); // Renamed
-                     this.addObject(targetObjectName); // Renamed
+                if (!this.objectsData[targetObjectName]) {
+                     console.error(`addFrame: Object '${targetObjectName}' does not exist.`);
+                     console.warn(`addFrame: Object '${targetObjectName}' not found. Creating it.`);
+                     this.addObject(targetObjectName);
                 }
 
-                const object = this.objectsData[targetObjectName]; // Renamed
-                object.frames.push(data); // Renamed
+                const object = this.objectsData[targetObjectName];
+                object.frames.push(data);
 
                 // Set view to this object
-                if (this.currentObjectName !== targetObjectName) { // Renamed
+                if (this.currentObjectName !== targetObjectName) {
                     this.stopAnimation(); // Stop if playing on another obj
-                    this.currentObjectName = targetObjectName; // Renamed
-                    this.objectSelect.value = targetObjectName; // Renamed
+                    this.currentObjectName = targetObjectName;
+                    this.objectSelect.value = targetObjectName;
                 }
 
                 // Update global center sum and count
@@ -894,15 +880,15 @@
                         const c = data.coords[i];
                         frameSum = frameSum.add(new Vec3(c[0], c[1], c[2]));
                     }
-                    object.globalCenterSum = object.globalCenterSum.add(frameSum); // Renamed
-                    object.totalAtoms += frameAtoms; // Renamed
+                    object.globalCenterSum = object.globalCenterSum.add(frameSum);
+                    object.totalAtoms += frameAtoms;
                 }
                 
-                const globalCenter = (object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0); // Renamed
+                const globalCenter = (object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0);
 
                 // Recalculate maxExtent for all frames using the new global center
                 let maxDistSq = 0;
-                for (const frame of object.frames) { // Renamed
+                for (const frame of object.frames) {
                     if (frame && frame.coords) {
                         for (let i = 0; i < frame.coords.length; i++) {
                             const c = frame.coords[i];
@@ -913,18 +899,18 @@
                         }
                     }
                 }
-                object.maxExtent = Math.sqrt(maxDistSq); // Renamed
+                object.maxExtent = Math.sqrt(maxDistSq);
 
                 if (!this.isPlaying) {
-                    this.setFrame(object.frames.length - 1); // Renamed
+                    this.setFrame(object.frames.length - 1);
                 }
                 this.updateUIControls();
 
                 // Handle autoplay
-                if (this.autoplay && !this.isPlaying && this.currentObjectName) { // Renamed
+                if (this.autoplay && !this.isPlaying && this.currentObjectName) {
                     // Check if the current object now has multiple frames
-                    const obj = this.objectsData[this.currentObjectName]; // Renamed
-                    if (obj && obj.frames.length > 1) { // Renamed
+                    const obj = this.objectsData[this.currentObjectName];
+                    if (obj && obj.frames.length > 1) {
                         this.startAnimation();
                     }
                 }
@@ -945,7 +931,7 @@
                 };
                 
                 // Handle null object name
-                if (!this.currentObjectName) { // Renamed
+                if (!this.currentObjectName) {
                     this.currentFrame = -1;
                     this.coords = [];
                     clearCanvas();
@@ -956,8 +942,8 @@
                     return;
                 }
 
-                const object = this.objectsData[this.currentObjectName]; // Renamed
-                if (!object || frameIndex < 0 || frameIndex >= object.frames.length) { // Renamed
+                const object = this.objectsData[this.currentObjectName];
+                if (!object || frameIndex < 0 || frameIndex >= object.frames.length) {
                     this.currentFrame = -1;
                     this.coords = [];
                     clearCanvas();
@@ -968,7 +954,7 @@
                 }
 
                 this.currentFrame = frameIndex;
-                const data = object.frames[frameIndex]; // Renamed
+                const data = object.frames[frameIndex];
                 
                 // Load 3D data
                 this._loadDataIntoRenderer(data); // This calls render()
@@ -986,14 +972,12 @@
             setUIEnabled(enabled) {
                  this.playButton.disabled = !enabled;
                  this.frameSlider.disabled = !enabled;
-                 this.objectSelect.disabled = !enabled; // Renamed
+                 this.objectSelect.disabled = !enabled;
                  this.speedSelect.disabled = !enabled;
                  this.rotationCheckbox.disabled = !enabled;
                  this.lineWidthSlider.disabled = !enabled;
                  if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
                  if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled;
-                 // if (this.pastelSlider) this.pastelSlider.disabled = !enabled; // Removed
-                 // if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled; // Removed
                  this.canvas.style.cursor = enabled ? 'grab' : 'wait';
             }
 
@@ -1002,8 +986,8 @@
                 if (!this.playButton) return;
 
                 // Handle null object
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null; // Renamed
-                const total = object ? object.frames.length : 0; // Renamed
+                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+                const total = object ? object.frames.length : 0;
                 const current = Math.max(0, this.currentFrame) + 1;
 
                 // Check config.hide_controls before showing
@@ -1047,9 +1031,9 @@
             // Start playback
             startAnimation() {
                 // Check for null
-                if (!this.currentObjectName) return; // Renamed
-                const object = this.objectsData[this.currentObjectName]; // Renamed
-                if (!object || object.frames.length < 2) return; // Renamed
+                if (!this.currentObjectName) return;
+                const object = this.objectsData[this.currentObjectName];
+                if (!object || object.frames.length < 2) return;
 
                 this.isPlaying = true;
                 this.lastFrameAdvanceTime = performance.now(); // Set start time
@@ -1063,16 +1047,16 @@
             }
 
             // Clear all objects
-            clearAllObjects() { // Renamed
+            clearAllObjects() {
                 this.stopAnimation();
                 
                 // Reset data
-                this.objectsData = {}; // Renamed
-                this.currentObjectName = null; // Renamed
+                this.objectsData = {};
+                this.currentObjectName = null;
                 
                 // Reset object dropdown
-                if (this.objectSelect) { // Renamed
-                    this.objectSelect.innerHTML = ''; // Clear all options // Renamed
+                if (this.objectSelect) {
+                    this.objectSelect.innerHTML = ''; // Clear all options
                 }
                 
                 // Clear PAE
@@ -1180,7 +1164,6 @@
                 let lastPolymerIndex = -1;
                 const ligandIndices = [];
                 
-                // const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R'); // Already defined
                 const isPolymerArr = this.atomTypes.map(isPolymer);
                 
                 const getChainbreakDistSq = (type1, type2) => {
@@ -1317,7 +1300,6 @@
                     }
                 }
                 
-                // --- MODIFIED ---
                 const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
                 
                 return this.segmentIndices.map(segInfo => {
@@ -1335,12 +1317,9 @@
                         const chainId = this.chains[i] || 'A';
                         const chainIndex = chainIndexMap.get(chainId) || 0;
                         
-                        // --- MODIFIED ---
-                        // Select color array based on colorblind mode
                         const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
                         const hex = colorArray[chainIndex % colorArray.length];
                         color = hexToRgb(hex);
-                        // --- END MODIFICATION ---
                     }
                     else { // rainbow
                         const scale = this.chainRainbowScales[segInfo.chainId];
@@ -1361,7 +1340,6 @@
                 
                 const colors = new Array(m);
                 
-                // --- MODIFIED ---
                 const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
                 
                 for (let i = 0; i < m; i++) {
@@ -1443,15 +1421,15 @@
                 }
                 
                 // Check segment length
-                if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) return; // Renamed
+                if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) return;
 
-                const object = this.objectsData[this.currentObjectName]; // Renamed
-                if (!object) { // Renamed
-                    console.warn("Render called but object data is missing."); // Renamed
+                const object = this.objectsData[this.currentObjectName];
+                if (!object) {
+                    console.warn("Render called but object data is missing.");
                     return;
                 }
 
-                const globalCenter = (object && object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0); // Renamed
+                const globalCenter = (object && object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0);
                 
                 // Update pre-allocated rotatedCoords
                 const m = this.rotationMatrix;
@@ -1473,15 +1451,11 @@
                 // Select pre-calculated color array
                 let colors;
                 if (this.colorMode === 'plddt') {
-                    // --- MODIFIED ---
-                    // Re-calculate plddtColors if they don't exist or mode changed
                     if (!this.plddtColors || this.plddtColors.length !== n) {
                         this.plddtColors = this._calculatePlddtColors();
                     }
                     colors = this.plddtColors;
                 } else {
-                    // --- MODIFIED ---
-                    // Re-calculate segment colors if they don't exist or mode changed
                     if (!this.colors || this.colors.length !== n) {
                         this.colors = this._calculateSegmentColors();
                     }
@@ -1539,7 +1513,7 @@
                 }
                 
                 const renderShadows = this.shadowEnabled;
-                const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0; // Renamed
+                const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
 
                 const shadows = new Float32Array(n);
                 const tints = new Float32Array(n);
@@ -1557,14 +1531,12 @@
 
                             for (let j_idx = i_idx + 1; j_idx < n; j_idx++) {
                                 const j = order[j_idx];
-                                // --- NEW VISIBILITY CHECK ---
                                 if (visibilityMask) {
                                     const segInfoJ = segments[j];
                                     if (!visibilityMask.has(segInfoJ.idx1) || !visibilityMask.has(segInfoJ.idx2)) {
                                         continue; // This segment is hidden, it can't cast a shadow
                                     }
                                 }
-                                // --- END CHECK ---
                                 
                                 const s2 = segData[j];
                                 
@@ -1650,12 +1622,10 @@
                                 tints[i] = 1 - maxTint;
 
                                 const gridIndex = gx1 + gy1 * GRID_DIM;
-                                // --- NEW VISIBILITY CHECK ---
                                 // Only add segment to grid if it's visible
                                 if (!visibilityMask || (visibilityMask.has(segInfoI.idx1) && visibilityMask.has(segInfoI.idx2))) {
                                     grid[gridIndex].push(i);
                                 }
-                                // --- END CHECK ---
                             }
                         } else {
                              shadows.fill(1.0);
@@ -1668,20 +1638,19 @@
                     tints.fill(1.0);
                 }
                 
-                const dataRange = (maxExtent * 2) + this.lineWidth * 2;
-                
+                // dataRange is just the molecule's extent in Angstroms
+                const dataRange = (maxExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
                 const canvasSize = Math.min(this.canvas.width, this.canvas.height);
-                const scale = (canvasSize / dataRange) * this.zoom;
-                const pyFigWidthPixels = 480.0;
-                const pyPixelsPerData = pyFigWidthPixels / dataRange;
                 
-                const baseLineWidthPixels = (this.lineWidth * pyPixelsPerData) * this.zoom; 
+                // scale is pixels per Angstrom
+                const scale = (canvasSize / dataRange) * this.zoom; 
                 
+                // baseLineWidth is this.lineWidth (in Angstroms) converted to pixels
+                const baseLineWidthPixels = this.lineWidth * scale;
+
                 const centerX = this.canvas.width / 2;
                 const centerY = this.canvas.height / 2;
                 
-                // const visibilityMask = this.visibilityMask; // Already cached
-
                 if (this.outlineEnabled) {
                     // 3-STEP DRAW (Outline) - Fixes gaps
                     for (const idx of order) {
@@ -1721,9 +1690,9 @@
                         
                         let widthMultiplier = 1.0;
                         if (type === 'L') {
-                            widthMultiplier = 0.25;
+                            widthMultiplier = 0.4;
                         } else if (type === 'D' || type === 'R') {
-                            widthMultiplier = 2.0;
+                            widthMultiplier = 1.6;
                         }
                         const currentLineWidth = baseLineWidthPixels * widthMultiplier;
                         const totalOutlineWidth = currentLineWidth + (2.0 * 2);
@@ -1781,9 +1750,9 @@
                         
                         let widthMultiplier = 1.0;
                         if (type === 'L') {
-                            widthMultiplier = 0.25;
+                            widthMultiplier = 0.4;
                         } else if (type === 'D' || type === 'R') {
-                            widthMultiplier = 2.0;
+                            widthMultiplier = 1.6;
                         }
                         const currentLineWidth = baseLineWidthPixels * widthMultiplier;
 
@@ -1834,11 +1803,11 @@
                 // 3. Handle frame playback
                 if (this.isPlaying) {
                     // Check for null
-                    if (now - this.lastFrameAdvanceTime > this.animationSpeed && this.currentObjectName) { // Renamed
-                        const object = this.objectsData[this.currentObjectName]; // Renamed
-                        if (object && object.frames.length > 0) { // Renamed
+                    if (now - this.lastFrameAdvanceTime > this.animationSpeed && this.currentObjectName) {
+                        const object = this.objectsData[this.currentObjectName];
+                        if (object && object.frames.length > 0) {
                             let nextFrame = this.currentFrame + 1;
-                            if (nextFrame >= object.frames.length) { // Renamed
+                            if (nextFrame >= object.frames.length) {
                                 nextFrame = 0;
                             }
                             this.setFrame(nextFrame); // This calls render()
@@ -1996,10 +1965,8 @@
                 for (let i = 0; i < n; i++) { // y
                     for (let j = 0; j < n; j++) { // x
                         const value = this.paeData[i][j];
-                        // --- MODIFIED ---
                         const paeFunc = this.mainRenderer.colorblindMode ? getPAEColor_Colorblind : getPAEColor;
                         const { r, g, b } = paeFunc(value);
-                        // --- END MODIFICATION ---
                         
                         // Fill all pixels in the cell
                         const startX = Math.floor(j * cellSize);
@@ -2063,7 +2030,7 @@
             hide_box: false,
             default_pastel: 0.25,
             show_pae: false,
-            colorblind: false // Added fallback
+            colorblind: false
         };
 
         // 2. Setup Canvas
@@ -2076,7 +2043,7 @@
         window.renderer = new Pseudo3DRenderer(canvas);
         
         // 4. Setup PAE Renderer (if enabled)
-        if (config.show_pae) { // Renamed from config.pae
+        if (config.show_pae) {
             try {
                 document.getElementById('paeContainer').style.display = 'block';
                 const paeCanvas = document.getElementById('paeCanvas');
@@ -2084,7 +2051,6 @@
                 paeCanvas.width = config.pae_size[0];
                 paeCanvas.height = config.pae_size[1];
                 
-                // This class is defined right after Pseudo3DRenderer
                 window.paeRenderer = new PAERenderer(paeCanvas, window.renderer); 
                 window.renderer.setPAERenderer(window.paeRenderer);
             } catch (e) {
@@ -2111,34 +2077,26 @@
         const outlineEnabledCheckbox = document.getElementById('outlineEnabledCheckbox'); 
         outlineEnabledCheckbox.checked = window.renderer.outlineEnabled; // Set default from renderer
         
-        // Setup colorblindCheckbox
-        // const colorblindCheckbox = document.getElementById('colorblindCheckbox'); // Removed
-        // colorblindCheckbox.checked = window.renderer.colorblindMode; // Removed
-
         // 6. Setup animation and object controls
         const controlsContainer = document.getElementById('controlsContainer');
         const playButton = document.getElementById('playButton');
         const frameSlider = document.getElementById('frameSlider');
         const frameCounter = document.getElementById('frameCounter');
-        const objectSelect = document.getElementById('objectSelect'); // Renamed
+        const objectSelect = document.getElementById('objectSelect');
         const speedSelect = document.getElementById('speedSelect');
         const rotationCheckbox = document.getElementById('rotationCheckbox');
         const lineWidthSlider = document.getElementById('lineWidthSlider');
-        // const pastelSlider = document.getElementById('pastelSlider'); // Removed
         
         // Set defaults for width, rotate, and pastel
         lineWidthSlider.value = window.renderer.lineWidth;
         rotationCheckbox.checked = window.renderer.autoRotate;
-        // pastelSlider.value = window.renderer.pastelLevel; // Removed
 
         // Pass ALL controls to the renderer
         window.renderer.setUIControls(
             controlsContainer, playButton, 
-            frameSlider, frameCounter, objectSelect, // Renamed
+            frameSlider, frameCounter, objectSelect,
             speedSelect, rotationCheckbox, lineWidthSlider,
             shadowEnabledCheckbox, outlineEnabledCheckbox
-            // pastelSlider, // Removed
-            // colorblindCheckbox // Removed
         );
 
         // Handle new UI config options
@@ -2150,14 +2108,12 @@
         // Handle hide_box
         if (config.hide_box) {
             document.getElementById('canvasContainer').style.border = 'none';
-            // document.getElementById('canvasContainer').style.boxShadow = 'none'; // Already removed
             document.getElementById('canvasContainer').style.background = 'transparent';
             document.getElementById('canvas').style.background = 'transparent';
             
             // Also update PAE container if it exists
-            if (config.show_pae) { // Renamed from config.pae
+            if (config.show_pae) {
                 document.getElementById('paeContainer').style.border = 'none';
-                // document.getElementById('paeContainer').style.boxShadow = 'none'; // Already removed
                 document.getElementById('paeContainer').style.background = 'transparent';
             }
             
@@ -2165,24 +2121,24 @@
         }
 
         // 7. Add function for Python to call (for new frames)
-        window.handlePythonUpdate = (jsonData, objectName) => { // Renamed
+        window.handlePythonUpdate = (jsonData, objectName) => {
             try {
                 const data = JSON.parse(jsonData);
                 // Pass name to addFrame
-                window.renderer.addFrame(data, objectName); // Renamed
+                window.renderer.addFrame(data, objectName);
             } catch (e) {
                 console.error("Failed to parse JSON from Python:", e);
             }
         };
 
         // 8. Add function for Python to start a new object
-        window.handlePythonNewObject = (name) => { // Renamed
-            window.renderer.addObject(name); // Renamed
+        window.handlePythonNewObject = (name) => {
+            window.renderer.addObject(name);
         };
 
         // 9. Add function for Python to clear everything
         window.handlePythonClearAll = () => {
-            window.renderer.clearAllObjects(); // Renamed
+            window.renderer.clearAllObjects();
         };
         
         // 10. Add function for Python to set color mode (e.g., for from_afdb)
@@ -2195,33 +2151,33 @@
         };
 
 
-        // 11. Load initial data (NEW LOGIC)
+        // 11. Load initial data
         let isStaticViewer = false;
 
-        if (window.staticObjectData && window.staticObjectData.length > 0) { // Renamed
+        if (window.staticObjectData && window.staticObjectData.length > 0) {
             // === STATIC MODE (from show()) ===
             isStaticViewer = true;
             try {
                 // Loop over all objects
-                for (const obj of window.staticObjectData) { // Renamed
-                    if (obj.name && obj.frames && obj.frames.length > 0) { // Renamed
+                for (const obj of window.staticObjectData) {
+                    if (obj.name && obj.frames && obj.frames.length > 0) {
                         // Add the first frame, which creates the object
-                        window.renderer.addFrame(obj.frames[0], obj.name); // Renamed
+                        window.renderer.addFrame(obj.frames[0], obj.name);
                         
                         // Add any remaining frames
-                        for (let i = 1; i < obj.frames.length; i++) { // Renamed
-                            window.renderer.addFrame(obj.frames[i], obj.name); // Renamed
+                        for (let i = 1; i < obj.frames.length; i++) {
+                            window.renderer.addFrame(obj.frames[i], obj.name);
                         }
                     }
                 }
                 // Set view to the first frame of the first object
-                if (window.staticObjectData.length > 0) { // Renamed
-                    window.renderer.currentObjectName = window.staticObjectData[0].name; // Renamed
-                    window.renderer.objectSelect.value = window.staticObjectData[0].name; // Renamed
+                if (window.staticObjectData.length > 0) {
+                    window.renderer.currentObjectName = window.staticObjectData[0].name;
+                    window.renderer.objectSelect.value = window.staticObjectData[0].name;
                     window.renderer.setFrame(0);
                 }
             } catch (error) {
-                console.error("Error loading static object data:", error); // Renamed
+                console.error("Error loading static object data:", error);
                 window.renderer.setFrame(-1); // Start empty on error
             }
             
@@ -2240,7 +2196,7 @@
             window.renderer.setFrame(-1);
         }
 
-        // 12. Add postMessage listener (MODIFIED)
+        // 12. Add postMessage listener
         // Only listen for messages if this is NOT a static viewer
         if (!isStaticViewer) {
             window.addEventListener('message', (event) => {
@@ -2250,16 +2206,16 @@
                             // Pass objectName from message
                             window.handlePythonUpdate(
                                 JSON.stringify(event.data.payload),
-                                event.data.objectName // Renamed
+                                event.data.objectName
                             );
                         } catch (e) {
                              console.error("Failed to handle postMessage (update):", e, event.data.payload);
                         }
-                    } else if (event.data.type === 'py2DmolNewObject') { // Renamed
+                    } else if (event.data.type === 'py2DmolNewObject') {
                         try {
-                            window.handlePythonNewObject(event.data.name); // Renamed
+                            window.handlePythonNewObject(event.data.name);
                         } catch (e) {
-                             console.error("Failed to handle postMessage (new object):", e, event.data.name); // Renamed
+                             console.error("Failed to handle postMessage (new object):", e, event.data.name);
                         }
                     } else if (event.data.type === 'py2DmolClearAll') {
                         try {
@@ -2281,7 +2237,7 @@
         // 13. Start the main animation loop
         window.renderer.animate();
         
-        // 14. Notify the parent window that the iframe is loaded and ready (MODIFIED)
+        // 14. Notify the parent window that the iframe is loaded and ready
         // Only notify if not static (i.e., we are a dynamic/hybrid viewer)
         if (window.parent && !isStaticViewer) {
             window.parent.postMessage({ 
