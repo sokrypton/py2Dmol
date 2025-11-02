@@ -186,17 +186,11 @@ class view:
         Returns:
             str: The complete HTML string to be displayed.
         """
-        try:
-            with importlib.resources.open_text(py2dmol_resources, 'pseudo_3D_viewer.html') as f:
-                html_template = f.read()
-        except FileNotFoundError:
-            # Fallback for when py2dmol_resources is not correctly set up (e.g., dev)
-            print("Error: Could not find the HTML template file (pseudo_3D_viewer.html).")
-            return "" # Return empty string on error
-        except Exception as e:
-            # Broader exception for other import-related issues
-            print(f"Error loading HTML template: {e}")
-            return ""
+        with importlib.resources.open_text(py2dmol_resources, 'py2Dmol.js') as f:
+            js_content = f.read()        
+        
+        with importlib.resources.open_text(py2dmol_resources, 'py2Dmol_viewer.html') as f:
+            html_template = f.read()
 
         config_script = f"""
         <script id="viewer-config">
@@ -225,6 +219,7 @@ class view:
         # We add style="position: relative;" to help with any potential
         # absolute positioning inside the component, and inline-block to fit content.
         container_html = f"""
+        <script>{js_content}</script>
         <div id="{viewer_id}" style="position: relative; display: inline-block; line-height: 0;">
             {final_html}
         </div>
