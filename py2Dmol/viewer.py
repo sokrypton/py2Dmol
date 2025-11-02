@@ -258,17 +258,33 @@ class view:
         
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
             
-        iframe_width = self.size[0]
+        # Calculate content width
+        content_width = self.size[0]
+        if self._initial_pae:
+            content_width += 15 # gap
+            content_width += self.pae_size[0]
         if not self._initial_hide_controls:
-            iframe_width += 180 # Width of side panel
+            content_width += 15 # gap
+            content_width += 184 # panel width (160 + 12*2)
+        
+        # Add 16px for body padding (8px * 2)
+        iframe_width = content_width + 16
+
+        # Calculate content height
+        viewer_column_height = self.size[1]
+        pae_container_height = 0
+        
+        if not self._initial_hide_controls:
+            # Add height for animation controls (10px gap + ~24px controls)
+            viewer_column_height += 34 
             
         if self._initial_pae:
-            iframe_width += self.pae_size[0] + 15 # Width of PAE plot + margin
+            pae_container_height = self.pae_size[1]
+            
+        content_height = max(viewer_column_height, pae_container_height)
         
-        iframe_height = self.size[1]
-        if not self._initial_hide_controls:
-             iframe_height = max(iframe_height, self.pae_size[1] if self._initial_pae else 0) # Ensure height matches PAE
-             iframe_height += 80 # Height for anim controls
+        # Add 16px for body padding (8px * 2)
+        iframe_height = content_height + 16
 
         if not IS_COLAB:
             # For Jupyter: wrap in iframe with srcdoc
