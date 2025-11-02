@@ -45,7 +45,7 @@ class view:
     def __init__(self, size=(300,300), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
         outline=True, width=3.0, rotate=False, autoplay=False,
-        pae=False, pae_size=(300,300),
+        pae=False, pae_size=(300,300), reuse_js=False,
     ):
         self.config = {
             "size": size,
@@ -68,6 +68,7 @@ class view:
         self.objects = []                 # Store all data
         self._current_object_data = None  # List to hold frames for current object
         self._is_live = False             # True if .show() was called *before* .add()
+        self._reuse_js = reuse_js
         
         # --- Alignment/Dynamic State ---
         self._coords = None
@@ -186,9 +187,6 @@ class view:
         Returns:
             str: The complete HTML string to be displayed.
         """
-        with importlib.resources.open_text(py2dmol_resources, 'py2Dmol.js') as f:
-            js_content = f.read()        
-        
         with importlib.resources.open_text(py2dmol_resources, 'py2Dmol_viewer.html') as f:
             html_template = f.read()
 
@@ -219,7 +217,6 @@ class view:
         # We add style="position: relative;" to help with any potential
         # absolute positioning inside the component, and inline-block to fit content.
         container_html = f"""
-        <script>{js_content}</script>
         <div id="{viewer_id}" style="position: relative; display: inline-block; line-height: 0;">
             {final_html}
         </div>
@@ -239,6 +236,11 @@ class view:
             }})();
         </script>
         """
+        if not self._reuse_js:
+            with importlib.resources.open_text(py2dmol_resources, 'py2Dmol.js') as f:
+                js_content = f.read() 
+            container_html = f"<script>{js_content}</script>\n" + container_html
+
         return container_html
 
     def _display_html(self, html_string):
