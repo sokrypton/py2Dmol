@@ -913,7 +913,7 @@ function initializePy2DmolViewer(containerElement) {
             
             let firstPolymerIndex = -1;
             let lastPolymerIndex = -1;
-            const ligandIndices = [];
+            const ligandIndicesByChain = new Map(); // Group ligands by chain
             
             const isPolymerArr = this.atomTypes.map(isPolymer);
             
@@ -958,7 +958,12 @@ function initializePy2DmolViewer(containerElement) {
                         }
                     }
                 } else if (this.atomTypes[i] === 'L') {
-                    ligandIndices.push(i);
+                    // Group ligand indices by chain
+                    const chainId = this.chains[i] || 'A';
+                    if (!ligandIndicesByChain.has(chainId)) {
+                        ligandIndicesByChain.set(chainId, []);
+                    }
+                    ligandIndicesByChain.get(chainId).push(i);
                 }
             }
 
@@ -993,23 +998,29 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
 
-            for (let i = 0; i < ligandIndices.length; i++) {
-                for (let j = i + 1; j < ligandIndices.length; j++) {
-                    const idx1 = ligandIndices[i];
-                    const idx2 = ligandIndices[j];
-                    const start = this.coords[idx1];
-                    const end = this.coords[idx2];
-                    const distSq = start.distanceToSq(end);
-                    if (distSq < ligandBondCutoffSq) {
-                         this.segmentIndices.push({ 
-                             idx1: idx1, 
-                             idx2: idx2,
-                             colorIndex: 0, 
-                             origIndex: idx1, 
-                             chainId: this.chains[idx1] || 'A',
-                             type: 'L',
-                             len: Math.sqrt(distSq)
-                        });
+            // Iterate over each chain's ligands separately
+            for (const [chainId, ligandIndices] of ligandIndicesByChain.entries()) {
+                for (let i = 0; i < ligandIndices.length; i++) {
+                    for (let j = i + 1; j < ligandIndices.length; j++) {
+                        const idx1 = ligandIndices[i];
+                        const idx2 = ligandIndices[j];
+                        
+                        // All atoms here are guaranteed to be in the same chain (chainId)
+                        
+                        const start = this.coords[idx1];
+                        const end = this.coords[idx2];
+                        const distSq = start.distanceToSq(end);
+                        if (distSq < ligandBondCutoffSq) {
+                             this.segmentIndices.push({ 
+                                 idx1: idx1, 
+                                 idx2: idx2,
+                                 colorIndex: 0, 
+                                 origIndex: idx1, 
+                                 chainId: chainId, // Use the chainId from the map key
+                                 type: 'L',
+                                 len: Math.sqrt(distSq)
+                            });
+                        }
                     }
                 }
             }
