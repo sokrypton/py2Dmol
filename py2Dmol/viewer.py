@@ -9,7 +9,11 @@ except ImportError:
 from IPython.display import display, HTML, Javascript
     
 import importlib.resources
-from . import resources as py2dmol_resources
+try:
+    from . import resources as py2dmol_resources
+except ImportError:
+    # Fallback for environments where . is not recognized
+    import resources as py2dmol_resources
 import gemmi
 import uuid
 import os
@@ -210,6 +214,10 @@ class view:
             # Fallback for when py2dmol_resources is not correctly set up (e.g., dev)
             print("Error: Could not find the HTML template file (pseudo_3D_viewer.html).")
             return "" # Return empty string on error
+        except Exception as e:
+            # Broader exception for other import-related issues
+            print(f"Error loading HTML template: {e}")
+            return ""
 
         viewer_config = {
             "size": self.size,
@@ -434,7 +442,7 @@ class view:
             })
 
 
-    def add_pdb(self, filepath, chains=None, new_obj=False, object_name=None, pae=None, align=True):
+    def add_pdb(self, filepath, chains=None, new_obj=False, object_name=None, pae=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -449,31 +457,71 @@ class view:
             new_obj (bool, optional): If True, starts a new object. Defaults to False.
             object_name (str, optional): Name for the new object.
             pae (np.array, optional): PAE matrix to associate with the *first* model.
+            use_biounit (bool): If True, attempts to generate the biological assembly.
+            biounit_name (str): The name of the assembly to generate (default "1").
+            ignore_ligands (bool): If True, skips loading ligand atoms.
         """
         
-        # --- Now, process the file ---
-        structure = gemmi.read_structure(filepath)
-        
-        # --- Handle new_obj logic ---
+        # --- Handle new_obj logic FIRST ---
         if new_obj or not self.objects:
-             # This call will set up the object in python
-             # AND send a message if in "live" mode
              self.new_obj(object_name)
         
         current_obj_name = self.objects[-1]["name"]
 
-        # --- Simplified Logic ---
-        # Just call .add() for each model.
-        # .add() will automatically handle batching vs. sending.
+        # --- Load structure ---
+        try:
+            structure = gemmi.read_structure(filepath)
+        except Exception as e:
+            print(f"Error reading structure {filepath}: {e}")
+            return
+            
+        models_to_process = []
+
+        # --- BIO-UNIT LOGIC ---
+        if use_biounit:
+            if len(structure) == 0:
+                print(f"Warning: Structure {filepath} has no models. Cannot generate biounit.")
+                models_to_process = [] # Will be empty
+            else:
+                model_0 = structure[0] # Get first model
+                assembly_obj = next((a for a in structure.assemblies if a.name == biounit_name), None)
+                
+                if assembly_obj:
+                    try:
+                        # Use the enum value we found (AddNumber)
+                        how_to_name = gemmi.HowToNameCopiedChain.AddNumber
+                        
+                        # Call the function we found
+                        biounit_model = gemmi.make_assembly(assembly_obj, model_0, how_to_name)                        
+                        models_to_process.append(biounit_model) # Add the new model to our list
+                    
+                    except Exception as e:
+                        print(f"Warning: Could not generate biounit '{biounit_name}' for {filepath}. Falling back to asymmetric unit. Error: {e}")
+                        # Fallback: just process all models from the original structure
+                        models_to_process = [model for model in structure]
+                else:
+                    print(f"Warning: Biounit '{biounit_name}' not found in {filepath}. Falling back to asymmetric unit.")
+                    models_to_process = [model for model in structure]
+        
+        # --- ASYMMETRIC UNIT (DEFAULT) LOGIC ---
+        else:
+            models_to_process = [model for model in structure]
+        
+        # --- Process all selected models (either the biounit or all ASU models) ---
         is_first_model = True
-        for model in structure:
-            model_to_process = model
-            coords, plddts, atom_chains, atom_types = self._parse_model(model_to_process, chains)
+        if not models_to_process and len(structure) > 0:
+             print(f"Warning: No models selected or generated for {filepath}, but structure was loaded.")
+             # This can happen if biounit fails but structure had no models
+             
+        for model in models_to_process:
+            coords, plddts, atom_chains, atom_types = self._parse_model(model, chains, ignore_ligands=ignore_ligands)
 
             if coords:
                 coords_np = np.array(coords)
                 plddts_np = np.array(plddts) if plddts else np.full(len(coords), 50.0)
-                if len(coords_np) > 0 and len(plddts_np) == 0:
+                
+                # Handle case where plddts might be empty from parse
+                if len(coords_np) > 0 and len(plddts_np) != len(coords_np):
                     plddts_np = np.full(len(coords_np), 50.0)
                 
                 # Only add PAE matrix to the first model
@@ -482,12 +530,13 @@ class view:
                 # Call add() - this will handle batch vs. live
                 self.add(coords_np, plddts_np, atom_chains, atom_types,
                     pae=pae_to_add,
-                    new_obj=False, object_name=current_obj_name,
+                    new_obj=False, # We already handled new_obj
+                    object_name=current_obj_name, # Add to the same object
                     align=align)
                 
-                is_first_model = False # Clear flag after first model
+                is_first_model = False
 
-    def _parse_model(self, model, chains_filter):
+    def _parse_model(self, model, chains_filter, ignore_ligands=False):
         """Helper function to parse a gemmi.Model object."""
         coords = []
         plddts = []
@@ -534,12 +583,13 @@ class view:
                                 
                     else:
                         # Ligand: use all heavy atoms
-                        for atom in residue:
-                            if atom.element.name != 'H':
-                                coords.append(atom.pos.tolist())
-                                plddts.append(atom.b_iso)
-                                atom_chains.append(chain.name)
-                                atom_types.append('L')
+                        if not ignore_ligands:
+                            for atom in residue:
+                                if atom.element.name != 'H':
+                                    coords.append(atom.pos.tolist())
+                                    plddts.append(atom.b_iso)
+                                    atom_chains.append(chain.name)
+                                    atom_types.append('L')
         return coords, plddts, atom_chains, atom_types
 
     def _get_filepath_from_pdb_id(self, pdb_id):
@@ -619,7 +669,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_obj=False, object_name=None, align=True):
+    def from_pdb(self, pdb_id, chains=None, new_obj=False, object_name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and displays the viewer.
@@ -629,17 +679,23 @@ class view:
             chains (list, optional): Specific chains to load. Defaults to all.
             new_obj (bool, optional): If True, starts a new object. Defaults to False.
             object_name (str, optional): Name for the new object.
+            use_biounit (bool): If True, attempts to generate the biological assembly.
+            biounit_name (str): The name of the assembly to generate (default "1").
+            ignore_ligands (bool): If True, skips loading ligand atoms.
         """
         filepath = self._get_filepath_from_pdb_id(pdb_id)
         
         if filepath:
-            self.add_pdb(filepath, chains=chains, new_obj=new_obj, object_name=object_name, pae=None, align=align)
+            self.add_pdb(filepath, chains=chains, new_obj=new_obj, 
+                         object_name=object_name, pae=None, align=align,
+                         use_biounit=use_biounit, biounit_name=biounit_name,
+                         ignore_ligands=ignore_ligands)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, new_obj=False, object_name=None, align=True):
+    def from_afdb(self, uniprot_id, chains=None, new_obj=False, object_name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and displays the viewer.
@@ -652,6 +708,9 @@ class view:
             chains (list, optional): Specific chains to load. Defaults to all.
             new_obj (bool, optional): If True, starts a new object. Defaults to False.
             object_name (str, optional): Name for the new object.
+            use_biounit (bool): If True, attempts to generate the biological assembly.
+            biounit_name (str): The name of the assembly to generate (default "1").
+            ignore_ligands (bool): If True, skips loading ligand atoms.
         """
         # Set color to plddt if it's currently 'auto'
         if self._initial_color_mode == "auto":
@@ -687,7 +746,9 @@ class view:
         # --- Add PDB (and PAE if loaded) ---
         if struct_filepath:
             self.add_pdb(struct_filepath, chains=chains, new_obj=new_obj,
-                object_name=object_name, pae=pae_matrix, align=align)
+                object_name=object_name, pae=pae_matrix, align=align,
+                use_biounit=use_biounit, biounit_name=biounit_name,
+                ignore_ligands=ignore_ligands)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         

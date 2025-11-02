@@ -85,6 +85,12 @@ import py2Dmol
 py2Dmol.view().from_pdb('1YNE')
 ```
 
+### Example: Load biounit from PDB
+```python
+import py2Dmol
+py2Dmol.view().from_pdb('1BJP', use_biounit=True, ignore_ligands=True)
+```
+
 ### Example: Load structure from PDB w/ multiple chains + DNA
 ```python
 import py2Dmol
