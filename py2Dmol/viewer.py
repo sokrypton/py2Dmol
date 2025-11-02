@@ -434,81 +434,6 @@ class view:
                 "payload": data_dict
             })
 
-    def append(self, coords, plddts=None, chains=None, atom_types=None, pae=None):
-        """
-        Appends coordinates to the *current frame*.
-        This is for building a single frame from multiple components.
-        
-        NOTE: This only works reliably in "batch" mode (before .show() is called).
-        PAE matrices are *not* combined and should only be added with the first component.
-        """
-        
-        if self._is_live:
-            print("Warning: .append() is not supported in 'live' mode. Use .add() to add new frames.")
-            self.add(coords, plddts, chains, atom_types, pae) # Fallback
-            return
-
-        # --- Batch Mode Logic ---
-        
-        # --- Step 1: Ensure an object exists ---
-        if not self.objects: self.new_obj()
-        if self._current_object_data is None: self.new_obj()
-            
-        # --- Step 2: Prepare new data (defaults) ---
-        n_new = coords.shape[0]
-        new_coords = coords
-        new_plddts = plddts if plddts is not None else np.full(n_new, 50.0)
-        new_chains = chains if chains is not None else ["A"] * n_new
-        new_atom_types = atom_types if atom_types is not None else ["P"] * n_new
-        
-        # --- Step 3: Align new coords ---
-        # We align the *new* coords to the *last* coords added
-        if self._coords is None:
-            aligned_new_coords = new_coords
-        else:
-            # Only align if shapes are compatible for alignment
-            if self._coords.shape == new_coords.shape:
-                aligned_new_coords = align_a_to_b(new_coords, self._coords)
-            else:
-                # If not, try aligning to the mean
-                try:
-                    new_mean = new_coords.mean(-2, keepdims=True)
-                    ref_mean = self._coords.mean(-2, keepdims=True)
-                    aligned_new_coords = new_coords - new_mean + ref_mean
-                except Exception:
-                    aligned_new_coords = new_coords # Can't align, just use original
-        
-        # --- Step 4: Update the alignment reference for next time ---
-        # The reference is *only* the last component.
-        self._coords = aligned_new_coords 
-        
-        # --- Step 5: Get or create current frame ---
-        if not self._current_object_data:
-            # This is the first component of the frame
-            data_dict = {
-                "coords": aligned_new_coords.tolist(),
-                "plddts": new_plddts.tolist(),
-                "chains": list(new_chains),
-                "atom_types": list(new_atom_types),
-                "pae": pae.tolist() if pae is not None else None # Add PAE
-            }
-            self._current_object_data.append(data_dict)
-        else:
-            # Pop the last frame to modify it
-            last_frame_data = self._current_object_data.pop()
-            
-            # Combine old and new (aligned) data
-            combined_data = {
-                "coords": last_frame_data['coords'] + aligned_new_coords.tolist(),
-                "plddts": last_frame_data['plddts'] + new_plddts.tolist(),
-                "chains": last_frame_data['chains'] + list(new_chains),
-                "atom_types": last_frame_data['atom_types'] + list(new_atom_types),
-                # PAE is only taken from the *first* component
-                "pae": last_frame_data['pae'] if last_frame_data['pae'] is not None else (pae.tolist() if pae is not None else None)
-            }
-            
-            # Push the modified frame back
-            self._current_object_data.append(combined_data)
 
     def add_pdb(self, filepath, chains=None, new_obj=False, object_name=None, pae=None):
         """
@@ -561,46 +486,6 @@ class view:
                     new_obj=False, object_name=current_obj_name)
                 
                 is_first_model = False # Clear flag after first model
-
-    def append_pdb(self, filepath, chains=None, pae=None):
-        """
-        Loads a structure from a PDB or CIF file and *appends* it
-        to the current frame.
-        
-        NOTE: This only works reliably in "batch" mode (before .show() is called).
-        
-        Args:
-            filepath (str): Path to the PDB or CIF file.
-            chains (list, optional): Specific chains to load. Defaults to all.
-            pae (np.array, optional): PAE matrix (only applied if this is the first component).
-        """
-        if self._is_live:
-            print("Warning: .append_pdb() is not supported in 'live' mode. Use .add_pdb() to add new frames.")
-            self.add_pdb(filepath, chains=chains, pae=pae) # Fallback
-            return
-
-        # --- Batch Mode Logic ---
-        structure = gemmi.read_structure(filepath)
-        
-        # Append each model's data to the current frame
-        is_first_model = True
-        for model in structure:
-            model_to_process = model
-            coords, plddts, atom_chains, atom_types = self._parse_model(model_to_process, chains)
-
-            if coords:
-                coords_np = np.array(coords)
-                plddts_np = np.array(plddts) if plddts else np.full(len(coords), 50.0)
-                if len(coords_np) > 0 and len(plddts_np) == 0:
-                    plddts_np = np.full(len(coords_np), 50.0)
-                
-                # Only add PAE if this is the very first model
-                pae_to_add = pae if is_first_model else None
-
-                # Call append() - this will handle batch vs. live
-                self.append(coords_np, plddts_np, atom_chains, atom_types, pae=pae_to_add)
-                
-                is_first_model = False # Clear flag
 
     def _parse_model(self, model, chains_filter):
         """Helper function to parse a gemmi.Model object."""
