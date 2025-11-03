@@ -31,7 +31,7 @@
             display: flex;
             flex-direction: column;
             gap: 10px; 
-            min-width: 800px;
+            min-width: 600px; 
         }
 
         .py2dmol-viewer-instance #canvasContainer {
@@ -41,7 +41,7 @@
             overflow: auto; 
             background: #ffffff;
             resize: both; 
-            width: 800px; 
+            width: 600px; 
             height: 600px; 
             min-width: 200px; 
             min-height: 200px;
@@ -73,7 +73,7 @@
         
         /* New Styles for Play/Pause Button to match Fetch button */
         .py2dmol-viewer-instance .controlButton {
-            padding: 10px 14px; /* Increased vertical padding */
+            padding: 10px 14px; 
             min-width: 80px; 
             border-radius: 6px; 
             background: #3b82f6; 
@@ -109,9 +109,10 @@
             appearance: none;
             width: 12px; 
             height: 12px;
-            background: #1e3a8a; 
+            background: #3b82f6; /* Styled to match button color */
             border-radius: 50%;
             cursor: pointer;
+            box-shadow: 0 0 2px #00000080;
         }
         .py2dmol-viewer-instance #frameCounter {
             color: #334155; 
@@ -119,7 +120,8 @@
             font-weight: 500;
         }
         .py2dmol-viewer-instance #speedSelect {
-            font-size: 12px;
+            /* Increased font size for speed dropdown */
+            font-size: 14px;
             padding: 5px 8px;
             border: 1px solid #cbd5e1;
             border-radius: 6px;
@@ -131,8 +133,8 @@
         .py2dmol-viewer-instance #rightPanelContainer {
             display: flex;
             flex-direction: column;
-            gap: 15px; 
-            width: 240px;
+            gap: 12px; /* Reduced from 15px */
+            width: 324px; 
             border: none; 
             border-radius: 12px; 
             padding: 16px; 
@@ -141,52 +143,115 @@
             border: 1px solid #e2e8f0; 
             flex-shrink: 0; 
         }
-
+        
+        /* New Styles for Control Group Sections */
         .py2dmol-viewer-instance .control-group {
             display: flex;
             flex-direction: column;
-            gap: 16px; 
+            gap: 8px; /* Reduced from 12px */
         }
+
         .py2dmol-viewer-instance .toggle-item {
             display: flex;
             align-items: center; 
-            gap: 4px;
+            justify-content: space-between; 
+            gap: 10px; 
             width: 100%; 
         }
-        .py2dmol-viewer-instance .toggle-item label { 
+        .py2dmol-viewer-instance .toggle-item > label { 
             font-weight: 500; 
             color: #334155;
-            flex-grow: 1; 
+            text-align: left;
+            flex-shrink: 1; 
+            line-height: 1.25; 
+            margin-right: 10px; 
         }
+        
+        /* Toggle Switch Styling - Fatter Version */
+        .py2dmol-viewer-instance .switch {
+            position: relative;
+            display: inline-block;
+            width: 34px; 
+            height: 16px; 
+            flex-shrink: 0; 
+        }
+        .py2dmol-viewer-instance .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .py2dmol-viewer-instance .slider-toggle {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 16px; 
+        }
+        .py2dmol-viewer-instance .slider-toggle:before {
+            position: absolute;
+            content: "";
+            height: 12px; 
+            width: 12px; 
+            left: 2px;
+            bottom: 2px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+        }
+        .py2dmol-viewer-instance input:checked + .slider-toggle {
+            background-color: #3b82f6; 
+        }
+        .py2dmol-viewer-instance input:checked + .slider-toggle:before {
+            transform: translateX(18px); 
+        }
+        /* End Toggle Switch Styling */
+
+        /* Ensures selects are aligned and take up remaining space */
         .py2dmol-viewer-instance #colorSelect, 
         .py2dmol-viewer-instance #objectSelect {
-            font-size: 12px;
+            /* Increased font size for main control dropdowns */
+            font-size: 14px; 
             padding: 6px 10px;
             border: 1px solid #cbd5e1;
             border-radius: 6px;
             background: #f8fafc;
-            width: 100%;
+            flex-grow: 1; 
+            width: 170px; 
+            min-width: 150px; 
+            flex-shrink: 0;
         }
-        .py2dmol-viewer-instance input[type="range"] {
-             margin-top: 4px; 
+
+        .py2dmol-viewer-instance #colorSelect:focus, 
+        .py2dmol-viewer-instance #objectSelect:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5); 
+            outline: none;
         }
-        .py2dmol-viewer-instance input[type="checkbox"] {
-            margin-right: 4px; 
-            width: 16px;
-            height: 16px;
-            accent-color: #3b82f6; 
+        /* Ensure the range input takes up the remaining space and is centered */
+        .py2dmol-viewer-instance #lineWidthSlider {
+             flex-grow: 1;
+             margin-top: 0; 
         }
+
 
         .py2dmol-viewer-instance #paeContainer {
             display: none; 
             flex-shrink: 0;
-            width: 200px;
-            height: 200px;
+            /* Adjusted size to 296px to compensate for 1px border on all sides (298px final size) */
+            width: 296px; 
+            height: 296px; 
             border: 1px solid #e2e8f0;
             border-radius: 12px;
             overflow: hidden;
             background: #ffffff;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+            /* Center the PAE container within the 324px panel */
+            margin: 10px auto 0 auto; /* Reduced margin-top from 15px to 10px */
         }
         
         .file-upload-match {
@@ -208,11 +273,12 @@
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans p-8">
 
-    <div class="mx-auto" style="width: 1064px;"> 
+    <!-- Total width (600 + 24 + 324 = 948px) -->
+    <div class="mx-auto" style="width: 948px;"> 
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">py2Dmol</h1>
         <p class="text-gray-500 mb-8">Upload a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
 
-        <div class="bg-white p-6 rounded-2xl shadow-lg mb-10 border border-gray-100" style="width: 1064px;">
+        <div class="bg-white p-6 rounded-2xl shadow-lg mb-10 border border-gray-100" style="width: 948px;">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div>
                     <label for="fetch-id" class="block text-sm font-semibold text-gray-700 mb-1">PDB (4-char) or UniProt ID</label>
@@ -257,8 +323,8 @@
                     <div id="styleAppearanceContainer" class="control-group">
                         
                         <div class="toggle-item">
-                            <label for="colorSelect" style="width: 50px;">Color:</label>
-                            <select id="colorSelect" style="flex-grow: 1;">
+                            <label for="colorSelect" class="font-medium text-gray-700">Color:</label>
+                            <select id="colorSelect">
                                 <option value="auto">Auto</option>
                                 <option value="plddt">pLDDT</option>
                                 <option value="rainbow">Rainbow</option>
@@ -267,44 +333,59 @@
                         </div>
 
                         <div class="toggle-item">
-                            <label for="lineWidthSlider" style="width: 50px;">Width:</label>
+                            <label for="lineWidthSlider" class="font-medium text-gray-700">Width:</label>
                             <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
                         </div>
                         
+                        <!-- Toggle Switches for Shadow/Outline/Colorblind -->
                         <div class="toggle-item">
-                             <input type="checkbox" id="shadowEnabledCheckbox">
-                             <label for="shadowEnabledCheckbox">Shadow</label>
+                             <label for="shadowEnabledCheckbox">Shadow:</label>
+                             <label class="switch">
+                                 <input type="checkbox" id="shadowEnabledCheckbox" checked>
+                                 <span class="slider-toggle"></span>
+                             </label>
                         </div>
                         
                         <div class="toggle-item">
-                             <input type="checkbox" id="outlineEnabledCheckbox">
-                             <label for="outlineEnabledCheckbox">Outline</label>
+                             <label for="outlineEnabledCheckbox">Outline:</label>
+                             <label class="switch">
+                                 <input type="checkbox" id="outlineEnabledCheckbox" checked>
+                                 <span class="slider-toggle"></span>
+                             </label>
                         </div>
                         
                         <div class="toggle-item">
-                             <input type="checkbox" id="colorblindCheckbox">
-                             <label for="colorblindCheckbox">Colorblind</label>
+                             <label for="colorblindCheckbox">Colorblind:</label>
+                             <label class="switch">
+                                 <input type="checkbox" id="colorblindCheckbox">
+                                 <span class="slider-toggle"></span>
+                             </label>
                         </div>
 
                         <div class="toggle-item"> 
-                            <input type="checkbox" id="rotationCheckbox">
-                            <label for="rotationCheckbox">Rotate</label>
+                            <label for="rotationCheckbox">Rotate:</label>
+                            <label class="switch">
+                                <input type="checkbox" id="rotationCheckbox">
+                                <span class="slider-toggle"></span>
+                            </label>
                         </div>
                     </div>
 
-                    <div id="modelControlContainer" class="control-group">
+                    <div id="modelControlContainer" class="control-group" style="padding-top: 0; gap: 8px;">
                          
-                         <div id="objectContainer" class="toggle-item">
-                             <label for="objectSelect" style="width: 50px;">Object:</label>
-                             <select id="objectSelect" style="flex-grow: 1;">
+                         <div id="objectContainer" class="toggle-item" style="margin-top: 0;">
+                             <label for="objectSelect" class="font-medium text-gray-700">Object:</label>
+                             <select id="objectSelect">
                                  <!-- Initially empty -->
                              </select>
                          </div>
                         
                     </div>
-
+                    
+                    <!-- PAE Container is now centered and aligned with no extra space -->
                     <div id="paeContainer">
-                         <canvas id="paeCanvas" width="200" height="200" style="cursor: crosshair; display: block;"></canvas>
+                         <!-- Canvas size must match the width/height CSS defined above (296px) -->
+                         <canvas id="paeCanvas" width="296" height="296" style="cursor: crosshair; display: block;"></canvas>
                     </div>
 
                 </div>
@@ -331,9 +412,10 @@
             const canvas = document.getElementById('canvas');
             const viewerColumn = document.getElementById('viewerColumn');
 
-            const FIXED_WIDTH = 800;
+            // UPDATED Constants:
+            const FIXED_WIDTH = 600; 
             const FIXED_HEIGHT = 600;
-            const PAE_PLOT_SIZE = 200;
+            const PAE_PLOT_SIZE = 300; 
             
             // --- Model Parsing Functions (omitted for brevity) ---
             function parsePDB(text) {
@@ -654,6 +736,7 @@
             function initApp() {
                 console.log("DOM is ready. Initializing app...");
 
+                // UPDATED to use new constants
                 window.viewerConfig = { 
                     size: [FIXED_WIDTH, FIXED_HEIGHT],
                     pae_size: [PAE_PLOT_SIZE, PAE_PLOT_SIZE],
