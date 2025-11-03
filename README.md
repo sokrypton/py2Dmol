@@ -4,12 +4,16 @@ A Python library for visualizing protein, DNA, and RNA structures in 2D, designe
 
 <img width="462" height="349" alt="image" src="https://github.com/user-attachments/assets/3b52d584-1d7e-45cc-a620-77377f0a0c01" />
 
+Bonus: [online interactive version](http://py2dmol.solab.org/)
+
+
 ## Installation
 ```bash
 pip install py2Dmol
 ```
 
 ## Basic Usage
+<a href="https://colab.research.google.com/github/sokrypton/py2Dmol/blob/main/py2Dmol_demo.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
 ### Example: Loading a PDB File
 
