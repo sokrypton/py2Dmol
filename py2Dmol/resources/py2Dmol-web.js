@@ -826,14 +826,15 @@ function initializePy2DmolViewer(containerElement) {
                     const plddts = data.plddts || [];
                     const chains = data.chains || [];
                     const atomTypes = data.atom_types || [];
-                    this.setCoords(coords, plddts, chains, atomTypes);
+                    const hasPAE = data.pae && data.pae.length > 0;
+                    this.setCoords(coords, plddts, chains, atomTypes, hasPAE);
                 }
             } catch (e) {
                 console.error("Failed to load data into renderer:", e);
             }
         }
 
-        setCoords(coords, plddts = [], chains = [], atomTypes = []) {
+        setCoords(coords, plddts = [], chains = [], atomTypes = [], hasPAE = false) {
             this.coords = coords;
             this.plddts = plddts;
             this.chains = chains;
@@ -841,7 +842,8 @@ function initializePy2DmolViewer(containerElement) {
             
             // "auto" logic:
             // Always calculate what 'auto' *should* be
-            if (this.paeRenderer && this.paeRenderer.paeData) {
+            // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
+            if (hasPAE) {
                 this.resolvedAutoColor = 'plddt';
             } else if (this.chains && this.chains.length > 0) {
                 const uniqueChains = new Set(this.chains.filter(c => c && c.trim()));
