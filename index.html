@@ -684,15 +684,14 @@
                  }
                  
                  let totalFrames = 0;
-                 let firstObjectName = null;
+                 let lastObjectName = null; // Changed to lastObjectName for accurate selection
 
                  for (const obj of batchedObjects) {
                      if (obj.frames.length > 0) {
                          // 1. Create the object in the viewer
                          viewerApi.handlePythonNewObject(obj.name);
                          // Use the name of the *last* object added as the default selection
-                         // to ensure the user immediately sees the result of their action.
-                         firstObjectName = obj.name; 
+                         lastObjectName = obj.name; 
                          
                          // 2. Add all collected frames
                          for (const frame of obj.frames) {
@@ -710,14 +709,11 @@
                  if (totalFrames > 0) {
                      viewerContainer.style.display = 'flex';
                      
-                     // Set the viewer to the first object loaded
-                     if (firstObjectName) {
-                        // The viewer's py2Dmol.js handles updating the dropdown options.
-                        // We must explicitly set the selected value to the LATEST object added.
-                        
-                        // Small delay to ensure py2Dmol.js has populated the options
+                     // Set the viewer to the last object loaded
+                     if (lastObjectName) {
+                        // Small delay to ensure py2dmol.js has populated the options
                         setTimeout(() => {
-                            objectSelect.value = firstObjectName;
+                            objectSelect.value = lastObjectName;
                             // Trigger change to set PAE visibility and update controls
                             handleObjectChange();
                         }, 50); // 50ms delay
@@ -944,7 +940,10 @@
                     
                     // Display status based on THIS operation
                     if (tempBatch.length > 0) {
-                         setStatus(`Successfully loaded ${tempBatch.length} new object(s) from ${file.name} (${totalFramesAdded} total frame${totalFramesAdded !== 1 ? 's' : ''}).`);
+                        // Correctly count objects: it's tempBatch.length if Load as Objects, or 1 if Load as Frames
+                        const objectsLoaded = loadAsFrames && modelFiles.length > 1 ? 1 : tempBatch.length;
+                        
+                        setStatus(`Successfully loaded ${objectsLoaded} new object(s) from ${file.name} (${totalFramesAdded} total frame${totalFramesAdded !== 1 ? 's' : ''}).`);
                     }
 
                 } catch (e) {
@@ -955,8 +954,6 @@
 
 
             function handleFileUpload(event) {
-                // Temporary storage for this operation
-                const tempBatch = []; 
                 
                 const files = event.target.files || (event.dataTransfer ? event.dataTransfer.files : null);
                 
@@ -964,67 +961,86 @@
 
                 const loadAsFrames = loadAsFramesCheckbox.checked;
 
-                const file = files[0];
-                const fileNameLower = file.name.toLowerCase();
-                
-                if (fileNameLower.endsWith('.zip')) {
-                    handleZipUpload(file, loadAsFrames);
-                    return;
-                }
-                
-                // --- Handle Single/Multiple PDB/CIF File Upload (Batch Mode) ---
-                
-                // If loading as frames (is checked) AND multiple files are selected, combine them into one object.
-                const combineFiles = loadAsFrames && files.length > 1;
-                const trajectoryObjectName = combineFiles ? cleanObjectName(files[0].name) : null;
-                
+                // FIX: Collect all promises for all files (ZIPs and PDBs)
                 let loadPromises = [];
-                let totalFramesAdded = 0;
+                let overallTotalFramesAdded = 0;
+                const overallTempBatch = [];
                 
+                // Track if any non-ZIP files are selected (to handle the combined frame group)
+                const nonZipFiles = Array.from(files).filter(f => !f.name.toLowerCase().endsWith('.zip'));
+                const filesLoadedCount = nonZipFiles.length; // Number of PDB/CIF files uploaded
+                
+                const combineFiles = loadAsFrames && filesLoadedCount > 1;
+                const trajectoryObjectName = combineFiles ? cleanObjectName(nonZipFiles[0].name) : null;
+
                 for (let i = 0; i < files.length; i++) {
-                    const singleFile = files[i];
-                    const reader = new FileReader();
+                    const file = files[i];
+                    const fileNameLower = file.name.toLowerCase();
                     
-                    const promise = new Promise((resolve) => {
+                    // --- Handle ZIPs (Handled asynchronously and appends to batchedObjects) ---
+                    if (fileNameLower.endsWith('.zip')) {
+                        const zipPromise = handleZipUpload(file, loadAsFrames);
+                        loadPromises.push(zipPromise);
+                        continue; 
+                    }
+                    
+                    // --- Handle Single/Multiple PDB/CIF File Upload (Non-ZIP) ---
+                    
+                    const singleFilePromise = new Promise((resolve) => {
+                        // FIX: Use the overallTempBatch directly for grouping logic to work across files
+                        const tempBatch = overallTempBatch; 
+                        const reader = new FileReader();
+                        
                         reader.onload = (e) => {
                             const text = e.target.result;
                             if (text) { 
-                                const objName = cleanObjectName(singleFile.name);
+                                const objName = cleanObjectName(file.name);
+                                
+                                // FIX: Use trajectoryObjectName if combining, otherwise use the file's own name
                                 const objectNameOverride = combineFiles ? trajectoryObjectName : objName;
                                 
                                 const framesAdded = processStructureToTempBatch(
                                     text, 
-                                    singleFile.name, 
+                                    file.name, 
                                     null, // No PAE support for arbitrary file uploads
-                                    objectNameOverride,
+                                    objectNameOverride, // <--- Correctly uses the shared name if combining
                                     tempBatch
                                 ); 
-                                totalFramesAdded += framesAdded;
+                                overallTotalFramesAdded += framesAdded;
                             }
                             resolve();
                         };
                         reader.onerror = resolve; // Resolve on error so batch continues
-                        reader.readAsText(singleFile);
+                        reader.readAsText(file);
                     });
-                    loadPromises.push(promise);
+                    loadPromises.push(singleFilePromise);
                 }
                 
-                // Wait for all files to be read, then append and finalize
+                // Wait for all files (ZIPs and PDBs) to be read/processed
                 Promise.all(loadPromises)
                     .then(() => {
-                        // Append new objects to global list
-                        batchedObjects.push(...tempBatch);
+                        // Append remaining PDB/CIF data to global list
+                        // FIX: overallTempBatch already contains processed data (no need to push again, just check its content)
+                        
+                        // We only append non-ZIP results if we successfully processed non-ZIPs.
+                        if (overallTempBatch.length > 0 && !batchedObjects.includes(overallTempBatch[0])) {
+                            batchedObjects.push(...overallTempBatch);
+                        }
+                        
                         updateViewerFromGlobalBatch();
                         
                         // Display status based on THIS operation
-                        if (tempBatch.length > 0) {
-                            const fileNames = files.length > 1 ? `${files.length} files` : files[0].name;
-                            setStatus(`Successfully loaded ${tempBatch.length} new object(s) from ${fileNames} (${totalFramesAdded} total frame${totalFramesAdded !== 1 ? 's' : ''}).`);
+                        if (filesLoadedCount > 0) {
+                            // FIX: Correctly count objects when PDB/CIF files are uploaded
+                            const objectsLoaded = combineFiles ? 1 : overallTempBatch.length;
+                            const messageSource = filesLoadedCount > 1 ? `${filesLoadedCount} files` : nonZipFiles[0].name;
+
+                            setStatus(`Successfully loaded ${objectsLoaded} new object(s) from ${messageSource} (${overallTotalFramesAdded} total frame${overallTotalFramesAdded !== 1 ? 's' : ''}).`);
                         }
                     })
                     .catch((e) => {
-                        console.error("File reading failed:", e);
-                        setStatus(`Error reading files. See console.`, true);
+                        console.error("File reading/ZIP processing failed:", e);
+                        setStatus(`Error processing files. See console.`, true);
                     });
             }
             
