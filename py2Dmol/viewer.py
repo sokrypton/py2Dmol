@@ -653,15 +653,6 @@ class view:
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
         """
-        # Set color to plddt if it's currently 'auto'
-        if self.config["color"] == "auto":
-            self.config["color"] = "plddt"
-            # If we are already live, send a message to update the viewer's color dropdown
-            if self._is_live:
-                self._send_message({
-                    "type": "py2DmolSetColor",
-                    "color": "plddt"
-                })
 
         # --- Download structure and (maybe) PAE ---
         struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self.config["pae"])

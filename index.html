@@ -193,7 +193,7 @@
             height: 42px;
             display: flex;
             align-items: center;
-            border: 2px dashed transparent; /* Base border for drag/drop */
+            border: 2px dashed transparent; 
             border-radius: 8px;
             transition: border-color 0.2s;
         }
@@ -335,6 +335,7 @@
             const FIXED_HEIGHT = 600;
             const PAE_PLOT_SIZE = 200;
             
+            // --- Model Parsing Functions (omitted for brevity) ---
             function parsePDB(text) {
                 const models = [];
                 let currentModelAtoms = [];
@@ -449,6 +450,8 @@
                 return { coords, plddts, chains: atom_chains, atom_types };
             }
 
+            // --- App Main Logic ---
+
             function setStatus(message, isError = false) {
                 statusElement.textContent = message;
                 statusElement.className = `mt-4 text-sm font-medium ${isError ? 'text-red-700 bg-red-100 border-red-200' : 'text-blue-700 bg-blue-50 border-blue-200'} p-2 rounded-lg border`;
@@ -500,18 +503,14 @@
 
                 viewerContainer.style.display = 'flex';
                 
-                const paeIsPresent = paeData != null;
-                
-                if (paeIsPresent) {
-                     paeContainer.style.display = 'block';
-                } else {
-                     paeContainer.style.display = 'none';
-                }
-                
+                // Show/hide PAE matrix immediately
+                paeContainer.style.display = paeData ? 'block' : 'none';
+
                 if (objectSelect) {
                     objectSelect.value = objectName;
                     
-                    objectSelect.dispatchEvent(new Event('change'));
+                    // Trigger object change logic to set color and finalize UI
+                    objectSelect.dispatchEvent(new Event('change')); 
                     
                     if (frameSlider) {
                         frameSlider.value = framesAdded - 1;
@@ -575,8 +574,12 @@
                 
                 if (!files || files.length === 0) return;
 
+                // Reset state before processing new files
                 paeContainer.style.display = 'none';
-                if (colorSelect) { colorSelect.value = 'auto'; colorSelect.dispatchEvent(new Event('change')); }
+                if (colorSelect) { 
+                    // When uploading, ensure the internal color mode is 'auto' but DONT change the dropdown value.
+                    viewerApi.handlePythonSetColor('auto');
+                }
                 
                 let filesProcessed = 0;
                 
@@ -599,49 +602,44 @@
                 }
             }
             
+            function updateColorMode() {
+                 const userPreference = colorSelect.value;
+                 
+                 // Pass the user's preference directly to the viewer.
+                 // The viewer (py2Dmol.js) now handles the logic: 
+                 // if preference is 'auto' AND PAE is present, it uses plddt internally.
+                 viewerApi.handlePythonSetColor(userPreference);
+            }
+            
             function handleObjectChange() {
                  const selectedObject = objectSelect.value;
                  const hasPAE = objectsWithPAE.has(selectedObject);
                  
-                 if (hasPAE) {
-                     paeContainer.style.display = 'block';
-
-                     if (colorSelect.value !== 'plddt') {
-                         colorSelect.value = 'plddt';
-                         colorSelect.dispatchEvent(new Event('change'));
-                     }
-                 } else {
-                     paeContainer.style.display = 'none';
-                     
-                     if (colorSelect.value === 'plddt') {
-                          colorSelect.value = 'auto';
-                          colorSelect.dispatchEvent(new Event('change'));
-                     }
-                 }
+                 // 1. Manage PAE visibility
+                 paeContainer.style.display = hasPAE ? 'block' : 'none';
+                 
+                 // 2. Update Color Mode based on user's dropdown choice
+                 updateColorMode();
             }
 
+            // --- Initialization Functions (omitted for brevity) ---
             function initDragAndDrop() {
                 const dropArea = document.getElementById('drop-area');
 
-                // Prevent default behavior for all drag events
                 ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
                     dropArea.addEventListener(eventName, preventDefaults, false);
                     document.body.addEventListener(eventName, preventDefaults, false);
                 });
 
-                // Highlight drop area when item is dragged over it
                 ['dragenter', 'dragover'].forEach(eventName => {
                     dropArea.addEventListener(eventName, () => dropArea.classList.add('drag-over'), false);
                 });
 
-                // Remove highlight when drag leaves
                 ['dragleave', 'drop'].forEach(eventName => {
                     dropArea.addEventListener(eventName, () => dropArea.classList.remove('drag-over'), false);
                 });
                 
-                // Handle dropped files
                 dropArea.addEventListener('drop', (e) => {
-                    // This is the fix: manually transfer files to the target
                     e.target.files = e.dataTransfer.files; 
                     handleFileUpload(e); 
                 }, false);
@@ -683,7 +681,10 @@
                 
                 document.getElementById('fetch-btn').addEventListener('click', handleFetch);
                 document.getElementById('file-upload').addEventListener('change', handleFileUpload);
+                
+                // Centralize logic calls
                 objectSelect.addEventListener('change', handleObjectChange);
+                colorSelect.addEventListener('change', updateColorMode); 
                 
                 initDragAndDrop(); 
                 
