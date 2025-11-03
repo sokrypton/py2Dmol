@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>py2Dmol</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- ADDED: JSZip library for handling AlphaFold zip outputs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJd4gYm4zQ6UvE6j3v/3Tf7U7T2Y9p6gJzU0bW5V6f6G6X6b6W6w6+g6w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
         
@@ -288,9 +290,9 @@
                     </div>
                 </div>
                 <div class="md:col-span-2">
-                    <label for="file-upload" class="block text-sm font-semibold text-gray-700 mb-1">Upload PDB / CIF</label>
+                    <label for="file-upload" class="block text-sm font-semibold text-gray-700 mb-1">Upload PDB / CIF / ZIP</label>
                     <div id="drop-area" class="file-upload-match">
-                        <input type="file" id="file-upload" accept=".pdb,.cif,.ent" multiple class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer transition duration-150">
+                        <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip" multiple class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer transition duration-150">
                     </div>
                 </div>
             </div>
@@ -417,7 +419,7 @@
             const FIXED_HEIGHT = 600;
             const PAE_PLOT_SIZE = 300; 
             
-            // --- Model Parsing Functions (omitted for brevity) ---
+            // --- Model Parsing Functions ---
             function parsePDB(text) {
                 const models = [];
                 let currentModelAtoms = [];
@@ -541,7 +543,7 @@
             }
             
             function cleanObjectName(name) {
-                return name.replace(/\.(cif|pdb|ent)$/i, '');
+                return name.replace(/\.(cif|pdb|ent|zip)$/i, '');
             }
 
             function processStructure(text, name, paeData = null) {
@@ -651,6 +653,96 @@
                 }
             }
 
+            // --- New ZIP Upload Handler ---
+            async function handleZipUpload(file) {
+                setStatus(`Unzipping ${file.name}...`);
+                
+                try {
+                    const zip = new JSZip();
+                    const content = await zip.loadAsync(file);
+                    
+                    const cifFiles = [];
+                    const jsonFiles = [];
+                    
+                    // Separate files into models and PAE
+                    content.forEach((relativePath, zipEntry) => {
+                        const lowerPath = relativePath.toLowerCase();
+                        if (lowerPath.match(/_model_\d+\.cif$/)) {
+                            cifFiles.push({ name: relativePath, entry: zipEntry });
+                        } else if (lowerPath.match(/_full_data_\d+\.json$/)) {
+                            jsonFiles.push({ name: relativePath, entry: zipEntry });
+                        }
+                    });
+                    
+                    if (cifFiles.length === 0) {
+                        setStatus(`Error: No model (*_model_*.cif) files found in ZIP.`, true);
+                        return;
+                    }
+                    
+                    // Sort both lists by model number to ensure correct pairing
+                    const getModelIndex = (name) => {
+                        const match = name.match(/_(\d+)\.(cif|json)$/);
+                        return match ? parseInt(match[1]) : -1;
+                    };
+                    
+                    cifFiles.sort((a, b) => getModelIndex(a.name) - getModelIndex(b.name));
+                    jsonFiles.sort((a, b) => getModelIndex(a.name) - getModelIndex(b.name));
+                    
+                    let processedCount = 0;
+                    
+                    // Process each CIF file
+                    for (let i = 0; i < cifFiles.length; i++) {
+                        const cifFile = cifFiles[i];
+                        const modelIndex = getModelIndex(cifFile.name);
+                        const paeJsonFile = jsonFiles.find(j => getModelIndex(j.name) === modelIndex);
+                        
+                        // 1. Extract CIF content
+                        setStatus(`Extracting Model ${modelIndex} from ZIP...`);
+                        const cifText = await cifFile.entry.async("text");
+                        
+                        let paeData = null;
+                        
+                        // 2. Extract PAE content if available
+                        if (paeJsonFile) {
+                            setStatus(`Extracting PAE for Model ${modelIndex}...`);
+                            const paeJsonText = await paeJsonFile.entry.async("text");
+                            try {
+                                const paeJson = JSON.parse(paeJsonText);
+                                
+                                // UPDATED: Check for top-level 'pae' key (AlphaFold3 Server format)
+                                if (paeJson && paeJson.pae) {
+                                    paeData = paeJson.pae;
+                                } 
+                                // Check for standard/older formats
+                                else if (paeJson && paeJson.predicted_aligned_error) {
+                                    paeData = paeJson.predicted_aligned_error;
+                                } else if (paeJson && paeJson.length > 0 && paeJson[0].predicted_aligned_error) {
+                                    paeData = paeJson[0].predicted_aligned_error;
+                                }
+                                
+                            } catch (e) {
+                                console.warn(`Could not parse PAE JSON for Model ${modelIndex}:`, e);
+                            }
+                        }
+                        
+                        // 3. Process the structure
+                        processStructure(cifText, cifFile.name, paeData);
+                        processedCount++;
+                    }
+
+                    if (processedCount > 0) {
+                        setStatus(`Successfully loaded ${processedCount} model(s) from ${file.name}.`);
+                    } else {
+                        setStatus(`Error: Could not process any models from ZIP.`, true);
+                    }
+                    
+                } catch (e) {
+                    console.error("ZIP processing failed:", e);
+                    setStatus(`Error processing ZIP file: ${e.message}`, true);
+                }
+            }
+
+
             function handleFileUpload(event) {
                 const files = event.target.files || (event.dataTransfer ? event.dataTransfer.files : null);
                 
@@ -659,28 +751,41 @@
                 // Reset state before processing new files
                 paeContainer.style.display = 'none';
                 if (colorSelect) { 
-                    // When uploading, ensure the internal color mode is 'auto' but DONT change the dropdown value.
                     viewerApi.handlePythonSetColor('auto');
                 }
                 
+                const file = files[0];
+                const fileNameLower = file.name.toLowerCase();
+                
+                if (fileNameLower.endsWith('.zip')) {
+                    // Handle ZIP file upload (AlphaFold3 server output)
+                    handleZipUpload(file);
+                    // Clear other files in case multiple were dragged
+                    if (files.length > 1) {
+                         setStatus(`Warning: Only the first ZIP file (${file.name}) was processed.`, true);
+                    }
+                    return;
+                }
+                
+                // --- Handle Single File Upload (PDB/CIF) ---
                 let filesProcessed = 0;
                 
-                for (const file of files) {
+                for (const singleFile of files) {
                     const reader = new FileReader();
                     reader.onload = (e) => {
                         const text = e.target.result;
                         if (text) { 
-                            processStructure(text, file.name); 
+                            processStructure(text, singleFile.name); 
                         } else { 
-                            setStatus(`File '${file.name}' is empty or unreadable.`, true); 
+                            setStatus(`File '${singleFile.name}' is empty or unreadable.`, true); 
                         }
                         filesProcessed++;
                         if (filesProcessed === files.length) {
                              objectSelect.dispatchEvent(new Event('change'));
                         }
                     };
-                    reader.onerror = () => { setStatus(`Failed to read file '${file.name}'.`, true); };
-                    reader.readAsText(file);
+                    reader.onerror = () => { setStatus(`Failed to read file '${singleFile.name}'.`, true); };
+                    reader.readAsText(singleFile);
                 }
             }
             
