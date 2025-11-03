@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>py2Dmol</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJd4gYm4zQ6UvE6j3v/3Tf7U7T2Y9p6gJzU0bW5V6f6G6X6b6W6w6+g6w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
         
         .py2dmol-viewer-instance * { 
@@ -69,20 +70,30 @@
             font-family: 'Inter', sans-serif;
             font-size: 12px;
         }
+        
+        /* New Styles for Play/Pause Button to match Fetch button */
         .py2dmol-viewer-instance .controlButton {
-            padding: 6px 14px; 
+            padding: 10px 14px; /* Increased vertical padding */
+            min-width: 80px; 
             border-radius: 6px; 
-            border: 1px solid #cbd5e1; 
-            background: #f8fafc; 
+            background: #3b82f6; 
+            color: white; 
+            border: 1px solid #3b82f6; 
             cursor: pointer;
-            min-width: 65px;
-            font-size: 12px;
+            font-size: 14px;
             font-weight: 500;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
             transition: background-color 0.1s;
         }
         .py2dmol-viewer-instance .controlButton:hover {
-            background: #e2e8f0;
+            background: #2563eb; 
         }
+        .py2dmol-viewer-instance .controlButton:disabled {
+            background: #93c5fd; 
+            cursor: not-allowed;
+            color: #dbeafe;
+        }
+        
         .py2dmol-viewer-instance #frameSlider {
             flex-grow: 1; 
             height: 4px; 
@@ -177,15 +188,22 @@
             background: #ffffff;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
         }
+        
+        .file-upload-match {
+            height: 42px;
+            display: flex;
+            align-items: center;
+        }
+
     </style>
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans p-8">
 
-    <div class="max-w-7xl mx-auto"> 
+    <div class="mx-auto" style="width: 1064px;"> 
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">py2Dmol</h1>
         <p class="text-gray-500 mb-8">Upload a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
 
-        <div class="bg-white p-6 rounded-2xl shadow-lg mb-10 border border-gray-100">
+        <div class="bg-white p-6 rounded-2xl shadow-lg mb-10 border border-gray-100" style="width: 1064px;">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div>
                     <label for="fetch-id" class="block text-sm font-semibold text-gray-700 mb-1">PDB (4-char) or UniProt ID</label>
@@ -196,7 +214,9 @@
                 </div>
                 <div class="md:col-span-2">
                     <label for="file-upload" class="block text-sm font-semibold text-gray-700 mb-1">Upload PDB / CIF</label>
-                    <input type="file" id="file-upload" accept=".pdb,.cif,.ent" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer transition duration-150">
+                    <div class="file-upload-match">
+                        <input type="file" id="file-upload" accept=".pdb,.cif,.ent" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer transition duration-150">
+                    </div>
                 </div>
             </div>
             <div id="status-message" class="mt-4 text-sm font-medium text-gray-600 hidden p-2 bg-blue-50 rounded-lg border border-blue-200"></div>
@@ -212,7 +232,7 @@
                         <canvas id="canvas"></canvas>
                     </div>
                     <div id="controlsContainer">
-                        <button id="playButton" class="controlButton">Play</button>
+                        <button id="playButton" class="controlButton"><i class="fa-solid fa-play"></i></button>
                         <input type="range" id="frameSlider" min="0" max="0" value="0">
                         <span id="frameCounter">Frame: 0 / 0</span>
                         <select id="speedSelect">
@@ -509,7 +529,7 @@
                     paeEnabled = window.viewerConfig.pae; 
                     
                     if (paeEnabled) { setStatus(`Fetching ${fetchId} model and PAE...`); }
-                    else { setStatus(`Fetching ${fetchId} model...`); paeContainer.style.display = 'none'; }
+                    else { paeContainer.style.display = 'none'; setStatus(`Fetching ${fetchId} model...`); }
                 } else { 
                     name = `${fetchId}.cif`; structUrl = `https://files.rcsb.org/download/${fetchId}.cif`;
                     paeUrl = null; paeEnabled = false;
