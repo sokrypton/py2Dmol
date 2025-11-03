@@ -266,10 +266,24 @@
         }
 
         /* Drag over style */
-        .file-upload-match.drag-over {
+        .file2uploade-match.drag-over {
             border-color: #3b82f6;
             background-color: #f0f8ff;
         }
+        
+        /* New style for the multi-upload toggle */
+        #uploadOptions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 14px;
+            margin-top: 8px;
+            color: #475569;
+        }
+        #uploadOptions .label-text {
+            font-weight: 500;
+        }
+        /* The toggle is already styled via .switch, just need the container style */
 
     </style>
 </head>
@@ -294,6 +308,19 @@
                     <div id="drop-area" class="file-upload-match">
                         <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip" multiple class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer transition duration-150">
                     </div>
+                    
+                    <!-- Default is Load as Objects (unchecked) -->
+                    <div id="uploadOptions">
+                        <span class="label-text">Multi-Model Files:</span>
+                        
+                        <label class="switch">
+                            <input type="checkbox" id="loadAsFramesCheckbox">
+                            <span class="slider-toggle"></span>
+                        </label>
+                        
+                        <label for="loadAsFramesCheckbox">Load as Frames</label>
+                    </div>
+                    
                 </div>
             </div>
             <div id="status-message" class="mt-4 text-sm font-medium text-gray-600 hidden p-2 bg-blue-50 rounded-lg border border-blue-200"></div>
@@ -400,6 +427,8 @@
     
     <script>
         
+        // --- NOTE: Alignment logic has been removed to simplify and stabilize the app ---
+        
         document.addEventListener('DOMContentLoaded', () => {
 
             let objectsWithPAE = new Set(); 
@@ -413,13 +442,39 @@
             const canvasContainer = document.getElementById('canvasContainer');
             const canvas = document.getElementById('canvas');
             const viewerColumn = document.getElementById('viewerColumn');
+            
+            // NEW UI ELEMENT
+            const loadAsFramesCheckbox = document.getElementById('loadAsFramesCheckbox');
+
+            // --- TEMPORARY BATCH STORAGE ---
+            // Stores all collected data before final injection
+            let batchedObjects = []; 
 
             // UPDATED Constants:
             const FIXED_WIDTH = 600; 
             const FIXED_HEIGHT = 600;
             const PAE_PLOT_SIZE = 300; 
             
-            // --- Model Parsing Functions ---
+            // --- Utilities ---
+            function centerCoordinates(coords) {
+                if (coords.length === 0) return [];
+                
+                let sumX = 0, sumY = 0, sumZ = 0;
+                for (const c of coords) {
+                    sumX += c[0];
+                    sumY += c[1];
+                    sumZ += c[2];
+                }
+                const meanX = sumX / coords.length;
+                const meanY = sumY / coords.length;
+                const meanZ = sumZ / coords.length;
+
+                return coords.map(c => [c[0] - meanX, c[1] - meanY, c[2] - meanZ]);
+            }
+            
+            // Removed delay function as we no longer need frame-by-frame updates
+
+            // --- Model Parsing Functions (omitted for brevity) ---
             function parsePDB(text) {
                 const models = [];
                 let currentModelAtoms = [];
@@ -546,68 +601,131 @@
                 return name.replace(/\.(cif|pdb|ent|zip)$/i, '');
             }
 
-            function processStructure(text, name, paeData = null) {
-                if (!viewerApi) { setStatus("Error: Viewer API not initialized.", true); return; }
-
-                setStatus(`Parsing ${name} for models...`);
+            /**
+             * Processes a single structure model and saves data to batchedObjects.
+             * @param {string} text - The PDB/CIF content.
+             * @param {string} name - The file name/name of the model.
+             * @param {Array<Array<number>>} paeData - PAE matrix (optional).
+             * @param {string} targetObjectName - The name of the object to push frames to (e.g., zip name or file name).
+             * @param {boolean} shouldCenter - If true, center coordinates before sending.
+             */
+            function processStructureToBatch(text, name, paeData, targetObjectName, shouldCenter) {
+                
                 let models;
                 try {
                     const isCIF = text.substring(0, 1000).includes('data_'); 
                     models = isCIF ? parseCIF(text) : parsePDB(text);
                     
-                    if (!models || models.length === 0 || models.every(m => m.length === 0)) { throw new Error("Could not parse any models or atoms from the file."); }
+                    if (!models || models.length === 0 || models.every(m => m.length === 0)) { 
+                        throw new Error(`Could not parse any models or atoms from ${name}.`); 
+                    }
                 } catch (e) {
                     console.error("Parsing failed:", e);
-                    setStatus(`Error: ${e.message}`, true); return;
+                    setStatus(`Error: ${e.message}`, true); 
+                    return 0;
                 }
                 
-                const objectName = cleanObjectName(name); 
-                viewerApi.handlePythonNewObject(objectName);
-                
-                objectsWithPAE.delete(objectName);
-
                 let framesAdded = 0;
+                let targetObject = batchedObjects.find(obj => obj.name === targetObjectName);
+                
+                if (!targetObject) {
+                    targetObject = { name: targetObjectName, frames: [] };
+                    batchedObjects.push(targetObject);
+                }
                 
                 for (let i = 0; i < models.length; i++) {
                     const model = models[i];
-                    setStatus(`Converting Model ${i + 1} of ${models.length}...`);
+                    
                     let frameData = convertParsedToFrameData(model);
                     
-                    if (frameData.coords.length === 0) { console.warn(`Skipping empty model ${i + 1}.`); continue; }
+                    if (frameData.coords.length === 0) { continue; }
 
-                    frameData.pae = (i === 0) ? paeData : null; 
+                    if (shouldCenter) {
+                         frameData.coords = centerCoordinates(frameData.coords);
+                    }
 
-                    viewerApi.handlePythonUpdate(JSON.stringify(frameData), objectName);
+                    frameData.pae = paeData || null;
+                    if (frameData.pae) {
+                        targetObject.hasPAE = true;
+                    }
+
+                    // Save the frame to the batched object
+                    targetObject.frames.push(frameData);
                     framesAdded++;
                 }
 
-                if (framesAdded === 0) { setStatus("Error: Found models, but no recognizable backbone atoms (CA/C4') in any of them.", true); return; }
-                
-                if (paeData) { objectsWithPAE.add(objectName); }
-
-                viewerContainer.style.display = 'flex';
-                
-                // Show/hide PAE matrix immediately
-                paeContainer.style.display = paeData ? 'block' : 'none';
-
-                if (objectSelect) {
-                    objectSelect.value = objectName;
-                    
-                    // Trigger object change logic to set color and finalize UI
-                    objectSelect.dispatchEvent(new Event('change')); 
-                    
-                    if (frameSlider) {
-                        frameSlider.value = framesAdded - 1;
-                        frameSlider.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
-                     
-                    setStatus(`Successfully rendered ${framesAdded} model${framesAdded > 1 ? 's' : ''} for ${objectName}.`);
+                if (framesAdded === 0) { 
+                    setStatus(`Warning: Found models, but no backbone atoms in ${name}.`, true); 
                 }
+                
+                return framesAdded;
             }
             
+            /**
+             * Finalizes the batch load: clears viewer, sends all collected data, and displays UI.
+             */
+            function finalizeLoadAndDisplay() {
+                 if (!viewerApi || batchedObjects.length === 0) {
+                     setStatus("Error: No valid structures were loaded to display.", true);
+                     return;
+                 }
+                 
+                 viewerApi.handlePythonClearAll();
+                 
+                 let totalFrames = 0;
+                 let firstObjectName = null;
+
+                 for (const obj of batchedObjects) {
+                     if (obj.frames.length > 0) {
+                         // 1. Create the object in the viewer
+                         viewerApi.handlePythonNewObject(obj.name);
+                         firstObjectName = firstObjectName || obj.name;
+                         
+                         // 2. Add all collected frames
+                         for (const frame of obj.frames) {
+                             viewerApi.handlePythonUpdate(JSON.stringify(frame), obj.name);
+                             totalFrames++;
+                         }
+                         
+                         // 3. Update local PAE tracking
+                         if (obj.hasPAE) {
+                             objectsWithPAE.add(obj.name);
+                         } else {
+                             objectsWithPAE.delete(obj.name);
+                         }
+                     }
+                 }
+                 
+                 if (totalFrames > 0) {
+                     viewerContainer.style.display = 'flex';
+                     
+                     // Set the viewer to the first object loaded
+                     if (firstObjectName) {
+                        objectSelect.value = firstObjectName;
+                        // Trigger change to set PAE visibility and update controls
+                        objectSelect.dispatchEvent(new Event('change'));
+                     }
+                     
+                     setStatus(`Successfully loaded ${batchedObjects.length} object(s) containing ${totalFrames} total frame(s).`);
+                 } else {
+                     setStatus("Error: No valid structures were loaded to display.", true);
+                 }
+                 
+                 // Clear batch storage
+                 batchedObjects = []; 
+            }
+            
+            // --- Fetch Logic (Updated for Batch) ---
             async function handleFetch() {
+                batchedObjects = []; // Reset batch
+                
                 const fetchId = document.getElementById('fetch-id').value.trim().toUpperCase();
                 if (!fetchId) { setStatus("Please enter a PDB or UniProt ID.", true); return; }
+
+                // Clear previous viewer state immediately and show loading status
+                viewerApi.handlePythonClearAll();
+                setStatus(`Fetching ${fetchId} data...`);
+                viewerContainer.style.display = 'none';
 
                 const isPDB = fetchId.length === 4;
                 const isAFDB = !isPDB;
@@ -619,13 +737,9 @@
                     structUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-model_v6.cif`;
                     paeUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-predicted_aligned_error_v6.json`;
                     paeEnabled = window.viewerConfig.pae; 
-                    
-                    if (paeEnabled) { setStatus(`Fetching ${fetchId} model and PAE...`); }
-                    else { paeContainer.style.display = 'none'; setStatus(`Fetching ${fetchId} model...`); }
                 } else { 
                     name = `${fetchId}.cif`; structUrl = `https://files.rcsb.org/download/${fetchId}.cif`;
                     paeUrl = null; paeEnabled = false;
-                    setStatus(`Fetching ${fetchId} from RCSB...`); paeContainer.style.display = 'none'; 
                 }
 
                 try {
@@ -640,166 +754,244 @@
                             if (paeResponse.ok) {
                                 const paeJson = await paeResponse.json();
                                 if (paeJson && paeJson.length > 0) { paeData = paeJson[0].predicted_aligned_error; }
-                            } else { setStatus(`Fetched model, but PAE data not found (HTTP ${paeResponse.status}).`); paeContainer.style.display = 'none'; }
+                            } else { console.warn(`PAE data not found (HTTP ${paeResponse.status}).`); }
                         } catch (e) {
-                            console.warn("Could not fetch PAE data:", e.message); setStatus(`Fetched model, but PAE data failed to load.`); paeContainer.style.display = 'none'; 
+                            console.warn("Could not fetch PAE data:", e.message);
                         }
                     }
                     
-                    processStructure(structText, name, paeData);
+                    // Single file load: No centering needed for fetched single structures
+                    processStructureToBatch(structText, name, paeData, cleanObjectName(name), false);
+                    
+                    finalizeLoadAndDisplay();
 
                 } catch (e) {
-                    console.error("Fetch failed:", e); setStatus(`Error: ${e.message}. Check ID and console.`, true); paeContainer.style.display = 'none'; 
+                    console.error("Fetch failed:", e); 
+                    setStatus(`Error: ${e.message}. Check ID and console.`, true); 
+                    viewerContainer.style.display = 'none';
+                    batchedObjects = [];
                 }
             }
 
-            // --- New ZIP Upload Handler ---
-            async function handleZipUpload(file) {
-                setStatus(`Unzipping ${file.name}...`);
+            // --- ZIP Upload Handler (GENERALIZED - Updated for Batch) ---
+            async function handleZipUpload(file, loadAsFrames) {
+                batchedObjects = []; // Reset batch
+                viewerApi.handlePythonClearAll();
+                viewerContainer.style.display = 'none';
+                setStatus(`Unzipping ${file.name} and collecting data...`);
                 
                 try {
                     const zip = new JSZip();
                     const content = await zip.loadAsync(file);
                     
-                    const cifFiles = [];
+                    // --- MODIFIED: Filter out junk files ---
+                    const modelFiles = [];
                     const jsonFiles = [];
                     
-                    // Separate files into models and PAE
                     content.forEach((relativePath, zipEntry) => {
+                        // 1. Skip junk files (macOS metadata)
+                        if (relativePath.startsWith('__MACOSX/') || relativePath.startsWith('._')) {
+                            return; 
+                        }
+                        
                         const lowerPath = relativePath.toLowerCase();
-                        if (lowerPath.match(/_model_\d+\.cif$/)) {
-                            cifFiles.push({ name: relativePath, entry: zipEntry });
-                        } else if (lowerPath.match(/_full_data_\d+\.json$/)) {
+                        if (lowerPath.match(/\.(cif|pdb|ent)$/)) { // Allow general PDB/CIF models
+                            modelFiles.push({ name: relativePath, entry: zipEntry });
+                        } else if (lowerPath.match(/\.json$/)) { // Allow any JSON file
                             jsonFiles.push({ name: relativePath, entry: zipEntry });
                         }
                     });
                     
-                    if (cifFiles.length === 0) {
-                        setStatus(`Error: No model (*_model_*.cif) files found in ZIP.`, true);
-                        return;
+                    if (modelFiles.length === 0) {
+                        throw new Error(`No structural files (*.cif, *.pdb, *.ent) found in ZIP.`);
                     }
                     
-                    // Sort both lists by model number to ensure correct pairing
+                    // Helper to determine if JSON corresponds to a model by numbering
                     const getModelIndex = (name) => {
-                        const match = name.match(/_(\d+)\.(cif|json)$/);
+                        const match = name.match(/_(\d+)\.(cif|pdb|ent|json)$/);
                         return match ? parseInt(match[1]) : -1;
                     };
-                    
-                    cifFiles.sort((a, b) => getModelIndex(a.name) - getModelIndex(b.name));
-                    jsonFiles.sort((a, b) => getModelIndex(a.name) - getModelIndex(b.name));
-                    
-                    let processedCount = 0;
-                    
-                    // Process each CIF file
-                    for (let i = 0; i < cifFiles.length; i++) {
-                        const cifFile = cifFiles[i];
-                        const modelIndex = getModelIndex(cifFile.name);
-                        const paeJsonFile = jsonFiles.find(j => getModelIndex(j.name) === modelIndex);
-                        
-                        // 1. Extract CIF content
-                        setStatus(`Extracting Model ${modelIndex} from ZIP...`);
-                        const cifText = await cifFile.entry.async("text");
-                        
-                        let paeData = null;
-                        
-                        // 2. Extract PAE content if available
-                        if (paeJsonFile) {
-                            setStatus(`Extracting PAE for Model ${modelIndex}...`);
-                            const paeJsonText = await paeJsonFile.entry.async("text");
-                            try {
-                                const paeJson = JSON.parse(paeJsonText);
-                                
-                                // UPDATED: Check for top-level 'pae' key (AlphaFold3 Server format)
-                                if (paeJson && paeJson.pae) {
-                                    paeData = paeJson.pae;
-                                } 
-                                // Check for standard/older formats
-                                else if (paeJson && paeJson.predicted_aligned_error) {
-                                    paeData = paeJson.predicted_aligned_error;
-                                } else if (paeJson && paeJson.length > 0 && paeJson[0].predicted_aligned_error) {
-                                    paeData = paeJson[0].predicted_aligned_error;
-                                }
-                                
-                            } catch (e) {
-                                console.warn(`Could not parse PAE JSON for Model ${modelIndex}:`, e);
-                            }
+
+                    const isPairedAlphafoldModel = (modelName, jsonName) => {
+                        // Check for AF3 server convention: *_model_N.cif and *_full_data_N.json
+                        const modelMatch = modelName.match(/_model_(\d+)\.(cif|pdb|ent)$/);
+                        if (modelMatch) {
+                            const modelIndex = modelMatch[1];
+                            return jsonName.match(new RegExp(`_full_data_${modelIndex}\\.json$`));
                         }
-                        
-                        // 3. Process the structure
-                        processStructure(cifText, cifFile.name, paeData);
-                        processedCount++;
+                        return false;
+                    };
+                    
+                    // 1. Group files
+                    let trajectoryMode = loadAsFrames;
+                    let modelGroups = {}; 
+
+                    if (modelFiles.length > 1) {
+                        const isAlphaFold3Trajectory = modelFiles.some(m => 
+                            jsonFiles.some(j => isPairedAlphafoldModel(m.name, j.name))
+                        );
+
+                        // --- FIX: Check loadAsFrames flag for non-AF3 generic ZIPs ---
+                        if (loadAsFrames) { 
+                             // If Load as Frames is selected, group all models into a single trajectory object.
+                             const groupKey = cleanObjectName(file.name);
+                             
+                             // If it's an AF3 trajectory, find PAE; otherwise, paeEntry will be null.
+                             if (isAlphaFold3Trajectory) {
+                                 modelGroups[groupKey] = modelFiles.map(m => ({
+                                    ...m, 
+                                    paeEntry: jsonFiles.find(j => isPairedAlphafoldModel(m.name, j.name))
+                                 }));
+                             } else {
+                                 // Generic multi-file ZIP loaded as frames. No paired PAE.
+                                 modelGroups[groupKey] = modelFiles.map(m => ({ ...m, paeEntry: null }));
+                             }
+                             
+                             trajectoryMode = true; // Ensure centering is applied
+                             
+                        } else {
+                            // Load as Objects: treat each model file as a separate object
+                            trajectoryMode = false;
+                            modelFiles.forEach((m) => {
+                                // For objects, they get their own group.
+                                modelGroups[m.name] = [{ ...m, paeEntry: null }];
+                            });
+                        }
+                    } else {
+                        // Single model file: Load as single object.
+                         modelGroups[modelFiles[0].name] = [{ ...modelFiles[0], paeEntry: jsonFiles.length > 0 ? jsonFiles[0].entry : null }];
+                         trajectoryMode = false;
                     }
 
-                    if (processedCount > 0) {
-                        setStatus(`Successfully loaded ${processedCount} model(s) from ${file.name}.`);
-                    } else {
-                        setStatus(`Error: Could not process any models from ZIP.`, true);
+                    // 2. Process and collect data into batchedObjects
+                    
+                    for (const groupKey in modelGroups) {
+                        const group = modelGroups[groupKey];
+                        const objectName = cleanObjectName(groupKey); 
+                        
+                        // If it's the AF3 trajectory group, sort by model index
+                        if (groupKey === cleanObjectName(file.name)) {
+                             group.sort((a, b) => getModelIndex(a.name) - getModelIndex(b.name));
+                        }
+
+                        for (const modelInfo of group) {
+                            setStatus(`Collecting ${modelInfo.name} from ZIP...`);
+                            
+                            const modelText = await modelInfo.entry.async("text");
+                            let currentModelPAE = null;
+                            
+                            let paeEntry = modelInfo.paeEntry;
+                            if (paeEntry) {
+                                const paeJsonText = await paeEntry.entry.async("text");
+                                try {
+                                    const paeJson = JSON.parse(paeJsonText);
+                                    if (paeJson && paeJson.pae) {
+                                        currentModelPAE = paeJson.pae;
+                                    } else if (paeJson && paeJson.predicted_aligned_error) {
+                                        currentModelPAE = paeJson.predicted_aligned_error;
+                                    } else if (paeJson && paeJson.length > 0 && paeJson[0].predicted_aligned_error) {
+                                        currentModelPAE = paeJson[0].predicted_aligned_error;
+                                    }
+                                } catch (e) {
+                                    console.warn(`Could not parse PAE JSON for ${modelInfo.name}:`, e);
+                                }
+                            }
+                            
+                            // Collect structure data to the batch
+                            processStructureToBatch(
+                                modelText, 
+                                modelInfo.name, 
+                                currentModelPAE, 
+                                objectName,
+                                trajectoryMode // Center only if loading as frames
+                            );
+                        }
                     }
                     
+                    // 3. Finalize and display
+                    finalizeLoadAndDisplay();
+
                 } catch (e) {
                     console.error("ZIP processing failed:", e);
                     setStatus(`Error processing ZIP file: ${e.message}`, true);
+                    viewerContainer.style.display = 'none';
+                    batchedObjects = [];
                 }
             }
 
 
             function handleFileUpload(event) {
+                batchedObjects = []; // Reset batch
+                viewerApi.handlePythonClearAll();
+                viewerContainer.style.display = 'none';
+                
                 const files = event.target.files || (event.dataTransfer ? event.dataTransfer.files : null);
                 
                 if (!files || files.length === 0) return;
 
-                // Reset state before processing new files
-                paeContainer.style.display = 'none';
-                if (colorSelect) { 
-                    viewerApi.handlePythonSetColor('auto');
-                }
-                
+                const loadAsFrames = loadAsFramesCheckbox.checked;
+
                 const file = files[0];
                 const fileNameLower = file.name.toLowerCase();
                 
                 if (fileNameLower.endsWith('.zip')) {
-                    // Handle ZIP file upload (AlphaFold3 server output)
-                    handleZipUpload(file);
-                    // Clear other files in case multiple were dragged
-                    if (files.length > 1) {
-                         setStatus(`Warning: Only the first ZIP file (${file.name}) was processed.`, true);
-                    }
+                    handleZipUpload(file, loadAsFrames);
                     return;
                 }
                 
-                // --- Handle Single File Upload (PDB/CIF) ---
-                let filesProcessed = 0;
+                // --- Handle Single/Multiple PDB/CIF File Upload (Batch Mode) ---
                 
-                for (const singleFile of files) {
+                // If loading as frames (is checked) AND multiple files are selected, combine them into one object.
+                const combineFiles = loadAsFrames && files.length > 1;
+                const trajectoryObjectName = combineFiles ? cleanObjectName(files[0].name) : null;
+                
+                let loadPromises = [];
+                
+                for (let i = 0; i < files.length; i++) {
+                    const singleFile = files[i];
                     const reader = new FileReader();
-                    reader.onload = (e) => {
-                        const text = e.target.result;
-                        if (text) { 
-                            processStructure(text, singleFile.name); 
-                        } else { 
-                            setStatus(`File '${singleFile.name}' is empty or unreadable.`, true); 
-                        }
-                        filesProcessed++;
-                        if (filesProcessed === files.length) {
-                             objectSelect.dispatchEvent(new Event('change'));
-                        }
-                    };
-                    reader.onerror = () => { setStatus(`Failed to read file '${singleFile.name}'.`, true); };
-                    reader.readAsText(singleFile);
+                    
+                    const promise = new Promise((resolve) => {
+                        reader.onload = (e) => {
+                            const text = e.target.result;
+                            if (text) { 
+                                const objName = cleanObjectName(singleFile.name);
+                                const objectNameOverride = combineFiles ? trajectoryObjectName : objName;
+                                
+                                processStructureToBatch(
+                                    text, 
+                                    singleFile.name, 
+                                    null, // No PAE support for arbitrary file uploads
+                                    objectNameOverride,
+                                    combineFiles // Center coordinates only if combining into a trajectory
+                                ); 
+                            }
+                            resolve();
+                        };
+                        reader.onerror = resolve; // Resolve on error so batch continues
+                        reader.readAsText(singleFile);
+                    });
+                    loadPromises.push(promise);
                 }
+                
+                // Wait for all files to be read, then finalize
+                Promise.all(loadPromises)
+                    .then(finalizeLoadAndDisplay)
+                    .catch((e) => {
+                        console.error("File reading failed:", e);
+                        setStatus(`Error reading files. See console.`, true);
+                        viewerContainer.style.display = 'none';
+                    });
             }
             
             function updateColorMode() {
                  const userPreference = colorSelect.value;
-                 
-                 // Pass the user's preference directly to the viewer.
-                 // The viewer (py2Dmol.js) now handles the logic: 
-                 // if preference is 'auto' AND PAE is present, it uses plddt internally.
                  viewerApi.handlePythonSetColor(userPreference);
             }
             
             function handleObjectChange() {
                  const selectedObject = objectSelect.value;
+                 // Find the PAE status locally (since viewerApi doesn't track it)
                  const hasPAE = objectsWithPAE.has(selectedObject);
                  
                  // 1. Manage PAE visibility
