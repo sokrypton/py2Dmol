@@ -396,7 +396,7 @@
                             <label class="switch">
                                 <input type="checkbox" id="rotationCheckbox">
                                 <span class="slider-toggle"></span>
-                            </label>
+                             </label>
                         </div>
                     </div>
 
@@ -626,8 +626,15 @@
                 }
                 
                 let framesAdded = 0;
-                // CRITICAL FIX: Use Array.prototype.find on the tempBatch object.
-                let targetObject = tempBatch.find(obj => obj.name === targetObjectName);
+                
+                // FIX: Use robust loop instead of .find() to avoid TypeError
+                let targetObject = null;
+                for (const obj of tempBatch) {
+                    if (obj.name === targetObjectName) {
+                        targetObject = obj;
+                        break;
+                    }
+                }
                 
                 if (!targetObject) {
                     targetObject = { name: targetObjectName, frames: [] };
@@ -683,7 +690,9 @@
                      if (obj.frames.length > 0) {
                          // 1. Create the object in the viewer
                          viewerApi.handlePythonNewObject(obj.name);
-                         firstObjectName = firstObjectName || obj.name;
+                         // Use the name of the *last* object added as the default selection
+                         // to ensure the user immediately sees the result of their action.
+                         firstObjectName = obj.name; 
                          
                          // 2. Add all collected frames
                          for (const frame of obj.frames) {
@@ -703,19 +712,15 @@
                      
                      // Set the viewer to the first object loaded
                      if (firstObjectName) {
-                        // Ensure the new option exists in the selector before trying to set the value
-                        const option = document.createElement('option');
-                        option.value = firstObjectName;
-                        option.textContent = firstObjectName;
-                        // Avoid adding duplicates if the py2dmol.js handler is fast
-                        if (!objectSelect.querySelector(`option[value="${firstObjectName}"]`)) {
-                            objectSelect.appendChild(option); 
-                        }
+                        // The viewer's py2Dmol.js handles updating the dropdown options.
+                        // We must explicitly set the selected value to the LATEST object added.
                         
-                        objectSelect.value = firstObjectName;
-                        
-                        // Trigger change to set PAE visibility and update controls
-                        handleObjectChange();
+                        // Small delay to ensure py2Dmol.js has populated the options
+                        setTimeout(() => {
+                            objectSelect.value = firstObjectName;
+                            // Trigger change to set PAE visibility and update controls
+                            handleObjectChange();
+                        }, 50); // 50ms delay
                      }
                      
                      // The status message is handled below in the fetch/upload functions for accuracy.
@@ -833,6 +838,7 @@
                         const modelMatch = modelName.match(/_model_(\d+)\.(cif|pdb|ent)$/);
                         if (modelMatch) {
                             const modelIndex = modelMatch[1];
+                            // Match the json file name pattern
                             return jsonName.match(new RegExp(`_full_data_${modelIndex}\\.json$`));
                         }
                         return false;
@@ -846,27 +852,33 @@
                             jsonFiles.some(j => isPairedAlphafoldModel(m.name, j.name))
                         );
 
-                        // --- FIX: Check loadAsFrames flag for non-AF3 generic ZIPs ---
                         if (loadAsFrames) { 
-                             // If Load as Frames is selected, group all models into a single trajectory object.
+                             // Load as Frames mode: Group all into one object (trajectory)
                              const groupKey = cleanObjectName(file.name);
                              
-                             // If it's an AF3 trajectory, find PAE; otherwise, paeEntry will be null.
                              if (isAlphaFold3Trajectory) {
+                                 // AlphaFold Trajectory (PAE is per-model)
                                  modelGroups[groupKey] = modelFiles.map(m => ({
                                     ...m, 
                                     paeEntry: jsonFiles.find(j => isPairedAlphafoldModel(m.name, j.name))
                                  }));
                              } else {
-                                 // Generic multi-file ZIP loaded as frames. No paired PAE.
+                                 // Generic Trajectory (No PAE expected)
                                  modelGroups[groupKey] = modelFiles.map(m => ({ ...m, paeEntry: null }));
                              }
                              
                         } else {
-                            // Load as Objects: treat each model file as a separate object
+                            // Load as Objects mode: Treat each model file as a separate object
                             modelFiles.forEach((m) => {
-                                // For objects, they get their own group.
-                                modelGroups[m.name] = [{ ...m, paeEntry: null }];
+                                let paeEntry = null;
+                                
+                                // NEW FIX: In Load as Objects mode, check if this model has a matching PAE file
+                                if (isAlphaFold3Trajectory) {
+                                    paeEntry = jsonFiles.find(j => isPairedAlphafoldModel(m.name, j.name));
+                                }
+
+                                // Create a separate group/object for each file
+                                modelGroups[m.name] = [{ ...m, paeEntry: paeEntry }];
                             });
                         }
                     } else {
@@ -883,7 +895,7 @@
                         const objectName = cleanObjectName(groupKey); 
                         
                         // If it's the AF3 trajectory group, sort by model index
-                        if (groupKey === cleanObjectName(file.name)) {
+                        if (loadAsFrames && groupKey === cleanObjectName(file.name)) {
                              group.sort((a, b) => getModelIndex(a.name) - getModelIndex(b.name));
                         }
 
@@ -898,12 +910,14 @@
                                 const paeJsonText = await paeEntry.entry.async("text");
                                 try {
                                     const paeJson = JSON.parse(paeJsonText);
+                                    // Check for AlphaFold3 server PAE structure
                                     if (paeJson && paeJson.pae) {
                                         currentModelPAE = paeJson.pae;
-                                    } else if (paeJson && paeJson.predicted_aligned_error) {
-                                        currentModelPAE = paeJson.predicted_aligned_error;
+                                    // Check for standard AFDB PAE structure
                                     } else if (paeJson && paeJson.length > 0 && paeJson[0].predicted_aligned_error) {
                                         currentModelPAE = paeJson[0].predicted_aligned_error;
+                                    } else if (paeJson && paeJson.predicted_aligned_error) {
+                                        currentModelPAE = paeJson.predicted_aligned_error;
                                     }
                                 } catch (e) {
                                     console.warn(`Could not parse PAE JSON for ${modelInfo.name}:`, e);
