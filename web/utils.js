@@ -87,20 +87,22 @@ document.addEventListener('DOMContentLoaded', () => {
      */
     function align_a_to_b(fullCoordsA, alignCoordsA, alignCoordsB) {
         
-        // 1. Calculate centroids for full translation
-        const meanFullA = calculateMean(fullCoordsA);
-        const meanAlignB = calculateMean(alignCoordsB); // Target centroid comes from Chain A reference
+        // 1. Calculate centroids
+        // [FIX] Calculate meanAlignA once. This is the correct pivot for the source.
+        const meanAlignA = calculateMean(alignCoordsA);
+        const meanAlignB = calculateMean(alignCoordsB); // Target centroid
 
         // 2. Centroid-center the alignment sets
-        const centAlignA = alignCoordsA.map(c => [c[0] - calculateMean(alignCoordsA)[0], c[1] - calculateMean(alignCoordsA)[1], c[2] - calculateMean(alignCoordsA)[2]]);
+        // [FIX] Use the pre-calculated meanAlignA
+        const centAlignA = alignCoordsA.map(c => [c[0] - meanAlignA[0], c[1] - meanAlignA[1], c[2] - meanAlignA[2]]);
         const centAlignB = alignCoordsB.map(c => [c[0] - meanAlignB[0], c[1] - meanAlignB[1], c[2] - meanAlignB[2]]);
         
         // 3. Compute optimal rotation matrix (R) based on centered Chain A coords
         const R = kabsch(centAlignA, centAlignB);
 
         // 4. Apply rotation to the full source coordinates (A)
-        // Centering full A by its mean *before* rotation
-        const centFullA = fullCoordsA.map(c => [c[0] - meanFullA[0], c[1] - meanFullA[1], c[2] - meanFullA[2]]);
+        // [FIX] Center full A by the *same mean* (meanAlignA)
+        const centFullA = fullCoordsA.map(c => [c[0] - meanAlignA[0], c[1] - meanAlignA[1], c[2] - meanAlignA[2]]);
         const rotatedFullA = numeric.dot(centFullA, R);
 
         // 5. Apply translation (translate back by the target's centroid)
