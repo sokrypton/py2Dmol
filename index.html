@@ -7,6 +7,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- ADDED: JSZip library for handling AlphaFold zip outputs -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- ADDED: Numeric.js for Kabsch Alignment (SVD) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJd4gYm4zQ6UvE6j3v/3Tf7U7T2Y9p6gJzU0bW5V6f6G6X6b6W6w6+g6w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
         
@@ -38,7 +40,7 @@
 
         .py2dmol-viewer-instance #canvasContainer {
             display: inline-block;
-            border: 1px solid #e2e8f0; 
+            border: 1px solid #e5e7eb; 
             border-radius: 12px;
             overflow: auto; 
             background: #ffffff;
@@ -47,7 +49,7 @@
             height: 600px; 
             min-width: 200px; 
             min-height: 200px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
         }
         .py2dmol-viewer-instance #canvas {
             background: #ffffff;
@@ -63,118 +65,160 @@
             display: flex; 
             flex-wrap: nowrap;
             align-items: center;
-            padding: 8px 12px; 
+            padding: 12px 16px; 
             width: 100%;
-            background: #fff;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px; 
-            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); 
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px; 
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06); 
             font-family: 'Inter', sans-serif;
-            font-size: 12px;
+            font-size: 14px;
         }
         
-        /* New Styles for Play/Pause Button to match Fetch button */
+        /* Control Buttons - Consistent Modern Style */
         .py2dmol-viewer-instance .controlButton {
-            padding: 10px 14px; 
+            padding: 0 16px; 
+            height: 42px;
             min-width: 80px; 
-            border-radius: 6px; 
-            background: #3b82f6; 
+            border-radius: 8px; 
+            background: linear-gradient(to bottom, #3b82f6, #2563eb);
             color: white; 
-            border: 1px solid #3b82f6; 
+            border: none;
             cursor: pointer;
             font-size: 14px;
-            font-weight: 500;
-            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-            transition: background-color 0.1s;
+            font-weight: 600;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
         }
         .py2dmol-viewer-instance .controlButton:hover {
-            background: #2563eb; 
+            background: linear-gradient(to bottom, #2563eb, #1d4ed8);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+            transform: translateY(-1px);
+        }
+        .py2dmol-viewer-instance .controlButton:active {
+            transform: translateY(0);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
         }
         .py2dmol-viewer-instance .controlButton:disabled {
-            background: #93c5fd; 
+            background: linear-gradient(to bottom, #e5e7eb, #d1d5db);
             cursor: not-allowed;
-            color: #dbeafe;
+            color: #9ca3af;
+            box-shadow: none;
+            transform: none;
         }
         
         .py2dmol-viewer-instance #frameSlider {
             flex-grow: 1; 
-            height: 4px; 
-            margin: 0 10px;
+            height: 6px; 
+            margin: 0 12px;
             vertical-align: middle;
             -webkit-appearance: none;
             appearance: none;
-            background: #94a3b8; 
-            border-radius: 2px;
+            background: #e5e7eb; 
+            border-radius: 3px;
+            outline: none;
         }
         .py2dmol-viewer-instance #frameSlider::-webkit-slider-thumb {
             -webkit-appearance: none;
             appearance: none;
-            width: 12px; 
-            height: 12px;
-            background: #3b82f6; /* Styled to match button color */
+            width: 16px; 
+            height: 16px;
+            background: #3b82f6;
             border-radius: 50%;
             cursor: pointer;
-            box-shadow: 0 0 2px #00000080;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            transition: all 0.2s;
+        }
+        .py2dmol-viewer-instance #frameSlider::-webkit-slider-thumb:hover {
+            background: #2563eb;
+            transform: scale(1.1);
+        }
+        .py2dmol-viewer-instance #frameSlider::-moz-range-thumb {
+            width: 16px; 
+            height: 16px;
+            background: #3b82f6;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            transition: all 0.2s;
+        }
+        .py2dmol-viewer-instance #frameSlider::-moz-range-thumb:hover {
+            background: #2563eb;
+            transform: scale(1.1);
         }
         .py2dmol-viewer-instance #frameCounter {
-            color: #334155; 
-            min-width: 80px;
+            color: #374151; 
+            min-width: 100px;
             font-weight: 500;
+            font-size: 14px;
         }
         .py2dmol-viewer-instance #speedSelect {
-            /* Increased font size for speed dropdown */
             font-size: 14px;
-            padding: 5px 8px;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            background: #f8fafc;
-            color: #334155;
-            min-width: 60px;
+            padding: 6px 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            background: #ffffff;
+            color: #374151;
+            min-width: 70px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .py2dmol-viewer-instance #speedSelect:hover {
+            border-color: #9ca3af;
+        }
+        .py2dmol-viewer-instance #speedSelect:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            outline: none;
         }
         
         .py2dmol-viewer-instance #rightPanelContainer {
             display: flex;
             flex-direction: column;
-            gap: 12px; /* Reduced from 15px */
+            gap: 16px;
             width: 324px; 
-            border: none; 
+            border: 1px solid #e5e7eb;
             border-radius: 12px; 
-            padding: 16px; 
+            padding: 20px; 
             background: #ffffff; 
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
-            border: 1px solid #e2e8f0; 
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
             flex-shrink: 0; 
         }
         
-        /* New Styles for Control Group Sections */
+        /* Control Group Sections */
         .py2dmol-viewer-instance .control-group {
             display: flex;
             flex-direction: column;
-            gap: 8px; /* Reduced from 12px */
+            gap: 5px;
         }
 
         .py2dmol-viewer-instance .toggle-item {
             display: flex;
             align-items: center; 
             justify-content: space-between; 
-            gap: 10px; 
+            gap: 12px; 
             width: 100%; 
         }
         .py2dmol-viewer-instance .toggle-item > label { 
             font-weight: 500; 
-            color: #334155;
+            color: #374151;
+            font-size: 14px;
             text-align: left;
             flex-shrink: 1; 
-            line-height: 1.25; 
-            margin-right: 10px; 
+            line-height: 1.5; 
+            margin: 0;
         }
         
-        /* Toggle Switch Styling - Fatter Version */
+        /* Toggle Switch Styling - Modern iOS-style */
         .py2dmol-viewer-instance .switch {
             position: relative;
             display: inline-block;
-            width: 34px; 
-            height: 16px; 
+            width: 44px; 
+            height: 24px; 
             flex-shrink: 0; 
         }
         .py2dmol-viewer-instance .switch input {
@@ -189,138 +233,462 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background-color: #ccc;
-            transition: .4s;
-            border-radius: 16px; 
+            background-color: #cbd5e1;
+            transition: .3s;
+            border-radius: 24px; 
         }
+        /* The sliding circle */
         .py2dmol-viewer-instance .slider-toggle:before {
             position: absolute;
             content: "";
-            height: 12px; 
-            width: 12px; 
-            left: 2px;
-            bottom: 2px;
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
             background-color: white;
-            transition: .4s;
+            transition: .3s;
             border-radius: 50%;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
         }
         .py2dmol-viewer-instance input:checked + .slider-toggle {
             background-color: #3b82f6; 
         }
+        .py2dmol-viewer-instance input:focus + .slider-toggle {
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+        }
         .py2dmol-viewer-instance input:checked + .slider-toggle:before {
-            transform: translateX(18px); 
+            transform: translateX(20px); 
         }
         /* End Toggle Switch Styling */
 
-        /* Ensures selects are aligned and take up remaining space */
+        /* Select dropdowns - Modern consistent style */
         .py2dmol-viewer-instance #colorSelect, 
         .py2dmol-viewer-instance #objectSelect {
-            /* Increased font size for main control dropdowns */
             font-size: 14px; 
-            padding: 6px 10px;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            background: #f8fafc;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            background: #ffffff;
+            color: #374151;
             flex-grow: 1; 
             width: 170px; 
             min-width: 150px; 
             flex-shrink: 0;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .py2dmol-viewer-instance #colorSelect:hover, 
+        .py2dmol-viewer-instance #objectSelect:hover {
+            border-color: #9ca3af;
         }
 
         .py2dmol-viewer-instance #colorSelect:focus, 
         .py2dmol-viewer-instance #objectSelect:focus {
             border-color: #3b82f6;
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5); 
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); 
             outline: none;
         }
-        /* Ensure the range input takes up the remaining space and is centered */
+        
+        /* Range slider for line width */
         .py2dmol-viewer-instance #lineWidthSlider {
              flex-grow: 1;
              margin-top: 0; 
+             height: 6px;
+             -webkit-appearance: none;
+             appearance: none;
+             background: #e5e7eb;
+             border-radius: 3px;
+             outline: none;
+        }
+        
+        .py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #3b82f6;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            transition: all 0.2s;
+        }
+        
+        .py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb:hover {
+            background: #2563eb;
+            transform: scale(1.1);
+        }
+        
+        .py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            background: #3b82f6;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            transition: all 0.2s;
+        }
+        
+        .py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb:hover {
+            background: #2563eb;
+            transform: scale(1.1);
         }
 
 
         .py2dmol-viewer-instance #paeContainer {
             display: none; 
             flex-shrink: 0;
-            /* Adjusted size to 296px to compensate for 1px border on all sides (298px final size) */
             width: 296px; 
             height: 296px; 
-            border: 1px solid #e2e8f0;
+            border: 1px solid #e5e7eb;
             border-radius: 12px;
             overflow: hidden;
             background: #ffffff;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
-            /* Center the PAE container within the 324px panel */
-            margin: 10px auto 0 auto; /* Reduced margin-top from 15px to 10px */
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+            margin: 12px auto 0 auto;
         }
         
-        .file-upload-match {
+        /* Vertical Divider Style */
+        .vertical-divider-md {
+            width: 1px;
+            background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent);
+        }
+        
+        /* Page styling improvements */
+        body {
+            background: #f9fafb;
+        }
+        
+        h1 {
+            color: #111827;
+            letter-spacing: -0.025em;
+        }
+        
+        .text-gray-500 {
+            color: #6b7280;
+        }
+        
+        /* Global Drop Overlay Styles */
+        #global-drop-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.95);
+            border: 4px dashed #3b82f6;
+            z-index: 10000;
+            display: none; /* Hidden by default */
+            align-items: center;
+            justify-content: center;
+            pointer-events: none; /* Allows clicks/interaction to pass through when not dragging */
+            border-radius: 16px;
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+        }
+        #global-drop-overlay p {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #3b82f6;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+        
+        /* Modern Button Styling for Fetch and Upload */
+        #fetch-btn, #upload-button {
             height: 42px;
-            display: flex;
-            align-items: center;
-            border: 2px dashed transparent; 
+            padding: 0 24px;
             border-radius: 8px;
-            transition: border-color 0.2s;
-        }
-
-        /* Drag over style */
-        .file2uploade-match.drag-over {
-            border-color: #3b82f6;
-            background-color: #f0f8ff;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
         
-        /* New style for the multi-upload toggle */
-        #uploadOptions {
+        #fetch-btn {
+            background: linear-gradient(to bottom, #3b82f6, #2563eb);
+            color: white;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+            min-width: 100px;
+        }
+        
+        #fetch-btn:hover {
+            background: linear-gradient(to bottom, #2563eb, #1d4ed8);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+            transform: translateY(-1px);
+        }
+        
+        #fetch-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+        }
+        
+        #upload-button {
+            background: linear-gradient(to bottom, #6b7280, #4b5563);
+            color: white;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+            min-width: 170px; /* Explicit width for "Upload Files" */
+        }
+        
+        #upload-button:hover {
+            background: linear-gradient(to bottom, #4b5563, #374151);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+            transform: translateY(-1px);
+        }
+        
+        #upload-button:active {
+            transform: translateY(0);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+        }
+        
+        /* Input field styling */
+        #fetch-id {
+            flex-grow: 1;
+            height: 42px;
+            padding: 0 16px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.2s;
+            background: #ffffff;
+        }
+        
+        #fetch-id:hover {
+            border-color: #9ca3af;
+        }
+        
+        #fetch-id:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            outline: none;
+        }
+        
+        #fetch-id::placeholder {
+            color: #9ca3af;
+        }
+        
+        /* Upload controls container */
+        #uploadControlsContainer {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        
+        /* Toggles container */
+        .upload-options-section {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            padding: 10px;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+        }
+        
+        .upload-option-label {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #6b7280;
+            margin-bottom: 4px;
+        }
+        
+        .upload-toggle-item {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
+        }
+        
+        .upload-toggle-label {
             font-size: 14px;
-            margin-top: 8px;
-            color: #475569;
-        }
-        #uploadOptions .label-text {
             font-weight: 500;
+            color: #374151;
+            cursor: pointer;
+            margin: 0;
+            user-select: none;
         }
-        /* The toggle is already styled via .switch, just need the container style */
+        
+        /* Upload section toggles - Match viewer style */
+        #uploadControlsContainer .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px; 
+            height: 24px; 
+            flex-shrink: 0; 
+        }
+        
+        #uploadControlsContainer .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        #uploadControlsContainer .slider-toggle {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e1;
+            transition: .3s;
+            border-radius: 24px; 
+        }
+        
+        #uploadControlsContainer .slider-toggle:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        
+        #uploadControlsContainer input:checked + .slider-toggle {
+            background-color: #3b82f6; 
+        }
+        
+        #uploadControlsContainer input:focus + .slider-toggle {
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+        }
+        
+        #uploadControlsContainer input:checked + .slider-toggle:before {
+            transform: translateX(20px); 
+        }
+        
+        /* Status message box styling */
+        #status-message {
+            display: none; /* Hidden by default */
+            margin-top: 20px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            border: 1px solid;
+            background: #dbeafe;
+            border-color: #3b82f6;
+            color: #1e40af;
+        }
+        
+        #status-message:not(:empty) {
+            display: block; /* Show when it has content */
+        }
+        
+        /* Main card styling */
+        .bg-white.p-6.rounded-2xl {
+            background: #ffffff;
+            padding: 24px;
+            border-radius: 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+            border: 1px solid #e5e7eb;
+        }
+        
+        /* Table layout helper */
+        table.layout-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        
+        table.layout-table td {
+            vertical-align: top;
+        }
+        
+        /* FIX: Ensure PDB input takes up remaining space */
+        #fetch-input-container {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        #fetch-input-container input {
+            flex-grow: 1; /* Input takes up available space */
+            height: 42px; /* Align input height with button height */
+        }
 
     </style>
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans p-8">
+    
+    <!-- Global Drop Overlay Element -->
+    <div id="global-drop-overlay">
+        <p><i class="fa-solid fa-cloud-arrow-up mr-3"></i> Drop File Anywhere to Upload</p>
+    </div>
+    <!-- End Global Drop Overlay -->
 
     <!-- Total width (600 + 24 + 324 = 948px) -->
     <div class="mx-auto" style="width: 948px;"> 
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">py2Dmol</h1>
         <p class="text-gray-500 mb-8">Upload a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
 
-        <div class="bg-white p-6 rounded-2xl shadow-lg mb-10 border border-gray-100" style="width: 948px;">
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div>
-                    <label for="fetch-id" class="block text-sm font-semibold text-gray-700 mb-1">PDB (4-char) or UniProt ID</label>
-                    <div class="flex space-x-3">
-                        <input type="text" id="fetch-id" class="flex-1 block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-inner focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition duration-150" placeholder="e.g., 4HHB or P0A8I3">
-                        <button id="fetch-btn" class="px-5 py-2 bg-blue-600 text-white rounded-lg font-medium shadow-md hover:bg-blue-700 transition duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">Fetch</button>
-                    </div>
-                </div>
-                <div class="md:col-span-2">
-                    <label for="file-upload" class="block text-sm font-semibold text-gray-700 mb-1">Upload PDB / CIF / ZIP</label>
-                    <div id="drop-area" class="file-upload-match">
-                        <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip" multiple class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer transition duration-150">
-                    </div>
+        <div class="bg-white p-6 rounded-2xl shadow-lg mb-5 border border-gray-100" style="width: 948px;">
+            
+            <!-- Use table for reliable layout -->
+            <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+                <tr>
+                    <!-- Fetch Column (Left - 40% width) -->
+                    <td style="width: 50%; padding-right: 20px; padding-bottom: 20px; vertical-align: top;">
+                        <label for="fetch-id" style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">PDB (4-char) or UniProt ID</label>
+                        <div id="fetch-input-container">
+                            <input type="text" id="fetch-id" placeholder="e.g., 4HHB or P0A8I3">
+                            <button id="fetch-btn">Fetch</button>
+                        </div>
+                    </td>
                     
-                    <!-- Default is Load as Objects -->
-                    <div id="uploadOptions">
-                        <label class="switch">
-                            <input type="checkbox" id="loadAsFramesCheckbox" checked />
-                            <span class="slider-toggle"></span>
-                        </label>                        
-                        <label for="loadAsFramesCheckbox">Load as Frames</label>
-                    </div>
+                    <!-- Separator Column -->
+                    <td style="width: 40px; vertical-align: top;">
+                        <div style="width: 1px; height: 160px; background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent); margin: 0 auto;"></div>
+                    </td>
                     
-                </div>
-            </div>
-            <div id="status-message" class="mt-4 text-sm font-medium text-gray-600 hidden p-2 bg-blue-50 rounded-lg border border-blue-200"></div>
+                    <!-- Upload Column (Right - remaining width) -->
+                    <td style="vertical-align: top;">
+                        <label style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">Upload PDB / CIF / ZIP</label>
+                        
+                        <div id="uploadControlsContainer">
+                            
+                             <!-- Upload Button (Triggers hidden input) -->
+                             <button id="upload-button">
+                                 <i class="fa-solid fa-file-arrow-up"></i>
+                                 <span>Choose Files</span>
+                             </button>
+                             
+                             <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json" multiple class="hidden">
+                            
+                             <!-- Options Section -->
+                             <div class="upload-options-section">
+                                 <!-- Load as Frames Toggle -->
+                                 <div class="upload-toggle-item">
+                                     <label class="switch">
+                                         <input type="checkbox" id="loadAsFramesCheckbox" checked> 
+                                         <span class="slider-toggle"></span>
+                                     </label>
+                                     <label for="loadAsFramesCheckbox" class="upload-toggle-label">Load as Frames</label>
+                                 </div>
+                                 
+                                 <!-- Align to First Frame Toggle -->
+                                 <div class="upload-toggle-item">
+                                     <label class="switch">
+                                         <input type="checkbox" id="alignFramesCheckbox" checked> 
+                                         <span class="slider-toggle"></span>
+                                     </label>
+                                     <label for="alignFramesCheckbox" class="upload-toggle-label">Align to First Frame</label>
+                                 </div>
+                             </div>
+                        </div>
+                    </td>
+                </tr>
+            </table>
+            
+            <!-- Status message below the table with extra margin -->
+            <div id="status-message"></div>
         </div>
 
 
@@ -420,724 +788,7 @@
         </div>
 
     </div>
+    <script src="https://py2dmol.solab.org/web/utils.js"></script>
     <script id="py2dmol-renderer" src="https://py2dmol.solab.org/py2Dmol/resources/py2Dmol.js"></script>
-    
-    <script>
-        
-        // --- NOTE: Alignment logic has been removed to simplify and stabilize the app ---
-        
-        document.addEventListener('DOMContentLoaded', () => {
-
-            let objectsWithPAE = new Set(); 
-            let viewerApi = null; 
-            let statusElement = document.getElementById('status-message');
-            let paeContainer = document.getElementById('paeContainer');
-            let objectSelect = document.getElementById('objectSelect');
-            let colorSelect = document.getElementById('colorSelect');
-            let frameSlider = document.getElementById('frameSlider');
-            const viewerContainer = document.getElementById('viewer-container');
-            const canvasContainer = document.getElementById('canvasContainer');
-            const canvas = document.getElementById('canvas');
-            const viewerColumn = document.getElementById('viewerColumn');
-            
-            // NEW UI ELEMENT
-            const loadAsFramesCheckbox = document.getElementById('loadAsFramesCheckbox');
-
-            // --- GLOBAL BATCH STORAGE ---
-            // Stores all collected data (old and new)
-            let batchedObjects = []; 
-
-            // UPDATED Constants:
-            const FIXED_WIDTH = 600; 
-            const FIXED_HEIGHT = 600;
-            const PAE_PLOT_SIZE = 300; 
-            
-            // --- Utilities ---
-            function calculateMean(coords) {
-                let sum = [0, 0, 0];
-                for (const c of coords) {
-                    sum[0] += c[0]; sum[1] += c[1]; sum[2] += c[2];
-                }
-                return [sum[0] / coords.length, sum[1] / coords.length, sum[2] / coords.length];
-            }
-            // Centering function is kept but usage below is controlled by the shouldCenter flag.
-            function centerCoordinates(coords) {
-                if (coords.length === 0) return [];
-                
-                const [meanX, meanY, meanZ] = calculateMean(coords);
-
-                return coords.map(c => [c[0] - meanX, c[1] - meanY, c[2] - meanZ]);
-            }
-            
-            // Removed delay function as we no longer need frame-by-frame updates
-
-            // --- Model Parsing Functions (omitted for brevity) ---
-            function parsePDB(text) {
-                const models = [];
-                let currentModelAtoms = [];
-                const lines = text.split('\n');
-                for (const line of lines) {
-                    if (line.startsWith('MODEL')) {
-                        if (currentModelAtoms.length > 0) { models.push(currentModelAtoms); }
-                        currentModelAtoms = []; 
-                    }
-                    if (line.startsWith('ATOM') || line.startsWith('HETATM')) {
-                        currentModelAtoms.push({
-                            record: line.substring(0, 6).trim(), atomName: line.substring(12, 16).trim(),
-                            resName: line.substring(17, 20).trim(), chain: line.substring(21, 22).trim(),
-                            resSeq: parseInt(line.substring(22, 26)), x: parseFloat(line.substring(30, 38)),
-                            y: parseFloat(line.substring(38, 46)), z: parseFloat(line.substring(46, 54)),
-                            b: parseFloat(line.substring(60, 66)), element: line.substring(76, 78).trim()
-                        });
-                    }
-                    if (line.startsWith('ENDMDL')) {
-                        if (currentModelAtoms.length > 0) { models.push(currentModelAtoms); currentModelAtoms = []; }
-                    }
-                }
-                if (currentModelAtoms.length > 0) { models.push(currentModelAtoms); }
-                if (models.length === 0 && currentModelAtoms.length > 0) { models.push(currentModelAtoms); }
-                return models;
-            }
-
-            function parseCIF(text) {
-                const modelMap = new Map(); 
-                const lines = text.split('\n');
-                let atomSiteLoop = false;
-                const headers = [];
-                const headerMap = {};
-                let modelIDKey = null; 
-                let modelID = 1;
-
-                for (const line of lines) {
-                    if (line.startsWith('_atom_site.')) {
-                        const header = line.trim();
-                        headerMap[header] = headers.length;
-                        headers.push(header);
-                        if (header.includes('model_no') || header.includes('pdbx_PDB_model_num')) { modelIDKey = header; }
-                    } else if (headers.length > 0 && (line.startsWith('loop_') || line.startsWith('#'))) { break; }
-                }
-                
-                for (const line of lines) {
-                    if (line.startsWith('_atom_site.')) { atomSiteLoop = true; } 
-                    else if (atomSiteLoop && line.startsWith('#')) { atomSiteLoop = false; } 
-                    else if (atomSiteLoop && !line.startsWith(';')) {
-                        const values = line.match(/(?:[^\s"']+|"([^"]*)"|'([^']*)')+/g);
-                        if (!values || values.length < headers.length) continue;
-                        
-                        const getString = (key) => values[headerMap[key]] || '?';
-                        const getFloat = (key) => parseFloat(values[headerMap[key]]) || 0.0;
-                        const getInt = (key) => parseInt(values[headerMap[key]]) || 0;
-
-                        const atomNameRaw = getString('_atom_site.label_atom_id');
-                        let atomName = atomNameRaw;
-                        if (atomName.length > 1 && atomName.startsWith("'") && atomName.endsWith("'")) { atomName = atomName.substring(1, atomName.length - 1); } 
-                        else if (atomName.length > 1 && atomName.startsWith('"') && atomName.endsWith('"')) { atomName = atomName.substring(1, atomName.length - 1); }
-                        
-                        const atom = {
-                            record: getString('_atom_site.group_PDB'), atomName: atomName, 
-                            resName: getString('_atom_site.label_comp_id'), chain: getString('_atom_site.auth_asym_id'),
-                            resSeq: getInt('_atom_site.auth_seq_id'), x: getFloat('_atom_site.Cartn_x'),
-                            y: getFloat('_atom_site.Cartn_y'), z: getFloat('_atom_site.Cartn_z'),
-                            b: getFloat('_atom_site.B_iso_or_equiv'), element: getString('_atom_site.type_symbol')
-                        };
-
-                        if (modelIDKey) { modelID = getInt(modelIDKey); }
-                        
-                        if (!modelMap.has(modelID)) { modelMap.set(modelID, []); }
-                        modelMap.get(modelID).push(atom);
-                    }
-                }
-                
-                return Array.from(modelMap.keys()).sort((a, b) => a - b).map(id => modelMap.get(id));
-            }
-
-            function convertParsedToFrameData(atoms) {
-                const coords = []; const plddts = []; const atom_chains = []; const atom_types = [];
-                const rna_bases = ['A', 'C','G', 'U', 'RA', 'RC', 'RG', 'RU'];
-                const proteinResidues = new Set(["ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL"]);
-                const nucleicResidues = new Set(["A", "C", "G", "U", "T", "DA", "DC", "DG", "DT", "RA", "RC", "RG", "RU"]);
-                const residues = new Map();
-                for (const atom of atoms) {
-                    if (atom.resName === 'HOH') continue;
-                    const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
-                    if (!residues.has(resKey)) { residues.set(resKey, { atoms: [], resName: atom.resName, chain: atom.chain, record: atom.record }); }
-                    residues.get(resKey).atoms.push(atom);
-                }
-                for (const [resKey, residue] of residues.entries()) {
-                    const is_protein = proteinResidues.has(residue.resName);
-                    const is_nucleic = nucleicResidues.has(residue.resName);
-                    if (is_protein) {
-                        const ca = residue.atoms.find(a => a.atomName === 'CA');
-                        if (ca) { coords.push([ca.x, ca.y, ca.z]); plddts.push(ca.b); atom_chains.push(ca.chain); atom_types.push('P'); }
-                    } else if (is_nucleic) {
-                        let c4_atom = residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
-                        if (c4_atom) {
-                            coords.push([c4_atom.x, c4_atom.y, c4_atom.z]); plddts.push(c4_atom.b); atom_chains.push(c4_atom.chain);
-                            atom_types.push(rna_bases.includes(residue.resName) || residue.resName.startsWith('R') ? 'R' : 'D');
-                        }
-                    } else if (residue.record === 'HETATM') {
-                        for (const atom of residue.atoms) {
-                            if (atom.element !== 'H' && atom.element !== 'D') { 
-                                coords.push([atom.x, atom.y, atom.z]); plddts.push(atom.b); atom_chains.push(atom.chain); atom_types.push('L');
-                            }
-                        }
-                    }
-                }
-                return { coords, plddts, chains: atom_chains, atom_types };
-            }
-
-            // --- App Main Logic ---
-
-            function setStatus(message, isError = false) {
-                statusElement.textContent = message;
-                statusElement.className = `mt-4 text-sm font-medium ${isError ? 'text-red-700 bg-red-100 border-red-200' : 'text-blue-700 bg-blue-50 border-blue-200'} p-2 rounded-lg border`;
-                statusElement.classList.remove('hidden');
-            }
-            
-            function cleanObjectName(name) {
-                return name.replace(/\.(cif|pdb|ent|zip)$/i, '');
-            }
-
-            /**
-             * Processes a single structure model and saves data to a temporary batch array.
-             * @param {string} text - The PDB/CIF content.
-             * @param {string} name - The file name/name of the model.
-             * @param {Array<Array<number>>} paeData - PAE matrix (optional).
-             * @param {string} targetObjectName - The name of the object to push frames to (e.g., zip name or file name).
-             * @param {Array<Object>} tempBatch - The temporary array to store the processed objects.
-             */
-            function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
-                
-                let models;
-                try {
-                    const isCIF = text.substring(0, 1000).includes('data_'); 
-                    models = isCIF ? parseCIF(text) : parsePDB(text);
-                    
-                    if (!models || models.length === 0 || models.every(m => m.length === 0)) { 
-                        throw new Error(`Could not parse any models or atoms from ${name}.`); 
-                    }
-                } catch (e) {
-                    console.error("Parsing failed:", e);
-                    setStatus(`Error: ${e.message}`, true); 
-                    return 0;
-                }
-                
-                let framesAdded = 0;
-                
-                // FIX: Use robust loop instead of .find() to avoid TypeError
-                let targetObject = null;
-                for (const obj of tempBatch) {
-                    if (obj.name === targetObjectName) {
-                        targetObject = obj;
-                        break;
-                    }
-                }
-                
-                if (!targetObject) {
-                    targetObject = { name: targetObjectName, frames: [] };
-                    tempBatch.push(targetObject);
-                }
-                
-                for (let i = 0; i < models.length; i++) {
-                    const model = models[i];
-                    
-                    let frameData = convertParsedToFrameData(model);
-                    
-                    if (frameData.coords.length === 0) { continue; }
-
-                    // Centering is disabled as requested. Coordinates are used as-is.
-                    
-                    frameData.pae = paeData || null;
-                    if (frameData.pae) {
-                        targetObject.hasPAE = true;
-                    }
-
-                    // Save the frame to the batched object
-                    targetObject.frames.push(frameData);
-                    framesAdded++;
-                }
-
-                if (framesAdded === 0) { 
-                    setStatus(`Warning: Found models, but no backbone atoms in ${name}.`, true); 
-                }
-                
-                return framesAdded;
-            }
-            
-            /**
-             * Finalizes the load: clears the viewer's screen, re-injects ALL global data, and updates UI.
-             */
-            function updateViewerFromGlobalBatch() {
-                 
-                 viewerApi.handlePythonClearAll(); // Clear the visualization pane
-                 
-                 objectsWithPAE = new Set(); // Reset PAE tracking
-                 objectSelect.innerHTML = ''; // Clear object dropdown UI
-                 
-                 if (!viewerApi || batchedObjects.length === 0) {
-                     viewerContainer.style.display = 'none';
-                     setStatus("Ready. Upload a file or fetch an ID.");
-                     return;
-                 }
-                 
-                 let totalFrames = 0;
-                 let lastObjectName = null; // Changed to lastObjectName for accurate selection
-
-                 for (const obj of batchedObjects) {
-                     if (obj.frames.length > 0) {
-                         // 1. Create the object in the viewer
-                         viewerApi.handlePythonNewObject(obj.name);
-                         // Use the name of the *last* object added as the default selection
-                         lastObjectName = obj.name; 
-                         
-                         // 2. Add all collected frames
-                         for (const frame of obj.frames) {
-                             viewerApi.handlePythonUpdate(JSON.stringify(frame), obj.name);
-                             totalFrames++;
-                         }
-                         
-                         // 3. Update local PAE tracking
-                         if (obj.hasPAE) {
-                             objectsWithPAE.add(obj.name);
-                         } 
-                     }
-                 }
-                 
-                 if (totalFrames > 0) {
-                     viewerContainer.style.display = 'flex';
-                     
-                     // Set the viewer to the last object loaded
-                     if (lastObjectName) {
-                        // Small delay to ensure py2dmol.js has populated the options
-                        setTimeout(() => {
-                            objectSelect.value = lastObjectName;
-                            // Trigger change to set PAE visibility and update controls
-                            handleObjectChange();
-                        }, 50); // 50ms delay
-                     }
-                     
-                     // The status message is handled below in the fetch/upload functions for accuracy.
-                 } else {
-                     setStatus("Error: No valid structures were loaded to display.", true);
-                     viewerContainer.style.display = 'none';
-                 }
-            }
-            
-            // --- Fetch Logic (Now Appends) ---
-            async function handleFetch() {
-                // Temporary storage for this operation
-                const tempBatch = []; 
-                
-                const fetchId = document.getElementById('fetch-id').value.trim().toUpperCase();
-                if (!fetchId) { setStatus("Please enter a PDB or UniProt ID.", true); return; }
-
-                setStatus(`Fetching ${fetchId} data...`);
-
-                const isPDB = fetchId.length === 4;
-                const isAFDB = !isPDB;
-                
-                let structUrl, paeUrl, name, paeEnabled;
-
-                if (isAFDB) {
-                    name = `${fetchId}.cif`;
-                    structUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-model_v6.cif`;
-                    paeUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-predicted_aligned_error_v6.json`;
-                    paeEnabled = window.viewerConfig.pae; 
-                } else { 
-                    name = `${fetchId}.cif`; structUrl = `https://files.rcsb.org/download/${fetchId}.cif`;
-                    paeUrl = null; paeEnabled = false;
-                }
-
-                try {
-                    const structResponse = await fetch(structUrl);
-                    if (!structResponse.ok) { throw new Error(`Failed to fetch structure (HTTP ${structResponse.status})`); }
-                    const structText = await structResponse.text();
-                    
-                    let paeData = null;
-                    if (paeEnabled && paeUrl) {
-                        try {
-                            const paeResponse = await fetch(paeUrl);
-                            if (paeResponse.ok) {
-                                const paeJson = await paeResponse.json();
-                                // Standard AFDB format check
-                                if (paeJson && paeJson.length > 0) { paeData = paeJson[0].predicted_aligned_error; }
-                            } else { console.warn(`PAE data not found (HTTP ${paeResponse.status}).`); }
-                        } catch (e) {
-                            console.warn("Could not fetch PAE data:", e.message);
-                        }
-                    }
-                    
-                    // Process to temporary batch. Centering is false.
-                    const framesAdded = processStructureToTempBatch(structText, name, paeData, cleanObjectName(name), tempBatch);
-                    
-                    // Append new objects to global list
-                    batchedObjects.push(...tempBatch);
-                    
-                    updateViewerFromGlobalBatch();
-                    
-                    // Display status based on THIS operation
-                    if (framesAdded > 0) {
-                        const objName = cleanObjectName(name);
-                        setStatus(`Successfully fetched and loaded 1 object: ${objName} (${framesAdded} frame${framesAdded !== 1 ? 's' : ''}).`);
-                    }
-
-                } catch (e) {
-                    console.error("Fetch failed:", e); 
-                    setStatus(`Error: Fetch failed for ${fetchId}. ${e.message}.`, true); 
-                }
-            }
-
-            // --- ZIP Upload Handler (Now Appends) ---
-            async function handleZipUpload(file, loadAsFrames) {
-                // Temporary storage for this operation
-                const tempBatch = []; 
-                
-                setStatus(`Unzipping ${file.name} and collecting data...`);
-                
-                try {
-                    const zip = new JSZip();
-                    const content = await zip.loadAsync(file);
-                    
-                    // --- MODIFIED: Filter out junk files ---
-                    const modelFiles = [];
-                    const jsonFiles = [];
-                    
-                    content.forEach((relativePath, zipEntry) => {
-                        // 1. Skip junk files (macOS metadata)
-                        if (relativePath.startsWith('__MACOSX/') || relativePath.startsWith('._')) {
-                            return; 
-                        }
-                        
-                        const lowerPath = relativePath.toLowerCase();
-                        if (lowerPath.match(/\.(cif|pdb|ent)$/)) { // Allow general PDB/CIF models
-                            modelFiles.push({ name: relativePath, entry: zipEntry });
-                        } else if (lowerPath.match(/\.json$/)) { // Allow any JSON file
-                            jsonFiles.push({ name: relativePath, entry: zipEntry });
-                        }
-                    });
-                    
-                    if (modelFiles.length === 0) {
-                        throw new Error(`No structural files (*.cif, *.pdb, *.ent) found in ZIP.`);
-                    }
-                    
-                    // Helper to determine if JSON corresponds to a model by numbering
-                    const getModelIndex = (name) => {
-                        const match = name.match(/_(\d+)\.(cif|pdb|ent|json)$/);
-                        return match ? parseInt(match[1]) : -1;
-                    };
-
-                    const isPairedAlphafoldModel = (modelName, jsonName) => {
-                        // Check for AF3 server convention: *_model_N.cif and *_full_data_N.json
-                        const modelMatch = modelName.match(/_model_(\d+)\.(cif|pdb|ent)$/);
-                        if (modelMatch) {
-                            const modelIndex = modelMatch[1];
-                            // Match the json file name pattern
-                            return jsonName.match(new RegExp(`_full_data_${modelIndex}\\.json$`));
-                        }
-                        return false;
-                    };
-                    
-                    // 1. Group files
-                    let modelGroups = {}; 
-
-                    if (modelFiles.length > 1) {
-                        const isAlphaFold3Trajectory = modelFiles.some(m => 
-                            jsonFiles.some(j => isPairedAlphafoldModel(m.name, j.name))
-                        );
-
-                        if (loadAsFrames) { 
-                             // Load as Frames mode: Group all into one object (trajectory)
-                             const groupKey = cleanObjectName(file.name);
-                             
-                             if (isAlphaFold3Trajectory) {
-                                 // AlphaFold Trajectory (PAE is per-model)
-                                 modelGroups[groupKey] = modelFiles.map(m => ({
-                                    ...m, 
-                                    paeEntry: jsonFiles.find(j => isPairedAlphafoldModel(m.name, j.name))
-                                 }));
-                             } else {
-                                 // Generic Trajectory (No PAE expected)
-                                 modelGroups[groupKey] = modelFiles.map(m => ({ ...m, paeEntry: null }));
-                             }
-                             
-                        } else {
-                            // Load as Objects mode: Treat each model file as a separate object
-                            modelFiles.forEach((m) => {
-                                let paeEntry = null;
-                                
-                                // NEW FIX: In Load as Objects mode, check if this model has a matching PAE file
-                                if (isAlphaFold3Trajectory) {
-                                    paeEntry = jsonFiles.find(j => isPairedAlphafoldModel(m.name, j.name));
-                                }
-
-                                // Create a separate group/object for each file
-                                modelGroups[m.name] = [{ ...m, paeEntry: paeEntry }];
-                            });
-                        }
-                    } else {
-                        // Single model file: Load as single object.
-                         modelGroups[modelFiles[0].name] = [{ ...modelFiles[0], paeEntry: jsonFiles.length > 0 ? jsonFiles[0].entry : null }];
-                    }
-
-                    // 2. Process and collect data into temporary storage
-                    
-                    let totalFramesAdded = 0;
-
-                    for (const groupKey in modelGroups) {
-                        const group = modelGroups[groupKey];
-                        const objectName = cleanObjectName(groupKey); 
-                        
-                        // If it's the AF3 trajectory group, sort by model index
-                        if (loadAsFrames && groupKey === cleanObjectName(file.name)) {
-                             group.sort((a, b) => getModelIndex(a.name) - getModelIndex(b.name));
-                        }
-
-                        for (const modelInfo of group) {
-                            setStatus(`Collecting ${modelInfo.name} from ZIP...`);
-                            
-                            const modelText = await modelInfo.entry.async("text");
-                            let currentModelPAE = null;
-                            
-                            let paeEntry = modelInfo.paeEntry;
-                            if (paeEntry) {
-                                const paeJsonText = await paeEntry.entry.async("text");
-                                try {
-                                    const paeJson = JSON.parse(paeJsonText);
-                                    // Check for AlphaFold3 server PAE structure
-                                    if (paeJson && paeJson.pae) {
-                                        currentModelPAE = paeJson.pae;
-                                    // Check for standard AFDB PAE structure
-                                    } else if (paeJson && paeJson.length > 0 && paeJson[0].predicted_aligned_error) {
-                                        currentModelPAE = paeJson[0].predicted_aligned_error;
-                                    } else if (paeJson && paeJson.predicted_aligned_error) {
-                                        currentModelPAE = paeJson.predicted_aligned_error;
-                                    }
-                                } catch (e) {
-                                    console.warn(`Could not parse PAE JSON for ${modelInfo.name}:`, e);
-                                }
-                            }
-                            
-                            // Collect structure data to the batch
-                            const framesAdded = processStructureToTempBatch(
-                                modelText, 
-                                modelInfo.name, 
-                                currentModelPAE, 
-                                objectName,
-                                tempBatch
-                            );
-                            totalFramesAdded += framesAdded;
-                        }
-                    }
-                    
-                    // 3. Append new objects to global list
-                    batchedObjects.push(...tempBatch);
-                    
-                    // 4. Finalize and display ALL objects (old + new)
-                    updateViewerFromGlobalBatch();
-                    
-                    // Display status based on THIS operation
-                    if (tempBatch.length > 0) {
-                        // Correctly count objects: it's tempBatch.length if Load as Objects, or 1 if Load as Frames
-                        const objectsLoaded = loadAsFrames && modelFiles.length > 1 ? 1 : tempBatch.length;
-                        
-                        setStatus(`Successfully loaded ${objectsLoaded} new object(s) from ${file.name} (${totalFramesAdded} total frame${totalFramesAdded !== 1 ? 's' : ''}).`);
-                    }
-
-                } catch (e) {
-                    console.error("ZIP processing failed:", e);
-                    setStatus(`Error processing ZIP file: ${file.name}. ${e.message}`, true);
-                }
-            }
-
-
-            function handleFileUpload(event) {
-                
-                const files = event.target.files || (event.dataTransfer ? event.dataTransfer.files : null);
-                
-                if (!files || files.length === 0) return;
-
-                const loadAsFrames = loadAsFramesCheckbox.checked;
-
-                // FIX: Collect all promises for all files (ZIPs and PDBs)
-                let loadPromises = [];
-                let overallTotalFramesAdded = 0;
-                const overallTempBatch = [];
-                
-                // Track if any non-ZIP files are selected (to handle the combined frame group)
-                const nonZipFiles = Array.from(files).filter(f => !f.name.toLowerCase().endsWith('.zip'));
-                const filesLoadedCount = nonZipFiles.length; // Number of PDB/CIF files uploaded
-                
-                const combineFiles = loadAsFrames && filesLoadedCount > 1;
-                const trajectoryObjectName = combineFiles ? cleanObjectName(nonZipFiles[0].name) : null;
-
-                for (let i = 0; i < files.length; i++) {
-                    const file = files[i];
-                    const fileNameLower = file.name.toLowerCase();
-                    
-                    // --- Handle ZIPs (Handled asynchronously and appends to batchedObjects) ---
-                    if (fileNameLower.endsWith('.zip')) {
-                        const zipPromise = handleZipUpload(file, loadAsFrames);
-                        loadPromises.push(zipPromise);
-                        continue; 
-                    }
-                    
-                    // --- Handle Single/Multiple PDB/CIF File Upload (Non-ZIP) ---
-                    
-                    const singleFilePromise = new Promise((resolve) => {
-                        // FIX: Use the overallTempBatch directly for grouping logic to work across files
-                        const tempBatch = overallTempBatch; 
-                        const reader = new FileReader();
-                        
-                        reader.onload = (e) => {
-                            const text = e.target.result;
-                            if (text) { 
-                                const objName = cleanObjectName(file.name);
-                                
-                                // FIX: Use trajectoryObjectName if combining, otherwise use the file's own name
-                                const objectNameOverride = combineFiles ? trajectoryObjectName : objName;
-                                
-                                const framesAdded = processStructureToTempBatch(
-                                    text, 
-                                    file.name, 
-                                    null, // No PAE support for arbitrary file uploads
-                                    objectNameOverride, // <--- Correctly uses the shared name if combining
-                                    tempBatch
-                                ); 
-                                overallTotalFramesAdded += framesAdded;
-                            }
-                            resolve();
-                        };
-                        reader.onerror = resolve; // Resolve on error so batch continues
-                        reader.readAsText(file);
-                    });
-                    loadPromises.push(singleFilePromise);
-                }
-                
-                // Wait for all files (ZIPs and PDBs) to be read/processed
-                Promise.all(loadPromises)
-                    .then(() => {
-                        // Append remaining PDB/CIF data to global list
-                        // FIX: overallTempBatch already contains processed data (no need to push again, just check its content)
-                        
-                        // We only append non-ZIP results if we successfully processed non-ZIPs.
-                        if (overallTempBatch.length > 0 && !batchedObjects.includes(overallTempBatch[0])) {
-                            batchedObjects.push(...overallTempBatch);
-                        }
-                        
-                        updateViewerFromGlobalBatch();
-                        
-                        // Display status based on THIS operation
-                        if (filesLoadedCount > 0) {
-                            // FIX: Correctly count objects when PDB/CIF files are uploaded
-                            const objectsLoaded = combineFiles ? 1 : overallTempBatch.length;
-                            const messageSource = filesLoadedCount > 1 ? `${filesLoadedCount} files` : nonZipFiles[0].name;
-
-                            setStatus(`Successfully loaded ${objectsLoaded} new object(s) from ${messageSource} (${overallTotalFramesAdded} total frame${overallTotalFramesAdded !== 1 ? 's' : ''}).`);
-                        }
-                    })
-                    .catch((e) => {
-                        console.error("File reading/ZIP processing failed:", e);
-                        setStatus(`Error processing files. See console.`, true);
-                    });
-            }
-            
-            function updateColorMode() {
-                 const userPreference = colorSelect.value;
-                 viewerApi.handlePythonSetColor(userPreference);
-            }
-            
-            function handleObjectChange() {
-                 const selectedObject = objectSelect.value;
-                 // Find the PAE status locally (since viewerApi doesn't track it)
-                 const hasPAE = objectsWithPAE.has(selectedObject);
-                 
-                 // 1. Manage PAE visibility
-                 paeContainer.style.display = hasPAE ? 'block' : 'none';
-                 
-                 // 2. Update Color Mode based on user's dropdown choice
-                 updateColorMode();
-            }
-
-            // --- Initialization Functions (omitted for brevity) ---
-            function initDragAndDrop() {
-                const dropArea = document.getElementById('drop-area');
-
-                ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                    dropArea.addEventListener(eventName, preventDefaults, false);
-                    document.body.addEventListener(eventName, preventDefaults, false);
-                });
-
-                ['dragenter', 'dragover'].forEach(eventName => {
-                    dropArea.addEventListener(eventName, () => dropArea.classList.add('drag-over'), false);
-                });
-
-                ['dragleave', 'drop'].forEach(eventName => {
-                    dropArea.addEventListener(eventName, () => dropArea.classList.remove('drag-over'), false);
-                });
-                
-                dropArea.addEventListener('drop', (e) => {
-                    e.target.files = e.dataTransfer.files; 
-                    handleFileUpload(e); 
-                }, false);
-            }
-
-            function preventDefaults (e) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-
-
-            function initApp() {
-                console.log("DOM is ready. Initializing app...");
-
-                // UPDATED to use new constants
-                window.viewerConfig = { 
-                    size: [FIXED_WIDTH, FIXED_HEIGHT],
-                    pae_size: [PAE_PLOT_SIZE, PAE_PLOT_SIZE],
-                    color: "auto", shadow: true, outline: true, width: 3.0,
-                    rotate: false, controls: true, autoplay: false, box: true,
-                    pastel: 0.25, pae: true, colorblind: false, viewer_id: "standalone-viewer-1" 
-                };
-                
-                canvasContainer.style.width = `${FIXED_WIDTH}px`;
-                canvasContainer.style.height = `${FIXED_HEIGHT}px`;
-                canvas.width = FIXED_WIDTH;
-                canvas.height = FIXED_HEIGHT;
-                viewerColumn.style.minWidth = `${FIXED_WIDTH}px`;
-
-
-                try {
-                    initializePy2DmolViewer(viewerContainer);
-                } catch (e) {
-                    console.error("Failed to initialize viewer:", e);
-                    setStatus("Error: Failed to initialize viewer. See console.", true);
-                    return;
-                }
-
-                viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
-                
-                document.getElementById('fetch-btn').addEventListener('click', handleFetch);
-                document.getElementById('file-upload').addEventListener('change', handleFileUpload);
-                
-                // Centralize logic calls
-                objectSelect.addEventListener('change', handleObjectChange);
-                colorSelect.addEventListener('change', updateColorMode); 
-                
-                initDragAndDrop(); 
-                
-                paeContainer.style.display = 'none';
-                setStatus("Ready. Upload a file or fetch an ID.");
-            }
-
-            const rendererScript = document.getElementById('py2dmol-renderer');
-            if (rendererScript && typeof initializePy2DmolViewer === 'function') {
-                initApp();
-            } else if (rendererScript) {
-                 rendererScript.onload = initApp;
-            }
-
-        });
-        
-    </script>
 </body>
 </html>
