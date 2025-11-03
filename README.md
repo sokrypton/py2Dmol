@@ -59,19 +59,19 @@ You can pass several options to the `view` constructor.
 import py2Dmol
 
 viewer = py2Dmol.view(
-    size=(300, 300),     # Set canvas size (width, height)
-    color='auto',        # Set initial color mode: ["auto","rainbow","chain","plddt"]
-    pastel=0.25,         # Lighten the colors
-    colorblind=False,    # Use colorbind friendly colors
-    shadow=True,         # Enable shadows by default
-    outline=True,        # Enable outlines by default
-    width=3.0,           # Set initial line width
-    rotate=False,        # Enable auto-rotation
-    autoplay=False,      # Enable auto-play (if trajectory or multiple models)
-    box=False,           # hide box around molecule
-    controls=False,      # hide all controls
-    pae=False,           # enable pae
-    pae_size=False,      # set pae canvas size (width, height)
+    size=(300, 300),     # canvas size (width, height)
+    color='auto',        # color mode: ["auto","rainbow","chain","plddt"]
+    pastel=0.25,         # lighten the colors
+    colorblind=False,    # use colorbind friendly colors
+    shadow=True,         # show shadow
+    outline=True,        # show outline
+    width=3.0,           # line width
+    rotate=False,        # auto-rotation
+    autoplay=False,      # auto-play (if trajectory or multiple models)
+    box=True,           # show box around molecule
+    controls=True,      # show controls
+    pae=False,          # show pae
+    pae_size=(300,300), # set pae canvas size (width, height)
 )
 
 viewer.add_pdb("my_complex.cif")
