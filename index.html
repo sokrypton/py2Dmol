@@ -599,27 +599,6 @@
                 }
             }
             
-            function handleObjectChange() {
-                 const selectedObject = objectSelect.value;
-                 const hasPAE = objectsWithPAE.has(selectedObject);
-                 
-                 if (hasPAE) {
-                     paeContainer.style.display = 'block';
-
-                     if (colorSelect.value !== 'plddt') {
-                         colorSelect.value = 'plddt';
-                         colorSelect.dispatchEvent(new Event('change'));
-                     }
-                 } else {
-                     paeContainer.style.display = 'none';
-                     
-                     if (colorSelect.value === 'plddt') {
-                          colorSelect.value = 'auto';
-                          colorSelect.dispatchEvent(new Event('change'));
-                     }
-                 }
-            }
-
             function initDragAndDrop() {
                 const dropArea = document.getElementById('drop-area');
 
@@ -683,7 +662,6 @@
                 
                 document.getElementById('fetch-btn').addEventListener('click', handleFetch);
                 document.getElementById('file-upload').addEventListener('change', handleFileUpload);
-                objectSelect.addEventListener('change', handleObjectChange);
                 
                 initDragAndDrop(); 
                 
