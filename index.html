@@ -381,9 +381,18 @@
                         const getFloat = (key) => parseFloat(values[headerMap[key]]) || 0.0;
                         const getInt = (key) => parseInt(values[headerMap[key]]) || 0;
 
+                        // Fix for atom names that might be quoted (e.g., 'C4\'')
+                        const atomNameRaw = getString('_atom_site.label_atom_id');
+                        let atomName = atomNameRaw;
+                        if (atomName.length > 1 && atomName.startsWith("'") && atomName.endsWith("'")) {
+                            atomName = atomName.substring(1, atomName.length - 1);
+                        } else if (atomName.length > 1 && atomName.startsWith('"') && atomName.endsWith('"')) {
+                            atomName = atomName.substring(1, atomName.length - 1);
+                        }
+
                         atoms.push({
                             record: getString('_atom_site.group_PDB'),
-                            atomName: getString('_atom_site.label_atom_id').replace(/['"]+/g, ''), // Remove quotes
+                            atomName: atomName, // Use the cleaned atom name
                             resName: getString('_atom_site.label_comp_id'),
                             chain: getString('_atom_site.auth_asym_id'),
                             resSeq: getInt('_atom_site.auth_seq_id'),
