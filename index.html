@@ -310,70 +310,13 @@
         // This is the main script for the standalone application
 
         // --- Global state for alignment ---
-        let refCoords = null; // Store the first loaded coords for alignment
+        // let refCoords = null; // Removed for debugging
         let viewerApi = null; // Store the viewer's API
         let statusElement = null;
         let paeContainer = null; // Store a reference to the PAE container
 
         // --- Math Functions (Ported from viewer.py) ---
-
-        /**
-         * Calculates the mean of a list of Vec3 objects.
-         */
-        function getMean(coords) {
-            if (coords.length === 0) return { x: 0, y: 0, z: 0 };
-            let sum_x = 0, sum_y = 0, sum_z = 0;
-            for (const c of coords) {
-                sum_x += c[0];
-                sum_y += c[1];
-                sum_z += c[2];
-            }
-            return { 
-                x: sum_x / coords.length, 
-                y: sum_y / coords.length, 
-                z: sum_z / coords.length 
-            };
-        }
-
-        /**
-         * Centers coordinates by subtracting the mean.
-         */
-        function centerCoords(coords, mean) {
-            return coords.map(c => [
-                c[0] - mean.x,
-                c[1] - mean.y,
-                c[2] - mean.z
-            ]);
-        }
-
-        /**
-         * Aligns new coords to a reference (best-effort w/o SVD)
-         */
-        function align_a_to_b(a, b) {
-            // This is a simplified version of the Python code
-            // It centers 'a' and moves it to 'b's center.
-            if (a.length === 0 || b.length === 0) return a;
-            
-            const a_mean = getMean(a);
-            const a_cent = centerCoords(a, a_mean);
-            const b_mean = getMean(b);
-            
-            // Add b_mean to translated coords
-            return a_cent.map(c => [
-                c[0] + b_mean.x,
-                c[1] + b_mean.y,
-                c[2] + b_mean.z
-            ]);
-        }
-
-        /**
-         * Creates the initial view (centered)
-         */
-        function best_view(a) {
-            // This just centers the coordinates.
-            const a_mean = getMean(a);
-            return centerCoords(a, a_mean);
-        }
+        // Removed best_view, align_a_to_b, getMean, and centerCoords for debugging.
 
         // --- Parsers ---
 
@@ -587,17 +530,15 @@
                  return;
             }
 
-            setStatus(`Aligning ${frameData.coords.length} atoms...`);
+            // setStatus(`Aligning ${frameData.coords.length} atoms...`); // Removed
             
-            // Alignment logic
-            if (!refCoords || refCoords.length !== frameData.coords.length) {
-                // New structure or different size, just center it
-                frameData.coords = best_view(frameData.coords);
-                refCoords = frameData.coords; // Set as new reference
-            } else {
-                // Align to previous structure
-                frameData.coords = align_a_to_b(frameData.coords, refCoords);
-            }
+            // Alignment logic removed for debugging
+            // if (!refCoords || refCoords.length !== frameData.coords.length) {
+            //     frameData.coords = best_view(frameData.coords);
+            //     refCoords = frameData.coords; 
+            // } else {
+            //     frameData.coords = align_a_to_b(frameData.coords, refCoords);
+            // }
 
             setStatus(`Rendering ${name}...`);
             
@@ -712,6 +653,9 @@
          * Initializes the entire application.
          */
         function initApp() {
+            // DEBUGGING: Log that initApp is called
+            console.log("py2Dmol.js loaded successfully. DOM is ready. Initializing app...");
+
             // 1. Manually set the viewer config
             window.viewerConfig = { 
                 size: [400, 400], // Start a bit bigger
@@ -738,51 +682,74 @@
             }
 
             // 3. Initialize the renderer
-            // We need to wait for the external script to load
-            const rendererScript = document.getElementById('py2dmol-renderer');
+            // This is *inside* initApp, which is called by onload, so initializePy2DmolViewer is defined.
+            try {
+                initializePy2DmolViewer(viewerContainer);
+            } catch (e) {
+                console.error("Failed to initialize viewer:", e);
+                setStatus("Error: Failed to initialize viewer. See console.", true);
+                return;
+            }
+
+            // 4. Get the API
+            viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
+            if (!viewerApi) {
+                console.error("Fatal: Could not get viewer API after init.");
+                setStatus("Error: Could not get viewer API. See console.", true);
+                return;
+            }
+
+            // 5. Wire up event listeners
+            document.getElementById('fetch-btn').addEventListener('click', handleFetch);
+            document.getElementById('file-upload').addEventListener('change', handleFileUpload);
+            
+            // 6. Get status element
+            statusElement = document.getElementById('status-message');
+            paeContainer = document.getElementById('paeContainer');
+            
+            // Hide PAE container by default on load
+            if (paeContainer) {
+                paeContainer.style.display = 'none';
+            }
+
+            setStatus("Ready. Upload a file or fetch an ID.");
+        }
+
+        // --- NEW STARTUP LOGIC ---
+        
+        // Find the renderer script tag
+        const rendererScript = document.getElementById('py2dmol-renderer');
+
+        if (rendererScript) {
             rendererScript.onload = () => {
-                console.log("py2Dmol.js loaded.");
-                try {
-                    initializePy2DmolViewer(viewerContainer);
-                } catch (e) {
-                    console.error("Failed to initialize viewer:", e);
-                    setStatus("Error: Failed to initialize viewer. See console.", true);
-                    return;
-                }
-
-                // 4. Get the API
-                viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
-                if (!viewerApi) {
-                    console.error("Fatal: Could not get viewer API after init.");
-                    setStatus("Error: Could not get viewer API. See console.", true);
-                    return;
-                }
-
-                // 5. Wire up event listeners
-                document.getElementById('fetch-btn').addEventListener('click', handleFetch);
-                document.getElementById('file-upload').addEventListener('change', handleFileUpload);
+                // DEBUGGING: Log that the script is loaded
+                console.log("External py2Dmol.js script has loaded.");
                 
-                // 6. Get status element
-                statusElement = document.getElementById('status-message');
-                paeContainer = document.getElementById('paeContainer');
-                
-                // Hide PAE container by default on load
-                if (paeContainer) {
-                    paeContainer.style.display = 'none';
+                // The script is loaded. Now we must wait for the DOM to be ready.
+                // It's possible DOM is already ready, or not.
+                if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                    // DOM is already ready, just run init
+                    initApp();
+                } else {
+                    // Wait for DOMContentLoaded
+                    document.addEventListener('DOMContentLoaded', initApp);
                 }
-
-                setStatus("Ready. Upload a file or fetch an ID.");
             };
             
             rendererScript.onerror = () => {
                 console.error("Fatal: Could not load py2Dmol.js renderer script.");
-                setStatus("Error: Could not load renderer script. Check network connection.", true);
+                // Try to write error to status message, even if DOM isn't fully ready
+                const statusEl = document.getElementById('status-message');
+                if (statusEl) {
+                    statusEl.textContent = "Error: Could not load renderer script. Check network connection.";
+                    statusEl.className = "mt-4 text-sm text-red-600";
+                    statusEl.classList.remove('hidden');
+                }
             }
+        } else {
+            console.error("Fatal: Could not find renderer script tag.");
         }
-
-        // Start the app once the page is loaded
-        document.addEventListener('DOMContentLoaded', initApp);
-
+        
     </script>
 </body>
 </html>
