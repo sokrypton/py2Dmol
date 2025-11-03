@@ -193,6 +193,15 @@
             height: 42px;
             display: flex;
             align-items: center;
+            border: 2px dashed transparent; /* Base border for drag/drop */
+            border-radius: 8px;
+            transition: border-color 0.2s;
+        }
+
+        /* Drag over style */
+        .file-upload-match.drag-over {
+            border-color: #3b82f6;
+            background-color: #f0f8ff;
         }
 
     </style>
@@ -214,8 +223,8 @@
                 </div>
                 <div class="md:col-span-2">
                     <label for="file-upload" class="block text-sm font-semibold text-gray-700 mb-1">Upload PDB / CIF</label>
-                    <div class="file-upload-match">
-                        <input type="file" id="file-upload" accept=".pdb,.cif,.ent" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer transition duration-150">
+                    <div id="drop-area" class="file-upload-match">
+                        <input type="file" id="file-upload" accept=".pdb,.cif,.ent" multiple class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer transition duration-150">
                     </div>
                 </div>
             </div>
@@ -562,20 +571,32 @@
             }
 
             function handleFileUpload(event) {
-                const file = event.target.files[0];
-                if (!file) return;
+                const files = event.target.files || (event.dataTransfer ? event.dataTransfer.files : null);
+                
+                if (!files || files.length === 0) return;
 
                 paeContainer.style.display = 'none';
                 if (colorSelect) { colorSelect.value = 'auto'; colorSelect.dispatchEvent(new Event('change')); }
-
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const text = e.target.result;
-                    if (text) { processStructure(text, file.name); } 
-                    else { setStatus("File is empty or unreadable.", true); }
-                };
-                reader.onerror = () => { setStatus("Failed to read file.", true); };
-                reader.readAsText(file);
+                
+                let filesProcessed = 0;
+                
+                for (const file of files) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const text = e.target.result;
+                        if (text) { 
+                            processStructure(text, file.name); 
+                        } else { 
+                            setStatus(`File '${file.name}' is empty or unreadable.`, true); 
+                        }
+                        filesProcessed++;
+                        if (filesProcessed === files.length) {
+                             objectSelect.dispatchEvent(new Event('change'));
+                        }
+                    };
+                    reader.onerror = () => { setStatus(`Failed to read file '${file.name}'.`, true); };
+                    reader.readAsText(file);
+                }
             }
             
             function handleObjectChange() {
@@ -597,6 +618,38 @@
                           colorSelect.dispatchEvent(new Event('change'));
                      }
                  }
+            }
+
+            function initDragAndDrop() {
+                const dropArea = document.getElementById('drop-area');
+
+                // Prevent default behavior for all drag events
+                ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                    dropArea.addEventListener(eventName, preventDefaults, false);
+                    document.body.addEventListener(eventName, preventDefaults, false);
+                });
+
+                // Highlight drop area when item is dragged over it
+                ['dragenter', 'dragover'].forEach(eventName => {
+                    dropArea.addEventListener(eventName, () => dropArea.classList.add('drag-over'), false);
+                });
+
+                // Remove highlight when drag leaves
+                ['dragleave', 'drop'].forEach(eventName => {
+                    dropArea.addEventListener(eventName, () => dropArea.classList.remove('drag-over'), false);
+                });
+                
+                // Handle dropped files
+                dropArea.addEventListener('drop', (e) => {
+                    // This is the fix: manually transfer files to the target
+                    e.target.files = e.dataTransfer.files; 
+                    handleFileUpload(e); 
+                }, false);
+            }
+
+            function preventDefaults (e) {
+              e.preventDefault();
+              e.stopPropagation();
             }
 
 
@@ -631,6 +684,8 @@
                 document.getElementById('fetch-btn').addEventListener('click', handleFetch);
                 document.getElementById('file-upload').addEventListener('change', handleFileUpload);
                 objectSelect.addEventListener('change', handleObjectChange);
+                
+                initDragAndDrop(); 
                 
                 paeContainer.style.display = 'none';
                 setStatus("Ready. Upload a file or fetch an ID.");
