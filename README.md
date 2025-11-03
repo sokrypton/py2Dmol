@@ -64,9 +64,9 @@ viewer = py2Dmol.view(
     width=3.0,           # Set initial line width
     rotate=False,        # Enable auto-rotation
     autoplay=False,      # Enable auto-play (if trajectory or multiple models)
-    hide_box=False,      # hide box around molecule
-    hide_controls=False, # hide all controls
-    show_pae=False,      # enable pae
+    box=False,           # hide box around molecule
+    controls=False,      # hide all controls
+    pae=False,           # enable pae
     pae_size=False,      # set pae canvas size (width, height)
 )
 
@@ -82,13 +82,13 @@ viewer.show()
 ### Example: Load structure from PDB w/ ensemble
 ```python
 import py2Dmol
-py2Dmol.view().from_pdb('1YNE')
+py2Dmol.view(autoplay=True).from_pdb('1YNE')
 ```
 
 ### Example: Load biounit from PDB
 ```python
 import py2Dmol
-py2Dmol.view().from_pdb('1BJP', use_biounit=True, ignore_ligands=True)
+py2Dmol.view(rotate=True).from_pdb('1BJP', use_biounit=True, ignore_ligands=True)
 ```
 
 ### Example: Load structure from PDB w/ multiple chains + DNA
@@ -100,7 +100,7 @@ py2Dmol.view().from_pdb('9D2J')
 ### Example: Load structure from AlphaFold DB, show pAE
 ```python
 import py2Dmol
-py2Dmol.view(show_pae=True).from_afdb('Q5VSL9')
+py2Dmol.view(pae=True).from_afdb('Q5VSL9')
 ```
 
 ---
@@ -114,7 +114,7 @@ py2Dmol.view(show_pae=True).from_afdb('Q5VSL9')
 You call `add()` or `add_pdb()` first to load all your data, and then call `show()` at the end.
 
 * **Workflow:** `viewer.add*()` ➔ `viewer.show()`
-* **Result:** Creates a single, 100% persistent viewer that contains all your data. This is ideal for saving, sharing, and reloading notebooks.
+* **Result:** Creates a single, 100% persistent viewer that contains all your data.
 
 ### Mode 2: Live (Dynamic) Mode
 
@@ -122,14 +122,12 @@ This mode is for live, dynamic updates (e.g., in a loop). You call `show()` *bef
 
 * **Workflow:** `viewer.show()` ➔ `viewer.add*()`
 * **Result:** `show()` creates an empty, live viewer. Subsequent `add()` calls send data to it one by one.
-* **Warning:** This mode is **not persistent**. The viewer will be blank when you close and reopen the notebook, as the data is not saved.
 
 #### Live Mode Example (Wiggle Animation)
 
 This example only works when run in a notebook. It will dynamically add frames to the viewer one at a time.
 
 ```python
-import py2Dmol
 import numpy as np
 import time
 
@@ -160,12 +158,11 @@ for frame in range(60):
     plddts = np.full((20,), 80.0)
     chains = ['A'] * 20
     atom_types = ['P'] * 20
-    
+
     # Send the new frame to the live viewer
-    viewer.add(coords, plddts, chains, atom_types, 
-               new_traj=(frame == 0)) # Start a new traj on frame 0
-    
-    # Wait a bit so you can see the animation
+    viewer.add(coords, plddts, chains, atom_types)
+
+    # Wait a bit
     time.sleep(0.1)
 ```
 
@@ -176,9 +173,7 @@ for frame in range(60):
 You can manually add coordinates for different molecule types (P, D, R, L).
 
 ```python
-import py2Dmol
 import numpy as np
-
 def helix(n, radius=2.3, rise=1.5, rotation=100):
     """Generate helical coordinates."""
     angles = np.radians(rotation) * np.arange(n)
@@ -210,10 +205,8 @@ plddts = np.concatenate([np.full(50, 90), np.full(30, 85), np.full(6, 70)])
 chains = ['A']*50 + ['B']*30 + ['L']*6
 types = ['P']*50 + ['D']*30 + ['L']*6
 
-viewer = py2Dmol.view(color='chain', size=(600, 600), width=2.5, outline=False)
+viewer = py2Dmol.view((400,300),rotate=True)
 viewer.add(coords, plddts, chains, types)
-
-# Show the final static viewer
 viewer.show()
 ```
 ---

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='py2Dmol',
-    version='1.3.0',
+    version='1.4.0',
     author='sokrypton',
     author_email='so3@mit.edu',
     description='A Python library for visualizing protein structures in 2D.',
@@ -12,7 +12,7 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     package_data={
-        'py2Dmol': ['resources/pseudo_3D_viewer.html'],
+        'py2Dmol': ['resources/py2Dmol_viewer.html','resources/py2Dmol.js'],
     },
     license='BEER-WARE',
     classifiers=[
