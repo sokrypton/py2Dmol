@@ -306,449 +306,425 @@
     <script id="py2dmol-renderer" src="https://py2dmol.solab.org/py2Dmol/resources/py2Dmol.js"></script>
     
     <!-- 6. New Standalone App Logic -->
-    <script type="module">
-        // This is the main script for the standalone application
+    <script>
+        // This is the main script for the standalone application.
+        // We wrap everything in DOMContentLoaded to ensure the external
+        // py2Dmol.js script has loaded and the DOM is ready.
+        
+        document.addEventListener('DOMContentLoaded', () => {
 
-        // --- Global state for alignment ---
-        // let refCoords = null; // Removed for debugging
-        let viewerApi = null; // Store the viewer's API
-        let statusElement = null;
-        let paeContainer = null; // Store a reference to the PAE container
+            // --- Global state for alignment ---
+            // let refCoords = null; // Removed for debugging
+            let viewerApi = null; // Store the viewer's API
+            let statusElement = null;
+            let paeContainer = null; // Store a reference to the PAE container
 
-        // --- Math Functions (Ported from viewer.py) ---
-        // Removed best_view, align_a_to_b, getMean, and centerCoords for debugging.
+            // --- Math Functions (Ported from viewer.py) ---
+            // Removed best_view, align_a_to_b, getMean, and centerCoords for debugging.
 
-        // --- Parsers ---
+            // --- Parsers ---
 
-        /**
-         * Rudimentary PDB parser
-         * @param {string} text - The raw PDB file text
-         * @returns {Array} List of atom objects
-         */
-        function parsePDB(text) {
-            const atoms = [];
-            const lines = text.split('\n');
-            for (const line of lines) {
-                if (line.startsWith('ATOM') || line.startsWith('HETATM')) {
-                    atoms.push({
-                        record: line.substring(0, 6).trim(),
-                        atomName: line.substring(12, 16).trim(),
-                        resName: line.substring(17, 20).trim(),
-                        chain: line.substring(21, 22).trim(),
-                        resSeq: parseInt(line.substring(22, 26)),
-                        x: parseFloat(line.substring(30, 38)),
-                        y: parseFloat(line.substring(38, 46)),
-                        z: parseFloat(line.substring(46, 54)),
-                        b: parseFloat(line.substring(60, 66)),
-                        element: line.substring(76, 78).trim()
-                    });
-                }
-            }
-            return atoms;
-        }
-
-        /**
-         * Rudimentary CIF parser
-         * @param {string} text - The raw CIF file text
-         * @returns {Array} List of atom objects
-         */
-        function parseCIF(text) {
-            const atoms = [];
-            const lines = text.split('\n');
-            let atomSiteLoop = false;
-            const headers = [];
-            const headerMap = {};
-
-            for (const line of lines) {
-                if (line.startsWith('_atom_site.')) {
-                    atomSiteLoop = true;
-                    const header = line.trim();
-                    headerMap[header] = headers.length;
-                    headers.push(header);
-                } else if (atomSiteLoop && line.startsWith('#')) {
-                    // End of loop
-                    atomSiteLoop = false;
-                } else if (atomSiteLoop && !line.startsWith(';')) {
-                    // Regex to split by spaces, respecting quotes
-                    const values = line.match(/(?:[^\s"']+|"([^"]*)"|'([^']*)')+/g);
-                    if (!values || values.length < headers.length) continue;
-                    
-                    const getString = (key) => values[headerMap[key]] || '?';
-                    const getFloat = (key) => parseFloat(values[headerMap[key]]) || 0.0;
-                    const getInt = (key) => parseInt(values[headerMap[key]]) || 0;
-
-                    atoms.push({
-                        record: getString('_atom_site.group_PDB'),
-                        atomName: getString('_atom_site.label_atom_id').replace(/['"]+/g, ''), // Remove quotes
-                        resName: getString('_atom_site.label_comp_id'),
-                        chain: getString('_atom_site.auth_asym_id'),
-                        resSeq: getInt('_atom_site.auth_seq_id'),
-                        x: getFloat('_atom_site.Cartn_x'),
-                        y: getFloat('_atom_site.Cartn_y'),
-                        z: getFloat('_atom_site.Cartn_z'),
-                        b: getFloat('_atom_site.B_iso_or_equiv'),
-                        element: getString('_atom_site.type_symbol')
-                    });
-                }
-            }
-            return atoms;
-        }
-
-        /**
-         * Converts parsed atom list into the format the renderer needs.
-         * This is a JS port of `_parse_model` from viewer.py
-         * @param {Array} atoms - List of atom objects from parsePDB/parseCIF
-         * @returns {object} - { coords, plddts, chains, atom_types }
-         */
-        function convertParsedToFrameData(atoms) {
-            const coords = [];
-            const plddts = [];
-            const atom_chains = [];
-            const atom_types = [];
-            
-            const rna_bases = ['A', 'C','G', 'U', 'RA', 'RC', 'RG', 'RU'];
-            const dna_bases = ['DA', 'DC', 'DG', 'DT', 'T'];
-
-            // Group atoms by residue
-            const residues = new Map();
-            for (const atom of atoms) {
-                if (atom.resName === 'HOH') continue;
-                const resKey = `${atom.chain}:${atom.resSeq}`;
-                if (!residues.has(resKey)) {
-                    residues.set(resKey, {
-                        atoms: [], 
-                        resName: atom.resName, 
-                        chain: atom.chain,
-                        record: atom.record
-                    });
-                }
-                residues.get(resKey).atoms.push(atom);
-            }
-
-            // Standard amino acid 3-letter codes
-            const proteinResidues = new Set([
-                "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS", "ILE",
-                "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL"
-            ]);
-            // Standard nucleic acid 3-letter codes
-            const nucleicResidues = new Set([
-                "A", "C", "G", "U", "T", "DA", "DC", "DG", "DT", "RA", "RC", "RG", "RU"
-            ]);
-
-            for (const [resKey, residue] of residues.entries()) {
-                const is_protein = proteinResidues.has(residue.resName);
-                const is_nucleic = nucleicResidues.has(residue.resName);
-
-                if (is_protein) {
-                    const ca = residue.atoms.find(a => a.atomName === 'CA');
-                    if (ca) {
-                        coords.push([ca.x, ca.y, ca.z]);
-                        plddts.push(ca.b);
-                        atom_chains.push(ca.chain);
-                        atom_types.push('P');
+            /**
+             * Rudimentary PDB parser
+             * @param {string} text - The raw PDB file text
+             * @returns {Array} List of atom objects
+             */
+            function parsePDB(text) {
+                const atoms = [];
+                const lines = text.split('\n');
+                for (const line of lines) {
+                    if (line.startsWith('ATOM') || line.startsWith('HETATM')) {
+                        atoms.push({
+                            record: line.substring(0, 6).trim(),
+                            atomName: line.substring(12, 16).trim(),
+                            resName: line.substring(17, 20).trim(),
+                            chain: line.substring(21, 22).trim(),
+                            resSeq: parseInt(line.substring(22, 26)),
+                            x: parseFloat(line.substring(30, 38)),
+                            y: parseFloat(line.substring(38, 46)),
+                            z: parseFloat(line.substring(46, 54)),
+                            b: parseFloat(line.substring(60, 66)),
+                            element: line.substring(76, 78).trim()
+                        });
                     }
-                } else if (is_nucleic) {
-                    let c4_atom = residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
-                    if (c4_atom) {
-                        coords.push([c4_atom.x, c4_atom.y, c4_atom.z]);
-                        plddts.push(c4_atom.b);
-                        atom_chains.push(c4_atom.chain);
-                        if (rna_bases.includes(residue.resName) || residue.resName.startsWith('R')) {
-                            atom_types.push('R');
-                        } else {
-                            atom_types.push('D');
+                }
+                return atoms;
+            }
+
+            /**
+             * Rudimentary CIF parser
+             * @param {string} text - The raw CIF file text
+             * @returns {Array} List of atom objects
+             */
+            function parseCIF(text) {
+                const atoms = [];
+                const lines = text.split('\n');
+                let atomSiteLoop = false;
+                const headers = [];
+                const headerMap = {};
+
+                for (const line of lines) {
+                    if (line.startsWith('_atom_site.')) {
+                        atomSiteLoop = true;
+                        const header = line.trim();
+                        headerMap[header] = headers.length;
+                        headers.push(header);
+                    } else if (atomSiteLoop && line.startsWith('#')) {
+                        // End of loop
+                        atomSiteLoop = false;
+                    } else if (atomSiteLoop && !line.startsWith(';')) {
+                        // Regex to split by spaces, respecting quotes
+                        const values = line.match(/(?:[^\s"']+|"([^"]*)"|'([^']*)')+/g);
+                        if (!values || values.length < headers.length) continue;
+                        
+                        const getString = (key) => values[headerMap[key]] || '?';
+                        const getFloat = (key) => parseFloat(values[headerMap[key]]) || 0.0;
+                        const getInt = (key) => parseInt(values[headerMap[key]]) || 0;
+
+                        atoms.push({
+                            record: getString('_atom_site.group_PDB'),
+                            atomName: getString('_atom_site.label_atom_id').replace(/['"]+/g, ''), // Remove quotes
+                            resName: getString('_atom_site.label_comp_id'),
+                            chain: getString('_atom_site.auth_asym_id'),
+                            resSeq: getInt('_atom_site.auth_seq_id'),
+                            x: getFloat('_atom_site.Cartn_x'),
+                            y: getFloat('_atom_site.Cartn_y'),
+                            z: getFloat('_atom_site.Cartn_z'),
+                            b: getFloat('_atom_site.B_iso_or_equiv'),
+                            element: getString('_atom_site.type_symbol')
+                        });
+                    }
+                }
+                return atoms;
+            }
+
+            /**
+             * Converts parsed atom list into the format the renderer needs.
+             * This is a JS port of `_parse_model` from viewer.py
+             * @param {Array} atoms - List of atom objects from parsePDB/parseCIF
+             * @returns {object} - { coords, plddts, chains, atom_types }
+             */
+            function convertParsedToFrameData(atoms) {
+                const coords = [];
+                const plddts = [];
+                const atom_chains = [];
+                const atom_types = [];
+                
+                const rna_bases = ['A', 'C','G', 'U', 'RA', 'RC', 'RG', 'RU'];
+                const dna_bases = ['DA', 'DC', 'DG', 'DT', 'T'];
+
+                // Group atoms by residue
+                const residues = new Map();
+                for (const atom of atoms) {
+                    if (atom.resName === 'HOH') continue;
+                    const resKey = `${atom.chain}:${atom.resSeq}`;
+                    if (!residues.has(resKey)) {
+                        residues.set(resKey, {
+                            atoms: [], 
+                            resName: atom.resName, 
+                            chain: atom.chain,
+                            record: atom.record
+                        });
+                    }
+                    residues.get(resKey).atoms.push(atom);
+                }
+
+                // Standard amino acid 3-letter codes
+                const proteinResidues = new Set([
+                    "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS", "ILE",
+                    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL"
+                ]);
+                // Standard nucleic acid 3-letter codes
+                const nucleicResidues = new Set([
+                    "A", "C", "G", "U", "T", "DA", "DC", "DG", "DT", "RA", "RC", "RG", "RU"
+                ]);
+
+                for (const [resKey, residue] of residues.entries()) {
+                    const is_protein = proteinResidues.has(residue.resName);
+                    const is_nucleic = nucleicResidues.has(residue.resName);
+
+                    if (is_protein) {
+                        const ca = residue.atoms.find(a => a.atomName === 'CA');
+                        if (ca) {
+                            coords.push([ca.x, ca.y, ca.z]);
+                            plddts.push(ca.b);
+                            atom_chains.push(ca.chain);
+                            atom_types.push('P');
                         }
-                    }
-                } else if (residue.record === 'HETATM') {
-                    // Ligand
-                    for (const atom of residue.atoms) {
-                        if (atom.element !== 'H' && atom.element !== 'D') { // Skip hydrogens
-                            coords.push([atom.x, atom.y, atom.z]);
-                            plddts.push(atom.b);
-                            atom_chains.push(atom.chain);
-                            atom_types.push('L');
-                        }
-                    }
-                }
-            }
-            return { coords, plddts, chains: atom_chains, atom_types };
-        }
-
-        // --- App Main Logic ---
-
-        function setStatus(message, isError = false) {
-            if (!statusElement) {
-                statusElement = document.getElementById('status-message');
-            }
-            statusElement.textContent = message;
-            statusElement.className = `mt-4 text-sm ${isError ? 'text-red-600' : 'text-gray-600'}`;
-            statusElement.classList.remove('hidden');
-        }
-
-        /**
-         * Main function to process a structure from text.
-         */
-        function processStructure(text, name, paeData = null) {
-            if (!viewerApi) {
-                console.error("Viewer API not initialized.");
-                setStatus("Error: Viewer API not initialized.", true);
-                return;
-            }
-
-            setStatus(`Parsing ${name}...`);
-            let atoms;
-            try {
-                if (name.toLowerCase().endsWith('.cif')) {
-                    atoms = parseCIF(text);
-                } else if (name.toLowerCase().endsWith('.pdb') || name.toLowerCase().endsWith('.ent')) {
-                    atoms = parsePDB(text);
-                } else {
-                    // Try parsing as CIF, then PDB, as a fallback for no extension
-                    try {
-                        atoms = parseCIF(text);
-                        if (!atoms || atoms.length === 0) atoms = parsePDB(text);
-                    } catch (e) {
-                        atoms = parsePDB(text);
-                    }
-                }
-                
-                if (!atoms || atoms.length === 0) {
-                    throw new Error("Could not parse any atoms from the file.");
-                }
-            } catch (e) {
-                console.error("Parsing failed:", e);
-                setStatus(`Error: ${e.message}`, true);
-                return;
-            }
-            
-            setStatus(`Converting ${atoms.length} atoms...`);
-            let frameData = convertParsedToFrameData(atoms);
-            frameData.pae = paeData;
-
-            if (frameData.coords.length === 0) {
-                 setStatus("Error: No C-alpha or ligand atoms found in file.", true);
-                 return;
-            }
-
-            // setStatus(`Aligning ${frameData.coords.length} atoms...`); // Removed
-            
-            // Alignment logic removed for debugging
-            // if (!refCoords || refCoords.length !== frameData.coords.length) {
-            //     frameData.coords = best_view(frameData.coords);
-            //     refCoords = frameData.coords; 
-            // } else {
-            //     frameData.coords = align_a_to_b(frameData.coords, refCoords);
-            // }
-
-            setStatus(`Rendering ${name}...`);
-            
-            // Send to viewer
-            viewerApi.handlePythonNewObject(name);
-            viewerApi.handlePythonUpdate(JSON.stringify(frameData), name);
-            setStatus(`Successfully rendered ${name}.`);
-        }
-
-        async function handleFetch() {
-            const fetchId = document.getElementById('fetch-id').value.trim().toUpperCase();
-            if (!fetchId) {
-                setStatus("Please enter a PDB or UniProt ID.", true);
-                return;
-            }
-
-            // New logic: 4 chars = PDB, else AFDB
-            const isPDB = fetchId.length === 4;
-            const isAFDB = !isPDB;
-            
-            let structUrl, paeUrl, name, paeEnabled;
-
-            if (isAFDB) {
-                name = `${fetchId}.cif`;
-                structUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-model_v6.cif`;
-                paeUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-predicted_aligned_error_v6.json`;
-                paeEnabled = window.viewerConfig.pae; // Check if PAE view is even on
-                
-                if (paeEnabled) {
-                    setStatus(`Fetching ${fetchId} model and PAE...`);
-                    if (paeContainer) paeContainer.style.display = 'block'; // Show PAE container
-                }
-                else {
-                    setStatus(`Fetching ${fetchId} model...`);
-                    if (paeContainer) paeContainer.style.display = 'none'; // Ensure hidden
-                }
-                viewerApi.handlePythonSetColor('plddt'); // Set color for AFDB
-            } else { // isPDB
-                name = `${fetchId}.cif`;
-                structUrl = `https://files.rcsb.org/download/${fetchId}.cif`;
-                paeUrl = null;
-                paeEnabled = false;
-                setStatus(`Fetching ${fetchId} from RCSB...`);
-                viewerApi.handlePythonSetColor('auto'); // Reset color
-                if (paeContainer) paeContainer.style.display = 'none'; // Hide PAE container for PDB
-            }
-
-            try {
-                // Fetch structure
-                const structResponse = await fetch(structUrl);
-                if (!structResponse.ok) {
-                    throw new Error(`Failed to fetch structure (HTTP ${structResponse.status})`);
-                }
-                const structText = await structResponse.text();
-                
-                // Fetch PAE (if applicable)
-                let paeData = null;
-                if (paeEnabled && paeUrl) {
-                    try {
-                        const paeResponse = await fetch(paeUrl);
-                        if (paeResponse.ok) {
-                            const paeJson = await paeResponse.json();
-                            // AFDB PAE is wrapped in a list
-                            if (paeJson && paeJson.length > 0) {
-                                paeData = paeJson[0].predicted_aligned_error;
+                    } else if (is_nucleic) {
+                        let c4_atom = residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
+                        if (c4_atom) {
+                            coords.push([c4_atom.x, c4_atom.y, c4_atom.z]);
+                            plddts.push(c4_atom.b);
+                            atom_chains.push(c4_atom.chain);
+                            if (rna_bases.includes(residue.resName) || residue.resName.startsWith('R')) {
+                                atom_types.push('R');
+                            } else {
+                                atom_types.push('D');
                             }
-                        } else {
-                             setStatus(`Fetched model, but PAE data not found (HTTP ${paeResponse.status}).`);
-                             if (paeContainer) paeContainer.style.display = 'none'; // Hide if PAE fetch fails
                         }
-                    } catch (e) {
-                        console.warn("Could not fetch PAE data:", e.message);
-                        setStatus(`Fetched model, but PAE data failed to load.`);
-                        if (paeContainer) paeContainer.style.display = 'none'; // Hide if PAE fetch fails
+                    } else if (residue.record === 'HETATM') {
+                        // Ligand
+                        for (const atom of residue.atoms) {
+                            if (atom.element !== 'H' && atom.element !== 'D') { // Skip hydrogens
+                                coords.push([atom.x, atom.y, atom.z]);
+                                plddts.push(atom.b);
+                                atom_chains.push(atom.chain);
+                                atom_types.push('L');
+                            }
+                        }
                     }
                 }
+                return { coords, plddts, chains: atom_chains, atom_types };
+            }
+
+            // --- App Main Logic ---
+
+            function setStatus(message, isError = false) {
+                if (!statusElement) {
+                    statusElement = document.getElementById('status-message');
+                }
+                statusElement.textContent = message;
+                statusElement.className = `mt-4 text-sm ${isError ? 'text-red-600' : 'text-gray-600'}`;
+                statusElement.classList.remove('hidden');
+            }
+
+            /**
+             * Main function to process a structure from text.
+             */
+            function processStructure(text, name, paeData = null) {
+                if (!viewerApi) {
+                    console.error("Viewer API not initialized.");
+                    setStatus("Error: Viewer API not initialized.", true);
+                    return;
+                }
+
+                setStatus(`Parsing ${name}...`);
+                let atoms;
+                try {
+                    if (name.toLowerCase().endsWith('.cif')) {
+                        atoms = parseCIF(text);
+                    } else if (name.toLowerCase().endsWith('.pdb') || name.toLowerCase().endsWith('.ent')) {
+                        atoms = parsePDB(text);
+                    } else {
+                        // Try parsing as CIF, then PDB, as a fallback for no extension
+                        try {
+                            atoms = parseCIF(text);
+                            if (!atoms || atoms.length === 0) atoms = parsePDB(text);
+                        } catch (e) {
+                            atoms = parsePDB(text);
+                        }
+                    }
+                    
+                    if (!atoms || atoms.length === 0) {
+                        throw new Error("Could not parse any atoms from the file.");
+                    }
+                } catch (e) {
+                    console.error("Parsing failed:", e);
+                    setStatus(`Error: ${e.message}`, true);
+                    return;
+                }
                 
-                // Process and render
-                processStructure(structText, name, paeData);
+                setStatus(`Converting ${atoms.length} atoms...`);
+                let frameData = convertParsedToFrameData(atoms);
+                frameData.pae = paeData;
 
-            } catch (e) {
-                console.error("Fetch failed:", e);
-                setStatus(`Error: ${e.message}. Check ID and console.`, true);
-                if (paeContainer) paeContainer.style.display = 'none'; // Hide on total failure
-            }
-        }
-
-        function handleFileUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-
-            // When uploading, always hide PAE
-            if (paeContainer) paeContainer.style.display = 'none';
-            viewerApi.handlePythonSetColor('auto'); // Reset color
-
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const text = e.target.result;
-                if (text) {
-                    processStructure(text, file.name);
-                } else {
-                    setStatus("File is empty or unreadable.", true);
+                if (frameData.coords.length === 0) {
+                     setStatus("Error: No C-alpha or ligand atoms found in file.", true);
+                     return;
                 }
-            };
-            reader.onerror = () => {
-                setStatus("Failed to read file.", true);
-            };
-            reader.readAsText(file);
-        }
-        
-        /**
-         * Initializes the entire application.
-         */
-        function initApp() {
-            // DEBUGGING: Log that initApp is called
-            console.log("py2Dmol.js loaded successfully. DOM is ready. Initializing app...");
 
-            // 1. Manually set the viewer config
-            window.viewerConfig = { 
-                size: [400, 400], // Start a bit bigger
-                pae_size: [300, 300],
-                color: "auto", 
-                shadow: true, 
-                outline: true,
-                width: 3.0,
-                rotate: false,
-                controls: true,
-                autoplay: false,
-                box: true,
-                pastel: 0.25,
-                pae: true, // Keep PAE logic enabled in the renderer
-                colorblind: false,
-                viewer_id: "standalone-viewer-1" // Give it a static ID
-            };
-
-            // 2. Find the viewer container
-            const viewerContainer = document.getElementById('viewer-container');
-            if (!viewerContainer) {
-                console.error("Fatal: Could not find #viewer-container element.");
-                return;
-            }
-
-            // 3. Initialize the renderer
-            // This is *inside* initApp, which is called by onload, so initializePy2DmolViewer is defined.
-            try {
-                initializePy2DmolViewer(viewerContainer);
-            } catch (e) {
-                console.error("Failed to initialize viewer:", e);
-                setStatus("Error: Failed to initialize viewer. See console.", true);
-                return;
-            }
-
-            // 4. Get the API
-            viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
-            if (!viewerApi) {
-                console.error("Fatal: Could not get viewer API after init.");
-                setStatus("Error: Could not get viewer API. See console.", true);
-                return;
-            }
-
-            // 5. Wire up event listeners
-            document.getElementById('fetch-btn').addEventListener('click', handleFetch);
-            document.getElementById('file-upload').addEventListener('change', handleFileUpload);
-            
-            // 6. Get status element
-            statusElement = document.getElementById('status-message');
-            paeContainer = document.getElementById('paeContainer');
-            
-            // Hide PAE container by default on load
-            if (paeContainer) {
-                paeContainer.style.display = 'none';
-            }
-
-            setStatus("Ready. Upload a file or fetch an ID.");
-        }
-
-        // --- NEW STARTUP LOGIC ---
-        
-        // Find the renderer script tag
-        const rendererScript = document.getElementById('py2dmol-renderer');
-
-        if (rendererScript) {
-            rendererScript.onload = () => {
-                // DEBUGGING: Log that the script is loaded
-                console.log("External py2Dmol.js script has loaded.");
+                // setStatus(`Aligning ${frameData.coords.length} atoms...`); // Removed
                 
-                // The script is loaded. Now we must wait for the DOM to be ready.
-                // It's possible DOM is already ready, or not.
-                if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                    // DOM is already ready, just run init
-                    initApp();
-                } else {
-                    // Wait for DOMContentLoaded
-                    document.addEventListener('DOMContentLoaded', initApp);
+                // Alignment logic removed for debugging
+                // if (!refCoords || refCoords.length !== frameData.coords.length) {
+                //     frameData.coords = best_view(frameData.coords);
+                //     refCoords = frameData.coords; 
+                // } else {
+                //     frameData.coords = align_a_to_b(frameData.coords, refCoords);
+                // }
+
+                setStatus(`Rendering ${name}...`);
+                
+                // Send to viewer
+                viewerApi.handlePythonNewObject(name);
+                viewerApi.handlePythonUpdate(JSON.stringify(frameData), name);
+                setStatus(`Successfully rendered ${name}.`);
+            }
+
+            async function handleFetch() {
+                const fetchId = document.getElementById('fetch-id').value.trim().toUpperCase();
+                if (!fetchId) {
+                    setStatus("Please enter a PDB or UniProt ID.", true);
+                    return;
                 }
-            };
-            
-            rendererScript.onerror = () => {
-                console.error("Fatal: Could not load py2Dmol.js renderer script.");
-                // Try to write error to status message, even if DOM isn't fully ready
-                const statusEl = document.getElementById('status-message');
-                if (statusEl) {
-                    statusEl.textContent = "Error: Could not load renderer script. Check network connection.";
-                    statusEl.className = "mt-4 text-sm text-red-600";
-                    statusEl.classList.remove('hidden');
+
+                // New logic: 4 chars = PDB, else AFDB
+                const isPDB = fetchId.length === 4;
+                const isAFDB = !isPDB;
+                
+                let structUrl, paeUrl, name, paeEnabled;
+
+                if (isAFDB) {
+                    name = `${fetchId}.cif`;
+                    structUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-model_v6.cif`;
+                    paeUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-predicted_aligned_error_v6.json`;
+                    paeEnabled = window.viewerConfig.pae; // Check if PAE view is even on
+                    
+                    if (paeEnabled) {
+                        setStatus(`Fetching ${fetchId} model and PAE...`);
+                        if (paeContainer) paeContainer.style.display = 'block'; // Show PAE container
+                    }
+                    else {
+                        setStatus(`Fetching ${fetchId} model...`);
+                        if (paeContainer) paeContainer.style.display = 'none'; // Ensure hidden
+                    }
+                    viewerApi.handlePythonSetColor('plddt'); // Set color for AFDB
+                } else { // isPDB
+                    name = `${fetchId}.cif`;
+                    structUrl = `https://files.rcsb.org/download/${fetchId}.cif`;
+                    paeUrl = null;
+                    paeEnabled = false;
+                    setStatus(`Fetching ${fetchId} from RCSB...`);
+                    viewerApi.handlePythonSetColor('auto'); // Reset color
+                    if (paeContainer) paeContainer.style.display = 'none'; // Hide PAE container for PDB
+                }
+
+                try {
+                    // Fetch structure
+                    const structResponse = await fetch(structUrl);
+                    if (!structResponse.ok) {
+                        throw new Error(`Failed to fetch structure (HTTP ${structResponse.status})`);
+                    }
+                    const structText = await structResponse.text();
+                    
+                    // Fetch PAE (if applicable)
+                    let paeData = null;
+                    if (paeEnabled && paeUrl) {
+                        try {
+                            const paeResponse = await fetch(paeUrl);
+                            if (paeResponse.ok) {
+                                const paeJson = await paeResponse.json();
+                                // AFDB PAE is wrapped in a list
+                                if (paeJson && paeJson.length > 0) {
+                                    paeData = paeJson[0].predicted_aligned_error;
+                                }
+                            } else {
+                                 setStatus(`Fetched model, but PAE data not found (HTTP ${paeResponse.status}).`);
+                                 if (paeContainer) paeContainer.style.display = 'none'; // Hide if PAE fetch fails
+                            }
+                        } catch (e) {
+                            console.warn("Could not fetch PAE data:", e.message);
+                            setStatus(`Fetched model, but PAE data failed to load.`);
+                            if (paeContainer) paeContainer.style.display = 'none'; // Hide if PAE fetch fails
+                        }
+                    }
+                    
+                    // Process and render
+                    processStructure(structText, name, paeData);
+
+                } catch (e) {
+                    console.error("Fetch failed:", e);
+                    setStatus(`Error: ${e.message}. Check ID and console.`, true);
+                    if (paeContainer) paeContainer.style.display = 'none'; // Hide on total failure
                 }
             }
-        } else {
-            console.error("Fatal: Could not find renderer script tag.");
-        }
+
+            function handleFileUpload(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                // When uploading, always hide PAE
+                if (paeContainer) paeContainer.style.display = 'none';
+                viewerApi.handlePythonSetColor('auto'); // Reset color
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const text = e.target.result;
+                    if (text) {
+                        processStructure(text, file.name);
+                    } else {
+                        setStatus("File is empty or unreadable.", true);
+                    }
+                };
+                reader.onerror = () => {
+                    setStatus("Failed to read file.", true);
+                };
+                reader.readAsText(file);
+            }
+            
+            /**
+             * Initializes the entire application.
+             */
+            function initApp() {
+                // DEBUGGING: Log that initApp is called
+                console.log("DOM is ready. Initializing app...");
+
+                // 1. Manually set the viewer config
+                window.viewerConfig = { 
+                    size: [400, 400], // Start a bit bigger
+                    pae_size: [300, 300],
+                    color: "auto", 
+                    shadow: true, 
+                    outline: true,
+                    width: 3.0,
+                    rotate: false,
+                    controls: true,
+                    autoplay: false,
+                    box: true,
+                    pastel: 0.25,
+                    pae: true, // Keep PAE logic enabled in the renderer
+                    colorblind: false,
+                    viewer_id: "standalone-viewer-1" // Give it a static ID
+                };
+
+                // 2. Find the viewer container
+                const viewerContainer = document.getElementById('viewer-container');
+                if (!viewerContainer) {
+                    console.error("Fatal: Could not find #viewer-container element.");
+                    return;
+                }
+
+                // 3. Initialize the renderer
+                try {
+                    // This function MUST be available from the external script
+                    initializePy2DmolViewer(viewerContainer);
+                } catch (e) {
+                    console.error("Failed to initialize viewer:", e);
+                    console.error("Did 'initializePy2DmolViewer' load from the external script?");
+                    setStatus("Error: Failed to initialize viewer. See console.", true);
+                    return;
+                }
+
+                // 4. Get the API
+                viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
+                if (!viewerApi) {
+                    console.error("Fatal: Could not get viewer API after init.");
+                    setStatus("Error: Could not get viewer API. See console.", true);
+                    return;
+                }
+
+                // 5. Wire up event listeners
+                document.getElementById('fetch-btn').addEventListener('click', handleFetch);
+                document.getElementById('file-upload').addEventListener('change', handleFileUpload);
+                
+                // 6. Get status element
+                statusElement = document.getElementById('status-message');
+                paeContainer = document.getElementById('paeContainer');
+                
+                // Hide PAE container by default on load
+                if (paeContainer) {
+                    paeContainer.style.display = 'none';
+                }
+
+                setStatus("Ready. Upload a file or fetch an ID.");
+            }
+
+            // --- STARTUP ---
+            // All functions are defined, now call initApp
+            initApp();
+
+        });
         
     </script>
 </body>
