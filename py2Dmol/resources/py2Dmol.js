@@ -841,19 +841,10 @@ function initializePy2DmolViewer(containerElement) {
             
             // "auto" logic:
             // Always calculate what 'auto' *should* be
-            const hasPAE = (paeData && paeData.length > 0);
-            
-            // --- NEW AUTO COLOR LOGIC ---
-            if (hasPAE) {
-                // If PAE data is present, 'auto' resolves to 'plddt'
-                this.resolvedAutoColor = 'plddt';
-            } else if (this.chains && this.chains.length > 0) {
-                // Otherwise, check chain count
+            if (this.chains && this.chains.length > 0) {
                 const uniqueChains = new Set(this.chains.filter(c => c && c.trim()));
-                // If multi-chain, 'auto' resolves to 'chain', else 'rainbow'
                 this.resolvedAutoColor = (uniqueChains.size > 1) ? 'chain' : 'rainbow';
             } else {
-                // Fallback for empty chain data
                 this.resolvedAutoColor = 'rainbow';
             }
             
