@@ -767,15 +767,11 @@ function initializePy2DmolViewer(containerElement) {
             }
             
             this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
-            this.playButton.innerHTML = this.isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+            this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
         }
 
         // Toggle play/pause
         togglePlay() {
-            if (!this.currentObjectName) return;
-            const object = this.objectsData[this.currentObjectName];
-            if (!object || object.frames.length < 2) return;
-            
             if (this.isPlaying) {
                 this.stopAnimation();
             } else {
@@ -830,34 +826,27 @@ function initializePy2DmolViewer(containerElement) {
                     const plddts = data.plddts || [];
                     const chains = data.chains || [];
                     const atomTypes = data.atom_types || [];
-                    
-                    // PASS PAE DATA TO setCoords (Needed for AUTO logic)
-                    this.setCoords(coords, plddts, chains, atomTypes, data.pae); 
+                    this.setCoords(coords, plddts, chains, atomTypes);
                 }
             } catch (e) {
                 console.error("Failed to load data into renderer:", e);
             }
         }
 
-        setCoords(coords, plddts = [], chains = [], atomTypes = [], paeData = null) {
+        setCoords(coords, plddts = [], chains = [], atomTypes = []) {
             this.coords = coords;
             this.plddts = plddts;
             this.chains = chains;
             this.atomTypes = atomTypes;
             
-            const hasPAE = (paeData && paeData.length > 0);
-            
-            // --- NEW AUTO COLOR LOGIC ---
-            if (hasPAE) {
-                // If PAE data is present, 'auto' resolves to 'plddt'
+            // "auto" logic:
+            // Always calculate what 'auto' *should* be
+            if (this.paeRenderer && this.paeRenderer.paeData) {
                 this.resolvedAutoColor = 'plddt';
             } else if (this.chains && this.chains.length > 0) {
-                // Otherwise, check chain count
                 const uniqueChains = new Set(this.chains.filter(c => c && c.trim()));
-                // If multi-chain, 'auto' resolves to 'chain', else 'rainbow'
                 this.resolvedAutoColor = (uniqueChains.size > 1) ? 'chain' : 'rainbow';
             } else {
-                // Fallback for empty chain data
                 this.resolvedAutoColor = 'rainbow';
             }
             
@@ -1971,10 +1960,9 @@ function initializePy2DmolViewer(containerElement) {
     // 10. Add function for Python to set color mode (e.g., for from_afdb)
     const handlePythonSetColor = (colorMode) => {
         if (colorSelect) {
-            renderer.colorMode = colorMode; // Directly set the renderer state
-            renderer.colors = renderer._calculateSegmentColors();
-            renderer.render();
-            // NOTE: We do NOT set colorSelect.value here to keep the user's manual selection intact.
+            colorSelect.value = colorMode;
+            // Manually trigger the change event
+            colorSelect.dispatchEvent(new Event('change'));
         }
     };
 
