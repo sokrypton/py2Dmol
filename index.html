@@ -37,6 +37,25 @@
                             <input type="text" id="fetch-id" placeholder="e.g., 4HHB or P0A8I3">
                             <button id="fetch-btn">Fetch</button>
                         </div>
+                        <!-- Bioassembly & Ligand toggles (default ON) -->
+                        <div class="upload-options-section" id="fetchOptionsSection">
+                            <div class="upload-toggle-item">
+                                <label class="switch">
+                                    <input type="checkbox" id="biounitCheckbox" checked>
+                                    <span class="slider-toggle"></span>
+                                </label>
+                                <label for="biounitCheckbox" class="upload-toggle-label">Load Bioassembly (BU1)</label>
+                            </div>
+
+                            <div class="upload-toggle-item">
+                                <label class="switch">
+                                    <input type="checkbox" id="ignoreLigandsCheckbox" checked>
+                                    <span class="slider-toggle"></span>
+                                </label>
+                                <label for="ignoreLigandsCheckbox" class="upload-toggle-label">Ignore Ligands</label>
+                            </div>
+                        </div>
+
                     </td>
                     
                     <!-- Separator Column -->
@@ -75,7 +94,7 @@
                                          <input type="checkbox" id="alignFramesCheckbox" checked> 
                                          <span class="slider-toggle"></span>
                                      </label>
-                                     <label for="alignFramesCheckbox" class="upload-toggle-label">Align to First Frame</label>
+                                     <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
                                  </div>
                              </div>
                         </div>
@@ -194,5 +213,42 @@
     </div>
     <script src="web/utils.js"></script>
     <script id="py2dmol-renderer" src="py2Dmol/resources/py2Dmol.js"></script>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  // Ensure viewerConfig exists
+  window.viewerConfig = window.viewerConfig || {};
+
+  const biounitEl = document.getElementById('biounitCheckbox');
+  const ignoreLigandsEl = document.getElementById('ignoreLigandsCheckbox');
+
+  // Initialize defaults ONLY if not already set (default = true as requested)
+  if (typeof window.viewerConfig.biounit === 'undefined') {
+    window.viewerConfig.biounit = true;
+  }
+  if (typeof window.viewerConfig.ignoreLigands === 'undefined') {
+    window.viewerConfig.ignoreLigands = true;
+  }
+
+  // Reflect into UI
+  if (biounitEl) biounitEl.checked = !!window.viewerConfig.biounit;
+  if (ignoreLigandsEl) ignoreLigandsEl.checked = !!window.viewerConfig.ignoreLigands;
+
+  // Wire change listeners
+  if (biounitEl) {
+    biounitEl.addEventListener('change', () => {
+      window.viewerConfig.biounit = biounitEl.checked;
+      console.debug('[UI] biounit =', window.viewerConfig.biounit);
+    });
+  }
+  if (ignoreLigandsEl) {
+    ignoreLigandsEl.addEventListener('change', () => {
+      window.viewerConfig.ignoreLigands = ignoreLigandsEl.checked;
+      console.debug('[UI] ignoreLigands =', window.viewerConfig.ignoreLigands);
+    });
+  }
+});
+</script>
+
 </body>
 </html>

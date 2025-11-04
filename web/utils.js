@@ -489,12 +489,293 @@ document.addEventListener('DOMContentLoaded', () => {
         console.warn("Could not find any *known* PAE matrix (pae, predicted_aligned_error) in the JSON file.");
         return null;
     }
+// ---- Lightweight Biological Assembly (BU1) helpers ----
+function tokenizeCIFLine_light(s) {
+    const out = []; let i=0, n=s.length;
+    while (i<n) {
+        while (i<n && /\s/.test(s[i])) i++;
+        if (i>=n) break;
+        if (s[i]==="'") { let j=++i; while (j<n && s[j]!=="'") j++; out.push(s.slice(i,j)); i=Math.min(j+1,n); }
+        else if (s[i]==='"') { let j=++i; while (j<n && s[j]!=='"') j++; out.push(s.slice(i,j)); i=Math.min(j+1,n); }
+        else { let j=i; while (j<n && !/\s/.test(s[j])) j++; const tok=s.slice(i,j); out.push(tok==='.'||tok==='?'?'':tok); i=j; }
+    }
+    return out;
+}
+function parseMinimalCIF_light(text){
+    const lines = text.split(/\r?\n/);
+    const loops = [];
+    let i=0;
+    while (i<lines.length){
+        let L = lines[i].trim();
+        if (!L || L[0]==='#'){ i++; continue; }
+        if (/^loop_/i.test(L)){
+            i++;
+            const cols=[]; const rows=[];
+            while (i<lines.length && /^\s*_/.test(lines[i])) { cols.push(lines[i].trim()); i++; }
+            while (i<lines.length){
+                const raw = lines[i];
+                if (!raw || /^\s*#/.test(raw) || /^\s*loop_/i.test(raw) || /^\s*data_/i.test(raw) || /^\s*_/.test(raw)) break;
+                let vals = tokenizeCIFLine_light(raw);
+                while (vals.length < cols.length && i+1<lines.length){
+                    const more = tokenizeCIFLine_light(lines[++i]);
+                    vals = vals.concat(more);
+                }
+                if (vals.length>=cols.length) rows.push(vals.slice(0, cols.length));
+                i++;
+            }
+            loops.push([cols, rows]);
+            continue;
+        }
+        i++;
+    }
+    return loops;
+}
+function expandOperExpr_light(expr){
+    if (!expr) return [];
+    expr = expr.replace(/\s+/g,'');
+    function splitTop(s, sep){
+        const out=[]; let depth=0; let last=0;
+        for (let i=0;i<s.length;i++){
+            const c=s[i]; if (c==='(') depth++; else if (c===')') depth--;
+            else if (depth===0 && c===sep) { out.push(s.slice(last,i)); last=i+1; }
+        }
+        out.push(s.slice(last)); return out.filter(Boolean);
+    }
+    const parts = splitTop(expr, ',');
+    const seqs=[];
+    for (const p of parts){
+        const groups = splitTop(p, 'x');
+        let expanded = groups.map(term=>{
+            if (term.startsWith('(') && term.endsWith(')')) term = term.slice(1,-1);
+            const m = term.match(/^(\d+)-(\d+)$/);
+            if (/^\d+$/.test(term)) return [term];
+            if (m){ const a=+m[1], b=+m[2]; const out=[]; const step=a<=b?1:-1; for (let k=a; step>0?k<=b:k>=b; k+=step) out.push(String(k)); return out; }
+            return term.split(',').filter(Boolean);
+        });
+        let acc = expanded[0].map(x=>[x]);
+        for (let i=1;i<expanded.length;i++){
+            const next=[]; for (const a of acc) for (const x of expanded[i]) next.push(a.concat([x])); acc=next;
+        }
+        seqs.push(...acc);
+    }
+    return seqs;
+}
+function applyOp_light(atom, R, t){
+    return {
+       ...atom,
+       x: R[0]*atom.x + R[1]*atom.y + R[2]*atom.z + t[0],
+       y: R[3]*atom.x + R[4]*atom.y + R[5]*atom.z + t[1],
+       z: R[6]*atom.x + R[7]*atom.y + R[8]*atom.z + t[2]
+    };
+}
+function parseFirstBioAssembly(text){
+    const isCIF = /^\s*data_/i.test(text) || /_atom_site\./i.test(text);
+    return isCIF ? buildBioFromCIF(text) : buildBioFromPDB(text);
+}
+function buildBioFromPDB(text){
+    // Parse atoms from the first MODEL (asymmetric unit)
+    const models = parsePDB(text);
+    const atoms = (models && models[0]) ? models[0] : [];
+    const lines = text.split(/\r?\n/);
+
+    let inTargetBio = false;
+    const targetBioId = 1;
+    const chains = new Set();
+    const opRows = {};
+
+    for (const L of lines) {
+        if (!L.startsWith('REMARK 350')) continue;
+        if (/REMARK 350\s+BIOMOLECULE:\s*(\d+)/.test(L)) {
+            const id = parseInt(L.match(/REMARK 350\s+BIOMOLECULE:\s*(\d+)/)[1], 10);
+            inTargetBio = (id === targetBioId);
+            continue;
+        }
+        if (!inTargetBio) continue;
+        if (/:/.test(L) && /(APPLY THE FOLLOWING TO|AND|ALSO)\s+CHAIN[S]?:/i.test(L)) {
+            const after = L.split(':')[1] || '';
+            after.split(/[, ]+/).map(s=>s.replace(/[^A-Za-z0-9]/g,'').trim()).filter(Boolean).forEach(c=>chains.add(c));
+            continue;
+        }
+        if (/REMARK 350\s+BIOMT[123]/.test(L)) {
+            const rowChar = L.substring(18,19);
+            const rowNum = parseInt(rowChar, 10);
+            const opIdx  = parseInt(L.substring(19,24), 10);
+            if (!(rowNum >= 1 && rowNum <= 3) || isNaN(opIdx)) continue;
+            const a1 = parseFloat(L.substring(23,33));
+            const a2 = parseFloat(L.substring(33,43));
+            const a3 = parseFloat(L.substring(43,53));
+            const t  = parseFloat(L.substring(53,68));
+            if ([a1,a2,a3,t].some(v => Number.isNaN(v))) continue;
+            const row = [a1,a2,a3,t];
+            opRows[opIdx] = opRows[opIdx] || [null, null, null];
+            opRows[opIdx][rowNum - 1] = row;
+        }
+    }
+    const ops = [];
+    Object.keys(opRows).forEach(k => {
+        const r = opRows[k];
+        if (r[0] && r[1] && r[2]) {
+            const R = [ r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2] ];
+            const t = [ r[0][3], r[1][3], r[2][3] ];
+            ops.push({ id: String(k), R, t });
+        }
+    });
+    if (ops.length === 0) return { atoms, meta: { source: 'pdb', assembly: 'asymmetric_unit' } };
+    if (chains.size === 0) { for (const a of atoms) if (a.chain) chains.add(a.chain); }
+    const out = [];
+    for (const op of ops) {
+        for (const a of atoms) {
+            if (!chains.size || chains.has(a.chain)) {
+                const ax = applyOp_light(a, op.R, op.t);
+                ax.chain = (op.id === '1') ? String(a.chain || '') : (String(a.chain || '') + '|' + op.id);
+                out.push(ax);
+            }
+        }
+    }
+    return { atoms: out, meta: { source: 'pdb', assembly: String(targetBioId), ops: ops.length, chains: [...chains] } };
+}
+function buildBioFromCIF(text){
+    const loops = parseMinimalCIF_light(text);
+    const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
+
+    // Atom table (asymmetric unit)
+    const atomL = loops.find(([cols]) => cols.some(c => c.startsWith('_atom_site.')));
+    if (!atomL) return { atoms: [], meta: { source: 'mmcif', assembly: 'empty' } };
+
+    const atomCols = atomL[0], atomRows = atomL[1];
+    const acol = (n) => atomCols.indexOf(n);
+
+    const ixX   = acol('_atom_site.Cartn_x');
+    const ixY   = acol('_atom_site.Cartn_y');
+    const ixZ   = acol('_atom_site.Cartn_z');
+    const ixEl  = acol('_atom_site.type_symbol');
+    const ixLA  = acol('_atom_site.label_asym_id');
+    const ixAA  = acol('_atom_site.auth_asym_id');
+    const ixRes = (acol('_atom_site.label_comp_id') >= 0 ? acol('_atom_site.label_comp_id') : acol('_atom_site.auth_comp_id'));
+    const ixSeq = (acol('_atom_site.label_seq_id')  >= 0 ? acol('_atom_site.label_seq_id')  : acol('_atom_site.auth_seq_id'));
+    const ixNm  = acol('_atom_site.label_atom_id');
+    const ixGrp = acol('_atom_site.group_PDB');
+    const ixB   = acol('_atom_site.B_iso_or_equiv');
+
+    const baseAtoms = atomRows.map(r => ({
+        record:   r[ixGrp] || 'ATOM',
+        atomName: r[ixNm]  || '',
+        resName:  r[ixRes] || '',
+        // Prefer label_asym_id for assembly logic and display
+        lchain:   (ixLA >= 0 ? r[ixLA] : (ixAA >= 0 ? r[ixAA] : '')) || '',
+        chain:    (ixLA >= 0 ? r[ixLA] : (ixAA >= 0 ? r[ixAA] : '')) || '',
+        authChain:(ixAA >= 0 ? r[ixAA] : ''),
+        resSeq:   r[ixSeq] ? parseInt(r[ixSeq], 10) : 0,
+        x:        parseFloat(r[ixX]),
+        y:        parseFloat(r[ixY]),
+        z:        parseFloat(r[ixZ]),
+        b:        ixB >= 0 ? (parseFloat(r[ixB]) || 0.0) : 0.0,
+        element:  (r[ixEl] || '').toUpperCase()
+    }));
+
+    // Assembly generator
+    const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
+    if (!asmL) return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' } };
+
+    // Operator list (may be missing; identity if so)
+    const operL = getLoop('_pdbx_struct_oper_list.id');
+    const opCols = operL ? operL[0] : [];
+    const opRows = operL ? operL[1] : [];
+    const o = (n) => opCols.indexOf(n);
+
+    const opMap = new Map();
+    for (const r of opRows) {
+        const id = (r[o('_pdbx_struct_oper_list.id')] || '').toString();
+        const R = [
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][1]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][2]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][3]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][1]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][2]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][3]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][1]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][2]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][3]')])
+        ];
+        const t = [
+            parseFloat(r[o('_pdbx_struct_oper_list.vector[1]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.vector[2]')]),
+            parseFloat(r[o('_pdbx_struct_oper_list.vector[3]')])
+        ];
+        if (Number.isFinite(R[0])) opMap.set(id, { R, t });
+    }
+    if (!operL || opMap.size === 0) {
+        opMap.set('1', { R: [1,0,0, 0,1,0, 0,0,1], t: [0,0,0] });
+    }
+
+    // Choose assembly 1 (fallback to first row if no explicit "1")
+    const a = (n) => asmL[0].indexOf(n);
+    let candidates = asmL[1].filter(r => (r[a('_pdbx_struct_assembly_gen.assembly_id')] || '') === '1');
+    if (candidates.length === 0 && asmL[1].length > 0) candidates = [asmL[1][0]];
+    if (candidates.length === 0) return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' } };
+
+    // Assemble
+    const out = [];
+    const seen = new Set();
+    for (const r of candidates) {
+        const asymList =
+            (r[a('_pdbx_struct_assembly_gen.asym_id_list')] ||
+             r[a('_pdbx_struct_assembly_gen.oper_asym_id_list')] || '').toString();
+        const asymIds = asymList.split(',').map(s => s.trim()).filter(Boolean);
+        asymIds.forEach(c => seen.add(c));
+
+        const expr = (r[a('_pdbx_struct_assembly_gen.oper_expression')] || '1').toString();
+        const seqs = expandOperExpr_light(expr);
+        const seqsUse = (seqs && seqs.length) ? seqs : [['1']];
+
+        for (const seq of seqsUse) {
+            const seqLabel = seq.join('x');
+            // Compose left-multiplied: opN * ... * op1
+            let R = [1,0,0, 0,1,0, 0,0,1];
+            let t = [0,0,0];
+            for (const id of seq) {
+                const op = opMap.get(id); if (!op) continue;
+                t = [ op.R[0]*t[0]+op.R[1]*t[1]+op.R[2]*t[2]+op.t[0],
+                      op.R[3]*t[0]+op.R[4]*t[1]+op.R[5]*t[2]+op.t[1],
+                      op.R[6]*t[0]+op.R[7]*t[1]+op.R[8]*t[2]+op.t[2] ];
+                R = [ op.R[0]*R[0]+op.R[1]*R[3]+op.R[2]*R[6],
+                      op.R[0]*R[1]+op.R[1]*R[4]+op.R[2]*R[7],
+                      op.R[0]*R[2]+op.R[1]*R[5]+op.R[2]*R[8],
+                      op.R[3]*R[0]+op.R[4]*R[3]+op.R[5]*R[6],
+                      op.R[3]*R[1]+op.R[4]*R[4]+op.R[5]*R[7],
+                      op.R[3]*R[2]+op.R[4]*R[5]+op.R[5]*R[8],
+                      op.R[6]*R[0]+op.R[7]*R[3]+op.R[8]*R[6],
+                      op.R[6]*R[1]+op.R[7]*R[4]+op.R[8]*R[7],
+                      op.R[6]*R[2]+op.R[7]*R[5]+op.R[8]*R[8] ];
+            }
+            for (const aAtom of baseAtoms) {
+                // Only label_asym_id participates in asym_id_list
+                if (!asymIds.includes(aAtom.lchain)) continue;
+                const ax = applyOp_light(aAtom, R, t);
+                ax.chain = (seqLabel === '1') ? String(aAtom.lchain || aAtom.chain || '') : (String(aAtom.lchain || aAtom.chain || '') + '|' + seqLabel);
+                out.push(ax);
+            }
+        }
+    }
+    // Optional debug
+    try { console.debug('[BU1 mmCIF] asym=', [...seen]); } catch {}
+
+    return { atoms: out, meta: { source: 'mmcif', assembly: '1', chains: [...seen] } };
+}
+
+
 
     function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
         let models;
         try {
-            const isCIF = text.substring(0, 1000).includes('data_');
-            models = isCIF ? parseCIF(text) : parsePDB(text);
+            const wantBU = !!(window.viewerConfig && window.viewerConfig.biounit);
+            if (wantBU) {
+                const assembled = parseFirstBioAssembly(text);
+                if (assembled && assembled.atoms && assembled.atoms.length) {
+                    models = [assembled.atoms];
+                }
+            }
+            if (!models) { const isCIF = text.substring(0, 1000).includes('data_'); models = isCIF ? parseCIF(text) : parsePDB(text); }
             if (!models || models.length === 0 || models.every(m => m.length === 0)) {
                 throw new Error(`Could not parse any models or atoms from ${name}.`);
             }
@@ -515,6 +796,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const isTrajectory = (loadAsFramesCheckbox.checked || targetObject.frames.length > 0 || models.length > 1);
         const shouldAlign = alignFramesCheckbox.checked;
 
+        function maybeFilterLigands(atoms) {
+            const ignore = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
+            if (!ignore) return atoms;
+            const proteinResidues = new Set(["ALA","ARG","ASN","ASP","CYS","GLU","GLN","GLY","HIS","ILE","LEU","LYS","MET","PHE","PRO","SER","THR","TRP","TYR","VAL","SEC","PYL"]);
+            const nucleicResidues = new Set(["A","C","G","U","T","DA","DC","DG","DT","RA","RC","RG","RU"]);
+            return atoms.filter(a => a && (
+                a.record !== 'HETATM' || proteinResidues.has(a.resName) || nucleicResidues.has(a.resName)
+            ));
+        }
+
         for (let i = 0; i < models.length; i++) {
             if (!loadAsFramesCheckbox.checked && i > 0) {
                 const modelObjectName = `${targetObjectName}_model_${i+1}`;
@@ -525,7 +816,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            const model = models[i];
+            const model = maybeFilterLigands(models[i]);
             let frameData = convertParsedToFrameData(model);
             if (frameData.coords.length === 0) continue;
 
@@ -900,7 +1191,11 @@ document.addEventListener('DOMContentLoaded', () => {
             pae_size: [PAE_PLOT_SIZE, PAE_PLOT_SIZE],
             color: "auto", shadow: true, outline: true, width: 3.0,
             rotate: false, controls: true, autoplay: false, box: true,
-            pastel: 0.25, pae: true, colorblind: false, viewer_id: "standalone-viewer-1"
+            pastel: 0.25, pae: true, colorblind: false, viewer_id: "standalone-viewer-1",
+            // when true, load first biological assembly (BU1)
+            biounit: true,
+            // ignore non-polymer ligands/ions (HETATM)
+            ignoreLigands: true
         };
 
         canvasContainer.style.width = `${FIXED_WIDTH}px`;

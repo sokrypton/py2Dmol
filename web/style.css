@@ -713,3 +713,45 @@
         .py2dmol-viewer-instance .btn-toggle input:checked + span:hover {
           background: #059669; /* Slightly darker green on hover when ON */
         }
+
+
+/* Match spacing/appearance for the Fetch options box */
+#fetchOptionsSection {
+  margin-top: 10px;
+}
+
+
+/* Fetch options toggles — mirror Upload options styling */
+#fetchOptionsSection .switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+#fetchOptionsSection .switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+#fetchOptionsSection .slider-toggle {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: #cbd5e1;
+  transition: .3s;
+  border-radius: 24px;
+}
+#fetchOptionsSection .slider-toggle:before {
+  position: absolute;
+  content: "";
+  height: 18px; width: 18px;
+  left: 3px; bottom: 3px;
+  background-color: white;
+  transition: .3s;
+  border-radius: 50%;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+#fetchOptionsSection input:checked + .slider-toggle { background-color: #3b82f6; }
+#fetchOptionsSection input:focus + .slider-toggle { box-shadow: 0 0 0 2px rgba(59,130,246,0.3); }
+#fetchOptionsSection input:checked + .slider-toggle:before { transform: translateX(20px); }
