@@ -570,9 +570,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 
                 // Prioritize matches that hint at being PAE files
-                const nameHintScore = (jsonBaseName.includes("pae") || jsonBaseName.includes("full_data") || jsonBaseName.includes("aligned_error")) ? 1 : 0;
+                const nameHintScore = (jsonBaseName.includes("pae") || jsonBaseName.includes("full_data") || jsonBaseName.includes("scores") || jsonBaseName.includes("aligned_error")) ? 1 : 0;
                 
-                // CRITICAL FIX: Check if the model numbers match (for AlphaFold3 convention)
+                // AlphaFold3 Server: Check if the model numbers match (at end of filename)
+                // Pattern: fold_2025_09_27_17_51_model_0.cif <-> fold_2025_09_27_17_51_full_data_0.json
                 const structModelMatch = structBaseName.match(/_model_(\d+)$/i);
                 const structModelNum = structModelMatch ? structModelMatch[1] : null;
 
@@ -584,7 +585,32 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
                 
-                const finalScore = score + nameHintScore + modelNumBonus;
+                // ColabFold: Check if rank numbers match (embedded in filename)
+                // Pattern: test_unrelaxed_rank_001_alphafold2_model_5.pdb <-> test_scores_rank_001_alphafold2_model_5.json
+                const structRankMatch = structBaseName.match(/_rank_(\d+)_/i);
+                const jsonRankMatch = jsonBaseName.match(/_rank_(\d+)_/i);
+                
+                let rankBonus = 0;
+                if (structRankMatch && jsonRankMatch && structRankMatch[1] === jsonRankMatch[1]) {
+                    rankBonus = 100; // Large bonus for exact rank match (ColabFold)
+                    
+                    // Additional bonus: Check if model numbers also match within the filename
+                    // Pattern: _model_5_ or _model_5_seed_
+                    const structInternalModel = structBaseName.match(/_model_(\d+)_/i);
+                    const jsonInternalModel = jsonBaseName.match(/_model_(\d+)_/i);
+                    if (structInternalModel && jsonInternalModel && structInternalModel[1] === jsonInternalModel[1]) {
+                        rankBonus += 50; // Extra bonus for matching internal model numbers
+                    }
+                    
+                    // Additional bonus: Check if seed numbers also match
+                    const structSeed = structBaseName.match(/_seed_(\d+)/i);
+                    const jsonSeed = jsonBaseName.match(/_seed_(\d+)/i);
+                    if (structSeed && jsonSeed && structSeed[1] === jsonSeed[1]) {
+                        rankBonus += 25; // Extra bonus for matching seed numbers
+                    }
+                }
+                
+                const finalScore = score + nameHintScore + modelNumBonus + rankBonus;
 
                 // Check content only if the score is higher than the current best score
                 if (finalScore > bestScore) {
