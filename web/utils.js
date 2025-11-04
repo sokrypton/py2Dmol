@@ -351,8 +351,87 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
+     * Calculates all valid "best view" orientations.
+     * This includes the ambiguity of 180-degree flips (v vs -v) and
+     * the ambiguity of swapping the largest and second-largest variance axes.
+     *
+     * @param {Array<Array<number>>} coords Coordinates to orient (N x 3)
+     * @returns {Array<Array<Array<number>>>} A list of 8 valid rotation matrices.
+     */
+    function get_all_best_view_rotations(coords) {
+        // 1. Calculate centroid
+        const mean = calculateMean(coords);
+        
+        // 2. Center coordinates
+        const centered = coords.map(c => [c[0] - mean[0], c[1] - mean[1], c[2] - mean[2]]);
+        
+        // 3. Compute covariance matrix H = centered.T @ centered
+        const H = numeric.dot(numeric.transpose(centered), centered);
+        
+        // 4. SVD to get principal axes (V matrix)
+        const svd = numeric.svd(H);
+        let V = svd.V; // V matrix columns are the principal axes
+        
+        // --- Get the three principal axes as column vectors ---
+        // V is (3x3), V[row][col]. We want columns.
+        const vL = [V[0][0], V[1][0], V[2][0]]; // Largest variance
+        const vS = [V[0][1], V[1][1], V[2][1]]; // Second largest
+        const vT = [V[0][2], V[1][2], V[2][2]]; // Third (smallest)
+
+        // --- Define the two base orientations (X/Y swap) ---
+        // We need to re-build V from columns. numeric.js matrices are [row][col].
+        
+        let V1 = [[vL[0], vS[0], vT[0]], [vL[1], vS[1], vT[1]], [vL[2], vS[2], vT[2]]]; // Base 1: L->X, S->Y
+        let V2 = [[vS[0], vL[0], vT[0]], [vS[1], vL[1], vT[1]], [vS[2], vL[2], vT[2]]]; // Base 2: L->Y, S->X
+
+        // --- Chirality/Reflection Check (Ensure determinant is +1) ---
+        if (numeric.det(V1) < 0) {
+            // Flip the smallest axis
+            V1 = [[vL[0], vS[0], -vT[0]], [vL[1], vS[1], -vT[1]], [vL[2], vS[2], -vT[2]]];
+        }
+        if (numeric.det(V2) < 0) {
+            // Flip the smallest axis
+            V2 = [[vS[0], vL[0], -vT[0]], [vS[1], vL[1], -vT[1]], [vS[2], vL[2], -vT[2]]];
+        }
+
+        // --- Calculate final coordinate sets for both base rotations ---
+        const rotated1_centered = numeric.dot(centered, V1);
+        const bestViewCoords1 = rotated1_centered.map(c => [c[0] + mean[0], c[1] + mean[1], c[2] + mean[2]]);
+
+        const rotated2_centered = numeric.dot(centered, V2);
+        const bestViewCoords2 = rotated2_centered.map(c => [c[0] + mean[0], c[1] + mean[1], c[2] + mean[2]]);
+
+        // --- Get the two base rotation matrices (from original coords) ---
+        const target_base1 = calculateRotationBetween(coords, bestViewCoords1);
+        const target_base2 = calculateRotationBetween(coords, bestViewCoords2);
+
+        // --- Define the 180-degree flip matrices ---
+        const R_X_180 = [[1,  0,  0], [0, -1,  0], [0,  0, -1]];
+        const R_Y_180 = [[-1, 0,  0], [0,  1,  0], [0,  0, -1]];
+        const R_Z_180 = [[-1, 0,  0], [0, -1,  0], [0,  0,  1]];
+
+        // --- Generate all 8 valid target rotation matrices ---
+        const all_targets = [];
+
+        // Set 1 (from target_base1)
+        all_targets.push(target_base1);
+        all_targets.push(numeric.dot(target_base1, R_X_180));
+        all_targets.push(numeric.dot(target_base1, R_Y_180));
+        all_targets.push(numeric.dot(target_base1, R_Z_180));
+        
+        // Set 2 (from target_base2)
+        all_targets.push(target_base2);
+        all_targets.push(numeric.dot(target_base2, R_X_180));
+        all_targets.push(numeric.dot(target_base2, R_Y_180));
+        all_targets.push(numeric.dot(target_base2, R_Z_180));
+
+        return all_targets;
+    }
+
+    /**
      * Applies a best view rotation to the current frame in the viewer.
-     * Animates smoothly to the optimal orientation.
+     * Animates smoothly to the optimal orientation using the SHORTEST PATH,
+     * avoiding 180-degree "dizzying" spins and X/Y axis swaps.
      */
     function applyBestViewRotation() {
         if (!viewerApi || !viewerApi.renderer) {
@@ -387,25 +466,39 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
-        // 1. Get current coordinates
+        // 1. Get current coordinates and current viewer rotation
         const coords = currentFrameData.coords;
+        const currentRotation = renderer.rotationMatrix.map(row => [...row]); // Deep copy
                 
-        // 2. Calculate best view orientation
-        const bestViewCoords = best_view(coords);
+        // --- START NEW IMPLEMENTATION (Shortest Path Logic) ---
+
+        // 2. Calculate all 8 valid "best view" orientations
+        const all_target_rots = get_all_best_view_rotations(coords);
         
-        // 3. Calculate rotation matrix needed
-        const targetRotation = calculateRotationBetween(coords, bestViewCoords);
+        // 3. Find the angle from the current view to each of the 8 targets
+        let bestTarget = null;
+        let minAngle = Infinity;
+
+        for (const target of all_target_rots) {
+            const angle = rotationAngleBetweenMatrices(currentRotation, target);
+            if (angle < minAngle) {
+                minAngle = angle;
+                bestTarget = target;
+            }
+        }
         
-        // 4. Get current viewer rotation matrix
-        const currentRotation = renderer.rotationMatrix;
+        // 4. This is the rotation we will animate to
+        const targetRotation = bestTarget;
         
-        // 5. Calculate the final target rotation
+        // --- END NEW IMPLEMENTATION ---
+        
+        // 5. Calculate the final target rotation matrix
         const currentInverse = numeric.transpose(currentRotation);
         const deltaRotation = numeric.dot(currentInverse, targetRotation);
         const finalTargetRotation = numeric.dot(currentRotation, deltaRotation);
         
-        // 6. Calculate animation duration based on rotation angle
-        const rotationAngle = rotationAngleBetweenMatrices(currentRotation, finalTargetRotation);
+        // 6. Calculate animation duration based on the SHORTEST rotation angle
+        const rotationAngle = minAngle; // Use the pre-calculated minimum angle
         const rotationDegrees = rotationAngle * (180 / Math.PI);
         
         // Duration: ~10ms per degree, with min 300ms and max 2000ms
@@ -413,7 +506,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // 7. Set up animation
         rotationAnimation.active = true;
-        rotationAnimation.startMatrix = currentRotation.map(row => [...row]); // Deep copy
+        rotationAnimation.startMatrix = currentRotation; // Use the deep copy from step 1
         rotationAnimation.targetMatrix = finalTargetRotation;
         rotationAnimation.duration = calculatedDuration;
         rotationAnimation.startTime = performance.now();
@@ -431,7 +524,6 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // 9. Start animation loop
         requestAnimationFrame(animateRotation);
-        
     }
 
     /**
