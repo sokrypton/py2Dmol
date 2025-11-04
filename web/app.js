@@ -300,47 +300,160 @@ function animateRotation() {
 // ============================================================================
 
 /**
- * Apply biounit transformations to all models
- * @param {string} text - Original file text
- * @param {Array<Array<object>>} models - Parsed models
+ * Extract biounit operations from PDB or CIF file (once for all models)
+ * @param {string} text - File text
  * @param {boolean} isCIF - Whether file is CIF format
- * @returns {Array<Array<object>>} - Models with biounit applied
+ * @returns {Array<object>|null} - Array of {R, t, chains} operations or null
  */
-function applyBiounitToModels(text, models, isCIF) {
+function extractBiounitOperations(text, isCIF) {
     if (isCIF) {
-        // For CIF, each model already shares the same assembly info
-        // So we just apply the assembly to each model
-        return models.map(modelAtoms => {
-            const tempText = text; // CIF assembly is file-level
-            const assembled = parseFirstBioAssembly(tempText);
-            if (assembled && assembled.atoms && assembled.atoms.length > 0) {
-                // Map the assembled structure back to this model's atoms
-                // For simplicity with CIF multi-models, return as-is
-                // (CIF multi-models are rare and complex)
-                return modelAtoms;
-            }
-            return modelAtoms;
-        });
+        return extractCIFBiounitOperations(text);
     } else {
-        // For PDB, extract biounit operations and apply to each model
-        const operations = extractPDBBiounitOperations(text);
-        if (!operations || operations.length === 0) {
-            return models; // No biounit info
-        }
-        
-        return models.map(modelAtoms => {
-            return applyBiounitOperationsToModel(modelAtoms, operations);
-        });
+        return extractPDBBiounitOperations(text);
     }
 }
 
 /**
+ * Extract biounit operations from CIF file
+ * @param {string} text - CIF text
+ * @returns {Array<object>|null} - Array of operations or null
+ */
+
+function extractCIFBiounitOperations(text) {
+    // Fast-negative: require both loops to be present
+    if (!/_pdbx_struct_assembly_gen\./.test(text) || !/_pdbx_struct_oper_list\./.test(text)) {
+        return null;
+    }
+
+    const loops = parseMinimalCIF_light(text);
+    const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
+
+    const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
+    const operL = getLoop('_pdbx_struct_oper_list.id');
+
+    if (!asmL) return null;
+
+    // Build operator map {id -> {R,t}}
+    const opMap = new Map();
+    if (operL) {
+        const opCols = operL[0];
+        const opRows = operL[1];
+        const o = (n) => opCols.indexOf(n);
+        for (const r of opRows) {
+            const id = (r[o('_pdbx_struct_oper_list.id')] || '').toString();
+            const R = [
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][1]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][2]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][3]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][1]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][2]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][3]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][1]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][2]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][3]')])
+            ];
+            const t = [
+                parseFloat(r[o('_pdbx_struct_oper_list.vector[1]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.vector[2]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.vector[3]')])
+            ];
+            if (Number.isFinite(R[0])) opMap.set(id, { R, t });
+        }
+    }
+    if (opMap.size === 0) {
+        opMap.set('1', { R: [1,0,0, 0,1,0, 0,0,1], t: [0,0,0] });
+    }
+
+    // Helpers to compose sequences of operators: Rb*Ra, tb + Rb*ta
+    function mulR(Rb, Ra) {
+        return [
+            Rb[0]*Ra[0] + Rb[1]*Ra[3] + Rb[2]*Ra[6],
+            Rb[0]*Ra[1] + Rb[1]*Ra[4] + Rb[2]*Ra[7],
+            Rb[0]*Ra[2] + Rb[1]*Ra[5] + Rb[2]*Ra[8],
+            Rb[3]*Ra[0] + Rb[4]*Ra[3] + Rb[5]*Ra[6],
+            Rb[3]*Ra[1] + Rb[4]*Ra[4] + Rb[5]*Ra[7],
+            Rb[3]*Ra[2] + Rb[4]*Ra[5] + Rb[5]*Ra[8],
+            Rb[6]*Ra[0] + Rb[7]*Ra[3] + Rb[8]*Ra[6],
+            Rb[6]*Ra[1] + Rb[7]*Ra[4] + Rb[8]*Ra[7],
+            Rb[6]*Ra[2] + Rb[7]*Ra[5] + Rb[8]*Ra[8],
+        ];
+    }
+    function mulRt(R, t) {
+        return [
+            R[0]*t[0] + R[1]*t[1] + R[2]*t[2],
+            R[3]*t[0] + R[4]*t[1] + R[5]*t[2],
+            R[6]*t[0] + R[7]*t[1] + R[8]*t[2],
+        ];
+    }
+    function composeSeq(seq) {
+        // Apply operators left-to-right: x' = O_n(...O_2(O_1(x))...)
+        let R = [1,0,0, 0,1,0, 0,0,1];
+        let t = [0,0,0];
+        for (const id of seq) {
+            const op = opMap.get(id) || opMap.get('1');
+            const Rb = op.R, tb = op.t;
+            // new = Rb * (R*x + t) + tb = (Rb*R) x + (Rb*t + tb)
+            const R_new = mulR(Rb, R);
+            const Rt = mulRt(Rb, t);
+            const t_new = [Rt[0] + tb[0], Rt[1] + tb[1], Rt[2] + tb[2]];
+            R = R_new;
+            t = t_new;
+        }
+        return { R, t };
+    }
+
+    // Choose assembly 1 (or fall back to first row)
+    const a = (n) => asmL[0].indexOf(n);
+    let candidates = asmL[1].filter(r => (r[a('_pdbx_struct_assembly_gen.assembly_id')] || '') === '1');
+    if (candidates.length === 0 && asmL[1].length > 0) candidates = [asmL[1][0]];
+    if (candidates.length === 0) return null;
+
+    const chainSet = new Set();
+    const operations = [];
+    const seenRT = new Set();
+
+    for (const r of candidates) {
+        const asymList = (r[a('_pdbx_struct_assembly_gen.asym_id_list')] ||
+            r[a('_pdbx_struct_assembly_gen.oper_asym_id_list')] || '').toString();
+        const asymIds = asymList.split(',').map(s => s.trim()).filter(Boolean);
+        asymIds.forEach(c => chainSet.add(c));
+
+        const operExpr = (r[a('_pdbx_struct_assembly_gen.oper_expression')] || '').toString();
+        const seqs = (operExpr && typeof expandOperExpr_light === 'function')
+            ? expandOperExpr_light(operExpr) : [['1']];
+
+        for (const seq of seqs) {
+            const { R, t } = composeSeq(seq);
+            const key = R.map(v => Number.isFinite(v)? v.toFixed(6) : 'nan').join(',') + '|' +
+                        t.map(v => Number.isFinite(v)? v.toFixed(6) : 'nan').join(',');
+            if (!seenRT.has(key)) {
+                seenRT.add(key);
+                operations.push({ id: seq.join('*') || '1', R, t, chains: [] });
+            }
+        }
+    }
+
+    const chains = [...chainSet];
+    operations.forEach(op => op.chains = chains);
+    return operations.length > 0 ? operations : null;
+}
+
+/**
+
  * Extract biounit operations from PDB REMARK 350
  * @param {string} text - PDB text
  * @returns {Array<object>} - Array of {R, t, chains} operations
  */
+/**
+ * Extract biounit operations from PDB REMARK 350
+ * @param {string} text - PDB text
+ * @returns {Array<object>|null} - Array of {R, t, chains} operations or null if none found
+ */
 function extractPDBBiounitOperations(text) {
+    // Fast-negative: no REMARK 350? no biounit.
+    if (!/REMARK 350/.test(text)) return null;
     const lines = text.split(/\r?\n/);
+
     let inTargetBio = false;
     const targetBioId = 1;
     const chains = new Set();
@@ -398,7 +511,7 @@ function extractPDBBiounitOperations(text) {
         }
     });
     
-    return ops;
+    return ops.length > 0 ? ops : null;
 }
 
 /**
@@ -451,7 +564,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
     
     try {
         const wantBU = !!(window.viewerConfig && window.viewerConfig.biounit);
-        const isCIF = text.substring(0, 1000).includes('data_');
+        const isCIF = /^\s*data_/m.test(text) || /_atom_site\./.test(text);
         
         // Parse all models first
         models = isCIF ? parseCIF(text) : parsePDB(text);
@@ -462,21 +575,28 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         
         // Apply biounit transformation to all models if requested
         if (wantBU && models.length > 0) {
-            const assembled = parseFirstBioAssembly(text);
-            if (assembled && assembled.atoms && assembled.atoms.length > 0) {
-                // If we successfully got biounit for first model, apply same transformation to all models
-                if (models.length === 1) {
-                    // Single model - just use the assembled version
-                    models = [assembled.atoms];
-                } else {
-                    // Multiple models - apply biounit transformation to each
-                    // Extract the transformation from the assembled first model
-                    const biounited = applyBiounitToModels(text, models, isCIF);
-                    if (biounited && biounited.length > 0) {
-                        models = biounited;
-                    }
-                }
+            const startTime = performance.now();
+            
+            // Fast-negative: only scan for BU if the file hints it's present
+const hasBiounitHints = isCIF
+    ? /_pdbx_struct_(assembly_gen|oper_list)\./.test(text)
+    : /REMARK 350/.test(text);
+// Extract operations ONCE for all models
+const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : null;
+
+            
+            if (operations && operations.length > 0) {
+                console.debug(`[Biounit] Found ${operations.length} operations, applying to ${models.length} models...`);
+                // Apply operations to each model
+                models = models.map(modelAtoms => 
+                    applyBiounitOperationsToModel(modelAtoms, operations)
+                );
+                const elapsed = performance.now() - startTime;
+                console.debug(`[Biounit] Applied transformations in ${elapsed.toFixed(1)}ms`);
+            } else {
+                console.debug('[Biounit] No biounit operations found, using asymmetric unit');
             }
+            // If no operations found, models stay as-is (no transformation needed)
         }
     } catch (e) {
         console.error("Parsing failed:", e);
