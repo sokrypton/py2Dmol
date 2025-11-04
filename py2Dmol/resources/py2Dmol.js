@@ -2041,7 +2041,8 @@ function initializePy2DmolViewer(containerElement) {
             handlePythonUpdate,
             handlePythonNewObject,
             handlePythonClearAll,
-            handlePythonSetColor
+            handlePythonSetColor,
+            renderer // Expose the renderer instance for external access
         };
     } else {
         console.error("py2dmol: viewer_id not found in config. Cannot register API.");

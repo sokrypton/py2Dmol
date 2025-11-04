@@ -78,6 +78,363 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
+     * Rotates coordinates to their principal axes for optimal viewing.
+     * This creates a canonical orientation based on the structure's geometry.
+     * Uses a deterministic convention to ensure consistent orientation.
+     * @param {Array<Array<number>>} coords Coordinates to orient (N x 3)
+     * @returns {Array<Array<number>>} Rotated coordinates (N x 3)
+     */
+    function best_view(coords) {
+        // 1. Calculate centroid
+        const mean = calculateMean(coords);
+        
+        // 2. Center coordinates
+        const centered = coords.map(c => [c[0] - mean[0], c[1] - mean[1], c[2] - mean[2]]);
+        
+        // 3. Compute covariance matrix H = centered.T @ centered
+        const H = numeric.dot(numeric.transpose(centered), centered);
+        
+        // 4. SVD to get principal axes (V matrix)
+        const svd = numeric.svd(H);
+        let V = svd.V; // V matrix gives us the principal axes
+        const S = svd.S; // Singular values (variances along each axis)
+        
+        // 5. IMPORTANT: Ensure deterministic orientation
+        // Make sure the determinant is positive (right-handed coordinate system)
+        const det = numeric.det(V);
+        if (det < 0) {
+            // Flip the last column to ensure right-handed system
+            V = V.map(row => [...row.slice(0, 2), -row[2]]);
+        }
+        
+        // 6. Apply optimal viewing convention:
+        // - Largest variance (S[0]) should be along X (horizontal)
+        // - Second largest (S[1]) should be along Y (vertical)  
+        // - Smallest (S[2]) should be along Z (depth)
+        
+        // Sort axes by variance (already sorted in S, but columns in V correspond to them)
+        // S is in descending order: S[0] >= S[1] >= S[2]
+        // V columns are: V[:,0] = largest variance, V[:,1] = second, V[:,2] = smallest
+        
+        // For optimal viewing: assign columns as [largest, second, smallest] -> [X, Y, Z]
+        // V is already in this order, so we can use it directly!
+        const finalV = V;
+        
+        // 7. Rotate centered coordinates by final V matrix
+        const rotated = numeric.dot(centered, finalV);
+        
+        // 8. Translate back
+        return rotated.map(c => [c[0] + mean[0], c[1] + mean[1], c[2] + mean[2]]);
+    }
+
+    /**
+     * Calculates the rotation matrix needed to transform coordsA to coordsB.
+     * Returns the optimal rotation matrix R such that coordsA @ R ≈ coordsB
+     * @param {Array<Array<number>>} coordsA Source coordinates (N x 3)
+     * @param {Array<Array<number>>} coordsB Target coordinates (N x 3)
+     * @returns {Array<Array<number>>} Rotation matrix (3 x 3)
+     */
+    function calculateRotationBetween(coordsA, coordsB) {
+        // 1. Center both coordinate sets
+        const meanA = calculateMean(coordsA);
+        const meanB = calculateMean(coordsB);
+        
+        const centA = coordsA.map(c => [c[0] - meanA[0], c[1] - meanA[1], c[2] - meanA[2]]);
+        const centB = coordsB.map(c => [c[0] - meanB[0], c[1] - meanB[1], c[2] - meanB[2]]);
+        
+        // 2. Use Kabsch to find rotation
+        return kabsch(centA, centB);
+    }
+
+    // --- BEST VIEW ROTATION ANIMATION STATE ---
+    let rotationAnimation = {
+        active: false,
+        startMatrix: null,
+        targetMatrix: null,
+        startTime: 0,
+        duration: 1000 // Will be calculated based on rotation angle
+    };
+
+    /**
+     * Smoothly interpolates between two rotation matrices.
+     * Uses linear interpolation with Gram-Schmidt orthonormalization.
+     * @param {Array<Array<number>>} M1 Start matrix (3x3)
+     * @param {Array<Array<number>>} M2 Target matrix (3x3)
+     * @param {number} t Progress from 0 to 1
+     * @returns {Array<Array<number>>} Interpolated rotation matrix (3x3)
+     */
+    function lerpRotationMatrix(M1, M2, t) {
+        // Linear interpolation
+        const result = [
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0]
+        ];
+        
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                result[i][j] = M1[i][j] * (1 - t) + M2[i][j] * t;
+            }
+        }
+        
+        // Gram-Schmidt orthonormalization to ensure valid rotation matrix
+        // Column 0
+        let c0 = [result[0][0], result[1][0], result[2][0]];
+        let n0 = Math.sqrt(c0[0]*c0[0] + c0[1]*c0[1] + c0[2]*c0[2]);
+        c0 = [c0[0]/n0, c0[1]/n0, c0[2]/n0];
+        
+        // Column 1 (orthogonalize to c0)
+        let c1 = [result[0][1], result[1][1], result[2][1]];
+        let dot01 = c0[0]*c1[0] + c0[1]*c1[1] + c0[2]*c1[2];
+        c1 = [c1[0] - dot01*c0[0], c1[1] - dot01*c0[1], c1[2] - dot01*c0[2]];
+        let n1 = Math.sqrt(c1[0]*c1[0] + c1[1]*c1[1] + c1[2]*c1[2]);
+        c1 = [c1[0]/n1, c1[1]/n1, c1[2]/n1];
+        
+        // Column 2 (cross product)
+        let c2 = [
+            c0[1]*c1[2] - c0[2]*c1[1],
+            c0[2]*c1[0] - c0[0]*c1[2],
+            c0[0]*c1[1] - c0[1]*c1[0]
+        ];
+        
+        return [
+            [c0[0], c1[0], c2[0]],
+            [c0[1], c1[1], c2[1]],
+            [c0[2], c1[2], c2[2]]
+        ];
+    }
+
+    /**
+     * Animation loop for smooth rotation transitions.
+     * Called via requestAnimationFrame.
+     */
+    function animateRotation() {
+        if (!rotationAnimation.active) {
+            return; // Stop when animation completes
+        }
+        
+        if (!viewerApi || !viewerApi.renderer) {
+            rotationAnimation.active = false;
+            return;
+        }
+        
+        const renderer = viewerApi.renderer;
+        const now = performance.now();
+        const elapsed = now - rotationAnimation.startTime;
+        
+        // Calculate progress (0 to 1)
+        let progress = elapsed / rotationAnimation.duration;
+        
+        if (progress >= 1.0) {
+            // Animation complete - set final matrix
+            renderer.rotationMatrix = rotationAnimation.targetMatrix;
+            renderer.render();
+            rotationAnimation.active = false;
+            return;
+        }
+        
+        // Apply easing (ease-in-out cubic)
+        const eased = progress < 0.5 
+            ? 4 * progress * progress * progress 
+            : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+        
+        // Interpolate rotation matrix
+        const interpolated = lerpRotationMatrix(
+            rotationAnimation.startMatrix,
+            rotationAnimation.targetMatrix,
+            eased
+        );
+        
+        // Apply to renderer
+        renderer.rotationMatrix = interpolated;
+        
+        // Force render
+        renderer.render();
+        
+        // Continue animation
+        requestAnimationFrame(animateRotation);
+    }
+
+    /**
+     * Calculates the angle (in radians) between two rotation matrices.
+     * Used to determine animation duration.
+     * @param {Array<Array<number>>} M1 First rotation matrix (3x3)
+     * @param {Array<Array<number>>} M2 Second rotation matrix (3x3)
+     * @returns {number} Angle in radians
+     */
+    function rotationAngleBetweenMatrices(M1, M2) {
+        // R = M1^T * M2 gives the relative rotation
+        const M1T = numeric.transpose(M1);
+        const R = numeric.dot(M1T, M2);
+        
+        // The angle of rotation is: theta = arccos((trace(R) - 1) / 2)
+        const trace = R[0][0] + R[1][1] + R[2][2];
+        const cosTheta = (trace - 1) / 2;
+        
+        // Clamp to [-1, 1] to avoid numerical errors
+        const clampedCos = Math.max(-1, Math.min(1, cosTheta));
+        const theta = Math.acos(clampedCos);
+        
+        return theta;
+    }
+
+    /**
+     * Navigate to the previous object in the object select dropdown.
+     */
+    function gotoPreviousObject() {
+        const objectSelect = document.getElementById('objectSelect');
+        if (!objectSelect || objectSelect.options.length === 0) return;
+        
+        const currentIndex = objectSelect.selectedIndex;
+        const newIndex = currentIndex > 0 ? currentIndex - 1 : objectSelect.options.length - 1;
+        
+        objectSelect.selectedIndex = newIndex;
+        objectSelect.dispatchEvent(new Event('change'));
+    }
+
+    /**
+     * Navigate to the next object in the object select dropdown.
+     */
+    function gotoNextObject() {
+        const objectSelect = document.getElementById('objectSelect');
+        if (!objectSelect || objectSelect.options.length === 0) return;
+        
+        const currentIndex = objectSelect.selectedIndex;
+        const newIndex = currentIndex < objectSelect.options.length - 1 ? currentIndex + 1 : 0;
+        
+        objectSelect.selectedIndex = newIndex;
+        objectSelect.dispatchEvent(new Event('change'));
+    }
+
+    /**
+     * Toggle auto-rotation on/off.
+     */
+    function toggleAutoRotate() {
+        if (!viewerApi || !viewerApi.renderer) return;
+        
+        const renderer = viewerApi.renderer;
+        renderer.autoRotate = !renderer.autoRotate;
+        
+        // Update the hidden checkbox if it exists
+        if (renderer.rotationCheckbox) {
+            renderer.rotationCheckbox.checked = renderer.autoRotate;
+        }
+        
+        // Update button visual state
+        const rotateButton = document.getElementById('rotateButton');
+        if (rotateButton) {
+            if (renderer.autoRotate) {
+                rotateButton.classList.add('active');
+            } else {
+                rotateButton.classList.remove('active');
+            }
+        }
+        
+    }
+
+    /**
+     * Update the state of prev/next object navigation buttons.
+     * Disables them if there's only one object.
+     */
+    function updateObjectNavigationButtons() {
+        const objectSelect = document.getElementById('objectSelect');
+        const prevButton = document.getElementById('prevObjectButton');
+        const nextButton = document.getElementById('nextObjectButton');
+        
+        if (!objectSelect || !prevButton || !nextButton) return;
+        
+        const objectCount = objectSelect.options.length;
+        const shouldDisable = objectCount <= 1;
+        
+        prevButton.disabled = shouldDisable;
+        nextButton.disabled = shouldDisable;
+    }
+
+    /**
+     * Applies a best view rotation to the current frame in the viewer.
+     * Animates smoothly to the optimal orientation.
+     */
+    function applyBestViewRotation() {
+        if (!viewerApi || !viewerApi.renderer) {
+            console.warn("Viewer API or renderer not initialized");
+            return;
+        }
+        
+        const renderer = viewerApi.renderer;
+        
+        // Get object name from the dropdown
+        const objectSelect = document.getElementById('objectSelect');
+        const objectName = objectSelect ? objectSelect.value : null;
+        
+        if (!objectName) {
+            console.warn("No object selected in dropdown");
+            return;
+        }
+        
+        const object = renderer.objectsData[objectName];
+        
+        if (!object || !object.frames || object.frames.length === 0) {
+            console.warn("No frames available for object:", objectName);
+            return;
+        }
+        
+        // Get current frame index from the renderer
+        const currentFrame = renderer.currentFrame || 0;
+        
+        const currentFrameData = object.frames[currentFrame];
+        if (!currentFrameData || !currentFrameData.coords) {
+            console.warn("No coordinates available for frame:", currentFrame);
+            return;
+        }
+        
+        // 1. Get current coordinates
+        const coords = currentFrameData.coords;
+                
+        // 2. Calculate best view orientation
+        const bestViewCoords = best_view(coords);
+        
+        // 3. Calculate rotation matrix needed
+        const targetRotation = calculateRotationBetween(coords, bestViewCoords);
+        
+        // 4. Get current viewer rotation matrix
+        const currentRotation = renderer.rotationMatrix;
+        
+        // 5. Calculate the final target rotation
+        const currentInverse = numeric.transpose(currentRotation);
+        const deltaRotation = numeric.dot(currentInverse, targetRotation);
+        const finalTargetRotation = numeric.dot(currentRotation, deltaRotation);
+        
+        // 6. Calculate animation duration based on rotation angle
+        const rotationAngle = rotationAngleBetweenMatrices(currentRotation, finalTargetRotation);
+        const rotationDegrees = rotationAngle * (180 / Math.PI);
+        
+        // Duration: ~10ms per degree, with min 300ms and max 2000ms
+        const calculatedDuration = Math.max(300, Math.min(2000, rotationDegrees * 10));
+        
+        // 7. Set up animation
+        rotationAnimation.active = true;
+        rotationAnimation.startMatrix = currentRotation.map(row => [...row]); // Deep copy
+        rotationAnimation.targetMatrix = finalTargetRotation;
+        rotationAnimation.duration = calculatedDuration;
+        rotationAnimation.startTime = performance.now();
+        
+        // 8. Disable auto-rotate and stop spin
+        if (renderer.autoRotate) {
+            renderer.autoRotate = false;
+            if (renderer.rotationCheckbox) {
+                renderer.rotationCheckbox.checked = false;
+                renderer.rotationCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+        renderer.spinVelocityX = 0;
+        renderer.spinVelocityY = 0;
+        
+        // 9. Start animation loop
+        requestAnimationFrame(animateRotation);
+        
+    }
+
+    /**
      * Aligns full coordinate set A onto reference B based on the alignment
      * calculated using the first chain's coordinates.
      * @param {Array<Array<number>>} fullCoordsA Full coordinates of the source frame
@@ -425,6 +782,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     objectSelect.value = lastObjectName;
                     // Trigger change to set PAE visibility and update controls
                     handleObjectChange();
+                    // Update navigation button states
+                    updateObjectNavigationButtons();
                 }, 50); // 50ms delay
              }
              
@@ -888,6 +1247,25 @@ document.addEventListener('DOMContentLoaded', () => {
         viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
         
         document.getElementById('fetch-btn').addEventListener('click', handleFetch);
+        
+        // Navigation and control buttons
+        const orientButton = document.getElementById('orientButton');
+        if (orientButton) {
+            orientButton.addEventListener('click', applyBestViewRotation);
+        }
+        
+        const prevObjectButton = document.getElementById('prevObjectButton');
+        if (prevObjectButton) {
+            prevObjectButton.addEventListener('click', gotoPreviousObject);
+        }
+        
+        const nextObjectButton = document.getElementById('nextObjectButton');
+        if (nextObjectButton) {
+            nextObjectButton.addEventListener('click', gotoNextObject);
+        }
+        
+        // Initialize navigation button states (disabled until objects load)
+        updateObjectNavigationButtons();
         
         // Centralize logic calls
         objectSelect.addEventListener('change', handleObjectChange);
