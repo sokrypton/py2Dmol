@@ -1,757 +1,732 @@
-        .py2dmol-viewer-instance * { 
-            box-sizing: border-box; 
-        }
-        .py2dmol-viewer-instance {
-            position: relative;
-            font-family: 'Inter', sans-serif; 
-            background: transparent;
-            display: inline-block; 
-            line-height: 0; 
-        }
-        
-        .py2dmol-viewer-instance #mainContainer {
-            display: flex;
-            flex-direction: row;
-            align-items: flex-start; 
-            gap: 24px; 
-            background: transparent;
-        }
-        
-        .py2dmol-viewer-instance #viewerColumn {
-            display: flex;
-            flex-direction: column;
-            gap: 10px; 
-            min-width: 600px; 
-        }
-
-        .py2dmol-viewer-instance #canvasContainer {
-            display: inline-block;
-            border: 1px solid #e5e7eb; 
-            border-radius: 12px;
-            overflow: auto; 
-            background: #ffffff;
-            resize: both; 
-            width: 600px; 
-            height: 600px; 
-            min-width: 200px; 
-            min-height: 200px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-        }
-        .py2dmol-viewer-instance #canvas {
-            background: #ffffff;
-            cursor: grab;
-            display: block;
-            touch-action: none;
-        }
-        .py2dmol-viewer-instance #canvas:active {
-            cursor: grabbing;
-        }
-
-        .py2dmol-viewer-instance #controlsContainer {
-            display: flex; 
-            flex-wrap: nowrap;
-            align-items: center;
-            padding: 12px 16px; 
-            width: 100%;
-            background: #ffffff;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px; 
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06); 
-            font-family: 'Inter', sans-serif;
-            font-size: 14px;
-        }
-        
-        /* Control Buttons - Consistent Modern Style */
-        .py2dmol-viewer-instance .controlButton {
-            padding: 0 16px; 
-            height: 42px;
-            min-width: 80px; 
-            border-radius: 8px; 
-            background: linear-gradient(to bottom, #3b82f6, #2563eb);
-            color: white; 
-            border: none;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
-            transition: all 0.2s;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .py2dmol-viewer-instance .controlButton:hover {
-            background: linear-gradient(to bottom, #2563eb, #1d4ed8);
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
-            transform: translateY(-1px);
-        }
-        .py2dmol-viewer-instance .controlButton:active {
-            transform: translateY(0);
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-        }
-        .py2dmol-viewer-instance .controlButton:disabled {
-            background: linear-gradient(to bottom, #e5e7eb, #d1d5db);
-            cursor: not-allowed;
-            color: #9ca3af;
-            box-shadow: none;
-            transform: none;
-        }
-        
-        /* Active state for Rotate button */
-        .py2dmol-viewer-instance .nav-button.active {
-            background: linear-gradient(to bottom, #10b981, #059669);
-        }
-        .py2dmol-viewer-instance .nav-button.active:hover {
-            background: linear-gradient(to bottom, #059669, #047857);
-        }
-        
-        .py2dmol-viewer-instance #frameSlider {
-            flex-grow: 1; 
-            height: 6px; 
-            margin: 0 12px;
-            vertical-align: middle;
-            -webkit-appearance: none;
-            appearance: none;
-            background: #e5e7eb; 
-            border-radius: 3px;
-            outline: none;
-        }
-        .py2dmol-viewer-instance #frameSlider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 16px; 
-            height: 16px;
-            background: #3b82f6;
-            border-radius: 50%;
-            cursor: pointer;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-            transition: all 0.2s;
-        }
-        .py2dmol-viewer-instance #frameSlider::-webkit-slider-thumb:hover {
-            background: #2563eb;
-            transform: scale(1.1);
-        }
-        .py2dmol-viewer-instance #frameSlider::-moz-range-thumb {
-            width: 16px; 
-            height: 16px;
-            background: #3b82f6;
-            border-radius: 50%;
-            cursor: pointer;
-            border: none;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-            transition: all 0.2s;
-        }
-        .py2dmol-viewer-instance #frameSlider::-moz-range-thumb:hover {
-            background: #2563eb;
-            transform: scale(1.1);
-        }
-        .py2dmol-viewer-instance #frameCounter {
-            color: #374151; 
-            min-width: 100px;
-            font-weight: 500;
-            font-size: 14px;
-        }
-        .py2dmol-viewer-instance #speedSelect {
-            font-size: 14px;
-            padding: 6px 10px;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            background: #ffffff;
-            color: #374151;
-            min-width: 70px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .py2dmol-viewer-instance #speedSelect:hover {
-            border-color: #9ca3af;
-        }
-        .py2dmol-viewer-instance #speedSelect:focus {
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-            outline: none;
-        }
-        
-        .py2dmol-viewer-instance #rightPanelContainer {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-            width: 324px; 
-            border: 1px solid #e5e7eb;
-            border-radius: 12px; 
-            padding: 20px; 
-            background: #ffffff; 
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-            flex-shrink: 0; 
-        }
-        
-        /* Control Group Sections */
-        .py2dmol-viewer-instance .control-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-
-        .py2dmol-viewer-instance .toggle-item {
-            display: flex;
-            align-items: center; 
-            justify-content: space-between; 
-            gap: 12px; 
-            width: 100%; 
-        }
-        .py2dmol-viewer-instance .toggle-item > label { 
-            font-weight: 500; 
-            color: #374151;
-            font-size: 14px;
-            text-align: left;
-            flex-shrink: 1; 
-            line-height: 1.5; 
-            margin: 0;
-        }
-        
-        /* Toggle Switch Styling - Modern iOS-style */
-        .py2dmol-viewer-instance .switch {
-            position: relative;
-            display: inline-block;
-            width: 44px; 
-            height: 24px; 
-            flex-shrink: 0; 
-        }
-        .py2dmol-viewer-instance .switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        .py2dmol-viewer-instance .slider-toggle {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #cbd5e1;
-            transition: .3s;
-            border-radius: 24px; 
-        }
-        /* The sliding circle */
-        .py2dmol-viewer-instance .slider-toggle:before {
-            position: absolute;
-            content: "";
-            height: 18px;
-            width: 18px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .3s;
-            border-radius: 50%;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-        }
-        .py2dmol-viewer-instance input:checked + .slider-toggle {
-            background-color: #3b82f6; 
-        }
-        .py2dmol-viewer-instance input:focus + .slider-toggle {
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
-        }
-        .py2dmol-viewer-instance input:checked + .slider-toggle:before {
-            transform: translateX(20px); 
-        }
-        /* End Toggle Switch Styling */
-
-        /* Select dropdowns - Modern consistent style */
-        .py2dmol-viewer-instance #colorSelect, 
-        .py2dmol-viewer-instance #objectSelect {
-            font-size: 14px; 
-            padding: 8px 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            background: #ffffff;
-            color: #374151;
-            flex-grow: 1; 
-            width: 170px; 
-            min-width: 150px; 
-            flex-shrink: 0;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .py2dmol-viewer-instance #colorSelect:hover, 
-        .py2dmol-viewer-instance #objectSelect:hover {
-            border-color: #9ca3af;
-        }
-
-        .py2dmol-viewer-instance #colorSelect:focus, 
-        .py2dmol-viewer-instance #objectSelect:focus {
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); 
-            outline: none;
-        }
-        
-        /* Range slider for line width */
-        .py2dmol-viewer-instance #lineWidthSlider {
-             flex-grow: 1;
-             margin-top: 0; 
-             height: 6px;
-             -webkit-appearance: none;
-             appearance: none;
-             background: #e5e7eb;
-             border-radius: 3px;
-             outline: none;
-        }
-        
-        .py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 16px;
-            height: 16px;
-            background: #3b82f6;
-            border-radius: 50%;
-            cursor: pointer;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-            transition: all 0.2s;
-        }
-        
-        .py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb:hover {
-            background: #2563eb;
-            transform: scale(1.1);
-        }
-        
-        .py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
-            background: #3b82f6;
-            border-radius: 50%;
-            cursor: pointer;
-            border: none;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-            transition: all 0.2s;
-        }
-        
-        .py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb:hover {
-            background: #2563eb;
-            transform: scale(1.1);
-        }
-
-
-        .py2dmol-viewer-instance #paeContainer {
-            display: none; 
-            flex-shrink: 0;
-            width: 296px; 
-            height: 296px; 
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            overflow: hidden;
-            background: #ffffff;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-            margin: 12px auto 0 auto;
-        }
-        
-        /* Vertical Divider Style */
-        .vertical-divider-md {
-            width: 1px;
-            background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent);
-        }
-        
-        /* Page styling improvements */
-        body {
-            background: #f9fafb;
-        }
-        
-        h1 {
-            color: #111827;
-            letter-spacing: -0.025em;
-        }
-        
-        .text-gray-500 {
-            color: #6b7280;
-        }
-        
-        /* Global Drop Overlay Styles */
-        #global-drop-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.95);
-            border: 4px dashed #3b82f6;
-            z-index: 10000;
-            display: none; /* Hidden by default */
-            align-items: center;
-            justify-content: center;
-            pointer-events: none; /* Allows clicks/interaction to pass through when not dragging */
-            border-radius: 16px;
-            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
-        }
-        #global-drop-overlay p {
-            font-size: 2rem;
-            font-weight: 700;
-            color: #3b82f6;
-            text-shadow: 0 1px 2px rgba(0,0,0,0.1);
-        }
-        
-        /* Modern Button Styling for Fetch and Upload */
-        #fetch-btn, #upload-button {
-            height: 42px;
-            padding: 0 24px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            border: none;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        
-        #fetch-btn {
-            background: linear-gradient(to bottom, #3b82f6, #2563eb);
-            color: white;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
-            min-width: 100px;
-        }
-        
-        #fetch-btn:hover {
-            background: linear-gradient(to bottom, #2563eb, #1d4ed8);
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
-            transform: translateY(-1px);
-        }
-        
-        #fetch-btn:active {
-            transform: translateY(0);
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-        }
-        
-        #upload-button {
-            background: linear-gradient(to bottom, #6b7280, #4b5563);
-            color: white;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
-            min-width: 170px; /* Explicit width for "Upload Files" */
-        }
-        
-        #upload-button:hover {
-            background: linear-gradient(to bottom, #4b5563, #374151);
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
-            transform: translateY(-1px);
-        }
-        
-        #upload-button:active {
-            transform: translateY(0);
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-        }
-        
-        /* Input field styling */
-        #fetch-id {
-            flex-grow: 1;
-            height: 42px;
-            padding: 0 16px;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: all 0.2s;
-            background: #ffffff;
-        }
-        
-        #fetch-id:hover {
-            border-color: #9ca3af;
-        }
-        
-        #fetch-id:focus {
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-            outline: none;
-        }
-        
-        #fetch-id::placeholder {
-            color: #9ca3af;
-        }
-        
-        /* Upload controls container */
-        #uploadControlsContainer {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-        
-        /* Toggles container */
-        .upload-options-section {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            padding: 10px;
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-        }
-        
-        .upload-option-label {
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #6b7280;
-            margin-bottom: 4px;
-        }
-        
-        .upload-toggle-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .upload-toggle-label {
-            font-size: 14px;
-            font-weight: 500;
-            color: #374151;
-            cursor: pointer;
-            margin: 0;
-            user-select: none;
-        }
-        
-        /* Upload section toggles - Match viewer style */
-        #uploadControlsContainer .switch {
-            position: relative;
-            display: inline-block;
-            width: 44px; 
-            height: 24px; 
-            flex-shrink: 0; 
-        }
-        
-        #uploadControlsContainer .switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        
-        #uploadControlsContainer .slider-toggle {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #cbd5e1;
-            transition: .3s;
-            border-radius: 24px; 
-        }
-        
-        #uploadControlsContainer .slider-toggle:before {
-            position: absolute;
-            content: "";
-            height: 18px;
-            width: 18px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .3s;
-            border-radius: 50%;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-        }
-        
-        #uploadControlsContainer input:checked + .slider-toggle {
-            background-color: #3b82f6; 
-        }
-        
-        #uploadControlsContainer input:focus + .slider-toggle {
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
-        }
-        
-        #uploadControlsContainer input:checked + .slider-toggle:before {
-            transform: translateX(20px); 
-        }
-        
-        /* Status message box styling */
-        #status-message {
-            display: none; /* Hidden by default */
-            margin-top: 20px;
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            border: 1px solid;
-            background: #dbeafe;
-            border-color: #3b82f6;
-            color: #1e40af;
-        }
-        
-        #status-message:not(:empty) {
-            display: block; /* Show when it has content */
-        }
-        
-        /* Main card styling */
-        .bg-white.p-6.rounded-2xl {
-            background: #ffffff;
-            padding: 24px;
-            border-radius: 16px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-            border: 1px solid #e5e7eb;
-        }
-        
-        /* Table layout helper */
-        table.layout-table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-        }
-        
-        table.layout-table td {
-            vertical-align: top;
-        }
-        
-        /* FIX: Ensure PDB input takes up remaining space */
-        #fetch-input-container {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
-        #fetch-input-container input {
-            flex-grow: 1; /* Input takes up available space */
-            height: 42px; /* Align input height with button height */
-        }
-
-        /* Two-row toolbar */
-        .py2dmol-viewer-instance #navigationControls.toolbar {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        
-        /* === NEW STYLES START === */
-
-        /* === Uniform sizing & layout === */
-        .py2dmol-viewer-instance {
-          --btn-h: 36px;
-          --btn-radius: 9999px;
-          --gap: 8px;
-        }
-
-        /* Make each toolbar row evenly distribute items */
-        .py2dmol-viewer-instance .toolbar-row {
-          display: flex;
-          gap: var(--gap);
-        }
-        .py2dmol-viewer-instance .toolbar-row > * {
-          flex: 1 1 0;          /* equal widths per row */
-          min-width: 0;           /* prevent overflow */
-        }
-
-        /* Prev/Next keep a compact fixed width, still same height */
-        #prevObjectButton,
-        #nextObjectButton {
-          flex: 0 0 48px;        /* fixed width */
-          padding: 0;             /* content is just "<" or ">" */
-          text-align: center;
-        }
-
-        /* === Normalize all buttons’ height, radius, weight === */
-        .py2dmol-viewer-instance .nav-button {
-          height: var(--btn-h);
-          line-height: var(--btn-h);
-          border-radius: var(--btn-radius);
-          font-weight: 600;
-          padding: 0 14px;      /* consistent pill padding */
-          /* ADDED: base styles for non-blue buttons */
-          border: none;
-          cursor: pointer;
-          transition: all 0.2s;
-          text-align: center;
-        }
-
-        /* NEW Class for grey action buttons */
-        .py2dmol-viewer-instance .btn-grey {
-          background: #e5e7eb;    /* grey */
-          color: #374151;
-        }
-        .py2dmol-viewer-instance .btn-grey:hover {
-          background: #d1d5db; /* Slightly darker grey */
-        }
-        .py2dmol-viewer-instance .btn-grey:active {
-          background: #cbd5e1; /* Even darker */
-          transform: translateY(1px);
-        }
-
-
-        /* === Checkbox-as-button: simple grey (off) → green (on) === */
-        .py2dmol-viewer-instance .btn-toggle {
-          position: relative;
-          padding: 0;             /* green span will fill entire pill */
-          border-radius: var(--btn-radius);
-          background: transparent; /* neutralize any inherited bg */
-          box-shadow: none;
-          height: var(--btn-h); /* ADDED: This aligns it with the other buttons */
-        }
-        .py2dmol-viewer-instance .btn-toggle:hover {
-            background: transparent;
-            box-shadow: none;
-            transform: none;
-        }
-        .py2dmol-viewer-instance .btn-toggle input[type="checkbox"] {
-          position: absolute;
-          inset: 0;
-          opacity: 0;
-          margin: 0;
-          cursor: pointer;
-        }
-        .py2dmol-viewer-instance .btn-toggle > span {
-          display: flex; /* CHANGED */
-          align-items: center; /* ADDED */
-          justify-content: center; /* ADDED */
-          height: var(--btn-h);
-          /* line-height: var(--btn-h); */ /* Replaced by flex */
-          padding: 0 14px;
-          border-radius: inherit;
-          /* text-align: center; */ /* Replaced by flex */
-          background: #e5e7eb;    /* grey OFF */
-          color: #374151;
-        }
-        .py2dmol-viewer-instance .btn-toggle input:checked + span {
-          background: #10b981;    /* green ON */
-          color: #fff;
-        }
-        .py2dmol-viewer-instance .btn-toggle input:not(:checked) + span:hover {
-          background: #d1d5db; /* Slightly darker grey on hover when OFF */
-        }
-        .py2dmol-viewer-instance .btn-toggle input:checked + span:hover {
-          background: #059669; /* Slightly darker green on hover when ON */
-        }
-
-
-/* Match spacing/appearance for the Fetch options box */
-#fetchOptionsSection {
-  margin-top: 10px;
+/* ============================================================================
+   BASE & LAYOUT
+   ============================================================================ */
+.py2dmol-viewer-instance * { 
+    box-sizing: border-box; 
 }
 
+.py2dmol-viewer-instance {
+    position: relative;
+    font-family: 'Inter', sans-serif; 
+    background: transparent;
+    display: inline-block; 
+    line-height: 0; 
+}
 
-/* Fetch options toggles — mirror Upload options styling */
-#fetchOptionsSection .switch {
-  position: relative;
-  display: inline-block;
-  width: 44px;
-  height: 24px;
-  flex-shrink: 0;
+.py2dmol-viewer-instance #mainContainer {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start; 
+    gap: 24px; 
+    background: transparent;
 }
-#fetchOptionsSection .switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
+
+.py2dmol-viewer-instance #viewerColumn {
+    display: flex;
+    flex-direction: column;
+    gap: 10px; 
+    min-width: 600px; 
 }
-#fetchOptionsSection .slider-toggle {
-  position: absolute;
-  cursor: pointer;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background-color: #cbd5e1;
-  transition: .3s;
-  border-radius: 24px;
+
+.py2dmol-viewer-instance #canvasContainer {
+    display: inline-block;
+    border: 1px solid #e5e7eb; 
+    border-radius: 12px;
+    overflow: auto; 
+    background: #ffffff;
+    resize: both; 
+    width: 600px; 
+    height: 600px; 
+    min-width: 200px; 
+    min-height: 200px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
 }
-#fetchOptionsSection .slider-toggle:before {
-  position: absolute;
-  content: "";
-  height: 18px; width: 18px;
-  left: 3px; bottom: 3px;
-  background-color: white;
-  transition: .3s;
-  border-radius: 50%;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+
+.py2dmol-viewer-instance #canvas {
+    background: #ffffff;
+    cursor: grab;
+    display: block;
+    touch-action: none;
 }
-#fetchOptionsSection input:checked + .slider-toggle { background-color: #3b82f6; }
-#fetchOptionsSection input:focus + .slider-toggle { box-shadow: 0 0 0 2px rgba(59,130,246,0.3); }
-#fetchOptionsSection input:checked + .slider-toggle:before { transform: translateX(20px); }
+
+.py2dmol-viewer-instance #canvas:active {
+    cursor: grabbing;
+}
+
+.py2dmol-viewer-instance #rightPanelContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 324px; 
+    border: 1px solid #e5e7eb;
+    border-radius: 12px; 
+    padding: 20px; 
+    background: #ffffff; 
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+    flex-shrink: 0; 
+}
+
+/* ============================================================================
+   COMMON BUTTON STYLES
+   ============================================================================ */
+
+/* Primary blue button (Fetch button) */
+#fetch-btn {
+    height: 42px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: linear-gradient(to bottom, #3b82f6, #2563eb);
+    color: white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+    min-width: 100px;
+}
+
+#fetch-btn:hover {
+    background: linear-gradient(to bottom, #2563eb, #1d4ed8);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
+}
+
+#fetch-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* Secondary grey button (Upload button) */
+#upload-button {
+    height: 42px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: linear-gradient(to bottom, #6b7280, #4b5563);
+    color: white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+    min-width: 170px;
+}
+
+#upload-button:hover {
+    background: linear-gradient(to bottom, #4b5563, #374151);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
+}
+
+#upload-button:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* Control buttons (Play button) */
+.py2dmol-viewer-instance .controlButton {
+    height: 42px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 80px;
+    background: linear-gradient(to bottom, #3b82f6, #2563eb);
+    color: white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.py2dmol-viewer-instance .controlButton i {
+    font-size: 14px;
+    line-height: 1;
+}
+
+.py2dmol-viewer-instance .controlButton:hover {
+    background: linear-gradient(to bottom, #2563eb, #1d4ed8);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
+}
+
+.py2dmol-viewer-instance .controlButton:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.py2dmol-viewer-instance .controlButton:disabled {
+    background: linear-gradient(to bottom, #e5e7eb, #d1d5db);
+    cursor: not-allowed;
+    color: #9ca3af;
+    box-shadow: none;
+    transform: none;
+}
+
+/* ============================================================================
+   NAVIGATION BUTTONS (TOOLBAR)
+   ============================================================================ */
+.py2dmol-viewer-instance {
+    --btn-h: 36px;
+    --btn-radius: 9999px;
+    --gap: 8px;
+}
+
+.py2dmol-viewer-instance .toolbar-row {
+    display: flex;
+    gap: var(--gap);
+}
+
+.py2dmol-viewer-instance .toolbar-row > * {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+#prevObjectButton,
+#nextObjectButton {
+    flex: 0 0 48px;
+    padding: 0;
+    text-align: center;
+}
+
+.py2dmol-viewer-instance .nav-button {
+    height: var(--btn-h);
+    line-height: var(--btn-h);
+    border-radius: var(--btn-radius);
+    font-weight: 600;
+    padding: 0 14px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+}
+
+.py2dmol-viewer-instance .btn-grey {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.py2dmol-viewer-instance .btn-grey:hover {
+    background: #d1d5db;
+}
+
+.py2dmol-viewer-instance .btn-grey:active {
+    background: #cbd5e1;
+    transform: translateY(1px);
+}
+
+.py2dmol-viewer-instance .nav-button.active {
+    background: linear-gradient(to bottom, #10b981, #059669);
+}
+
+.py2dmol-viewer-instance .nav-button.active:hover {
+    background: linear-gradient(to bottom, #059669, #047857);
+}
+
+/* ============================================================================
+   TOGGLE SWITCHES (UNIFIED STYLE)
+   ============================================================================ */
+/* Base toggle switch - used for all checkboxes styled as toggles */
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 44px; 
+    height: 24px; 
+    flex-shrink: 0; 
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider-toggle {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #cbd5e1;
+    transition: .3s;
+    border-radius: 24px; 
+}
+
+.slider-toggle:before {
+    position: absolute;
+    content: "";
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.switch input:checked + .slider-toggle {
+    background-color: #3b82f6; 
+}
+
+.switch input:focus + .slider-toggle {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.switch input:checked + .slider-toggle:before {
+    transform: translateX(20px); 
+}
+
+/* ============================================================================
+   BUTTON-STYLE TOGGLES (for toolbar)
+   ============================================================================ */
+.py2dmol-viewer-instance .btn-toggle {
+    position: relative;
+    padding: 0;
+    border-radius: var(--btn-radius);
+    background: transparent;
+    box-shadow: none;
+    height: var(--btn-h);
+}
+
+.py2dmol-viewer-instance .btn-toggle:hover {
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+}
+
+.py2dmol-viewer-instance .btn-toggle input[type="checkbox"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    margin: 0;
+    cursor: pointer;
+}
+
+.py2dmol-viewer-instance .btn-toggle > span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--btn-h);
+    padding: 0 14px;
+    border-radius: inherit;
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.py2dmol-viewer-instance .btn-toggle input:checked + span {
+    background: #10b981;
+    color: #fff;
+}
+
+.py2dmol-viewer-instance .btn-toggle input:not(:checked) + span:hover {
+    background: #d1d5db;
+}
+
+.py2dmol-viewer-instance .btn-toggle input:checked + span:hover {
+    background: #059669;
+}
+
+/* ============================================================================
+   SLIDERS
+   ============================================================================ */
+
+/* Frame slider */
+.py2dmol-viewer-instance #frameSlider {
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #e5e7eb;
+    border-radius: 3px;
+    outline: none;
+    flex-grow: 1;
+    margin: 0 12px;
+    vertical-align: middle;
+}
+
+.py2dmol-viewer-instance #frameSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #frameSlider::-webkit-slider-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+.py2dmol-viewer-instance #frameSlider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #frameSlider::-moz-range-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+/* Line width slider */
+.py2dmol-viewer-instance #lineWidthSlider {
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #e5e7eb;
+    border-radius: 3px;
+    outline: none;
+    flex-grow: 1;
+    margin-top: 0;
+}
+
+.py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+.py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+/* ============================================================================
+   SELECT DROPDOWNS
+   ============================================================================ */
+
+.py2dmol-viewer-instance #colorSelect, 
+.py2dmol-viewer-instance #objectSelect {
+    font-size: 14px;
+    padding: 8px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #374151;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-grow: 1;
+    width: 170px;
+    min-width: 150px;
+    flex-shrink: 0;
+}
+
+.py2dmol-viewer-instance #colorSelect:hover, 
+.py2dmol-viewer-instance #objectSelect:hover {
+    border-color: #9ca3af;
+}
+
+.py2dmol-viewer-instance #colorSelect:focus, 
+.py2dmol-viewer-instance #objectSelect:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
+}
+
+.py2dmol-viewer-instance #speedSelect {
+    font-size: 14px;
+    padding: 8px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #374151;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 70px;
+}
+
+.py2dmol-viewer-instance #speedSelect:hover {
+    border-color: #9ca3af;
+}
+
+.py2dmol-viewer-instance #speedSelect:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
+}
+
+/* ============================================================================
+   CONTROL GROUPS & CONTAINERS
+   ============================================================================ */
+.py2dmol-viewer-instance #controlsContainer {
+    display: flex; 
+    flex-wrap: nowrap;
+    align-items: center;
+    padding: 12px 16px; 
+    width: 100%;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px; 
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06); 
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+}
+
+.py2dmol-viewer-instance #navigationControls.toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.py2dmol-viewer-instance .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.py2dmol-viewer-instance .toggle-item {
+    display: flex;
+    align-items: center; 
+    justify-content: space-between; 
+    gap: 12px; 
+    width: 100%; 
+}
+
+.py2dmol-viewer-instance .toggle-item > label { 
+    font-weight: 500; 
+    color: #374151;
+    font-size: 14px;
+    text-align: left;
+    flex-shrink: 1; 
+    line-height: 1.5; 
+    margin: 0;
+}
+
+.py2dmol-viewer-instance #frameCounter {
+    color: #374151; 
+    min-width: 100px;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+/* ============================================================================
+   PAE CONTAINER
+   ============================================================================ */
+.py2dmol-viewer-instance #paeContainer {
+    display: none; 
+    flex-shrink: 0;
+    width: 296px; 
+    height: 296px; 
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+    margin: 12px auto 0 auto;
+}
+
+/* ============================================================================
+   INPUT FIELDS
+   ============================================================================ */
+#fetch-id {
+    flex-grow: 1;
+    height: 42px;
+    padding: 0 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.2s;
+    background: #ffffff;
+}
+
+#fetch-id:hover {
+    border-color: #9ca3af;
+}
+
+#fetch-id:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
+}
+
+#fetch-id::placeholder {
+    color: #9ca3af;
+}
+
+#fetch-input-container {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+#fetch-input-container input {
+    flex-grow: 1;
+    height: 42px;
+}
+
+/* ============================================================================
+   UPLOAD CONTROLS
+   ============================================================================ */
+/* No additional styles needed - button defined above */
+
+.upload-options-section {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 10px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+}
+
+.upload-option-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6b7280;
+    margin-bottom: 4px;
+}
+
+.upload-toggle-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.upload-toggle-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: #374151;
+    cursor: pointer;
+    margin: 0;
+    user-select: none;
+}
+
+/* ============================================================================
+   STATUS MESSAGE
+   ============================================================================ */
+#status-message {
+    display: none;
+    margin-top: 20px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    border: 1px solid;
+    background: #dbeafe;
+    border-color: #3b82f6;
+    color: #1e40af;
+}
+
+#status-message:not(:empty) {
+    display: block;
+}
+
+/* ============================================================================
+   GLOBAL DROP OVERLAY
+   ============================================================================ */
+#global-drop-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.95);
+    border: 4px dashed #3b82f6;
+    z-index: 10000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    border-radius: 16px;
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+}
+
+#global-drop-overlay p {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #3b82f6;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+/* ============================================================================
+   PAGE STYLING
+   ============================================================================ */
+body {
+    background: #f9fafb;
+}
+
+h1 {
+    color: #111827;
+    letter-spacing: -0.025em;
+}
+
+.text-gray-500 {
+    color: #6b7280;
+}
+
+.bg-white.p-6.rounded-2xl {
+    background: #ffffff;
+    padding: 24px;
+    border-radius: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+    border: 1px solid #e5e7eb;
+}
+
+/* ============================================================================
+   UTILITY CLASSES
+   ============================================================================ */
+.vertical-divider-md {
+    width: 1px;
+    background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent);
+}
+
+.hidden {
+    display: none !important;
+}
+
+table.layout-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+table.layout-table td {
+    vertical-align: top;
+}

@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>py2Dmol</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- ADDED: JSZip library for handling AlphaFold zip outputs -->
+    <!-- JSZip library for handling AlphaFold zip outputs -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <!-- ADDED: Numeric.js for Kabsch Alignment (SVD) -->
+    <!-- Numeric.js for Kabsch Alignment (SVD) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJd4gYm4zQ6UvE6j3v/3Tf7U7T2Y9p6gJzU0bW5V6f6G6X6b6W6w6+g6w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link rel="stylesheet" href="web/style.css">
@@ -30,15 +30,60 @@
             <!-- Use table for reliable layout -->
             <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
                 <tr>
-                    <!-- Fetch Column (Left - 40% width) -->
-                    <td style="width: 50%; padding-right: 20px; padding-bottom: 20px; vertical-align: top;">
+                    <!-- Left Column: Fetch + Upload -->
+                    <td style="width: 50%; padding-right: 20px; vertical-align: top;">
+                        
+                        <!-- Fetch Section -->
                         <label for="fetch-id" style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">PDB (4-char) or UniProt ID</label>
-                        <div id="fetch-input-container">
+                        <div id="fetch-input-container" style="margin-bottom: 20px;">
                             <input type="text" id="fetch-id" placeholder="e.g., 4HHB or P0A8I3">
                             <button id="fetch-btn">Fetch</button>
                         </div>
-                        <!-- Bioassembly & Ligand toggles (default ON) -->
-                        <div class="upload-options-section" id="fetchOptionsSection">
+
+                        <!-- Upload Section -->
+                        <label style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">Upload PDB / CIF / ZIP</label>
+                        <div id="uploadControlsContainer">
+                             <!-- Upload Button (Triggers hidden input) -->
+                             <button id="upload-button">
+                                 <i class="fa-solid fa-file-arrow-up"></i>
+                                 <span>Choose Files</span>
+                             </button>
+                             
+                             <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json" multiple class="hidden">
+                        </div>
+
+                    </td>
+                    
+                    <!-- Separator Column -->
+                    <td style="width: 40px; vertical-align: top;">
+                        <div style="width: 1px; height: 180px; background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent); margin: 0 auto;"></div>
+                    </td>
+                    
+                    <!-- Right Column: All Options -->
+                    <td style="vertical-align: top;">
+                        <label style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">Options</label>
+                        
+                        <div class="upload-options-section" style="margin-bottom: 0;">
+                            
+                            <!-- Load as Frames Toggle -->
+                            <div class="upload-toggle-item">
+                                <label class="switch">
+                                    <input type="checkbox" id="loadAsFramesCheckbox" checked> 
+                                    <span class="slider-toggle"></span>
+                                </label>
+                                <label for="loadAsFramesCheckbox" class="upload-toggle-label">Load as Frames</label>
+                            </div>
+                            
+                            <!-- Align to First Frame Toggle -->
+                            <div class="upload-toggle-item">
+                                <label class="switch">
+                                    <input type="checkbox" id="alignFramesCheckbox" checked> 
+                                    <span class="slider-toggle"></span>
+                                </label>
+                                <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
+                            </div>
+
+                            <!-- Bioassembly Toggle -->
                             <div class="upload-toggle-item">
                                 <label class="switch">
                                     <input type="checkbox" id="biounitCheckbox" checked>
@@ -47,6 +92,7 @@
                                 <label for="biounitCheckbox" class="upload-toggle-label">Load Bioassembly (BU1)</label>
                             </div>
 
+                            <!-- Ignore Ligands Toggle -->
                             <div class="upload-toggle-item">
                                 <label class="switch">
                                     <input type="checkbox" id="ignoreLigandsCheckbox" checked>
@@ -54,49 +100,7 @@
                                 </label>
                                 <label for="ignoreLigandsCheckbox" class="upload-toggle-label">Ignore Ligands</label>
                             </div>
-                        </div>
 
-                    </td>
-                    
-                    <!-- Separator Column -->
-                    <td style="width: 40px; vertical-align: top;">
-                        <div style="width: 1px; height: 160px; background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent); margin: 0 auto;"></div>
-                    </td>
-                    
-                    <!-- Upload Column (Right - remaining width) -->
-                    <td style="vertical-align: top;">
-                        <label style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">Upload PDB / CIF / ZIP</label>
-                        
-                        <div id="uploadControlsContainer">
-                            
-                             <!-- Upload Button (Triggers hidden input) -->
-                             <button id="upload-button">
-                                 <i class="fa-solid fa-file-arrow-up"></i>
-                                 <span>Choose Files</span>
-                             </button>
-                             
-                             <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json" multiple class="hidden">
-                            
-                             <!-- Options Section -->
-                             <div class="upload-options-section">
-                                 <!-- Load as Frames Toggle -->
-                                 <div class="upload-toggle-item">
-                                     <label class="switch">
-                                         <input type="checkbox" id="loadAsFramesCheckbox" checked> 
-                                         <span class="slider-toggle"></span>
-                                     </label>
-                                     <label for="loadAsFramesCheckbox" class="upload-toggle-label">Load as Frames</label>
-                                 </div>
-                                 
-                                 <!-- Align to First Frame Toggle -->
-                                 <div class="upload-toggle-item">
-                                     <label class="switch">
-                                         <input type="checkbox" id="alignFramesCheckbox" checked> 
-                                         <span class="slider-toggle"></span>
-                                     </label>
-                                     <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
-                                 </div>
-                             </div>
                         </div>
                     </td>
                 </tr>
@@ -211,44 +215,11 @@
         </div>
 
     </div>
+    
+    <!-- Load scripts in order -->
     <script src="web/utils.js"></script>
     <script id="py2dmol-renderer" src="py2Dmol/resources/py2Dmol.js"></script>
-
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-  // Ensure viewerConfig exists
-  window.viewerConfig = window.viewerConfig || {};
-
-  const biounitEl = document.getElementById('biounitCheckbox');
-  const ignoreLigandsEl = document.getElementById('ignoreLigandsCheckbox');
-
-  // Initialize defaults ONLY if not already set (default = true as requested)
-  if (typeof window.viewerConfig.biounit === 'undefined') {
-    window.viewerConfig.biounit = true;
-  }
-  if (typeof window.viewerConfig.ignoreLigands === 'undefined') {
-    window.viewerConfig.ignoreLigands = true;
-  }
-
-  // Reflect into UI
-  if (biounitEl) biounitEl.checked = !!window.viewerConfig.biounit;
-  if (ignoreLigandsEl) ignoreLigandsEl.checked = !!window.viewerConfig.ignoreLigands;
-
-  // Wire change listeners
-  if (biounitEl) {
-    biounitEl.addEventListener('change', () => {
-      window.viewerConfig.biounit = biounitEl.checked;
-      console.debug('[UI] biounit =', window.viewerConfig.biounit);
-    });
-  }
-  if (ignoreLigandsEl) {
-    ignoreLigandsEl.addEventListener('change', () => {
-      window.viewerConfig.ignoreLigands = ignoreLigandsEl.checked;
-      console.debug('[UI] ignoreLigands =', window.viewerConfig.ignoreLigands);
-    });
-  }
-});
-</script>
+    <script src="web/app.js"></script>
 
 </body>
 </html>
