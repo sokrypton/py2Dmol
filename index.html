@@ -110,6 +110,12 @@
             <div id="status-message"></div>
         </div>
 
+        <div id="top-panel-container" class="bg-white p-4 rounded-2xl shadow-lg mb-5 border border-gray-100" style="width: 948px; display: none;">
+            <div id="sequenceViewContainer" class="control-group">
+                <label class="font-medium text-gray-700">Sequence:</label>
+                <div id="sequenceView" class="flex flex-wrap gap-1"></div>
+            </div>
+        </div>
 
         <div id="viewer-container" class="py2dmol-viewer-instance" style="display: none;">
             
@@ -205,6 +211,26 @@
                              </select>
                          </div>
                         
+                    </div>
+
+                    <div id="selectionContainer" class="control-group">
+                        <div class="selection-mode-toggle">
+                            <label>
+                                <input type="radio" name="selectionMode" value="chain" checked>
+                                <span>Chains</span>
+                            </label>
+                            <label>
+                                <input type="radio" name="selectionMode" value="residue">
+                                <span>Residues</span>
+                            </label>
+                        </div>
+                        <div id="chainSelectionContent">
+                            <div id="chainCheckboxes" class="flex flex-wrap gap-2"></div>
+                        </div>
+                        <div id="residueSelectionContent" style="display: none;">
+                            <textarea id="residueInput" rows="2" placeholder="e.g., A:1-10, B:20-30"></textarea>
+                        </div>
+                        <button id="applySelectionButton">Apply Selection</button>
                     </div>
                     
                     <!-- PAE Container is now centered and aligned with no extra space -->

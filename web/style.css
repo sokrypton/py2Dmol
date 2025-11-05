@@ -589,6 +589,45 @@
     font-size: 14px;
 }
 
+#top-panel-container {
+    display: none;
+}
+
+#sequenceViewContainer {
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: thin;
+    scrollbar-color: #d1d5db #f9fafb;
+}
+
+#sequenceView {
+    display: inline-flex;
+    gap: 1px;
+}
+
+#sequenceView .chain-container {
+    display: inline-flex;
+    align-items: center;
+    padding-right: 10px;
+}
+
+#sequenceView .chain-label {
+    font-weight: bold;
+    margin-right: 5px;
+}
+
+#sequenceView .residue-span {
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    font-family: monospace;
+}
+
+#sequenceView .residue-span:hover {
+    background-color: #e0e0e0;
+}
+
+
 /* ============================================================================
    PAE CONTAINER
    ============================================================================ */
@@ -774,4 +813,43 @@ table.layout-table {
 
 table.layout-table td {
     vertical-align: top;
+}
+
+/* Selection Mode Toggle */
+.selection-mode-toggle {
+    display: flex;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.selection-mode-toggle label {
+    flex: 1;
+    text-align: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    background-color: #f9fafb;
+    color: #4b5563;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
+    position: relative;
+}
+
+.selection-mode-toggle label:first-of-type {
+    border-right: 1px solid #d1d5db;
+}
+
+.selection-mode-toggle input[type="radio"] {
+    display: none;
+}
+
+.selection-mode-toggle input[type="radio"]:checked + span {
+    color: #ffffff;
+}
+
+.selection-mode-toggle label:has(input:checked) {
+    background-color: #4f46e5;
+    color: #ffffff;
 }

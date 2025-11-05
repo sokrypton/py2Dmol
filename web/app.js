@@ -149,9 +149,38 @@ function setupEventListeners() {
     
     if (objectSelect) objectSelect.addEventListener('change', handleObjectChange);
     if (colorSelect) colorSelect.addEventListener('change', updateColorMode);
+
+    // Listen for the custom event dispatched by the renderer when color settings change
+    document.addEventListener('py2dmol-color-change', () => {
+        console.log("Color change event received, updating sequence UI.");
+        updateSequenceViewUI();
+    });
     
     // Update navigation button states
     updateObjectNavigationButtons();
+
+    // Selection controls
+    const applySelectionButton = document.getElementById('applySelectionButton');
+    if (applySelectionButton) {
+        applySelectionButton.addEventListener('click', applySelection);
+    }
+
+    // Selection mode toggle
+    const selectionModeRadios = document.querySelectorAll('input[name="selectionMode"]');
+    const chainSelectionContent = document.getElementById('chainSelectionContent');
+    const residueSelectionContent = document.getElementById('residueSelectionContent');
+
+    selectionModeRadios.forEach(radio => {
+        radio.addEventListener('change', (event) => {
+            if (event.target.value === 'chain') {
+                chainSelectionContent.style.display = 'block';
+                residueSelectionContent.style.display = 'none';
+            } else {
+                chainSelectionContent.style.display = 'none';
+                residueSelectionContent.style.display = 'block';
+            }
+        });
+    });
 }
 
 // ============================================================================
@@ -702,6 +731,7 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
 
 function updateViewerFromGlobalBatch() {
     const viewerContainer = document.getElementById('viewer-container');
+    const topPanelContainer = document.getElementById('top-panel-container');
     const objectSelect = document.getElementById('objectSelect');
     
     viewerApi.handlePythonClearAll();
@@ -729,18 +759,246 @@ function updateViewerFromGlobalBatch() {
         }
     }
 
-    if (totalFrames > 0) {
+    if (batchedObjects.length > 0) {
         viewerContainer.style.display = 'flex';
+        topPanelContainer.style.display = 'block';
         if (lastObjectName) {
             setTimeout(() => {
                 objectSelect.value = lastObjectName;
                 handleObjectChange();
                 updateObjectNavigationButtons();
+                updateChainSelectionUI();
+                updateSequenceViewUI();
             }, 50);
         }
     } else {
         setStatus("Error: No valid structures were loaded to display.", true);
         viewerContainer.style.display = 'none';
+    }
+}
+
+function updateChainSelectionUI() {
+    const chainCheckboxes = document.getElementById('chainCheckboxes');
+    if (!chainCheckboxes) return;
+
+    chainCheckboxes.innerHTML = ''; // Clear existing checkboxes
+
+    const objectName = viewerApi.renderer.currentObjectName;
+    if (!objectName) return;
+
+    const object = viewerApi.renderer.objectsData[objectName];
+    if (!object || !object.frames || object.frames.length === 0) return;
+
+    const firstFrame = object.frames[0];
+    if (!firstFrame || !firstFrame.chains) return;
+
+    const uniqueChains = [...new Set(firstFrame.chains)];
+
+    uniqueChains.forEach(chain => {
+        const checkboxContainer = document.createElement('div');
+        checkboxContainer.className = 'flex items-center';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `chain-${chain}`;
+        checkbox.value = chain;
+        checkbox.checked = true;
+        checkbox.className = 'h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
+
+        const label = document.createElement('label');
+        label.htmlFor = `chain-${chain}`;
+        label.textContent = chain;
+        label.className = 'ml-2 block text-sm text-gray-900';
+
+        checkboxContainer.appendChild(checkbox);
+        checkboxContainer.appendChild(label);
+        chainCheckboxes.appendChild(checkboxContainer);
+    });
+}
+
+function applySelection() {
+    const objectName = viewerApi.renderer.currentObjectName;
+    if (!objectName) return;
+
+    const object = viewerApi.renderer.objectsData[objectName];
+    if (!object || !object.frames || object.frames.length === 0) return;
+
+    const firstFrame = object.frames[0];
+    if (!firstFrame) return;
+
+    // Get selected chains
+    const selectedChains = new Set();
+    const chainCheckboxes = document.querySelectorAll('#chainCheckboxes input[type="checkbox"]');
+    chainCheckboxes.forEach(checkbox => {
+        if (checkbox.checked) {
+            selectedChains.add(checkbox.value);
+        }
+    });
+
+    // Get selected residues
+    const residueInput = document.getElementById('residueInput').value;
+    const selectedResidues = parseResidueSelection(residueInput);
+
+    // Create visibility mask
+    const visibilityMask = new Set();
+    for (let i = 0; i < firstFrame.coords.length; i++) {
+        const chain = firstFrame.chains[i];
+        const resSeq = firstFrame.residue_index[i];
+
+        if (selectedChains.has(chain)) {
+            if (selectedResidues.size === 0) {
+                visibilityMask.add(i);
+            } else {
+                if (selectedResidues.has(`${chain}:${resSeq}`)) {
+                    visibilityMask.add(i);
+                }
+            }
+        }
+    }
+
+    viewerApi.renderer.visibilityMask = visibilityMask;
+    viewerApi.renderer.render();
+}
+
+function parseResidueSelection(input) {
+    const selection = new Set();
+    if (!input) return selection;
+
+    const parts = input.split(/[,;]/);
+    for (const part of parts) {
+        const [chain, range] = part.split(':');
+        if (!chain || !range) continue;
+
+        const [start, end] = range.split('-').map(Number);
+        if (isNaN(start)) continue;
+
+        if (isNaN(end)) {
+            selection.add(`${chain.trim()}:${start}`);
+        } else {
+            for (let i = start; i <= end; i++) {
+                selection.add(`${chain.trim()}:${i}`);
+            }
+        }
+    }
+    return selection;
+}
+
+function highlightResidue(chain, residueIndex) {
+    if (viewerApi && viewerApi.renderer) {
+        viewerApi.renderer.highlightedResidue = { chain, residueIndex };
+        viewerApi.renderer.render();
+    }
+}
+
+function clearHighlight() {
+    if (viewerApi && viewerApi.renderer) {
+        viewerApi.renderer.highlightedResidue = null;
+        viewerApi.renderer.render();
+    }
+}
+
+function toggleResidueSelection(chain, residueIndex) {
+    const residueInput = document.getElementById('residueInput');
+    const selectionIdentifier = `${chain}:${residueIndex}`;
+    const currentSelection = residueInput.value.trim();
+    let selections = currentSelection ? currentSelection.split(/[,;]\s*/) : [];
+
+    if (selections.includes(selectionIdentifier)) {
+        selections = selections.filter(sel => sel !== selectionIdentifier);
+    } else {
+        selections.push(selectionIdentifier);
+    }
+
+    residueInput.value = selections.join(', ');
+    applySelection();
+}
+
+function updateSequenceViewUI() {
+    const sequenceView = document.getElementById('sequenceView');
+    if (!sequenceView) return;
+
+    sequenceView.innerHTML = ''; // Clear existing sequence
+
+    const objectName = viewerApi.renderer.currentObjectName;
+    if (!objectName) return;
+
+    const object = viewerApi.renderer.objectsData[objectName];
+    if (!object || !object.frames || object.frames.length === 0) return;
+
+    const firstFrame = object.frames[0];
+    if (!firstFrame || !firstFrame.residues) return;
+
+    const residues = firstFrame.residues;
+    const residue_index = firstFrame.residue_index;
+    const chains = firstFrame.chains;
+
+    let currentChain = null;
+    let chainContainer = null;
+
+    // Create a map to get unique residues for the sequence view
+    const uniqueResidues = new Map();
+    for (let i = 0; i < residues.length; i++) {
+        const key = `${chains[i]}:${residue_index[i]}`;
+        if (!uniqueResidues.has(key)) {
+            uniqueResidues.set(key, {
+                chain: chains[i],
+                resName: residues[i],
+                resSeq: residue_index[i],
+                atomIndex: i // Store the first atom index for this residue
+            });
+        }
+    }
+
+    const sortedUniqueResidues = Array.from(uniqueResidues.values()).sort((a, b) => {
+        if (a.chain < b.chain) return -1;
+        if (a.chain > b.chain) return 1;
+        return a.resSeq - b.resSeq;
+    });
+
+    for (const res of sortedUniqueResidues) {
+        const { chain, resName, resSeq, atomIndex } = res;
+        if (chain !== currentChain) {
+            currentChain = chain;
+            chainContainer = document.createElement('div');
+            chainContainer.className = 'flex flex-wrap p-2 border-t border-gray-200'; // Removed gap-1
+            const chainLabel = document.createElement('div');
+            chainLabel.className = 'font-bold text-gray-700 w-full';
+            chainLabel.textContent = `Chain ${chain}`;
+            chainContainer.appendChild(chainLabel);
+            sequenceView.appendChild(chainContainer);
+        }
+
+        const residueSpan = document.createElement('span');
+        residueSpan.className = 'cursor-pointer rounded hover:bg-indigo-100 font-mono'; // Removed p-1
+        const threeToOne = {
+            'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
+            'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+            'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
+            'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
+            'SEC': 'U', 'PYL': 'O'
+        };
+        residueSpan.textContent = threeToOne[resName] || 'X';
+        residueSpan.dataset.residueIndex = resSeq;
+        residueSpan.dataset.chain = chain;
+        residueSpan.title = `${resName}${resSeq}`;
+
+        // Color the residue based on the viewer's current color scheme
+        if (viewerApi && viewerApi.renderer && typeof viewerApi.renderer.getAtomColor === 'function') {
+            const color = viewerApi.renderer.getAtomColor(atomIndex);
+            residueSpan.style.color = `rgb(${color.r}, ${color.g}, ${color.b})`;
+        }
+
+        residueSpan.addEventListener('mouseenter', () => {
+            highlightResidue(chain, resSeq);
+        });
+        residueSpan.addEventListener('mouseleave', () => {
+            clearHighlight();
+        });
+        residueSpan.addEventListener('click', () => {
+            toggleResidueSelection(chain, resSeq);
+        });
+
+        chainContainer.appendChild(residueSpan);
     }
 }
 

@@ -233,6 +233,7 @@ function initializePy2DmolViewer(containerElement) {
             this.paeRenderer = null;
             this.visibilityMask = null; // Set of atom indices to *show*
             this.polymerAtomIndices = []; // Map residue index -> atom index
+            this.highlightedResidue = null; // To store { chain, residueIndex }
 
             // UI elements
             this.playButton = null;
@@ -893,42 +894,43 @@ function initializePy2DmolViewer(containerElement) {
             try {
                 if (data && data.coords && data.coords.length > 0) {
                     const coords = data.coords.map(c => new Vec3(c[0], c[1], c[2]));
-                    const plddts = data.plddts || [];
-                    const chains = data.chains || [];
-                    const atomTypes = data.atom_types || [];
-                    const hasPAE = data.pae && data.pae.length > 0;
-                    this.setCoords(coords, plddts, chains, atomTypes, hasPAE);
+                    // Pass other data fields directly, allowing them to be undefined
+                    this.setCoords(
+                        coords,
+                        data.plddts,
+                        data.chains,
+                        data.atom_types,
+                        (data.pae && data.pae.length > 0),
+                        data.residues,
+                        data.residue_index
+                    );
                 }
             } catch (e) {
                 console.error("Failed to load data into renderer:", e);
             }
         }
 
-        setCoords(coords, plddts = [], chains = [], atomTypes = [], hasPAE = false) {
+        setCoords(coords, plddts, chains, atomTypes, hasPAE = false, residues, residue_index) {
             this.coords = coords;
-            this.plddts = plddts;
-            this.chains = chains;
-            this.atomTypes = atomTypes;
-            
+            const n = this.coords.length;
+
+            // --- Handle Defaults for Missing Data ---
+            this.plddts = (plddts && plddts.length === n) ? plddts : Array(n).fill(50.0);
+            this.chains = (chains && chains.length === n) ? chains : Array(n).fill('A');
+            this.atomTypes = (atomTypes && atomTypes.length === n) ? atomTypes : Array(n).fill('P');
+            this.residues = (residues && residues.length === n) ? residues : Array(n).fill('UNK');
+            this.residue_index = (residue_index && residue_index.length === n) ? residue_index : Array.from({length: n}, (_, i) => i + 1);
+
             // "auto" logic:
-            // Always calculate what 'auto' *should* be
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
             if (hasPAE) {
                 this.resolvedAutoColor = 'plddt';
-            } else if (this.chains && this.chains.length > 0) {
-                const uniqueChains = new Set(this.chains.filter(c => c && c.trim()));
-                this.resolvedAutoColor = (uniqueChains.size > 1) ? 'chain' : 'rainbow';
+            } else if (this.chains && new Set(this.chains).size > 1) {
+                this.resolvedAutoColor = 'chain';
             } else {
                 this.resolvedAutoColor = 'rainbow';
             }
-            
-            const n = this.coords.length;
 
-            // Handle defaults
-            if (this.plddts.length !== n) { this.plddts = Array(n).fill(50.0); }
-            if (this.chains.length !== n) { this.chains = Array(n).fill('A'); }
-            if (this.atomTypes.length !== n) { this.atomTypes = Array(n).fill('P'); }
-            
             // Map polymer atoms to residue indices for PAE selection
             this.polymerAtomIndices = [];
             const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
@@ -1116,6 +1118,58 @@ function initializePy2DmolViewer(containerElement) {
             // Trigger first render
             this.render(); 
         }
+
+        getAtomColor(atomIndex) {
+            if (atomIndex < 0 || atomIndex >= this.coords.length) {
+                return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
+            }
+
+            let effectiveColorMode = this.colorMode;
+            if (effectiveColorMode === 'auto') {
+                effectiveColorMode = this.resolvedAutoColor || 'rainbow';
+            }
+
+            const type = this.atomTypes[atomIndex];
+            let color;
+
+            if (effectiveColorMode === 'plddt') {
+                const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
+                const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
+                color = plddtFunc(plddt);
+            } else {
+                 if (type === 'L') {
+                    color = { r: 128, g: 128, b: 128 }; // Ligands are grey
+                } else if (effectiveColorMode === 'chain') {
+                    const chainId = this.chains[atomIndex] || 'A';
+                    if (!this.chainIndexMap || this.chainIndexMap.size === 0) {
+                        this.chainIndexMap = new Map();
+                         if (this.chains.length > 0) {
+                            for (const cId of new Set(this.chains)) {
+                                if (cId && !this.chainIndexMap.has(cId)) {
+                                    this.chainIndexMap.set(cId, this.chainIndexMap.size);
+                                }
+                            }
+                        }
+                    }
+                    const chainIndex = this.chainIndexMap.get(chainId) || 0;
+                    const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
+                    const hex = colorArray[chainIndex % colorArray.length];
+                    color = hexToRgb(hex);
+                } else { // rainbow
+                    const chainId = this.chains[atomIndex] || 'A';
+                    const scale = this.chainRainbowScales[chainId];
+                    const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
+                    if (scale) {
+                        const colorIndex = this.perChainIndices[atomIndex];
+                        color = rainbowFunc(colorIndex, scale.min, scale.max);
+                    } else {
+                        color = { r: 128, g: 128, b: 128 };
+                    }
+                }
+            }
+
+            return this._applyPastel(color);
+        }
         
         // Calculate segment colors (chain or rainbow)
         _calculateSegmentColors() {
@@ -1127,11 +1181,11 @@ function initializePy2DmolViewer(containerElement) {
                 effectiveColorMode = this.resolvedAutoColor || 'rainbow';
             }
             
-            const chainIndexMap = new Map();
+            this.chainIndexMap = new Map();
             if (effectiveColorMode === 'chain' && this.chains.length > 0) {
-                for (const chainId of this.chains) {
-                    if (chainId && !chainIndexMap.has(chainId)) {
-                        chainIndexMap.set(chainId, chainIndexMap.size);
+                for (const chainId of new Set(this.chains)) {
+                    if (chainId && !this.chainIndexMap.has(chainId)) {
+                        this.chainIndexMap.set(chainId, this.chainIndexMap.size);
                     }
                 }
             }
@@ -1630,6 +1684,72 @@ function initializePy2DmolViewer(containerElement) {
             // ====================================================================
             // END OF REFACTORED LOOP
             // ====================================================================
+
+            // ====================================================================
+            // HIGHLIGHTING PASS
+            // ====================================================================
+            if (this.highlightedResidue) {
+                this.ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
+                this.ctx.lineCap = 'round';
+
+                for (const idx of order) {
+                    const segInfo = segments[idx];
+
+                    // Check if this segment belongs to the highlighted residue
+                    const belongsToHighlight = (
+                        (segInfo.chainId === this.highlightedResidue.chain && this.residue_index[segInfo.idx1] === this.highlightedResidue.residueIndex) ||
+                        (segInfo.chainId === this.highlightedResidue.chain && this.residue_index[segInfo.idx2] === this.highlightedResidue.residueIndex)
+                    );
+
+                    if (!belongsToHighlight) {
+                        continue;
+                    }
+                     if (visibilityMask && (!visibilityMask.has(segInfo.idx1) || !visibilityMask.has(segInfo.idx2))) {
+                        continue;
+                    }
+
+                    const start = rotated[segInfo.idx1];
+                    const end = rotated[segInfo.idx2];
+                    let x1, y1, x2, y2;
+                    let perspectiveScale1 = 1.0;
+                    let perspectiveScale2 = 1.0;
+
+                    if (this.perspectiveEnabled) {
+                        const z1 = this.focalLength - start.z;
+                        const z2 = this.focalLength - end.z;
+                        if (z1 < 0.01 || z2 < 0.01) continue;
+                        perspectiveScale1 = this.focalLength / z1;
+                        perspectiveScale2 = this.focalLength / z2;
+                        x1 = centerX + (start.x * scale * perspectiveScale1);
+                        y1 = centerY - (start.y * scale * perspectiveScale1);
+                        x2 = centerX + (end.x * scale * perspectiveScale2);
+                        y2 = centerY - (end.y * scale * perspectiveScale2);
+                    } else {
+                        x1 = centerX + start.x * scale;
+                        y1 = centerY - start.y * scale;
+                        x2 = centerX + end.x * scale;
+                        y2 = centerY - end.y * scale;
+                    }
+
+                    const type = segInfo.type;
+                    let widthMultiplier = 1.0;
+                    if (type === 'L') widthMultiplier = 0.4;
+                    else if (type === 'D' || type === 'R') widthMultiplier = 1.6;
+
+                    let highlightLineWidth = (baseLineWidthPixels * widthMultiplier) * 1.5; // Make highlight thicker
+                    if (this.perspectiveEnabled) {
+                        const avgPerspectiveScale = (perspectiveScale1 + perspectiveScale2) / 2;
+                        highlightLineWidth *= avgPerspectiveScale;
+                    }
+                    highlightLineWidth = Math.max(1.0, highlightLineWidth);
+
+                    this.ctx.lineWidth = highlightLineWidth;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x1, y1);
+                    this.ctx.lineTo(x2, y2);
+                    this.ctx.stroke();
+                }
+            }
         }
 
         // Main animation loop
@@ -1971,6 +2091,8 @@ function initializePy2DmolViewer(containerElement) {
         renderer.colorMode = e.target.value;
         renderer.colors = renderer._calculateSegmentColors();
         renderer.render();
+        // Dispatch a custom event to notify external listeners (like the sequence viewer)
+        document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
     });
     
     // Setup shadowEnabledCheckbox
@@ -2081,30 +2203,28 @@ function initializePy2DmolViewer(containerElement) {
 
     <!-- 11. Load initial data
     if (window.staticObjectData && window.staticObjectData.length > 0) {
-        <!-- === STATIC MODE (from show()) ===
+        // === STATIC MODE (from show()) ===
         try {
-            <!-- Loop over all objects (NEW STRUCTURE)
             for (const obj of window.staticObjectData) {
                 if (obj.name && obj.frames && obj.frames.length > 0) {
                     
-                    // Get the static data from the *object* level
-                    const staticChains = obj.chains;
-                    const staticAtomTypes = obj.atom_types;
+                    const staticChains = obj.chains; // Might be undefined
+                    const staticAtomTypes = obj.atom_types; // Might be undefined
                     
-                    // Loop through the "light" frames
                     for (let i = 0; i < obj.frames.length; i++) {
-                        const lightFrame = obj.frames[i]; // This only has coords/plddts/pae
+                        const lightFrame = obj.frames[i];
                         
-                        // Re-construct the full frame data expected by addFrame
+                        // Re-construct the full frame data, keys might be undefined
                         const fullFrameData = {
                             coords: lightFrame.coords,
                             plddts: lightFrame.plddts,
-                            pae: lightFrame.pae, // PAE is per-frame
+                            pae: lightFrame.pae,
                             chains: staticChains,
-                            atom_types: staticAtomTypes
+                            atom_types: staticAtomTypes,
+                            residues: lightFrame.residues,
+                            residue_index: lightFrame.residue_index
                         };
                         
-                        // Pass the re-hydrated frame to the renderer
                         renderer.addFrame(fullFrameData, obj.name);
                     }
                 }
