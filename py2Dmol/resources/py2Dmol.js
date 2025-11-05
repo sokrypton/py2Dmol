@@ -923,9 +923,10 @@ function initializePy2DmolViewer(containerElement) {
 
             // "auto" logic:
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
+            const uniqueChains = new Set(this.chains);
             if (hasPAE) {
                 this.resolvedAutoColor = 'plddt';
-            } else if (this.chains && new Set(this.chains).size > 1) {
+            } else if (this.chains && uniqueChains.size > 1) {
                 this.resolvedAutoColor = 'chain';
             } else {
                 this.resolvedAutoColor = 'rainbow';
@@ -1115,6 +1116,8 @@ function initializePy2DmolViewer(containerElement) {
             // Pre-calculate pLDDT colors
             this.plddtColors = this._calculatePlddtColors();
 
+            console.log(`[Debug] Generated ${this.segmentIndices.length} segments.`);
+
             // Trigger first render
             this.render(); 
         }
@@ -1173,51 +1176,53 @@ function initializePy2DmolViewer(containerElement) {
         
         // Calculate segment colors (chain or rainbow)
         _calculateSegmentColors() {
-            const n = this.coords.length;
             const m = this.segmentIndices.length;
-            
+            if (m === 0) return [];
+
             let effectiveColorMode = this.colorMode;
             if (effectiveColorMode === 'auto') {
                 effectiveColorMode = this.resolvedAutoColor || 'rainbow';
             }
-            
-            this.chainIndexMap = new Map();
-            if (effectiveColorMode === 'chain' && this.chains.length > 0) {
-                for (const chainId of new Set(this.chains)) {
-                    if (chainId && !this.chainIndexMap.has(chainId)) {
-                        this.chainIndexMap.set(chainId, this.chainIndexMap.size);
+
+            // This is the CRITICAL fix. We must ensure that ONE chainIndexMap is
+            // created and used for the entire render. We create it here if it doesn't
+            // exist, and other functions like getAtomColor will use this same map.
+            if (!this.chainIndexMap || this.chainIndexMap.size === 0) {
+                this.chainIndexMap = new Map();
+                 if (this.chains.length > 0) {
+                    // Use a sorted list of unique chain IDs to ensure a consistent order
+                    const uniqueChains = [...new Set(this.chains)].sort();
+                    for (const chainId of uniqueChains) {
+                        if (chainId && !this.chainIndexMap.has(chainId)) {
+                            this.chainIndexMap.set(chainId, this.chainIndexMap.size);
+                        }
                     }
                 }
             }
-            
+
             const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
-            
+            const chainColors = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
+            const grey = {r: 128, g: 128, b: 128};
+
             return this.segmentIndices.map(segInfo => {
-                const grey = {r: 128, g: 128, b: 128};
                 let color;
                 const i = segInfo.origIndex;
                 const type = segInfo.type;
-                
+
                 if (type === 'L') {
-                    // Ligands are grey unless in plddt mode
                     color = grey;
-                }
-                // plddt mode is handled in render()
-                else if (effectiveColorMode === 'chain') {
+                } else if (effectiveColorMode === 'chain') {
                     const chainId = this.chains[i] || 'A';
-                    const chainIndex = chainIndexMap.get(chainId) || 0;
-                    
-                    const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
-                    const hex = colorArray[chainIndex % colorArray.length];
+                    const chainIndex = this.chainIndexMap.get(chainId) || 0;
+                    const hex = chainColors[chainIndex % chainColors.length];
                     color = hexToRgb(hex);
-                }
-                else { // rainbow
+                } else { // 'rainbow' or other modes
                     const scale = this.chainRainbowScales[segInfo.chainId];
-                    if (scale) { 
-                        // Use the selected rainbow function
-                        color = rainbowFunc(segInfo.colorIndex, scale.min, scale.max); 
+                    if (scale) {
+                        color = rainbowFunc(segInfo.colorIndex, scale.min, scale.max);
+                    } else {
+                        color = grey;
                     }
-                    else { color = grey; }
                 }
                 return this._applyPastel(color);
             });

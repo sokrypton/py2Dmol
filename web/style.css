@@ -627,6 +627,13 @@
     background-color: #e0e0e0;
 }
 
+/* Style for selected residues */
+#sequenceView .residue-span.selected {
+    background-color: #4f46e5; /* A distinct background color */
+    color: white !important; /* White text for contrast, !important to override inline style */
+    border-radius: 4px;
+}
+
 
 /* ============================================================================
    PAE CONTAINER

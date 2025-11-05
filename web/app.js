@@ -10,6 +10,8 @@ let referenceChainACoords = null; // Baseline for alignment (append mode)
 let viewerApi = null;
 let objectsWithPAE = new Set();
 let batchedObjects = [];
+let selectedResiduesSet = new Set(); // New global set for residue selections
+
 
 // Rotation animation state
 let rotationAnimation = {
@@ -158,29 +160,6 @@ function setupEventListeners() {
     
     // Update navigation button states
     updateObjectNavigationButtons();
-
-    // Selection controls
-    const applySelectionButton = document.getElementById('applySelectionButton');
-    if (applySelectionButton) {
-        applySelectionButton.addEventListener('click', applySelection);
-    }
-
-    // Selection mode toggle
-    const selectionModeRadios = document.querySelectorAll('input[name="selectionMode"]');
-    const chainSelectionContent = document.getElementById('chainSelectionContent');
-    const residueSelectionContent = document.getElementById('residueSelectionContent');
-
-    selectionModeRadios.forEach(radio => {
-        radio.addEventListener('change', (event) => {
-            if (event.target.value === 'chain') {
-                chainSelectionContent.style.display = 'block';
-                residueSelectionContent.style.display = 'none';
-            } else {
-                chainSelectionContent.style.display = 'none';
-                residueSelectionContent.style.display = 'block';
-            }
-        });
-    });
 }
 
 // ============================================================================
@@ -767,7 +746,7 @@ function updateViewerFromGlobalBatch() {
                 objectSelect.value = lastObjectName;
                 handleObjectChange();
                 updateObjectNavigationButtons();
-                updateChainSelectionUI();
+                updateChainSelectionUI(); // This will setup the new logic
                 updateSequenceViewUI();
             }, 50);
         }
@@ -777,11 +756,13 @@ function updateViewerFromGlobalBatch() {
     }
 }
 
+
 function updateChainSelectionUI() {
     const chainCheckboxes = document.getElementById('chainCheckboxes');
     if (!chainCheckboxes) return;
 
-    chainCheckboxes.innerHTML = ''; // Clear existing checkboxes
+    chainCheckboxes.innerHTML = ''; // Clear existing
+    selectedResiduesSet.clear(); // Clear residue selections on object change
 
     const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) return;
@@ -802,7 +783,7 @@ function updateChainSelectionUI() {
         checkbox.type = 'checkbox';
         checkbox.id = `chain-${chain}`;
         checkbox.value = chain;
-        checkbox.checked = true;
+        checkbox.checked = true; // Default to visible
         checkbox.className = 'h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
 
         const label = document.createElement('label');
@@ -810,15 +791,27 @@ function updateChainSelectionUI() {
         label.textContent = chain;
         label.className = 'ml-2 block text-sm text-gray-900';
 
+        // Add event listener to apply changes immediately
+        checkbox.addEventListener('change', applySelection);
+
         checkboxContainer.appendChild(checkbox);
         checkboxContainer.appendChild(label);
         chainCheckboxes.appendChild(checkboxContainer);
     });
+
+    // Initial application to show all chains
+    applySelection();
 }
 
 function applySelection() {
+    if (!viewerApi || !viewerApi.renderer) return;
+
     const objectName = viewerApi.renderer.currentObjectName;
-    if (!objectName) return;
+    if (!objectName) {
+        viewerApi.renderer.visibilityMask = null; // Show all if no object
+        viewerApi.renderer.render();
+        return;
+    }
 
     const object = viewerApi.renderer.objectsData[objectName];
     if (!object || !object.frames || object.frames.length === 0) return;
@@ -826,62 +819,46 @@ function applySelection() {
     const firstFrame = object.frames[0];
     if (!firstFrame) return;
 
-    // Get selected chains
-    const selectedChains = new Set();
+    // Get selected chains from checkboxes
+    const visibleChains = new Set();
     const chainCheckboxes = document.querySelectorAll('#chainCheckboxes input[type="checkbox"]');
     chainCheckboxes.forEach(checkbox => {
         if (checkbox.checked) {
-            selectedChains.add(checkbox.value);
+            visibleChains.add(checkbox.value);
         }
     });
 
-    // Get selected residues
-    const residueInput = document.getElementById('residueInput').value;
-    const selectedResidues = parseResidueSelection(residueInput);
+    // If there is any residue selection, we show only those residues.
+    // Otherwise, we show all residues from the selected chains.
+    const hasResidueSelection = selectedResiduesSet.size > 0;
 
-    // Create visibility mask
     const visibilityMask = new Set();
     for (let i = 0; i < firstFrame.coords.length; i++) {
         const chain = firstFrame.chains[i];
         const resSeq = firstFrame.residue_index[i];
+        const residueIdentifier = `${chain}:${resSeq}`;
 
-        if (selectedChains.has(chain)) {
-            if (selectedResidues.size === 0) {
+        if (hasResidueSelection) {
+            // If we have a residue selection, only show atoms from those residues,
+            // but still respect the chain visibility toggle.
+            if (visibleChains.has(chain) && selectedResiduesSet.has(residueIdentifier)) {
                 visibilityMask.add(i);
-            } else {
-                if (selectedResidues.has(`${chain}:${resSeq}`)) {
-                    visibilityMask.add(i);
-                }
+            }
+        } else {
+            // If no residues are selected, just show all atoms from visible chains.
+            if (visibleChains.has(chain)) {
+                visibilityMask.add(i);
             }
         }
     }
 
     viewerApi.renderer.visibilityMask = visibilityMask;
     viewerApi.renderer.render();
+
+    // Also update the sequence UI to reflect the selection
+    updateSequenceViewUI();
 }
 
-function parseResidueSelection(input) {
-    const selection = new Set();
-    if (!input) return selection;
-
-    const parts = input.split(/[,;]/);
-    for (const part of parts) {
-        const [chain, range] = part.split(':');
-        if (!chain || !range) continue;
-
-        const [start, end] = range.split('-').map(Number);
-        if (isNaN(start)) continue;
-
-        if (isNaN(end)) {
-            selection.add(`${chain.trim()}:${start}`);
-        } else {
-            for (let i = start; i <= end; i++) {
-                selection.add(`${chain.trim()}:${i}`);
-            }
-        }
-    }
-    return selection;
-}
 
 function highlightResidue(chain, residueIndex) {
     if (viewerApi && viewerApi.renderer) {
@@ -898,18 +875,15 @@ function clearHighlight() {
 }
 
 function toggleResidueSelection(chain, residueIndex) {
-    const residueInput = document.getElementById('residueInput');
     const selectionIdentifier = `${chain}:${residueIndex}`;
-    const currentSelection = residueInput.value.trim();
-    let selections = currentSelection ? currentSelection.split(/[,;]\s*/) : [];
 
-    if (selections.includes(selectionIdentifier)) {
-        selections = selections.filter(sel => sel !== selectionIdentifier);
+    if (selectedResiduesSet.has(selectionIdentifier)) {
+        selectedResiduesSet.delete(selectionIdentifier);
     } else {
-        selections.push(selectionIdentifier);
+        selectedResiduesSet.add(selectionIdentifier);
     }
 
-    residueInput.value = selections.join(', ');
+    // Re-apply the selection immediately
     applySelection();
 }
 
@@ -969,7 +943,13 @@ function updateSequenceViewUI() {
         }
 
         const residueSpan = document.createElement('span');
-        residueSpan.className = 'cursor-pointer rounded hover:bg-indigo-100 font-mono'; // Removed p-1
+        const selectionIdentifier = `${chain}:${resSeq}`;
+
+        residueSpan.className = 'cursor-pointer rounded hover:bg-indigo-100 font-mono';
+        if (selectedResiduesSet.has(selectionIdentifier)) {
+            residueSpan.classList.add('selected');
+        }
+
         const threeToOne = {
             'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
             'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
@@ -985,7 +965,10 @@ function updateSequenceViewUI() {
         // Color the residue based on the viewer's current color scheme
         if (viewerApi && viewerApi.renderer && typeof viewerApi.renderer.getAtomColor === 'function') {
             const color = viewerApi.renderer.getAtomColor(atomIndex);
-            residueSpan.style.color = `rgb(${color.r}, ${color.g}, ${color.b})`;
+            // Only apply color if not selected, to let the 'selected' class override it
+            if (!residueSpan.classList.contains('selected')) {
+                 residueSpan.style.color = `rgb(${color.r}, ${color.g}, ${color.b})`;
+            }
         }
 
         residueSpan.addEventListener('mouseenter', () => {

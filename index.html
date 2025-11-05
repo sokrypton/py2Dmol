@@ -214,23 +214,8 @@
                     </div>
 
                     <div id="selectionContainer" class="control-group">
-                        <div class="selection-mode-toggle">
-                            <label>
-                                <input type="radio" name="selectionMode" value="chain" checked>
-                                <span>Chains</span>
-                            </label>
-                            <label>
-                                <input type="radio" name="selectionMode" value="residue">
-                                <span>Residues</span>
-                            </label>
-                        </div>
-                        <div id="chainSelectionContent">
-                            <div id="chainCheckboxes" class="flex flex-wrap gap-2"></div>
-                        </div>
-                        <div id="residueSelectionContent" style="display: none;">
-                            <textarea id="residueInput" rows="2" placeholder="e.g., A:1-10, B:20-30"></textarea>
-                        </div>
-                        <button id="applySelectionButton">Apply Selection</button>
+                        <label class="font-medium text-gray-700">Visible Chains:</label>
+                        <div id="chainCheckboxes" class="flex flex-wrap gap-2"></div>
                     </div>
                     
                     <!-- PAE Container is now centered and aligned with no extra space -->
