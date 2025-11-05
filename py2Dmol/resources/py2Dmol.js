@@ -1494,104 +1494,115 @@ function initializePy2DmolViewer(containerElement) {
 
             const centerX = this.canvas.width / 2;
             const centerY = this.canvas.height / 2;
-            
-            if (this.outlineEnabled) {
-                // 3-STEP DRAW (Outline) - Fixes gaps
-                for (const idx of order) {
-                    const segInfo = segments[idx];
-                    
-                    // Visibility Check
-                    if (visibilityMask && (!visibilityMask.has(segInfo.idx1) || !visibilityMask.has(segInfo.idx2))) {
+
+            // ====================================================================
+            // REFACTORED DRAWING LOOP
+            // ====================================================================
+            // This loop draws the main line, and if outlining is on,
+            // it also draws the 'butt' capped gap-filler just before it.
+            for (const idx of order) {
+                
+                // --- 1. COMMON CALCULATIONS (Do these ONCE) ---
+
+                const segInfo = segments[idx];
+
+                // Visibility Check
+                if (visibilityMask && (!visibilityMask.has(segInfo.idx1) || !visibilityMask.has(segInfo.idx2))) {
+                    continue;
+                }
+
+                // Color Calculation
+                let { r, g, b } = colors[idx];
+                r /= 255; g /= 255; b /= 255;
+
+                if (renderShadows) {
+                    const tintFactor = (0.50 * zNorm[idx] + 0.50 * tints[idx]) / 3;
+                    r = r + (1 - r) * tintFactor;
+                    g = g + (1 - g) * tintFactor;
+                    b = b + (1 - b) * tintFactor;
+                    const shadowFactor = 0.20 + 0.25 * zNorm[idx] + 0.55 * shadows[idx];
+                    r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
+                } else {
+                    const depthFactor = 0.70 + 0.30 * zNorm[idx];
+                    r *= depthFactor; g *= depthFactor; b *= depthFactor;
+                }
+
+                // Projection
+                const start = rotated[segInfo.idx1];
+                const end = rotated[segInfo.idx2];
+
+                let x1, y1, x2, y2;
+                let perspectiveScale1 = 1.0;
+                let perspectiveScale2 = 1.0;
+
+                if (this.perspectiveEnabled) {
+                    const z1 = this.focalLength - start.z;
+                    const z2 = this.focalLength - end.z;
+
+                    if (z1 < 0.01 || z2 < 0.01) { // Clipping check
                         continue;
                     }
-                    
-                    let {r, g, b} = colors[idx];
-                    r /= 255; g /= 255; b /= 255;
-                    
-                    if (renderShadows) {
-                        const tintFactor = (0.50 * zNorm[idx] + 0.50 * tints[idx]) / 3;
-                        r = r + (1 - r) * tintFactor;
-                        g = g + (1 - g) * tintFactor;
-                        b = b + (1 - b) * tintFactor;
-                        const shadowFactor = 0.20 + 0.25 * zNorm[idx] + 0.55 * shadows[idx];
-                        r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
-                    } else {
-                        const depthFactor = 0.70 + 0.30 * zNorm[idx];
-                        r *= depthFactor; g *= depthFactor; b *= depthFactor;
-                    }
 
-                    const color = `rgb(${r*255|0},${g*255|0},${b*255|0})`;
+                    perspectiveScale1 = this.focalLength / z1;
+                    perspectiveScale2 = this.focalLength / z2;
+
+                    x1 = centerX + (start.x * scale * perspectiveScale1);
+                    y1 = centerY - (start.y * scale * perspectiveScale1);
+                    x2 = centerX + (end.x * scale * perspectiveScale2);
+                    y2 = centerY - (end.y * scale * perspectiveScale2);
+                } else {
+                    // Orthographic projection
+                    x1 = centerX + start.x * scale;
+                    y1 = centerY - start.y * scale;
+                    x2 = centerX + end.x * scale;
+                    y2 = centerY - end.y * scale;
+                }
+
+                // Width Calculation
+                const type = segInfo.type;
+                let widthMultiplier = 1.0;
+                if (type === 'L') {
+                    widthMultiplier = 0.4;
+                } else if (type === 'D' || type === 'R') {
+                    widthMultiplier = 1.6;
+                }
+                let currentLineWidth = baseLineWidthPixels * widthMultiplier;
+
+                if (this.perspectiveEnabled) {
+                    const avgPerspectiveScale = (perspectiveScale1 + perspectiveScale2) / 2;
+                    currentLineWidth *= avgPerspectiveScale;
+                }
+                
+                // Ensure minimum line width to be visible
+                currentLineWidth = Math.max(0.5, currentLineWidth);
+
+
+                // --- 2. CONDITIONAL DRAWING ---
+
+                if (this.outlineEnabled) {
+                    // --- 3-STEP DRAW (Outline) - Fixes gaps ---
+                    
+                    // Calculate colors needed for outline mode
+                    const r_int = r * 255 | 0;
+                    const g_int = g * 255 | 0;
+                    const b_int = b * 255 | 0;
+                    const color = `rgb(${r_int},${g_int},${b_int})`;
                     const darkenFactor = 0.7;
-                    const gapFillerColor = `rgb(${r*255*darkenFactor|0}, ${g*255*darkenFactor|0}, ${b*255*darkenFactor|0})`;
+                    const gapFillerColor = `rgb(${r_int * darkenFactor | 0}, ${g_int * darkenFactor | 0}, ${b_int * darkenFactor | 0})`;
+                    
+                    // Outline width is 2px on each side
+                    const totalOutlineWidth = currentLineWidth + (2.0 * 2); 
 
-
-                    // Get coords from rotated array
-                    const start = rotated[segInfo.idx1];
-                    const end = rotated[segInfo.idx2];
-                    
-                    // Apply perspective or orthographic projection
-                    let x1, y1, x2, y2;
-                    let perspectiveScale1 = 1.0;
-                    let perspectiveScale2 = 1.0;
-                    
-                    if (this.perspectiveEnabled) {
-                        // Perspective projection
-                        // Check for clipping
-                        const z1 = this.focalLength - start.z;
-                        const z2 = this.focalLength - end.z;
-                        
-                        // If either point is behind the camera (z1/z2 <= 0),
-                        // or very close, skip drawing this segment.
-                        // The max start.z is ~maxExtent. 
-                        // The min focalLength is 1.5 * maxExtent.
-                        // So the min z1/z2 should be (1.5 * maxExtent) - maxExtent = 0.5 * maxExtent.
-                        // This should be safe, but a check is good.
-                        if (z1 < 0.01 || z2 < 0.01) {
-                            continue;
-                        }
-                        
-                        perspectiveScale1 = this.focalLength / z1;
-                        perspectiveScale2 = this.focalLength / z2;
-                        
-                        x1 = centerX + (start.x * scale * perspectiveScale1);
-                        y1 = centerY - (start.y * scale * perspectiveScale1);
-                        x2 = centerX + (end.x * scale * perspectiveScale2);
-                        y2 = centerY - (end.y * scale * perspectiveScale2);
-                    } else {
-                        // Orthographic projection (original behavior)
-                        x1 = centerX + start.x * scale;
-                        y1 = centerY - start.y * scale;
-                        x2 = centerX + end.x * scale;
-                        y2 = centerY - end.y * scale;
-                    }
-                    
-                    const type = segInfo.type;
-                    
-                    let widthMultiplier = 1.0;
-                    if (type === 'L') {
-                        widthMultiplier = 0.4;
-                    } else if (type === 'D' || type === 'R') {
-                        widthMultiplier = 1.6;
-                    }
-                    let currentLineWidth = baseLineWidthPixels * widthMultiplier;
-                    
-                    // Apply perspective scaling to line width
-                    if (this.perspectiveEnabled) {
-                        const avgPerspectiveScale = (perspectiveScale1 + perspectiveScale2) / 2;
-                        currentLineWidth *= avgPerspectiveScale;
-                    }
-                    
-                    const totalOutlineWidth = currentLineWidth + (2.0 * 2);
-                    
-
+                    // Pass 1: The "gap filler" outline
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
                     this.ctx.lineTo(x2, y2);
                     this.ctx.strokeStyle = gapFillerColor;
                     this.ctx.lineWidth = totalOutlineWidth;
-                    this.ctx.lineCap = 'butt'; 
+                    this.ctx.lineCap = 'butt'; // 'butt' cap fills gaps between segments
                     this.ctx.stroke();
 
+                    // Pass 2: The main colored line
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
                     this.ctx.lineTo(x2, y2);
@@ -1599,85 +1610,14 @@ function initializePy2DmolViewer(containerElement) {
                     this.ctx.lineWidth = currentLineWidth;
                     this.ctx.lineCap = 'round';
                     this.ctx.stroke();
-                }
-            } else {
-                // 1-STEP DRAW (No Outline)
-                for (const idx of order) {
-                    const segInfo = segments[idx];
-                    
-                    // Visibility Check
-                    if (visibilityMask && (!visibilityMask.has(segInfo.idx1) || !visibilityMask.has(segInfo.idx2))) {
-                        continue;
-                    }
-                    
-                    let {r, g, b} = colors[idx];
-                    r /= 255; g /= 255; b /= 255;
-                    
-                    if (renderShadows) {
-                        const tintFactor = (0.50 * zNorm[idx] + 0.50 * tints[idx]) / 3;
-                        r = r + (1 - r) * tintFactor;
-                        g = g + (1 - g) * tintFactor;
-                        b = b + (1 - b) * tintFactor;
-                        const shadowFactor = 0.20 + 0.25 * zNorm[idx] + 0.55 * shadows[idx];
-                        r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
-                    } else {
-                        const depthFactor = 0.70 + 0.30 * zNorm[idx];
-                        r *= depthFactor; g *= depthFactor; b *= depthFactor;
-                    }
 
-                    const color = `rgb(${r*255|0},${g*255|0},${b*255|0})`;
+                } else {
+                    // --- 1-STEP DRAW (No Outline) ---
+                    
+                    // Calculate color needed for non-outline mode
+                    const color = `rgb(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0})`;
 
-                    // Get coords from rotated array
-                    const start = rotated[segInfo.idx1];
-                    const end = rotated[segInfo.idx2];
-                    
-                    // Apply perspective or orthographic projection
-                    let x1, y1, x2, y2;
-                    let perspectiveScale1 = 1.0;
-                    let perspectiveScale2 = 1.0;
-                    
-                    if (this.perspectiveEnabled) {
-                        // Perspective projection
-                        const z1 = this.focalLength - start.z;
-                        const z2 = this.focalLength - end.z;
-                        
-                        if (z1 < 0.01 || z2 < 0.01) {
-                            continue;
-                        }
-
-                        perspectiveScale1 = this.focalLength / z1;
-                        perspectiveScale2 = this.focalLength / z2;
-                        
-                        x1 = centerX + (start.x * scale * perspectiveScale1);
-                        y1 = centerY - (start.y * scale * perspectiveScale1);
-                        x2 = centerX + (end.x * scale * perspectiveScale2);
-                        y2 = centerY - (end.y * scale * perspectiveScale2);
-                    } else {
-                        // Orthographic projection (original behavior)
-                        x1 = centerX + start.x * scale;
-                        y1 = centerY - start.y * scale;
-                        x2 = centerX + end.x * scale;
-                        y2 = centerY - end.y * scale;
-                    }
-                    
-                    const type = segInfo.type;
-                    
-                    let widthMultiplier = 1.0;
-                    if (type === 'L') {
-                        widthMultiplier = 0.4;
-                    } else if (type === 'D' || type === 'R') {
-                        widthMultiplier = 1.6;
-                    }
-                    let currentLineWidth = baseLineWidthPixels * widthMultiplier;
-                    
-                    // Apply perspective scaling to line width
-                    if (this.perspectiveEnabled) {
-                        const avgPerspectiveScale = (perspectiveScale1 + perspectiveScale2) / 2;
-                        currentLineWidth *= avgPerspectiveScale;
-                    }
-                    
-                    const totalOutlineWidth = currentLineWidth + (2.0 * 2);
-
+                    // Single Pass: The main colored line
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
                     this.ctx.lineTo(x2, y2);
@@ -1687,6 +1627,9 @@ function initializePy2DmolViewer(containerElement) {
                     this.ctx.stroke();
                 }
             }
+            // ====================================================================
+            // END OF REFACTORED LOOP
+            // ====================================================================
         }
 
         // Main animation loop
