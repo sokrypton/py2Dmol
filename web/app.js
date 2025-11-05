@@ -79,6 +79,7 @@ function initializeViewerConfig() {
         shadow: true,
         outline: true,
         width: 3.0,
+        ortho: 150.0,
         rotate: false,
         controls: true,
         autoplay: false,

@@ -166,6 +166,18 @@ function initializePy2DmolViewer(containerElement) {
             this.zoom = 1.0;
             this.lineWidth = (typeof config.width === 'number') ? config.width : 3.0;
             this.shadowIntensity = 0.95;
+            this.perspectiveEnabled = false; // false = orthographic, true = perspective
+            
+            // Set default focalLength, but it will be overridden by the
+            // slider logic if perspective is enabled.
+            this.focalLength = (typeof config.ortho === 'number') ? config.ortho : 200.0;
+            // Check config if ortho slider should start in perspective mode
+            if (typeof config.ortho === 'number' && config.ortho < 195) {
+                this.perspectiveEnabled = true;
+                // Note: We can't set the *correct* focalLength here,
+                // because we don't know maxExtent yet. The slider's
+                // first input event will fix this.
+            }
             
             // Set defaults from config, with fallback
             this.shadowEnabled = (typeof config.shadow === 'boolean') ? config.shadow : true;
@@ -197,9 +209,12 @@ function initializePy2DmolViewer(containerElement) {
             
             // Interaction
             this.isDragging = false;
-            this.autoRotate = (typeof config.rotate === 'boolean') ? config.rotate : false; 
-            
+            this.autoRotate = (typeof config.rotate === 'boolean') ? config.rotate : false;             
             this.autoplay = (typeof config.autoplay === 'boolean') ? config.autoplay : false; 
+
+            // Perspective mode (for testing - change these values!)
+            // this.perspectiveEnabled = true; // Set to true to enable perspective
+            // this.focalLength = 200; // Smaller = more dramatic perspective (try 300-800)
             
             // Inertia
             this.spinVelocityX = 0;
@@ -231,6 +246,7 @@ function initializePy2DmolViewer(containerElement) {
             this.shadowEnabledCheckbox = null; 
             this.outlineEnabledCheckbox = null; 
             this.colorblindCheckbox = null;
+            this.orthoSlider = null;
 
             this.setupInteraction();
         }
@@ -457,7 +473,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, colorblindCheckbox) {
+        setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.frameSlider = frameSlider;
@@ -469,6 +485,7 @@ function initializePy2DmolViewer(containerElement) {
             this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
             this.outlineEnabledCheckbox = outlineEnabledCheckbox;
             this.colorblindCheckbox = colorblindCheckbox;
+            this.orthoSlider = orthoSlider;
             
             this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
             this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
@@ -501,6 +518,50 @@ function initializePy2DmolViewer(containerElement) {
                     this.render();
                 }
             });
+
+            // *** UPDATED ORTHO SLIDER LOGIC ***
+            if (this.orthoSlider) {
+                this.orthoSlider.addEventListener('input', (e) => {
+                    const sliderVal = parseFloat(e.target.value); // This is 50 to 200
+
+                    // 1. Get the current object's maxExtent (your "object size")
+                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+                    const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
+
+                    // 2. Check if we are in "ortho" mode (the toggle part is good)
+                    if (sliderVal >= 195) {
+                        this.perspectiveEnabled = false;
+                        // We can also reset focalLength to a default, though it's not used
+                        this.focalLength = maxExtent * 20.0; // Set to a "far away" value
+                    } else {
+                        this.perspectiveEnabled = true;
+
+                        // 3. Re-map the slider (50-195) to a sensible multiplier.
+                        //    We want 50 (strongest perspective) to be "close"
+                        //    and 195 (weakest) to be "far away".
+                        
+                        // Normalize the perspective part of the slider (50-195) to a 0.0-1.0 range
+                        const normalizedFactor = (sliderVal - 50) / (195 - 50); // 0.0 (strong) to 1.0 (weak)
+
+                        // 4. Interpolate between a "close" and "far" multiplier for maxExtent.
+                        //    minMult *must* be > 1.0 to prevent clipping.
+                        //    The clipping happens if focalLength < start.z.
+                        //    The max start.z is maxExtent. So focalLength *must* be > maxExtent.
+                        const minMult = 1.5; // Closest camera: focalLength = 1.5 * maxExtent
+                        const maxMult = 20.0; // Farthest camera: focalLength = 20.0 * maxExtent
+                        
+                        const multiplier = minMult + (maxMult - minMult) * normalizedFactor;
+
+                        // 5. Set focalLength relative to object size
+                        this.focalLength = maxExtent * multiplier;
+                    }
+                    
+                    if (!this.isPlaying) {
+                        this.render();
+                    }
+                });
+            }
+            // *** END UPDATED LOGIC ***
 
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.addEventListener('change', (e) => {
@@ -561,7 +622,7 @@ function initializePy2DmolViewer(containerElement) {
             const allControls = [this.playButton, this.objectSelect, this.speedSelect,
                                  this.rotationCheckbox, this.lineWidthSlider, 
                                  this.shadowEnabledCheckbox, this.outlineEnabledCheckbox,
-                                 this.colorblindCheckbox];
+                                 this.colorblindCheckbox, this.orthoSlider];
             allControls.forEach(control => {
                 if (control) {
                     control.addEventListener('mousedown', (e) => {
@@ -654,6 +715,14 @@ function initializePy2DmolViewer(containerElement) {
                 this.setFrame(object.frames.length - 1);
             }
             this.updateUIControls();
+            
+            // If this is the first frame being loaded, we need to
+            // potentially update the focalLength if we're in perspective mode.
+            if (object.frames.length === 1 && this.perspectiveEnabled && this.orthoSlider) {
+                 // Trigger a "change" on the orthoSlider to recalculate
+                 // focalLength with the new maxExtent.
+                 this.orthoSlider.dispatchEvent(new Event('input'));
+            }
 
             // Handle autoplay
             if (this.autoplay && !this.isPlaying && this.currentObjectName) {
@@ -728,6 +797,7 @@ function initializePy2DmolViewer(containerElement) {
              if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
              if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled;
              if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled;
+             if (this.orthoSlider) this.orthoSlider.disabled = !enabled;
              this.canvas.style.cursor = enabled ? 'grab' : 'wait';
         }
 
@@ -1254,6 +1324,8 @@ function initializePy2DmolViewer(containerElement) {
                 const segInfo = segments[i];
                 const start = rotated[segInfo.idx1];
                 const end = rotated[segInfo.idx2];
+
+
                 
                 const midX = (start.x + end.x) * 0.5;
                 const midY = (start.y + end.y) * 0.5;
@@ -1452,11 +1524,46 @@ function initializePy2DmolViewer(containerElement) {
                     const darkenFactor = 0.7;
                     const gapFillerColor = `rgb(${r*255*darkenFactor|0}, ${g*255*darkenFactor|0}, ${b*255*darkenFactor|0})`;
 
+
                     // Get coords from rotated array
                     const start = rotated[segInfo.idx1];
                     const end = rotated[segInfo.idx2];
-                    const x1 = centerX + start.x * scale; const y1 = centerY - start.y * scale;
-                    const x2 = centerX + end.x * scale; const y2 = centerY - end.y * scale;
+                    
+                    // Apply perspective or orthographic projection
+                    let x1, y1, x2, y2;
+                    let perspectiveScale1 = 1.0;
+                    let perspectiveScale2 = 1.0;
+                    
+                    if (this.perspectiveEnabled) {
+                        // Perspective projection
+                        // Check for clipping
+                        const z1 = this.focalLength - start.z;
+                        const z2 = this.focalLength - end.z;
+                        
+                        // If either point is behind the camera (z1/z2 <= 0),
+                        // or very close, skip drawing this segment.
+                        // The max start.z is ~maxExtent. 
+                        // The min focalLength is 1.5 * maxExtent.
+                        // So the min z1/z2 should be (1.5 * maxExtent) - maxExtent = 0.5 * maxExtent.
+                        // This should be safe, but a check is good.
+                        if (z1 < 0.01 || z2 < 0.01) {
+                            continue;
+                        }
+                        
+                        perspectiveScale1 = this.focalLength / z1;
+                        perspectiveScale2 = this.focalLength / z2;
+                        
+                        x1 = centerX + (start.x * scale * perspectiveScale1);
+                        y1 = centerY - (start.y * scale * perspectiveScale1);
+                        x2 = centerX + (end.x * scale * perspectiveScale2);
+                        y2 = centerY - (end.y * scale * perspectiveScale2);
+                    } else {
+                        // Orthographic projection (original behavior)
+                        x1 = centerX + start.x * scale;
+                        y1 = centerY - start.y * scale;
+                        x2 = centerX + end.x * scale;
+                        y2 = centerY - end.y * scale;
+                    }
                     
                     const type = segInfo.type;
                     
@@ -1466,8 +1573,16 @@ function initializePy2DmolViewer(containerElement) {
                     } else if (type === 'D' || type === 'R') {
                         widthMultiplier = 1.6;
                     }
-                    const currentLineWidth = baseLineWidthPixels * widthMultiplier;
+                    let currentLineWidth = baseLineWidthPixels * widthMultiplier;
+                    
+                    // Apply perspective scaling to line width
+                    if (this.perspectiveEnabled) {
+                        const avgPerspectiveScale = (perspectiveScale1 + perspectiveScale2) / 2;
+                        currentLineWidth *= avgPerspectiveScale;
+                    }
+                    
                     const totalOutlineWidth = currentLineWidth + (2.0 * 2);
+                    
 
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
@@ -1515,8 +1630,35 @@ function initializePy2DmolViewer(containerElement) {
                     // Get coords from rotated array
                     const start = rotated[segInfo.idx1];
                     const end = rotated[segInfo.idx2];
-                    const x1 = centerX + start.x * scale; const y1 = centerY - start.y * scale;
-                    const x2 = centerX + end.x * scale; const y2 = centerY - end.y * scale;
+                    
+                    // Apply perspective or orthographic projection
+                    let x1, y1, x2, y2;
+                    let perspectiveScale1 = 1.0;
+                    let perspectiveScale2 = 1.0;
+                    
+                    if (this.perspectiveEnabled) {
+                        // Perspective projection
+                        const z1 = this.focalLength - start.z;
+                        const z2 = this.focalLength - end.z;
+                        
+                        if (z1 < 0.01 || z2 < 0.01) {
+                            continue;
+                        }
+
+                        perspectiveScale1 = this.focalLength / z1;
+                        perspectiveScale2 = this.focalLength / z2;
+                        
+                        x1 = centerX + (start.x * scale * perspectiveScale1);
+                        y1 = centerY - (start.y * scale * perspectiveScale1);
+                        x2 = centerX + (end.x * scale * perspectiveScale2);
+                        y2 = centerY - (end.y * scale * perspectiveScale2);
+                    } else {
+                        // Orthographic projection (original behavior)
+                        x1 = centerX + start.x * scale;
+                        y1 = centerY - start.y * scale;
+                        x2 = centerX + end.x * scale;
+                        y2 = centerY - end.y * scale;
+                    }
                     
                     const type = segInfo.type;
                     
@@ -1526,7 +1668,15 @@ function initializePy2DmolViewer(containerElement) {
                     } else if (type === 'D' || type === 'R') {
                         widthMultiplier = 1.6;
                     }
-                    const currentLineWidth = baseLineWidthPixels * widthMultiplier;
+                    let currentLineWidth = baseLineWidthPixels * widthMultiplier;
+                    
+                    // Apply perspective scaling to line width
+                    if (this.perspectiveEnabled) {
+                        const avgPerspectiveScale = (perspectiveScale1 + perspectiveScale2) / 2;
+                        currentLineWidth *= avgPerspectiveScale;
+                    }
+                    
+                    const totalOutlineWidth = currentLineWidth + (2.0 * 2);
 
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
@@ -1901,6 +2051,8 @@ function initializePy2DmolViewer(containerElement) {
     const speedSelect = containerElement.querySelector('#speedSelect');
     const rotationCheckbox = containerElement.querySelector('#rotationCheckbox');
     const lineWidthSlider = containerElement.querySelector('#lineWidthSlider');
+    const orthoSlider = containerElement.querySelector('#orthoSlider');
+
     
     // Set defaults for width, rotate, and pastel
     lineWidthSlider.value = renderer.lineWidth;
@@ -1912,8 +2064,17 @@ function initializePy2DmolViewer(containerElement) {
         frameSlider, frameCounter, objectSelect,
         speedSelect, rotationCheckbox, lineWidthSlider,
         shadowEnabledCheckbox, outlineEnabledCheckbox,
-        colorblindCheckbox
+        colorblindCheckbox, orthoSlider
     );
+    
+    // Set ortho slider from config
+    if (config.ortho && orthoSlider) {
+        orthoSlider.value = config.ortho;
+        // Trigger the input event to set the initial
+        // focalLength correctly based on maxExtent (if available).
+        // We do this *after* loading data.
+    }
+
 
     // Handle new UI config options
     if (!config.controls) {
@@ -2030,6 +2191,12 @@ function initializePy2DmolViewer(containerElement) {
         // No initial data, start with an empty canvas.
         renderer.setFrame(-1);
     }
+    
+    // After data load, trigger ortho slider to set correct initial focal length
+    if (orthoSlider) {
+        orthoSlider.dispatchEvent(new Event('input'));
+    }
+
 
     <!-- 12. Start the main animation loop
     renderer.animate();

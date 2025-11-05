@@ -44,7 +44,7 @@ def align_a_to_b(a, b):
 class view:
     def __init__(self, size=(300,300), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
-        outline=True, width=3.0, rotate=False, autoplay=False,
+        outline=True, width=3.0, ortho=150.0, rotate=False, autoplay=False,
         pae=False, pae_size=(300,300), reuse_js=False,
     ):
         self.config = {
@@ -57,6 +57,7 @@ class view:
             "shadow": shadow,
             "outline": outline,
             "width": width,
+            "ortho": ortho,
             "rotate": rotate,
             "autoplay": autoplay,
             "pae": pae,
