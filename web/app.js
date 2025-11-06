@@ -10,8 +10,8 @@ let referenceChainACoords = null; // Baseline for alignment (append mode)
 let viewerApi = null;
 let objectsWithPAE = new Set();
 let batchedObjects = [];
-let selectedResiduesSet = new Set(); // New global set for residue selections
-let previewSelectionSet = null;       // NEW: live drag preview selection
+// Removed selectedResiduesSet - now using renderer.selectionModel as single source of truth
+let previewSelectionSet = null;       // NEW: live drag preview selection (temporary during drag)
 
 
 // Rotation animation state
@@ -175,6 +175,14 @@ function setupEventListeners() {
     // Listen for the custom event dispatched by the renderer when color settings change
     document.addEventListener('py2dmol-color-change', () => {
         console.log("Color change event received, updating sequence UI.");
+        updateSequenceViewSelectionState();
+    });
+    
+    // Listen for selection changes (including PAE selections)
+    document.addEventListener('py2dmol-selection-change', (e) => {
+        // Sync chain pills with selection model
+        syncChainPillsToSelection();
+        // Update sequence view
         updateSequenceViewSelectionState();
     });
     
@@ -781,133 +789,186 @@ function updateChainSelectionUI() {
   /* [EDIT] This function no longer builds UI (pills). 
      It just sets the default selected state. */
 
-  selectedResiduesSet.clear();
-
   const objectName = viewerApi?.renderer?.currentObjectName;
-  if (!objectName) return;
+  if (!objectName || !viewerApi?.renderer) return;
 
   const obj = viewerApi.renderer.objectsData[objectName];
   if (!obj?.frames?.length) return;
   const frame0 = obj.frames[0];
   if (!frame0?.residue_index || !frame0?.chains) return;
 
-  // Select all by default
+  // Select all by default using renderer API
+  const allResidues = new Set();
+  const allChains = new Set();
   for (let i = 0; i < frame0.residue_index.length; i++) {
     const chain = frame0.chains[i];
     const resSeq = frame0.residue_index[i];
-    selectedResiduesSet.add(`${chain}:${resSeq}`);
+    allResidues.add(`${chain}:${resSeq}`);
+    allChains.add(chain);
   }
 
-  /* [EDIT] Pills are built in buildSequenceView, so no UI code here. */
-
-  applySelection();
+  viewerApi.renderer.setSelection({
+    residues: allResidues,
+    chains: allChains,
+    selectionMode: 'default'
+  });
 }
 
 function setChainResiduesSelected(chain, selected) {
-  const objectName = viewerApi?.renderer?.currentObjectName;
+  if (!viewerApi?.renderer) return;
+  const current = viewerApi.renderer.getSelection();
+  const objectName = viewerApi.renderer.currentObjectName;
   if (!objectName) return;
+  
   const obj = viewerApi.renderer.objectsData[objectName];
   if (!obj?.frames?.length) return;
   const frame0 = obj.frames[0];
   if (!frame0?.residue_index || !frame0?.chains) return;
-
-  for (let i = 0; i < frame0.residue_index.length; i++) {
-    if (frame0.chains[i] === chain) {
-      const id = `${chain}:${frame0.residue_index[i]}`;
-      if (selected) selectedResiduesSet.add(id); else selectedResiduesSet.delete(id);
+  
+  // Get all available chains
+  const allChains = new Set(frame0.chains);
+  
+  // Determine current chain selection
+  // If chains.size === 0 and mode is 'default', all chains are selected
+  let currentChains = new Set(current.chains);
+  if (currentChains.size === 0 && current.selectionMode === 'default') {
+    currentChains = new Set(allChains);
+  }
+  
+  const newChains = new Set(currentChains);
+  const newResidues = new Set(current.residues);
+  
+  if (selected) {
+    newChains.add(chain);
+    // When selecting a chain, add all residues in that chain
+    for (let i = 0; i < frame0.residue_index.length; i++) {
+      if (frame0.chains[i] === chain) {
+        const id = `${chain}:${frame0.residue_index[i]}`;
+        newResidues.add(id);
+      }
+    }
+  } else {
+    newChains.delete(chain);
+    // When unselecting a chain, remove all residues in that chain
+    for (const residueId of Array.from(newResidues)) {
+      if (residueId.startsWith(`${chain}:`)) {
+        newResidues.delete(residueId);
+      }
     }
   }
+  
+  // If all chains are selected, we can use empty set with default mode
+  // Otherwise, use explicit chain selection
+  const selectionMode = (newChains.size === allChains.size && 
+                         Array.from(newChains).every(c => allChains.has(c))) 
+                         ? 'default' : 'explicit';
+  
+  viewerApi.renderer.setSelection({ 
+    chains: newChains.size === allChains.size ? new Set() : newChains,
+    residues: newResidues,
+    selectionMode: selectionMode
+  });
+  // Event listener will update UI, no need to call applySelection()
 }
 
 /** Alt-click a chain label to toggle selection of all residues in that chain */
 function toggleChainResidues(chain) {
-    const objectName = viewerApi?.renderer?.currentObjectName;
+    if (!viewerApi?.renderer) return;
+    const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) return;
     const obj = viewerApi.renderer.objectsData[objectName];
     if (!obj?.frames?.length) return;
     const frame = obj.frames[0];
     if (!frame?.residue_index || !frame?.chains) return;
 
+    const current = viewerApi.renderer.getSelection();
     const ids = [];
     for (let i = 0; i < frame.residue_index.length; i++) {
         if (frame.chains[i] === chain) {
             ids.push(`${chain}:${frame.residue_index[i]}`);
         }
     }
-    const allSelected = ids.every(id => selectedResiduesSet.has(id));
+    const allSelected = ids.every(id => current.residues.has(id));
+    
+    const newResidues = new Set(current.residues);
     ids.forEach(id => {
-        if (allSelected) selectedResiduesSet.delete(id);
-        else selectedResiduesSet.add(id);
+        if (allSelected) newResidues.delete(id);
+        else newResidues.add(id);
     });
-    applySelection();
+    
+    viewerApi.renderer.setSelection({ residues: newResidues });
 }
 
 // [NEW] This function updates the chain pill checkboxes
-// based on the contents of selectedResiduesSet
+// based on the renderer's selection model
 function syncChainPillsToSelection() {
-    const objectName = viewerApi?.renderer?.currentObjectName;
-    if (!objectName) return;
-    const obj = viewerApi.renderer.objectsData[objectName];
-    if (!obj?.frames?.length) return;
-    const frame0 = obj.frames[0];
-    if (!frame0?.residue_index || !frame0?.chains) return;
-
+    if (!viewerApi?.renderer) return;
+    const selection = viewerApi.renderer.getSelection();
+    
     // [EDIT] Find pills in their new location
     const allPills = document.querySelectorAll('.chain-pill input[type="checkbox"]');
     if (allPills.length === 0) return;
 
-    // Find out which chains have at least one residue selected
-    const selectedChains = new Set();
-    for (const residueId of selectedResiduesSet) {
-        const chain = residueId.split(':')[0];
-        selectedChains.add(chain);
+    // Determine which chains should be checked
+    let selectedChains = new Set();
+    
+    if (selection.chains.size > 0) {
+        // Explicit chain selection
+        selectedChains = selection.chains;
+    } else if (selection.residues.size > 0) {
+        // Infer chains from selected residues
+        for (const residueId of selection.residues) {
+            const chain = residueId.split(':')[0];
+            selectedChains.add(chain);
+        }
+    } else if (selection.selectionMode === 'default') {
+        // Default mode with no explicit selection = all chains selected
+        // We'll need to get all chains from the renderer
+        if (viewerApi.renderer.chains) {
+            selectedChains = new Set(viewerApi.renderer.chains);
+        }
     }
+    // If explicit mode with no selection, selectedChains stays empty (all unchecked)
 
     // Update each pill's checked state
     allPills.forEach(cb => {
-        if (selectedChains.has(cb.value)) {
-            cb.checked = true;
-        } else {
-            cb.checked = false;
-        }
+        cb.checked = selectedChains.has(cb.value);
     });
 }
 
-function applySelection() {
+function applySelection(previewResidues = null) {
   if (!viewerApi || !viewerApi.renderer) return;
-
-  // [EDIT] Sync pills based on the new selection set *before* calculating the mask
-  syncChainPillsToSelection();
-  // [END EDIT]
 
   const objectName = viewerApi.renderer.currentObjectName;
   if (!objectName) {
-    viewerApi.renderer.visibilityMask = null;
-    viewerApi.renderer.render();
+    if (viewerApi.renderer.resetSelection) {
+      viewerApi.renderer.resetSelection();
+    } else {
+      viewerApi.renderer.visibilityMask = null;
+      viewerApi.renderer.render();
+    }
     return;
   }
-  const object = viewerApi.renderer.objectsData[objectName];
-  if (!object?.frames?.length) return;
 
-  const frameIdx = viewerApi.renderer.currentFrame || 0;
-  const frame = object.frames[frameIdx];
-  if (!frame) return;
-
+  // Get current selection
+  const current = viewerApi.renderer.getSelection();
+  
+  // Get visible chains from checkboxes
   const visibleChains = new Set();
-  // [EDIT] Find pills in their new location
   document.querySelectorAll('.chain-pill input[type="checkbox"]').forEach(cb => {
     if (cb.checked) visibleChains.add(cb.value);
   });
 
-  const mask = new Set();
-  for (let i = 0; i < frame.coords.length; i++) {
-    const id = `${frame.chains[i]}:${frame.residue_index[i]}`;
-    if (visibleChains.has(frame.chains[i]) && selectedResiduesSet.has(id)) mask.add(i);
-  }
+  // Use preview selection if provided, otherwise use current selection
+  const residuesToUse = previewResidues !== null ? previewResidues : current.residues;
 
-  viewerApi.renderer.visibilityMask = mask;
-  viewerApi.renderer.render();
-  updateSequenceViewSelectionState();
+  viewerApi.renderer.setSelection({
+    residues: residuesToUse,
+    chains: visibleChains
+    // Keep current PAE boxes and mode
+  });
+  
+  // Note: updateSequenceViewSelectionState will be called via event listener
 }
 
 
@@ -926,36 +987,17 @@ function clearHighlight() {
 }
 
 function selectAllResidues() {
-  const objectName = viewerApi?.renderer?.currentObjectName;
-  if (!objectName) return;
-  const obj = viewerApi.renderer.objectsData[objectName];
-  if (!obj?.frames?.length) return;
-  const frame0 = obj.frames[0];
-  if (!frame0?.residue_index || !frame0?.chains) return;
-  selectedResiduesSet.clear();
-  for (let i = 0; i < frame0.residue_index.length; i++) {
-    selectedResiduesSet.add(`${frame0.chains[i]}:${frame0.residue_index[i]}`);
-  }
-
-  // [EDIT] Find pills in their new location
-  document.querySelectorAll('.chain-pill input[type="checkbox"]').forEach(cb => {
-    cb.checked = true;
-  });
-  // [END EDIT]
-
-  applySelection();
+  if (!viewerApi?.renderer) return;
+  // Use renderer's resetToDefault method
+  viewerApi.renderer.resetToDefault();
+  // UI will update via event listener
 }
 
 function clearAllResidues() {
-  selectedResiduesSet.clear();
-
-  // [EDIT] Find pills in their new location
-  document.querySelectorAll('.chain-pill input[type="checkbox"]').forEach(cb => {
-    cb.checked = false;
-  });
-  // [END EDIT]
-
-  applySelection();
+  if (!viewerApi?.renderer) return;
+  // Use renderer's clearSelection method
+  viewerApi.renderer.clearSelection();
+  // UI will update via event listener
 }
 
 function buildSequenceView() {
@@ -1064,11 +1106,45 @@ function updateSequenceViewSelectionState() {
   const sequenceView = document.getElementById('sequenceView');
   if (!sequenceView) return;
 
-  const selection = previewSelectionSet || selectedResiduesSet;
+  // Determine what's actually visible from the unified model or visibilityMask
+  let visibleResidues = new Set();
+  
+  if (viewerApi?.renderer) {
+    const renderer = viewerApi.renderer;
+    
+    // Check if we have a unified selection model
+    if (renderer.selectionModel && renderer.chains && renderer.residue_index) {
+      // Get visible atoms from visibilityMask
+      // The renderer stores chains and residue_index as direct properties
+      if (renderer.visibilityMask === null) {
+        // null mask means all atoms are visible (default mode)
+        for (let i = 0; i < renderer.chains.length && i < renderer.residue_index.length; i++) {
+          const id = `${renderer.chains[i]}:${renderer.residue_index[i]}`;
+          visibleResidues.add(id);
+        }
+      } else if (renderer.visibilityMask.size > 0) {
+        // Non-empty Set means some atoms are visible
+        for (const atomIdx of renderer.visibilityMask) {
+          if (atomIdx < renderer.chains.length && atomIdx < renderer.residue_index.length) {
+            const id = `${renderer.chains[atomIdx]}:${renderer.residue_index[atomIdx]}`;
+            visibleResidues.add(id);
+          }
+        }
+      }
+      // Empty Set (size === 0) means nothing is visible - visibleResidues stays empty
+    } else {
+      // Legacy mode: use preview or empty
+      visibleResidues = new Set(previewSelectionSet || []);
+    }
+  } else {
+    // Fallback: use preview or empty
+    visibleResidues = new Set(previewSelectionSet || []);
+  }
+
   const allSpans = sequenceView.querySelectorAll('span[data-residue-index]');
   allSpans.forEach(span => {
     const id = `${span.dataset.chain}:${span.dataset.residueIndex}`;
-    const isSelected = selection.has(id);
+    const isSelected = visibleResidues.has(id);
     span.classList.toggle('selected', isSelected);
 
     // Color from viewer; fall back safely if not available
@@ -1116,24 +1192,15 @@ function setupDragToSelect(container) {
 
       checkbox.addEventListener('change', (ev) => {
           setChainResiduesSelected(chain, ev.target.checked);
-          applySelection();
+          // setChainResiduesSelected already calls setSelection which triggers events
+          // No need to call applySelection() here
       });
 
       span.addEventListener('click', (ev) => {
           if (ev.altKey) {
               ev.preventDefault();
               toggleChainResidues(chain);
-              // Sync checkbox state after toggle
-              if (frame0) {
-                  let anySelected = false;
-                  for (let i = 0; i < frame0.residue_index.length; i++) {
-                      if (frame0.chains[i] === chain) {
-                          const id = `${chain}:${frame0.residue_index[i]}`;
-                          if (selectedResiduesSet.has(id)) { anySelected = true; break; }
-                      }
-                  }
-                  checkbox.checked = anySelected;
-              }
+              // Checkbox state will sync via event listener
           }
       });
   });
@@ -1153,9 +1220,11 @@ function setupDragToSelect(container) {
     startCoords = { x: point.clientX, y: point.clientY };
 
     const startId = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
-    dragAddMode = (e.shiftKey === true) || !selectedResiduesSet.has(startId);
+    const current = viewerApi?.renderer?.getSelection();
+    const isCurrentlySelected = current?.residues?.has(startId) || false;
+    dragAddMode = (e.shiftKey === true) || !isCurrentlySelected;
 
-    previewSelectionSet = new Set(selectedResiduesSet);
+    previewSelectionSet = new Set(current?.residues || []);
     updateSequenceViewSelectionState();
   };
 
@@ -1176,13 +1245,15 @@ function setupDragToSelect(container) {
       const endIndex = allSpans.indexOf(lastHoveredElement);
       if (startIndex !== -1 && endIndex !== -1) {
         const [min, max] = [Math.min(startIndex, endIndex), Math.max(startIndex, endIndex)];
-        previewSelectionSet = new Set(selectedResiduesSet);
+        const current = viewerApi?.renderer?.getSelection();
+        previewSelectionSet = new Set(current?.residues || []);
         for (let i = min; i <= max; i++) {
           const span = allSpans[i];
           const id = `${span.dataset.chain}:${span.dataset.residueIndex}`;
           if (dragAddMode) previewSelectionSet.add(id); else previewSelectionSet.delete(id);
         }
-        updateSequenceViewSelectionState();  // live highlight
+        updateSequenceViewSelectionState();  // live highlight in sequence view
+        applySelection(previewSelectionSet); // live update to renderer and PAE
       }
     }
   };
@@ -1197,14 +1268,21 @@ function setupDragToSelect(container) {
     if (!hasMoved) {
       // Click toggle
       const id = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
-      if (selectedResiduesSet.has(id)) selectedResiduesSet.delete(id); else selectedResiduesSet.add(id);
+      const current = viewerApi?.renderer?.getSelection();
+      const newResidues = new Set(current?.residues || []);
+      if (newResidues.has(id)) {
+        newResidues.delete(id);
+      } else {
+        newResidues.add(id);
+      }
       previewSelectionSet = null;
-      applySelection();
+      viewerApi.renderer.setSelection({ residues: newResidues });
     } else {
       // Commit preview
-      if (previewSelectionSet) selectedResiduesSet = new Set(previewSelectionSet);
+      if (previewSelectionSet) {
+        viewerApi.renderer.setSelection({ residues: previewSelectionSet });
+      }
       previewSelectionSet = null;
-      applySelection();
     }
 
     selectionStartElement = null;
