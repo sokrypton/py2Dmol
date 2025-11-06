@@ -11,6 +11,7 @@ let viewerApi = null;
 let objectsWithPAE = new Set();
 let batchedObjects = [];
 let selectedResiduesSet = new Set(); // New global set for residue selections
+let previewSelectionSet = null;       // NEW: live drag preview selection
 
 
 // Rotation animation state
@@ -151,6 +152,25 @@ function setupEventListeners() {
     
     if (objectSelect) objectSelect.addEventListener('change', handleObjectChange);
     if (colorSelect) colorSelect.addEventListener('change', updateColorMode);
+
+    // Attach sequence accordion controls (attach ONCE)
+    const seqToggle   = document.getElementById('sequenceToggle');
+    const seqPanel    = document.getElementById('sequencePanel');
+    const selectAllBtn = document.getElementById('selectAllResidues');
+    const clearAllBtn  = document.getElementById('clearAllResidues');
+
+    if (seqToggle && seqPanel) {
+      seqToggle.addEventListener('click', (ev) => {
+        // ignore clicks on action buttons inside the header
+        if (ev.target.closest('#selectAllResidues') || ev.target.closest('#clearAllResidues')) return;
+        const expanded = seqToggle.getAttribute('aria-expanded') === 'true';
+        seqToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        if (expanded) seqPanel.classList.add('hidden'); else seqPanel.classList.remove('hidden');
+      });
+    }
+    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); selectAllResidues(); });
+    if (clearAllBtn)  clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); clearAllResidues(); });
+
 
     // Listen for the custom event dispatched by the renderer when color settings change
     document.addEventListener('py2dmol-color-change', () => {
@@ -747,7 +767,7 @@ function updateViewerFromGlobalBatch() {
                 handleObjectChange();
                 updateObjectNavigationButtons();
                 buildSequenceView();
-                updateChainSelectionUI();
+                updateChainSelectionUI(); // This sets up default selection and calls applySelection
             }, 50);
         }
     } else {
@@ -758,94 +778,136 @@ function updateViewerFromGlobalBatch() {
 
 
 function updateChainSelectionUI() {
-    const chainCheckboxes = document.getElementById('chainCheckboxes');
-    if (!chainCheckboxes) return;
+  /* [EDIT] This function no longer builds UI (pills). 
+     It just sets the default selected state. */
 
-    chainCheckboxes.innerHTML = '';
-    selectedResiduesSet.clear();
+  selectedResiduesSet.clear();
 
-    const objectName = viewerApi.renderer.currentObjectName;
-    if (!objectName) return;
+  const objectName = viewerApi?.renderer?.currentObjectName;
+  if (!objectName) return;
 
-    const object = viewerApi.renderer.objectsData[objectName];
-    if (!object || !object.frames || object.frames.length === 0) return;
+  const obj = viewerApi.renderer.objectsData[objectName];
+  if (!obj?.frames?.length) return;
+  const frame0 = obj.frames[0];
+  if (!frame0?.residue_index || !frame0?.chains) return;
 
-    const firstFrame = object.frames[0];
-    if (!firstFrame || !firstFrame.chains) return;
+  // Select all by default
+  for (let i = 0; i < frame0.residue_index.length; i++) {
+    const chain = frame0.chains[i];
+    const resSeq = frame0.residue_index[i];
+    selectedResiduesSet.add(`${chain}:${resSeq}`);
+  }
 
-    for (let i = 0; i < firstFrame.residues.length; i++) {
-        const chain = firstFrame.chains[i];
-        const resSeq = firstFrame.residue_index[i];
-        const residueIdentifier = `${chain}:${resSeq}`;
-        selectedResiduesSet.add(residueIdentifier);
+  /* [EDIT] Pills are built in buildSequenceView, so no UI code here. */
+
+  applySelection();
+}
+
+function setChainResiduesSelected(chain, selected) {
+  const objectName = viewerApi?.renderer?.currentObjectName;
+  if (!objectName) return;
+  const obj = viewerApi.renderer.objectsData[objectName];
+  if (!obj?.frames?.length) return;
+  const frame0 = obj.frames[0];
+  if (!frame0?.residue_index || !frame0?.chains) return;
+
+  for (let i = 0; i < frame0.residue_index.length; i++) {
+    if (frame0.chains[i] === chain) {
+      const id = `${chain}:${frame0.residue_index[i]}`;
+      if (selected) selectedResiduesSet.add(id); else selectedResiduesSet.delete(id);
     }
+  }
+}
 
-    const uniqueChains = [...new Set(firstFrame.chains)];
-    uniqueChains.forEach(chain => {
-        const checkboxContainer = document.createElement('div');
-        checkboxContainer.className = 'flex items-center';
+/** Alt-click a chain label to toggle selection of all residues in that chain */
+function toggleChainResidues(chain) {
+    const objectName = viewerApi?.renderer?.currentObjectName;
+    if (!objectName) return;
+    const obj = viewerApi.renderer.objectsData[objectName];
+    if (!obj?.frames?.length) return;
+    const frame = obj.frames[0];
+    if (!frame?.residue_index || !frame?.chains) return;
 
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.id = `chain-${chain}`;
-        checkbox.value = chain;
-        checkbox.checked = true;
-        checkbox.className = 'h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
-
-        const label = document.createElement('label');
-        label.htmlFor = `chain-${chain}`;
-        label.textContent = chain;
-        label.className = 'ml-2 block text-sm text-gray-900';
-
-        checkbox.addEventListener('change', applySelection);
-
-        checkboxContainer.appendChild(checkbox);
-        checkboxContainer.appendChild(label);
-        chainCheckboxes.appendChild(checkboxContainer);
+    const ids = [];
+    for (let i = 0; i < frame.residue_index.length; i++) {
+        if (frame.chains[i] === chain) {
+            ids.push(`${chain}:${frame.residue_index[i]}`);
+        }
+    }
+    const allSelected = ids.every(id => selectedResiduesSet.has(id));
+    ids.forEach(id => {
+        if (allSelected) selectedResiduesSet.delete(id);
+        else selectedResiduesSet.add(id);
     });
-
     applySelection();
 }
 
+// [NEW] This function updates the chain pill checkboxes
+// based on the contents of selectedResiduesSet
+function syncChainPillsToSelection() {
+    const objectName = viewerApi?.renderer?.currentObjectName;
+    if (!objectName) return;
+    const obj = viewerApi.renderer.objectsData[objectName];
+    if (!obj?.frames?.length) return;
+    const frame0 = obj.frames[0];
+    if (!frame0?.residue_index || !frame0?.chains) return;
 
-function applySelection() {
-    if (!viewerApi || !viewerApi.renderer) return;
+    // [EDIT] Find pills in their new location
+    const allPills = document.querySelectorAll('.chain-pill input[type="checkbox"]');
+    if (allPills.length === 0) return;
 
-    const objectName = viewerApi.renderer.currentObjectName;
-    if (!objectName) {
-        viewerApi.renderer.visibilityMask = null;
-        viewerApi.renderer.render();
-        return;
+    // Find out which chains have at least one residue selected
+    const selectedChains = new Set();
+    for (const residueId of selectedResiduesSet) {
+        const chain = residueId.split(':')[0];
+        selectedChains.add(chain);
     }
 
-    const object = viewerApi.renderer.objectsData[objectName];
-    if (!object || !object.frames || object.frames.length === 0) return;
-
-    const firstFrame = object.frames[0];
-    if (!firstFrame) return;
-
-    const visibleChains = new Set();
-    const chainCheckboxes = document.querySelectorAll('#chainCheckboxes input[type="checkbox"]');
-    chainCheckboxes.forEach(checkbox => {
-        if (checkbox.checked) {
-            visibleChains.add(checkbox.value);
+    // Update each pill's checked state
+    allPills.forEach(cb => {
+        if (selectedChains.has(cb.value)) {
+            cb.checked = true;
+        } else {
+            cb.checked = false;
         }
     });
+}
 
-    const visibilityMask = new Set();
-    for (let i = 0; i < firstFrame.coords.length; i++) {
-        const chain = firstFrame.chains[i];
-        const resSeq = firstFrame.residue_index[i];
-        const residueIdentifier = `${chain}:${resSeq}`;
-        if (visibleChains.has(chain) && selectedResiduesSet.has(residueIdentifier)) {
-            visibilityMask.add(i);
-        }
-    }
+function applySelection() {
+  if (!viewerApi || !viewerApi.renderer) return;
 
-    viewerApi.renderer.visibilityMask = visibilityMask;
+  // [EDIT] Sync pills based on the new selection set *before* calculating the mask
+  syncChainPillsToSelection();
+  // [END EDIT]
+
+  const objectName = viewerApi.renderer.currentObjectName;
+  if (!objectName) {
+    viewerApi.renderer.visibilityMask = null;
     viewerApi.renderer.render();
+    return;
+  }
+  const object = viewerApi.renderer.objectsData[objectName];
+  if (!object?.frames?.length) return;
 
-    updateSequenceViewSelectionState();
+  const frameIdx = viewerApi.renderer.currentFrame || 0;
+  const frame = object.frames[frameIdx];
+  if (!frame) return;
+
+  const visibleChains = new Set();
+  // [EDIT] Find pills in their new location
+  document.querySelectorAll('.chain-pill input[type="checkbox"]').forEach(cb => {
+    if (cb.checked) visibleChains.add(cb.value);
+  });
+
+  const mask = new Set();
+  for (let i = 0; i < frame.coords.length; i++) {
+    const id = `${frame.chains[i]}:${frame.residue_index[i]}`;
+    if (visibleChains.has(frame.chains[i]) && selectedResiduesSet.has(id)) mask.add(i);
+  }
+
+  viewerApi.renderer.visibilityMask = mask;
+  viewerApi.renderer.render();
+  updateSequenceViewSelectionState();
 }
 
 
@@ -861,6 +923,39 @@ function clearHighlight() {
         viewerApi.renderer.highlightedResidue = null;
         viewerApi.renderer.render();
     }
+}
+
+function selectAllResidues() {
+  const objectName = viewerApi?.renderer?.currentObjectName;
+  if (!objectName) return;
+  const obj = viewerApi.renderer.objectsData[objectName];
+  if (!obj?.frames?.length) return;
+  const frame0 = obj.frames[0];
+  if (!frame0?.residue_index || !frame0?.chains) return;
+  selectedResiduesSet.clear();
+  for (let i = 0; i < frame0.residue_index.length; i++) {
+    selectedResiduesSet.add(`${frame0.chains[i]}:${frame0.residue_index[i]}`);
+  }
+
+  // [EDIT] Find pills in their new location
+  document.querySelectorAll('.chain-pill input[type="checkbox"]').forEach(cb => {
+    cb.checked = true;
+  });
+  // [END EDIT]
+
+  applySelection();
+}
+
+function clearAllResidues() {
+  selectedResiduesSet.clear();
+
+  // [EDIT] Find pills in their new location
+  document.querySelectorAll('.chain-pill input[type="checkbox"]').forEach(cb => {
+    cb.checked = false;
+  });
+  // [END EDIT]
+
+  applySelection();
 }
 
 function buildSequenceView() {
@@ -901,6 +996,7 @@ function buildSequenceView() {
 
     let currentChain = null;
     let chainContainer = null;
+    let residueContainer = null;
     const threeToOne = {
         'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 'HIS':'H', 'ILE':'I',
         'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V',
@@ -911,140 +1007,217 @@ function buildSequenceView() {
         const { chain, resName, resSeq, atomIndex } = res;
         if (chain !== currentChain) {
             currentChain = chain;
+            // [EDIT] Create a container for the whole chain (pill + residues)
             chainContainer = document.createElement('div');
-            chainContainer.className = 'flex flex-wrap p-2 border-t border-gray-200';
-            const chainLabel = document.createElement('div');
-            chainLabel.className = 'font-bold text-gray-700 w-full';
-            chainLabel.textContent = `Chain ${chain}`;
-            chainContainer.appendChild(chainLabel);
+            chainContainer.className = 'chain-container';
+            
+            // [EDIT] Create the chain pill
+            const pill = document.createElement('label');
+            pill.className = 'chain-pill';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `chain-${chain}`;
+            checkbox.value = chain;
+            checkbox.checked = true; // Will be corrected by applySelection
+
+            const span = document.createElement('span');
+            span.textContent = chain;
+            span.title = 'Alt-click to select/deselect all residues in this chain';
+
+            pill.appendChild(checkbox);
+            pill.appendChild(span);
+            chainContainer.appendChild(pill);
+            
+            // [EDIT] No listeners here - they will be added in setupDragToSelect
+            // [END EDIT]
+
+            // [EDIT] Create a separate container for the residues
+            residueContainer = document.createElement('div');
+            residueContainer.className = 'chain-residues';
+            chainContainer.appendChild(residueContainer);
+            
             sequenceView.appendChild(chainContainer);
         }
 
         const residueSpan = document.createElement('span');
-        residueSpan.className = 'cursor-pointer rounded hover:bg-indigo-100 font-mono';
-        residueSpan.textContent = threeToOne[resName] || 'X';
-        residueSpan.dataset.residueIndex = resSeq;
+        residueSpan.className = 'residue-span cursor-pointer rounded font-mono';
+        residueSpan.dataset.residueIndex = String(resSeq);
         residueSpan.dataset.chain = chain;
-        residueSpan.dataset.atomIndex = atomIndex;
+        residueSpan.dataset.atomIndex = String(atomIndex);
+        residueSpan.textContent = threeToOne[resName] || 'X';
         residueSpan.title = `${resName}${resSeq}`;
 
         residueSpan.addEventListener('mouseenter', () => highlightResidue(chain, resSeq));
         residueSpan.addEventListener('mouseleave', clearHighlight);
 
-        chainContainer.appendChild(residueSpan);
+        // [EDIT] Append to the residueContainer, not chainContainer
+        if (residueContainer) {
+            residueContainer.appendChild(residueSpan);
+        }
     }
     setupDragToSelect(sequenceView);
+    updateSequenceViewSelectionState(); // This will run after build, before applySelection
 }
 
 function updateSequenceViewSelectionState() {
-    const sequenceView = document.getElementById('sequenceView');
-    if (!sequenceView) return;
+  const sequenceView = document.getElementById('sequenceView');
+  if (!sequenceView) return;
 
-    const allSpans = sequenceView.querySelectorAll('span[data-residue-index]');
-    allSpans.forEach(span => {
-        const identifier = `${span.dataset.chain}:${span.dataset.residueIndex}`;
-        if (selectedResiduesSet.has(identifier)) {
-            span.classList.add('selected');
-        } else {
-            span.classList.remove('selected');
-        }
+  const selection = previewSelectionSet || selectedResiduesSet;
+  const allSpans = sequenceView.querySelectorAll('span[data-residue-index]');
+  allSpans.forEach(span => {
+    const id = `${span.dataset.chain}:${span.dataset.residueIndex}`;
+    const isSelected = selection.has(id);
+    span.classList.toggle('selected', isSelected);
 
-        if (viewerApi?.renderer?.getAtomColor) {
-            const atomIndex = parseInt(span.dataset.atomIndex, 10);
-            if (!isNaN(atomIndex)) {
-                const color = viewerApi.renderer.getAtomColor(atomIndex);
-                span.style.color = `rgb(${color.r}, ${color.g}, ${color.b})`;
-            }
-        }
-    });
+    // Color from viewer; fall back safely if not available
+    const atomIndex = parseInt(span.dataset.atomIndex, 10);
+    let color = { r: 80, g: 80, b: 80 };
+    if (!Number.isNaN(atomIndex) && viewerApi?.renderer?.getAtomColor) {
+      color = viewerApi.renderer.getAtomColor(atomIndex);
+    }
+    if (isSelected) {
+      span.style.backgroundColor = `rgb(${color.r}, ${color.g}, ${color.b})`;
+      /* [EDIT] Changed text color to black for readability */
+      span.style.color = '#000000';
+      span.style.opacity = '1.0';
+    } else {
+      span.style.backgroundColor = 'transparent';
+      span.style.color = `rgb(${color.r}, ${color.g}, ${color.S})`;
+      /* [EDIT] Removed dimming, set to full opacity */
+      span.style.opacity = '1.0';
+    }
+  });
 }
 
 function setupDragToSelect(container) {
-    let isDragging = false;
-    let selectionStartElement = null;
-    let lastHoveredElement = null;
-    let hasMoved = false;
-    let startCoords = { x: 0, y: 0 };
+  let isDragging = false;
+  let selectionStartElement = null;
+  let lastHoveredElement = null;
+  let hasMoved = false;
+  let startCoords = { x: 0, y: 0 };
+  let dragAddMode = true;
 
-    // Remove old listeners to prevent accumulation
-    const newContainer = container.cloneNode(true);
-    container.parentNode.replaceChild(newContainer, container);
+  // Avoid duplicate listeners: clone node and replace
+  const newContainer = container.cloneNode(true);
+  container.parentNode.replaceChild(newContainer, container);
+  
+  // [EDIT] Re-find frame data for alt-click listener
+  const objectName = viewerApi?.renderer?.currentObjectName;
+  const obj = objectName ? viewerApi.renderer.objectsData[objectName] : null;
+  const frame0 = (obj && obj.frames.length > 0) ? obj.frames[0] : null;
 
-    const handleInteractionStart = (e) => {
-        const target = e.target.closest('span[data-residue-index]');
-        if (!target) return;
+  // [EDIT] Find all pills *within the new container* and add listeners
+  newContainer.querySelectorAll('.chain-pill').forEach(pill => {
+      const checkbox = pill.querySelector('input[type="checkbox"]');
+      const span = pill.querySelector('span');
+      const chain = checkbox.value;
 
-        e.preventDefault();
-        isDragging = true;
-        hasMoved = false;
-        selectionStartElement = target;
-        lastHoveredElement = target;
+      checkbox.addEventListener('change', (ev) => {
+          setChainResiduesSelected(chain, ev.target.checked);
+          applySelection();
+      });
 
-        const point = e.touches ? e.touches[0] : e;
-        startCoords = { x: point.clientX, y: point.clientY };
-    };
+      span.addEventListener('click', (ev) => {
+          if (ev.altKey) {
+              ev.preventDefault();
+              toggleChainResidues(chain);
+              // Sync checkbox state after toggle
+              if (frame0) {
+                  let anySelected = false;
+                  for (let i = 0; i < frame0.residue_index.length; i++) {
+                      if (frame0.chains[i] === chain) {
+                          const id = `${chain}:${frame0.residue_index[i]}`;
+                          if (selectedResiduesSet.has(id)) { anySelected = true; break; }
+                      }
+                  }
+                  checkbox.checked = anySelected;
+              }
+          }
+      });
+  });
+  // [END EDIT]
 
-    const handleInteractionMove = (e) => {
-        if (!isDragging) return;
-        e.preventDefault();
+  const handleStart = (e) => {
+    const target = e.target.closest('span[data-residue-index]');
+    if (!target) return;
+    e.preventDefault();
 
-        const point = e.touches ? e.touches[0] : e;
-        const distSq = (point.clientX - startCoords.x)**2 + (point.clientY - startCoords.y)**2;
-        if (distSq > 10) {
-             hasMoved = true;
+    isDragging = true;
+    hasMoved = false;
+    selectionStartElement = target;
+    lastHoveredElement = target;
+
+    const point = e.touches ? e.touches[0] : e;
+    startCoords = { x: point.clientX, y: point.clientY };
+
+    const startId = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
+    dragAddMode = (e.shiftKey === true) || !selectedResiduesSet.has(startId);
+
+    previewSelectionSet = new Set(selectedResiduesSet);
+    updateSequenceViewSelectionState();
+  };
+
+  const handleMove = (e) => {
+    if (!isDragging) return;
+    e.preventDefault();
+
+    const point = e.touches ? e.touches[0] : e;
+    const distSq = (point.clientX - startCoords.x) ** 2 + (point.clientY - startCoords.y) ** 2;
+    if (distSq > 10) hasMoved = true;
+
+    const hovered = e.target && e.target.closest ? e.target.closest('span[data-residue-index]') : null;
+    if (hovered && hovered !== lastHoveredElement) lastHoveredElement = hovered;
+
+    if (hasMoved && previewSelectionSet) {
+      const allSpans = Array.from(newContainer.querySelectorAll('span[data-residue-index]'));
+      const startIndex = allSpans.indexOf(selectionStartElement);
+      const endIndex = allSpans.indexOf(lastHoveredElement);
+      if (startIndex !== -1 && endIndex !== -1) {
+        const [min, max] = [Math.min(startIndex, endIndex), Math.max(startIndex, endIndex)];
+        previewSelectionSet = new Set(selectedResiduesSet);
+        for (let i = min; i <= max; i++) {
+          const span = allSpans[i];
+          const id = `${span.dataset.chain}:${span.dataset.residueIndex}`;
+          if (dragAddMode) previewSelectionSet.add(id); else previewSelectionSet.delete(id);
         }
+        updateSequenceViewSelectionState();  // live highlight
+      }
+    }
+  };
 
-        const target = e.target;
-        const residueSpan = target.closest('span[data-residue-index]');
-        if (residueSpan && residueSpan !== lastHoveredElement) {
-            lastHoveredElement = residueSpan;
-        }
-    };
+  const handleEnd = (e) => {
+    if (!isDragging) return;
+    e.preventDefault();
+    isDragging = false;
 
-    const handleInteractionEnd = (e) => {
-        if (!isDragging) return;
-        e.preventDefault();
-        isDragging = false;
+    if (!selectionStartElement) return;
 
-        if (!selectionStartElement) return;
+    if (!hasMoved) {
+      // Click toggle
+      const id = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
+      if (selectedResiduesSet.has(id)) selectedResiduesSet.delete(id); else selectedResiduesSet.add(id);
+      previewSelectionSet = null;
+      applySelection();
+    } else {
+      // Commit preview
+      if (previewSelectionSet) selectedResiduesSet = new Set(previewSelectionSet);
+      previewSelectionSet = null;
+      applySelection();
+    }
 
-        if (!hasMoved) {
-            const identifier = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
-            if (selectedResiduesSet.has(identifier)) {
-                selectedResiduesSet.delete(identifier);
-            } else {
-                selectedResiduesSet.add(identifier);
-            }
-        } else {
-            if (!lastHoveredElement) return;
+    selectionStartElement = null;
+    lastHoveredElement = null;
+  };
 
-            const allSpans = Array.from(newContainer.querySelectorAll('span[data-residue-index]'));
-            const startIndex = allSpans.indexOf(selectionStartElement);
-            const endIndex = allSpans.indexOf(lastHoveredElement);
+  newContainer.addEventListener('mousedown', handleStart);
+  document.addEventListener('mousemove', handleMove);
+  document.addEventListener('mouseup', handleEnd);
 
-            if (startIndex !== -1 && endIndex !== -1) {
-                const [min, max] = [Math.min(startIndex, endIndex), Math.max(startIndex, endIndex)];
-                for (let i = min; i <= max; i++) {
-                    const span = allSpans[i];
-                    const identifier = `${span.dataset.chain}:${span.dataset.residueIndex}`;
-                    selectedResiduesSet.delete(identifier);
-                }
-            }
-        }
-
-        applySelection();
-
-        selectionStartElement = null;
-        lastHoveredElement = null;
-    };
-
-    newContainer.addEventListener('mousedown', handleInteractionStart);
-    document.addEventListener('mousemove', handleInteractionMove);
-    document.addEventListener('mouseup', handleInteractionEnd);
-
-    newContainer.addEventListener('touchstart', handleInteractionStart, { passive: false });
-    document.addEventListener('touchmove', handleInteractionMove, { passive: false });
-    document.addEventListener('touchend', handleInteractionEnd);
+  newContainer.addEventListener('touchstart', handleStart, { passive: false });
+  document.addEventListener('touchmove', handleMove, { passive: false });
+  document.addEventListener('touchend', handleEnd);
 }
 
 // ============================================================================
@@ -1195,7 +1368,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             const jsonRankMatch = jsonBaseName.match(/_rank_(\d+)_/i);
 
             let rankBonus = 0;
-            if (structRankMatch && jsonRankMatch && structRankMatch[1] === jsonRankMatch[1]) {
+            if (structRankMatch && jsonRankMatch && structRankMatch[1] === structRankMatch[1]) {
                 rankBonus = 100;
                 const structInternalModel = structBaseName.match(/_model_(\d+)_/i);
                 const jsonInternalModel = jsonBaseName.match(/_model_(\d+)_/i);
@@ -1370,7 +1543,7 @@ function initDragAndDrop() {
     document.body.addEventListener('dragleave', (e) => {
         preventDefaults(e);
         dragCounter--;
-        if (dragCounter === 0 || e.relatedTarget === null) {
+        if (dragCounter === 0 || e.relatedTargEt === null) {
             globalDropOverlay.style.display = 'none';
         }
     }, false);

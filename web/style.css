@@ -5,13 +5,17 @@
     box-sizing: border-box; 
 }
 
+/* [EDIT] Centered viewer on the page */
 .py2dmol-viewer-instance {
     position: relative;
     font-family: 'Inter', sans-serif; 
     background: transparent;
-    display: inline-block; 
+    display: block; /* CHANGED from inline-block */
+    margin: 0 auto; /* ADDED */
+    width: 948px; /* ADDED */
     line-height: 0; 
 }
+/* [END EDIT] */
 
 .py2dmol-viewer-instance #mainContainer {
     display: flex;
@@ -590,31 +594,33 @@
 }
 
 #top-panel-container {
-    display: none;
+    /* display: none; */ /* JS controls this */
 }
 
-#sequenceViewContainer {
-    overflow-x: auto;
-    white-space: nowrap;
-    scrollbar-width: thin;
-    scrollbar-color: #d1d5db #f9fafb;
-}
+/* [EDIT] Removed old #sequenceViewContainer styles */
 
+/* [EDIT] Updated #sequenceView styles */
 #sequenceView {
-    display: inline-flex;
+    display: flex; /* Changed from inline-flex */
+    flex-direction: column; /* Stack chains vertically */
+    gap: 8px; /* [EDIT] Tighter spacing between chains */
+}
+
+/* [EDIT] New style for each chain's container */
+.chain-container {
+    display: flex;
+    flex-direction: column; /* Stack pill on top of residues */
+    gap: 8px;
+    /* [EDIT] Removed border, padding, and background for compact style */
+}
+
+.chain-residues {
+    display: flex;
+    flex-wrap: wrap;
     gap: 1px;
 }
+/* [END EDIT] */
 
-#sequenceView .chain-container {
-    display: inline-flex;
-    align-items: center;
-    padding-right: 10px;
-}
-
-#sequenceView .chain-label {
-    font-weight: bold;
-    margin-right: 5px;
-}
 
 #sequenceView .residue-span {
     cursor: pointer;
@@ -629,8 +635,8 @@
 
 /* Style for selected residues */
 #sequenceView .residue-span.selected {
-    background-color: #4f46e5; /* A distinct background color */
-    color: white !important; /* White text for contrast, !important to override inline style */
+    /* background-color set by JS */
+    /* color set by JS */
     border-radius: 4px;
 }
 
@@ -861,14 +867,51 @@ table.layout-table td {
     color: #ffffff;
 }
 
-#sequenceView span {
-    padding: 2px 1px;
-    transition: opacity 0.2s ease-in-out, text-shadow 0.2s ease-in-out;
-    opacity: 0.4; /* Default (deselected) state is dimmed */
-    text-shadow: none;
-}
+/* [EDIT] Removed old opacity styles for .residue-span */
 
-#sequenceView span.selected {
-    opacity: 1.0; /* Selected state is fully opaque */
-    text-shadow: 0 0 1px rgba(0, 0, 0, 0.2); /* Add a subtle glow */
+/* [EDIT] Appended new styles for accordion, pills, and sequence view */
+/* Sequence accordion */
+.sequence-accordion { display: flex; flex-direction: column; gap: 8px; }
+.sequence-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+  background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px 12px;
+  cursor: pointer; text-align: left;
 }
+.sequence-toggle .title { font-weight: 600; color: #374151; flex: 1; }
+.sequence-toggle .chevron { width: 16px; margin-right: 8px; transition: transform .2s ease; }
+.sequence-toggle[aria-expanded="true"] .chevron { transform: rotate(90deg); }
+/* [EDIT] Hide action buttons by default */
+.sequence-toggle .sequence-actions { display: none; gap: 8px; }
+/* [EDIT] Show action buttons when expanded */
+.sequence-toggle[aria-expanded="true"] .sequence-actions { display: flex; }
+.nav-button.small { height: 28px; line-height: 28px; padding: 0 10px; font-size: 12px; }
+.sequence-panel.hidden { display: none; }
+/* [EDIT] Removed border, padding, and background to merge with parent box */
+.sequence-panel { padding-top: 16px; }
+
+/* Chain pills */
+/* [EDIT] Pills are now used inside .chain-container */
+.chain-pill { 
+    position: relative; 
+    display: inline-block; /* Make it a block for layout */
+    margin-bottom: 8px; /* Space between pill and residues */
+}
+.chain-pill input[type="checkbox"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.chain-pill span {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 28px; padding: 0 10px;
+  border-radius: 9999px; background: #e5e7eb; color: #374151; font-weight: 600; border: 1px solid #d1d5db;
+  transition: background .2s ease, color .2s ease, transform .05s ease;
+}
+.chain-pill input[type="checkbox"]:checked + span { background:#10b981; color:white; border-color:#059669; }
+.chain-pill input[type="checkbox"]:active + span { transform: translateY(1px); }
+
+/* Sequence view container */
+/* [EDIT] Removed border, background, and padding from #sequenceView */
+#sequenceView .residue-span { padding:2px 3px; }
+
+/* Selected residue – background set inline via JS; keep CSS minimal */
+#sequenceView .residue-span.selected {
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.08);
+}
+/* [END EDIT] */

@@ -110,12 +110,25 @@
             <div id="status-message"></div>
         </div>
 
+        <!-- [EDIT] This HTML ensures the buttons are in-line with the title -->
         <div id="top-panel-container" class="bg-white p-4 rounded-2xl shadow-lg mb-5 border border-gray-100" style="width: 948px; display: none;">
-            <div id="sequenceViewContainer" class="control-group">
-                <label class="font-medium text-gray-700">Sequence:</label>
-                <div id="sequenceView" class="flex flex-wrap gap-1"></div>
+          <div id="sequenceAccordion" class="sequence-accordion">
+            <button id="sequenceToggle" class="sequence-toggle" aria-expanded="false">
+              <span class="chevron" aria-hidden="true">▸</span>
+              <span class="title">Sequence</span>
+              <div class="sequence-actions">
+                <button id="selectAllResidues" class="nav-button btn-grey small">Select all</button>
+                <button id="clearAllResidues" class="nav-button btn-grey small">Clear all</button>
+              </div>
+            </button>
+            <div id="sequencePanel" class="sequence-panel hidden">
+              <!-- [EDIT] Removed the chainCheckboxes div. -->
+              <!-- Sequence residues AND their chain pills will be rendered here by app.js -->
+              <div id="sequenceView" class="flex flex-wrap gap-1"></div>
             </div>
+          </div>
         </div>
+        <!-- [END EDIT] -->
 
         <div id="viewer-container" class="py2dmol-viewer-instance" style="display: none;">
             
@@ -213,10 +226,7 @@
                         
                     </div>
 
-                    <div id="selectionContainer" class="control-group">
-                        <label class="font-medium text-gray-700">Visible Chains:</label>
-                        <div id="chainCheckboxes" class="flex flex-wrap gap-2"></div>
-                    </div>
+                    <!-- [EDIT] Removed the old #selectionContainer div -->
                     
                     <!-- PAE Container is now centered and aligned with no extra space -->
                     <div id="paeContainer">
@@ -233,7 +243,7 @@
     
     <!-- Load scripts in order -->
     <script src="web/utils.js"></script>
-    <script id="py2dmol-renderer" src="py2Dmol/resources/py2Dmol.js"></script>
+    <script src="py2Dmol/resources/py2Dmol.js"></script>
     <script src="web/app.js"></script>
 
 </body>
