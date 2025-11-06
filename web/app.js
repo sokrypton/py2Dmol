@@ -155,7 +155,7 @@ function setupEventListeners() {
     // Listen for the custom event dispatched by the renderer when color settings change
     document.addEventListener('py2dmol-color-change', () => {
         console.log("Color change event received, updating sequence UI.");
-        updateSequenceViewUI();
+        updateSequenceViewSelectionState();
     });
     
     // Update navigation button states
@@ -994,8 +994,8 @@ function setupDragToSelect(container) {
              hasMoved = true;
         }
 
-        const target = document.elementFromPoint(point.clientX, point.clientY);
-        const residueSpan = target ? target.closest('span[data-residue-index]') : null;
+        const target = e.target;
+        const residueSpan = target.closest('span[data-residue-index]');
         if (residueSpan && residueSpan !== lastHoveredElement) {
             lastHoveredElement = residueSpan;
         }
