@@ -746,8 +746,8 @@ function updateViewerFromGlobalBatch() {
                 objectSelect.value = lastObjectName;
                 handleObjectChange();
                 updateObjectNavigationButtons();
-                updateChainSelectionUI(); // This will setup the new logic
-                updateSequenceViewUI();
+                buildSequenceView();
+                updateChainSelectionUI();
             }, 50);
         }
     } else {
@@ -761,8 +761,8 @@ function updateChainSelectionUI() {
     const chainCheckboxes = document.getElementById('chainCheckboxes');
     if (!chainCheckboxes) return;
 
-    chainCheckboxes.innerHTML = ''; // Clear existing
-    selectedResiduesSet.clear(); // Clear residue selections on object change
+    chainCheckboxes.innerHTML = '';
+    selectedResiduesSet.clear();
 
     const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) return;
@@ -773,7 +773,6 @@ function updateChainSelectionUI() {
     const firstFrame = object.frames[0];
     if (!firstFrame || !firstFrame.chains) return;
 
-    // Populate selectedResiduesSet with all residues by default
     for (let i = 0; i < firstFrame.residues.length; i++) {
         const chain = firstFrame.chains[i];
         const resSeq = firstFrame.residue_index[i];
@@ -782,7 +781,6 @@ function updateChainSelectionUI() {
     }
 
     const uniqueChains = [...new Set(firstFrame.chains)];
-
     uniqueChains.forEach(chain => {
         const checkboxContainer = document.createElement('div');
         checkboxContainer.className = 'flex items-center';
@@ -791,7 +789,7 @@ function updateChainSelectionUI() {
         checkbox.type = 'checkbox';
         checkbox.id = `chain-${chain}`;
         checkbox.value = chain;
-        checkbox.checked = true; // Default to visible
+        checkbox.checked = true;
         checkbox.className = 'h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
 
         const label = document.createElement('label');
@@ -839,7 +837,6 @@ function applySelection() {
         const chain = firstFrame.chains[i];
         const resSeq = firstFrame.residue_index[i];
         const residueIdentifier = `${chain}:${resSeq}`;
-
         if (visibleChains.has(chain) && selectedResiduesSet.has(residueIdentifier)) {
             visibilityMask.add(i);
         }
@@ -848,7 +845,7 @@ function applySelection() {
     viewerApi.renderer.visibilityMask = visibilityMask;
     viewerApi.renderer.render();
 
-    updateSequenceViewUI();
+    updateSequenceViewSelectionState();
 }
 
 
@@ -866,19 +863,7 @@ function clearHighlight() {
     }
 }
 
-function toggleResidueSelection(chain, residueIndex) {
-    const selectionIdentifier = `${chain}:${residueIndex}`;
-
-    if (selectedResiduesSet.has(selectionIdentifier)) {
-        selectedResiduesSet.delete(selectionIdentifier);
-    } else {
-        selectedResiduesSet.add(selectionIdentifier);
-    }
-
-    applySelection();
-}
-
-function updateSequenceViewUI() {
+function buildSequenceView() {
     const sequenceView = document.getElementById('sequenceView');
     if (!sequenceView) return;
 
@@ -916,6 +901,11 @@ function updateSequenceViewUI() {
 
     let currentChain = null;
     let chainContainer = null;
+    const threeToOne = {
+        'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 'HIS':'H', 'ILE':'I',
+        'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V',
+        'SEC':'U', 'PYL':'O'
+    };
 
     for (const res of sortedUniqueResidues) {
         const { chain, resName, resSeq, atomIndex } = res;
@@ -931,28 +921,12 @@ function updateSequenceViewUI() {
         }
 
         const residueSpan = document.createElement('span');
-        const selectionIdentifier = `${chain}:${resSeq}`;
         residueSpan.className = 'cursor-pointer rounded hover:bg-indigo-100 font-mono';
-        if (selectedResiduesSet.has(selectionIdentifier)) {
-            residueSpan.classList.add('selected');
-        }
-
-        const threeToOne = {
-            'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 'HIS':'H', 'ILE':'I',
-            'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V',
-            'SEC':'U', 'PYL':'O'
-        };
         residueSpan.textContent = threeToOne[resName] || 'X';
         residueSpan.dataset.residueIndex = resSeq;
         residueSpan.dataset.chain = chain;
+        residueSpan.dataset.atomIndex = atomIndex;
         residueSpan.title = `${resName}${resSeq}`;
-
-        if (viewerApi?.renderer?.getAtomColor) {
-            const color = viewerApi.renderer.getAtomColor(atomIndex);
-            // Always apply the color from the renderer as an inline style.
-            // The .selected class in CSS will control the visual state (e.g., opacity).
-            residueSpan.style.color = `rgb(${color.r}, ${color.g}, ${color.b})`;
-        }
 
         residueSpan.addEventListener('mouseenter', () => highlightResidue(chain, resSeq));
         residueSpan.addEventListener('mouseleave', clearHighlight);
@@ -962,6 +936,28 @@ function updateSequenceViewUI() {
     setupDragToSelect(sequenceView);
 }
 
+function updateSequenceViewSelectionState() {
+    const sequenceView = document.getElementById('sequenceView');
+    if (!sequenceView) return;
+
+    const allSpans = sequenceView.querySelectorAll('span[data-residue-index]');
+    allSpans.forEach(span => {
+        const identifier = `${span.dataset.chain}:${span.dataset.residueIndex}`;
+        if (selectedResiduesSet.has(identifier)) {
+            span.classList.add('selected');
+        } else {
+            span.classList.remove('selected');
+        }
+
+        if (viewerApi?.renderer?.getAtomColor) {
+            const atomIndex = parseInt(span.dataset.atomIndex, 10);
+            if (!isNaN(atomIndex)) {
+                const color = viewerApi.renderer.getAtomColor(atomIndex);
+                span.style.color = `rgb(${color.r}, ${color.g}, ${color.b})`;
+            }
+        }
+    });
+}
 
 function setupDragToSelect(container) {
     let isDragging = false;
@@ -969,6 +965,10 @@ function setupDragToSelect(container) {
     let lastHoveredElement = null;
     let hasMoved = false;
     let startCoords = { x: 0, y: 0 };
+
+    // Remove old listeners to prevent accumulation
+    const newContainer = container.cloneNode(true);
+    container.parentNode.replaceChild(newContainer, container);
 
     const handleInteractionStart = (e) => {
         const target = e.target.closest('span[data-residue-index]');
@@ -990,15 +990,12 @@ function setupDragToSelect(container) {
 
         const point = e.touches ? e.touches[0] : e;
         const distSq = (point.clientX - startCoords.x)**2 + (point.clientY - startCoords.y)**2;
-        if (distSq > 10) { // Threshold to detect a drag vs. a click
+        if (distSq > 10) {
              hasMoved = true;
         }
 
-        const target = (e.touches)
-            ? document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY)
-            : e.target;
-
-        const residueSpan = target.closest('span[data-residue-index]');
+        const target = document.elementFromPoint(point.clientX, point.clientY);
+        const residueSpan = target ? target.closest('span[data-residue-index]') : null;
         if (residueSpan && residueSpan !== lastHoveredElement) {
             lastHoveredElement = residueSpan;
         }
@@ -1011,17 +1008,17 @@ function setupDragToSelect(container) {
 
         if (!selectionStartElement) return;
 
-        if (!hasMoved) { // This was a CLICK
+        if (!hasMoved) {
             const identifier = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
             if (selectedResiduesSet.has(identifier)) {
                 selectedResiduesSet.delete(identifier);
             } else {
                 selectedResiduesSet.add(identifier);
             }
-        } else { // This was a DRAG
+        } else {
             if (!lastHoveredElement) return;
 
-            const allSpans = Array.from(container.querySelectorAll('span[data-residue-index]'));
+            const allSpans = Array.from(newContainer.querySelectorAll('span[data-residue-index]'));
             const startIndex = allSpans.indexOf(selectionStartElement);
             const endIndex = allSpans.indexOf(lastHoveredElement);
 
@@ -1030,7 +1027,7 @@ function setupDragToSelect(container) {
                 for (let i = min; i <= max; i++) {
                     const span = allSpans[i];
                     const identifier = `${span.dataset.chain}:${span.dataset.residueIndex}`;
-                    selectedResiduesSet.delete(identifier); // Always deselect on drag
+                    selectedResiduesSet.delete(identifier);
                 }
             }
         }
@@ -1041,11 +1038,11 @@ function setupDragToSelect(container) {
         lastHoveredElement = null;
     };
 
-    container.addEventListener('mousedown', handleInteractionStart);
+    newContainer.addEventListener('mousedown', handleInteractionStart);
     document.addEventListener('mousemove', handleInteractionMove);
     document.addEventListener('mouseup', handleInteractionEnd);
 
-    container.addEventListener('touchstart', handleInteractionStart, { passive: false });
+    newContainer.addEventListener('touchstart', handleInteractionStart, { passive: false });
     document.addEventListener('touchmove', handleInteractionMove, { passive: false });
     document.addEventListener('touchend', handleInteractionEnd);
 }
