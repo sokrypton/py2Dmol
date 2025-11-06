@@ -861,12 +861,14 @@ table.layout-table td {
     color: #ffffff;
 }
 
-#sequenceView span.selected {
-    background-color: #4f46e5; /* A strong indigo color */
-    color: white !important; /* Use !important to override inline style from JS */
+#sequenceView span {
+    padding: 2px 1px;
+    transition: opacity 0.2s ease-in-out, text-shadow 0.2s ease-in-out;
+    opacity: 0.4; /* Default (deselected) state is dimmed */
+    text-shadow: none;
 }
 
-#sequenceView span {
-    padding: 2px 1px; /* Add a little padding */
-    transition: background-color 0.1s ease; /* Smooth transition */
+#sequenceView span.selected {
+    opacity: 1.0; /* Selected state is fully opaque */
+    text-shadow: 0 0 1px rgba(0, 0, 0, 0.2); /* Add a subtle glow */
 }

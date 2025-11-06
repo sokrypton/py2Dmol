@@ -773,6 +773,14 @@ function updateChainSelectionUI() {
     const firstFrame = object.frames[0];
     if (!firstFrame || !firstFrame.chains) return;
 
+    // Populate selectedResiduesSet with all residues by default
+    for (let i = 0; i < firstFrame.residues.length; i++) {
+        const chain = firstFrame.chains[i];
+        const resSeq = firstFrame.residue_index[i];
+        const residueIdentifier = `${chain}:${resSeq}`;
+        selectedResiduesSet.add(residueIdentifier);
+    }
+
     const uniqueChains = [...new Set(firstFrame.chains)];
 
     uniqueChains.forEach(chain => {
@@ -791,7 +799,6 @@ function updateChainSelectionUI() {
         label.textContent = chain;
         label.className = 'ml-2 block text-sm text-gray-900';
 
-        // Add event listener to apply changes immediately
         checkbox.addEventListener('change', applySelection);
 
         checkboxContainer.appendChild(checkbox);
@@ -799,16 +806,16 @@ function updateChainSelectionUI() {
         chainCheckboxes.appendChild(checkboxContainer);
     });
 
-    // Initial application to show all chains
     applySelection();
 }
+
 
 function applySelection() {
     if (!viewerApi || !viewerApi.renderer) return;
 
     const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) {
-        viewerApi.renderer.visibilityMask = null; // Show all if no object
+        viewerApi.renderer.visibilityMask = null;
         viewerApi.renderer.render();
         return;
     }
@@ -819,7 +826,6 @@ function applySelection() {
     const firstFrame = object.frames[0];
     if (!firstFrame) return;
 
-    // Get selected chains from checkboxes
     const visibleChains = new Set();
     const chainCheckboxes = document.querySelectorAll('#chainCheckboxes input[type="checkbox"]');
     chainCheckboxes.forEach(checkbox => {
@@ -828,34 +834,20 @@ function applySelection() {
         }
     });
 
-    // If there is any residue selection, we show only those residues.
-    // Otherwise, we show all residues from the selected chains.
-    const hasResidueSelection = selectedResiduesSet.size > 0;
-
     const visibilityMask = new Set();
     for (let i = 0; i < firstFrame.coords.length; i++) {
         const chain = firstFrame.chains[i];
         const resSeq = firstFrame.residue_index[i];
         const residueIdentifier = `${chain}:${resSeq}`;
 
-        if (hasResidueSelection) {
-            // If we have a residue selection, only show atoms from those residues,
-            // but still respect the chain visibility toggle.
-            if (visibleChains.has(chain) && selectedResiduesSet.has(residueIdentifier)) {
-                visibilityMask.add(i);
-            }
-        } else {
-            // If no residues are selected, just show all atoms from visible chains.
-            if (visibleChains.has(chain)) {
-                visibilityMask.add(i);
-            }
+        if (visibleChains.has(chain) && selectedResiduesSet.has(residueIdentifier)) {
+            visibilityMask.add(i);
         }
     }
 
     viewerApi.renderer.visibilityMask = visibilityMask;
     viewerApi.renderer.render();
 
-    // Also update the sequence UI to reflect the selection
     updateSequenceViewUI();
 }
 
@@ -883,7 +875,6 @@ function toggleResidueSelection(chain, residueIndex) {
         selectedResiduesSet.add(selectionIdentifier);
     }
 
-    // Re-apply the selection immediately
     applySelection();
 }
 
@@ -891,7 +882,7 @@ function updateSequenceViewUI() {
     const sequenceView = document.getElementById('sequenceView');
     if (!sequenceView) return;
 
-    sequenceView.innerHTML = ''; // Clear existing sequence
+    sequenceView.innerHTML = '';
 
     const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) return;
@@ -902,14 +893,8 @@ function updateSequenceViewUI() {
     const firstFrame = object.frames[0];
     if (!firstFrame || !firstFrame.residues) return;
 
-    const residues = firstFrame.residues;
-    const residue_index = firstFrame.residue_index;
-    const chains = firstFrame.chains;
+    const { residues, residue_index, chains } = firstFrame;
 
-    let currentChain = null;
-    let chainContainer = null;
-
-    // Create a map to get unique residues for the sequence view
     const uniqueResidues = new Map();
     for (let i = 0; i < residues.length; i++) {
         const key = `${chains[i]}:${residue_index[i]}`;
@@ -918,7 +903,7 @@ function updateSequenceViewUI() {
                 chain: chains[i],
                 resName: residues[i],
                 resSeq: residue_index[i],
-                atomIndex: i // Store the first atom index for this residue
+                atomIndex: i
             });
         }
     }
@@ -929,12 +914,15 @@ function updateSequenceViewUI() {
         return a.resSeq - b.resSeq;
     });
 
+    let currentChain = null;
+    let chainContainer = null;
+
     for (const res of sortedUniqueResidues) {
         const { chain, resName, resSeq, atomIndex } = res;
         if (chain !== currentChain) {
             currentChain = chain;
             chainContainer = document.createElement('div');
-            chainContainer.className = 'flex flex-wrap p-2 border-t border-gray-200'; // Removed gap-1
+            chainContainer.className = 'flex flex-wrap p-2 border-t border-gray-200';
             const chainLabel = document.createElement('div');
             chainLabel.className = 'font-bold text-gray-700 w-full';
             chainLabel.textContent = `Chain ${chain}`;
@@ -944,125 +932,119 @@ function updateSequenceViewUI() {
 
         const residueSpan = document.createElement('span');
         const selectionIdentifier = `${chain}:${resSeq}`;
-
         residueSpan.className = 'cursor-pointer rounded hover:bg-indigo-100 font-mono';
         if (selectedResiduesSet.has(selectionIdentifier)) {
             residueSpan.classList.add('selected');
         }
 
         const threeToOne = {
-            'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
-            'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
-            'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
-            'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
-            'SEC': 'U', 'PYL': 'O'
+            'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 'HIS':'H', 'ILE':'I',
+            'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V',
+            'SEC':'U', 'PYL':'O'
         };
         residueSpan.textContent = threeToOne[resName] || 'X';
         residueSpan.dataset.residueIndex = resSeq;
         residueSpan.dataset.chain = chain;
         residueSpan.title = `${resName}${resSeq}`;
 
-        // Color the residue based on the viewer's current color scheme
-        if (viewerApi && viewerApi.renderer && typeof viewerApi.renderer.getAtomColor === 'function') {
+        if (viewerApi?.renderer?.getAtomColor) {
             const color = viewerApi.renderer.getAtomColor(atomIndex);
-            // Only apply color if not selected, to let the 'selected' class override it
-            if (!residueSpan.classList.contains('selected')) {
-                 residueSpan.style.color = `rgb(${color.r}, ${color.g}, ${color.b})`;
-            }
+            // Always apply the color from the renderer as an inline style.
+            // The .selected class in CSS will control the visual state (e.g., opacity).
+            residueSpan.style.color = `rgb(${color.r}, ${color.g}, ${color.b})`;
         }
 
-        residueSpan.addEventListener('mouseenter', () => {
-            highlightResidue(chain, resSeq);
-        });
-        residueSpan.addEventListener('mouseleave', () => {
-            clearHighlight();
-        });
-        residueSpan.addEventListener('click', () => {
-            toggleResidueSelection(chain, resSeq);
-        });
+        residueSpan.addEventListener('mouseenter', () => highlightResidue(chain, resSeq));
+        residueSpan.addEventListener('mouseleave', clearHighlight);
 
         chainContainer.appendChild(residueSpan);
     }
     setupDragToSelect(sequenceView);
 }
 
+
 function setupDragToSelect(container) {
-    let isSelecting = false;
+    let isDragging = false;
     let selectionStartElement = null;
-    let selectionEndElement = null;
+    let lastHoveredElement = null;
+    let hasMoved = false;
+    let startCoords = { x: 0, y: 0 };
 
     const handleInteractionStart = (e) => {
         const target = e.target.closest('span[data-residue-index]');
         if (!target) return;
 
         e.preventDefault();
-        isSelecting = true;
+        isDragging = true;
+        hasMoved = false;
         selectionStartElement = target;
-        selectionEndElement = target;
+        lastHoveredElement = target;
 
-        // Determine selection mode: if the first element is already selected,
-        // we will be de-selecting. Otherwise, selecting.
-        const startIdentifier = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
-        const selectMode = !selectedResiduesSet.has(startIdentifier);
-
-        updateSelectionState(selectMode);
+        const point = e.touches ? e.touches[0] : e;
+        startCoords = { x: point.clientX, y: point.clientY };
     };
 
     const handleInteractionMove = (e) => {
-        if (!isSelecting) return;
+        if (!isDragging) return;
         e.preventDefault();
+
+        const point = e.touches ? e.touches[0] : e;
+        const distSq = (point.clientX - startCoords.x)**2 + (point.clientY - startCoords.y)**2;
+        if (distSq > 10) { // Threshold to detect a drag vs. a click
+             hasMoved = true;
+        }
 
         const target = (e.touches)
             ? document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY)
             : e.target;
 
         const residueSpan = target.closest('span[data-residue-index]');
-        if (residueSpan && residueSpan !== selectionEndElement) {
-            selectionEndElement = residueSpan;
-            const selectMode = !selectedResiduesSet.has(`${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`);
-            updateSelectionState(selectMode);
+        if (residueSpan && residueSpan !== lastHoveredElement) {
+            lastHoveredElement = residueSpan;
         }
     };
 
     const handleInteractionEnd = (e) => {
-        if (!isSelecting) return;
+        if (!isDragging) return;
         e.preventDefault();
-        isSelecting = false;
-        selectionStartElement = null;
-        selectionEndElement = null;
-        applySelection(); // Final update to the 3D view
-    };
+        isDragging = false;
 
-    const updateSelectionState = (selectMode) => {
-        if (!selectionStartElement || !selectionEndElement) return;
+        if (!selectionStartElement) return;
 
-        const allSpans = Array.from(container.querySelectorAll('span[data-residue-index]'));
-        const startIndex = allSpans.indexOf(selectionStartElement);
-        const endIndex = allSpans.indexOf(selectionEndElement);
+        if (!hasMoved) { // This was a CLICK
+            const identifier = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
+            if (selectedResiduesSet.has(identifier)) {
+                selectedResiduesSet.delete(identifier);
+            } else {
+                selectedResiduesSet.add(identifier);
+            }
+        } else { // This was a DRAG
+            if (!lastHoveredElement) return;
 
-        const [min, max] = [Math.min(startIndex, endIndex), Math.max(startIndex, endIndex)];
+            const allSpans = Array.from(container.querySelectorAll('span[data-residue-index]'));
+            const startIndex = allSpans.indexOf(selectionStartElement);
+            const endIndex = allSpans.indexOf(lastHoveredElement);
 
-        allSpans.forEach((span, index) => {
-            const identifier = `${span.dataset.chain}:${span.dataset.residueIndex}`;
-            if (index >= min && index <= max) {
-                if (selectMode) {
-                    selectedResiduesSet.add(identifier);
-                    span.classList.add('selected');
-                } else {
-                    selectedResiduesSet.delete(identifier);
-                    span.classList.remove('selected');
+            if (startIndex !== -1 && endIndex !== -1) {
+                const [min, max] = [Math.min(startIndex, endIndex), Math.max(startIndex, endIndex)];
+                for (let i = min; i <= max; i++) {
+                    const span = allSpans[i];
+                    const identifier = `${span.dataset.chain}:${span.dataset.residueIndex}`;
+                    selectedResiduesSet.delete(identifier); // Always deselect on drag
                 }
             }
-        });
-        applySelection(); // Apply intermediate selection to the viewer
+        }
+
+        applySelection();
+
+        selectionStartElement = null;
+        lastHoveredElement = null;
     };
 
-    // Mouse events
     container.addEventListener('mousedown', handleInteractionStart);
     document.addEventListener('mousemove', handleInteractionMove);
     document.addEventListener('mouseup', handleInteractionEnd);
 
-    // Touch events
     container.addEventListener('touchstart', handleInteractionStart, { passive: false });
     document.addEventListener('touchmove', handleInteractionMove, { passive: false });
     document.addEventListener('touchend', handleInteractionEnd);
