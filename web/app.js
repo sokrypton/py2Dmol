@@ -983,6 +983,89 @@ function updateSequenceViewUI() {
 
         chainContainer.appendChild(residueSpan);
     }
+    setupDragToSelect(sequenceView);
+}
+
+function setupDragToSelect(container) {
+    let isSelecting = false;
+    let selectionStartElement = null;
+    let selectionEndElement = null;
+
+    const handleInteractionStart = (e) => {
+        const target = e.target.closest('span[data-residue-index]');
+        if (!target) return;
+
+        e.preventDefault();
+        isSelecting = true;
+        selectionStartElement = target;
+        selectionEndElement = target;
+
+        // Determine selection mode: if the first element is already selected,
+        // we will be de-selecting. Otherwise, selecting.
+        const startIdentifier = `${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`;
+        const selectMode = !selectedResiduesSet.has(startIdentifier);
+
+        updateSelectionState(selectMode);
+    };
+
+    const handleInteractionMove = (e) => {
+        if (!isSelecting) return;
+        e.preventDefault();
+
+        const target = (e.touches)
+            ? document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY)
+            : e.target;
+
+        const residueSpan = target.closest('span[data-residue-index]');
+        if (residueSpan && residueSpan !== selectionEndElement) {
+            selectionEndElement = residueSpan;
+            const selectMode = !selectedResiduesSet.has(`${selectionStartElement.dataset.chain}:${selectionStartElement.dataset.residueIndex}`);
+            updateSelectionState(selectMode);
+        }
+    };
+
+    const handleInteractionEnd = (e) => {
+        if (!isSelecting) return;
+        e.preventDefault();
+        isSelecting = false;
+        selectionStartElement = null;
+        selectionEndElement = null;
+        applySelection(); // Final update to the 3D view
+    };
+
+    const updateSelectionState = (selectMode) => {
+        if (!selectionStartElement || !selectionEndElement) return;
+
+        const allSpans = Array.from(container.querySelectorAll('span[data-residue-index]'));
+        const startIndex = allSpans.indexOf(selectionStartElement);
+        const endIndex = allSpans.indexOf(selectionEndElement);
+
+        const [min, max] = [Math.min(startIndex, endIndex), Math.max(startIndex, endIndex)];
+
+        allSpans.forEach((span, index) => {
+            const identifier = `${span.dataset.chain}:${span.dataset.residueIndex}`;
+            if (index >= min && index <= max) {
+                if (selectMode) {
+                    selectedResiduesSet.add(identifier);
+                    span.classList.add('selected');
+                } else {
+                    selectedResiduesSet.delete(identifier);
+                    span.classList.remove('selected');
+                }
+            }
+        });
+        applySelection(); // Apply intermediate selection to the viewer
+    };
+
+    // Mouse events
+    container.addEventListener('mousedown', handleInteractionStart);
+    document.addEventListener('mousemove', handleInteractionMove);
+    document.addEventListener('mouseup', handleInteractionEnd);
+
+    // Touch events
+    container.addEventListener('touchstart', handleInteractionStart, { passive: false });
+    document.addEventListener('touchmove', handleInteractionMove, { passive: false });
+    document.addEventListener('touchend', handleInteractionEnd);
 }
 
 // ============================================================================

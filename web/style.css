@@ -860,3 +860,13 @@ table.layout-table td {
     background-color: #4f46e5;
     color: #ffffff;
 }
+
+#sequenceView span.selected {
+    background-color: #4f46e5; /* A strong indigo color */
+    color: white !important; /* Use !important to override inline style from JS */
+}
+
+#sequenceView span {
+    padding: 2px 1px; /* Add a little padding */
+    transition: background-color 0.1s ease; /* Smooth transition */
+}

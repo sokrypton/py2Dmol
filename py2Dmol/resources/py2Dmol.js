@@ -932,6 +932,18 @@ function initializePy2DmolViewer(containerElement) {
                 this.resolvedAutoColor = 'rainbow';
             }
 
+            // Create the definitive chain index map for this dataset.
+            this.chainIndexMap = new Map();
+            if (this.chains.length > 0) {
+                // Use a sorted list of unique chain IDs to ensure a consistent order
+                const sortedUniqueChains = [...uniqueChains].sort();
+                for (const chainId of sortedUniqueChains) {
+                    if (chainId && !this.chainIndexMap.has(chainId)) {
+                        this.chainIndexMap.set(chainId, this.chainIndexMap.size);
+                    }
+                }
+            }
+
             // Map polymer atoms to residue indices for PAE selection
             this.polymerAtomIndices = [];
             const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
@@ -1144,16 +1156,6 @@ function initializePy2DmolViewer(containerElement) {
                     color = { r: 128, g: 128, b: 128 }; // Ligands are grey
                 } else if (effectiveColorMode === 'chain') {
                     const chainId = this.chains[atomIndex] || 'A';
-                    if (!this.chainIndexMap || this.chainIndexMap.size === 0) {
-                        this.chainIndexMap = new Map();
-                         if (this.chains.length > 0) {
-                            for (const cId of new Set(this.chains)) {
-                                if (cId && !this.chainIndexMap.has(cId)) {
-                                    this.chainIndexMap.set(cId, this.chainIndexMap.size);
-                                }
-                            }
-                        }
-                    }
                     const chainIndex = this.chainIndexMap.get(chainId) || 0;
                     const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
                     const hex = colorArray[chainIndex % colorArray.length];
@@ -1182,22 +1184,6 @@ function initializePy2DmolViewer(containerElement) {
             let effectiveColorMode = this.colorMode;
             if (effectiveColorMode === 'auto') {
                 effectiveColorMode = this.resolvedAutoColor || 'rainbow';
-            }
-
-            // This is the CRITICAL fix. We must ensure that ONE chainIndexMap is
-            // created and used for the entire render. We create it here if it doesn't
-            // exist, and other functions like getAtomColor will use this same map.
-            if (!this.chainIndexMap || this.chainIndexMap.size === 0) {
-                this.chainIndexMap = new Map();
-                 if (this.chains.length > 0) {
-                    // Use a sorted list of unique chain IDs to ensure a consistent order
-                    const uniqueChains = [...new Set(this.chains)].sort();
-                    for (const chainId of uniqueChains) {
-                        if (chainId && !this.chainIndexMap.has(chainId)) {
-                            this.chainIndexMap.set(chainId, this.chainIndexMap.size);
-                        }
-                    }
-                }
             }
 
             const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
