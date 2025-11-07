@@ -2319,9 +2319,12 @@ function initializePy2DmolViewer(containerElement) {
 
         getMousePos(e) {
             const rect = this.canvas.getBoundingClientRect();
+            // Support both mouse and touch events
+            const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : e.changedTouches[0].clientX);
+            const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : e.changedTouches[0].clientY);
             return { 
-                x: e.clientX - rect.left, 
-                y: e.clientY - rect.top 
+                x: clientX - rect.left, 
+                y: clientY - rect.top 
             };
         }
         
@@ -2397,7 +2400,7 @@ function initializePy2DmolViewer(containerElement) {
                 }
             });
             
-            window.addEventListener('mouseup', (e) => {
+            const handleEnd = (e) => {
                 if (!this.isDragging) return;
                 this.isDragging = false;
                 
@@ -2495,7 +2498,67 @@ function initializePy2DmolViewer(containerElement) {
                 this.lastSelectionHash = null;
                 this.cachedSequencePositions = null;
                 this.scheduleRender(); // Throttled render
+            };
+            
+            window.addEventListener('mouseup', handleEnd);
+            
+            // Touch event handlers for mobile devices
+            this.canvas.addEventListener('touchstart', (e) => {
+                if (e.touches.length !== 1) return; // Only single touch
+                if (!this.paeData) return; // No data to select
+                e.preventDefault(); // Prevent scrolling
+                
+                // Check if Shift is held for additive selection (not available on touch)
+                this.isAdding = false;
+                
+                // Clear sequence selection when starting a new PAE selection
+                this.mainRenderer.setSelection({ 
+                    paeBoxes: [],
+                    residues: new Set(),
+                    chains: new Set(),
+                    selectionMode: 'explicit'
+                });
+                
+                this.isDragging = true;
+                const { i, j } = this.getCellIndices(e);
+                this.selection.x1 = j;
+                this.selection.y1 = i;
+                this.selection.x2 = j;
+                this.selection.y2 = i;
+                // Invalidate cache when starting new selection
+                this.lastSelectionHash = null;
+                this.scheduleRender(); // Throttled render
             });
+            
+            window.addEventListener('touchmove', (e) => {
+                if (!this.isDragging) return;
+                if (!this.paeData) return; // No data to select
+                if (e.touches.length !== 1) return;
+                e.preventDefault(); // Prevent scrolling
+                
+                // Get cell indices - handle case where touch might be outside canvas
+                let cellIndices;
+                try {
+                    cellIndices = this.getCellIndices(e);
+                } catch (err) {
+                    return; // Touch outside canvas, ignore
+                }
+                const { i, j } = cellIndices;
+
+                // Clamp selection to canvas bounds
+                const n = this.paeData.length;
+                const newX2 = Math.max(0, Math.min(n - 1, j));
+                const newY2 = Math.max(0, Math.min(n - 1, i));
+                
+                // Only update if selection actually changed
+                if (this.selection.x2 !== newX2 || this.selection.y2 !== newY2) {
+                    this.selection.x2 = newX2;
+                    this.selection.y2 = newY2;
+                    this.scheduleRender(); // Throttled render
+                }
+            });
+            
+            window.addEventListener('touchend', handleEnd);
         }
 
         setData(paeData) {

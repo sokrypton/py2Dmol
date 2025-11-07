@@ -1729,6 +1729,93 @@ function setupHTMLSequenceEvents() {
             handleMouseUp();
             clearHighlight();
         });
+        
+        // Touch event handlers for mobile devices
+        const getTouchTarget = (e) => {
+            const touch = e.touches && e.touches[0] ? e.touches[0] : e.changedTouches[0];
+            const element = document.elementFromPoint(touch.clientX, touch.clientY);
+            return element ? element.closest('.residue-char') : null;
+        };
+        
+        sequenceContainer.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return; // Only single touch
+            e.preventDefault(); // Prevent scrolling
+            
+            const span = getTouchTarget(e);
+            if (!span) return;
+            
+            const residueId = span.dataset.residueId;
+            const residue = residues.find(r => r.id === residueId);
+            if (!residue) return;
+            
+            dragState.isDragging = true;
+            dragState.hasMoved = false;
+            dragState.dragStart = residue;
+            dragState.dragEnd = residue;
+            
+            const current = viewerApi?.renderer?.getSelection();
+            dragState.dragUnselectMode = current?.residues?.has(residueId) || false;
+            
+            // Toggle single residue on tap
+            const newResidues = new Set(current?.residues || []);
+            if (newResidues.has(residueId)) {
+                newResidues.delete(residueId);
+            } else {
+                newResidues.add(residueId);
+            }
+            // Clear PAE boxes when editing sequence selection
+            viewerApi.renderer.setSelection({ 
+                residues: newResidues, 
+                paeBoxes: [] 
+            });
+            // Force update to reflect changes
+            lastSequenceUpdateHash = null;
+            updateSequenceViewSelectionState();
+        });
+        
+        sequenceContainer.addEventListener('touchmove', (e) => {
+            if (!dragState.isDragging) return;
+            if (e.touches.length !== 1) return;
+            e.preventDefault(); // Prevent scrolling
+            
+            const span = getTouchTarget(e);
+            if (span) {
+                const residueId = span.dataset.residueId;
+                const residue = residues.find(r => r.id === residueId);
+                if (residue && residue !== dragState.dragEnd) {
+                    dragState.dragEnd = residue;
+                    const startIdx = residues.indexOf(dragState.dragStart);
+                    const endIdx = residues.indexOf(dragState.dragEnd);
+                    if (startIdx !== -1 && endIdx !== -1) {
+                        dragState.hasMoved = true;
+                        const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
+                        const current = viewerApi?.renderer?.getSelection();
+                        const newResidues = new Set(current?.residues || []);
+                        for (let i = min; i <= max; i++) {
+                            const res = residues[i];
+                            if (dragState.dragUnselectMode) {
+                                newResidues.delete(res.id);
+                            } else {
+                                newResidues.add(res.id);
+                            }
+                        }
+                        previewSelectionSet = newResidues;
+                        lastSequenceUpdateHash = null;
+                        updateSequenceViewSelectionState();
+                    }
+                }
+            }
+        });
+        
+        sequenceContainer.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            handleMouseUp();
+        });
+        
+        sequenceContainer.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            handleMouseUp();
+        });
     }
 }
 
