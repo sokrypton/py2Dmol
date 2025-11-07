@@ -167,6 +167,9 @@ function initializePy2DmolViewer(containerElement) {
             this.lineWidth = (typeof config.width === 'number') ? config.width : 3.0;
             this.shadowIntensity = 0.95;
             this.perspectiveEnabled = false; // false = orthographic, true = perspective
+            // Temporary center and extent for orienting to visible atoms
+            this.temporaryCenter = null;
+            this.temporaryExtent = null;
             
             // Set default focalLength, but it will be overridden by the
             // slider logic if perspective is enabled.
@@ -770,6 +773,8 @@ function initializePy2DmolViewer(containerElement) {
                     this.plddtColors = this._calculatePlddtColors();
                     // Re-render main canvas
                     this.render();
+                    // Dispatch event to notify sequence viewer
+                    document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
                     // Re-render PAE canvas
                     if (this.paeRenderer) {
                         this.paeRenderer.render();
@@ -1319,6 +1324,9 @@ function initializePy2DmolViewer(containerElement) {
         
             // [PATCH] Apply initial mask
             this._composeAndApplyMask();
+            
+            // Dispatch event to notify sequence viewer that colors have changed (e.g., when frame changes)
+            document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
         }
 
         getAtomColor(atomIndex) {
@@ -1499,9 +1507,11 @@ function initializePy2DmolViewer(containerElement) {
 
             const globalCenter = (object && object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0);
             
+            // Use temporary center if set (for orienting to visible atoms), otherwise use global center
+            const c = this.temporaryCenter || globalCenter;
+            
             // Update pre-allocated rotatedCoords
             const m = this.rotationMatrix;
-            const c = globalCenter;
             for (let i = 0; i < this.coords.length; i++) {
                 const v = this.coords[i];
                 const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
@@ -1715,7 +1725,9 @@ function initializePy2DmolViewer(containerElement) {
             }
             
             // dataRange is just the molecule's extent in Angstroms
-            const dataRange = (maxExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
+            // Use temporary extent if set (for orienting to visible atoms), otherwise use object's maxExtent
+            const effectiveExtent = this.temporaryExtent || maxExtent;
+            const dataRange = (effectiveExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
             const canvasSize = Math.min(this.canvas.width, this.canvas.height);
             
             // scale is pixels per Angstrom
@@ -2089,8 +2101,16 @@ function initializePy2DmolViewer(containerElement) {
             
             window.addEventListener('mousemove', (e) => {
                 if (!this.isDragging) return;
+                if (!this.paeData) return; // No data to select
                 
-                const { i, j } = this.getCellIndices(e);
+                // Get cell indices - handle case where mouse might be outside canvas
+                let cellIndices;
+                try {
+                    cellIndices = this.getCellIndices(e);
+                } catch (err) {
+                    return; // Mouse outside canvas, ignore
+                }
+                const { i, j } = cellIndices;
 
                 // Clamp selection to canvas bounds
                 const n = this.paeData.length;
@@ -2150,14 +2170,24 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         setData(paeData) {
-            this.paeData = paeData;
-            // Clear selection when data changes
-            this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
-            // [PATCH] Check unified model
-            if (this.mainRenderer.selectionModel.paeBoxes.length > 0) {
-                 this.mainRenderer.setResidueVisibility(null);
+            // Only clear selection if data actually changed (not just same data on new frame)
+            // For most structures, PAE data is the same across frames, so preserve selection
+            const dataChanged = this.paeData !== paeData && 
+                (this.paeData === null || paeData === null || 
+                 (this.paeData.length !== paeData.length));
+            
+            // If data structure changed, clear selection
+            if (dataChanged) {
+                this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                // [PATCH] Check unified model
+                if (this.mainRenderer.selectionModel.paeBoxes.length > 0) {
+                     this.mainRenderer.setResidueVisibility(null);
+                }
             }
-            // Invalidate cache when data changes
+            
+            this.paeData = paeData;
+            
+            // Invalidate cache when data changes (or on any frame change for color updates)
             this.baseImageData = null;
             this.lastSelectionHash = null;
             this.cachedSequencePositions = null;

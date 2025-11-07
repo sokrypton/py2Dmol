@@ -54,7 +54,7 @@
     display: flex;
     flex-direction: row;
     align-items: flex-start; 
-    gap: 24px; 
+    gap: 8px; 
     background: transparent;
 }
 
@@ -67,8 +67,8 @@
 
 .py2dmol-viewer-instance #canvasContainer {
     display: inline-block;
-    border: 1px solid var(--color-gray-200); 
-    border-radius: var(--radius-lg);
+    border: 1px solid #e5e7eb; 
+    border-radius: 10px;
     overflow: auto; 
     background: #ffffff;
     resize: both; 
@@ -100,11 +100,11 @@
 .py2dmol-viewer-instance #rightPanelContainer {
     display: flex;
     flex-direction: column;
-    gap: 18px;
-    width: 324px; 
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-lg); 
-    padding: 22px; 
+    gap: 12px;
+    width: 340px; 
+    border: 1px solid #e5e7eb;
+    border-radius: 10px; 
+    padding: 16px; 
     background: #ffffff; 
     box-shadow: var(--shadow-md);
     flex-shrink: 0;
@@ -205,6 +205,47 @@
 
 #upload-button:focus-visible {
     outline: 2px solid var(--color-gray-600);
+    outline-offset: 2px;
+}
+
+/* Example buttons - green style */
+#example-button-1,
+#example-button-2 {
+    height: 42px;
+    padding: 0 18px;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    box-shadow: var(--shadow-sm);
+    min-width: 100px;
+    flex: 1;
+}
+
+#example-button-1:hover,
+#example-button-2:hover {
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+#example-button-1:active,
+#example-button-2:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm);
+}
+
+#example-button-1:focus-visible,
+#example-button-2:focus-visible {
+    outline: 2px solid #10b981;
     outline-offset: 2px;
 }
 
@@ -665,9 +706,7 @@
     font-size: 14px;
 }
 
-#top-panel-container {
-    /* display: none; */ /* JS controls this */
-}
+/* #top-panel-container display is controlled by JS */
 
 /* [EDIT] Removed old #sequenceViewContainer styles */
 
@@ -675,15 +714,30 @@
 #sequenceView {
     display: flex; /* Changed from inline-flex */
     flex-direction: column; /* Stack chains vertically */
-    gap: 8px; /* [EDIT] Tighter spacing between chains */
+    gap: 4px; /* [EDIT] Tighter spacing between chains */
 }
 
-/* [EDIT] New style for each chain's container */
+/* [EDIT] Chain container with two columns: chain button and sequence */
 .chain-container {
+    margin-bottom: 4px;
+    overflow: hidden; /* Prevent overflow */
     display: flex;
-    flex-direction: column; /* Stack pill on top of residues */
-    gap: 8px;
-    /* [EDIT] Removed border, padding, and background for compact style */
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.chain-button-column {
+    flex-shrink: 0;
+}
+
+.chain-container canvas {
+    /* width and height are set inline by JavaScript - don't override */
+    margin: 0;
+    padding: 0;
+    display: block;
+    /* Prevent any CSS from affecting canvas dimensions */
+    box-sizing: border-box;
 }
 
 .chain-residues {
@@ -730,8 +784,8 @@
     flex-shrink: 0;
     width: 296px; 
     height: 296px; 
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
     overflow: hidden;
     background: #ffffff;
     box-shadow: var(--shadow-md);
@@ -957,68 +1011,84 @@ table.layout-table td {
 /* [EDIT] Removed old opacity styles for .residue-span */
 
 /* [EDIT] Appended new styles for accordion, pills, and sequence view */
-/* Sequence accordion */
-.sequence-accordion { display: flex; flex-direction: column; gap: 8px; }
-.sequence-toggle {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
-  background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px 12px;
-  cursor: pointer; text-align: left;
+/* Sequence section container with box */
+.sequence-section-container {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 8px;
 }
-.sequence-toggle .title { font-weight: 600; color: #374151; flex: 1; }
-.sequence-toggle .chevron { width: 16px; margin-right: 8px; transition: transform .2s ease; }
-.sequence-toggle[aria-expanded="true"] .chevron { transform: rotate(90deg); }
-/* [EDIT] Hide action buttons by default */
-.sequence-toggle .sequence-actions { display: none; gap: 8px; }
-/* [EDIT] Show action buttons when expanded */
-.sequence-toggle[aria-expanded="true"] .sequence-actions { display: flex; }
-.nav-button.small { height: 28px; line-height: 28px; padding: 0 10px; font-size: 12px; }
-.sequence-panel.hidden { display: none; }
-/* [EDIT] Removed border, padding, and background to merge with parent box */
-.sequence-panel { padding-top: 16px; }
 
-/* Chain pills */
-/* [EDIT] Pills are now used inside .chain-container */
-.chain-pill { 
-    position: relative; 
-    display: inline-block;
-    margin-bottom: 10px;
+/* Reduce bottom margin when collapsed to remove extra white space */
+.sequence-section-container.collapsed {
+  margin-bottom: 4px;
 }
-.chain-pill input[type="checkbox"] { 
-    position: absolute; 
-    inset: 0; 
-    opacity: 0; 
-    cursor: pointer; 
-    z-index: 1;
+
+/* Sequence header with toggle */
+.sequence-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 0;
 }
-.chain-pill span {
-    display: inline-flex; 
-    align-items: center; 
-    justify-content: center; 
-    min-width: 36px; 
-    height: 30px; 
-    padding: 0 12px;
-    border-radius: var(--radius-full); 
-    background: var(--color-gray-200); 
-    color: var(--color-gray-700); 
-    font-weight: 600; 
-    font-size: 13px;
-    border: 1.5px solid var(--color-gray-300);
-    transition: all var(--transition-base);
-    box-shadow: var(--shadow-sm);
+
+.sequence-content:not(.hidden) {
+  margin-top: 8px;
 }
-.chain-pill input[type="checkbox"]:checked + span { 
-    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
-    color: white; 
-    border-color: var(--color-success-hover);
-    box-shadow: var(--shadow-md);
+
+.sequence-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  color: #374151;
 }
-.chain-pill input[type="checkbox"]:hover + span {
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+
+.sequence-toggle-btn:hover {
+  color: #1f2937;
 }
-.chain-pill input[type="checkbox"]:active + span { 
-    transform: translateY(0);
+
+.sequence-toggle-btn .chevron {
+  font-size: 24px;
+  color: #6b7280;
+  transition: transform 0.2s ease;
+  line-height: 1;
+  font-weight: normal;
+  display: inline-block;
+  vertical-align: middle;
 }
+
+.sequence-title {
+  font-weight: 600;
+  color: #374151;
+  font-size: 15px;
+}
+
+.sequence-content.hidden {
+  display: none;
+}
+
+.sequence-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.nav-button.small { 
+  height: 28px; 
+  line-height: 28px; 
+  padding: 0 10px; 
+  font-size: 12px; 
+}
+
+/* Chain buttons are now drawn on canvas - no CSS needed */
 
 /* Sequence view container */
 /* [EDIT] Removed border, background, and padding from #sequenceView */

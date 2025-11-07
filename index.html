@@ -20,43 +20,57 @@
     </div>
     <!-- End Global Drop Overlay -->
 
-    <!-- Total width (600 + 24 + 324 = 948px) -->
+    <!-- Total width (600 + 8 + 340 = 948px) -->
     <div class="mx-auto" style="width: 948px;"> 
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">py2Dmol</h1>
-        <p class="text-gray-500 mb-8">Upload a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
+        <p class="text-gray-500 mb-4">Upload a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
 
-        <div class="bg-white p-6 rounded-2xl shadow-lg mb-5 border border-gray-100" style="width: 948px;">
+        <div class="bg-white mb-2" style="width: 948px; padding: 24px 24px 20px 24px; border-radius: 10px; border: 1px solid #e5e7eb; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);">
             
             <!-- Use table for reliable layout -->
-            <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+            <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 0;">
                 <tr>
                     <!-- Left Column: Fetch + Upload -->
                     <td style="width: 50%; padding-right: 20px; vertical-align: top;">
                         
                         <!-- Fetch Section -->
                         <label for="fetch-id" style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">PDB (4-char) or UniProt ID</label>
-                        <div id="fetch-input-container" style="margin-bottom: 20px;">
+                        <div id="fetch-input-container" style="margin-bottom: 12px;">
                             <input type="text" id="fetch-id" placeholder="e.g., 4HHB or P0A8I3">
                             <button id="fetch-btn">Fetch</button>
                         </div>
 
                         <!-- Upload Section -->
-                        <label style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">Upload PDB / CIF / ZIP</label>
-                        <div id="uploadControlsContainer">
-                             <!-- Upload Button (Triggers hidden input) -->
-                             <button id="upload-button">
-                                 <i class="fa-solid fa-file-arrow-up"></i>
-                                 <span>Choose Files</span>
-                             </button>
-                             
-                             <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json" multiple class="hidden">
+                        <div style="display: flex; gap: 12px; align-items: flex-start;">
+                            <div style="flex: 1;">
+                                <label style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">Upload PDB / CIF / ZIP</label>
+                                <div id="uploadControlsContainer" style="display: flex; gap: 8px;">
+                                     <!-- Upload Button (Triggers hidden input) -->
+                                     <button id="upload-button">
+                                         <i class="fa-solid fa-file-arrow-up"></i>
+                                         <span>Choose Files</span>
+                                     </button>
+                                     
+                                     <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json" multiple class="hidden">
+                                </div>
+                            </div>
+                            
+                            <!-- Separator Bar -->
+                            <div style="width: 1px; height: 60px; background: #e5e7eb; margin-top: 28px;"></div>
+                            
+                            <div style="flex: 1;">
+                                <label style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">Example</label>
+                                <div style="display: flex; gap: 8px;">
+                                    <button id="example-button-1">
+                                        <span>A0JNW5</span>
+                                    </button>
+                                    <button id="example-button-2">
+                                        <span>1YNE</span>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
 
-                    </td>
-                    
-                    <!-- Separator Column -->
-                    <td style="width: 40px; vertical-align: top;">
-                        <div style="width: 1px; height: 180px; background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent); margin: 0 auto;"></div>
                     </td>
                     
                     <!-- Right Column: All Options -->
@@ -106,27 +120,23 @@
                 </tr>
             </table>
             
-            <!-- Status message below the table with extra margin -->
-            <div id="status-message"></div>
+            <!-- Status message below the table -->
+            <div id="status-message" style="margin-top: 12px;"></div>
         </div>
 
-        <!-- [EDIT] This HTML ensures the buttons are in-line with the title -->
-        <div id="top-panel-container" class="bg-white p-4 rounded-2xl shadow-lg mb-5 border border-gray-100" style="width: 948px; display: none;">
-          <div id="sequenceAccordion" class="sequence-accordion">
-            <button id="sequenceToggle" class="sequence-toggle" aria-expanded="false">
+        <!-- [EDIT] Sequence container with box and toggle -->
+        <div id="top-panel-container" class="sequence-section-container" style="width: 948px; display: none;">
+          <div id="sequenceHeader" class="sequence-header">
+            <button id="sequenceToggle" class="sequence-toggle-btn" aria-expanded="false">
               <span class="chevron" aria-hidden="true">▸</span>
-              <span class="title">Sequence</span>
-              <div class="sequence-actions">
-                <button id="selectAllResidues" class="nav-button btn-grey small">Select all</button>
-                <button id="clearAllResidues" class="nav-button btn-grey small">Clear all</button>
-              </div>
+              <span class="sequence-title">Sequence</span>
             </button>
-            <div id="sequencePanel" class="sequence-panel hidden">
-              <!-- [EDIT] Removed the chainCheckboxes div. -->
-              <!-- Sequence residues AND their chain pills will be rendered here by app.js -->
-              <div id="sequenceView" class="flex flex-wrap gap-1"></div>
+            <div class="sequence-actions">
+              <button id="selectAllResidues" class="nav-button btn-grey small sequence-action-btn">Select all</button>
+              <button id="clearAllResidues" class="nav-button btn-grey small sequence-action-btn">Clear all</button>
             </div>
           </div>
+          <div id="sequenceView" class="sequence-content hidden"></div>
         </div>
         <!-- [END EDIT] -->
 
@@ -153,7 +163,7 @@
                 <div id="rightPanelContainer">
                     
                     <!-- Toolbar (two rows) -->
-                    <div id="navigationControls" class="toolbar" style="margin-bottom: 12px;">
+                    <div id="navigationControls" class="toolbar" style="margin-bottom: 8px;">
                       <div class="toolbar-row">
                         <button id="orientButton" class="nav-button btn-grey" style="flex: 1;" title="Orient to best view">
                           Orient
