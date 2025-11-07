@@ -353,6 +353,18 @@
     background: linear-gradient(to bottom, #059669, #047857);
 }
 
+.py2dmol-viewer-instance .nav-button.greyed-out {
+    background: #f3f4f6;
+    color: #9ca3af;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.py2dmol-viewer-instance .nav-button.greyed-out:hover {
+    background: #f3f4f6;
+    color: #9ca3af;
+}
+
 /* ============================================================================
    TOGGLE SWITCHES (UNIFIED STYLE)
    ============================================================================ */

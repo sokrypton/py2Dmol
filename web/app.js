@@ -315,6 +315,15 @@ function updateObjectNavigationButtons() {
     const shouldDisable = objectSelect.options.length <= 1;
     prevButton.disabled = shouldDisable;
     nextButton.disabled = shouldDisable;
+    
+    // Add greyed-out class for visual feedback
+    if (shouldDisable) {
+        prevButton.classList.add('greyed-out');
+        nextButton.classList.add('greyed-out');
+    } else {
+        prevButton.classList.remove('greyed-out');
+        nextButton.classList.remove('greyed-out');
+    }
 }
 
 function handleObjectChange() {
@@ -1145,7 +1154,8 @@ function setChainResiduesSelected(chain, selected) {
   viewerApi.renderer.setSelection({ 
     chains: newChains.size === allChains.size ? new Set() : newChains,
     residues: newResidues,
-    selectionMode: selectionMode
+    selectionMode: selectionMode,
+    paeBoxes: []  // Clear PAE boxes when editing chain selection
   });
   // Event listener will update UI, no need to call applySelection()
 }
@@ -1175,7 +1185,10 @@ function toggleChainResidues(chain) {
         else newResidues.add(id);
     });
     
-    viewerApi.renderer.setSelection({ residues: newResidues });
+    viewerApi.renderer.setSelection({ 
+        residues: newResidues,
+        paeBoxes: []  // Clear PAE boxes when editing sequence
+    });
 }
 
 // [NEW] This function updates the chain buttons and sequence view
@@ -1244,7 +1257,7 @@ function clearHighlight() {
 
 function selectAllResidues() {
   if (!viewerApi?.renderer) return;
-  // Use renderer's resetToDefault method
+  // Reset to default (all residues/chains) - this also clears PAE boxes
   viewerApi.renderer.resetToDefault();
   // UI will update via event listener
 }
@@ -1639,7 +1652,12 @@ function setupHTMLSequenceEvents() {
             } else {
                 newResidues.add(residueId);
             }
-            viewerApi.renderer.setSelection({ residues: newResidues, paeBoxes: [] });
+            // Clear PAE boxes when editing sequence selection
+            // (sequence selection is already reflected in PAE via colors)
+            viewerApi.renderer.setSelection({ 
+                residues: newResidues, 
+                paeBoxes: [] 
+            });
             // Force update to reflect changes
             lastSequenceUpdateHash = null;
             updateSequenceViewSelectionState();
@@ -1688,7 +1706,12 @@ function setupHTMLSequenceEvents() {
         
         const handleMouseUp = () => {
             if (dragState.hasMoved && previewSelectionSet) {
-                viewerApi.renderer.setSelection({ residues: previewSelectionSet, paeBoxes: [] });
+                // Clear PAE boxes when finishing drag selection
+                // (sequence selection is already reflected in PAE via colors)
+                viewerApi.renderer.setSelection({ 
+                    residues: previewSelectionSet, 
+                    paeBoxes: [] 
+                });
             }
             previewSelectionSet = null;
             dragState.isDragging = false;
