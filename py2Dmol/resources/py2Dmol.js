@@ -253,6 +253,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // UI elements
             this.playButton = null;
+            this.recordButton = null;
             this.frameSlider = null;
             this.frameCounter = null;
             this.objectSelect = null;
@@ -264,6 +265,13 @@ function initializePy2DmolViewer(containerElement) {
             this.outlineEnabledCheckbox = null; 
             this.colorblindCheckbox = null;
             this.orthoSlider = null;
+            
+            // Recording state
+            this.isRecording = false;
+            this.mediaRecorder = null;
+            this.recordedChunks = [];
+            this.recordingStream = null;
+            this.recordingEndFrame = 0;
 
             this.setupInteraction();
         }
@@ -661,9 +669,10 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, recordButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
+            this.recordButton = recordButton;
             this.frameSlider = frameSlider;
             this.frameCounter = frameCounter;
             this.objectSelect = objectSelect;
@@ -682,6 +691,12 @@ function initializePy2DmolViewer(containerElement) {
             this.playButton.addEventListener('click', () => {
                 this.togglePlay();
             });
+            
+            if (this.recordButton) {
+                this.recordButton.addEventListener('click', () => {
+                    this.toggleRecording();
+                });
+            }
 
             this.objectSelect.addEventListener('change', () => {
                 this.stopAnimation();
@@ -1027,7 +1042,29 @@ function initializePy2DmolViewer(containerElement) {
             }
             
             this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
-            this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
+            // Update play button icon (preserve icon structure)
+            if (this.playButton) {
+                this.playButton.innerHTML = this.isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+            }
+            
+            // Update record button
+            if (this.recordButton) {
+                const span = this.recordButton.querySelector('span');
+                if (span) {
+                    if (this.isRecording) {
+                        span.innerHTML = '<i class="fa-solid fa-stop"></i>';
+                        span.style.background = '#ef4444';
+                        span.style.color = '#fff';
+                    } else {
+                        span.innerHTML = '<i class="fa-solid fa-video"></i>';
+                        span.style.background = '#e5e7eb';
+                        span.style.color = '#374151';
+                    }
+                }
+                this.recordButton.disabled = !this.currentObjectName || 
+                    !this.objectsData[this.currentObjectName] || 
+                    this.objectsData[this.currentObjectName].frames.length < 2;
+            }
         }
 
         // Toggle play/pause
@@ -1035,6 +1072,11 @@ function initializePy2DmolViewer(containerElement) {
             if (this.isPlaying) {
                 this.stopAnimation();
             } else {
+                // Ensure we're not in a recording state when starting normal playback
+                if (this.isRecording) {
+                    console.warn("Cannot start playback while recording");
+                    return;
+                }
                 this.startAnimation();
             }
         }
@@ -1046,14 +1088,209 @@ function initializePy2DmolViewer(containerElement) {
             const object = this.objectsData[this.currentObjectName];
             if (!object || object.frames.length < 2) return;
 
+            // If we're at the last frame and not recording, reset to first frame for looping
+            if (!this.isRecording && this.currentFrame >= object.frames.length - 1) {
+                this.setFrame(0);
+            }
+
             this.isPlaying = true;
-            this.lastFrameAdvanceTime = performance.now(); // Set start time
+            // Set timing to allow immediate frame advance on next animation loop
+            // Use a time far enough in the past to ensure immediate advancement
+            this.lastFrameAdvanceTime = performance.now() - (this.animationSpeed * 2); // Set to 2x animation speed in the past
             this.updateUIControls();
         }
 
         // Stop playback
         stopAnimation() {
             this.isPlaying = false;
+            this.updateUIControls();
+        }
+        
+        // Toggle recording
+        toggleRecording() {
+            if (this.isRecording) {
+                this.stopRecording();
+            } else {
+                this.startRecording();
+            }
+        }
+        
+        // Start recording animation
+        startRecording() {
+            // Check if we have frames to record
+            if (!this.currentObjectName) {
+                console.warn("Cannot record: No object loaded");
+                return;
+            }
+            
+            const object = this.objectsData[this.currentObjectName];
+            if (!object || object.frames.length < 2) {
+                console.warn("Cannot record: Need at least 2 frames");
+                return;
+            }
+            
+            // Check if MediaRecorder is supported
+            if (typeof MediaRecorder === 'undefined' || !this.canvas.captureStream) {
+                console.error("Recording not supported in this browser");
+                alert("Video recording is not supported in this browser. Please use Chrome, Edge, or Firefox.");
+                return;
+            }
+            
+            // Stop any existing animation first
+            this.stopAnimation();
+            
+            // Clean up any existing recording state first
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                try {
+                    this.mediaRecorder.stop();
+                } catch (e) {
+                    console.warn("Error stopping existing recorder:", e);
+                }
+            }
+            if (this.recordingStream) {
+                this.recordingStream.getTracks().forEach(track => track.stop());
+                this.recordingStream = null;
+            }
+            this.mediaRecorder = null;
+            this.recordedChunks = [];
+            
+            // Set recording state
+            this.isRecording = true;
+            this.recordingEndFrame = object.frames.length - 1;
+            
+            // Capture stream from canvas at 30fps for smooth playback
+            const fps = 30;
+            this.recordingStream = this.canvas.captureStream(fps);
+            
+            // Set up MediaRecorder with low compression (high quality)
+            const options = {
+                mimeType: 'video/webm;codecs=vp9', // VP9 for better quality
+                videoBitsPerSecond: 8000000 // 8 Mbps for high quality (low compression)
+            };
+            
+            // Fallback to VP8 if VP9 not supported
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm;codecs=vp8';
+                options.videoBitsPerSecond = 5000000; // 5 Mbps for VP8
+            }
+            
+            // Fallback to default if neither supported
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm';
+                options.videoBitsPerSecond = 5000000;
+            }
+            
+            try {
+                this.mediaRecorder = new MediaRecorder(this.recordingStream, options);
+                
+                this.mediaRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) {
+                        this.recordedChunks.push(event.data);
+                    }
+                };
+                
+                this.mediaRecorder.onstop = () => {
+                    this.finishRecording();
+                };
+                
+                this.mediaRecorder.onerror = (event) => {
+                    console.error("MediaRecorder error:", event.error);
+                    this.isRecording = false;
+                    this.updateUIControls();
+                    alert("Recording error: " + event.error.message);
+                };
+                
+                // Start recording
+                this.mediaRecorder.start(100); // Collect data every 100ms
+                
+                // Stop any existing animation first
+                this.stopAnimation();
+                
+                // Go to first frame (this will render frame 0)
+                this.setFrame(0);
+                
+                // Use requestAnimationFrame to ensure state is set before next animation loop iteration
+                requestAnimationFrame(() => {
+                    // Start animation - set timing so first frame advances immediately
+                    const now = performance.now();
+                    this.lastFrameAdvanceTime = now - (this.animationSpeed * 2); // Set to 2x animation speed in the past
+                    this.isPlaying = true; // Set this AFTER setting lastFrameAdvanceTime
+                    this.updateUIControls();
+                });
+                
+            } catch (error) {
+                console.error("Failed to start recording:", error);
+                this.isRecording = false;
+                this.updateUIControls();
+                alert("Failed to start recording: " + error.message);
+            }
+        }
+        
+        // Stop recording
+        stopRecording() {
+            if (!this.isRecording || !this.mediaRecorder) {
+                return;
+            }
+            
+            // Stop animation
+            this.stopAnimation();
+            
+            // Stop MediaRecorder
+            if (this.mediaRecorder.state !== 'inactive') {
+                this.mediaRecorder.stop();
+            }
+            
+            // Stop stream
+            if (this.recordingStream) {
+                this.recordingStream.getTracks().forEach(track => track.stop());
+                this.recordingStream = null;
+            }
+        }
+        
+        // Finish recording and download file
+        finishRecording() {
+            if (this.recordedChunks.length === 0) {
+                console.warn("No video data recorded");
+                this.isRecording = false;
+                this.mediaRecorder = null;
+                if (this.recordingStream) {
+                    this.recordingStream.getTracks().forEach(track => track.stop());
+                    this.recordingStream = null;
+                }
+                // Ensure animation is stopped and state is clean
+                this.stopAnimation();
+                this.updateUIControls();
+                return;
+            }
+            
+            // Create blob from recorded chunks
+            const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+            
+            // Create download link
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `py2dmol_animation_${this.currentObjectName || 'recording'}_${Date.now()}.webm`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+            // Clean up all recording state
+            URL.revokeObjectURL(url);
+            this.recordedChunks = [];
+            this.isRecording = false;
+            this.mediaRecorder = null;
+            if (this.recordingStream) {
+                this.recordingStream.getTracks().forEach(track => track.stop());
+                this.recordingStream = null;
+            }
+            
+            // Ensure animation is fully stopped and state is clean
+            this.stopAnimation();
+            
+            // Reset animation timing - set to a time in the past so next play starts immediately
+            this.lastFrameAdvanceTime = performance.now() - this.animationSpeed - 1;
+            
             this.updateUIControls();
         }
 
@@ -1971,16 +2208,37 @@ function initializePy2DmolViewer(containerElement) {
             // 3. Handle frame playback
             if (this.isPlaying) {
                 // Check for null
-                if (now - this.lastFrameAdvanceTime > this.animationSpeed && this.currentObjectName) {
+                if (this.currentObjectName) {
                     const object = this.objectsData[this.currentObjectName];
                     if (object && object.frames.length > 0) {
-                        let nextFrame = this.currentFrame + 1;
-                        if (nextFrame >= object.frames.length) {
-                            nextFrame = 0;
+                        // Check if enough time has passed since last frame advance
+                        const timeSinceLastFrame = now - this.lastFrameAdvanceTime;
+                        if (timeSinceLastFrame > this.animationSpeed) {
+                            let nextFrame = this.currentFrame + 1;
+                            
+                            // If recording, stop at the last frame
+                            if (this.isRecording) {
+                                if (nextFrame > this.recordingEndFrame) {
+                                    // Finished recording - stop
+                                    this.stopRecording();
+                                    needsRender = false;
+                                    // Don't return here - let the animation loop continue
+                                    // so it can keep running for future play/record operations
+                                } else {
+                                    this.setFrame(nextFrame); // This calls render()
+                                    this.lastFrameAdvanceTime = now;
+                                    needsRender = false; // setFrame() already called render()
+                                }
+                            } else {
+                                // Normal playback - loop
+                                if (nextFrame >= object.frames.length) {
+                                    nextFrame = 0;
+                                }
+                                this.setFrame(nextFrame); // This calls render()
+                                this.lastFrameAdvanceTime = now;
+                                needsRender = false; // setFrame() already called render()
+                            }
                         }
-                        this.setFrame(nextFrame); // This calls render()
-                        this.lastFrameAdvanceTime = now;
-                        needsRender = false; // setFrame() already called render()
                     } else {
                         this.stopAnimation();
                     }
@@ -2586,6 +2844,7 @@ function initializePy2DmolViewer(containerElement) {
     // 6. Setup animation and object controls
     const controlsContainer = containerElement.querySelector('#controlsContainer');
     const playButton = containerElement.querySelector('#playButton');
+    const recordButton = containerElement.querySelector('#recordButton');
     const frameSlider = containerElement.querySelector('#frameSlider');
     const frameCounter = containerElement.querySelector('#frameCounter');
     const objectSelect = containerElement.querySelector('#objectSelect');
@@ -2601,7 +2860,7 @@ function initializePy2DmolViewer(containerElement) {
 
     // Pass ALL controls to the renderer
     renderer.setUIControls(
-        controlsContainer, playButton, 
+        controlsContainer, playButton, recordButton,
         frameSlider, frameCounter, objectSelect,
         speedSelect, rotationCheckbox, lineWidthSlider,
         shadowEnabledCheckbox, outlineEnabledCheckbox,
