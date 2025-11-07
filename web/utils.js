@@ -153,13 +153,61 @@ function polar2x2_withScore(A) {
  * @returns {Array<Array<number>>} - Target rotation matrix
  */
 function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
+    // Edge case: not enough coordinates
+    if (!coords || coords.length < 2) {
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
+    // Edge case: all coordinates are the same (degenerate case)
+    const firstCoord = coords[0];
+    const allSame = coords.every(c => 
+        Math.abs(c[0] - firstCoord[0]) < 1e-10 &&
+        Math.abs(c[1] - firstCoord[1]) < 1e-10 &&
+        Math.abs(c[2] - firstCoord[2]) < 1e-10
+    );
+    if (allSame) {
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
     const H = covarianceXXT(coords);
-    const svd = numeric.svd(H);
-    let V = [
-        [svd.V[0][0], svd.V[0][1], svd.V[0][2]],
-        [svd.V[1][0], svd.V[1][1], svd.V[1][2]],
-        [svd.V[2][0], svd.V[2][1], svd.V[2][2]]
-    ];
+    
+    // Edge case: covariance matrix is all zeros (shouldn't happen after allSame check, but just in case)
+    const traceH = H[0][0] + H[1][1] + H[2][2];
+    if (Math.abs(traceH) < 1e-10) {
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
+    let svd;
+    try {
+        svd = numeric.svd(H);
+    } catch (e) {
+        // SVD failed, return current rotation or identity
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
+    // Check if SVD returned valid structure
+    if (!svd || !svd.V || !Array.isArray(svd.V) || svd.V.length < 3) {
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
+    // Handle both 2D array and array of arrays formats for V
+    let V;
+    if (Array.isArray(svd.V[0]) && Array.isArray(svd.V[0][0])) {
+        // V is already a 2D array
+        V = [
+            [svd.V[0][0][0] || svd.V[0][0], svd.V[0][1][0] || svd.V[0][1], svd.V[0][2][0] || svd.V[0][2]],
+            [svd.V[1][0][0] || svd.V[1][0], svd.V[1][1][0] || svd.V[1][1], svd.V[1][2][0] || svd.V[1][2]],
+            [svd.V[2][0][0] || svd.V[2][0], svd.V[2][1][0] || svd.V[2][1], svd.V[2][2][0] || svd.V[2][2]]
+        ];
+    } else {
+        // V is array of arrays (standard format)
+        V = [
+            [svd.V[0][0], svd.V[0][1], svd.V[0][2]],
+            [svd.V[1][0], svd.V[1][1], svd.V[1][2]],
+            [svd.V[2][0], svd.V[2][1], svd.V[2][2]]
+        ];
+    }
+    
     V = ensureRightHand(V);
 
     const signCombos = [
@@ -169,15 +217,15 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
         [-1, -1, 1]
     ];
 
-    const Rcur = currentRotation;
-    const RcurT = numeric.transpose(currentRotation);
+    const Rcur = currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const RcurT = numeric.transpose(Rcur);
     const candidates = [];
 
     for (const s of signCombos) {
         const VS = multCols(V, s);
 
         // POST-YAW: R = VS * Qz
-        {
+        try {
             const M = numeric.dot(RcurT, VS);
             const A = [[M[0][0], M[0][1]], [M[1][0], M[1][1]]];
             const { R2 } = polar2x2_withScore(A);
@@ -189,10 +237,12 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
             const Ra = numeric.dot(VS, Qa);
             const angleA = rotationAngleBetweenMatrices(Rcur, Ra);
             candidates.push({ R: Ra, angle: angleA, mode: 'post' });
+        } catch (e) {
+            // Skip this candidate if computation fails
         }
 
         // PRE-YAW: R = Qz * VS
-        {
+        try {
             const B = numeric.dot(VS, RcurT);
             const B2 = [[B[0][0], B[0][1]], [B[1][0], B[1][1]]];
             const { R2 } = polar2x2_withScore(B2);
@@ -204,7 +254,14 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
             const Rb = numeric.dot(Qb, VS);
             const angleB = rotationAngleBetweenMatrices(Rcur, Rb);
             candidates.push({ R: Rb, angle: angleB, mode: 'pre' });
+        } catch (e) {
+            // Skip this candidate if computation fails
         }
+    }
+
+    // If no valid candidates, return current rotation or identity
+    if (candidates.length === 0) {
+        return Rcur;
     }
 
     candidates.sort((a, b) => a.angle - b.angle);

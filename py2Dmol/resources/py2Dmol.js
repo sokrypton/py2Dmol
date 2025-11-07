@@ -1317,7 +1317,6 @@ function initializePy2DmolViewer(containerElement) {
             // Pre-calculate pLDDT colors
             this.plddtColors = this._calculatePlddtColors();
 
-            console.log(`[Debug] Generated ${this.segmentIndices.length} segments.`);
 
             // Trigger first render
             this.render(); 
@@ -1876,67 +1875,61 @@ function initializePy2DmolViewer(containerElement) {
             // ====================================================================
 
             // ====================================================================
-            // HIGHLIGHTING PASS
+            // HIGHLIGHTING PASS - Draw yellow circles at atom positions
             // ====================================================================
             if (this.highlightedResidue) {
-                this.ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
-                this.ctx.lineCap = 'round';
-
-                for (const idx of order) {
-                    const segInfo = segments[idx];
-
-                    // Check if this segment belongs to the highlighted residue
-                    const belongsToHighlight = (
-                        (segInfo.chainId === this.highlightedResidue.chain && this.residue_index[segInfo.idx1] === this.highlightedResidue.residueIndex) ||
-                        (segInfo.chainId === this.highlightedResidue.chain && this.residue_index[segInfo.idx2] === this.highlightedResidue.residueIndex)
-                    );
-
-                    if (!belongsToHighlight) {
+                // Find all atoms that belong to the highlighted residue
+                const highlightedAtoms = new Set();
+                for (let i = 0; i < this.coords.length; i++) {
+                    if (this.chains && this.residue_index && 
+                        i < this.chains.length && i < this.residue_index.length) {
+                        if (this.chains[i] === this.highlightedResidue.chain &&
+                            this.residue_index[i] === this.highlightedResidue.residueIndex) {
+                            highlightedAtoms.add(i);
+                        }
+                    }
+                }
+                
+                // Draw yellow circles at highlighted atom positions
+                this.ctx.fillStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
+                this.ctx.strokeStyle = 'rgba(255, 255, 0, 1.0)'; // Yellow border
+                this.ctx.lineWidth = 1;
+                
+                for (const atomIdx of highlightedAtoms) {
+                    if (visibilityMask && !visibilityMask.has(atomIdx)) {
                         continue;
                     }
-                     if (visibilityMask && (!visibilityMask.has(segInfo.idx1) || !visibilityMask.has(segInfo.idx2))) {
-                        continue;
-                    }
-
-                    const start = rotated[segInfo.idx1];
-                    const end = rotated[segInfo.idx2];
-                    let x1, y1, x2, y2;
-                    let perspectiveScale1 = 1.0;
-                    let perspectiveScale2 = 1.0;
-
+                    
+                    const atom = rotated[atomIdx];
+                    let x, y;
+                    let perspectiveScale = 1.0;
+                    
                     if (this.perspectiveEnabled) {
-                        const z1 = this.focalLength - start.z;
-                        const z2 = this.focalLength - end.z;
-                        if (z1 < 0.01 || z2 < 0.01) continue;
-                        perspectiveScale1 = this.focalLength / z1;
-                        perspectiveScale2 = this.focalLength / z2;
-                        x1 = centerX + (start.x * scale * perspectiveScale1);
-                        y1 = centerY - (start.y * scale * perspectiveScale1);
-                        x2 = centerX + (end.x * scale * perspectiveScale2);
-                        y2 = centerY - (end.y * scale * perspectiveScale2);
+                        const z = this.focalLength - atom.z;
+                        if (z < 0.01) continue;
+                        perspectiveScale = this.focalLength / z;
+                        x = centerX + (atom.x * scale * perspectiveScale);
+                        y = centerY - (atom.y * scale * perspectiveScale);
                     } else {
-                        x1 = centerX + start.x * scale;
-                        y1 = centerY - start.y * scale;
-                        x2 = centerX + end.x * scale;
-                        y2 = centerY - end.y * scale;
+                        x = centerX + atom.x * scale;
+                        y = centerY - atom.y * scale;
                     }
-
-                    const type = segInfo.type;
-                    let widthMultiplier = 1.0;
-                    if (type === 'L') widthMultiplier = 0.4;
-                    else if (type === 'D' || type === 'R') widthMultiplier = 1.6;
-
-                    let highlightLineWidth = (baseLineWidthPixels * widthMultiplier) * 1.5; // Make highlight thicker
+                    
+                    // Calculate circle radius to match original line width
+                    // Original line width was: baseLineWidthPixels * widthMultiplier * 1.5
+                    // For circles, use radius = lineWidth / 2 to match visual thickness
+                    // Use default widthMultiplier of 1.0 (can be adjusted if needed)
+                    const widthMultiplier = 1.0;
+                    let circleRadius = (baseLineWidthPixels * widthMultiplier * 1.5) / 2;
                     if (this.perspectiveEnabled) {
-                        const avgPerspectiveScale = (perspectiveScale1 + perspectiveScale2) / 2;
-                        highlightLineWidth *= avgPerspectiveScale;
+                        circleRadius *= perspectiveScale;
                     }
-                    highlightLineWidth = Math.max(1.0, highlightLineWidth);
-
-                    this.ctx.lineWidth = highlightLineWidth;
+                    circleRadius = Math.max(2, circleRadius); // Minimum radius for visibility
+                    
+                    // Draw circle at atom position
                     this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
+                    this.ctx.arc(x, y, circleRadius, 0, Math.PI * 2);
+                    this.ctx.fill();
                     this.ctx.stroke();
                 }
             }

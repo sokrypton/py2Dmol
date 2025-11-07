@@ -249,7 +249,6 @@ function setupEventListeners() {
 
     // Listen for the custom event dispatched by the renderer when color settings change
     document.addEventListener('py2dmol-color-change', () => {
-        console.log("Color change event received, updating sequence UI.");
         // Update colors in sequence view when color mode changes
         updateSequenceViewColors();
         updateSequenceViewSelectionState();
@@ -1279,7 +1278,9 @@ function buildSequenceView() {
     const rnaMapping = {
         'A':'A', 'U':'U', 'C':'C', 'G':'G',
         'RA':'A', 'RU':'U', 'RC':'C', 'RG':'G',  // Alternative naming
-        'ADE':'A', 'URA':'U', 'CYT':'C', 'GUA':'G'  // Alternative naming
+        'ADE':'A', 'URA':'U', 'CYT':'C', 'GUA':'G',  // Alternative naming
+        'URI':'U', 'UMP':'U', 'URD':'U',  // Uridine variations
+        'RURA':'U', 'RURI':'U'  // More RNA uracil variations
     };
     
     // Detect sequence type based on residue names
@@ -1290,18 +1291,46 @@ function buildSequenceView() {
         let rnaCount = 0;
         let proteinCount = 0;
         
+        // First pass: check for unambiguous indicators (U = RNA, T/DT = DNA)
+        let hasU = false;
+        let hasT = false;
+        
         for (const resName of residues) {
-            const upperResName = resName.toUpperCase();
-            if (dnaMapping[upperResName]) {
-                dnaCount++;
-            } else if (rnaMapping[upperResName]) {
+            const upperResName = (resName || '').toString().trim().toUpperCase();
+            
+            // RNA-specific: U is RNA-only
+            if (upperResName === 'U' || upperResName.startsWith('RU') || upperResName.includes('URI') || upperResName.includes('URA')) {
+                hasU = true;
                 rnaCount++;
-            } else if (threeToOne[upperResName]) {
+            }
+            // DNA-specific: T or DT is DNA-only
+            else if (upperResName === 'T' || upperResName === 'DT' || upperResName.startsWith('DT')) {
+                hasT = true;
+                dnaCount++;
+            }
+            // Check mappings (A, C, G are in both)
+            else if (dnaMapping[upperResName]) {
+                dnaCount++;
+            }
+            else if (rnaMapping[upperResName]) {
+                rnaCount++;
+            }
+            // Check protein
+            else if (threeToOne[upperResName]) {
                 proteinCount++;
             }
         }
         
-        // Determine type based on majority
+        // If we found U (RNA-specific) and no T, it's definitely RNA
+        if (hasU && !hasT) {
+            return 'rna';
+        }
+        // If we found T/DT (DNA-specific) and no U, it's DNA
+        if (hasT && !hasU) {
+            return 'dna';
+        }
+        
+        // Otherwise, determine type based on majority
         if (dnaCount > rnaCount && dnaCount > proteinCount) {
             return 'dna';
         } else if (rnaCount > dnaCount && rnaCount > proteinCount) {
@@ -1328,11 +1357,42 @@ function buildSequenceView() {
         
         // Return appropriate mapping function
         if (chainType === 'dna') {
-            return (resName) => dnaMapping[resName.toUpperCase()] || 'N';
+            return (resName) => {
+                const upper = (resName || '').toString().trim().toUpperCase();
+                return dnaMapping[upper] || 'N';
+            };
         } else if (chainType === 'rna') {
-            return (resName) => rnaMapping[resName.toUpperCase()] || 'N';
+            return (resName) => {
+                const upper = (resName || '').toString().trim().toUpperCase();
+                // Check exact match first
+                if (rnaMapping[upper]) {
+                    return rnaMapping[upper];
+                }
+                // Special case: if it's exactly 'U', return 'U' (should be in mapping, but just in case)
+                if (upper === 'U') {
+                    return 'U';
+                }
+                // Fallback: check if it contains U, URI, or URA for uracil
+                if (upper.includes('U') || upper.includes('URI') || upper.includes('URA')) {
+                    return 'U';
+                }
+                // Fallback: check if it contains A, C, or G (but not D for DNA)
+                if (upper.includes('A') && !upper.includes('D')) {
+                    return 'A';
+                }
+                if (upper.includes('C') && !upper.includes('D')) {
+                    return 'C';
+                }
+                if (upper.includes('G') && !upper.includes('D')) {
+                    return 'G';
+                }
+                return 'N';
+            };
         } else {
-            return (resName) => threeToOne[resName.toUpperCase()] || 'X';
+            return (resName) => {
+                const upper = (resName || '').toString().trim().toUpperCase();
+                return threeToOne[upper] || 'X';
+            };
         }
     };
 
@@ -1418,6 +1478,7 @@ function buildSequenceView() {
         // Create HTML spans for each residue
         for (let i = 0; i < chainResidues.length; i++) {
             const res = chainResidues[i];
+            // Get letter using the mapping function (handles trimming and fallbacks internally)
             const letter = getResidueLetter(res.resName);
             const id = `${res.chain}:${res.resSeq}`;
             
