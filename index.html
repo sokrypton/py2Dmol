@@ -165,8 +165,8 @@
                     <!-- Toolbar (two rows) -->
                     <div id="navigationControls" class="toolbar" style="margin-bottom: 8px;">
                       <div class="toolbar-row">
-                        <button id="orientButton" class="nav-button btn-grey" style="flex: 1;" title="Orient to best view">
-                          Orient
+                        <button id="orientButton" class="nav-button btn-grey" style="width: 32px; padding: 0; min-width: 32px;" title="Orient to best view">
+                          <i class="fa-solid fa-crosshairs" style="font-size: 0.75em;"></i>
                         </button>
 
                         <!-- Rotate: checkbox styled as a button -->
@@ -194,24 +194,35 @@
                           <input type="checkbox" id="outlineEnabledCheckbox" checked>
                           <span>Outline</span>
                         </label>
-
-                        <label class="btn-toggle" title="Colorblind-safe colors">
-                          <input type="checkbox" id="colorblindCheckbox">
-                          <span>Colorblind</span>
-                        </label>
+                        
+                        <button id="recordButton" class="btn-toggle" title="Record animation to video file" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px;">
+                          <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: inherit; background: #e5e7eb; color: #374151;">
+                            <i class="fa-solid fa-video" style="font-size: 0.75em;"></i>
+                          </span>
+                        </button>
+                        
+                        <button id="saveStateButton" class="btn-toggle" title="Save current state to file" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px;">
+                          <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: inherit; background: #e5e7eb; color: #374151;">
+                            <i class="fa-solid fa-floppy-disk" style="font-size: 0.75em;"></i>
+                          </span>
+                        </button>
                       </div>
                     </div>   
 
                     <div id="styleAppearanceContainer" class="control-group">
                         
-                        <div class="toggle-item">
+                        <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
                             <label for="colorSelect" class="font-medium text-gray-700">Color:</label>
-                            <select id="colorSelect">
+                            <select id="colorSelect" style="flex: 1;">
                                 <option value="auto">Auto</option>
                                 <option value="plddt">pLDDT</option>
                                 <option value="rainbow">Rainbow</option>
                                 <option value="chain">Chain</option>
                             </select>
+                            <label class="btn-toggle" title="Colorblind-safe colors" style="margin: 0;">
+                                <input type="checkbox" id="colorblindCheckbox">
+                                <span>Colorblind</span>
+                            </label>
                         </div>
 
                         <div class="toggle-item">
@@ -220,7 +231,7 @@
                         </div>
                         <div class="toggle-item">
                             <label for="orthoSlider" class="font-medium text-gray-700">Ortho:</label>
-                            <input type="range" id="orthoSlider" min="50" max="200" value="150" step="5">
+                            <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01">
                         </div>
                                                 
                     </div>

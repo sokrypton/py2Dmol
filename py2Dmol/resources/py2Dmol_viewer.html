@@ -287,7 +287,7 @@
                 <!-- Ortho -->
                 <div class="toggle-item">
                     <label for="orthoSlider" style="width: 50px;">Ortho:</label>
-                    <input type="range" id="orthoSlider" min="50" max="200" value="150" step="5">
+                    <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01">
                 </div>
                 <!-- Shadow -->
                 <div class="toggle-item">
@@ -307,6 +307,18 @@
                 <div class="toggle-item"> 
                     <input type="checkbox" id="rotationCheckbox">
                     <label for="rotationCheckbox">Rotate</label>
+                </div>
+                <!-- Record Button -->
+                <div class="toggle-item">
+                    <button id="recordButton" class="controlButton" style="width: 100%;" title="Record animation to video file">
+                        <i class="fa-solid fa-video"></i> Record
+                    </button>
+                </div>
+                <!-- Save State Button -->
+                <div class="toggle-item">
+                    <button id="saveStateButton" class="controlButton" style="width: 100%;" title="Save current state to file">
+                        <i class="fa-solid fa-floppy-disk"></i> Save State
+                    </button>
                 </div>
             </div>
 

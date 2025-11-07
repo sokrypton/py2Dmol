@@ -458,6 +458,24 @@
     background: #059669;
 }
 
+/* Record button styled like btn-toggle */
+.py2dmol-viewer-instance #recordButton.btn-toggle {
+    cursor: pointer;
+}
+
+.py2dmol-viewer-instance #recordButton.btn-toggle:hover > span {
+    background: #d1d5db;
+}
+
+.py2dmol-viewer-instance #recordButton.btn-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.py2dmol-viewer-instance #recordButton.btn-toggle:disabled:hover > span {
+    background: #e5e7eb;
+}
+
 /* ============================================================================
    SLIDERS
    ============================================================================ */
