@@ -181,12 +181,6 @@
                         <button id="nextObjectButton" class="nav-button btn-grey" style="width: 40px; padding: 0;" title="Next object">
                           &gt;
                         </button>
-                        
-                        <button id="recordButton" class="btn-toggle" title="Record animation to video file" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px;">
-                          <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: inherit; background: #e5e7eb; color: #374151;">
-                            <i class="fa-solid fa-video" style="font-size: 0.75em;"></i>
-                          </span>
-                        </button>
                       </div>
 
                       <!-- New second row -->
@@ -200,6 +194,12 @@
                           <input type="checkbox" id="outlineEnabledCheckbox" checked>
                           <span>Outline</span>
                         </label>
+                        
+                        <button id="recordButton" class="btn-toggle" title="Record animation to video file" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px;">
+                          <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: inherit; background: #e5e7eb; color: #374151;">
+                            <i class="fa-solid fa-video" style="font-size: 0.75em;"></i>
+                          </span>
+                        </button>
                         
                         <button id="saveStateButton" class="btn-toggle" title="Save current state to file" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px;">
                           <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: inherit; background: #e5e7eb; color: #374151;">
@@ -231,7 +231,7 @@
                         </div>
                         <div class="toggle-item">
                             <label for="orthoSlider" class="font-medium text-gray-700">Ortho:</label>
-                            <input type="range" id="orthoSlider" min="0" max="1" value="0.75" step="0.01">
+                            <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01">
                         </div>
                                                 
                     </div>

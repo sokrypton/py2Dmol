@@ -15,7 +15,7 @@ function initializePy2DmolViewer(containerElement) {
     
     // Helper function to normalize ortho value from old (50-200) or new (0-1) format
     function normalizeOrthoValue(value) {
-        if (typeof value !== 'number') return 0.75; // Default
+        if (typeof value !== 'number') return 0.5; // Default
         if (value >= 50 && value <= 200) {
             // Old format: convert 50-200 to 0-1
             return (value - 50) / 150;
@@ -24,7 +24,7 @@ function initializePy2DmolViewer(containerElement) {
             // New format: already normalized
             return value;
         }
-        return 0.75; // Default if out of range
+        return 0.5; // Default if out of range
     }
 
     // ============================================================================

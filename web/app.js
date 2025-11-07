@@ -82,7 +82,7 @@ function initializeViewerConfig() {
         shadow: true,
         outline: true,
         width: 3.0,
-        ortho: 0.75, // Normalized 0-1 range (0.75 = 75% toward orthographic)
+        ortho: 0.5, // Normalized 0-1 range (0.5 = 50% toward orthographic)
         rotate: false,
         controls: true,
         autoplay: false,
@@ -389,17 +389,29 @@ function applyBestViewRotation() {
                 sum[2] / visibleCoords.length
             ];
             
-            // Calculate extent from visible coordinates
+            // Calculate extent and standard deviation from visible coordinates
             let maxDistSq = 0;
+            let sumDistSq = 0;
             for (const c of visibleCoords) {
                 const dx = c[0] - visibleCenter[0];
                 const dy = c[1] - visibleCenter[1];
                 const dz = c[2] - visibleCenter[2];
                 const distSq = dx * dx + dy * dy + dz * dz;
                 if (distSq > maxDistSq) maxDistSq = distSq;
+                sumDistSq += distSq;
             }
             visibleExtent = Math.sqrt(maxDistSq);
+            // Calculate standard deviation for visible subset
+            const visibleStdDev = visibleCoords.length > 0 ? Math.sqrt(sumDistSq / visibleCoords.length) : 0;
+            
+            // Store visible stdDev and original stdDev for animation
+            rotationAnimation.visibleStdDev = visibleStdDev;
+            rotationAnimation.originalStdDev = object.stdDev || 0;
         }
+    } else {
+        // No visible subset, clear stdDev animation data
+        rotationAnimation.visibleStdDev = null;
+        rotationAnimation.originalStdDev = null;
     }
     
     // If we have visible coordinates, use them for best view
@@ -508,6 +520,16 @@ function animateRotation() {
             renderer.temporaryExtent = null;
         }
         
+        // Set final stdDev to visible subset's stdDev if it was modified during animation
+        if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined) {
+            rotationAnimation.object.stdDev = rotationAnimation.visibleStdDev;
+            // Trigger ortho slider update to recalculate focal length with final stdDev
+            const orthoSlider = document.getElementById('orthoSlider');
+            if (orthoSlider) {
+                orthoSlider.dispatchEvent(new Event('input'));
+            }
+        }
+        
         renderer.render();
         rotationAnimation.active = false;
         // Clear stored values
@@ -518,6 +540,8 @@ function animateRotation() {
         rotationAnimation.startZoom = null;
         rotationAnimation.targetZoom = null;
         rotationAnimation.object = null;
+        rotationAnimation.visibleStdDev = null;
+        rotationAnimation.originalStdDev = null;
         return;
     }
 
@@ -536,6 +560,21 @@ function animateRotation() {
     if (rotationAnimation.targetZoom !== undefined) {
         const t = eased; // Use same eased value for smooth zoom interpolation
         renderer.zoom = rotationAnimation.startZoom + (rotationAnimation.targetZoom - rotationAnimation.startZoom) * t;
+    }
+    
+    // Interpolate stdDev during animation if visible subset exists
+    if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined && 
+        rotationAnimation.originalStdDev !== null && rotationAnimation.originalStdDev !== undefined) {
+        const t = eased;
+        // Interpolate stdDev from original to visible subset's stdDev
+        rotationAnimation.object.stdDev = rotationAnimation.originalStdDev + 
+            (rotationAnimation.visibleStdDev - rotationAnimation.originalStdDev) * t;
+        
+        // Trigger ortho slider update to recalculate focal length with new stdDev
+        const orthoSlider = document.getElementById('orthoSlider');
+        if (orthoSlider) {
+            orthoSlider.dispatchEvent(new Event('input'));
+        }
     }
     
     // Interpolate center and extent during animation - use same easing for consistency
@@ -2245,7 +2284,7 @@ function saveViewerState() {
         
         // Get viewer state
         const orthoSlider = document.getElementById('orthoSlider');
-        const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 0.75;
+        const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 0.5;
         
         const viewerState = {
             current_object_name: renderer.currentObjectName,
@@ -2509,7 +2548,7 @@ async function loadViewerState(stateData) {
                     const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
                     const multiplier = vs.focal_length / maxExtent;
                     
-                    let normalizedValue = 0.75; // default
+                    let normalizedValue = 0.5; // default
                     if (multiplier >= 20.0) {
                         // Orthographic mode
                         normalizedValue = 1.0;
