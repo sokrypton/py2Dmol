@@ -733,3 +733,161 @@ class view:
             html_to_display = self._display_viewer(static_data=self.objects)
             self._display_html(html_to_display)
             self._is_live = True
+
+    def save_state(self, filepath):
+        """
+        Saves the current viewer state (objects, frames, viewer settings, selection) to a JSON file.
+        
+        Args:
+            filepath (str): Path to save the state file.
+        """
+        import os
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
+        
+        # Collect all objects
+        objects = []
+        for obj in self.objects:
+            frames = []
+            for frame in obj.get("frames", []):
+                frame_data = {}
+                
+                # Round coordinates to 2 decimal places
+                if "coords" in frame:
+                    frame_data["coords"] = [[round(c, 2) for c in coord] for coord in frame["coords"]]
+                
+                # Round pLDDT to integers
+                if "plddts" in frame:
+                    frame_data["plddts"] = [round(p) for p in frame["plddts"]]
+                
+                # Copy other fields
+                for key in ["chains", "atom_types", "residues", "residue_index"]:
+                    if key in frame:
+                        frame_data[key] = frame[key]
+                
+                # Round PAE to 1 decimal place
+                if "pae" in frame and frame["pae"] is not None:
+                    frame_data["pae"] = [[round(val, 1) for val in row] for row in frame["pae"]]
+                
+                frames.append(frame_data)
+            
+            objects.append({
+                "name": obj.get("name", "unknown"),
+                "frames": frames,
+                "hasPAE": any(f.get("pae") is not None for f in frames)
+            })
+        
+        # Get viewer state (limited - Python doesn't have access to all JS state)
+        viewer_state = {
+            "current_object_name": self.objects[-1]["name"] if self.objects else None,
+            "current_frame": 0,  # Python doesn't track current frame
+            "rotation_matrix": [[1,0,0],[0,1,0],[0,0,1]],  # Default, JS will override
+            "zoom": 1.0,  # Default, JS will override
+            "color_mode": self.config.get("color", "auto"),
+            "line_width": self.config.get("width", 3.0),
+            "shadow_enabled": self.config.get("shadow", True),
+            "outline_enabled": self.config.get("outline", True),
+            "colorblind_mode": self.config.get("colorblind", False),
+            "pastel_level": self.config.get("pastel", 0.25),
+            "perspective_enabled": False,
+            "ortho_slider_value": self.config.get("ortho", 0.75), # Normalized 0-1 range
+            "animation_speed": 100
+        }
+        
+        # Selection state (Python doesn't track this, but include empty structure)
+        selection_state = {
+            "residues": [],
+            "chains": [],
+            "pae_boxes": [],
+            "selection_mode": "default"
+        }
+        
+        # Create state object
+        state_data = {
+            "py2dmol_version": "1.0",
+            "objects": objects,
+            "viewer_state": viewer_state,
+            "selection_state": selection_state
+        }
+        
+        # Write to file
+        with open(filepath, 'w') as f:
+            json.dump(state_data, f, indent=2)
+        
+        print(f"State saved to {filepath}")
+
+    def load_state(self, filepath):
+        """
+        Loads a saved viewer state from a JSON file.
+        
+        Args:
+            filepath (str): Path to the state file to load.
+        """
+        with open(filepath, 'r') as f:
+            state_data = json.load(f)
+        
+        # Validate version
+        if state_data.get("py2dmol_version") != "1.0":
+            print(f"Warning: State file version {state_data.get('py2dmol_version')} may not be fully compatible.")
+        
+        # Clear existing objects
+        self.objects = []
+        self._current_object_data = None
+        
+        # Restore objects
+        if "objects" in state_data and isinstance(state_data["objects"], list):
+            for obj_data in state_data["objects"]:
+                if not obj_data.get("name") or not obj_data.get("frames"):
+                    print(f"Warning: Skipping invalid object in state file: {obj_data}")
+                    continue
+                
+                self.new_obj(obj_data["name"])
+                
+                for frame_data in obj_data["frames"]:
+                    # Convert frame data to numpy arrays
+                    coords = np.array(frame_data.get("coords", []))
+                    plddts = np.array(frame_data.get("plddts", []))
+                    chains = frame_data.get("chains")
+                    atom_types = frame_data.get("atom_types")
+                    residues = frame_data.get("residues")
+                    residue_index = frame_data.get("residue_index")
+                    pae = np.array(frame_data.get("pae")) if frame_data.get("pae") else None
+                    
+                    if len(coords) > 0:
+                        self.add(
+                            coords,
+                            plddts if len(plddts) > 0 else None,
+                            chains,
+                            atom_types,
+                            pae=pae,
+                            new_obj=False,
+                            name=None,
+                            align=False,  # Don't re-align loaded data
+                            residues=residues,
+                            residue_index=residue_index
+                        )
+        
+        # Restore viewer config from state (if available)
+        if "viewer_state" in state_data:
+            vs = state_data["viewer_state"]
+            if vs.get("color_mode"):
+                self.config["color"] = vs["color_mode"]
+            if vs.get("line_width"):
+                self.config["width"] = vs["line_width"]
+            if "shadow_enabled" in vs:
+                self.config["shadow"] = vs["shadow_enabled"]
+            if "outline_enabled" in vs:
+                self.config["outline"] = vs["outline_enabled"]
+            if "colorblind_mode" in vs:
+                self.config["colorblind"] = vs["colorblind_mode"]
+            if vs.get("pastel_level"):
+                self.config["pastel"] = vs["pastel_level"]
+            if vs.get("focal_length"):
+                self.config["ortho"] = vs["focal_length"]
+        
+        # Call show() to display
+        if self.objects:
+            self.show()
+        else:
+            print("Warning: No objects loaded from state file.")

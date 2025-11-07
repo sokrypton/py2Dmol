@@ -82,7 +82,7 @@ function initializeViewerConfig() {
         shadow: true,
         outline: true,
         width: 3.0,
-        ortho: 150.0,
+        ortho: 0.75, // Normalized 0-1 range (0.75 = 75% toward orthographic)
         rotate: false,
         controls: true,
         autoplay: false,
@@ -154,6 +154,12 @@ function setupEventListeners() {
             fetchIdInput.value = '1YNE';
             handleFetch();
         });
+    }
+    
+    // Save state button
+    const saveStateButton = document.getElementById('saveStateButton');
+    if (saveStateButton) {
+        saveStateButton.addEventListener('click', saveViewerState);
     }
     
     // Navigation buttons
@@ -1862,26 +1868,38 @@ async function processFiles(files, loadAsFrames, groupName = null) {
 
     const structureFiles = [];
     const jsonFiles = [];
+    const stateFiles = [];
 
+    // First pass: identify state files
     for (const file of files) {
         const nameLower = file.name.toLowerCase();
         if (file.name.startsWith('__MACOSX/') || file.name.startsWith('._')) continue;
-        if (nameLower.match(/\.(cif|pdb|ent)$/)) structureFiles.push(file);
-        else if (nameLower.endsWith('.json')) jsonFiles.push(file);
+        
+        // Check for state file extension
+        if (nameLower.endsWith('.py2dmol.json')) {
+            stateFiles.push(file);
+        } else if (nameLower.endsWith('.json')) {
+            jsonFiles.push(file);
+        } else if (nameLower.match(/\.(cif|pdb|ent)$/)) {
+            structureFiles.push(file);
+        }
     }
 
-    if (structureFiles.length === 0) {
-        throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
-    }
-
-    // Load JSON files
+    // Load JSON files and check for state file signature
     const jsonContentsMap = new Map();
     const jsonLoadPromises = jsonFiles.map(jsonFile => new Promise(async (resolve) => {
         try {
             const jsonText = await jsonFile.readAsync("text");
             const jsonObject = JSON.parse(jsonText);
-            const jsonBaseName = jsonFile.name.replace(/\.json$/i, '');
-            jsonContentsMap.set(jsonBaseName, jsonObject);
+            
+            // Check if this is a state file
+            if (jsonObject.py2dmol_version) {
+                stateFiles.push(jsonFile);
+            } else {
+                // Regular PAE JSON file
+                const jsonBaseName = jsonFile.name.replace(/\.json$/i, '');
+                jsonContentsMap.set(jsonBaseName, jsonObject);
+            }
         } catch (e) {
             console.warn(`Failed to parse JSON file ${jsonFile.name}:`, e);
         }
@@ -1889,6 +1907,30 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     }));
 
     await Promise.all(jsonLoadPromises);
+
+    // If we found state files, load them and return early
+    if (stateFiles.length > 0) {
+        // Load the first state file (if multiple, use the first one)
+        try {
+            const stateFile = stateFiles[0];
+            const jsonText = await stateFile.readAsync("text");
+            const stateData = JSON.parse(jsonText);
+            
+            if (stateData.py2dmol_version) {
+                await loadViewerState(stateData);
+                return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
+            }
+        } catch (e) {
+            console.error("Failed to load state file:", e);
+            setStatus(`Error loading state file: ${e.message}`, true);
+            return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
+        }
+    }
+
+    // Continue with normal file processing if no state files
+    if (structureFiles.length === 0) {
+        throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
+    }
 
     // Match JSON to structures
     function getBestJsonMatch(structBaseName, jsonMap) {
@@ -2008,6 +2050,22 @@ async function handleZipUpload(file, loadAsFrames) {
             });
         });
 
+        // Check if this is a state file zip (contains a .json file with py2dmol_version)
+        const jsonFiles = fileList.filter(f => f.name.toLowerCase().endsWith('.json'));
+        if (jsonFiles.length > 0) {
+            // Try to load as state file first
+            try {
+                const jsonText = await jsonFiles[0].readAsync("text");
+                const stateData = JSON.parse(jsonText);
+                if (stateData.py2dmol_version) {
+                    await loadViewerState(stateData);
+                    return;
+                }
+            } catch (e) {
+                // Not a state file, continue with normal processing
+            }
+        }
+
         const stats = await processFiles(fileList, loadAsFrames, cleanObjectName(file.name));
 
         const objectsLoaded = stats.isTrajectory ? 1 : stats.objectsLoaded;
@@ -2056,10 +2114,19 @@ function handleFileUpload(event) {
         return;
     }
 
-    (async () => {
-        if (looseFiles.length > 0) {
+    if (looseFiles.length > 0) {
+        (async () => {
             try {
                 const stats = await processFiles(looseFiles, loadAsFrames);
+                
+                // If processFiles returned early due to state file, stats will indicate it
+                if (stats.objectsLoaded === 0 && stats.framesAdded === 0 && 
+                    looseFiles.some(f => f.name.toLowerCase().endsWith('.py2dmol.json') || 
+                                       f.name.toLowerCase().endsWith('.json'))) {
+                    // State file was loaded, status already set by loadViewerState
+                    return;
+                }
+                
                 const objectsLoaded = stats.isTrajectory ? 1 : stats.objectsLoaded;
                 const sourceName = looseFiles.length > 1 ?
                     `${looseFiles.length} files` : looseFiles[0].name;
@@ -2074,8 +2141,8 @@ function handleFileUpload(event) {
                 console.error("Loose file processing failed:", e);
                 setStatus(`Error processing loose files: ${e.message}`, true);
             }
-        }
-    })();
+        })();
+    }
 }
 
 // ============================================================================
@@ -2120,3 +2187,419 @@ function preventDefaults(e) {
     e.preventDefault();
     e.stopPropagation();
 }
+
+// ============================================================================
+// SAVE/LOAD STATE
+// ============================================================================
+
+function saveViewerState() {
+    if (!viewerApi || !viewerApi.renderer) {
+        setStatus("Error: No viewer data to save.", true);
+        return;
+    }
+    
+    const renderer = viewerApi.renderer;
+    
+    try {
+        // Collect all objects
+        const objects = [];
+        for (const [objectName, objectData] of Object.entries(renderer.objectsData)) {
+            const frames = [];
+            for (const frame of objectData.frames) {
+                const frameData = {};
+                
+                // Round coordinates to 2 decimal places
+                if (frame.coords) {
+                    frameData.coords = frame.coords.map(coord => 
+                        coord.map(c => Math.round(c * 100) / 100)
+                    );
+                }
+                
+                // Round pLDDT to integers
+                if (frame.plddts) {
+                    frameData.plddts = frame.plddts.map(p => Math.round(p));
+                }
+                
+                // Copy other fields as-is (omit null/undefined)
+                if (frame.chains) frameData.chains = frame.chains;
+                if (frame.atom_types) frameData.atom_types = frame.atom_types;
+                if (frame.residues) frameData.residues = frame.residues;
+                if (frame.residue_index) frameData.residue_index = frame.residue_index;
+                
+                // Round PAE to 1 decimal place
+                if (frame.pae) {
+                    frameData.pae = frame.pae.map(row => 
+                        row.map(val => Math.round(val * 10) / 10)
+                    );
+                }
+                
+                frames.push(frameData);
+            }
+            
+            objects.push({
+                name: objectName,
+                frames: frames,
+                hasPAE: objectData.hasPAE || false
+            });
+        }
+        
+        // Get viewer state
+        const orthoSlider = document.getElementById('orthoSlider');
+        const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 0.75;
+        
+        const viewerState = {
+            current_object_name: renderer.currentObjectName,
+            current_frame: renderer.currentFrame,
+            rotation_matrix: renderer.rotationMatrix,
+            zoom: renderer.zoom,
+            color_mode: renderer.colorMode || 'auto',
+            line_width: renderer.lineWidth || 3.0,
+            shadow_enabled: renderer.shadowEnabled !== false,
+            outline_enabled: renderer.outlineEnabled !== false,
+            colorblind_mode: renderer.colorblindMode || false,
+            pastel_level: renderer.pastelLevel || 0.25,
+            perspective_enabled: renderer.perspectiveEnabled || false,
+            ortho_slider_value: orthoSliderValue, // Save the normalized slider value (0.0-1.0)
+            animation_speed: renderer.animationSpeed || 100
+        };
+        
+        // Get selection state
+        const selection = renderer.getSelection();
+        const selectionState = {
+            residues: Array.from(selection.residues),
+            chains: Array.from(selection.chains),
+            pae_boxes: selection.paeBoxes.map(box => ({...box})),
+            selection_mode: selection.selectionMode
+        };
+        
+        // Create state object
+        const stateData = {
+            py2dmol_version: "1.0",
+            objects: objects,
+            viewer_state: viewerState,
+            selection_state: selectionState
+        };
+        
+        // Create filename with timestamp
+        const now = new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        const jsonFilename = `py2dmol_state_${timestamp}.json`;
+        const zipFilename = `py2dmol_state_${timestamp}.zip`;
+        
+        // Create JSON string
+        const jsonString = JSON.stringify(stateData, null, 2);
+        
+        // Check if JSZip is available
+        if (typeof JSZip !== 'undefined') {
+            // Create zip file
+            const zip = new JSZip();
+            zip.file(jsonFilename, jsonString);
+            
+            // Generate zip blob
+            zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } })
+                .then((blob) => {
+                    // Download zip file
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = zipFilename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    
+                    setStatus(`State saved to ${zipFilename}`);
+                })
+                .catch((error) => {
+                    console.error("Failed to create zip file:", error);
+                    // Fallback to JSON download
+                    const blob = new Blob([jsonString], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = jsonFilename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    setStatus(`State saved to ${jsonFilename} (zip failed, saved as JSON)`);
+                });
+        } else {
+            // Fallback to JSON download if JSZip not available
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = jsonFilename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            setStatus(`State saved to ${jsonFilename}`);
+        }
+    } catch (e) {
+        console.error("Failed to save state:", e);
+        setStatus(`Error saving state: ${e.message}`, true);
+    }
+}
+
+async function loadViewerState(stateData) {
+    if (!viewerApi || !viewerApi.renderer) {
+        setStatus("Error: Viewer not initialized.", true);
+        return;
+    }
+    
+    const renderer = viewerApi.renderer;
+    
+    try {
+        // Validate version
+        if (stateData.py2dmol_version && stateData.py2dmol_version !== "1.0") {
+            console.warn(`State file version ${stateData.py2dmol_version} may not be fully compatible.`);
+        }
+        
+        // Clear existing objects
+        renderer.clearAllObjects();
+        objectsWithPAE.clear();
+        
+        // Ensure viewer container is visible
+        const viewerContainer = document.getElementById('viewer-container');
+        const topPanelContainer = document.getElementById('top-panel-container');
+        if (viewerContainer) viewerContainer.style.display = 'flex';
+        if (topPanelContainer) topPanelContainer.style.display = 'block';
+        
+        // Restore objects
+        if (stateData.objects && Array.isArray(stateData.objects) && stateData.objects.length > 0) {
+            for (const objData of stateData.objects) {
+                if (!objData.name || !objData.frames || !Array.isArray(objData.frames) || objData.frames.length === 0) {
+                    console.warn("Skipping invalid object in state file:", objData);
+                    continue;
+                }
+                
+                renderer.addObject(objData.name);
+                
+                // Temporarily disable auto frame setting during batch load
+                const wasPlaying = renderer.isPlaying;
+                renderer.isPlaying = true; // Prevent setFrame from being called during addFrame
+                
+                for (const frameData of objData.frames) {
+                    renderer.addFrame(frameData, objData.name);
+                }
+                
+                // Restore playing state
+                renderer.isPlaying = wasPlaying;
+                
+                if (objData.hasPAE) {
+                    objectsWithPAE.add(objData.name);
+                }
+            }
+        } else {
+            setStatus("Error: No valid objects found in state file.", true);
+            return;
+        }
+        
+        // Restore viewer state
+        if (stateData.viewer_state) {
+            const vs = stateData.viewer_state;
+            
+            // Set current object first (before setting frame)
+            if (vs.current_object_name && renderer.objectsData[vs.current_object_name]) {
+                renderer.currentObjectName = vs.current_object_name;
+                if (renderer.objectSelect) {
+                    renderer.objectSelect.value = vs.current_object_name;
+                }
+            } else if (stateData.objects && stateData.objects.length > 0) {
+                // Fallback to first object if saved object doesn't exist
+                const firstObjName = stateData.objects[0].name;
+                renderer.currentObjectName = firstObjName;
+                if (renderer.objectSelect) {
+                    renderer.objectSelect.value = firstObjName;
+                }
+            }
+            
+            // Restore rotation
+            if (vs.rotation_matrix && Array.isArray(vs.rotation_matrix)) {
+                renderer.rotationMatrix = vs.rotation_matrix;
+            }
+            
+            // Restore zoom
+            if (typeof vs.zoom === 'number') {
+                renderer.zoom = vs.zoom;
+            }
+            
+            // Restore color mode
+            if (vs.color_mode) {
+                renderer.colorMode = vs.color_mode;
+                const colorSelect = document.getElementById('colorSelect');
+                if (colorSelect) {
+                    colorSelect.value = vs.color_mode;
+                    colorSelect.dispatchEvent(new Event('change'));
+                }
+            }
+            
+            // Restore line width
+            if (typeof vs.line_width === 'number') {
+                renderer.lineWidth = vs.line_width;
+                const lineWidthSlider = document.getElementById('lineWidthSlider');
+                if (lineWidthSlider) {
+                    lineWidthSlider.value = vs.line_width;
+                    lineWidthSlider.dispatchEvent(new Event('input'));
+                }
+            }
+            
+            // Restore shadow
+            if (typeof vs.shadow_enabled === 'boolean') {
+                renderer.shadowEnabled = vs.shadow_enabled;
+                const shadowCheckbox = document.getElementById('shadowEnabledCheckbox');
+                if (shadowCheckbox) {
+                    shadowCheckbox.checked = vs.shadow_enabled;
+                    shadowCheckbox.dispatchEvent(new Event('change'));
+                }
+            }
+            
+            // Restore outline
+            if (typeof vs.outline_enabled === 'boolean') {
+                renderer.outlineEnabled = vs.outline_enabled;
+                const outlineCheckbox = document.getElementById('outlineEnabledCheckbox');
+                if (outlineCheckbox) {
+                    outlineCheckbox.checked = vs.outline_enabled;
+                    outlineCheckbox.dispatchEvent(new Event('change'));
+                }
+            }
+            
+            // Restore colorblind mode
+            if (typeof vs.colorblind_mode === 'boolean') {
+                renderer.colorblindMode = vs.colorblind_mode;
+                const colorblindCheckbox = document.getElementById('colorblindCheckbox');
+                if (colorblindCheckbox) {
+                    colorblindCheckbox.checked = vs.colorblind_mode;
+                    colorblindCheckbox.dispatchEvent(new Event('change'));
+                }
+            }
+            
+            // Restore pastel level
+            if (typeof vs.pastel_level === 'number') {
+                renderer.pastelLevel = vs.pastel_level;
+            }
+            
+            // Restore ortho slider value (this will set perspective_enabled and focal_length correctly)
+            if (typeof vs.ortho_slider_value === 'number') {
+                const orthoSlider = document.getElementById('orthoSlider');
+                if (orthoSlider) {
+                    let normalizedValue = vs.ortho_slider_value;
+                    
+                    // Handle old state files that saved 50-200 range
+                    if (normalizedValue > 1.0) {
+                        // Old format: convert 50-200 to 0-1
+                        normalizedValue = (normalizedValue - 50) / 150;
+                    }
+                    
+                    // Clamp value to valid range (0.0-1.0)
+                    normalizedValue = Math.max(0.0, Math.min(1.0, normalizedValue));
+                    orthoSlider.value = normalizedValue;
+                    // Trigger input event to update perspective_enabled and focal_length
+                    orthoSlider.dispatchEvent(new Event('input'));
+                }
+            } else if (typeof vs.focal_length === 'number') {
+                // Fallback for very old state files that saved focal_length
+                const orthoSlider = document.getElementById('orthoSlider');
+                if (orthoSlider) {
+                    // Try to reverse-calculate slider value from focal_length
+                    // This is approximate, but better than nothing
+                    const object = renderer.currentObjectName ? renderer.objectsData[renderer.currentObjectName] : null;
+                    const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
+                    const multiplier = vs.focal_length / maxExtent;
+                    
+                    let normalizedValue = 0.75; // default
+                    if (multiplier >= 20.0) {
+                        // Orthographic mode
+                        normalizedValue = 1.0;
+                    } else if (multiplier >= 1.5) {
+                        // Perspective mode - reverse the calculation
+                        normalizedValue = (multiplier - 1.5) / (20.0 - 1.5);
+                    }
+                    
+                    normalizedValue = Math.max(0.0, Math.min(1.0, normalizedValue));
+                    orthoSlider.value = normalizedValue;
+                    orthoSlider.dispatchEvent(new Event('input'));
+                }
+            }
+            
+            // Restore animation speed
+            if (typeof vs.animation_speed === 'number') {
+                renderer.animationSpeed = vs.animation_speed;
+            }
+        }
+        
+        // Set frame (this triggers render and PAE update)
+        // Use setTimeout to ensure objects are fully loaded and DOM is ready
+        setTimeout(() => {
+            try {
+                // Ensure we have a valid current object
+                if (!renderer.currentObjectName && stateData.objects && stateData.objects.length > 0) {
+                    const firstObjName = stateData.objects[0].name;
+                    renderer.currentObjectName = firstObjName;
+                    if (renderer.objectSelect) {
+                        renderer.objectSelect.value = firstObjName;
+                    }
+                }
+                
+                // Verify object exists before setting frame
+                if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
+                    const obj = renderer.objectsData[renderer.currentObjectName];
+                    if (obj.frames && obj.frames.length > 0) {
+                        if (stateData.viewer_state) {
+                            const vs = stateData.viewer_state;
+                            const targetFrame = (typeof vs.current_frame === 'number' && vs.current_frame >= 0 && vs.current_frame < obj.frames.length) 
+                                ? vs.current_frame 
+                                : 0;
+                            renderer.setFrame(targetFrame);
+                        } else {
+                            renderer.setFrame(0);
+                        }
+                        
+                        // Restore selection state after frame is set
+                        if (stateData.selection_state) {
+                            const ss = stateData.selection_state;
+                            const selectionPatch = {
+                                residues: new Set(ss.residues || []),
+                                chains: new Set(ss.chains || []),
+                                paeBoxes: ss.pae_boxes || [],
+                                selectionMode: ss.selection_mode || 'default'
+                            };
+                            renderer.setSelection(selectionPatch);
+                        }
+                        
+                        // Rebuild sequence view and update UI
+                        buildSequenceView();
+                        updateChainSelectionUI();
+                        updateObjectNavigationButtons();
+                        
+                        // Trigger object change handler to ensure UI is fully updated
+                        if (renderer.objectSelect) {
+                            handleObjectChange();
+                        }
+                        
+                        // Force a render to ensure everything is displayed
+                        renderer.render();
+                        
+                        setStatus("State loaded successfully.");
+                    } else {
+                        setStatus("Error: Object has no frames.", true);
+                    }
+                } else {
+                    setStatus("Error: Could not set current object.", true);
+                    console.error("Current object:", renderer.currentObjectName, "Available objects:", Object.keys(renderer.objectsData));
+                }
+            } catch (e) {
+                console.error("Error in setTimeout during state load:", e);
+                setStatus(`Error loading state: ${e.message}`, true);
+            }
+        }, 100);
+    } catch (e) {
+        console.error("Failed to load state:", e);
+        setStatus(`Error loading state: ${e.message}`, true);
+    }
+}
+
+// Expose saveViewerState globally for Python interface compatibility
+window.saveViewerState = saveViewerState;

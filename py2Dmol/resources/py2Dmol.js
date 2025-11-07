@@ -12,6 +12,20 @@ if (!window.py2dmol_viewers) {
  * @param {HTMLElement} containerElement The root <div> element for this viewer.
  */
 function initializePy2DmolViewer(containerElement) {
+    
+    // Helper function to normalize ortho value from old (50-200) or new (0-1) format
+    function normalizeOrthoValue(value) {
+        if (typeof value !== 'number') return 0.75; // Default
+        if (value >= 50 && value <= 200) {
+            // Old format: convert 50-200 to 0-1
+            return (value - 50) / 150;
+        }
+        if (value >= 0 && value <= 1) {
+            // New format: already normalized
+            return value;
+        }
+        return 0.75; // Default if out of range
+    }
 
     // ============================================================================
     // VECTOR MATH
@@ -166,21 +180,13 @@ function initializePy2DmolViewer(containerElement) {
             this.zoom = 1.0;
             this.lineWidth = (typeof config.width === 'number') ? config.width : 3.0;
             this.shadowIntensity = 0.95;
+            // Perspective/orthographic projection state
             this.perspectiveEnabled = false; // false = orthographic, true = perspective
+            this.focalLength = 200.0; // Will be set by ortho slider based on object size
+            
             // Temporary center and extent for orienting to visible atoms
             this.temporaryCenter = null;
             this.temporaryExtent = null;
-            
-            // Set default focalLength, but it will be overridden by the
-            // slider logic if perspective is enabled.
-            this.focalLength = (typeof config.ortho === 'number') ? config.ortho : 200.0;
-            // Check config if ortho slider should start in perspective mode
-            if (typeof config.ortho === 'number' && config.ortho < 195) {
-                this.perspectiveEnabled = true;
-                // Note: We can't set the *correct* focalLength here,
-                // because we don't know maxExtent yet. The slider's
-                // first input event will fix this.
-            }
             
             // Set defaults from config, with fallback
             this.shadowEnabled = (typeof config.shadow === 'boolean') ? config.shadow : true;
@@ -722,41 +728,38 @@ function initializePy2DmolViewer(containerElement) {
                 }
             });
 
-            // *** UPDATED ORTHO SLIDER LOGIC ***
+            // Ortho slider: controls perspective/orthographic projection
+            // Value range: 0.0 (strongest perspective) to 1.0 (full orthographic)
             if (this.orthoSlider) {
+                // Constants for perspective focal length calculation
+                const PERSPECTIVE_MIN_MULT = 1.5;  // Closest camera (strongest perspective)
+                const PERSPECTIVE_MAX_MULT = 20.0; // Farthest camera (weakest perspective)
+                const STD_DEV_MULT = 2.0;           // Use stdDev * 2.0 as base size measure
+                const DEFAULT_SIZE = 30.0;         // Fallback if no object loaded
+                
                 this.orthoSlider.addEventListener('input', (e) => {
-                    const sliderVal = parseFloat(e.target.value); // This is 50 to 200
-
-                    // 1. Get the current object's maxExtent (your "object size")
+                    const normalizedValue = parseFloat(e.target.value);
+                    
+                    // Get object size using standard deviation from center
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
+                    let baseSize = DEFAULT_SIZE;
+                    if (object && object.stdDev > 0) {
+                        // Use standard deviation * 3.0 as the base size measure
+                        baseSize = object.stdDev * STD_DEV_MULT;
+                    } else if (object && object.maxExtent > 0) {
+                        // Fallback to maxExtent if stdDev not available
+                        baseSize = object.maxExtent;
+                    }
 
-                    // 2. Check if we are in "ortho" mode (the toggle part is good)
-                    if (sliderVal >= 195) {
+                    if (normalizedValue >= 1.0) {
+                        // Orthographic mode: no perspective
                         this.perspectiveEnabled = false;
-                        // We can also reset focalLength to a default, though it's not used
-                        this.focalLength = maxExtent * 20.0; // Set to a "far away" value
+                        this.focalLength = baseSize * PERSPECTIVE_MAX_MULT; // Not used, but set for consistency
                     } else {
+                        // Perspective mode: interpolate focal length based on slider value
                         this.perspectiveEnabled = true;
-
-                        // 3. Re-map the slider (50-195) to a sensible multiplier.
-                        //    We want 50 (strongest perspective) to be "close"
-                        //    and 195 (weakest) to be "far away".
-                        
-                        // Normalize the perspective part of the slider (50-195) to a 0.0-1.0 range
-                        const normalizedFactor = (sliderVal - 50) / (195 - 50); // 0.0 (strong) to 1.0 (weak)
-
-                        // 4. Interpolate between a "close" and "far" multiplier for maxExtent.
-                        //    minMult *must* be > 1.0 to prevent clipping.
-                        //    The clipping happens if focalLength < start.z.
-                        //    The max start.z is maxExtent. So focalLength *must* be > maxExtent.
-                        const minMult = 1.5; // Closest camera: focalLength = 1.5 * maxExtent
-                        const maxMult = 20.0; // Farthest camera: focalLength = 20.0 * maxExtent
-                        
-                        const multiplier = minMult + (maxMult - minMult) * normalizedFactor;
-
-                        // 5. Set focalLength relative to object size
-                        this.focalLength = maxExtent * multiplier;
+                        const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
+                        this.focalLength = baseSize * multiplier;
                     }
                     
                     if (!this.isPlaying) {
@@ -764,7 +767,6 @@ function initializePy2DmolViewer(containerElement) {
                     }
                 });
             }
-            // *** END UPDATED LOGIC ***
 
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.addEventListener('change', (e) => {
@@ -841,7 +843,7 @@ function initializePy2DmolViewer(containerElement) {
         // Add a new object
         addObject(name) {
             this.stopAnimation();
-            this.objectsData[name] = { maxExtent: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
+            this.objectsData[name] = { maxExtent: 0, stdDev: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
             this.currentObjectName = name;
             this.currentFrame = -1;
 
@@ -901,8 +903,10 @@ function initializePy2DmolViewer(containerElement) {
             
             const globalCenter = (object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0);
 
-            // Recalculate maxExtent for all frames using the new global center
+            // Recalculate maxExtent and standard deviation for all frames using the new global center
             let maxDistSq = 0;
+            let sumDistSq = 0;
+            let atomCount = 0;
             for (const frame of object.frames) {
                 if (frame && frame.coords) {
                     for (let i = 0; i < frame.coords.length; i++) {
@@ -911,10 +915,14 @@ function initializePy2DmolViewer(containerElement) {
                         const centeredCoord = coordVec.sub(globalCenter);
                         const distSq = centeredCoord.dot(centeredCoord);
                         if (distSq > maxDistSq) maxDistSq = distSq;
+                        sumDistSq += distSq;
+                        atomCount++;
                     }
                 }
             }
             object.maxExtent = Math.sqrt(maxDistSq);
+            // Calculate standard deviation: sqrt(mean of squared distances)
+            object.stdDev = atomCount > 0 ? Math.sqrt(sumDistSq / atomCount) : 0;
 
             if (!this.isPlaying) {
                 this.setFrame(object.frames.length - 1);
@@ -922,11 +930,9 @@ function initializePy2DmolViewer(containerElement) {
             this.updateUIControls();
             
             // If this is the first frame being loaded, we need to
-            // potentially update the focalLength if we're in perspective mode.
+            // Recalculate focal length if perspective is enabled and object size changed
             if (object.frames.length === 1 && this.perspectiveEnabled && this.orthoSlider) {
-                 // Trigger a "change" on the orthoSlider to recalculate
-                 // focalLength with the new maxExtent.
-                 this.orthoSlider.dispatchEvent(new Event('input'));
+                this.orthoSlider.dispatchEvent(new Event('input'));
             }
 
             // Handle autoplay
@@ -1275,8 +1281,10 @@ function initializePy2DmolViewer(containerElement) {
             a.click();
             document.body.removeChild(a);
             
-            // Clean up all recording state
+            // Clean up
             URL.revokeObjectURL(url);
+            
+            // Clean up all recording state
             this.recordedChunks = [];
             this.isRecording = false;
             this.mediaRecorder = null;
@@ -2867,12 +2875,23 @@ function initializePy2DmolViewer(containerElement) {
         colorblindCheckbox, orthoSlider
     );
     
+    // Setup save state button (for Python interface only - web interface handles it in app.js)
+    // Only add listener if we're in Python interface (no window.saveViewerState exists yet)
+    const saveStateButton = containerElement.querySelector('#saveStateButton');
+    if (saveStateButton && typeof window.saveViewerState !== 'function') {
+        saveStateButton.addEventListener('click', () => {
+            // For Python interface, we'll need to expose this through the API
+            // For now, just log a message
+            console.log("Save state functionality is available in the web interface. For Python interface, use view.save_state(filepath) method.");
+            alert("Save state: Use the Python method view.save_state(filepath) to save the current state.");
+        });
+    }
+    
     // Set ortho slider from config
-    if (config.ortho && orthoSlider) {
-        orthoSlider.value = config.ortho;
-        // Trigger the input event to set the initial
-        // focalLength correctly based on maxExtent (if available).
-        // We do this *after* loading data.
+    if (config.ortho !== undefined && orthoSlider) {
+        orthoSlider.value = normalizeOrthoValue(config.ortho);
+        // Note: The slider's input event will be triggered after data loads
+        // to set the correct focalLength based on maxExtent
     }
 
 
