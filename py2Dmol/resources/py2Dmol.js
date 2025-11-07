@@ -355,12 +355,12 @@ function initializePy2DmolViewer(containerElement) {
             // Select all chains
             const allChains = new Set(this.chains);
             
-            // Keep PAE boxes (don't clear them)
+            // Clear PAE boxes when resetting to default (select all)
             this.setSelection({
                 residues: allResidues,
                 chains: allChains,
+                paeBoxes: [],
                 selectionMode: 'default'
-                // paeBoxes: undefined (keep current)
             });
         }
 
@@ -1031,12 +1031,11 @@ function initializePy2DmolViewer(containerElement) {
             
             // Handle object selection dropdown visibility
             if (this.objectSelect) {
-                const totalObjects = this.objectSelect.options.length;
                 // Find the objectContainer relative to the main container
                 const objectContainer = containerElement.querySelector('#objectContainer');
                 if (objectContainer) {
-                    // Show if more than 1 object AND controls are not hidden
-                    objectContainer.style.display = (totalObjects > 1 && config.controls) ? 'flex' : 'none';
+                    // Always show if controls are enabled (regardless of number of objects)
+                    objectContainer.style.display = config.controls ? 'flex' : 'none';
                 }
             }
 
@@ -2405,8 +2404,15 @@ function initializePy2DmolViewer(containerElement) {
                 const isClick = (i_start === i_end && j_start === j_end);
 
                 if (isClick) {
-                    // Single click: Clear selection
-                    this.mainRenderer.setSelection({ paeBoxes: [] });
+                    // Single click: Clear both PAE and sequence selection
+                    this.mainRenderer.setSelection({ 
+                        paeBoxes: [],
+                        residues: new Set(),
+                        chains: new Set(),
+                        selectionMode: 'default'
+                    });
+                    // Invalidate PAE cache
+                    this.cachedSequencePositions = null;
                     this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
                 } else {
                     // Create new box - replaces any existing selection
@@ -2416,8 +2422,39 @@ function initializePy2DmolViewer(containerElement) {
                         j_start: j_start,
                         j_end: j_end
                     };
-                    // Replace selection (single box only, no shift-select)
-                    this.mainRenderer.setResidueVisibility(newBox);
+                    
+                    // Convert PAE box to residue IDs and set sequence selection
+                    const newResidues = new Set();
+                    const renderer = this.mainRenderer;
+                    
+                    // Get residue positions from PAE box (i and j ranges)
+                    for (let r = i_start; r <= i_end; r++) {
+                        const atomIdx = renderer.polymerAtomIndices[r];
+                        if (atomIdx >= 0 && atomIdx < renderer.chains.length) {
+                            const chain = renderer.chains[atomIdx];
+                            const residueIndex = renderer.residue_index[atomIdx];
+                            newResidues.add(`${chain}:${residueIndex}`);
+                        }
+                    }
+                    for (let r = j_start; r <= j_end; r++) {
+                        const atomIdx = renderer.polymerAtomIndices[r];
+                        if (atomIdx >= 0 && atomIdx < renderer.chains.length) {
+                            const chain = renderer.chains[atomIdx];
+                            const residueIndex = renderer.residue_index[atomIdx];
+                            newResidues.add(`${chain}:${residueIndex}`);
+                        }
+                    }
+                    
+                    // Set both PAE box (for visual reference) and sequence selection (for visibility and PAE colors)
+                    this.mainRenderer.setSelection({
+                        paeBoxes: [newBox],
+                        residues: newResidues,
+                        chains: new Set(), // Clear chain selection when PAE sets residues
+                        selectionMode: 'explicit'
+                    });
+                    
+                    // Invalidate PAE cache so colors update immediately
+                    this.cachedSequencePositions = null;
                 }
                 
                 this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
