@@ -26,6 +26,7 @@
     --radius-lg: 12px;
     --radius-xl: 16px;
     --radius-full: 9999px;
+    --btn-radius: 6px;
     --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -97,17 +98,24 @@
     cursor: grabbing;
 }
 
+.py2dmol-viewer-instance #rightPanelsContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+    align-self: flex-start;
+}
+
 .py2dmol-viewer-instance #rightPanelContainer {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     width: 340px; 
     border: 1px solid #e5e7eb;
     border-radius: 10px; 
-    padding: 16px; 
+    padding: 12px; 
     background: #ffffff; 
     box-shadow: var(--shadow-md);
-    flex-shrink: 0;
     transition: box-shadow var(--transition-base);
 }
 
@@ -116,144 +124,14 @@
 }
 
 /* ============================================================================
-   COMMON BUTTON STYLES
+   UNIFIED BUTTON SYSTEM
    ============================================================================ */
 
-/* Primary blue button (Fetch button) */
-#fetch-btn {
-    height: 42px;
-    padding: 0 18px;
-    border-radius: var(--radius-md);
-    font-size: 14px;
-    font-weight: 600;
-    border: none;
-    cursor: pointer;
-    transition: all var(--transition-base);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
-    color: white;
-    box-shadow: var(--shadow-sm);
-    min-width: 100px;
-    position: relative;
-    overflow: hidden;
-}
-
-#fetch-btn::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-    transition: left var(--transition-slow);
-}
-
-#fetch-btn:hover {
-    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-primary-dark) 100%);
-    box-shadow: var(--shadow-md);
-    transform: translateY(-1px);
-}
-
-#fetch-btn:hover::before {
-    left: 100%;
-}
-
-#fetch-btn:active {
-    transform: translateY(0);
-    box-shadow: var(--shadow-sm);
-}
-
-#fetch-btn:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 2px;
-}
-
-/* Secondary grey button (Upload button) */
-#upload-button {
-    height: 42px;
-    padding: 0 18px;
-    border-radius: var(--radius-md);
-    font-size: 14px;
-    font-weight: 600;
-    border: none;
-    cursor: pointer;
-    transition: all var(--transition-base);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    background: linear-gradient(135deg, var(--color-gray-600) 0%, var(--color-gray-700) 100%);
-    color: white;
-    box-shadow: var(--shadow-sm);
-    min-width: 170px;
-}
-
-#upload-button:hover {
-    background: linear-gradient(135deg, var(--color-gray-700) 0%, var(--color-gray-800) 100%);
-    box-shadow: var(--shadow-md);
-    transform: translateY(-1px);
-}
-
-#upload-button:active {
-    transform: translateY(0);
-    box-shadow: var(--shadow-sm);
-}
-
-#upload-button:focus-visible {
-    outline: 2px solid var(--color-gray-600);
-    outline-offset: 2px;
-}
-
-/* Example buttons - green style */
-#example-button-1,
-#example-button-2 {
-    height: 42px;
-    padding: 0 18px;
-    border-radius: var(--radius-md);
-    font-size: 14px;
-    font-weight: 600;
-    border: none;
-    cursor: pointer;
-    transition: all var(--transition-base);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-    color: white;
-    box-shadow: var(--shadow-sm);
-    min-width: 100px;
-    flex: 1;
-}
-
-#example-button-1:hover,
-#example-button-2:hover {
-    background: linear-gradient(135deg, #059669 0%, #047857 100%);
-    box-shadow: var(--shadow-md);
-    transform: translateY(-1px);
-}
-
-#example-button-1:active,
-#example-button-2:active {
-    transform: translateY(0);
-    box-shadow: var(--shadow-sm);
-}
-
-#example-button-1:focus-visible,
-#example-button-2:focus-visible {
-    outline: 2px solid #10b981;
-    outline-offset: 2px;
-}
-
-/* Control buttons (Play button) */
-.py2dmol-viewer-instance .controlButton {
-    height: 42px;
-    padding: 0 16px;
-    border-radius: 8px;
+/* Base button class - all buttons inherit from this */
+.btn {
+    height: 36px;
+    padding: 0 14px;
+    border-radius: var(--btn-radius);
     font-size: 14px;
     font-weight: 600;
     border: none;
@@ -263,10 +141,114 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    min-width: 80px;
-    background: linear-gradient(to bottom, #3b82f6, #2563eb);
+    box-shadow: var(--shadow-sm);
     color: white;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+    text-align: center;
+}
+
+/* Unified hover state for all buttons */
+.btn:hover:not(:disabled) {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+/* Unified active state for all buttons */
+.btn:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm);
+}
+
+/* Unified disabled state */
+.btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+    box-shadow: none;
+    transform: none;
+}
+
+/* Color variants */
+.btn-primary {
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-primary-dark) 100%);
+}
+
+.btn-primary:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+.btn-secondary {
+    background: linear-gradient(135deg, var(--color-gray-600) 0%, var(--color-gray-700) 100%);
+}
+
+.btn-secondary:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--color-gray-700) 0%, var(--color-gray-800) 100%);
+}
+
+.btn-secondary:focus-visible {
+    outline: 2px solid var(--color-gray-600);
+    outline-offset: 2px;
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+}
+
+.btn-success:hover:not(:disabled) {
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+}
+
+.btn-success:focus-visible {
+    outline: 2px solid #10b981;
+    outline-offset: 2px;
+}
+
+.btn-grey {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.btn-grey:hover:not(:disabled) {
+    background: #d1d5db;
+}
+
+.btn-grey:active:not(:disabled) {
+    background: #cbd5e1;
+}
+
+.btn-blue {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+}
+
+.btn-blue:hover:not(:disabled) {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+}
+
+.btn-disabled {
+    background: linear-gradient(135deg, #e5e7eb, #d1d5db);
+    color: #9ca3af;
+}
+
+/* Specific button overrides (min-width, flex, etc.) */
+#fetch-btn {
+    min-width: 100px;
+}
+
+#upload-button {
+    min-width: 170px;
+}
+
+#example-button-1,
+#example-button-2 {
+    flex: 1;
+}
+
+/* Control buttons (Play button) */
+.py2dmol-viewer-instance .controlButton {
+    min-width: 80px;
 }
 
 .py2dmol-viewer-instance .controlButton i {
@@ -274,31 +256,11 @@
     line-height: 1;
 }
 
-.py2dmol-viewer-instance .controlButton:hover {
-    background: linear-gradient(to bottom, #2563eb, #1d4ed8);
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
-    transform: translateY(-1px);
-}
-
-.py2dmol-viewer-instance .controlButton:active {
-    transform: translateY(0);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-}
-
-.py2dmol-viewer-instance .controlButton:disabled {
-    background: linear-gradient(to bottom, #e5e7eb, #d1d5db);
-    cursor: not-allowed;
-    color: #9ca3af;
-    box-shadow: none;
-    transform: none;
-}
-
 /* ============================================================================
    NAVIGATION BUTTONS (TOOLBAR)
    ============================================================================ */
 .py2dmol-viewer-instance {
     --btn-h: 36px;
-    --btn-radius: 9999px;
     --gap: 8px;
 }
 
@@ -319,38 +281,18 @@
     text-align: center;
 }
 
+/* Navigation buttons use base .btn class */
 .py2dmol-viewer-instance .nav-button {
-    height: var(--btn-h);
     line-height: var(--btn-h);
-    border-radius: var(--btn-radius);
-    font-weight: 600;
-    padding: 0 14px;
-    border: none;
-    cursor: pointer;
-    transition: all 0.2s;
-    text-align: center;
-}
-
-.py2dmol-viewer-instance .btn-grey {
-    background: #e5e7eb;
-    color: #374151;
-}
-
-.py2dmol-viewer-instance .btn-grey:hover {
-    background: #d1d5db;
-}
-
-.py2dmol-viewer-instance .btn-grey:active {
-    background: #cbd5e1;
-    transform: translateY(1px);
 }
 
 .py2dmol-viewer-instance .nav-button.active {
-    background: linear-gradient(to bottom, #10b981, #059669);
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: white;
 }
 
-.py2dmol-viewer-instance .nav-button.active:hover {
-    background: linear-gradient(to bottom, #059669, #047857);
+.py2dmol-viewer-instance .nav-button.active:hover:not(:disabled) {
+    background: linear-gradient(135deg, #059669, #047857);
 }
 
 .py2dmol-viewer-instance .nav-button.greyed-out {
@@ -447,12 +389,18 @@
 }
 
 .py2dmol-viewer-instance .btn-toggle > span {
+    /* Apply .btn base styles */
+    height: 36px;
+    padding: 0 14px;
+    border-radius: var(--btn-radius);
+    font-size: 14px;
+    font-weight: 600;
     display: flex;
     align-items: center;
     justify-content: center;
-    height: var(--btn-h);
-    padding: 0 14px;
-    border-radius: inherit;
+    gap: 8px;
+    box-shadow: var(--shadow-sm);
+    transition: all 0.2s;
     background: #e5e7eb;
     color: #374151;
 }
@@ -464,10 +412,14 @@
 
 .py2dmol-viewer-instance .btn-toggle input:not(:checked) + span:hover {
     background: #d1d5db;
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
 }
 
 .py2dmol-viewer-instance .btn-toggle input:checked + span:hover {
     background: #059669;
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
 }
 
 /* Record button styled like btn-toggle */
@@ -475,8 +427,26 @@
     cursor: pointer;
 }
 
+/* Hide save state button */
+.py2dmol-viewer-instance #saveStateButton {
+    display: none !important;
+}
+
+/* Camera/SVG export button styled like btn-toggle */
+.py2dmol-viewer-instance #saveSvgButton.btn-toggle {
+    cursor: pointer;
+}
+
+.py2dmol-viewer-instance #saveSvgButton.btn-toggle:hover > span {
+    background: #d1d5db;
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
 .py2dmol-viewer-instance #recordButton.btn-toggle:hover > span {
     background: #d1d5db;
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
 }
 
 .py2dmol-viewer-instance #recordButton.btn-toggle:disabled {
@@ -708,14 +678,14 @@
 .py2dmol-viewer-instance .control-group {
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 4px;
 }
 
 .py2dmol-viewer-instance .toggle-item {
     display: flex;
     align-items: center; 
     justify-content: space-between; 
-    gap: 12px; 
+    gap: 8px; 
     width: 100%; 
 }
 
@@ -813,15 +783,20 @@
 .py2dmol-viewer-instance #paeContainer {
     display: none; 
     flex-shrink: 0;
-    width: 296px; 
-    height: 296px; 
+    width: 340px; 
+    height: 340px; 
     border: 1px solid #e5e7eb;
     border-radius: 10px;
     overflow: hidden;
     background: #ffffff;
     box-shadow: var(--shadow-md);
-    margin: 12px auto 0 auto;
     transition: box-shadow var(--transition-base), border-color var(--transition-base);
+}
+
+.py2dmol-viewer-instance #paeCanvas {
+    width: 100%;
+    height: 100%;
+    display: block;
 }
 
 .py2dmol-viewer-instance #paeContainer:hover {
@@ -859,7 +834,7 @@
 
 #fetch-input-container {
     display: flex;
-    gap: 12px;
+    gap: 8px;
     align-items: center;
 }
 
