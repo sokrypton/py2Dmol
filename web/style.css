@@ -731,6 +731,7 @@
     flex-shrink: 0;
 }
 
+
 .chain-container canvas {
     /* width and height are set inline by JavaScript - don't override */
     margin: 0;

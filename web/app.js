@@ -194,7 +194,7 @@ function setupEventListeners() {
         if (ev) {
           ev.stopPropagation(); // Prevent event from bubbling to header
           // Ignore clicks on action buttons
-          if (ev.target.closest('#selectAllResidues') || ev.target.closest('#clearAllResidues')) return;
+        if (ev.target.closest('#selectAllResidues') || ev.target.closest('#clearAllResidues')) return;
         }
         const expanded = seqToggle.getAttribute('aria-expanded') === 'true';
         seqToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
@@ -1058,7 +1058,7 @@ function setChainResiduesSelected(chain, selected) {
   if (!obj?.frames?.length) return;
   const frame0 = obj.frames[0];
   if (!frame0?.residue_index || !frame0?.chains) return;
-  
+
   // Get all available chains
   const allChains = new Set(frame0.chains);
   
@@ -1075,9 +1075,9 @@ function setChainResiduesSelected(chain, selected) {
   if (selected) {
     newChains.add(chain);
     // When selecting a chain, add all residues in that chain
-    for (let i = 0; i < frame0.residue_index.length; i++) {
-      if (frame0.chains[i] === chain) {
-        const id = `${chain}:${frame0.residue_index[i]}`;
+  for (let i = 0; i < frame0.residue_index.length; i++) {
+    if (frame0.chains[i] === chain) {
+      const id = `${chain}:${frame0.residue_index[i]}`;
         newResidues.add(id);
       }
     }
@@ -1151,8 +1151,8 @@ function applySelection(previewResidues = null) {
     if (viewerApi.renderer.resetSelection) {
       viewerApi.renderer.resetSelection();
     } else {
-      viewerApi.renderer.visibilityMask = null;
-      viewerApi.renderer.render();
+    viewerApi.renderer.visibilityMask = null;
+    viewerApi.renderer.render();
     }
     return;
   }
@@ -1266,7 +1266,7 @@ function buildSequenceView() {
         'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V',
         'SEC':'U', 'PYL':'O'
     };
-    
+
     // DNA nucleotide mapping
     const dnaMapping = {
         'DA':'A', 'DT':'T', 'DC':'C', 'DG':'G',
@@ -1483,7 +1483,7 @@ function buildSequenceView() {
             const id = `${res.chain}:${res.resSeq}`;
             
             // Get color for this residue
-            let color = { r: 80, g: 80, b: 80 };
+    let color = { r: 80, g: 80, b: 80 };
             if (hasGetAtomColor && !Number.isNaN(res.atomIndex)) {
                 color = renderer.getAtomColor(res.atomIndex);
             }
@@ -1561,8 +1561,8 @@ function setupHTMLSequenceEvents() {
                 (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
             
             if (e.altKey) {
-                toggleChainResidues(chain);
-            } else {
+              toggleChainResidues(chain);
+    } else {
                 setChainResiduesSelected(chain, !isSelected);
             }
             // Force update to reflect changes
@@ -1637,9 +1637,9 @@ function setupHTMLSequenceEvents() {
                         lastSequenceUpdateHash = null;
                         updateSequenceViewSelectionState();
                     }
-                }
-            }
-        });
+              }
+          }
+      });
         
         const handleMouseUp = () => {
             if (dragState.hasMoved && previewSelectionSet) {
@@ -1653,9 +1653,9 @@ function setupHTMLSequenceEvents() {
             dragState.dragUnselectMode = false;
             // Force update to reflect changes
             lastSequenceUpdateHash = null;
-            updateSequenceViewSelectionState();
-        };
-        
+    updateSequenceViewSelectionState();
+  };
+
         sequenceContainer.addEventListener('mouseup', handleMouseUp);
         sequenceContainer.addEventListener('mouseleave', () => {
             handleMouseUp();
