@@ -2276,6 +2276,7 @@ function initializePy2DmolViewer(containerElement) {
             
             this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
             this.isDragging = false;
+            this.isAdding = false; // Track if Shift is held for additive selection
             
             // Performance optimization: cache base image and selection state
             this.baseImageData = null; // Cached base PAE image (no selection overlay)
@@ -2337,14 +2338,20 @@ function initializePy2DmolViewer(containerElement) {
                 if (e.button !== 0) return; // Only left click
                 if (!this.paeData) return; // No data to select
                 
-                // Clear sequence selection when starting a new PAE selection
-                // This ensures only the PAE box selection is active
-                this.mainRenderer.setSelection({ 
-                    paeBoxes: [],
-                    residues: new Set(),
-                    chains: new Set(),
-                    selectionMode: 'explicit'
-                });
+                // Check if Shift is held for additive selection
+                this.isAdding = e.shiftKey;
+                
+                if (!this.isAdding) {
+                    // Clear sequence selection when starting a new PAE selection (non-additive)
+                    // This ensures only the PAE box selection is active
+                    this.mainRenderer.setSelection({ 
+                        paeBoxes: [],
+                        residues: new Set(),
+                        chains: new Set(),
+                        selectionMode: 'explicit'
+                    });
+                }
+                // If Shift is held, preserve existing selections and add to them
                 
                 this.isDragging = true;
                 const { i, j } = this.getCellIndices(e);
@@ -2415,7 +2422,7 @@ function initializePy2DmolViewer(containerElement) {
                     this.cachedSequencePositions = null;
                     this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
                 } else {
-                    // Create new box - replaces any existing selection
+                    // Create new box
                     const newBox = {
                         i_start: i_start,
                         i_end: i_end,
@@ -2423,7 +2430,12 @@ function initializePy2DmolViewer(containerElement) {
                         j_end: j_end
                     };
                     
-                    // Convert PAE box to residue IDs and set sequence selection
+                    // Get current selection state
+                    const currentSelection = this.mainRenderer.getSelection();
+                    const existingBoxes = currentSelection.paeBoxes || [];
+                    const existingResidues = currentSelection.residues || new Set();
+                    
+                    // Convert PAE box to residue IDs
                     const newResidues = new Set();
                     const renderer = this.mainRenderer;
                     
@@ -2445,13 +2457,27 @@ function initializePy2DmolViewer(containerElement) {
                         }
                     }
                     
-                    // Set both PAE box (for visual reference) and sequence selection (for visibility and PAE colors)
-                    this.mainRenderer.setSelection({
-                        paeBoxes: [newBox],
-                        residues: newResidues,
-                        chains: new Set(), // Clear chain selection when PAE sets residues
-                        selectionMode: 'explicit'
-                    });
+                    // If Shift is held, add to existing selection; otherwise replace
+                    if (this.isAdding) {
+                        // Additive: combine with existing boxes and residues
+                        const combinedBoxes = [...existingBoxes, newBox];
+                        const combinedResidues = new Set([...existingResidues, ...newResidues]);
+                        
+                        this.mainRenderer.setSelection({
+                            paeBoxes: combinedBoxes,
+                            residues: combinedResidues,
+                            chains: new Set(), // Clear chain selection when PAE sets residues
+                            selectionMode: 'explicit'
+                        });
+                    } else {
+                        // Replace: use only the new box and residues
+                        this.mainRenderer.setSelection({
+                            paeBoxes: [newBox],
+                            residues: newResidues,
+                            chains: new Set(), // Clear chain selection when PAE sets residues
+                            selectionMode: 'explicit'
+                        });
+                    }
                     
                     // Invalidate PAE cache so colors update immediately
                     this.cachedSequencePositions = null;

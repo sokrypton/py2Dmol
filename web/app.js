@@ -2450,7 +2450,14 @@ async function loadViewerState(stateData) {
                 // Restore playing state
                 renderer.isPlaying = wasPlaying;
                 
-                if (objData.hasPAE) {
+                // Check if any frame has PAE data (more reliable than just hasPAE flag)
+                let hasPAEData = objData.hasPAE || false;
+                if (!hasPAEData && objData.frames && objData.frames.length > 0) {
+                    // Check if any frame actually has PAE data
+                    hasPAEData = objData.frames.some(frame => frame.pae && Array.isArray(frame.pae) && frame.pae.length > 0);
+                }
+                
+                if (hasPAEData) {
                     objectsWithPAE.add(objData.name);
                 }
             }
@@ -2619,7 +2626,29 @@ async function loadViewerState(stateData) {
                             renderer.setFrame(0);
                         }
                         
-                        // Restore selection state after frame is set
+                        // Explicitly ensure PAE data is set if available
+                        // (setFrame should handle this, but we verify here)
+                        if (renderer.paeRenderer && obj.frames && obj.frames.length > 0) {
+                            const currentFrameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
+                            const currentFrameData = obj.frames[currentFrameIndex];
+                            if (currentFrameData && currentFrameData.pae) {
+                                renderer.paeRenderer.setData(currentFrameData.pae);
+                            }
+                        }
+                        
+                        // Rebuild sequence view and update UI first
+                        // (These may reset selection, so we restore it after)
+                        buildSequenceView();
+                        updateChainSelectionUI();
+                        updateObjectNavigationButtons();
+                        
+                        // Trigger object change handler to ensure UI is fully updated
+                        if (renderer.objectSelect) {
+                            handleObjectChange();
+                        }
+                        
+                        // Restore selection state AFTER all UI updates
+                        // (This must be last to avoid being overwritten by updateChainSelectionUI)
                         if (stateData.selection_state) {
                             const ss = stateData.selection_state;
                             const selectionPatch = {
@@ -2629,16 +2658,6 @@ async function loadViewerState(stateData) {
                                 selectionMode: ss.selection_mode || 'default'
                             };
                             renderer.setSelection(selectionPatch);
-                        }
-                        
-                        // Rebuild sequence view and update UI
-                        buildSequenceView();
-                        updateChainSelectionUI();
-                        updateObjectNavigationButtons();
-                        
-                        // Trigger object change handler to ensure UI is fully updated
-                        if (renderer.objectSelect) {
-                            handleObjectChange();
                         }
                         
                         // Force a render to ensure everything is displayed
