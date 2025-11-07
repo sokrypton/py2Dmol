@@ -119,21 +119,32 @@
         }
         
         .controlButton {
-            padding: 5px 10px;
+            height: 36px;
+            width: 36px;
+            padding: 0;
             border-radius: 4px;
             border: 1px solid #ccc;
-            background: #f0f0f0;
+            background: #3b82f6;
+            color: white;
             cursor: pointer;
-            min-width: 60px;
-            font-size: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             vertical-align: middle;
             margin-right: 5px;
             flex-shrink: 0;
         }
+        .controlButton i {
+            font-size: 16px;
+        }
+        .controlButton:hover {
+            background: #2563eb;
+        }
         .controlButton:disabled {
             cursor: not-allowed;
-            background: #eee;
-            color: #999;
+            background: #e5e7eb;
+            color: #9ca3af;
+            border-color: #d1d5db;
         }
         #frameSlider {
             flex-grow: 1; 
