@@ -119,32 +119,21 @@
         }
         
         .controlButton {
-            height: 36px;
-            width: 36px;
-            padding: 0;
+            padding: 5px 10px;
             border-radius: 4px;
             border: 1px solid #ccc;
-            background: #3b82f6;
-            color: white;
+            background: #f0f0f0;
             cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
+            min-width: 60px;
+            font-size: 12px;
             vertical-align: middle;
             margin-right: 5px;
             flex-shrink: 0;
         }
-        .controlButton i {
-            font-size: 16px;
-        }
-        .controlButton:hover {
-            background: #2563eb;
-        }
         .controlButton:disabled {
             cursor: not-allowed;
-            background: #e5e7eb;
-            color: #9ca3af;
-            border-color: #d1d5db;
+            background: #eee;
+            color: #999;
         }
         #frameSlider {
             flex-grow: 1; 
@@ -259,7 +248,7 @@
 
             <!-- Animation Controls -->
             <div id="controlsContainer">
-                <button id="playButton" class="controlButton"><i class="fa-solid fa-play"></i></button>
+                <button id="playButton" class="controlButton">Play</button>
                 <input type="range" id="frameSlider" min="0" max="0" value="0">
                 <span id="frameCounter">Frame: 0 / 0</span>
                 <select id="speedSelect">

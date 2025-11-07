@@ -1047,9 +1047,16 @@ function initializePy2DmolViewer(containerElement) {
             }
             
             this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
-            // Update play button icon (preserve icon structure)
+            // Update play button - use icons if available (web version), otherwise use text (Colab)
             if (this.playButton) {
-                this.playButton.innerHTML = this.isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+                const hasIcon = this.playButton.querySelector('i');
+                if (hasIcon) {
+                    // Web version with Font Awesome - use icons
+                    this.playButton.innerHTML = this.isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+                } else {
+                    // Colab version without Font Awesome - use text
+                    this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
+                }
             }
             
             // Update record button
