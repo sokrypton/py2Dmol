@@ -153,13 +153,61 @@ function polar2x2_withScore(A) {
  * @returns {Array<Array<number>>} - Target rotation matrix
  */
 function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
+    // Edge case: not enough coordinates
+    if (!coords || coords.length < 2) {
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
+    // Edge case: all coordinates are the same (degenerate case)
+    const firstCoord = coords[0];
+    const allSame = coords.every(c => 
+        Math.abs(c[0] - firstCoord[0]) < 1e-10 &&
+        Math.abs(c[1] - firstCoord[1]) < 1e-10 &&
+        Math.abs(c[2] - firstCoord[2]) < 1e-10
+    );
+    if (allSame) {
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
     const H = covarianceXXT(coords);
-    const svd = numeric.svd(H);
-    let V = [
-        [svd.V[0][0], svd.V[0][1], svd.V[0][2]],
-        [svd.V[1][0], svd.V[1][1], svd.V[1][2]],
-        [svd.V[2][0], svd.V[2][1], svd.V[2][2]]
-    ];
+    
+    // Edge case: covariance matrix is all zeros (shouldn't happen after allSame check, but just in case)
+    const traceH = H[0][0] + H[1][1] + H[2][2];
+    if (Math.abs(traceH) < 1e-10) {
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
+    let svd;
+    try {
+        svd = numeric.svd(H);
+    } catch (e) {
+        // SVD failed, return current rotation or identity
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
+    // Check if SVD returned valid structure
+    if (!svd || !svd.V || !Array.isArray(svd.V) || svd.V.length < 3) {
+        return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    }
+    
+    // Handle both 2D array and array of arrays formats for V
+    let V;
+    if (Array.isArray(svd.V[0]) && Array.isArray(svd.V[0][0])) {
+        // V is already a 2D array
+        V = [
+            [svd.V[0][0][0] || svd.V[0][0], svd.V[0][1][0] || svd.V[0][1], svd.V[0][2][0] || svd.V[0][2]],
+            [svd.V[1][0][0] || svd.V[1][0], svd.V[1][1][0] || svd.V[1][1], svd.V[1][2][0] || svd.V[1][2]],
+            [svd.V[2][0][0] || svd.V[2][0], svd.V[2][1][0] || svd.V[2][1], svd.V[2][2][0] || svd.V[2][2]]
+        ];
+    } else {
+        // V is array of arrays (standard format)
+        V = [
+            [svd.V[0][0], svd.V[0][1], svd.V[0][2]],
+            [svd.V[1][0], svd.V[1][1], svd.V[1][2]],
+            [svd.V[2][0], svd.V[2][1], svd.V[2][2]]
+        ];
+    }
+    
     V = ensureRightHand(V);
 
     const signCombos = [
@@ -169,15 +217,15 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
         [-1, -1, 1]
     ];
 
-    const Rcur = currentRotation;
-    const RcurT = numeric.transpose(currentRotation);
+    const Rcur = currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const RcurT = numeric.transpose(Rcur);
     const candidates = [];
 
     for (const s of signCombos) {
         const VS = multCols(V, s);
 
         // POST-YAW: R = VS * Qz
-        {
+        try {
             const M = numeric.dot(RcurT, VS);
             const A = [[M[0][0], M[0][1]], [M[1][0], M[1][1]]];
             const { R2 } = polar2x2_withScore(A);
@@ -189,10 +237,12 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
             const Ra = numeric.dot(VS, Qa);
             const angleA = rotationAngleBetweenMatrices(Rcur, Ra);
             candidates.push({ R: Ra, angle: angleA, mode: 'post' });
+        } catch (e) {
+            // Skip this candidate if computation fails
         }
 
         // PRE-YAW: R = Qz * VS
-        {
+        try {
             const B = numeric.dot(VS, RcurT);
             const B2 = [[B[0][0], B[0][1]], [B[1][0], B[1][1]]];
             const { R2 } = polar2x2_withScore(B2);
@@ -204,7 +254,14 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
             const Rb = numeric.dot(Qb, VS);
             const angleB = rotationAngleBetweenMatrices(Rcur, Rb);
             candidates.push({ R: Rb, angle: angleB, mode: 'pre' });
+        } catch (e) {
+            // Skip this candidate if computation fails
         }
+    }
+
+    // If no valid candidates, return current rotation or identity
+    if (candidates.length === 0) {
+        return Rcur;
     }
 
     candidates.sort((a, b) => a.angle - b.angle);
@@ -298,7 +355,9 @@ function parsePDB(text) {
                 y: parseFloat(line.substring(38, 46)),
                 z: parseFloat(line.substring(46, 54)),
                 b: parseFloat(line.substring(60, 66)),
-                element: line.substring(76, 78).trim()
+                element: line.substring(76, 78).trim(),
+                res_name: line.substring(17, 20).trim(),
+                res_seq: parseInt(line.substring(22, 26))
             });
         }
         
@@ -359,15 +418,15 @@ function parseCIF(text) {
             const values = line.match(/(?:[^\s"']+|"([^"]*)"|'([^']*)')+/g);
             if (!values || values.length < headers.length) continue;
 
-            const getString = (key) => values[headerMap[key]] || '?';
-            const getFloat = (key) => parseFloat(values[headerMap[key]]) || 0.0;
-            const getInt = (key) => parseInt(values[headerMap[key]]) || 0;
+            const getString = (key) => values[headerMap[key]];
+            const getFloat = (key) => parseFloat(values[headerMap[key]]);
+            const getInt = (key) => parseInt(values[headerMap[key]]);
 
             const atomNameRaw = getString('_atom_site.label_atom_id');
             let atomName = atomNameRaw;
-            if (atomName.length > 1 && atomName.startsWith("'") && atomName.endsWith("'")) {
+            if (atomName && atomName.length > 1 && atomName.startsWith("'") && atomName.endsWith("'")) {
                 atomName = atomName.substring(1, atomName.length - 1);
-            } else if (atomName.length > 1 && atomName.startsWith('"') && atomName.endsWith('"')) {
+            } else if (atomName && atomName.length > 1 && atomName.startsWith('"') && atomName.endsWith('"')) {
                 atomName = atomName.substring(1, atomName.length - 1);
             }
 
@@ -381,7 +440,9 @@ function parseCIF(text) {
                 y: getFloat('_atom_site.Cartn_y'),
                 z: getFloat('_atom_site.Cartn_z'),
                 b: getFloat('_atom_site.B_iso_or_equiv'),
-                element: getString('_atom_site.type_symbol')
+                element: getString('_atom_site.type_symbol'),
+                res_name: getString('_atom_site.label_comp_id'),
+                res_seq: getInt('_atom_site.auth_seq_id')
             };
 
             if (modelIDKey) {
@@ -401,15 +462,17 @@ function parseCIF(text) {
 }
 
 /**
- * Convert parsed atoms to frame data format
+ * Convert parsed atoms to frame data format, omitting keys for data that is not present.
  * @param {Array<object>} atoms - Parsed atoms
- * @returns {object} - Frame data with coords, plddts, chains, atom_types
+ * @returns {object} - Frame data with coords, and optional plddts, chains, atom_types
  */
 function convertParsedToFrameData(atoms) {
     const coords = [];
     const plddts = [];
     const atom_chains = [];
     const atom_types = [];
+    const residues = [];
+    const residue_index = [];
     const rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU'];
     const proteinResidues = new Set([
         "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS", "ILE",
@@ -418,26 +481,27 @@ function convertParsedToFrameData(atoms) {
     const nucleicResidues = new Set([
         "A", "C", "G", "U", "T", "DA", "DC", "DG", "DT", "RA", "RC", "RG", "RU"
     ]);
-    
-    const residues = new Map();
+
+    const residueMap = new Map();
     for (const atom of atoms) {
         if (atom.resName === 'HOH') continue;
         const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
-        if (!residues.has(resKey)) {
-            residues.set(resKey, {
+        if (!residueMap.has(resKey)) {
+            residueMap.set(resKey, {
                 atoms: [],
                 resName: atom.resName,
                 chain: atom.chain,
-                record: atom.record
+                record: atom.record,
+                resSeq: atom.resSeq
             });
         }
-        residues.get(resKey).atoms.push(atom);
+        residueMap.get(resKey).atoms.push(atom);
     }
-    
-    for (const [, residue] of residues.entries()) {
+
+    for (const [, residue] of residueMap.entries()) {
         const is_protein = proteinResidues.has(residue.resName);
         const is_nucleic = nucleicResidues.has(residue.resName);
-        
+
         if (is_protein) {
             const ca = residue.atoms.find(a => a.atomName === 'CA');
             if (ca) {
@@ -445,6 +509,8 @@ function convertParsedToFrameData(atoms) {
                 plddts.push(ca.b);
                 atom_chains.push(ca.chain);
                 atom_types.push('P');
+                residues.push(ca.res_name);
+                residue_index.push(ca.res_seq);
             }
         } else if (is_nucleic) {
             let c4_atom = residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
@@ -455,6 +521,8 @@ function convertParsedToFrameData(atoms) {
                 atom_types.push(
                     rna_bases.includes(residue.resName) || residue.resName.startsWith('R') ? 'R' : 'D'
                 );
+                residues.push(c4_atom.res_name);
+                residue_index.push(c4_atom.res_seq);
             }
         } else if (residue.record === 'HETATM') {
             for (const atom of residue.atoms) {
@@ -463,12 +531,32 @@ function convertParsedToFrameData(atoms) {
                     plddts.push(atom.b);
                     atom_chains.push(atom.chain);
                     atom_types.push('L');
+                    residues.push(atom.res_name);
+                    residue_index.push(atom.res_seq);
                 }
             }
         }
     }
+
+    const result = { coords };
+
+    if (atom_types.length > 0) {
+        result.atom_types = atom_types;
+    }
+    if (plddts.some(p => !isNaN(p))) {
+        result.plddts = plddts;
+    }
+    if (atom_chains.some(c => c && c.trim())) {
+        result.chains = atom_chains;
+    }
+    if (residues.some(r => r && r.trim())) {
+        result.residues = residues;
+    }
+    if (residue_index.some(i => !isNaN(i))) {
+        result.residue_index = residue_index;
+    }
     
-    return { coords, plddts, chains: atom_chains, atom_types };
+    return result;
 }
 
 /**

@@ -10,6 +10,9 @@ let referenceChainACoords = null; // Baseline for alignment (append mode)
 let viewerApi = null;
 let objectsWithPAE = new Set();
 let batchedObjects = [];
+// Removed selectedResiduesSet - now using renderer.selectionModel as single source of truth
+let previewSelectionSet = null;       // NEW: live drag preview selection (temporary during drag)
+
 
 // Rotation animation state
 let rotationAnimation = {
@@ -134,6 +137,25 @@ function setupEventListeners() {
     uploadButton.addEventListener('click', () => fileUploadInput.click());
     fileUploadInput.addEventListener('change', handleFileUpload);
     
+    // Example buttons
+    const exampleButton1 = document.getElementById('example-button-1');
+    if (exampleButton1) {
+        exampleButton1.addEventListener('click', () => {
+            const fetchIdInput = document.getElementById('fetch-id');
+            fetchIdInput.value = 'A0JNW5';
+            handleFetch();
+        });
+    }
+    
+    const exampleButton2 = document.getElementById('example-button-2');
+    if (exampleButton2) {
+        exampleButton2.addEventListener('click', () => {
+            const fetchIdInput = document.getElementById('fetch-id');
+            fetchIdInput.value = '1YNE';
+            handleFetch();
+        });
+    }
+    
     // Navigation buttons
     const orientButton = document.getElementById('orientButton');
     const prevObjectButton = document.getElementById('prevObjectButton');
@@ -149,6 +171,96 @@ function setupEventListeners() {
     
     if (objectSelect) objectSelect.addEventListener('change', handleObjectChange);
     if (colorSelect) colorSelect.addEventListener('change', updateColorMode);
+
+    // Attach sequence controls
+    const seqToggle = document.getElementById('sequenceToggle');
+    const sequenceView = document.getElementById('sequenceView');
+    const selectAllBtn = document.getElementById('selectAllResidues');
+    const clearAllBtn  = document.getElementById('clearAllResidues');
+
+    if (seqToggle && sequenceView) {
+      const container = document.getElementById('top-panel-container');
+      const sequenceHeader = document.getElementById('sequenceHeader');
+      const actionButtons = document.querySelectorAll('.sequence-action-btn');
+      
+      // Set initial collapsed state
+      if (container) {
+        container.classList.add('collapsed');
+      }
+      // Hide action buttons initially
+      actionButtons.forEach(btn => btn.style.display = 'none');
+      
+      const toggleSequence = (ev) => {
+        if (ev) {
+          ev.stopPropagation(); // Prevent event from bubbling to header
+          // Ignore clicks on action buttons
+        if (ev.target.closest('#selectAllResidues') || ev.target.closest('#clearAllResidues')) return;
+        }
+        const expanded = seqToggle.getAttribute('aria-expanded') === 'true';
+        seqToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        const chevron = seqToggle.querySelector('.chevron');
+        if (chevron) {
+          chevron.textContent = expanded ? '▸' : '▾';
+        }
+        if (expanded) {
+          sequenceView.classList.add('hidden');
+          if (container) container.classList.add('collapsed');
+          // Hide action buttons when collapsed
+          actionButtons.forEach(btn => btn.style.display = 'none');
+        } else {
+          sequenceView.classList.remove('hidden');
+          if (container) container.classList.remove('collapsed');
+          // Show action buttons when expanded
+          actionButtons.forEach(btn => btn.style.display = '');
+        }
+      };
+      
+      // Make entire header clickable (for areas outside the button)
+      if (sequenceHeader) {
+        sequenceHeader.addEventListener('click', (ev) => {
+          // Only handle clicks if they're not on the button or action buttons
+          if (!ev.target.closest('#sequenceToggle') && 
+              !ev.target.closest('#selectAllResidues') && 
+              !ev.target.closest('#clearAllResidues')) {
+            toggleSequence(ev);
+          }
+        });
+        sequenceHeader.style.cursor = 'pointer';
+      }
+      
+      // Make button clickable - clicks on children (chevron, title) will bubble up
+      seqToggle.addEventListener('click', toggleSequence);
+      
+      // Ensure chevron and title are clickable (pointer-events should allow clicks to bubble)
+      const chevron = seqToggle.querySelector('.chevron');
+      const title = seqToggle.querySelector('.sequence-title');
+      if (chevron) {
+        chevron.style.pointerEvents = 'auto';
+        chevron.style.cursor = 'pointer';
+      }
+      if (title) {
+        title.style.pointerEvents = 'auto';
+        title.style.cursor = 'pointer';
+      }
+    }
+    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); selectAllResidues(); });
+    if (clearAllBtn)  clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); clearAllResidues(); });
+
+
+    // Listen for the custom event dispatched by the renderer when color settings change
+    document.addEventListener('py2dmol-color-change', () => {
+        // Update colors in sequence view when color mode changes
+        updateSequenceViewColors();
+        updateSequenceViewSelectionState();
+    });
+    
+    // Listen for selection changes (including PAE selections)
+    document.addEventListener('py2dmol-selection-change', (e) => {
+        // Sync chain pills with selection model
+        syncChainPillsToSelection();
+        // Update sequence view
+        updateSequenceViewSelectionState();
+    });
     
     // Update navigation button states
     updateObjectNavigationButtons();
@@ -208,6 +320,11 @@ function handleObjectChange() {
     
     const hasPAE = objectsWithPAE.has(selectedObject);
     paeContainer.style.display = hasPAE ? 'block' : 'none';
+    
+    // Rebuild sequence view for the new object
+    buildSequenceView();
+    updateChainSelectionUI();
+    
     updateColorMode();
 }
 
@@ -235,18 +352,111 @@ function applyBestViewRotation() {
     const frame = object.frames[currentFrame];
     if (!frame || !frame.coords) return;
 
+    // Get visible coordinates based on visibilityMask
+    let visibleCoords = frame.coords;
+    let visibleCenter = null;
+    let visibleExtent = null;
+    
+    if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
+        // Filter to only visible atoms
+        visibleCoords = [];
+        for (const atomIdx of renderer.visibilityMask) {
+            if (atomIdx >= 0 && atomIdx < frame.coords.length) {
+                visibleCoords.push(frame.coords[atomIdx]);
+            }
+        }
+        
+        if (visibleCoords.length === 0) {
+            // No visible atoms, use all coordinates
+            visibleCoords = frame.coords;
+        } else {
+            // Calculate center from visible coordinates
+            const sum = [0, 0, 0];
+            for (const c of visibleCoords) {
+                sum[0] += c[0];
+                sum[1] += c[1];
+                sum[2] += c[2];
+            }
+            visibleCenter = [
+                sum[0] / visibleCoords.length,
+                sum[1] / visibleCoords.length,
+                sum[2] / visibleCoords.length
+            ];
+            
+            // Calculate extent from visible coordinates
+            let maxDistSq = 0;
+            for (const c of visibleCoords) {
+                const dx = c[0] - visibleCenter[0];
+                const dy = c[1] - visibleCenter[1];
+                const dz = c[2] - visibleCenter[2];
+                const distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq > maxDistSq) maxDistSq = distSq;
+            }
+            visibleExtent = Math.sqrt(maxDistSq);
+        }
+    }
+    
+    // If we have visible coordinates, use them for best view
+    const coordsForBestView = visibleCoords.length > 0 ? visibleCoords : frame.coords;
     const Rcur = renderer.rotationMatrix;
-    const Rtarget = bestViewTargetRotation_relaxed_AUTO(frame.coords, Rcur);
+    const Rtarget = bestViewTargetRotation_relaxed_AUTO(coordsForBestView, Rcur);
 
     const angle = rotationAngleBetweenMatrices(Rcur, Rtarget);
     const deg = angle * 180 / Math.PI;
     const duration = Math.max(300, Math.min(2000, deg * 10));
+
+    // Calculate target center and zoom based on final orientation
+    let targetCenter = null;
+    let targetExtent = null;
+    let targetZoom = renderer.zoom;
+    
+    if (visibleCenter && visibleExtent && visibleCoords.length > 0) {
+        // Center is the same regardless of rotation (it's a 3D point)
+        targetCenter = visibleCenter;
+        targetExtent = visibleExtent;
+        
+        // Calculate zoom adjustment based on final orientation
+        // When temporaryExtent is set, the renderer uses it in the scale calculation:
+        // scale = (canvasSize / (temporaryExtent * 2)) * zoom
+        // So if we set temporaryExtent to visibleExtent, the scale is already larger.
+        // We should keep zoom at 1.0 (base zoom) when using temporaryExtent to avoid double-scaling.
+        targetZoom = 1.0;
+    } else {
+        // When orienting to all atoms, reset zoom to base level (1.0) or keep current if reasonable
+        // Don't change zoom when there's no selection
+        targetZoom = renderer.zoom;
+    }
 
     rotationAnimation.active = true;
     rotationAnimation.startMatrix = Rcur.map(row => [...row]);
     rotationAnimation.targetMatrix = Rtarget;
     rotationAnimation.duration = duration;
     rotationAnimation.startTime = performance.now();
+    
+    // Store start and target values for interpolation
+    // Calculate start center (either existing temporary center or global center)
+    let startCenter = null;
+    if (renderer.temporaryCenter) {
+        startCenter = { x: renderer.temporaryCenter.x, y: renderer.temporaryCenter.y, z: renderer.temporaryCenter.z };
+    } else {
+        // Calculate global center once at start
+        const globalCenter = (object && object.totalAtoms > 0 && object.globalCenterSum) ? 
+            { 
+                x: object.globalCenterSum.x / object.totalAtoms,
+                y: object.globalCenterSum.y / object.totalAtoms,
+                z: object.globalCenterSum.z / object.totalAtoms
+            } : { x: 0, y: 0, z: 0 };
+        startCenter = globalCenter;
+    }
+    
+    rotationAnimation.startCenter = startCenter;
+    rotationAnimation.targetCenter = targetCenter ? 
+        { x: targetCenter[0], y: targetCenter[1], z: targetCenter[2] } : null;
+    rotationAnimation.startExtent = renderer.temporaryExtent || (object && object.maxExtent) || 30.0;
+    rotationAnimation.targetExtent = targetExtent;
+    rotationAnimation.startZoom = renderer.zoom;
+    rotationAnimation.targetZoom = targetZoom;
+    rotationAnimation.object = object;
 
     // Stop auto-rotation if active
     if (renderer.autoRotate) {
@@ -277,12 +487,35 @@ function animateRotation() {
 
     if (progress >= 1.0) {
         renderer.rotationMatrix = rotationAnimation.targetMatrix;
+        
+        // Set final zoom and center values
+        if (rotationAnimation.targetZoom !== undefined) {
+            renderer.zoom = rotationAnimation.targetZoom;
+        }
+        
+        if (rotationAnimation.targetCenter) {
+            renderer.temporaryCenter = rotationAnimation.targetCenter;
+            renderer.temporaryExtent = rotationAnimation.targetExtent;
+        } else {
+            // Clear temporary center/extent if orienting to all atoms
+            renderer.temporaryCenter = null;
+            renderer.temporaryExtent = null;
+        }
+        
         renderer.render();
         rotationAnimation.active = false;
+        // Clear stored values
+        rotationAnimation.startCenter = null;
+        rotationAnimation.targetCenter = null;
+        rotationAnimation.startExtent = null;
+        rotationAnimation.targetExtent = null;
+        rotationAnimation.startZoom = null;
+        rotationAnimation.targetZoom = null;
+        rotationAnimation.object = null;
         return;
     }
 
-    // Cubic easing
+    // Cubic easing - ensure smooth interpolation
     const eased = progress < 0.5 ?
         4 * progress * progress * progress :
         1 - Math.pow(-2 * progress + 2, 3) / 2;
@@ -292,6 +525,43 @@ function animateRotation() {
         rotationAnimation.targetMatrix,
         eased
     );
+    
+    // Interpolate zoom during animation - use same easing for consistency
+    if (rotationAnimation.targetZoom !== undefined) {
+        const t = eased; // Use same eased value for smooth zoom interpolation
+        renderer.zoom = rotationAnimation.startZoom + (rotationAnimation.targetZoom - rotationAnimation.startZoom) * t;
+    }
+    
+    // Interpolate center and extent during animation - use same easing for consistency
+    if (rotationAnimation.targetCenter && rotationAnimation.startCenter) {
+        const t = eased; // Use same eased value for smooth interpolation
+        // Smoothly interpolate from start center to target center
+        renderer.temporaryCenter = {
+            x: rotationAnimation.startCenter.x + (rotationAnimation.targetCenter.x - rotationAnimation.startCenter.x) * t,
+            y: rotationAnimation.startCenter.y + (rotationAnimation.targetCenter.y - rotationAnimation.startCenter.y) * t,
+            z: rotationAnimation.startCenter.z + (rotationAnimation.targetCenter.z - rotationAnimation.startCenter.z) * t
+        };
+        // Interpolate extent as well for smooth zoom animation
+        if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
+            renderer.temporaryExtent = rotationAnimation.startExtent + (rotationAnimation.targetExtent - rotationAnimation.startExtent) * t;
+        } else {
+            renderer.temporaryExtent = rotationAnimation.startExtent;
+        }
+    } else {
+        // Interpolate extent even when clearing center (for smooth transition back to all atoms)
+        if (rotationAnimation.targetExtent === null || rotationAnimation.targetExtent === undefined) {
+            const t = eased;
+            const currentExtent = renderer.temporaryExtent || rotationAnimation.startExtent;
+            const targetExtent = (rotationAnimation.object && rotationAnimation.object.maxExtent) || 30.0;
+            renderer.temporaryExtent = currentExtent + (targetExtent - currentExtent) * t;
+        }
+        // Clear temporary center if orienting to all atoms
+        if (progress >= 0.99) { // Only clear at the very end
+            renderer.temporaryCenter = null;
+            renderer.temporaryExtent = null;
+        }
+    }
+    
     renderer.render();
     requestAnimationFrame(animateRotation);
 }
@@ -702,6 +972,7 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
 
 function updateViewerFromGlobalBatch() {
     const viewerContainer = document.getElementById('viewer-container');
+    const topPanelContainer = document.getElementById('top-panel-container');
     const objectSelect = document.getElementById('objectSelect');
     
     viewerApi.handlePythonClearAll();
@@ -729,13 +1000,16 @@ function updateViewerFromGlobalBatch() {
         }
     }
 
-    if (totalFrames > 0) {
+    if (batchedObjects.length > 0) {
         viewerContainer.style.display = 'flex';
+        topPanelContainer.style.display = 'block';
         if (lastObjectName) {
             setTimeout(() => {
                 objectSelect.value = lastObjectName;
                 handleObjectChange();
                 updateObjectNavigationButtons();
+                buildSequenceView();
+                updateChainSelectionUI(); // This sets up default selection and calls applySelection
             }, 50);
         }
     } else {
@@ -743,6 +1017,763 @@ function updateViewerFromGlobalBatch() {
         viewerContainer.style.display = 'none';
     }
 }
+
+
+function updateChainSelectionUI() {
+  /* [EDIT] This function no longer builds UI (pills). 
+     It just sets the default selected state. */
+
+  const objectName = viewerApi?.renderer?.currentObjectName;
+  if (!objectName || !viewerApi?.renderer) return;
+
+  const obj = viewerApi.renderer.objectsData[objectName];
+  if (!obj?.frames?.length) return;
+  const frame0 = obj.frames[0];
+  if (!frame0?.residue_index || !frame0?.chains) return;
+
+  // Select all by default using renderer API
+  const allResidues = new Set();
+  const allChains = new Set();
+  for (let i = 0; i < frame0.residue_index.length; i++) {
+    const chain = frame0.chains[i];
+    const resSeq = frame0.residue_index[i];
+    allResidues.add(`${chain}:${resSeq}`);
+    allChains.add(chain);
+  }
+
+  viewerApi.renderer.setSelection({
+    residues: allResidues,
+    chains: allChains,
+    selectionMode: 'default'
+  });
+}
+
+function setChainResiduesSelected(chain, selected) {
+  if (!viewerApi?.renderer) return;
+  const current = viewerApi.renderer.getSelection();
+  const objectName = viewerApi.renderer.currentObjectName;
+  if (!objectName) return;
+  
+  const obj = viewerApi.renderer.objectsData[objectName];
+  if (!obj?.frames?.length) return;
+  const frame0 = obj.frames[0];
+  if (!frame0?.residue_index || !frame0?.chains) return;
+
+  // Get all available chains
+  const allChains = new Set(frame0.chains);
+  
+  // Determine current chain selection
+  // If chains.size === 0 and mode is 'default', all chains are selected
+  let currentChains = new Set(current.chains);
+  if (currentChains.size === 0 && current.selectionMode === 'default') {
+    currentChains = new Set(allChains);
+  }
+  
+  const newChains = new Set(currentChains);
+  const newResidues = new Set(current.residues);
+  
+  if (selected) {
+    newChains.add(chain);
+    // When selecting a chain, add all residues in that chain
+  for (let i = 0; i < frame0.residue_index.length; i++) {
+    if (frame0.chains[i] === chain) {
+      const id = `${chain}:${frame0.residue_index[i]}`;
+        newResidues.add(id);
+      }
+    }
+  } else {
+    newChains.delete(chain);
+    // When unselecting a chain, remove all residues in that chain
+    for (const residueId of Array.from(newResidues)) {
+      if (residueId.startsWith(`${chain}:`)) {
+        newResidues.delete(residueId);
+      }
+    }
+  }
+  
+  // If all chains are selected, we can use empty set with default mode
+  // Otherwise, use explicit chain selection
+  const selectionMode = (newChains.size === allChains.size && 
+                         Array.from(newChains).every(c => allChains.has(c))) 
+                         ? 'default' : 'explicit';
+  
+  viewerApi.renderer.setSelection({ 
+    chains: newChains.size === allChains.size ? new Set() : newChains,
+    residues: newResidues,
+    selectionMode: selectionMode
+  });
+  // Event listener will update UI, no need to call applySelection()
+}
+
+/** Alt-click a chain label to toggle selection of all residues in that chain */
+function toggleChainResidues(chain) {
+    if (!viewerApi?.renderer) return;
+    const objectName = viewerApi.renderer.currentObjectName;
+    if (!objectName) return;
+    const obj = viewerApi.renderer.objectsData[objectName];
+    if (!obj?.frames?.length) return;
+    const frame = obj.frames[0];
+    if (!frame?.residue_index || !frame?.chains) return;
+
+    const current = viewerApi.renderer.getSelection();
+    const ids = [];
+    for (let i = 0; i < frame.residue_index.length; i++) {
+        if (frame.chains[i] === chain) {
+            ids.push(`${chain}:${frame.residue_index[i]}`);
+        }
+    }
+    const allSelected = ids.every(id => current.residues.has(id));
+    
+    const newResidues = new Set(current.residues);
+    ids.forEach(id => {
+        if (allSelected) newResidues.delete(id);
+        else newResidues.add(id);
+    });
+    
+    viewerApi.renderer.setSelection({ residues: newResidues });
+}
+
+// [NEW] This function updates the chain buttons and sequence view
+// based on the renderer's selection model
+function syncChainPillsToSelection() {
+    // Chain buttons are now HTML elements, update them via updateSequenceViewSelectionState
+    if (sequenceHTMLData) {
+        lastSequenceUpdateHash = null; // Force redraw
+        updateSequenceViewSelectionState();
+    }
+}
+
+function applySelection(previewResidues = null) {
+  if (!viewerApi || !viewerApi.renderer) return;
+
+  const objectName = viewerApi.renderer.currentObjectName;
+  if (!objectName) {
+    if (viewerApi.renderer.resetSelection) {
+      viewerApi.renderer.resetSelection();
+    } else {
+    viewerApi.renderer.visibilityMask = null;
+    viewerApi.renderer.render();
+    }
+    return;
+  }
+
+  // Get current selection
+  const current = viewerApi.renderer.getSelection();
+  
+  // Get visible chains from selection model (chain buttons are now on canvas)
+  let visibleChains = current?.chains || new Set();
+  // If in default mode with no explicit chains, all chains are visible
+  if (current?.selectionMode === 'default' && (!current.chains || current.chains.size === 0)) {
+    // Get all chains from renderer
+    if (viewerApi.renderer.chains) {
+      visibleChains = new Set(viewerApi.renderer.chains);
+    }
+  }
+
+  // Use preview selection if provided, otherwise use current selection
+  const residuesToUse = previewResidues !== null ? previewResidues : current.residues;
+
+  viewerApi.renderer.setSelection({
+    residues: residuesToUse,
+    chains: visibleChains
+    // Keep current PAE boxes and mode
+  });
+  
+  // Note: updateSequenceViewSelectionState will be called via event listener
+}
+
+
+function highlightResidue(chain, residueIndex) {
+    if (viewerApi && viewerApi.renderer) {
+        viewerApi.renderer.highlightedResidue = { chain, residueIndex };
+        viewerApi.renderer.render();
+    }
+}
+
+function clearHighlight() {
+    if (viewerApi && viewerApi.renderer) {
+        viewerApi.renderer.highlightedResidue = null;
+        viewerApi.renderer.render();
+    }
+}
+
+function selectAllResidues() {
+  if (!viewerApi?.renderer) return;
+  // Use renderer's resetToDefault method
+  viewerApi.renderer.resetToDefault();
+  // UI will update via event listener
+}
+
+function clearAllResidues() {
+  if (!viewerApi?.renderer) return;
+  // Use renderer's clearSelection method
+  viewerApi.renderer.clearSelection();
+  // UI will update via event listener
+}
+
+// HTML-based sequence renderer data
+let sequenceHTMLData = null; // { chain: { container, residues: [{element, id, resSeq, chain, atomIndex, color}] } }
+
+function buildSequenceView() {
+    const sequenceViewEl = document.getElementById('sequenceView');
+    if (!sequenceViewEl) return;
+
+    // Clear cache when rebuilding
+    cachedSequenceSpans = null;
+    lastSequenceUpdateHash = null;
+    sequenceHTMLData = {};
+
+    sequenceViewEl.innerHTML = '';
+
+    // Get object name from dropdown first, fallback to renderer's currentObjectName
+    const objectSelect = document.getElementById('objectSelect');
+    const objectName = objectSelect?.value || viewerApi?.renderer?.currentObjectName;
+    if (!objectName || !viewerApi?.renderer) return;
+
+    const object = viewerApi.renderer.objectsData[objectName];
+    if (!object || !object.frames || object.frames.length === 0) return;
+
+    const firstFrame = object.frames[0];
+    if (!firstFrame || !firstFrame.residues) return;
+
+    const { residues, residue_index, chains } = firstFrame;
+
+    // Use Set for faster lookups
+    const seen = new Set();
+    const uniqueResidues = [];
+    for (let i = 0; i < residues.length; i++) {
+        const key = `${chains[i]}:${residue_index[i]}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            uniqueResidues.push({
+                chain: chains[i],
+                resName: residues[i],
+                resSeq: residue_index[i],
+                atomIndex: i
+            });
+        }
+    }
+
+    const sortedUniqueResidues = uniqueResidues.sort((a, b) => {
+        if (a.chain < b.chain) return -1;
+        if (a.chain > b.chain) return 1;
+        return a.resSeq - b.resSeq;
+    });
+
+    // Protein amino acid mapping (3-letter to 1-letter)
+    const threeToOne = {
+        'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 'HIS':'H', 'ILE':'I',
+        'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V',
+        'SEC':'U', 'PYL':'O'
+    };
+
+    // DNA nucleotide mapping
+    const dnaMapping = {
+        'DA':'A', 'DT':'T', 'DC':'C', 'DG':'G',
+        'A':'A', 'T':'T', 'C':'C', 'G':'G',  // Alternative naming
+        'ADE':'A', 'THY':'T', 'CYT':'C', 'GUA':'G'  // Alternative naming
+    };
+    
+    // RNA nucleotide mapping
+    const rnaMapping = {
+        'A':'A', 'U':'U', 'C':'C', 'G':'G',
+        'RA':'A', 'RU':'U', 'RC':'C', 'RG':'G',  // Alternative naming
+        'ADE':'A', 'URA':'U', 'CYT':'C', 'GUA':'G',  // Alternative naming
+        'URI':'U', 'UMP':'U', 'URD':'U',  // Uridine variations
+        'RURA':'U', 'RURI':'U'  // More RNA uracil variations
+    };
+    
+    // Detect sequence type based on residue names
+    const detectSequenceType = (residues) => {
+        if (residues.length === 0) return 'protein';
+        
+        let dnaCount = 0;
+        let rnaCount = 0;
+        let proteinCount = 0;
+        
+        // First pass: check for unambiguous indicators (U = RNA, T/DT = DNA)
+        let hasU = false;
+        let hasT = false;
+        
+        for (const resName of residues) {
+            const upperResName = (resName || '').toString().trim().toUpperCase();
+            
+            // RNA-specific: U is RNA-only
+            if (upperResName === 'U' || upperResName.startsWith('RU') || upperResName.includes('URI') || upperResName.includes('URA')) {
+                hasU = true;
+                rnaCount++;
+            }
+            // DNA-specific: T or DT is DNA-only
+            else if (upperResName === 'T' || upperResName === 'DT' || upperResName.startsWith('DT')) {
+                hasT = true;
+                dnaCount++;
+            }
+            // Check mappings (A, C, G are in both)
+            else if (dnaMapping[upperResName]) {
+                dnaCount++;
+            }
+            else if (rnaMapping[upperResName]) {
+                rnaCount++;
+            }
+            // Check protein
+            else if (threeToOne[upperResName]) {
+                proteinCount++;
+            }
+        }
+        
+        // If we found U (RNA-specific) and no T, it's definitely RNA
+        if (hasU && !hasT) {
+            return 'rna';
+        }
+        // If we found T/DT (DNA-specific) and no U, it's DNA
+        if (hasT && !hasU) {
+            return 'dna';
+        }
+        
+        // Otherwise, determine type based on majority
+        if (dnaCount > rnaCount && dnaCount > proteinCount) {
+            return 'dna';
+        } else if (rnaCount > dnaCount && rnaCount > proteinCount) {
+            return 'rna';
+        } else {
+            return 'protein';
+        }
+    };
+    
+    // Group by chain
+    const chainsData = {};
+    for (const res of sortedUniqueResidues) {
+        if (!chainsData[res.chain]) {
+            chainsData[res.chain] = [];
+        }
+        chainsData[res.chain].push(res);
+    }
+    
+    // Helper function to get residue letter based on sequence type
+    const getResidueLetterForChain = (chainResidues) => {
+        // Detect sequence type for this specific chain
+        const chainResidueNames = chainResidues.map(r => r.resName);
+        const chainType = detectSequenceType(chainResidueNames);
+        
+        // Return appropriate mapping function
+        if (chainType === 'dna') {
+            return (resName) => {
+                const upper = (resName || '').toString().trim().toUpperCase();
+                return dnaMapping[upper] || 'N';
+            };
+        } else if (chainType === 'rna') {
+            return (resName) => {
+                const upper = (resName || '').toString().trim().toUpperCase();
+                // Check exact match first
+                if (rnaMapping[upper]) {
+                    return rnaMapping[upper];
+                }
+                // Special case: if it's exactly 'U', return 'U' (should be in mapping, but just in case)
+                if (upper === 'U') {
+                    return 'U';
+                }
+                // Fallback: check if it contains U, URI, or URA for uracil
+                if (upper.includes('U') || upper.includes('URI') || upper.includes('URA')) {
+                    return 'U';
+                }
+                // Fallback: check if it contains A, C, or G (but not D for DNA)
+                if (upper.includes('A') && !upper.includes('D')) {
+                    return 'A';
+                }
+                if (upper.includes('C') && !upper.includes('D')) {
+                    return 'C';
+                }
+                if (upper.includes('G') && !upper.includes('D')) {
+                    return 'G';
+                }
+                return 'N';
+            };
+        } else {
+            return (resName) => {
+                const upper = (resName || '').toString().trim().toUpperCase();
+                return threeToOne[upper] || 'X';
+            };
+        }
+    };
+
+    // HTML text rendering settings
+    const charWidth = 10; // Monospace character width
+    const charHeight = 14; // Line height
+    
+    // Chain button uses same dimensions as sequence characters
+    const maxChainIdLength = 3; // Most chain IDs are 1-2 chars, but some like "A|2" are longer
+    const chainButtonWidth = charWidth * maxChainIdLength;
+    
+    // Calculate dynamic line breaks based on container width (accounting for chain button column)
+    const containerWidth = sequenceViewEl ? sequenceViewEl.offsetWidth || 900 : 900;
+    const sequenceWidth = containerWidth - chainButtonWidth - 4; // Subtract button column width and gap
+    const charsPerLine = Math.floor(sequenceWidth / charWidth);
+
+    const fragment = document.createDocumentFragment();
+    const renderer = viewerApi?.renderer;
+    const hasGetAtomColor = renderer?.getAtomColor;
+
+    for (const [chain, chainResidues] of Object.entries(chainsData)) {
+        // Create chain container with two columns: chain button and sequence
+        const chainContainer = document.createElement('div');
+        chainContainer.className = 'chain-container';
+        chainContainer.style.display = 'flex';
+        chainContainer.style.flexDirection = 'row';
+        chainContainer.style.alignItems = 'flex-start';
+        chainContainer.style.gap = '4px';
+        
+        // Create chain button column
+        const chainButtonColumn = document.createElement('div');
+        chainButtonColumn.className = 'chain-button-column';
+        chainButtonColumn.style.width = chainButtonWidth + 'px';
+        chainButtonColumn.style.flexShrink = '0';
+        
+        // Create chain button as HTML element
+        const chainButton = document.createElement('span');
+        chainButton.className = 'chain-button';
+        chainButton.textContent = chain;
+        chainButton.style.display = 'inline-block';
+        chainButton.style.width = chainButtonWidth + 'px';
+        chainButton.style.height = charHeight + 'px';
+        chainButton.style.textAlign = 'center';
+        chainButton.style.lineHeight = charHeight + 'px';
+        chainButton.style.fontSize = '12px';
+        chainButton.style.fontFamily = 'monospace';
+        chainButton.style.cursor = 'pointer';
+        chainButton.style.userSelect = 'none';
+        chainButton.style.verticalAlign = 'top';
+        
+        // Set initial button state
+        const current = viewerApi?.renderer?.getSelection();
+        const allChainsSelected = current?.chains?.has(chain) || 
+            (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+        if (allChainsSelected) {
+            chainButton.style.backgroundColor = '#10b981';
+            chainButton.style.color = '#ffffff';
+        } else {
+            chainButton.style.backgroundColor = '#e5e7eb';
+            chainButton.style.color = '#000000';
+        }
+        
+        chainButtonColumn.appendChild(chainButton);
+        
+        // Create sequence container for this chain
+        const sequenceContainer = document.createElement('div');
+        sequenceContainer.className = 'sequence-text-container';
+        sequenceContainer.style.display = 'flex';
+        sequenceContainer.style.flexWrap = 'wrap';
+        sequenceContainer.style.fontFamily = 'monospace';
+        sequenceContainer.style.fontSize = '12px';
+        sequenceContainer.style.lineHeight = charHeight + 'px';
+        sequenceContainer.style.cursor = 'crosshair';
+        sequenceContainer.style.gap = '0';
+        sequenceContainer.style.flex = '1';
+        
+        // Store residue elements
+        const residueElements = [];
+        
+        // Get the appropriate mapping function for this chain
+        const getResidueLetter = getResidueLetterForChain(chainResidues);
+        
+        // Create HTML spans for each residue
+        for (let i = 0; i < chainResidues.length; i++) {
+            const res = chainResidues[i];
+            // Get letter using the mapping function (handles trimming and fallbacks internally)
+            const letter = getResidueLetter(res.resName);
+            const id = `${res.chain}:${res.resSeq}`;
+            
+            // Get color for this residue
+    let color = { r: 80, g: 80, b: 80 };
+            if (hasGetAtomColor && !Number.isNaN(res.atomIndex)) {
+                color = renderer.getAtomColor(res.atomIndex);
+            }
+            
+            // Create span element for this residue
+            const span = document.createElement('span');
+            span.className = 'residue-char';
+            span.textContent = letter;
+            span.dataset.residueId = id;
+            span.style.display = 'inline-block';
+            span.style.width = charWidth + 'px';
+            span.style.height = charHeight + 'px';
+            span.style.textAlign = 'center';
+            span.style.lineHeight = charHeight + 'px';
+            span.style.color = '#000000';
+            span.style.backgroundColor = `rgb(${color.r}, ${color.g}, ${color.b})`;
+            span.style.userSelect = 'none';
+            
+            // Add line break after charsPerLine characters
+            if ((i + 1) % charsPerLine === 0 && i < chainResidues.length - 1) {
+                const br = document.createElement('br');
+                sequenceContainer.appendChild(br);
+            }
+            
+            sequenceContainer.appendChild(span);
+            
+            residueElements.push({
+                element: span,
+                id,
+                letter,
+                color,
+                resSeq: res.resSeq,
+                chain: res.chain,
+                atomIndex: res.atomIndex
+            });
+        }
+        
+        chainContainer.appendChild(chainButtonColumn);
+        chainContainer.appendChild(sequenceContainer);
+        fragment.appendChild(chainContainer);
+        
+        sequenceHTMLData[chain] = {
+            container: chainContainer,
+            sequenceContainer: sequenceContainer,
+            chainButton: chainButton,
+            residues: residueElements,
+            charsPerLine
+        };
+    }
+    
+    sequenceViewEl.appendChild(fragment);
+    
+    // Setup HTML event handlers
+    setupHTMLSequenceEvents();
+    
+    updateSequenceViewSelectionState();
+}
+
+// HTML-based sequence event handlers using event delegation
+
+function setupHTMLSequenceEvents() {
+    if (!sequenceHTMLData) return;
+    
+    // Store drag state (shared across all chains)
+    const dragState = { isDragging: false, dragStart: null, dragEnd: null, hasMoved: false, dragUnselectMode: false };
+    
+    // Setup event handlers for each chain
+    for (const [chain, chainData] of Object.entries(sequenceHTMLData)) {
+        const { sequenceContainer, chainButton, residues } = chainData;
+        
+        // Chain button click handler
+        chainButton.addEventListener('click', (e) => {
+            const current = viewerApi?.renderer?.getSelection();
+            const isSelected = current?.chains?.has(chain) || 
+                (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+            
+            if (e.altKey) {
+              toggleChainResidues(chain);
+    } else {
+                setChainResiduesSelected(chain, !isSelected);
+            }
+            // Force update to reflect changes
+            lastSequenceUpdateHash = null;
+            updateSequenceViewSelectionState();
+        });
+        
+        // Sequence container event delegation
+        sequenceContainer.addEventListener('mousedown', (e) => {
+            const span = e.target.closest('.residue-char');
+            if (!span) return;
+            
+            const residueId = span.dataset.residueId;
+            const residue = residues.find(r => r.id === residueId);
+            if (!residue) return;
+            
+            dragState.isDragging = true;
+            dragState.hasMoved = false;
+            dragState.dragStart = residue;
+            dragState.dragEnd = residue;
+            
+            const current = viewerApi?.renderer?.getSelection();
+            dragState.dragUnselectMode = current?.residues?.has(residueId) || false;
+            
+            // Toggle single residue on click
+            const newResidues = new Set(current?.residues || []);
+            if (newResidues.has(residueId)) {
+                newResidues.delete(residueId);
+            } else {
+                newResidues.add(residueId);
+            }
+            viewerApi.renderer.setSelection({ residues: newResidues, paeBoxes: [] });
+            // Force update to reflect changes
+            lastSequenceUpdateHash = null;
+            updateSequenceViewSelectionState();
+        });
+        
+        sequenceContainer.addEventListener('mousemove', (e) => {
+            const span = e.target.closest('.residue-char');
+            if (!dragState.isDragging) {
+                if (span) {
+                    const residueId = span.dataset.residueId;
+                    const residue = residues.find(r => r.id === residueId);
+                    if (residue) {
+                        highlightResidue(residue.chain, residue.resSeq);
+                    }
+                }
+                return;
+            }
+            
+            if (span) {
+                const residueId = span.dataset.residueId;
+                const residue = residues.find(r => r.id === residueId);
+                if (residue && residue !== dragState.dragEnd) {
+                    dragState.dragEnd = residue;
+                    const startIdx = residues.indexOf(dragState.dragStart);
+                    const endIdx = residues.indexOf(dragState.dragEnd);
+                    if (startIdx !== -1 && endIdx !== -1) {
+                        dragState.hasMoved = true;
+                        const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
+                        const current = viewerApi?.renderer?.getSelection();
+                        const newResidues = new Set(current?.residues || []);
+                        for (let i = min; i <= max; i++) {
+                            const res = residues[i];
+                            if (dragState.dragUnselectMode) {
+                                newResidues.delete(res.id);
+                            } else {
+                                newResidues.add(res.id);
+                            }
+                        }
+                        previewSelectionSet = newResidues;
+                        lastSequenceUpdateHash = null;
+                        updateSequenceViewSelectionState();
+                    }
+              }
+          }
+      });
+        
+        const handleMouseUp = () => {
+            if (dragState.hasMoved && previewSelectionSet) {
+                viewerApi.renderer.setSelection({ residues: previewSelectionSet, paeBoxes: [] });
+            }
+            previewSelectionSet = null;
+            dragState.isDragging = false;
+            dragState.dragStart = null;
+            dragState.dragEnd = null;
+            dragState.hasMoved = false;
+            dragState.dragUnselectMode = false;
+            // Force update to reflect changes
+            lastSequenceUpdateHash = null;
+    updateSequenceViewSelectionState();
+  };
+
+        sequenceContainer.addEventListener('mouseup', handleMouseUp);
+        sequenceContainer.addEventListener('mouseleave', () => {
+            handleMouseUp();
+            clearHighlight();
+        });
+    }
+}
+
+// Cache for sequence view spans to avoid repeated DOM queries
+let cachedSequenceSpans = null;
+let lastSequenceUpdateHash = null;
+
+// Update colors in sequence view when color mode changes
+function updateSequenceViewColors() {
+  if (!sequenceHTMLData || !viewerApi?.renderer) return;
+  
+  const renderer = viewerApi.renderer;
+  const hasGetAtomColor = renderer?.getAtomColor;
+  
+  // Update colors for all residues
+  for (const [chain, chainData] of Object.entries(sequenceHTMLData)) {
+    for (const res of chainData.residues) {
+      if (hasGetAtomColor && !Number.isNaN(res.atomIndex)) {
+        res.color = renderer.getAtomColor(res.atomIndex);
+        // Update element background color
+        res.element.style.backgroundColor = `rgb(${res.color.r}, ${res.color.g}, ${res.color.b})`;
+      }
+    }
+  }
+  
+  // Invalidate hash to force redraw with new colors
+  lastSequenceUpdateHash = null;
+}
+
+function updateSequenceViewSelectionState() {
+  if (!sequenceHTMLData) return;
+
+  // Determine what's actually visible from the unified model or visibilityMask
+  // Use previewSelectionSet during drag for live feedback
+  let visibleResidues = new Set();
+  
+  if (previewSelectionSet && previewSelectionSet.size > 0) {
+    // During drag, use preview selection for live feedback
+    visibleResidues = new Set(previewSelectionSet);
+  } else if (viewerApi?.renderer) {
+    const renderer = viewerApi.renderer;
+    
+    // Check if we have a unified selection model
+    if (renderer.selectionModel && renderer.chains && renderer.residue_index) {
+      if (renderer.visibilityMask === null) {
+        // null mask means all atoms are visible (default mode)
+        for (let i = 0; i < renderer.chains.length && i < renderer.residue_index.length; i++) {
+          const id = `${renderer.chains[i]}:${renderer.residue_index[i]}`;
+          visibleResidues.add(id);
+        }
+      } else if (renderer.visibilityMask.size > 0) {
+        // Non-empty Set means some atoms are visible
+        for (const atomIdx of renderer.visibilityMask) {
+          if (atomIdx < renderer.chains.length && atomIdx < renderer.residue_index.length) {
+            const id = `${renderer.chains[atomIdx]}:${renderer.residue_index[atomIdx]}`;
+            visibleResidues.add(id);
+          }
+        }
+      }
+    } else {
+      visibleResidues = new Set(previewSelectionSet || []);
+    }
+  } else {
+    visibleResidues = new Set(previewSelectionSet || []);
+  }
+
+  // Create hash to detect if selection actually changed
+  // Include previewSelectionSet in hash to ensure live feedback during drag
+  const renderer = viewerApi?.renderer;
+  const previewHash = previewSelectionSet ? previewSelectionSet.size : 0;
+  const currentHash = visibleResidues.size + previewHash + (renderer?.visibilityMask === null ? 'all' : 'some');
+  if (currentHash === lastSequenceUpdateHash && !previewSelectionSet) {
+    return; // No change, skip update (unless we have preview selection for live feedback)
+  }
+  lastSequenceUpdateHash = currentHash;
+
+  // Update HTML elements with selection state
+  const dimFactor = 0.3; // Same as PAE plot - dim unselected to 30% brightness
+  for (const [chain, chainData] of Object.entries(sequenceHTMLData)) {
+    const { residues, chainButton } = chainData;
+    
+    // Update residue background colors
+    for (const res of residues) {
+      let r = res.color.r;
+      let g = res.color.g;
+      let b = res.color.b;
+      
+      if (!visibleResidues.has(res.id)) {
+        // Unselected: dim by mixing with white (similar to PAE plot)
+        r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
+        g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
+        b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
+      }
+      // Selected: use full color (already has pastel applied via getAtomColor)
+      res.element.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+    }
+    
+    // Update chain button state
+    const current = viewerApi?.renderer?.getSelection();
+    const allChainsSelected = current?.chains?.has(chain) || 
+        (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+    
+    if (allChainsSelected) {
+      chainButton.style.backgroundColor = '#10b981';
+      chainButton.style.color = '#ffffff';
+    } else {
+      chainButton.style.backgroundColor = '#e5e7eb';
+      chainButton.style.color = '#000000';
+    }
+  }
+}
+
+// Removed setupDragToSelect - replaced by canvas-based sequence rendering (setupCanvasSequenceEvents)
 
 // ============================================================================
 // FETCH LOGIC
@@ -892,7 +1923,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             const jsonRankMatch = jsonBaseName.match(/_rank_(\d+)_/i);
 
             let rankBonus = 0;
-            if (structRankMatch && jsonRankMatch && structRankMatch[1] === jsonRankMatch[1]) {
+            if (structRankMatch && jsonRankMatch && structRankMatch[1] === structRankMatch[1]) {
                 rankBonus = 100;
                 const structInternalModel = structBaseName.match(/_model_(\d+)_/i);
                 const jsonInternalModel = jsonBaseName.match(/_model_(\d+)_/i);
@@ -1067,7 +2098,7 @@ function initDragAndDrop() {
     document.body.addEventListener('dragleave', (e) => {
         preventDefaults(e);
         dragCounter--;
-        if (dragCounter === 0 || e.relatedTarget === null) {
+        if (dragCounter === 0 || e.relatedTargEt === null) {
             globalDropOverlay.style.display = 'none';
         }
     }, false);

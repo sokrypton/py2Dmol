@@ -167,6 +167,9 @@ function initializePy2DmolViewer(containerElement) {
             this.lineWidth = (typeof config.width === 'number') ? config.width : 3.0;
             this.shadowIntensity = 0.95;
             this.perspectiveEnabled = false; // false = orthographic, true = perspective
+            // Temporary center and extent for orienting to visible atoms
+            this.temporaryCenter = null;
+            this.temporaryExtent = null;
             
             // Set default focalLength, but it will be overridden by the
             // slider logic if perspective is enabled.
@@ -233,6 +236,20 @@ function initializePy2DmolViewer(containerElement) {
             this.paeRenderer = null;
             this.visibilityMask = null; // Set of atom indices to *show*
             this.polymerAtomIndices = []; // Map residue index -> atom index
+            this.highlightedResidue = null; // To store { chain, residueIndex }
+
+            // [PATCH] Unified selection model (sequence/chain + PAE)
+            // residues: Set of 'CHAIN:RESSEQ' strings (explicit sequence/chain picks)
+            // chains: Set of chain IDs (empty => all chains)
+            // paeBoxes: Array of selection rectangles in residue-index space {i_start,i_end,j_start,j_end}
+            // selectionMode: 'default' = empty selection means "show all" (initial state)
+            //                'explicit' = empty selection means "show nothing" (user cleared)
+            this.selectionModel = {
+                residues: new Set(),
+                chains: new Set(),
+                paeBoxes: [],
+                selectionMode: 'default' // Start in default mode (show all)
+            };
 
             // UI elements
             this.playButton = null;
@@ -256,39 +273,210 @@ function initializePy2DmolViewer(containerElement) {
             this.render(); // Re-render with new clear color
         }
         
+        // [PATCH] --- Unified Selection API ---
+        setSelection(patch) {
+            if (!patch) return;
+            if (patch.residues !== undefined) {
+                const r = patch.residues;
+                this.selectionModel.residues = (r instanceof Set) ? new Set(r) : new Set(Array.from(r || []));
+            }
+            if (patch.chains !== undefined) {
+                const c = patch.chains;
+                this.selectionModel.chains = (c instanceof Set) ? new Set(c) : new Set(Array.from(c || []));
+            }
+            if (patch.paeBoxes !== undefined) {
+                if (patch.paeBoxes === 'clear' || patch.paeBoxes === null) {
+                    this.selectionModel.paeBoxes = [];
+                } else if (Array.isArray(patch.paeBoxes)) {
+                    this.selectionModel.paeBoxes = patch.paeBoxes.map(b => ({
+                        i_start: Math.max(0, Math.floor(b.i_start ?? 0)),
+                        i_end:   Math.max(0, Math.floor(b.i_end   ?? 0)),
+                        j_start: Math.max(0, Math.floor(b.j_start ?? 0)),
+                        j_end:   Math.max(0, Math.floor(b.j_end   ?? 0))
+                    }));
+                }
+            }
+            if (patch.selectionMode !== undefined) {
+                this.selectionModel.selectionMode = patch.selectionMode;
+            }
+            this._composeAndApplyMask();
+        }
+
+        getSelection() {
+            const m = this.selectionModel;
+            return {
+                residues: new Set(m.residues),
+                chains: new Set(m.chains),
+                paeBoxes: m.paeBoxes.map(b => ({...b})),
+                selectionMode: m.selectionMode
+            };
+        }
+
+        resetSelection() {
+            this.selectionModel = { 
+                residues: new Set(), 
+                chains: new Set(), 
+                paeBoxes: [],
+                selectionMode: 'default'
+            };
+            this._composeAndApplyMask();
+        }
+
+        // Reset to default state: show all atoms
+        resetToDefault() {
+            const n = this.coords ? this.coords.length : 0;
+            if (n === 0) {
+                this.resetSelection();
+                return;
+            }
+            
+            // Select all residues
+            const allResidues = new Set();
+            for (let i = 0; i < n; i++) {
+                const ch = this.chains[i];
+                const rid = `${ch}:${this.residue_index[i]}`;
+                allResidues.add(rid);
+            }
+            
+            // Select all chains
+            const allChains = new Set(this.chains);
+            
+            // Keep PAE boxes (don't clear them)
+            this.setSelection({
+                residues: allResidues,
+                chains: allChains,
+                selectionMode: 'default'
+                // paeBoxes: undefined (keep current)
+            });
+        }
+
+        // Clear all selections: show nothing (explicit mode)
+        clearSelection() {
+            this.setSelection({
+                residues: new Set(),
+                chains: new Set(),
+                paeBoxes: [],
+                selectionMode: 'explicit'
+            });
+        }
+
+        _composeAndApplyMask() {
+            const n = this.coords ? this.coords.length : 0;
+            if (n === 0) {
+                this.visibilityMask = null;
+                this.render();
+                return;
+            }
+
+            // (1) Sequence/Chain contribution
+            // Always compute sequence selection - it works together with PAE via UNION
+            let allowedChains;
+            if (this.selectionModel.chains && this.selectionModel.chains.size > 0) {
+                allowedChains = this.selectionModel.chains;
+            } else {
+                // All chains
+                allowedChains = new Set(this.chains);
+            }
+
+            let seqAtoms = null;
+            if ((this.selectionModel.residues && this.selectionModel.residues.size > 0) ||
+                (this.selectionModel.chains && this.selectionModel.chains.size > 0)) {
+                seqAtoms = new Set();
+                for (let i = 0; i < n; i++) {
+                    const ch = this.chains[i];
+                    if (!allowedChains.has(ch)) continue;
+                    const rid = `${ch}:${this.residue_index[i]}`;
+                    if (this.selectionModel.residues.size === 0 || this.selectionModel.residues.has(rid)) {
+                        seqAtoms.add(i);
+                    }
+                }
+            }
+
+            // (2) PAE contribution: expand i/j ranges into polymer residue atoms
+            let paeAtoms = null;
+            if (this.selectionModel.paeBoxes && this.selectionModel.paeBoxes.length > 0 && Array.isArray(this.polymerAtomIndices)) {
+                paeAtoms = new Set();
+                const L = this.polymerAtomIndices.length;
+                for (const box of this.selectionModel.paeBoxes) {
+                    const i0 = Math.max(0, Math.min(L - 1, Math.min(box.i_start, box.i_end)));
+                    const i1 = Math.max(0, Math.min(L - 1, Math.max(box.i_start, box.i_end)));
+                    const j0 = Math.max(0, Math.min(L - 1, Math.min(box.j_start, box.j_end)));
+                    const j1 = Math.max(0, Math.min(L - 1, Math.max(box.j_start, box.j_end)));
+                    for (let r = i0; r <= i1; r++) { paeAtoms.add(this.polymerAtomIndices[r]); }
+                    for (let r = j0; r <= j1; r++) { paeAtoms.add(this.polymerAtomIndices[r]); }
+                }
+                // Include all ligands when PAE selection is active (runtime only; parse-time ignore_ligand takes precedence)
+                for (let i = 0; i < n; i++) { 
+                    if (this.atomTypes[i] === 'L') {
+                        paeAtoms.add(i);
+                    }
+                }
+            }
+
+            // (3) Combine via UNION
+            let combined = null;
+            if (seqAtoms && paeAtoms) {
+                combined = new Set(seqAtoms);
+                for (const a of paeAtoms) combined.add(a);
+            } else {
+                combined = seqAtoms || paeAtoms;
+            }
+
+            // (4) Apply based on selection mode
+            const mode = this.selectionModel.selectionMode || 'default';
+            if (combined && combined.size > 0) {
+                // We have some selection - use it
+                this.visibilityMask = combined;
+            } else {
+                // No selection computed
+                if (mode === 'default') {
+                    // Default mode: empty selection means "show all"
+                    this.visibilityMask = null;
+                } else {
+                    // Explicit mode: empty selection means "show nothing"
+                    this.visibilityMask = new Set(); // Empty set = nothing visible
+                }
+            }
+            
+            this.render();
+            
+            // Dispatch event to notify UI of selection change
+            if (typeof document !== 'undefined') {
+                try {
+                    document.dispatchEvent(new CustomEvent('py2dmol-selection-change', {
+                        detail: { 
+                            hasSelection: this.visibilityMask !== null && this.visibilityMask.size > 0,
+                            selectionModel: {
+                                residues: Array.from(this.selectionModel.residues),
+                                chains: Array.from(this.selectionModel.chains),
+                                paeBoxes: this.selectionModel.paeBoxes.map(b => ({...b})),
+                                selectionMode: this.selectionModel.selectionMode
+                            }
+                        }
+                    }));
+                } catch (e) {
+                    console.warn('Failed to dispatch selection change event:', e);
+                }
+            }
+        }
+        // [END PATCH]
+        
         // --- PAE / Visibility ---
         setPAERenderer(paeRenderer) {
             this.paeRenderer = paeRenderer;
         }
         
+        // [PATCH] Re-routed setResidueVisibility to use the new unified selection model
         setResidueVisibility(selection) {
             if (selection === null) {
-                this.visibilityMask = null;
+                // Clear only PAE contribution; leave sequence/chain selections intact
+                this.setSelection({ paeBoxes: 'clear' });
             } else {
                 const { i_start, i_end, j_start, j_end } = selection;
-                this.visibilityMask = new Set();
-                
-                // Add all ligands
-                for (let i = 0; i < this.atomTypes.length; i++) {
-                    if (this.atomTypes[i] === 'L') {
-                        this.visibilityMask.add(i);
-                    }
-                }
-                
-                // Add selected residues (mapping from residue index to atom index)
-                for (let res_idx = i_start; res_idx <= i_end; res_idx++) {
-                    if (res_idx < this.polymerAtomIndices.length) {
-                        this.visibilityMask.add(this.polymerAtomIndices[res_idx]);
-                    }
-                }
-                for (let res_idx = j_start; res_idx <= j_end; res_idx++) {
-                    if (res_idx < this.polymerAtomIndices.length) {
-                        this.visibilityMask.add(this.polymerAtomIndices[res_idx]);
-                    }
-                }
+                this.setSelection({ paeBoxes: [{ i_start, i_end, j_start, j_end }] });
             }
-            this.render(); // Trigger re-render of 3D view
         }
+        // [END PATCH]
 
         getTouchDistance(touch1, touch2) {
             const dx = touch1.clientX - touch2.clientX;
@@ -585,6 +773,8 @@ function initializePy2DmolViewer(containerElement) {
                     this.plddtColors = this._calculatePlddtColors();
                     // Re-render main canvas
                     this.render();
+                    // Dispatch event to notify sequence viewer
+                    document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
                     // Re-render PAE canvas
                     if (this.paeRenderer) {
                         this.paeRenderer.render();
@@ -893,42 +1083,56 @@ function initializePy2DmolViewer(containerElement) {
             try {
                 if (data && data.coords && data.coords.length > 0) {
                     const coords = data.coords.map(c => new Vec3(c[0], c[1], c[2]));
-                    const plddts = data.plddts || [];
-                    const chains = data.chains || [];
-                    const atomTypes = data.atom_types || [];
-                    const hasPAE = data.pae && data.pae.length > 0;
-                    this.setCoords(coords, plddts, chains, atomTypes, hasPAE);
+                    // Pass other data fields directly, allowing them to be undefined
+                    this.setCoords(
+                        coords,
+                        data.plddts,
+                        data.chains,
+                        data.atom_types,
+                        (data.pae && data.pae.length > 0),
+                        data.residues,
+                        data.residue_index
+                    );
                 }
             } catch (e) {
                 console.error("Failed to load data into renderer:", e);
             }
         }
 
-        setCoords(coords, plddts = [], chains = [], atomTypes = [], hasPAE = false) {
+        setCoords(coords, plddts, chains, atomTypes, hasPAE = false, residues, residue_index) {
             this.coords = coords;
-            this.plddts = plddts;
-            this.chains = chains;
-            this.atomTypes = atomTypes;
-            
+            const n = this.coords.length;
+
+            // --- Handle Defaults for Missing Data ---
+            this.plddts = (plddts && plddts.length === n) ? plddts : Array(n).fill(50.0);
+            this.chains = (chains && chains.length === n) ? chains : Array(n).fill('A');
+            this.atomTypes = (atomTypes && atomTypes.length === n) ? atomTypes : Array(n).fill('P');
+            this.residues = (residues && residues.length === n) ? residues : Array(n).fill('UNK');
+            this.residue_index = (residue_index && residue_index.length === n) ? residue_index : Array.from({length: n}, (_, i) => i + 1);
+
             // "auto" logic:
-            // Always calculate what 'auto' *should* be
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
+            const uniqueChains = new Set(this.chains);
             if (hasPAE) {
                 this.resolvedAutoColor = 'plddt';
-            } else if (this.chains && this.chains.length > 0) {
-                const uniqueChains = new Set(this.chains.filter(c => c && c.trim()));
-                this.resolvedAutoColor = (uniqueChains.size > 1) ? 'chain' : 'rainbow';
+            } else if (this.chains && uniqueChains.size > 1) {
+                this.resolvedAutoColor = 'chain';
             } else {
                 this.resolvedAutoColor = 'rainbow';
             }
-            
-            const n = this.coords.length;
 
-            // Handle defaults
-            if (this.plddts.length !== n) { this.plddts = Array(n).fill(50.0); }
-            if (this.chains.length !== n) { this.chains = Array(n).fill('A'); }
-            if (this.atomTypes.length !== n) { this.atomTypes = Array(n).fill('P'); }
-            
+            // Create the definitive chain index map for this dataset.
+            this.chainIndexMap = new Map();
+            if (this.chains.length > 0) {
+                // Use a sorted list of unique chain IDs to ensure a consistent order
+                const sortedUniqueChains = [...uniqueChains].sort();
+                for (const chainId of sortedUniqueChains) {
+                    if (chainId && !this.chainIndexMap.has(chainId)) {
+                        this.chainIndexMap.set(chainId, this.chainIndexMap.size);
+                    }
+                }
+            }
+
             // Map polymer atoms to residue indices for PAE selection
             this.polymerAtomIndices = [];
             const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
@@ -1113,57 +1317,92 @@ function initializePy2DmolViewer(containerElement) {
             // Pre-calculate pLDDT colors
             this.plddtColors = this._calculatePlddtColors();
 
+
             // Trigger first render
             this.render(); 
-        }
         
-        // Calculate segment colors (chain or rainbow)
-        _calculateSegmentColors() {
-            const n = this.coords.length;
-            const m = this.segmentIndices.length;
+            // [PATCH] Apply initial mask
+            this._composeAndApplyMask();
             
+            // Dispatch event to notify sequence viewer that colors have changed (e.g., when frame changes)
+            document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+        }
+
+        getAtomColor(atomIndex) {
+            if (atomIndex < 0 || atomIndex >= this.coords.length) {
+                return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
+            }
+
             let effectiveColorMode = this.colorMode;
             if (effectiveColorMode === 'auto') {
                 effectiveColorMode = this.resolvedAutoColor || 'rainbow';
             }
-            
-            const chainIndexMap = new Map();
-            if (effectiveColorMode === 'chain' && this.chains.length > 0) {
-                for (const chainId of this.chains) {
-                    if (chainId && !chainIndexMap.has(chainId)) {
-                        chainIndexMap.set(chainId, chainIndexMap.size);
-                    }
-                }
-            }
-            
-            const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
-            
-            return this.segmentIndices.map(segInfo => {
-                const grey = {r: 128, g: 128, b: 128};
-                let color;
-                const i = segInfo.origIndex;
-                const type = segInfo.type;
-                
-                if (type === 'L') {
-                    // Ligands are grey unless in plddt mode
-                    color = grey;
-                }
-                // plddt mode is handled in render()
-                else if (effectiveColorMode === 'chain') {
-                    const chainId = this.chains[i] || 'A';
-                    const chainIndex = chainIndexMap.get(chainId) || 0;
-                    
+
+            const type = this.atomTypes[atomIndex];
+            let color;
+
+            if (effectiveColorMode === 'plddt') {
+                const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
+                const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
+                color = plddtFunc(plddt);
+            } else {
+                 if (type === 'L') {
+                    color = { r: 128, g: 128, b: 128 }; // Ligands are grey
+                } else if (effectiveColorMode === 'chain') {
+                    const chainId = this.chains[atomIndex] || 'A';
+                    const chainIndex = this.chainIndexMap.get(chainId) || 0;
                     const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
                     const hex = colorArray[chainIndex % colorArray.length];
                     color = hexToRgb(hex);
-                }
-                else { // rainbow
-                    const scale = this.chainRainbowScales[segInfo.chainId];
-                    if (scale) { 
-                        // Use the selected rainbow function
-                        color = rainbowFunc(segInfo.colorIndex, scale.min, scale.max); 
+                } else { // rainbow
+                    const chainId = this.chains[atomIndex] || 'A';
+                    const scale = this.chainRainbowScales[chainId];
+                    const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
+                    if (scale) {
+                        const colorIndex = this.perChainIndices[atomIndex];
+                        color = rainbowFunc(colorIndex, scale.min, scale.max);
+                    } else {
+                        color = { r: 128, g: 128, b: 128 };
                     }
-                    else { color = grey; }
+                }
+            }
+
+            return this._applyPastel(color);
+        }
+        
+        // Calculate segment colors (chain or rainbow)
+        _calculateSegmentColors() {
+            const m = this.segmentIndices.length;
+            if (m === 0) return [];
+
+            let effectiveColorMode = this.colorMode;
+            if (effectiveColorMode === 'auto') {
+                effectiveColorMode = this.resolvedAutoColor || 'rainbow';
+            }
+
+            const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
+            const chainColors = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
+            const grey = {r: 128, g: 128, b: 128};
+
+            return this.segmentIndices.map(segInfo => {
+                let color;
+                const i = segInfo.origIndex;
+                const type = segInfo.type;
+
+                if (type === 'L') {
+                    color = grey;
+                } else if (effectiveColorMode === 'chain') {
+                    const chainId = this.chains[i] || 'A';
+                    const chainIndex = this.chainIndexMap.get(chainId) || 0;
+                    const hex = chainColors[chainIndex % chainColors.length];
+                    color = hexToRgb(hex);
+                } else { // 'rainbow' or other modes
+                    const scale = this.chainRainbowScales[segInfo.chainId];
+                    if (scale) {
+                        color = rainbowFunc(segInfo.colorIndex, scale.min, scale.max);
+                    } else {
+                        color = grey;
+                    }
                 }
                 return this._applyPastel(color);
             });
@@ -1267,9 +1506,11 @@ function initializePy2DmolViewer(containerElement) {
 
             const globalCenter = (object && object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0);
             
+            // Use temporary center if set (for orienting to visible atoms), otherwise use global center
+            const c = this.temporaryCenter || globalCenter;
+            
             // Update pre-allocated rotatedCoords
             const m = this.rotationMatrix;
-            const c = globalCenter;
             for (let i = 0; i < this.coords.length; i++) {
                 const v = this.coords[i];
                 const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
@@ -1483,7 +1724,9 @@ function initializePy2DmolViewer(containerElement) {
             }
             
             // dataRange is just the molecule's extent in Angstroms
-            const dataRange = (maxExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
+            // Use temporary extent if set (for orienting to visible atoms), otherwise use object's maxExtent
+            const effectiveExtent = this.temporaryExtent || maxExtent;
+            const dataRange = (effectiveExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
             const canvasSize = Math.min(this.canvas.width, this.canvas.height);
             
             // scale is pixels per Angstrom
@@ -1630,6 +1873,66 @@ function initializePy2DmolViewer(containerElement) {
             // ====================================================================
             // END OF REFACTORED LOOP
             // ====================================================================
+
+            // ====================================================================
+            // HIGHLIGHTING PASS - Draw yellow circles at atom positions
+            // ====================================================================
+            if (this.highlightedResidue) {
+                // Find all atoms that belong to the highlighted residue
+                const highlightedAtoms = new Set();
+                for (let i = 0; i < this.coords.length; i++) {
+                    if (this.chains && this.residue_index && 
+                        i < this.chains.length && i < this.residue_index.length) {
+                        if (this.chains[i] === this.highlightedResidue.chain &&
+                            this.residue_index[i] === this.highlightedResidue.residueIndex) {
+                            highlightedAtoms.add(i);
+                        }
+                    }
+                }
+                
+                // Draw yellow circles at highlighted atom positions
+                this.ctx.fillStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
+                this.ctx.strokeStyle = 'rgba(255, 255, 0, 1.0)'; // Yellow border
+                this.ctx.lineWidth = 1;
+                
+                for (const atomIdx of highlightedAtoms) {
+                    if (visibilityMask && !visibilityMask.has(atomIdx)) {
+                        continue;
+                    }
+                    
+                    const atom = rotated[atomIdx];
+                    let x, y;
+                    let perspectiveScale = 1.0;
+                    
+                    if (this.perspectiveEnabled) {
+                        const z = this.focalLength - atom.z;
+                        if (z < 0.01) continue;
+                        perspectiveScale = this.focalLength / z;
+                        x = centerX + (atom.x * scale * perspectiveScale);
+                        y = centerY - (atom.y * scale * perspectiveScale);
+                    } else {
+                        x = centerX + atom.x * scale;
+                        y = centerY - atom.y * scale;
+                    }
+                    
+                    // Calculate circle radius to match original line width
+                    // Original line width was: baseLineWidthPixels * widthMultiplier * 1.5
+                    // For circles, use radius = lineWidth / 2 to match visual thickness
+                    // Use default widthMultiplier of 1.0 (can be adjusted if needed)
+                    const widthMultiplier = 1.0;
+                    let circleRadius = (baseLineWidthPixels * widthMultiplier * 1.5) / 2;
+                    if (this.perspectiveEnabled) {
+                        circleRadius *= perspectiveScale;
+                    }
+                    circleRadius = Math.max(2, circleRadius); // Minimum radius for visibility
+                    
+                    // Draw circle at atom position
+                    this.ctx.beginPath();
+                    this.ctx.arc(x, y, circleRadius, 0, Math.PI * 2);
+                    this.ctx.fill();
+                    this.ctx.stroke();
+                }
+            }
         }
 
         // Main animation loop
@@ -1709,7 +2012,36 @@ function initializePy2DmolViewer(containerElement) {
             this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
             this.isDragging = false;
             
+            // Performance optimization: cache base image and selection state
+            this.baseImageData = null; // Cached base PAE image (no selection overlay)
+            this.lastSelectionHash = null; // Hash of last selection state to detect changes
+            this.renderScheduled = false; // Flag to prevent multiple queued renders
+            this.cachedSequencePositions = null; // Cache sequence selected positions
+            
             this.setupInteraction();
+            
+            // Listen for selection changes to re-render PAE with sequence selections
+            if (typeof document !== 'undefined') {
+                this.selectionChangeHandler = () => {
+                    if (this.paeData) {
+                        // Invalidate cache when selection changes
+                        this.lastSelectionHash = null;
+                        this.cachedSequencePositions = null;
+                        this.scheduleRender();
+                    }
+                };
+                document.addEventListener('py2dmol-selection-change', this.selectionChangeHandler);
+            }
+        }
+        
+        // Schedule render using requestAnimationFrame to throttle
+        scheduleRender() {
+            if (this.renderScheduled) return;
+            this.renderScheduled = true;
+            requestAnimationFrame(() => {
+                this.renderScheduled = false;
+                this.render();
+            });
         }
 
         getMousePos(e) {
@@ -1740,68 +2072,226 @@ function initializePy2DmolViewer(containerElement) {
                 if (e.button !== 0) return; // Only left click
                 if (!this.paeData) return; // No data to select
                 
+                // Clear sequence selection when starting a new PAE selection
+                // This ensures only the PAE box selection is active
+                this.mainRenderer.setSelection({ 
+                    paeBoxes: [],
+                    residues: new Set(),
+                    chains: new Set(),
+                    selectionMode: 'explicit'
+                });
+                
                 this.isDragging = true;
                 const { i, j } = this.getCellIndices(e);
                 this.selection.x1 = j;
                 this.selection.y1 = i;
                 this.selection.x2 = j;
                 this.selection.y2 = i;
-                this.render(); // Re-render to show start of selection
+                // Invalidate cache when starting new selection
+                this.lastSelectionHash = null;
+                this.scheduleRender(); // Throttled render
             });
             
             window.addEventListener('mousemove', (e) => {
                 if (!this.isDragging) return;
+                if (!this.paeData) return; // No data to select
                 
-                const { i, j } = this.getCellIndices(e);
+                // Get cell indices - handle case where mouse might be outside canvas
+                let cellIndices;
+                try {
+                    cellIndices = this.getCellIndices(e);
+                } catch (err) {
+                    return; // Mouse outside canvas, ignore
+                }
+                const { i, j } = cellIndices;
 
                 // Clamp selection to canvas bounds
                 const n = this.paeData.length;
-                this.selection.x2 = Math.max(0, Math.min(n - 1, j));
-                this.selection.y2 = Math.max(0, Math.min(n - 1, i));
+                const newX2 = Math.max(0, Math.min(n - 1, j));
+                const newY2 = Math.max(0, Math.min(n - 1, i));
                 
-                this.render(); // Re-render to show selection box
+                // Only update if selection actually changed
+                if (this.selection.x2 !== newX2 || this.selection.y2 !== newY2) {
+                    this.selection.x2 = newX2;
+                    this.selection.y2 = newY2;
+                    this.scheduleRender(); // Throttled render
+                }
             });
             
             window.addEventListener('mouseup', (e) => {
                 if (!this.isDragging) return;
                 this.isDragging = false;
                 
-                const i_start = Math.min(this.selection.y1, this.selection.y2);
-                const i_end = Math.max(this.selection.y1, this.selection.y2);
-                const j_start = Math.min(this.selection.x1, this.selection.x2);
-                const j_end = Math.max(this.selection.x1, this.selection.x2);
-                
-                if (i_start < 0 || j_start < 0) { // Dragged off canvas
-                     this.mainRenderer.setResidueVisibility(null);
-                     this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
-                     this.render();
-                     return;
+                let i_start = Math.min(this.selection.y1, this.selection.y2);
+                let i_end = Math.max(this.selection.y1, this.selection.y2);
+                let j_start = Math.min(this.selection.x1, this.selection.x2);
+                let j_end = Math.max(this.selection.x1, this.selection.x2);
+
+                // Clamp to valid range
+                const n = this.paeData.length;
+                if (n === 0 || i_start < 0 || j_start < 0) {
+                    this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                    this.render();
+                    return;
                 }
 
                 // Check for a single-click
                 const isClick = (i_start === i_end && j_start === j_end);
-                
-                if (isClick && this.mainRenderer.visibilityMask) {
-                    // Clicked, and something is already selected -> Clear selection
-                    this.mainRenderer.setResidueVisibility(null);
+
+                if (isClick) {
+                    // Single click: Clear selection
+                    this.mainRenderer.setSelection({ paeBoxes: [] });
                     this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
                 } else {
-                    // New selection (drag or first click)
-                    this.mainRenderer.setResidueVisibility({ i_start, i_end, j_start, j_end });
+                    // Create new box - replaces any existing selection
+                    const newBox = {
+                        i_start: i_start,
+                        i_end: i_end,
+                        j_start: j_start,
+                        j_end: j_end
+                    };
+                    // Replace selection (single box only, no shift-select)
+                    this.mainRenderer.setResidueVisibility(newBox);
                 }
                 
-                this.render(); // Re-render PAE (with or without selection box)
+                this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                // Invalidate cache after selection change
+                this.lastSelectionHash = null;
+                this.cachedSequencePositions = null;
+                this.scheduleRender(); // Throttled render
             });
         }
 
         setData(paeData) {
-            this.paeData = paeData;
-            // Clear selection when data changes
-            this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
-            if (this.mainRenderer.visibilityMask) {
-                 this.mainRenderer.setResidueVisibility(null);
+            // Only clear selection if data actually changed (not just same data on new frame)
+            // For most structures, PAE data is the same across frames, so preserve selection
+            const dataChanged = this.paeData !== paeData && 
+                (this.paeData === null || paeData === null || 
+                 (this.paeData.length !== paeData.length));
+            
+            // If data structure changed, clear selection
+            if (dataChanged) {
+                this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                // [PATCH] Check unified model
+                if (this.mainRenderer.selectionModel.paeBoxes.length > 0) {
+                     this.mainRenderer.setResidueVisibility(null);
+                }
             }
+            
+            this.paeData = paeData;
+            
+            // Invalidate cache when data changes (or on any frame change for color updates)
+            this.baseImageData = null;
+            this.lastSelectionHash = null;
+            this.cachedSequencePositions = null;
             this.render();
+        }
+
+        // Helper function to compute which PAE positions are selected from sequence space
+        // Returns a Set of PAE matrix indices (0-based) that correspond to selected residues/chains
+        // Only returns positions for explicit selections (not default "all" state)
+        getSequenceSelectedPAEPositions() {
+            const selectedPositions = new Set();
+            const renderer = this.mainRenderer;
+            
+            if (!renderer.polymerAtomIndices || renderer.polymerAtomIndices.length === 0) {
+                return selectedPositions;
+            }
+            
+            const selectionModel = renderer.selectionModel;
+            const hasResidueSelection = selectionModel.residues && selectionModel.residues.size > 0;
+            const hasChainSelection = selectionModel.chains && selectionModel.chains.size > 0;
+            const mode = selectionModel.selectionMode || 'default';
+            
+            // Only return positions for explicit selections
+            // In default mode with no explicit selection, return empty (show all at full brightness)
+            if (mode === 'default') {
+                // In default mode, only highlight if there's an explicit residue selection
+                // (not just "all chains" which is the default)
+                if (!hasResidueSelection) {
+                    return selectedPositions; // No explicit selection = show all
+                }
+            }
+            
+            // If no sequence selection, return empty set
+            if (!hasResidueSelection && !hasChainSelection) {
+                return selectedPositions;
+            }
+            
+            // Determine allowed chains
+            let allowedChains;
+            if (hasChainSelection) {
+                allowedChains = selectionModel.chains;
+            } else {
+                // All chains allowed
+                allowedChains = new Set(renderer.chains);
+            }
+            
+            // Map sequence selections to PAE positions
+            // polymerAtomIndices[r] gives the atom index for PAE position r
+            for (let r = 0; r < renderer.polymerAtomIndices.length; r++) {
+                const atomIdx = renderer.polymerAtomIndices[r];
+                if (atomIdx < 0 || atomIdx >= renderer.chains.length) continue;
+                
+                const chain = renderer.chains[atomIdx];
+                const residueIndex = renderer.residue_index[atomIdx];
+                const residueId = `${chain}:${residueIndex}`;
+                
+                // Check if this PAE position is selected
+                const chainMatches = allowedChains.has(chain);
+                const residueMatches = !hasResidueSelection || selectionModel.residues.has(residueId);
+                
+                if (chainMatches && residueMatches) {
+                    selectedPositions.add(r);
+                }
+            }
+            
+            return selectedPositions;
+        }
+
+        // Helper function to check if a cell (i, j) is in any selected box
+        // Note: Visual symmetry is handled in rendering, but selection boxes are NOT symmetric internally
+        isCellSelected(i, j, boxes, previewBox = null, sequenceSelectedPositions = null) {
+            // Check active boxes (non-symmetric - only check if (i,j) is in the box)
+            for (const box of boxes) {
+                const i_start = Math.min(box.i_start, box.i_end);
+                const i_end = Math.max(box.i_start, box.i_end);
+                const j_start = Math.min(box.j_start, box.j_end);
+                const j_end = Math.max(box.j_start, box.j_end);
+                
+                // Check if (i, j) is directly in this box
+                const inBox = (i >= i_start && i <= i_end && j >= j_start && j <= j_end);
+                
+                if (inBox) {
+                    return true;
+                }
+            }
+            
+            // Check preview box if dragging (non-symmetric)
+            if (previewBox) {
+                const i_start = Math.min(previewBox.y1, previewBox.y2);
+                const i_end = Math.max(previewBox.y1, previewBox.y2);
+                const j_start = Math.min(previewBox.x1, previewBox.x2);
+                const j_end = Math.max(previewBox.x1, previewBox.x2);
+                
+                const inBox = (i >= i_start && i <= i_end && j >= j_start && j <= j_end);
+                
+                if (inBox) {
+                    return true;
+                }
+            }
+            
+            // Check if cell is in a sequence-selected region
+            // Only highlight cells where BOTH i AND j are in selected positions
+            // This shows only the specific interactions between selected residues
+            if (sequenceSelectedPositions && sequenceSelectedPositions.size > 0) {
+                // Both row i and column j must be selected
+                if (sequenceSelectedPositions.has(i) && sequenceSelectedPositions.has(j)) {
+                    return true;
+                }
+            }
+            
+            return false;
         }
 
         render() {
@@ -1823,15 +2313,49 @@ function initializePy2DmolViewer(containerElement) {
             
             const cellSize = this.size / n;
             
+            // Get active boxes and preview box
+            const activeBoxes = this.mainRenderer.selectionModel.paeBoxes || [];
+            const previewBox = (this.isDragging && this.selection.x1 !== -1) ? this.selection : null;
+            
+            // Cache sequence-selected PAE positions (only recompute if selection changed)
+            if (this.cachedSequencePositions === null) {
+                this.cachedSequencePositions = this.getSequenceSelectedPAEPositions();
+            }
+            const sequenceSelectedPositions = this.cachedSequencePositions;
+            
+            // Check selection mode
+            const mode = this.mainRenderer.selectionModel?.selectionMode || 'default';
+            
+            // Determine if we should dim non-selected cells
+            // - If there's an active selection (boxes or sequence), dim non-selected
+            // - If in explicit mode with no selection, dim everything (nothing selected)
+            // - If in default mode with no selection, show everything at full brightness
+            const hasActiveSelection = activeBoxes.length > 0 || previewBox !== null || sequenceSelectedPositions.size > 0;
+            const hasSelection = hasActiveSelection || (mode === 'explicit' && !hasActiveSelection);
+            
+            // Dim factor for non-selected cells (0.0 = fully dim, 1.0 = no dimming)
+            const dimFactor = 0.3; // Non-selected cells will be 30% of original brightness
+            
             // Use createImageData for faster rendering
             const imageData = this.ctx.createImageData(this.size, this.size);
             const data = imageData.data;
+            const paeFunc = this.mainRenderer.colorblindMode ? getPAEColor_Colorblind : getPAEColor;
             
             for (let i = 0; i < n; i++) { // y
                 for (let j = 0; j < n; j++) { // x
                     const value = this.paeData[i][j];
-                    const paeFunc = this.mainRenderer.colorblindMode ? getPAEColor_Colorblind : getPAEColor;
-                    const { r, g, b } = paeFunc(value);
+                    let { r, g, b } = paeFunc(value);
+                    
+                    // Check if this cell is selected (or if nothing is selected, show all)
+                    const isSelected = !hasSelection || this.isCellSelected(i, j, activeBoxes, previewBox, sequenceSelectedPositions);
+                    
+                    // Dim non-selected cells by mixing with white
+                    if (!isSelected) {
+                        // Mix with white: dimmed = original * dimFactor + white * (1 - dimFactor)
+                        r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
+                        g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
+                        b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
+                    }
                     
                     // Fill all pixels in the cell
                     const startX = Math.floor(j * cellSize);
@@ -1852,27 +2376,99 @@ function initializePy2DmolViewer(containerElement) {
             }
             this.ctx.putImageData(imageData, 0, 0);
             
-            // Draw selection box if one is active or being drawn
-            if ((this.mainRenderer.visibilityMask || this.isDragging) && this.selection.x1 !== -1) {
-                 const i_start = Math.min(this.selection.y1, this.selection.y2);
-                 const i_end = Math.max(this.selection.y1, this.selection.y2);
-                 const j_start = Math.min(this.selection.x1, this.selection.x2);
-                 const j_end = Math.max(this.selection.x1, this.selection.x2);
-                 
-                 if (i_start < 0 || j_start < 0) return; // Invalid selection
-
-                 const x = j_start * cellSize;
-                 const y = i_start * cellSize;
-                 const w = (j_end - j_start + 1) * cellSize;
-                 const h = (i_end - i_start + 1) * cellSize;
-                 
-                 this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
-                 this.ctx.lineWidth = 4;
-                 this.ctx.strokeRect(x, y, w, h);
-                 
-                 this.ctx.strokeStyle = 'rgba(255, 255, 255, 1.0)';
-                 this.ctx.lineWidth = 2;
-                 this.ctx.strokeRect(x, y, w, h);
+            // Draw selection boxes around selected regions
+            this._drawSelectionBoxes(activeBoxes, previewBox, n, cellSize);
+            
+            // Draw chain boundary lines
+            this._drawChainBoundaries(n, cellSize);
+        }
+        
+        // Helper to draw selection boxes around selected regions
+        _drawSelectionBoxes(activeBoxes, previewBox, n, cellSize) {
+            this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)'; // Black box
+            this.ctx.lineWidth = 2;
+            this.ctx.setLineDash([]);
+            
+            // Draw active boxes
+            for (const box of activeBoxes) {
+                const i_start = Math.min(box.i_start, box.i_end);
+                const i_end = Math.max(box.i_start, box.i_end);
+                const j_start = Math.min(box.j_start, box.j_end);
+                const j_end = Math.max(box.j_start, box.j_end);
+                
+                const x1 = Math.floor(j_start * cellSize);
+                const y1 = Math.floor(i_start * cellSize);
+                const x2 = Math.floor((j_end + 1) * cellSize);
+                const y2 = Math.floor((i_end + 1) * cellSize);
+                
+                this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+            }
+            
+            // Draw preview box if dragging
+            if (previewBox && previewBox.x1 !== -1) {
+                const i_start = Math.min(previewBox.y1, previewBox.y2);
+                const i_end = Math.max(previewBox.y1, previewBox.y2);
+                const j_start = Math.min(previewBox.x1, previewBox.x2);
+                const j_end = Math.max(previewBox.x1, previewBox.x2);
+                
+                const x1 = Math.floor(j_start * cellSize);
+                const y1 = Math.floor(i_start * cellSize);
+                const x2 = Math.floor((j_end + 1) * cellSize);
+                const y2 = Math.floor((i_end + 1) * cellSize);
+                
+                // Dashed line for preview
+                this.ctx.setLineDash([5, 5]);
+                this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)'; // Lighter black for preview
+                this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+                this.ctx.setLineDash([]);
+            }
+        }
+        
+        // Helper to draw chain boundary lines in PAE plot
+        _drawChainBoundaries(n, cellSize) {
+            const renderer = this.mainRenderer;
+            if (!renderer.polymerAtomIndices || renderer.polymerAtomIndices.length === 0) return;
+            if (!renderer.chains) return;
+            
+            const boundaries = new Set(); // Set of PAE positions where chain changes
+            
+            // Find chain boundaries in polymerAtomIndices
+            for (let r = 0; r < renderer.polymerAtomIndices.length - 1; r++) {
+                const atomIdx1 = renderer.polymerAtomIndices[r];
+                const atomIdx2 = renderer.polymerAtomIndices[r + 1];
+                
+                if (atomIdx1 >= 0 && atomIdx1 < renderer.chains.length &&
+                    atomIdx2 >= 0 && atomIdx2 < renderer.chains.length) {
+                    const chain1 = renderer.chains[atomIdx1];
+                    const chain2 = renderer.chains[atomIdx2];
+                    
+                    if (chain1 !== chain2) {
+                        // Chain boundary at position r+1 (draw line before this position)
+                        boundaries.add(r + 1);
+                    }
+                }
+            }
+            
+            if (boundaries.size === 0) return; // No boundaries to draw
+            
+            // Draw vertical and horizontal lines at chain boundaries
+            this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)'; // Subtle gray lines
+            this.ctx.lineWidth = 1;
+            
+            for (const pos of boundaries) {
+                const coord = Math.floor(pos * cellSize);
+                
+                // Vertical line
+                this.ctx.beginPath();
+                this.ctx.moveTo(coord, 0);
+                this.ctx.lineTo(coord, this.size);
+                this.ctx.stroke();
+                
+                // Horizontal line
+                this.ctx.beginPath();
+                this.ctx.moveTo(0, coord);
+                this.ctx.lineTo(this.size, coord);
+                this.ctx.stroke();
             }
         }
     }
@@ -1971,6 +2567,8 @@ function initializePy2DmolViewer(containerElement) {
         renderer.colorMode = e.target.value;
         renderer.colors = renderer._calculateSegmentColors();
         renderer.render();
+        // Dispatch a custom event to notify external listeners (like the sequence viewer)
+        document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
     });
     
     // Setup shadowEnabledCheckbox
@@ -2081,30 +2679,28 @@ function initializePy2DmolViewer(containerElement) {
 
     <!-- 11. Load initial data
     if (window.staticObjectData && window.staticObjectData.length > 0) {
-        <!-- === STATIC MODE (from show()) ===
+        // === STATIC MODE (from show()) ===
         try {
-            <!-- Loop over all objects (NEW STRUCTURE)
             for (const obj of window.staticObjectData) {
                 if (obj.name && obj.frames && obj.frames.length > 0) {
                     
-                    // Get the static data from the *object* level
-                    const staticChains = obj.chains;
-                    const staticAtomTypes = obj.atom_types;
+                    const staticChains = obj.chains; // Might be undefined
+                    const staticAtomTypes = obj.atom_types; // Might be undefined
                     
-                    // Loop through the "light" frames
                     for (let i = 0; i < obj.frames.length; i++) {
-                        const lightFrame = obj.frames[i]; // This only has coords/plddts/pae
+                        const lightFrame = obj.frames[i];
                         
-                        // Re-construct the full frame data expected by addFrame
+                        // Re-construct the full frame data, keys might be undefined
                         const fullFrameData = {
                             coords: lightFrame.coords,
                             plddts: lightFrame.plddts,
-                            pae: lightFrame.pae, // PAE is per-frame
+                            pae: lightFrame.pae,
                             chains: staticChains,
-                            atom_types: staticAtomTypes
+                            atom_types: staticAtomTypes,
+                            residues: lightFrame.residues,
+                            residue_index: lightFrame.residue_index
                         };
                         
-                        // Pass the re-hydrated frame to the renderer
                         renderer.addFrame(fullFrameData, obj.name);
                     }
                 }

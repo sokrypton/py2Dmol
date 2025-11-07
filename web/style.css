@@ -1,37 +1,74 @@
 /* ============================================================================
+   CSS VARIABLES & DESIGN TOKENS
+   ============================================================================ */
+:root {
+    --color-primary: #3b82f6;
+    --color-primary-hover: #2563eb;
+    --color-primary-dark: #1d4ed8;
+    --color-success: #10b981;
+    --color-success-hover: #059669;
+    --color-gray-50: #f9fafb;
+    --color-gray-100: #f3f4f6;
+    --color-gray-200: #e5e7eb;
+    --color-gray-300: #d1d5db;
+    --color-gray-400: #9ca3af;
+    --color-gray-500: #6b7280;
+    --color-gray-600: #4b5563;
+    --color-gray-700: #374151;
+    --color-gray-800: #1f2937;
+    --color-gray-900: #111827;
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-full: 9999px;
+    --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================================================
    BASE & LAYOUT
    ============================================================================ */
 .py2dmol-viewer-instance * { 
     box-sizing: border-box; 
 }
 
+/* [EDIT] Centered viewer on the page */
 .py2dmol-viewer-instance {
     position: relative;
-    font-family: 'Inter', sans-serif; 
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
     background: transparent;
-    display: inline-block; 
-    line-height: 0; 
+    display: block;
+    margin: 0 auto;
+    width: 948px;
+    line-height: 1.5; 
 }
+/* [END EDIT] */
 
 .py2dmol-viewer-instance #mainContainer {
     display: flex;
     flex-direction: row;
     align-items: flex-start; 
-    gap: 24px; 
+    gap: 8px; 
     background: transparent;
 }
 
 .py2dmol-viewer-instance #viewerColumn {
     display: flex;
     flex-direction: column;
-    gap: 10px; 
+    gap: 12px; 
     min-width: 600px; 
 }
 
 .py2dmol-viewer-instance #canvasContainer {
     display: inline-block;
     border: 1px solid #e5e7eb; 
-    border-radius: 12px;
+    border-radius: 10px;
     overflow: auto; 
     background: #ffffff;
     resize: both; 
@@ -39,7 +76,13 @@
     height: 600px; 
     min-width: 200px; 
     min-height: 200px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+    box-shadow: var(--shadow-md);
+    transition: box-shadow var(--transition-base), border-color var(--transition-base);
+}
+
+.py2dmol-viewer-instance #canvasContainer:hover {
+    box-shadow: var(--shadow-lg);
+    border-color: var(--color-gray-300);
 }
 
 .py2dmol-viewer-instance #canvas {
@@ -47,6 +90,7 @@
     cursor: grab;
     display: block;
     touch-action: none;
+    transition: cursor var(--transition-fast);
 }
 
 .py2dmol-viewer-instance #canvas:active {
@@ -56,14 +100,19 @@
 .py2dmol-viewer-instance #rightPanelContainer {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    width: 324px; 
+    gap: 12px;
+    width: 340px; 
     border: 1px solid #e5e7eb;
-    border-radius: 12px; 
-    padding: 20px; 
+    border-radius: 10px; 
+    padding: 16px; 
     background: #ffffff; 
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-    flex-shrink: 0; 
+    box-shadow: var(--shadow-md);
+    flex-shrink: 0;
+    transition: box-shadow var(--transition-base);
+}
+
+.py2dmol-viewer-instance #rightPanelContainer:hover {
+    box-shadow: var(--shadow-lg);
 }
 
 /* ============================================================================
@@ -73,63 +122,131 @@
 /* Primary blue button (Fetch button) */
 #fetch-btn {
     height: 42px;
-    padding: 0 16px;
-    border-radius: 8px;
+    padding: 0 18px;
+    border-radius: var(--radius-md);
     font-size: 14px;
     font-weight: 600;
     border: none;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all var(--transition-base);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: linear-gradient(to bottom, #3b82f6, #2563eb);
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
     color: white;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+    box-shadow: var(--shadow-sm);
     min-width: 100px;
+    position: relative;
+    overflow: hidden;
+}
+
+#fetch-btn::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+    transition: left var(--transition-slow);
 }
 
 #fetch-btn:hover {
-    background: linear-gradient(to bottom, #2563eb, #1d4ed8);
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-primary-dark) 100%);
+    box-shadow: var(--shadow-md);
     transform: translateY(-1px);
+}
+
+#fetch-btn:hover::before {
+    left: 100%;
 }
 
 #fetch-btn:active {
     transform: translateY(0);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    box-shadow: var(--shadow-sm);
+}
+
+#fetch-btn:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
 }
 
 /* Secondary grey button (Upload button) */
 #upload-button {
     height: 42px;
-    padding: 0 16px;
-    border-radius: 8px;
+    padding: 0 18px;
+    border-radius: var(--radius-md);
     font-size: 14px;
     font-weight: 600;
     border: none;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all var(--transition-base);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: linear-gradient(to bottom, #6b7280, #4b5563);
+    background: linear-gradient(135deg, var(--color-gray-600) 0%, var(--color-gray-700) 100%);
     color: white;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+    box-shadow: var(--shadow-sm);
     min-width: 170px;
 }
 
 #upload-button:hover {
-    background: linear-gradient(to bottom, #4b5563, #374151);
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+    background: linear-gradient(135deg, var(--color-gray-700) 0%, var(--color-gray-800) 100%);
+    box-shadow: var(--shadow-md);
     transform: translateY(-1px);
 }
 
 #upload-button:active {
     transform: translateY(0);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    box-shadow: var(--shadow-sm);
+}
+
+#upload-button:focus-visible {
+    outline: 2px solid var(--color-gray-600);
+    outline-offset: 2px;
+}
+
+/* Example buttons - green style */
+#example-button-1,
+#example-button-2 {
+    height: 42px;
+    padding: 0 18px;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    box-shadow: var(--shadow-sm);
+    min-width: 100px;
+    flex: 1;
+}
+
+#example-button-1:hover,
+#example-button-2:hover {
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+#example-button-1:active,
+#example-button-2:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm);
+}
+
+#example-button-1:focus-visible,
+#example-button-2:focus-visible {
+    outline: 2px solid #10b981;
+    outline-offset: 2px;
 }
 
 /* Control buttons (Play button) */
@@ -589,6 +706,77 @@
     font-size: 14px;
 }
 
+/* #top-panel-container display is controlled by JS */
+
+/* [EDIT] Removed old #sequenceViewContainer styles */
+
+/* [EDIT] Updated #sequenceView styles */
+#sequenceView {
+    display: flex; /* Changed from inline-flex */
+    flex-direction: column; /* Stack chains vertically */
+    gap: 4px; /* [EDIT] Tighter spacing between chains */
+}
+
+/* [EDIT] Chain container with two columns: chain button and sequence */
+.chain-container {
+    margin-bottom: 4px;
+    overflow: hidden; /* Prevent overflow */
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.chain-button-column {
+    flex-shrink: 0;
+}
+
+
+.chain-container canvas {
+    /* width and height are set inline by JavaScript - don't override */
+    margin: 0;
+    padding: 0;
+    display: block;
+    /* Prevent any CSS from affecting canvas dimensions */
+    box-sizing: border-box;
+}
+
+.chain-residues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1px;
+}
+/* [END EDIT] */
+
+
+#sequenceView .residue-span {
+    cursor: pointer;
+    padding: 3px 5px;
+    border-radius: var(--radius-sm);
+    font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all var(--transition-fast);
+    user-select: none;
+    position: relative;
+}
+
+#sequenceView .residue-span:hover {
+    background-color: var(--color-gray-100);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+}
+
+/* Style for selected residues */
+#sequenceView .residue-span.selected {
+    /* background-color set by JS */
+    /* color set by JS */
+    border-radius: var(--radius-sm);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+    font-weight: 600;
+}
+
+
 /* ============================================================================
    PAE CONTAINER
    ============================================================================ */
@@ -598,11 +786,17 @@
     width: 296px; 
     height: 296px; 
     border: 1px solid #e5e7eb;
-    border-radius: 12px;
+    border-radius: 10px;
     overflow: hidden;
     background: #ffffff;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+    box-shadow: var(--shadow-md);
     margin: 12px auto 0 auto;
+    transition: box-shadow var(--transition-base), border-color var(--transition-base);
+}
+
+.py2dmol-viewer-instance #paeContainer:hover {
+    box-shadow: var(--shadow-lg);
+    border-color: var(--color-gray-300);
 }
 
 /* ============================================================================
@@ -775,3 +969,135 @@ table.layout-table {
 table.layout-table td {
     vertical-align: top;
 }
+
+/* Selection Mode Toggle */
+.selection-mode-toggle {
+    display: flex;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.selection-mode-toggle label {
+    flex: 1;
+    text-align: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    background-color: #f9fafb;
+    color: #4b5563;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
+    position: relative;
+}
+
+.selection-mode-toggle label:first-of-type {
+    border-right: 1px solid #d1d5db;
+}
+
+.selection-mode-toggle input[type="radio"] {
+    display: none;
+}
+
+.selection-mode-toggle input[type="radio"]:checked + span {
+    color: #ffffff;
+}
+
+.selection-mode-toggle label:has(input:checked) {
+    background-color: #4f46e5;
+    color: #ffffff;
+}
+
+/* [EDIT] Removed old opacity styles for .residue-span */
+
+/* [EDIT] Appended new styles for accordion, pills, and sequence view */
+/* Sequence section container with box */
+.sequence-section-container {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 8px;
+}
+
+/* Reduce bottom margin when collapsed to remove extra white space */
+.sequence-section-container.collapsed {
+  margin-bottom: 4px;
+}
+
+/* Sequence header with toggle */
+.sequence-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 0;
+}
+
+.sequence-content:not(.hidden) {
+  margin-top: 8px;
+}
+
+.sequence-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.sequence-toggle-btn:hover {
+  color: #1f2937;
+}
+
+.sequence-toggle-btn .chevron {
+  font-size: 24px;
+  color: #6b7280;
+  transition: transform 0.2s ease;
+  line-height: 1;
+  font-weight: normal;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.sequence-title {
+  font-weight: 600;
+  color: #374151;
+  font-size: 15px;
+}
+
+.sequence-content.hidden {
+  display: none;
+}
+
+.sequence-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.nav-button.small { 
+  height: 28px; 
+  line-height: 28px; 
+  padding: 0 10px; 
+  font-size: 12px; 
+}
+
+/* Chain buttons are now drawn on canvas - no CSS needed */
+
+/* Sequence view container */
+/* [EDIT] Removed border, background, and padding from #sequenceView */
+#sequenceView .residue-span { padding:2px 3px; }
+
+/* Selected residue – background set inline via JS; keep CSS minimal */
+#sequenceView .residue-span.selected {
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.08);
+}
+/* [END EDIT] */

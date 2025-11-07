@@ -77,77 +77,86 @@ class view:
         self._chains = None
         self._atom_types = None
         self._pae = None
+        self._residues = None
+        self._residue_index = None
 
     def _get_data_dict(self):
-        """Serializes the current coordinate state to a dict."""
+        """
+        Serializes the current coordinate state to a dict, omitting
+        any attributes that are None.
+        """
+        payload = {}
         
-        # Round arrays before converting to list
-        # Coords to 3 decimal places (float)
-        rounded_coords = np.round(self._coords, 2)
-        
-        # pLDDTs to 0 decimal places (integer)
-        rounded_plddts = np.round(self._plddts, 0).astype(int)
-        
-        rounded_pae = None
-        if self._pae is not None:
-            # PAE to 0 decimal places (integer)
-            rounded_pae = np.round(self._pae, 0).astype(int).tolist()
+        # Coords are mandatory
+        if self._coords is not None:
+            payload["coords"] = np.round(self._coords, 2).tolist()
+        else:
+            # If there are no coordinates, return an empty dict
+            return {}
 
-        payload = {
-            "coords": rounded_coords.tolist(),
-            "plddts": rounded_plddts.tolist(),
-            "chains": list(self._chains),
-            "atom_types": list(self._atom_types),
-            "pae": rounded_pae
-        }
+        # Optional attributes
+        if self._plddts is not None:
+            payload["plddts"] = np.round(self._plddts, 0).astype(int).tolist()
+
+        if self._chains is not None:
+            payload["chains"] = list(self._chains)
+
+        if self._atom_types is not None:
+            payload["atom_types"] = list(self._atom_types)
+
+        if self._pae is not None:
+            payload["pae"] = np.round(self._pae, 0).astype(int).tolist()
+
+        if self._residues is not None:
+            payload["residues"] = list(self._residues)
+
+        if self._residue_index is not None:
+            payload["residue_index"] = list(self._residue_index)
+
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, atom_types=None, pae=None, align=True):
-      """Updates the internal state with new data, aligning coords."""
+    def _update(self, coords, plddts=None, chains=None, atom_types=None, pae=None, align=True, residues=None, residue_index=None):
+      """
+      Updates the internal state with new data. It no longer creates
+      default values, simply storing what is provided.
+      """
+      # --- Coordinate Alignment ---
       if self._coords is None:
-        self._coords = best_view(coords) if align else coords
+          # First frame of an object, align to best view
+          self._coords = best_view(coords) if align else coords
       else:
-        if align and self._coords.shape == coords.shape:
-            self._coords = align_a_to_b(coords, self._coords)
-        else:
-            self._coords = coords
+          # Subsequent frames, align to the first frame
+          if align and self._coords.shape == coords.shape:
+              self._coords = align_a_to_b(coords, self._coords)
+          else:
+              self._coords = coords
       
+      # --- Store Provided Data (or None) ---
+      self._plddts = plddts
+      self._chains = chains
+      self._atom_types = atom_types
+      self._pae = pae
+      self._residues = residues
+      self._residue_index = residue_index
+
+      # --- Final Safety Check (ensure arrays match coord length if provided) ---
       n_atoms = self._coords.shape[0]
-
-      # 1. Handle pLDDTs
-      if plddts is not None:
-          # New data is provided, use it
-          self._plddts = plddts
-      elif self._plddts is None or len(self._plddts) != n_atoms:
-          # No new data, and old data is missing or wrong size, create default
-          self._plddts = np.full(n_atoms, 50.0)
-      # Else: plddts is None, but self._plddts is valid and correct size, so keep it.
-
-      # 2. Handle Chains
-      if chains is not None:
-          self._chains = chains
-      elif self._chains is None or len(self._chains) != n_atoms:
-          self._chains = ["A"] * n_atoms
       
-      # 3. Handle Atom Types
-      if atom_types is not None:
-          self._atom_types = atom_types
-      elif self._atom_types is None or len(self._atom_types) != n_atoms:
-          self._atom_types = ["P"] * n_atoms
-          
-      # 4. Handle PAE
-      self._pae = pae # Store PAE matrix (or None)
-
-      # Ensure all arrays have the same length as coords (final safety check)
-      if len(self._plddts) != n_atoms:
-          print(f"Warning: pLDDT length mismatch. Resetting to default.")
-          self._plddts = np.full(n_atoms, 50.0)
-      if len(self._chains) != n_atoms:
-          print(f"Warning: Chains length mismatch. Resetting to default.")
-          self._chains = ["A"] * n_atoms
-      if len(self._atom_types) != n_atoms:
-          print(f"Warning: Atom types length mismatch. Resetting to default.")
-          self._atom_types = ["P"] * n_atoms
+      if self._plddts is not None and len(self._plddts) != n_atoms:
+          print(f"Warning: pLDDT length mismatch. Ignoring pLDDTs for this frame.")
+          self._plddts = None
+      if self._chains is not None and len(self._chains) != n_atoms:
+          print(f"Warning: Chains length mismatch. Ignoring chains for this frame.")
+          self._chains = None
+      if self._atom_types is not None and len(self._atom_types) != n_atoms:
+          print(f"Warning: Atom types length mismatch. Ignoring atom types for this frame.")
+          self._atom_types = None
+      if self._residues is not None and len(self._residues) != n_atoms:
+          print(f"Warning: Residues length mismatch. Ignoring residues for this frame.")
+          self._residues = None
+      if self._residue_index is not None and len(self._residue_index) != n_atoms:
+          print(f"Warning: Residue index length mismatch. Ignoring residue indices for this frame.")
+          self._residue_index = None
 
     def _send_message(self, message_dict):
         """Generates JS to directly call the viewer's API."""
@@ -163,8 +172,8 @@ class view:
             # Create a JavaScript string literal *from* that JSON string
             payload_js_literal = json.dumps(payload_json_string) 
             
-            object_name = message_dict.get("objectName", "")
-            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonUpdate({payload_js_literal}, '{object_name}');"
+            name = message_dict.get("name", "")
+            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonUpdate({payload_js_literal}, '{name}');"
         
         elif msg_type == "py2DmolNewObject":
             name = message_dict.get("name", "")
@@ -213,40 +222,40 @@ class view:
         data_script = ""
         
         if static_data and isinstance(static_data, list):
-            # --- START NEW LOGIC (Plan 2, Corrected) ---
-            # Create a new, lighter list for serialization
             serialized_objects = []
-            for py_obj in static_data: # static_data is self.objects
+            for py_obj in static_data:
                 if not py_obj.get("frames"):
                     continue
-                    
-                # Take static data from the *first* frame
+
+                light_frames = []
+                for frame in py_obj["frames"]:
+                    light_frame = {}
+                    if "name" in frame and frame["name"] is not None:
+                        light_frame["name"] = frame["name"]
+                    if "coords" in frame:
+                        light_frame["coords"] = frame["coords"]
+                    if "plddts" in frame and frame["plddts"] is not None:
+                        light_frame["plddts"] = frame["plddts"]
+                    if "pae" in frame and frame["pae"] is not None:
+                        light_frame["pae"] = frame["pae"]
+                    if "residues" in frame and frame["residues"] is not None:
+                        light_frame["residues"] = frame["residues"]
+                    if "residue_index" in frame and frame["residue_index"] is not None:
+                        light_frame["residue_index"] = frame["residue_index"]
+                    light_frames.append(light_frame)
+
+                # For static data, we still need to provide chains and atom_types
+                # for the whole object, but only if they exist in the first frame.
                 first_frame = py_obj["frames"][0]
-                static_chains = first_frame.get("chains", [])
-                static_atom_types = first_frame.get("atom_types", [])
+                obj_to_serialize = {"name": py_obj.get("name"), "frames": light_frames}
+                if "chains" in first_frame and first_frame["chains"] is not None:
+                    obj_to_serialize["chains"] = first_frame["chains"]
+                if "atom_types" in first_frame and first_frame["atom_types"] is not None:
+                    obj_to_serialize["atom_types"] = first_frame["atom_types"]
                 
-                # Find the first non-None PAE matrix to store - NO, PAE is per-frame
-                # static_pae = None ... (REMOVED)
-                
-                # Create a list of frames containing coords, plddts, AND pae
-                light_frames = [
-                    {
-                        "coords": frame.get("coords"),
-                        "plddts": frame.get("plddts"),
-                        "pae": frame.get("pae") # PAE is per-frame
-                    } for frame in py_obj["frames"]
-                ]
-                
-                serialized_objects.append({
-                    "name": py_obj.get("name"),
-                    "chains": static_chains,
-                    "atom_types": static_atom_types,
-                    # "pae": None, # (REMOVED)
-                    "frames": light_frames # This list is much smaller
-                })
+                serialized_objects.append(obj_to_serialize)
 
             data_json = json.dumps(serialized_objects)
-            # --- END NEW LOGIC (Plan 2, Corrected) ---
             
             data_script = f'<script id="static-data">window.staticObjectData = {data_json};</script>'
         else:
@@ -316,7 +325,7 @@ class view:
         self._pae = None
         self._is_live = False
 
-    def new_obj(self, object_name=None):
+    def new_obj(self, name=None):
         """Starts a new object for subsequent 'add' calls."""
         
         # This is a new object, reset the alignment reference
@@ -326,13 +335,13 @@ class view:
         self._atom_types = None
         self._pae = None
 
-        if object_name is None:
-            object_name = f"{len(self.objects)}"
+        if name is None:
+            name = f"{len(self.objects)}"
             
         # Always update the python-side data
         self._current_object_data = [] # List to hold frames
         self.objects.append({
-            "name": object_name,
+            "name": name,
             "frames": self._current_object_data
         })
         
@@ -340,11 +349,11 @@ class view:
         if self._is_live:
             self._send_message({
                 "type": "py2DmolNewObject",
-                "name": object_name
+                "name": name
             })
     
     def add(self, coords, plddts=None, chains=None, atom_types=None, pae=None,
-            new_obj=False, object_name=None, align=True):
+            new_obj=False, name=None, align=True, residues=None, residue_index=None):
         """
         Adds a new *frame* of data to the viewer.
         
@@ -357,20 +366,27 @@ class view:
             atom_types (list, optional): N-length list of atom types ('P', 'D', 'R', 'L').
             pae (np.array, optional): LxL PAE matrix.
             new_obj (bool, optional): If True, starts a new object. Defaults to False.
-            object_name (str, optional): Name for the new object.
+            name (str, optional): Name for the new object or frame.
+            residues (list, optional): N-length list of residue names.
+            residue_index (list, optional): N-length list of residue indices.
         """
         
         # --- Step 1: Update Python-side alignment state ---
-        self._update(coords, plddts, chains, atom_types, pae, align=align) # This handles defaults
+        self._update(coords, plddts, chains, atom_types, pae, align=align, residues=residues, residue_index=residue_index) # This handles defaults
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         # --- Step 2: Handle object creation ---
+        object_name = name if new_obj else None
+        frame_name = name if not new_obj else None
+
         if new_obj or not self.objects:
             self.new_obj(object_name)
         
         # Safeguard: ensure _current_object_data exists
         if self._current_object_data is None:
             self.new_obj(object_name)
+
+        data_dict["name"] = frame_name
             
         # --- Step 3: Always save data to Python list ---
         self._current_object_data.append(data_dict)
@@ -379,12 +395,12 @@ class view:
         if self._is_live:
             self._send_message({
                 "type": "py2DmolUpdate",
-                "objectName": self.objects[-1]["name"],
+                "name": self.objects[-1]["name"],
                 "payload": data_dict
             })
 
 
-    def add_pdb(self, filepath, chains=None, new_obj=False, object_name=None, pae=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
+    def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -397,8 +413,8 @@ class view:
             filepath (str): Path to the PDB or CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
             new_obj (bool, optional): If True, starts a new object. Defaults to False.
-            object_name (str, optional): Name for the new object.
-            pae (np.array, optional): PAE matrix to associate with the *first* model.
+            name (str, optional): Name for the new object.
+            paes (list, optional): List of PAE matrices to associate with each model.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
@@ -406,7 +422,7 @@ class view:
         
         # --- Handle new_obj logic FIRST ---
         if new_obj or not self.objects:
-             self.new_obj(object_name)
+             self.new_obj(name)
         
         current_obj_name = self.objects[-1]["name"]
 
@@ -450,13 +466,12 @@ class view:
             models_to_process = [model for model in structure]
         
         # --- Process all selected models (either the biounit or all ASU models) ---
-        is_first_model = True
         if not models_to_process and len(structure) > 0:
              print(f"Warning: No models selected or generated for {filepath}, but structure was loaded.")
              # This can happen if biounit fails but structure had no models
              
-        for model in models_to_process:
-            coords, plddts, atom_chains, atom_types = self._parse_model(model, chains, ignore_ligands=ignore_ligands)
+        for i, model in enumerate(models_to_process):
+            coords, plddts, atom_chains, atom_types, residues, residue_index = self._parse_model(model, chains, ignore_ligands=ignore_ligands)
 
             if coords:
                 coords_np = np.array(coords)
@@ -467,16 +482,16 @@ class view:
                     plddts_np = np.full(len(coords_np), 50.0)
                 
                 # Only add PAE matrix to the first model
-                pae_to_add = pae if is_first_model else None
+                pae_to_add = paes[i] if paes and i < len(paes) else None
 
                 # Call add() - this will handle batch vs. live
                 self.add(coords_np, plddts_np, atom_chains, atom_types,
                     pae=pae_to_add,
                     new_obj=False, # We already handled new_obj
-                    object_name=current_obj_name, # Add to the same object
-                    align=align)
-                
-                is_first_model = False
+                    name=f"model_{i+1}", # Add to the same object
+                    align=align,
+                    residues=residues,
+                    residue_index=residue_index)
 
     def _parse_model(self, model, chains_filter, ignore_ligands=False):
         """Helper function to parse a gemmi.Model object."""
@@ -484,6 +499,8 @@ class view:
         plddts = []
         atom_chains = []
         atom_types = []
+        residues = []
+        residue_index = []
 
         for chain in model:
             if chains_filter is None or chain.name in chains_filter:
@@ -502,6 +519,8 @@ class view:
                             plddts.append(atom.b_iso)
                             atom_chains.append(chain.name)
                             atom_types.append('P')
+                            residues.append(residue.name)
+                            residue_index.append(residue.seqid.num)
                             
                     elif is_nucleic:
                         c4_atom = None
@@ -522,6 +541,8 @@ class view:
                                 atom_types.append('D')
                             else:
                                 atom_types.append('R') # Default to RNA
+                            residues.append(residue.name)
+                            residue_index.append(residue.seqid.num)
                                 
                     else:
                         # Ligand: use all heavy atoms
@@ -532,7 +553,9 @@ class view:
                                     plddts.append(atom.b_iso)
                                     atom_chains.append(chain.name)
                                     atom_types.append('L')
-        return coords, plddts, atom_chains, atom_types
+                                    residues.append(residue.name)
+                                    residue_index.append(residue.seqid.num)
+        return coords, plddts, atom_chains, atom_types, residues, residue_index
 
     def _get_filepath_from_pdb_id(self, pdb_id):
         """
@@ -611,7 +634,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_obj=False, object_name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
+    def from_pdb(self, pdb_id, chains=None, new_obj=False, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and displays the viewer.
@@ -620,7 +643,7 @@ class view:
             pdb_id (str): 4-character PDB code or a path to a local PDB/CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
             new_obj (bool, optional): If True, starts a new object. Defaults to False.
-            object_name (str, optional): Name for the new object.
+            name (str, optional): Name for the new object.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
@@ -629,7 +652,7 @@ class view:
         
         if filepath:
             self.add_pdb(filepath, chains=chains, new_obj=new_obj, 
-                         object_name=object_name, pae=None, align=align,
+                         name=name, paes=None, align=align,
                          use_biounit=use_biounit, biounit_name=biounit_name,
                          ignore_ligands=ignore_ligands)
             if not self._is_live: # Only call show() if it hasn't been called
@@ -637,7 +660,7 @@ class view:
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, new_obj=False, object_name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
+    def from_afdb(self, uniprot_id, chains=None, new_obj=False, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and displays the viewer.
@@ -649,7 +672,7 @@ class view:
             uniprot_id (str): UniProt accession code (e.g., "P0A8I3").
             chains (list, optional): Specific chains to load. Defaults to all.
             new_obj (bool, optional): If True, starts a new object. Defaults to False.
-            object_name (str, optional): Name for the new object.
+            name (str, optional): Name for the new object.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
@@ -679,7 +702,7 @@ class view:
         # --- Add PDB (and PAE if loaded) ---
         if struct_filepath:
             self.add_pdb(struct_filepath, chains=chains, new_obj=new_obj,
-                object_name=object_name, pae=pae_matrix, align=align,
+                name=name, paes=[pae_matrix] if pae_matrix is not None else None, align=align,
                 use_biounit=use_biounit, biounit_name=biounit_name,
                 ignore_ligands=ignore_ligands)
             if not self._is_live: # Only call show() if it hasn't been called
