@@ -196,12 +196,24 @@
             color: #333;
         }
         
-        #paeCanvas {
+        #paeContainer {
             display: none; /* JS will manage visibility */
-            flex-shrink: 0;
+            width: 100%;
+            aspect-ratio: 1;
             border: 1px solid #ddd;
             border-radius: 12px;
             background: #ffffff;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        #paeCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
         }
         
         /* Style for the initialization error message */
@@ -259,7 +271,9 @@
         </div>
         
         <!-- PAE Canvas -->
-        <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair; display: none;"></canvas>
+        <div id="paeContainer" style="display: none;">
+            <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
+        </div>
         
         <!-- Right Column -->
         <div id="rightPanelContainer">

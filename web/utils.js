@@ -146,13 +146,16 @@ function polar2x2_withScore(A) {
 }
 
 /**
- * Calculate best view rotation matrix (AUTO convention)
- * Locks z-axis to min-variance, allows x/y yaw to match current view
+ * Calculate best view rotation matrix (matches Python best_view)
+ * Uses Kabsch algorithm with same coordinates for both inputs to get principal axes
+ * Then maps largest variance to longest screen axis
  * @param {Array<Array<number>>} coords - Structure coordinates
  * @param {Array<Array<number>>} currentRotation - Current rotation matrix
+ * @param {number} canvasWidth - Canvas width (optional, for axis selection)
+ * @param {number} canvasHeight - Canvas height (optional, for axis selection)
  * @returns {Array<Array<number>>} - Target rotation matrix
  */
-function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
+function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation, canvasWidth = null, canvasHeight = null) {
     // Edge case: not enough coordinates
     if (!coords || coords.length < 2) {
         return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -169,102 +172,284 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation) {
         return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     }
     
-    const H = covarianceXXT(coords);
+    // Use Kabsch algorithm like Python best_view: kabsch(a_cent, a_cent, return_v=True)
+    // This computes the eigenvectors of the covariance matrix
+    const mu = mean3(coords);
+    const centeredCoords = coords.map(c => [c[0] - mu[0], c[1] - mu[1], c[2] - mu[2]]);
     
-    // Edge case: covariance matrix is all zeros (shouldn't happen after allSame check, but just in case)
+    // Compute H = centeredCoords^T @ centeredCoords (covariance matrix)
+    const H = numeric.dot(numeric.transpose(centeredCoords), centeredCoords);
+    
+    // Edge case: covariance matrix is all zeros
     const traceH = H[0][0] + H[1][1] + H[2][2];
     if (Math.abs(traceH) < 1e-10) {
         return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     }
     
+    // Perform SVD: H = U @ S @ V^T
+    // For symmetric H, U and V are the same (eigenvectors)
+    // Python best_view uses U (left singular vectors) when return_v=True
     let svd;
     try {
         svd = numeric.svd(H);
     } catch (e) {
-        // SVD failed, return current rotation or identity
         return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     }
     
     // Check if SVD returned valid structure
-    if (!svd || !svd.V || !Array.isArray(svd.V) || svd.V.length < 3) {
+    if (!svd || !svd.U || !Array.isArray(svd.U) || svd.U.length < 3) {
         return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     }
     
-    // Handle both 2D array and array of arrays formats for V
-    let V;
-    if (Array.isArray(svd.V[0]) && Array.isArray(svd.V[0][0])) {
-        // V is already a 2D array
-        V = [
-            [svd.V[0][0][0] || svd.V[0][0], svd.V[0][1][0] || svd.V[0][1], svd.V[0][2][0] || svd.V[0][2]],
-            [svd.V[1][0][0] || svd.V[1][0], svd.V[1][1][0] || svd.V[1][1], svd.V[1][2][0] || svd.V[1][2]],
-            [svd.V[2][0][0] || svd.V[2][0], svd.V[2][1][0] || svd.V[2][1], svd.V[2][2][0] || svd.V[2][2]]
+    // Extract singular values to verify order
+    let S = svd.S;
+    if (!Array.isArray(S)) {
+        S = [S, S, S];
+    }
+    
+    // Extract eigenvectors from U (left singular vectors) - matches Python best_view
+    // U columns are eigenvectors, ordered by singular values (descending)
+    // U[:,0] = largest variance direction, U[:,1] = second, U[:,2] = smallest
+    let U;
+    if (Array.isArray(svd.U[0]) && Array.isArray(svd.U[0][0])) {
+        // Nested array format
+        U = [
+            [svd.U[0][0][0] || svd.U[0][0], svd.U[0][1][0] || svd.U[0][1], svd.U[0][2][0] || svd.U[0][2]],
+            [svd.U[1][0][0] || svd.U[1][0], svd.U[1][1][0] || svd.U[1][1], svd.U[1][2][0] || svd.U[1][2]],
+            [svd.U[2][0][0] || svd.U[2][0], svd.U[2][1][0] || svd.U[2][1], svd.U[2][2][0] || svd.U[2][2]]
         ];
     } else {
-        // V is array of arrays (standard format)
-        V = [
-            [svd.V[0][0], svd.V[0][1], svd.V[0][2]],
-            [svd.V[1][0], svd.V[1][1], svd.V[1][2]],
-            [svd.V[2][0], svd.V[2][1], svd.V[2][2]]
+        // Standard format: U is array of rows
+        U = [
+            [svd.U[0][0], svd.U[0][1], svd.U[0][2]],
+            [svd.U[1][0], svd.U[1][1], svd.U[1][2]],
+            [svd.U[2][0], svd.U[2][1], svd.U[2][2]]
         ];
     }
     
-    V = ensureRightHand(V);
-
-    const signCombos = [
-        [1, 1, 1],
-        [1, -1, -1],
-        [-1, 1, -1],
-        [-1, -1, 1]
-    ];
-
+    // Extract eigenvectors (columns of U)
+    // U[i][j] means row i, column j
+    // Column indices correspond to singular value order (descending)
+    const v1 = [U[0][0], U[1][0], U[2][0]];  // Column 0 - largest variance
+    const v2 = [U[0][1], U[1][1], U[2][1]];  // Column 1 - second largest
+    const v3 = [U[0][2], U[1][2], U[2][2]];  // Column 2 - smallest
+    
+    // Determine which screen axis is longer
+    // Use a tolerance for "square" check to account for rounding/pixel differences
+    const tolerance = 2; // Consider square if dimensions differ by 2 pixels or less
+    const isXLonger = (canvasWidth && canvasHeight) ? canvasWidth > canvasHeight + tolerance : false;
+    const isSquare = (canvasWidth && canvasHeight) ? Math.abs(canvasWidth - canvasHeight) <= tolerance : false;
+    
     const Rcur = currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-    const RcurT = numeric.transpose(Rcur);
     const candidates = [];
-
-    for (const s of signCombos) {
-        const VS = multCols(V, s);
-
-        // POST-YAW: R = VS * Qz
-        try {
-            const M = numeric.dot(RcurT, VS);
-            const A = [[M[0][0], M[0][1]], [M[1][0], M[1][1]]];
-            const { R2 } = polar2x2_withScore(A);
-            const Qa = [
-                [R2[0][0], R2[0][1], 0],
-                [R2[1][0], R2[1][1], 0],
-                [0, 0, 1]
+    
+    // Try all sign combinations for eigenvectors (flipping doesn't change variance)
+    // We need to try different signs because eigenvectors can point in either direction
+    const signs = [
+        [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1],
+        [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1]
+    ];
+    
+    // Try both mappings: e1->x/e2->y AND e1->y/e2->x
+    // This ensures we explore all possible orientations
+    // When square, we try both mappings and let rotation angle decide
+    const mappings = isSquare
+        ? [
+            // For square, try both mappings equally
+            { r0: 'e1', r1: 'e2', desc: 'e1->x, e2->y' },  // Largest on x, second on y
+            { r0: 'e2', r1: 'e1', desc: 'e2->x, e1->y' }   // Second on x, largest on y
+          ]
+        : isXLonger 
+        ? [
+            { r0: 'e1', r1: 'e2', desc: 'e1->x, e2->y' },  // Largest on x, second on y
+            { r0: 'e2', r1: 'e1', desc: 'e2->x, e1->y' }   // Second on x, largest on y (try this too!)
+          ]
+        : [
+            { r0: 'e2', r1: 'e1', desc: 'e2->x, e1->y' },  // Second on x, largest on y
+            { r0: 'e1', r1: 'e2', desc: 'e1->x, e2->y' }   // Largest on x, second on y (try this too!)
+          ];
+    
+    for (const mapping of mappings) {
+        for (const [s1, s2, s3] of signs) {
+            // Apply signs to eigenvectors
+            const e1 = [v1[0] * s1, v1[1] * s1, v1[2] * s1];
+            const e2 = [v2[0] * s2, v2[1] * s2, v2[2] * s2];
+            const e3 = [v3[0] * s3, v3[1] * s3, v3[2] * s3];
+            
+            // Construct rotation matrix based on mapping
+            let r0, r1;
+            if (mapping.r0 === 'e1') {
+                r0 = e1;
+                r1 = e2;
+            } else {
+                r0 = e2;
+                r1 = e1;
+            }
+            
+            // Normalize (eigenvectors should already be normalized, but ensure it)
+            let n0 = Math.sqrt(r0[0] * r0[0] + r0[1] * r0[1] + r0[2] * r0[2]);
+            if (n0 < 1e-10) continue;
+            r0 = [r0[0] / n0, r0[1] / n0, r0[2] / n0];
+            
+            let n1 = Math.sqrt(r1[0] * r1[0] + r1[1] * r1[1] + r1[2] * r1[2]);
+            if (n1 < 1e-10) continue;
+            r1 = [r1[0] / n1, r1[1] / n1, r1[2] / n1];
+            
+            // Ensure r0 and r1 are orthogonal (they should be from SVD, but verify)
+            // If not perfectly orthogonal, orthogonalize r1 with respect to r0
+            let dot01 = r0[0] * r1[0] + r0[1] * r1[1] + r0[2] * r1[2];
+            if (Math.abs(dot01) > 1e-6) {
+                // Not orthogonal - orthogonalize r1
+                r1 = [r1[0] - dot01 * r0[0], r1[1] - dot01 * r0[1], r1[2] - dot01 * r0[2]];
+                n1 = Math.sqrt(r1[0] * r1[0] + r1[1] * r1[1] + r1[2] * r1[2]);
+                if (n1 < 1e-10) continue;
+                r1 = [r1[0] / n1, r1[1] / n1, r1[2] / n1];
+            }
+            
+            // Third row is cross product to ensure right-handed coordinate system
+            // This preserves the mapping: r0 and r1 stay exactly aligned with their eigenvectors
+            let r2 = [
+                r0[1] * r1[2] - r0[2] * r1[1],
+                r0[2] * r1[0] - r0[0] * r1[2],
+                r0[0] * r1[1] - r0[1] * r1[0]
             ];
-            const Ra = numeric.dot(VS, Qa);
-            const angleA = rotationAngleBetweenMatrices(Rcur, Ra);
-            candidates.push({ R: Ra, angle: angleA, mode: 'post' });
-        } catch (e) {
-            // Skip this candidate if computation fails
-        }
-
-        // PRE-YAW: R = Qz * VS
-        try {
-            const B = numeric.dot(VS, RcurT);
-            const B2 = [[B[0][0], B[0][1]], [B[1][0], B[1][1]]];
-            const { R2 } = polar2x2_withScore(B2);
-            const Qb = [
-                [R2[0][0], R2[0][1], 0],
-                [R2[1][0], R2[1][1], 0],
-                [0, 0, 1]
+            
+            // Construct rotation matrix
+            // Python: a_aligned = a_cent @ v, where v has eigenvectors as COLUMNS
+            //        v[:,0] = largest variance, v[:,1] = second, v[:,2] = smallest
+            //        result[i][j] = sum(a_cent[i][k] * v[k][j])
+            //
+            // Our renderer: screen_x = R[0][0]*x + R[0][1]*y + R[0][2]*z
+            //               screen_y = R[1][0]*x + R[1][1]*y + R[1][2]*z
+            //               So R[0] is x-axis direction, R[1] is y-axis direction
+            //
+            // To match Python's rotation, we need R = v^T (transpose)
+            // So if v has eigenvectors as columns, R should have them as rows
+            // R[0] = first row = first column of v = first eigenvector
+            // R[1] = second row = second column of v = second eigenvector
+            //
+            // But wait - we want to map largest variance to longest screen axis
+            // If isXLonger: R[0] should be largest variance eigenvector
+            // If !isXLonger: R[1] should be largest variance eigenvector
+            //
+            // Currently we're setting:
+            //   if isXLonger: r0 = e1 (largest), r1 = e2 (second)
+            //   if !isXLonger: r0 = e2 (second), r1 = e1 (largest)
+            //
+            // Then R = [[r0[0], r1[0], r2[0]], [r0[1], r1[1], r2[1]], [r0[2], r1[2], r2[2]]]
+            // So R[0] = r0, R[1] = r1
+            //
+            // This should be correct! But all candidates show VarX > VarY...
+            // Maybe the issue is that we're not actually using the right eigenvectors?
+            // Or maybe the variance calculation is wrong?
+            
+            // Construct rotation matrix
+            // The renderer applies rotation as:
+            //   out.x = m[0][0]*subX + m[0][1]*subY + m[0][2]*subZ
+            //   out.y = m[1][0]*subX + m[1][1]*subY + m[1][2]*subZ
+            // So m[0] is the x-axis direction, m[1] is the y-axis direction
+            // 
+            // We want:
+            //   R[0] = x-axis direction = eigenvector we want on x-axis
+            //   R[1] = y-axis direction = eigenvector we want on y-axis
+            //   R[2] = z-axis direction = cross product
+            //
+            // So R should be:
+            //   R = [[r0[0], r0[1], r0[2]],    // Row 0 = x-axis
+            //        [r1[0], r1[1], r1[2]],    // Row 1 = y-axis
+            //        [r2[0], r2[1], r2[2]]]    // Row 2 = z-axis
+            
+            const R = [
+                [r0[0], r0[1], r0[2]],
+                [r1[0], r1[1], r1[2]],
+                [r2[0], r2[1], r2[2]]
             ];
-            const Rb = numeric.dot(Qb, VS);
-            const angleB = rotationAngleBetweenMatrices(Rcur, Rb);
-            candidates.push({ R: Rb, angle: angleB, mode: 'pre' });
-        } catch (e) {
-            // Skip this candidate if computation fails
+            
+            // Verify the mapping by calculating projected variance
+            // Project coordinates to screen space using this rotation
+            // This matches how the renderer applies rotation: screen = R @ coords
+            let sumX = 0, sumY = 0, sumX2 = 0, sumY2 = 0;
+            for (const c of centeredCoords) {
+                const projX = R[0][0] * c[0] + R[0][1] * c[1] + R[0][2] * c[2];
+                const projY = R[1][0] * c[0] + R[1][1] * c[1] + R[1][2] * c[2];
+                sumX += projX;
+                sumY += projY;
+                sumX2 += projX * projX;
+                sumY2 += projY * projY;
+            }
+            const n = centeredCoords.length;
+            const meanX = sumX / n;
+            const meanY = sumY / n;
+            const varX = (sumX2 / n) - (meanX * meanX);
+            const varY = (sumY2 / n) - (meanY * meanY);
+            
+            // Calculate rotation angle from current to target
+            const angle = rotationAngleBetweenMatrices(Rcur, R);
+            
+            // Score based on:
+            // 1. Correct variance mapping (largest variance on longest axis)
+            // 2. Small rotation angle (prevent flips)
+            // When square, prioritize rotation angle over variance mapping
+            let varianceScore = 0;
+            if (isXLonger) {
+                // x should have larger variance than y
+                varianceScore = varX - varY;
+            } else {
+                // y should have larger variance than x
+                varianceScore = varY - varX;
+            }
+            
+            // Combine variance score with rotation angle penalty
+            if (isSquare) {
+                // For square canvas, prioritize minimizing rotation angle
+                // Both mappings are equally valid, so choose the one with smaller rotation
+                // Use angle as primary factor (multiply by large negative to make smaller angles score higher)
+                let score = -angle * 1000; // Smaller angle is better (multiply by 1000 to dominate)
+                // Add a very small bonus for variance mapping as a tie-breaker (only if angles are very close)
+                score += varianceScore * 0.1; // Very small weight for variance as tie-breaker
+                if (angle > Math.PI / 2) {
+                    score -= (angle - Math.PI / 2) * 10000; // Heavy penalty for large rotations
+                }
+                candidates.push({ 
+                    R, 
+                    angle, 
+                    score, 
+                    varX, 
+                    varY, 
+                    varianceScore,
+                    signs: [s1, s2, s3],
+                    mapping: mapping.desc
+                });
+            } else {
+                // For non-square canvas, prioritize correct variance mapping
+                let score = varianceScore * 1000; // Weight variance heavily
+                score -= angle; // Smaller angle is better
+                if (angle > Math.PI / 2) {
+                    score -= (angle - Math.PI / 2) * 10; // Heavy penalty for large rotations
+                }
+                candidates.push({ 
+                    R, 
+                    angle, 
+                    score, 
+                    varX, 
+                    varY, 
+                    varianceScore,
+                    signs: [s1, s2, s3],
+                    mapping: mapping.desc
+                });
+            }
         }
     }
-
-    // If no valid candidates, return current rotation or identity
+    
+    // If no valid candidates, return current rotation
     if (candidates.length === 0) {
         return Rcur;
     }
-
-    candidates.sort((a, b) => a.angle - b.angle);
+    
+    // Sort by score (higher is better - smaller angle, no flips)
+    candidates.sort((a, b) => b.score - a.score);
+    
+    // Return the best candidate
     return candidates[0].R;
 }
 

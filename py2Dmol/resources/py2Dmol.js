@@ -150,6 +150,11 @@ function initializePy2DmolViewer(containerElement) {
             this.canvas = canvas;
             this.ctx = canvas.getContext('2d');
             
+            // Store display dimensions (CSS size) for calculations
+            // Internal resolution is scaled by devicePixelRatio, but we work in display pixels
+            this.displayWidth = parseInt(canvas.style.width) || canvas.width;
+            this.displayHeight = parseInt(canvas.style.height) || canvas.height;
+            
             // Get config from Python
             // This relies on window.viewerConfig being available globally
             const config = window.viewerConfig || { 
@@ -689,7 +694,6 @@ function initializePy2DmolViewer(containerElement) {
             this.outlineEnabledCheckbox = outlineEnabledCheckbox;
             this.colorblindCheckbox = colorblindCheckbox;
             this.orthoSlider = orthoSlider;
-            
             this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
             this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
 
@@ -769,6 +773,7 @@ function initializePy2DmolViewer(containerElement) {
                     }
                 });
             }
+
 
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.addEventListener('change', (e) => {
@@ -957,11 +962,14 @@ function initializePy2DmolViewer(containerElement) {
             
             // Handle clearing the canvas based on transparency
             const clearCanvas = () => {
+                // Use display dimensions since context is scaled
+                const displayWidth = parseInt(this.canvas.style.width) || this.canvas.width;
+                const displayHeight = parseInt(this.canvas.style.height) || this.canvas.height;
                 if (this.isTransparent) {
-                    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                    this.ctx.clearRect(0, 0, displayWidth, displayHeight);
                 } else {
                     this.ctx.fillStyle = '#ffffff';
-                    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                    this.ctx.fillRect(0, 0, displayWidth, displayHeight);
                 }
             };
             
@@ -1180,22 +1188,22 @@ function initializePy2DmolViewer(containerElement) {
             const fps = 30;
             this.recordingStream = this.canvas.captureStream(fps);
             
-            // Set up MediaRecorder with low compression (high quality)
+            // Set up MediaRecorder with very low compression (very high quality)
             const options = {
                 mimeType: 'video/webm;codecs=vp9', // VP9 for better quality
-                videoBitsPerSecond: 8000000 // 8 Mbps for high quality (low compression)
+                videoBitsPerSecond: 20000000 // 20 Mbps for very high quality (very low compression)
             };
             
             // Fallback to VP8 if VP9 not supported
             if (!MediaRecorder.isTypeSupported(options.mimeType)) {
                 options.mimeType = 'video/webm;codecs=vp8';
-                options.videoBitsPerSecond = 5000000; // 5 Mbps for VP8
+                options.videoBitsPerSecond = 15000000; // 15 Mbps for VP8
             }
             
             // Fallback to default if neither supported
             if (!MediaRecorder.isTypeSupported(options.mimeType)) {
                 options.mimeType = 'video/webm';
-                options.videoBitsPerSecond = 5000000;
+                options.videoBitsPerSecond = 15000000;
             }
             
             try {
@@ -1744,12 +1752,16 @@ function initializePy2DmolViewer(containerElement) {
         // RENDER (Core drawing logic)
         render() {
             const startTime = performance.now();
+            // Use display dimensions since context is scaled
+            const displayWidth = parseInt(this.canvas.style.width) || this.canvas.width;
+            const displayHeight = parseInt(this.canvas.style.height) || this.canvas.height;
+            
             // Use clearRect or fillRect based on transparency
             if (this.isTransparent) {
-                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.ctx.clearRect(0, 0, displayWidth, displayHeight);
             } else {
                 this.ctx.fillStyle = '#ffffff';
-                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                this.ctx.fillRect(0, 0, displayWidth, displayHeight);
             }
             
             // Check segment length
@@ -1777,7 +1789,7 @@ function initializePy2DmolViewer(containerElement) {
                 out.z = m[2][0]*subX + m[2][1]*subY + m[2][2]*subZ;
             }
             const rotated = this.rotatedCoords;
-
+            
             // Segment generation is now just data lookup
             const n = this.segmentIndices.length;
             const segments = this.segmentIndices; // Use the pre-calculated segment definitions
@@ -1984,16 +1996,68 @@ function initializePy2DmolViewer(containerElement) {
             // Use temporary extent if set (for orienting to visible atoms), otherwise use object's maxExtent
             const effectiveExtent = this.temporaryExtent || maxExtent;
             const dataRange = (effectiveExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
-            const canvasSize = Math.min(this.canvas.width, this.canvas.height);
             
-            // scale is pixels per Angstrom
-            const scale = (canvasSize / dataRange) * this.zoom; 
+            // Calculate scale based on window dimensions and aspect ratio
+            // Project the structure extent to screen space considering the rotation
+            // The rotation matrix rows represent screen axes: R[0] = x-axis, R[1] = y-axis
+            // Note: 'm' (rotationMatrix) is already declared earlier in this function
+            
+            // Calculate projected extent in screen space (x and y directions)
+            // The extent vector in 3D space, when rotated, projects to screen space
+            // We approximate by using the rotation matrix rows to project the extent
+            // For a roughly spherical extent, we can use the diagonal of the bounding box
+            // But for better accuracy with oriented structures, we calculate projected extents
+            
+            // Project extent to x-axis (screen width direction)
+            // The x screen axis direction is R[0], which is a unit vector
+            // For a spherical extent, the projection is just the extent itself
+            // But we need to account for the actual 3D extent distribution
+            // Since rotation matrix rows are orthonormal, we can use the extent directly
+            // but we need to consider how the 3D bounding box projects to 2D
+            // For simplicity, we approximate by using the extent scaled by the axis alignment
+            const xProjectedExtent = effectiveExtent;
+            const yProjectedExtent = effectiveExtent;
+            
+            // Calculate scale needed for each dimension
+            // We want the structure to fit within the viewport with some padding
+            const padding = 0.9; // Use 90% of viewport to leave some margin
+            let scaleX = (displayWidth * padding) / (xProjectedExtent * 2);
+            let scaleY = (displayHeight * padding) / (yProjectedExtent * 2);
+            
+            // Account for perspective projection if enabled
+            // In perspective mode, apparent size depends on z-depth relative to focal length
+            if (this.perspectiveEnabled && this.focalLength > 0) {
+                // Estimate average z-depth at the center of the structure
+                // For a structure centered at origin after rotation, z-depth is approximately 0
+                // But we need to account for the structure's extent in z-direction
+                // Use the center z-depth (which should be near 0 after centering) as reference
+                const centerZ = 0; // Structure is centered, so center z is approximately 0
+                const avgZ = centerZ; // Average z-depth for perspective calculation
+                
+                // Perspective scale factor: focalLength / (focalLength - z)
+                // For z near 0, this is approximately 1.0
+                // For structures extending in z, we use the center as reference
+                const perspectiveScale = this.focalLength / (this.focalLength - avgZ);
+                
+                // Adjust base scale to account for perspective
+                // Perspective makes objects appear larger when closer, so we need to scale down
+                // to compensate and ensure the structure fits in the viewport
+                scaleX /= perspectiveScale;
+                scaleY /= perspectiveScale;
+            }
+            
+            // Use the minimum scale to ensure structure fits in both dimensions
+            // This accounts for window aspect ratio
+            const baseScale = Math.min(scaleX, scaleY);
+            
+            // Apply zoom multiplier
+            const scale = baseScale * this.zoom; 
             
             // baseLineWidth is this.lineWidth (in Angstroms) converted to pixels
             const baseLineWidthPixels = this.lineWidth * scale;
 
-            const centerX = this.canvas.width / 2;
-            const centerY = this.canvas.height / 2;
+            const centerX = displayWidth / 2;
+            const centerY = displayHeight / 2;
 
             // ====================================================================
             // OPTIMIZED DRAWING LOOP - Reduced property changes and string ops
@@ -2284,6 +2348,8 @@ function initializePy2DmolViewer(containerElement) {
             this.mainRenderer = mainRenderer; // Reference to Pseudo3DRenderer
             
             this.paeData = null;
+            // Use canvas internal width for size (canvas may be stretched by CSS)
+            // This ensures rendering coordinates match mouse coordinates
             this.size = canvas.width;
             
             this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
@@ -2328,13 +2394,18 @@ function initializePy2DmolViewer(containerElement) {
             const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : e.changedTouches[0].clientX);
             const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : e.changedTouches[0].clientY);
             
-            // Account for any CSS scaling: scale mouse coordinates to match canvas resolution
+            // Get mouse position relative to canvas (in display pixels)
+            const displayX = clientX - rect.left;
+            const displayY = clientY - rect.top;
+            
+            // Scale to canvas logical coordinates (canvas may be stretched by CSS)
+            // Canvas internal size vs displayed size
             const scaleX = this.canvas.width / rect.width;
             const scaleY = this.canvas.height / rect.height;
             
             return { 
-                x: (clientX - rect.left) * scaleX, 
-                y: (clientY - rect.top) * scaleY 
+                x: displayX * scaleX, 
+                y: displayY * scaleY 
             };
         }
         
@@ -2907,14 +2978,34 @@ function initializePy2DmolViewer(containerElement) {
         colorblind: false
     };
 
-    // 2. Setup Canvas
+    // 2. Setup Canvas with high-DPI scaling for crisp rendering
     const canvas = containerElement.querySelector('#canvas');
     if (!canvas) {
         console.error("py2dmol: Could not find #canvas element in container.");
         return;
     }
-    canvas.width = config.size[0];
-    canvas.height = config.size[1];
+    
+    // Get device pixel ratio for high-DPI displays
+    // Use devicePixelRatio for native scaling, capped at 1.5x for performance
+    // Can be overridden with window.canvasDPR
+    const currentDPR = window.canvasDPR !== undefined ? window.canvasDPR : Math.min(window.devicePixelRatio || 1, 1.5);
+    
+    // Store display dimensions as constants - these never change
+    const displayWidth = config.size[0];
+    const displayHeight = config.size[1];
+    const paeDisplayWidth = config.pae_size[0];
+    const paeDisplayHeight = config.pae_size[1];
+    
+    // Initialize canvas with DPI scaling (before renderer creation)
+    canvas.width = displayWidth * currentDPR;
+    canvas.height = displayHeight * currentDPR;
+    canvas.style.width = displayWidth + 'px';
+    canvas.style.height = displayHeight + 'px';
+    
+    // Scale the context to match the internal resolution
+    const ctx = canvas.getContext('2d');
+    ctx.scale(currentDPR, currentDPR);
+    
     const viewerColumn = containerElement.querySelector('#viewerColumn');
     
     // We no longer set a fixed width on viewerColumn, to allow resizing.
@@ -2935,13 +3026,27 @@ function initializePy2DmolViewer(containerElement) {
                 newWidth = Math.max(newWidth, 1);
                 newHeight = Math.max(newHeight, 1);
 
-                // 1. Update canvas resolution. This is the critical step
-                // to prevent stretching/blurring.
-                if (canvas.width !== newWidth || canvas.height !== newHeight) {
-                    canvas.width = newWidth;
-                    canvas.height = newHeight;
+                // Only update if display size actually changed
+                const currentDisplayWidth = parseInt(canvas.style.width) || displayWidth;
+                const currentDisplayHeight = parseInt(canvas.style.height) || displayHeight;
+                
+                if (Math.abs(newWidth - currentDisplayWidth) > 1 || 
+                    Math.abs(newHeight - currentDisplayHeight) > 1) {
+                    // Update canvas resolution with high-DPI scaling
+                    const internalWidth = newWidth * currentDPR;
+                    const internalHeight = newHeight * currentDPR;
+                    
+                    canvas.width = internalWidth;
+                    canvas.height = internalHeight;
+                    canvas.style.width = newWidth + 'px';
+                    canvas.style.height = newHeight + 'px';
+                    
+                    // Scale context to match internal resolution
+                    const ctx = canvas.getContext('2d');
+                    ctx.setTransform(1, 0, 0, 1, 0, 0);
+                    ctx.scale(currentDPR, currentDPR);
 
-                    // 2. Re-render the scene
+                    // Re-render the scene
                     renderer.render();
                 }
             }
@@ -2953,17 +3058,37 @@ function initializePy2DmolViewer(containerElement) {
         console.warn("py2dmol: ResizeObserver not supported. Canvas resizing will not work.");
     }
     
-    // 4. Setup PAE Renderer (if enabled)
+    // 4. Setup PAE Renderer (if enabled) with high-DPI scaling
+    // Note: Container visibility will be controlled by app.js based on actual PAE data availability
     if (config.pae) {
         try {
+            const paeContainer = containerElement.querySelector('#paeContainer');
             const paeCanvas = containerElement.querySelector('#paeCanvas');
-            // Set canvas size from config
-            paeCanvas.width = config.pae_size[0];
-            paeCanvas.height = config.pae_size[1];
-            paeCanvas.style.display = 'block';
+            if (!paeContainer || !paeCanvas) {
+                console.warn("PAE container or canvas not found");
+                return;
+            }
             
-            const paeRenderer = new PAERenderer(paeCanvas, renderer); 
-            renderer.setPAERenderer(paeRenderer);
+            // Keep container hidden initially - app.js will show it when PAE data is available
+            paeContainer.style.display = 'none';
+            
+            // Keep PAE at fixed DPI of 1 (not scaled by currentDPR)
+            paeCanvas.width = paeDisplayWidth;
+            paeCanvas.height = paeDisplayHeight;
+            // Canvas will be stretched by CSS to fill container
+            
+            // No scaling - keep PAE at 1x DPI
+            const paeCtx = paeCanvas.getContext('2d');
+            paeCtx.setTransform(1, 0, 0, 1, 0, 0);
+            
+            // Wait for container to be laid out, then create renderer
+            requestAnimationFrame(() => {
+                const paeRenderer = new PAERenderer(paeCanvas, renderer);
+                // Use canvas internal size for rendering (canvas will be stretched by CSS)
+                // This ensures mouse coordinates and rendering coordinates match
+                paeRenderer.size = paeCanvas.width; // Use canvas.width (internal resolution)
+                renderer.setPAERenderer(paeRenderer);
+            });
         } catch (e) {
             console.error("Failed to initialize PAE renderer:", e);
         }
@@ -3039,6 +3164,7 @@ function initializePy2DmolViewer(containerElement) {
         // Note: The slider's input event will be triggered after data loads
         // to set the correct focalLength based on maxExtent
     }
+    
 
 
     // Handle new UI config options
