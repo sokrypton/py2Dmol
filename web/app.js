@@ -64,8 +64,10 @@ function initializeApp() {
     initDragAndDrop();
     
     // Set initial state
-    const paeContainer = document.getElementById('paeContainer');
-    paeContainer.style.display = 'none';
+    const paeCanvas = document.getElementById('paeCanvas');
+    if (paeCanvas) {
+        paeCanvas.style.display = 'none';
+    }
     setStatus("Ready. Upload a file or fetch an ID.");
 }
 
@@ -334,13 +336,15 @@ function updateObjectNavigationButtons() {
 
 function handleObjectChange() {
     const objectSelect = document.getElementById('objectSelect');
-    const paeContainer = document.getElementById('paeContainer');
+    const paeCanvas = document.getElementById('paeCanvas');
     
     const selectedObject = objectSelect.value;
     if (!selectedObject) return;
     
     const hasPAE = objectsWithPAE.has(selectedObject);
-    paeContainer.style.display = hasPAE ? 'block' : 'none';
+    if (paeCanvas) {
+        paeCanvas.style.display = hasPAE ? 'block' : 'none';
+    }
     
     // Rebuild sequence view for the new object
     buildSequenceView();

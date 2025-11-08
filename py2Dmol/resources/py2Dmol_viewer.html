@@ -196,12 +196,11 @@
             color: #333;
         }
         
-        #paeContainer {
+        #paeCanvas {
             display: none; /* JS will manage visibility */
             flex-shrink: 0;
             border: 1px solid #ddd;
             border-radius: 12px;
-            overflow: hidden;
             background: #ffffff;
         }
         
@@ -259,10 +258,8 @@
             </div>
         </div>
         
-        <!-- PAE Plot Container -->
-        <div id="paeContainer">
-             <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair; display: block;"></canvas>
-        </div>
+        <!-- PAE Canvas -->
+        <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair; display: none;"></canvas>
         
         <!-- Right Column -->
         <div id="rightPanelContainer">

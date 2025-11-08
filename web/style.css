@@ -780,26 +780,17 @@
 /* ============================================================================
    PAE CONTAINER
    ============================================================================ */
-.py2dmol-viewer-instance #paeContainer {
-    display: none; 
+.py2dmol-viewer-instance #paeCanvas {
+    display: none;
     flex-shrink: 0;
-    width: 340px; 
-    height: 340px; 
     border: 1px solid #e5e7eb;
     border-radius: 10px;
-    overflow: hidden;
     background: #ffffff;
     box-shadow: var(--shadow-md);
     transition: box-shadow var(--transition-base), border-color var(--transition-base);
 }
 
-.py2dmol-viewer-instance #paeCanvas {
-    width: 100%;
-    height: 100%;
-    display: block;
-}
-
-.py2dmol-viewer-instance #paeContainer:hover {
+.py2dmol-viewer-instance #paeCanvas:hover {
     box-shadow: var(--shadow-lg);
     border-color: var(--color-gray-300);
 }

@@ -1990,14 +1990,30 @@ function initializePy2DmolViewer(containerElement) {
             const centerY = this.canvas.height / 2;
 
             // ====================================================================
-            // REFACTORED DRAWING LOOP
+            // OPTIMIZED DRAWING LOOP - Reduced property changes and string ops
             // ====================================================================
-            // This loop draws the main line, and if outlining is on,
-            // it also draws the 'butt' capped gap-filler just before it.
+            // Track last canvas properties to avoid redundant changes
+            let lastStrokeStyle = null;
+            let lastLineWidth = null;
+            let lastLineCap = null;
+            
+            const setCanvasProps = (strokeStyle, lineWidth, lineCap) => {
+                if (strokeStyle !== lastStrokeStyle) {
+                    this.ctx.strokeStyle = strokeStyle;
+                    lastStrokeStyle = strokeStyle;
+                }
+                if (lineWidth !== lastLineWidth) {
+                    this.ctx.lineWidth = lineWidth;
+                    lastLineWidth = lineWidth;
+                }
+                if (lineCap !== lastLineCap) {
+                    this.ctx.lineCap = lineCap;
+                    lastLineCap = lineCap;
+                }
+            };
+            
             for (const idx of order) {
-                
                 // --- 1. COMMON CALCULATIONS (Do these ONCE) ---
-
                 const segInfo = segments[idx];
 
                 // Visibility Check
@@ -2033,7 +2049,7 @@ function initializePy2DmolViewer(containerElement) {
                     const z1 = this.focalLength - start.z;
                     const z2 = this.focalLength - end.z;
 
-                    if (z1 < 0.01 || z2 < 0.01) { // Clipping check
+                    if (z1 < 0.01 || z2 < 0.01) {
                         continue;
                     }
 
@@ -2067,57 +2083,40 @@ function initializePy2DmolViewer(containerElement) {
                     currentLineWidth *= avgPerspectiveScale;
                 }
                 
-                // Ensure minimum line width to be visible
                 currentLineWidth = Math.max(0.5, currentLineWidth);
 
-
                 // --- 2. CONDITIONAL DRAWING ---
-
                 if (this.outlineEnabled) {
-                    // --- 3-STEP DRAW (Outline) - Fixes gaps ---
-                    
-                    // Calculate colors needed for outline mode
+                    // --- 2-STEP DRAW (Outline) - Fixes gaps ---
                     const r_int = r * 255 | 0;
                     const g_int = g * 255 | 0;
                     const b_int = b * 255 | 0;
                     const color = `rgb(${r_int},${g_int},${b_int})`;
-                    const darkenFactor = 0.7;
-                    const gapFillerColor = `rgb(${r_int * darkenFactor | 0}, ${g_int * darkenFactor | 0}, ${b_int * darkenFactor | 0})`;
-                    
-                    // Outline width is 2px on each side
-                    const totalOutlineWidth = currentLineWidth + (2.0 * 2); 
+                    const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
+                    const totalOutlineWidth = currentLineWidth + 4.0;
 
-                    // Pass 1: The "gap filler" outline
+                    // Pass 1: Gap filler outline (butt caps)
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
                     this.ctx.lineTo(x2, y2);
-                    this.ctx.strokeStyle = gapFillerColor;
-                    this.ctx.lineWidth = totalOutlineWidth;
-                    this.ctx.lineCap = 'butt'; // 'butt' cap fills gaps between segments
+                    setCanvasProps(gapFillerColor, totalOutlineWidth, 'butt');
                     this.ctx.stroke();
 
-                    // Pass 2: The main colored line
+                    // Pass 2: Main colored line (round caps)
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
                     this.ctx.lineTo(x2, y2);
-                    this.ctx.strokeStyle = color;
-                    this.ctx.lineWidth = currentLineWidth;
-                    this.ctx.lineCap = 'round';
+                    setCanvasProps(color, currentLineWidth, 'round');
                     this.ctx.stroke();
 
                 } else {
                     // --- 1-STEP DRAW (No Outline) ---
-                    
-                    // Calculate color needed for non-outline mode
                     const color = `rgb(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0})`;
 
-                    // Single Pass: The main colored line
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
                     this.ctx.lineTo(x2, y2);
-                    this.ctx.strokeStyle = color;
-                    this.ctx.lineWidth = currentLineWidth;
-                    this.ctx.lineCap = 'round';
+                    setCanvasProps(color, currentLineWidth, 'round');
                     this.ctx.stroke();
                 }
             }
@@ -2322,9 +2321,14 @@ function initializePy2DmolViewer(containerElement) {
             // Support both mouse and touch events
             const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : e.changedTouches[0].clientX);
             const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : e.changedTouches[0].clientY);
+            
+            // Account for any CSS scaling: scale mouse coordinates to match canvas resolution
+            const scaleX = this.canvas.width / rect.width;
+            const scaleY = this.canvas.height / rect.height;
+            
             return { 
-                x: clientX - rect.left, 
-                y: clientY - rect.top 
+                x: (clientX - rect.left) * scaleX, 
+                y: (clientY - rect.top) * scaleY 
             };
         }
         
@@ -2943,12 +2947,11 @@ function initializePy2DmolViewer(containerElement) {
     // 4. Setup PAE Renderer (if enabled)
     if (config.pae) {
         try {
-            const paeContainer = containerElement.querySelector('#paeContainer');
-            paeContainer.style.display = 'block';
             const paeCanvas = containerElement.querySelector('#paeCanvas');
             // Set canvas size from config
             paeCanvas.width = config.pae_size[0];
             paeCanvas.height = config.pae_size[1];
+            paeCanvas.style.display = 'block';
             
             const paeRenderer = new PAERenderer(paeCanvas, renderer); 
             renderer.setPAERenderer(paeRenderer);
@@ -3044,12 +3047,12 @@ function initializePy2DmolViewer(containerElement) {
         }
         if (canvas) canvas.style.background = 'transparent';
         
-        // Also update PAE container if it exists
+        // Also update PAE canvas if it exists
         if (config.pae) {
-            const paeCont = containerElement.querySelector('#paeContainer');
-            if(paeCont) {
-                paeCont.style.border = 'none';
-                paeCont.style.background = 'transparent';
+            const paeCanvas = containerElement.querySelector('#paeCanvas');
+            if(paeCanvas) {
+                paeCanvas.style.border = 'none';
+                paeCanvas.style.background = 'transparent';
             }
         }
         
