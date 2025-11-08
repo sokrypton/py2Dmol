@@ -129,13 +129,21 @@
         <!-- [EDIT] Sequence container with box and toggle -->
         <div id="top-panel-container" class="sequence-section-container" style="width: 948px; display: none;">
           <div id="sequenceHeader" class="sequence-header">
-            <button id="sequenceToggle" class="sequence-toggle-btn" aria-expanded="false">
-              <span class="chevron" aria-hidden="true">▸</span>
-              <span class="sequence-title">Sequence</span>
-            </button>
-            <div class="sequence-actions">
-              <button id="selectAllResidues" class="nav-button btn-grey small sequence-action-btn">Select all</button>
-              <button id="clearAllResidues" class="nav-button btn-grey small sequence-action-btn">Clear all</button>
+            <!-- Object selection dropdown aligned to the left -->
+            <select id="objectSelect" style="min-width: 150px;">
+              <!-- Initially empty -->
+            </select>
+            
+            <!-- Action buttons and sequence button aligned to the right -->
+            <div style="display: flex; gap: 8px; margin-left: auto; align-items: center;">
+              <!-- Action buttons that appear when sequence is shown -->
+              <div class="sequence-actions" style="display: none;">
+                <button id="selectAllResidues" class="nav-button btn-grey small">Select all</button>
+                <button id="clearAllResidues" class="nav-button btn-grey small">Clear all</button>
+              </div>
+              
+              <!-- Sequence toggle button -->
+              <button id="showHideSequenceBtn" class="nav-button btn-grey small">Sequence</button>
             </div>
           </div>
           <div id="sequenceView" class="sequence-content hidden"></div>
@@ -178,13 +186,6 @@
                               <input type="checkbox" id="rotationCheckbox">
                               <span>Rotate</span>
                             </label>
-
-                            <button id="prevObjectButton" class="nav-button btn btn-grey" style="width: 40px; padding: 0;" title="Previous object">
-                              <i class="fa-solid fa-chevron-left"></i>
-                            </button>
-                            <button id="nextObjectButton" class="nav-button btn btn-grey" style="width: 40px; padding: 0;" title="Next object">
-                              <i class="fa-solid fa-chevron-right"></i>
-                            </button>
                           </div>
 
                           <!-- New second row -->
@@ -202,12 +203,6 @@
                             <button id="recordButton" class="btn-toggle" title="Record animation to video file" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px;">
                               <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: var(--btn-radius); background: #e5e7eb; color: #374151;">
                                 <i class="fa-solid fa-video" style="font-size: 0.75em;"></i>
-                              </span>
-                            </button>
-                            
-                            <button id="saveStateButton" class="btn-toggle" title="Save current state to file" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px; display: none;">
-                              <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: var(--btn-radius); background: #e5e7eb; color: #374151;">
-                                <i class="fa-solid fa-floppy-disk" style="font-size: 0.75em;"></i>
                               </span>
                             </button>
                             
@@ -246,16 +241,6 @@
                                                     
                         </div>
 
-                        <div id="modelControlContainer" class="control-group">
-                             
-                             <div id="objectContainer" class="toggle-item">
-                                 <label for="objectSelect" class="font-medium text-gray-700">Object:</label>
-                                 <select id="objectSelect">
-                                     <!-- Initially empty -->
-                                 </select>
-                             </div>
-                            
-                        </div>
 
                     </div>
                     

@@ -704,11 +704,13 @@ function initializePy2DmolViewer(containerElement) {
                 });
             }
 
-            this.objectSelect.addEventListener('change', () => {
-                this.stopAnimation();
-                this.currentObjectName = this.objectSelect.value;
-                this.setFrame(0);
-            });
+            if (this.objectSelect) {
+                this.objectSelect.addEventListener('change', () => {
+                    this.stopAnimation();
+                    this.currentObjectName = this.objectSelect.value;
+                    this.setFrame(0);
+                });
+            }
 
             this.speedSelect.addEventListener('change', (e) => {
                 this.animationSpeed = parseInt(e.target.value);
@@ -850,8 +852,10 @@ function initializePy2DmolViewer(containerElement) {
             const option = document.createElement('option');
             option.value = name;
             option.textContent = name;
-            this.objectSelect.appendChild(option);
-            this.objectSelect.value = name;
+            if (this.objectSelect) {
+                this.objectSelect.appendChild(option);
+                this.objectSelect.value = name;
+            }
 
             this.setFrame(-1);
         }
@@ -885,7 +889,9 @@ function initializePy2DmolViewer(containerElement) {
             if (this.currentObjectName !== targetObjectName) {
                 this.stopAnimation(); // Stop if playing on another obj
                 this.currentObjectName = targetObjectName;
-                this.objectSelect.value = targetObjectName;
+                if (this.objectSelect) {
+                    this.objectSelect.value = targetObjectName;
+                }
             }
 
             // Update global center sum and count
@@ -1001,7 +1007,7 @@ function initializePy2DmolViewer(containerElement) {
         setUIEnabled(enabled) {
              this.playButton.disabled = !enabled;
              this.frameSlider.disabled = !enabled;
-             this.objectSelect.disabled = !enabled;
+             if (this.objectSelect) this.objectSelect.disabled = !enabled;
              this.speedSelect.disabled = !enabled;
              this.rotationCheckbox.disabled = !enabled;
              this.lineWidthSlider.disabled = !enabled;
@@ -2991,7 +2997,8 @@ function initializePy2DmolViewer(containerElement) {
     const recordButton = containerElement.querySelector('#recordButton');
     const frameSlider = containerElement.querySelector('#frameSlider');
     const frameCounter = containerElement.querySelector('#frameCounter');
-    const objectSelect = containerElement.querySelector('#objectSelect');
+    // objectSelect is now in the sequence header, query from document
+    const objectSelect = document.querySelector('#objectSelect');
     const speedSelect = containerElement.querySelector('#speedSelect');
     const rotationCheckbox = containerElement.querySelector('#rotationCheckbox');
     const lineWidthSlider = containerElement.querySelector('#lineWidthSlider');

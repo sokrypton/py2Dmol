@@ -187,74 +187,61 @@ function setupEventListeners() {
     if (colorSelect) colorSelect.addEventListener('change', updateColorMode);
 
     // Attach sequence controls
-    const seqToggle = document.getElementById('sequenceToggle');
     const sequenceView = document.getElementById('sequenceView');
     const selectAllBtn = document.getElementById('selectAllResidues');
     const clearAllBtn  = document.getElementById('clearAllResidues');
+    const showHideBtn = document.getElementById('showHideSequenceBtn');
+    const sequenceActions = document.querySelector('.sequence-actions');
 
-    if (seqToggle && sequenceView) {
+    if (sequenceView) {
       const container = document.getElementById('top-panel-container');
-      const sequenceHeader = document.getElementById('sequenceHeader');
-      const actionButtons = document.querySelectorAll('.sequence-action-btn');
       
       // Set initial collapsed state
       if (container) {
         container.classList.add('collapsed');
       }
-      // Hide action buttons initially
-      actionButtons.forEach(btn => btn.style.display = 'none');
+      // Hide action buttons container initially
+      if (sequenceActions) {
+        sequenceActions.style.display = 'none';
+      }
       
-      const toggleSequence = (ev) => {
-        if (ev) {
-          ev.stopPropagation(); // Prevent event from bubbling to header
-          // Ignore clicks on action buttons
-        if (ev.target.closest('#selectAllResidues') || ev.target.closest('#clearAllResidues')) return;
-        }
-        const expanded = seqToggle.getAttribute('aria-expanded') === 'true';
-        seqToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-        const chevron = seqToggle.querySelector('.chevron');
-        if (chevron) {
-          chevron.textContent = expanded ? '▸' : '▾';
-        }
-        if (expanded) {
-          sequenceView.classList.add('hidden');
-          if (container) container.classList.add('collapsed');
-          // Hide action buttons when collapsed
-          actionButtons.forEach(btn => btn.style.display = 'none');
-        } else {
-          sequenceView.classList.remove('hidden');
-          if (container) container.classList.remove('collapsed');
-          // Show action buttons when expanded
-          actionButtons.forEach(btn => btn.style.display = '');
-        }
-      };
-      
-      // Make entire header clickable (for areas outside the button)
-      if (sequenceHeader) {
-        sequenceHeader.addEventListener('click', (ev) => {
-          // Only handle clicks if they're not on the button or action buttons
-          if (!ev.target.closest('#sequenceToggle') && 
-              !ev.target.closest('#selectAllResidues') && 
-              !ev.target.closest('#clearAllResidues')) {
-            toggleSequence(ev);
+      // Sequence toggle button handler
+      if (showHideBtn) {
+        let sequenceContentVisible = false;
+        showHideBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          sequenceContentVisible = !sequenceContentVisible;
+          
+          if (sequenceContentVisible) {
+            // Show the sequence content area
+            sequenceView.classList.remove('hidden');
+            if (container) {
+              container.classList.remove('collapsed');
+            }
+            // Show action buttons
+            if (sequenceActions) {
+              sequenceActions.style.display = 'flex';
+            }
+            // Make button green when active
+            showHideBtn.style.background = '#10b981';
+            showHideBtn.style.color = '#ffffff';
+            showHideBtn.style.borderColor = '#10b981';
+          } else {
+            // Hide the sequence content area
+            sequenceView.classList.add('hidden');
+            if (container) {
+              container.classList.add('collapsed');
+            }
+            // Hide action buttons
+            if (sequenceActions) {
+              sequenceActions.style.display = 'none';
+            }
+            // Reset button to default style
+            showHideBtn.style.background = '';
+            showHideBtn.style.color = '';
+            showHideBtn.style.borderColor = '';
           }
         });
-        sequenceHeader.style.cursor = 'pointer';
-      }
-      
-      // Make button clickable - clicks on children (chevron, title) will bubble up
-      seqToggle.addEventListener('click', toggleSequence);
-      
-      // Ensure chevron and title are clickable (pointer-events should allow clicks to bubble)
-      const chevron = seqToggle.querySelector('.chevron');
-      const title = seqToggle.querySelector('.sequence-title');
-      if (chevron) {
-        chevron.style.pointerEvents = 'auto';
-        chevron.style.cursor = 'pointer';
-      }
-      if (title) {
-        title.style.pointerEvents = 'auto';
-        title.style.cursor = 'pointer';
       }
     }
     if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); selectAllResidues(); });

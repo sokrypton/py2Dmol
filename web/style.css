@@ -428,9 +428,6 @@
 }
 
 /* Hide save state button */
-.py2dmol-viewer-instance #saveStateButton {
-    display: none !important;
-}
 
 /* Camera/SVG export button styled like btn-toggle */
 .py2dmol-viewer-instance #saveSvgButton.btn-toggle {
@@ -793,6 +790,29 @@
 .py2dmol-viewer-instance #paeCanvas:hover {
     box-shadow: var(--shadow-lg);
     border-color: var(--color-gray-300);
+}
+
+/* Object select in sequence header */
+#top-panel-container #objectSelect {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 14px;
+    background: #ffffff;
+    color: #374151;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 150px;
+}
+
+#top-panel-container #objectSelect:hover {
+    border-color: #9ca3af;
+}
+
+#top-panel-container #objectSelect:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
 }
 
 /* ============================================================================
