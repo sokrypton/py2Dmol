@@ -2837,15 +2837,17 @@ function initializePy2DmolViewer(containerElement) {
         _drawChainBoundaries(n, cellSize) {
             const renderer = this.mainRenderer;
             if (!renderer.polymerAtomIndices || renderer.polymerAtomIndices.length === 0) return;
-            if (!renderer.chains) return;
+            if (!renderer.chains || renderer.chains.length === 0) return;
             
             const boundaries = new Set(); // Set of PAE positions where chain changes
             
             // Find chain boundaries in polymerAtomIndices
+            // polymerAtomIndices maps PAE position -> atom index
             for (let r = 0; r < renderer.polymerAtomIndices.length - 1; r++) {
                 const atomIdx1 = renderer.polymerAtomIndices[r];
                 const atomIdx2 = renderer.polymerAtomIndices[r + 1];
                 
+                // Check if both atom indices are valid
                 if (atomIdx1 >= 0 && atomIdx1 < renderer.chains.length &&
                     atomIdx2 >= 0 && atomIdx2 < renderer.chains.length) {
                     const chain1 = renderer.chains[atomIdx1];
@@ -2861,8 +2863,9 @@ function initializePy2DmolViewer(containerElement) {
             if (boundaries.size === 0) return; // No boundaries to draw
             
             // Draw vertical and horizontal lines at chain boundaries
-            this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)'; // Subtle gray lines
-            this.ctx.lineWidth = 1;
+            this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)'; // More visible black lines
+            this.ctx.lineWidth = 2;
+            this.ctx.setLineDash([]); // Solid lines
             
             for (const pos of boundaries) {
                 const coord = Math.floor(pos * cellSize);

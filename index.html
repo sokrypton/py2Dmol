@@ -137,7 +137,7 @@
             <!-- Action buttons and sequence button aligned to the right -->
             <div style="display: flex; gap: 8px; margin-left: auto; align-items: center;">
               <!-- Action buttons that appear when sequence is shown -->
-              <div class="sequence-actions" style="display: none;">
+              <div class="sequence-actions">
                 <button id="selectAllResidues" class="nav-button btn-grey small">Select all</button>
                 <button id="clearAllResidues" class="nav-button btn-grey small">Clear all</button>
               </div>
@@ -177,9 +177,10 @@
                         <!-- Toolbar (two rows) -->
                         <div id="navigationControls" class="toolbar" style="margin-bottom: 4px;">
                           <div class="toolbar-row">
-                            <button id="orientButton" class="nav-button btn btn-grey" style="padding: 0 12px; min-width: auto;" title="Orient to best view">
-                              <i class="fa-solid fa-crosshairs" style="font-size: 1em; margin-right: 4px;"></i>Orient
-                            </button>
+                            <label class="btn-toggle" id="orientToggle" style="flex: 1;" title="Orient to best view">
+                              <input type="checkbox" style="display: none;">
+                              <span><i class="fa-solid fa-crosshairs" style="font-size: 1em; margin-right: 4px;"></i>Orient</span>
+                            </label>
 
                             <!-- Rotate: checkbox styled as a button -->
                             <label class="btn-toggle" id="rotateToggle" style="flex: 1;" title="Toggle auto-rotation">
@@ -190,25 +191,25 @@
 
                           <!-- New second row -->
                           <div class="toolbar-row">
-                            <label class="btn-toggle" title="Toggle shadow">
+                            <label class="btn-toggle" title="Toggle shadow" style="flex: 1;">
                               <input type="checkbox" id="shadowEnabledCheckbox" checked>
                               <span>Shadow</span>
                             </label>
 
-                            <label class="btn-toggle" title="Toggle outline">
+                            <label class="btn-toggle" title="Toggle outline" style="flex: 1;">
                               <input type="checkbox" id="outlineEnabledCheckbox" checked>
                               <span>Outline</span>
                             </label>
                             
-                            <button id="recordButton" class="btn-toggle" title="Record animation to video file" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px;">
-                              <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: var(--btn-radius); background: #e5e7eb; color: #374151;">
-                                <i class="fa-solid fa-video" style="font-size: 1em;"></i>
+                            <button id="recordButton" class="btn-toggle" title="Record animation to video file" style="flex: 1;">
+                              <span>
+                                <i class="fa-solid fa-video"></i>
                               </span>
                             </button>
                             
-                            <button id="saveSvgButton" class="btn-toggle" title="Save as SVG" style="pointer-events: auto; width: 32px; padding: 0; min-width: 32px;">
-                              <span style="display: flex; align-items: center; justify-content: center; height: var(--btn-h); padding: 0; border-radius: var(--btn-radius); background: #e5e7eb; color: #374151;">
-                                <i class="fa-solid fa-camera" style="font-size: 1em;"></i>
+                            <button id="saveSvgButton" class="btn-toggle" title="Save as SVG" style="flex: 1;">
+                              <span>
+                                <i class="fa-solid fa-camera"></i>
                               </span>
                             </button>
                           </div>

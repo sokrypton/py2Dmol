@@ -171,11 +171,20 @@ function setupEventListeners() {
     }
     
     // Navigation buttons
-    const orientButton = document.getElementById('orientButton');
+    const orientToggle = document.getElementById('orientToggle');
     const prevObjectButton = document.getElementById('prevObjectButton');
     const nextObjectButton = document.getElementById('nextObjectButton');
     
-    if (orientButton) orientButton.addEventListener('click', applyBestViewRotation);
+    if (orientToggle) {
+        // Handle click on the label/span (not the hidden checkbox)
+        const orientSpan = orientToggle.querySelector('span');
+        if (orientSpan) {
+            orientSpan.addEventListener('click', (e) => {
+                e.preventDefault();
+                applyBestViewRotation();
+            });
+        }
+    }
     if (prevObjectButton) prevObjectButton.addEventListener('click', gotoPreviousObject);
     if (nextObjectButton) nextObjectButton.addEventListener('click', gotoNextObject);
     

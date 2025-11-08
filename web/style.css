@@ -422,25 +422,33 @@
     transform: translateY(-1px);
 }
 
-/* Record button styled like btn-toggle */
-.py2dmol-viewer-instance #recordButton.btn-toggle {
-    cursor: pointer;
-}
-
-/* Hide save state button */
-
-/* Camera/SVG export button styled like btn-toggle */
+/* Icon button styles (record, save SVG, etc.) */
+.py2dmol-viewer-instance #recordButton.btn-toggle,
 .py2dmol-viewer-instance #saveSvgButton.btn-toggle {
     cursor: pointer;
+    padding: 0;
+    pointer-events: auto;
 }
 
+.py2dmol-viewer-instance #recordButton.btn-toggle > span,
+.py2dmol-viewer-instance #saveSvgButton.btn-toggle > span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--btn-h);
+    padding: 0;
+    border-radius: var(--btn-radius);
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.py2dmol-viewer-instance #recordButton.btn-toggle > span > i,
+.py2dmol-viewer-instance #saveSvgButton.btn-toggle > span > i {
+    font-size: 1em;
+}
+
+.py2dmol-viewer-instance #recordButton.btn-toggle:hover > span,
 .py2dmol-viewer-instance #saveSvgButton.btn-toggle:hover > span {
-    background: #d1d5db;
-    box-shadow: var(--shadow-md);
-    transform: translateY(-1px);
-}
-
-.py2dmol-viewer-instance #recordButton.btn-toggle:hover > span {
     background: #d1d5db;
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
@@ -1094,8 +1102,12 @@ table.layout-table td {
 }
 
 .sequence-actions {
-  display: flex;
+  display: none;
   gap: 8px;
+}
+
+.sequence-actions[style*="display: flex"] {
+  display: flex !important;
 }
 
 .nav-button.small { 
