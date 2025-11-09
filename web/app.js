@@ -252,6 +252,30 @@ function setupEventListeners() {
     // Initialize button state to reflect default sequence mode
     updateSequenceModeButton();
     
+    // Monitor frame changes to update sequence view during animation
+    let lastCheckedFrame = -1;
+    function checkFrameChange() {
+        if (viewerApi?.renderer) {
+            const renderer = viewerApi.renderer;
+            const currentFrame = renderer.currentFrame;
+            if (currentFrame !== lastCheckedFrame && currentFrame >= 0) {
+                lastCheckedFrame = currentFrame;
+                // Check if sequence view needs updating
+                const objectName = renderer.currentObjectName;
+                if (objectName && renderer.objectsData[objectName]) {
+                    const object = renderer.objectsData[objectName];
+                    if (object.frames && object.frames.length > currentFrame) {
+                        // Rebuild sequence view if sequence changed
+                        buildSequenceView();
+                    }
+                }
+            }
+        }
+        requestAnimationFrame(checkFrameChange);
+    }
+    // Start monitoring frame changes
+    requestAnimationFrame(checkFrameChange);
+    
     if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); selectAllResidues(); });
     if (clearAllBtn)  clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); clearAllResidues(); });
 
@@ -1871,11 +1895,27 @@ function clearAllObjects() {
 
 // HTML-based sequence renderer data
 let sequenceHTMLData = null; // Unified structure: { unifiedContainer, allResidues, chainBoundaries, charsPerLine, mode, sideChainButtons }
+let lastSequenceFrameIndex = -1; // Track which frame the sequence view is showing
 
 // Sequence view mode state
 // If false: show only chain labels (inline)
 // If true: show both chain labels (inline) and sequence
 let sequenceViewMode = true;  // Default: show sequence
+
+// Check if sequence differs between frames
+function sequencesDiffer(frame1, frame2) {
+    if (!frame1 || !frame2) return true;
+    if (!frame1.residues || !frame2.residues) return true;
+    if (frame1.residues.length !== frame2.residues.length) return true;
+    
+    // Check if residues, chains, or atom_types differ
+    for (let i = 0; i < frame1.residues.length; i++) {
+        if (frame1.residues[i] !== frame2.residues[i]) return true;
+        if (frame1.chains && frame2.chains && frame1.chains[i] !== frame2.chains[i]) return true;
+        if (frame1.atom_types && frame2.atom_types && frame1.atom_types[i] !== frame2.atom_types[i]) return true;
+    }
+    return false;
+}
 
 function buildSequenceView() {
     const sequenceViewEl = document.getElementById('sequenceView');
@@ -1896,10 +1936,28 @@ function buildSequenceView() {
     const object = viewerApi.renderer.objectsData[objectName];
     if (!object || !object.frames || object.frames.length === 0) return;
 
-    const firstFrame = object.frames[0];
-    if (!firstFrame || !firstFrame.residues) return;
+    // Use current frame instead of always first frame (for animation support)
+    const currentFrameIndex = viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0;
+    const currentFrame = object.frames[currentFrameIndex];
+    if (!currentFrame || !currentFrame.residues) return;
 
-    const { residues, residue_index, chains, atom_types } = firstFrame;
+    // Check if sequence actually changed - only rebuild if it did
+    const lastFrame = lastSequenceFrameIndex >= 0 && lastSequenceFrameIndex < object.frames.length 
+        ? object.frames[lastSequenceFrameIndex] 
+        : null;
+    
+    // Only rebuild if sequence changed or this is first build
+    if (lastFrame && !sequencesDiffer(currentFrame, lastFrame) && sequenceHTMLData) {
+        // Sequence hasn't changed, just update colors and selection
+        updateSequenceViewColors();
+        updateSequenceViewSelectionState();
+        lastSequenceFrameIndex = currentFrameIndex;
+        return;
+    }
+
+    lastSequenceFrameIndex = currentFrameIndex;
+
+    const { residues, residue_index, chains, atom_types } = currentFrame;
 
     // Create one entry per atom (one atom = one position, no collapsing)
     const atomEntries = [];
@@ -3184,6 +3242,12 @@ async function handleZipUpload(file, loadAsFrames) {
             if (relativePath.startsWith('__MACOSX/') ||
                 relativePath.startsWith('._') ||
                 zipEntry.dir) return;
+            
+            // Only process files in the main folder (root level), ignore subdirectories
+            // A file is in the root if it doesn't contain '/' (or only at the start/end)
+            const normalizedPath = relativePath.replace(/^\/+|\/+$/g, ''); // Remove leading/trailing slashes
+            if (normalizedPath.includes('/')) return; // Skip files in subdirectories
+            
             fileList.push({
                 name: relativePath,
                 readAsync: (type) => zipEntry.async(type)
