@@ -239,11 +239,10 @@ function setupEventListeners() {
             if (!toggleSequenceModeBtn.style.minWidth) {
                 toggleSequenceModeBtn.style.minWidth = '100px'; // Fixed min width for both texts
             }
+            // Only change the text, no color changes
             if (sequenceViewMode) {
-                toggleSequenceModeBtn.classList.add('active');
                 toggleSequenceModeBtn.textContent = 'Chain'; // Show "Chain" when sequence is visible
             } else {
-                toggleSequenceModeBtn.classList.remove('active');
                 toggleSequenceModeBtn.textContent = 'Sequence'; // Show "Sequence" when only chains are visible
             }
         }
@@ -1900,7 +1899,7 @@ let lastSequenceFrameIndex = -1; // Track which frame the sequence view is showi
 // Sequence view mode state
 // If false: show only chain labels (inline)
 // If true: show both chain labels (inline) and sequence
-let sequenceViewMode = true;  // Default: show sequence
+let sequenceViewMode = false;  // Default: show only chains
 
 // Check if sequence differs between frames
 function sequencesDiffer(frame1, frame2) {

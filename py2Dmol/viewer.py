@@ -45,8 +45,14 @@ class view:
     def __init__(self, size=(300,300), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
         outline=True, width=3.0, ortho=0.5, rotate=False, autoplay=False,
-        pae=False, pae_size=(300,300), reuse_js=False,
+        pae=False, pae_size=300, reuse_js=False,
     ):
+        # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
+        if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
+            pae_size = int(pae_size[0])
+        else:
+            pae_size = int(pae_size)
+        
         self.config = {
             "size": size,
             "controls": controls,

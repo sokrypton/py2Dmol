@@ -163,7 +163,7 @@ function initializePy2DmolViewer(containerElement) {
             // This relies on window.viewerConfig being available globally
             const config = window.viewerConfig || { 
                 size: [300, 300], 
-                pae_size: [300, 300],
+                pae_size: 300,
                 color: "rainbow", 
                 shadow: true, 
                 outline: true,
@@ -2802,11 +2802,11 @@ function initializePy2DmolViewer(containerElement) {
                 const hasOuterEnd = shouldRoundEndpoint(segInfo.idx2);
                 
                 if (this.outlineEnabled) {
-                    // --- 2-STEP DRAW (Outline) - Fixes gaps ---
+                    // --- 2-STEP DRAW (Outline) - Background segment 3px larger ---
                     const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
-                    const totalOutlineWidth = currentLineWidth + 4.0;
+                    const totalOutlineWidth = currentLineWidth + 3.0;
 
-                    // Pass 1: Gap filler outline
+                    // Pass 1: Gap filler outline (3px larger than main line)
                     // Draw line with butt caps, then add rounded caps manually at outer endpoints
                     this.ctx.beginPath();
                     this.ctx.moveTo(x1, y1);
@@ -3724,21 +3724,21 @@ function initializePy2DmolViewer(containerElement) {
 
     // 1. Get config from Python
     // This relies on window.viewerConfig being available globally
-    const config = window.viewerConfig || { 
-        size: [300, 300], 
-        pae_size: [300, 300],
-        color: "auto", 
-        shadow: true, 
-        outline: true,
-        width: 3.0,
-        rotate: false,
-        controls: true,
-        autoplay: false,
-        box: true,
-        pastel: 0.25,
-        pae: false,
-        colorblind: false
-    };
+            const config = window.viewerConfig || { 
+                size: [300, 300], 
+                pae_size: 300,
+                color: "auto", 
+                shadow: true, 
+                outline: true,
+                width: 3.0,
+                rotate: false,
+                controls: true,
+                autoplay: false,
+                box: true,
+                pastel: 0.25,
+                pae: false,
+                colorblind: false
+            };
 
     // 2. Setup Canvas with high-DPI scaling for crisp rendering
     const canvas = containerElement.querySelector('#canvas');
@@ -3755,8 +3755,12 @@ function initializePy2DmolViewer(containerElement) {
     // Store display dimensions as constants - these never change
     const displayWidth = config.size[0];
     const displayHeight = config.size[1];
-    const paeDisplayWidth = config.pae_size[0];
-    const paeDisplayHeight = config.pae_size[1];
+    // pae_size is now a single integer (backward compatible: if array/tuple, use first value)
+    const paeSize = Array.isArray(config.pae_size) || (typeof config.pae_size === 'object' && config.pae_size.length !== undefined) 
+        ? config.pae_size[0] 
+        : config.pae_size;
+    const paeDisplayWidth = paeSize;
+    const paeDisplayHeight = paeSize;
     
     // Initialize canvas with DPI scaling (before renderer creation)
     canvas.width = displayWidth * currentDPR;
@@ -3843,6 +3847,16 @@ function initializePy2DmolViewer(containerElement) {
                     const paeRenderer = new PAERenderer(paeCanvas, renderer);
                     paeRenderer.size = paeCanvas.width;
                     renderer.setPAERenderer(paeRenderer);
+                    // If static data was already loaded, set PAE data for current frame
+                    if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
+                        const object = renderer.objectsData[renderer.currentObjectName];
+                        if (object.frames && object.frames.length > 0 && renderer.currentFrame >= 0) {
+                            const currentFrame = object.frames[renderer.currentFrame];
+                            if (currentFrame && currentFrame.pae) {
+                                paeRenderer.setData(currentFrame.pae);
+                            }
+                        }
+                    }
                     renderer.updatePAEContainerVisibility();
                 });
             }
@@ -4040,7 +4054,10 @@ function initializePy2DmolViewer(containerElement) {
                 renderer.objectSelect.value = window.staticObjectData[0].name;
                 renderer.setFrame(0);
                 // Update PAE container visibility after initial load
-                renderer.updatePAEContainerVisibility();
+                // Use requestAnimationFrame to ensure PAE renderer is initialized
+                requestAnimationFrame(() => {
+                    renderer.updatePAEContainerVisibility();
+                });
             }
         } catch (error) {
             console.error("Error loading static object data:", error);

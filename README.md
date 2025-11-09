@@ -71,7 +71,7 @@ viewer = py2Dmol.view(
     box=True,           # show box around molecule
     controls=True,      # show controls
     pae=False,          # show pae
-    pae_size=(300,300), # set pae canvas size (width, height)
+    pae_size=300,       # set pae canvas size (single integer for square canvas)
 )
 
 viewer.add_pdb("my_complex.cif")

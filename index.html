@@ -136,30 +136,6 @@
             <div id="status-message" style="margin-top: 12px;"></div>
         </div>
 
-        <!-- [EDIT] Sequence container with box and toggle -->
-        <div id="top-panel-container" class="sequence-section-container" style="width: 948px; display: none;">
-          <div id="sequenceHeader" class="sequence-header">
-            <!-- Object selection dropdown aligned to the left -->
-            <select id="objectSelect" style="min-width: 150px;">
-              <!-- Initially empty -->
-            </select>
-            
-            <!-- Action buttons and sequence button aligned to the right -->
-            <div style="display: flex; gap: 8px; margin-left: auto; align-items: center;">
-              <!-- Action buttons that appear when sequence is shown -->
-            <div class="sequence-actions">
-                <button id="selectAllResidues" class="btn btn-grey btn-small">Select all</button>
-                <button id="clearAllResidues" class="btn btn-grey btn-small">Clear all</button>
-              </div>
-              
-              <!-- Sequence toggle button -->
-              <button id="toggleSequenceMode" class="btn btn-grey btn-small active">Chain</button>
-            </div>
-          </div>
-          <div id="sequenceView" class="sequence-content hidden"></div>
-        </div>
-        <!-- [END EDIT] -->
-
         <div id="viewer-container" class="py2dmol-viewer-instance" style="display: none;">
             
             <div id="mainContainer">
@@ -262,6 +238,29 @@
                 </div>
             </div>    
             
+        </div>
+
+        <!-- Sequence container with box and toggle -->
+        <div id="top-panel-container" class="sequence-section-container" style="width: 948px; display: none;">
+          <div id="sequenceHeader" class="sequence-header">
+            <!-- Action buttons and sequence button aligned to the left -->
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <!-- Sequence toggle button (first) -->
+              <button id="toggleSequenceMode" class="btn btn-grey btn-small">Sequence</button>
+              
+              <!-- Action buttons that appear when sequence is shown -->
+            <div class="sequence-actions">
+                <button id="selectAllResidues" class="btn btn-grey btn-small">Select all</button>
+                <button id="clearAllResidues" class="btn btn-grey btn-small">Clear all</button>
+              </div>
+            </div>
+            
+            <!-- Object selection dropdown aligned to the right -->
+            <select id="objectSelect" style="min-width: 150px; margin-left: auto;">
+              <!-- Initially empty -->
+            </select>
+          </div>
+          <div id="sequenceView" class="sequence-content hidden"></div>
         </div>
 
     </div>
