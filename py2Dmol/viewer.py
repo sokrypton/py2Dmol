@@ -210,7 +210,7 @@ class view:
         Returns:
             str: The complete HTML string to be displayed.
         """
-        with importlib.resources.open_text(py2dmol_resources, 'py2Dmol_viewer.html') as f:
+        with importlib.resources.open_text(py2dmol_resources, 'viewer.html') as f:
             html_template = f.read()
 
         config_script = f"""
@@ -293,7 +293,7 @@ class view:
         </script>
         """
         if not self._reuse_js:
-            with importlib.resources.open_text(py2dmol_resources, 'py2Dmol.js') as f:
+            with importlib.resources.open_text(py2dmol_resources, 'viewer.js') as f:
                 js_content = f.read() 
             container_html = f"<script>{js_content}</script>\n" + container_html
 
@@ -797,7 +797,7 @@ class view:
         
         # Selection state (Python doesn't track this, but include empty structure)
         selection_state = {
-            "residues": [],
+            "atoms": [],
             "chains": [],
             "pae_boxes": [],
             "selection_mode": "default"

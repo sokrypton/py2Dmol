@@ -3,7 +3,7 @@
 // ============================================================================
 
 // ============================================================================
-// KABSCH ALIGNMENT UTILITIES
+// ALIGNMENT UTILITIES
 // ============================================================================
 
 /**
@@ -571,6 +571,45 @@ function parsePDB(text) {
  * @returns {Array<Array<object>>} - Array of models, each containing atoms
  */
 function parseCIF(text) {
+    // Parse chemical component table first (for modified residue detection)
+    const loops = parseMinimalCIF_light(text);
+    const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
+    
+    const chemCompMap = new Map();
+    const chemCompL = getLoop('_chem_comp.id');
+    if (chemCompL) {
+        const chemCompCols = chemCompL[0], chemCompRows = chemCompL[1];
+        const ccol_id = chemCompCols.indexOf('_chem_comp.id');
+        const ccol_type = chemCompCols.indexOf('_chem_comp.type');
+        const ccol_mon_nstd = chemCompCols.indexOf('_chem_comp.mon_nstd_flag');
+        
+        if (ccol_id >= 0 && ccol_type >= 0) {
+            for (const row of chemCompRows) {
+                const resName = row[ccol_id]?.trim();
+                const type = row[ccol_type]?.trim();
+                const mon_nstd = ccol_mon_nstd >= 0 ? row[ccol_mon_nstd]?.trim() : null;
+                
+                if (resName && type) {
+                    // Map residue type: 'RNA linking' -> 'R', 'DNA linking' -> 'D', 'L-peptide linking' -> 'P'
+                    let mappedType = null;
+                    if (type.includes('RNA linking')) {
+                        mappedType = 'R';
+                    } else if (type.includes('DNA linking')) {
+                        mappedType = 'D';
+                    } else if (type.includes('peptide linking') || type.includes('L-peptide linking')) {
+                        mappedType = 'P';
+                    }
+                    
+                    const isModified = mon_nstd === 'n' || mon_nstd === 'y' || mon_nstd === 'Y';
+                    chemCompMap.set(resName, { type: mappedType, isModified, originalType: type });
+                }
+            }
+        }
+    }
+    
+    // Store chemCompMap globally for use in convertParsedToFrameData
+    window._lastChemCompMap = chemCompMap;
+    
     const modelMap = new Map();
     const lines = text.split('\n');
     let atomSiteLoop = false;
@@ -647,6 +686,98 @@ function parseCIF(text) {
 }
 
 /**
+ * Map modified residue codes to their parent types
+ * Returns 'P' for protein, 'D' for DNA, 'R' for RNA, or null if not a modified standard residue
+ */
+function getModifiedResidueType(resName) {
+    // Comprehensive mapping of modified residues to their parent types
+    // Format: modified_code -> {type: 'P'|'D'|'R', parent: standard_code}
+    const modifiedResidueMap = {
+        // Modified amino acids (protein)
+        'MSE': {type: 'P', parent: 'MET'}, // Selenomethionine
+        'PTR': {type: 'P', parent: 'TYR'}, // Phosphotyrosine
+        'SEP': {type: 'P', parent: 'SER'}, // Phosphoserine
+        'TPO': {type: 'P', parent: 'THR'}, // Phosphothreonine
+        'M3L': {type: 'P', parent: 'LYS'}, // N-methyllysine
+        'FME': {type: 'P', parent: 'MET'}, // N-formylmethionine
+        'OMY': {type: 'P', parent: 'TYR'}, // O-methyltyrosine
+        'OMT': {type: 'P', parent: 'THR'}, // O-methylthreonine
+        'OMG': {type: 'P', parent: 'GLY'}, // O-methylglycine
+        'OMU': {type: 'P', parent: 'SER'}, // O-methylserine
+        'CME': {type: 'P', parent: 'CYS'}, // S-(carboxymethyl)cysteine
+        'CSO': {type: 'P', parent: 'CYS'}, // S-hydroxycysteine
+        'CSD': {type: 'P', parent: 'CYS'}, // S-sulfocysteine
+        'CSX': {type: 'P', parent: 'CYS'}, // Cysteine sulfonic acid
+        'CAS': {type: 'P', parent: 'CYS'}, // S-(dimethylarsenic)cysteine
+        'CCS': {type: 'P', parent: 'CYS'}, // Carboxyethylcysteine
+        'CEA': {type: 'P', parent: 'CYS'}, // S-carbamoyl-cysteine
+        'CGU': {type: 'P', parent: 'GLU'}, // Carboxyglutamic acid
+        'CMH': {type: 'P', parent: 'HIS'}, // N-methylhistidine
+        'HIP': {type: 'P', parent: 'HIS'}, // Protonated histidine
+        'HIC': {type: 'P', parent: 'HIS'}, // 4-methylhistidine
+        'HIE': {type: 'P', parent: 'HIS'}, // Histidine epsilon
+        'HID': {type: 'P', parent: 'HIS'}, // Histidine delta
+        'MEN': {type: 'P', parent: 'ASN'}, // N-methylasparagine
+        'MGN': {type: 'P', parent: 'GLN'}, // N-methylglutamine
+        'PCA': {type: 'P', parent: 'GLU'}, // Pyroglutamic acid
+        'SCH': {type: 'P', parent: 'CYS'}, // S-methylcysteine
+        'SCY': {type: 'P', parent: 'CYS'}, // S-ethylcysteine
+        'SCS': {type: 'P', parent: 'CYS'}, // S-methylthiocysteine
+        'KCX': {type: 'P', parent: 'LYS'}, // Lysine with modified side chain
+        'LLP': {type: 'P', parent: 'LYS'}, // Lysine with lipoyl group
+        'MLY': {type: 'P', parent: 'LYS'}, // N-dimethyllysine
+        'MLZ': {type: 'P', parent: 'LYS'}, // N-trimethyllysine
+        'ALY': {type: 'P', parent: 'LYS'}, // N-acetyllysine
+        'LYZ': {type: 'P', parent: 'LYS'}, // N-methyl-N-acetyllysine
+        'STY': {type: 'P', parent: 'TYR'}, // Sulfotyrosine
+        'TYI': {type: 'P', parent: 'TYR'}, // Iodotyrosine
+        'TYS': {type: 'P', parent: 'TYR'}, // Sulfotyrosine
+        'IYR': {type: 'P', parent: 'TYR'}, // 3-iodotyrosine
+        'TRN': {type: 'P', parent: 'TRP'}, // N-methyltryptophan
+        'TRQ': {type: 'P', parent: 'TRP'}, // N-formyltryptophan
+        'HTR': {type: 'P', parent: 'TRP'}, // Hydroxytryptophan
+        'PHI': {type: 'P', parent: 'PHE'}, // Iodophenylalanine
+        'PHL': {type: 'P', parent: 'PHE'}, // Hydroxyphenylalanine
+        'DPN': {type: 'P', parent: 'PHE'}, // D-phenylalanine
+        'DPR': {type: 'P', parent: 'PRO'}, // D-proline
+        'HYP': {type: 'P', parent: 'PRO'}, // 4-hydroxyproline
+        '3HP': {type: 'P', parent: 'PRO'}, // 3-hydroxyproline
+        '4HP': {type: 'P', parent: 'PRO'}, // 4-hydroxyproline
+        'PFF': {type: 'P', parent: 'PHE'}, // 4-fluorophenylalanine
+        // Modified nucleotides (DNA)
+        '5MU': {type: 'D', parent: 'DT'}, // 5-methyluridine (DNA)
+        '5MC': {type: 'D', parent: 'DC'}, // 5-methylcytidine (DNA)
+        '5MG': {type: 'D', parent: 'DG'}, // 5-methylguanosine (DNA)
+        '5MA': {type: 'D', parent: 'DA'}, // 5-methyladenosine (DNA)
+        'OMC': {type: 'D', parent: 'DC'}, // O-methylcytidine (DNA)
+        'OMG': {type: 'D', parent: 'DG'}, // O-methylguanosine (DNA)
+        'OMA': {type: 'D', parent: 'DA'}, // O-methyladenosine (DNA)
+        'OMT': {type: 'D', parent: 'DT'}, // O-methylthymidine (DNA)
+        // Modified nucleotides (RNA)
+        '1MA': {type: 'R', parent: 'A'}, // 1-methyladenosine
+        '2MA': {type: 'R', parent: 'A'}, // 2-methyladenosine
+        '5MU': {type: 'R', parent: 'U'}, // 5-methyluridine
+        '5MC': {type: 'R', parent: 'C'}, // 5-methylcytidine
+        '5MG': {type: 'R', parent: 'G'}, // 5-methylguanosine
+        'OMC': {type: 'R', parent: 'C'}, // O-methylcytidine
+        'OMG': {type: 'R', parent: 'G'}, // O-methylguanosine
+        'OMA': {type: 'R', parent: 'A'}, // O-methyladenosine
+        'OMU': {type: 'R', parent: 'U'}, // O-methyluridine
+        'PSU': {type: 'R', parent: 'U'}, // Pseudouridine
+        '1MG': {type: 'R', parent: 'G'}, // 1-methylguanosine
+        '2MG': {type: 'R', parent: 'G'}, // 2-methylguanosine
+        '7MG': {type: 'R', parent: 'G'}, // 7-methylguanosine
+        'M2G': {type: 'R', parent: 'G'}, // N2-methylguanosine
+        'QUO': {type: 'R', parent: 'G'}, // Queuosine
+        'Y': {type: 'R', parent: 'U'}, // Pseudouridine (alternative code)
+        'I': {type: 'R', parent: 'A'}, // Inosine
+        'DI': {type: 'D', parent: 'DA'}, // Deoxyinosine
+    };
+    
+    return modifiedResidueMap[resName] || null;
+}
+
+/**
  * Convert parsed atoms to frame data format, omitting keys for data that is not present.
  * @param {Array<object>} atoms - Parsed atoms
  * @returns {object} - Frame data with coords, and optional plddts, chains, atom_types
@@ -684,8 +815,28 @@ function convertParsedToFrameData(atoms) {
     }
 
     for (const [, residue] of residueMap.entries()) {
-        const is_protein = proteinResidues.has(residue.resName);
-        const is_nucleic = nucleicResidues.has(residue.resName);
+        // Check if it's a standard residue by name
+        let is_protein = proteinResidues.has(residue.resName);
+        let is_nucleic = nucleicResidues.has(residue.resName);
+        
+        // For HETATM records, check if it has backbone atoms (CA or C4')
+        // If it has backbone atoms, treat as modified protein/nucleic acid
+        // If it doesn't, keep as ligand
+        if (residue.record === 'HETATM' && !is_protein && !is_nucleic) {
+            // Check if it has CA atom (characteristic of amino acids)
+            const hasCA = residue.atoms.some(a => a.atomName === 'CA');
+            // Check if it has C4' atom (characteristic of nucleotides)
+            const hasC4 = residue.atoms.some(a => a.atomName === "C4'" || a.atomName === "C4*");
+            
+            if (hasCA) {
+                // Has CA atom - treat as modified amino acid (protein)
+                is_protein = true;
+            } else if (hasC4) {
+                // Has C4' atom - treat as modified nucleotide
+                is_nucleic = true;
+            }
+            // If no backbone atoms, it will be treated as ligand below
+        }
 
         if (is_protein) {
             const ca = residue.atoms.find(a => a.atomName === 'CA');
@@ -694,8 +845,8 @@ function convertParsedToFrameData(atoms) {
                 plddts.push(ca.b);
                 atom_chains.push(ca.chain);
                 atom_types.push('P');
-                residues.push(ca.res_name);
-                residue_index.push(ca.res_seq);
+                residues.push(ca.res_name || ca.resName || residue.resName);
+                residue_index.push(ca.res_seq || ca.resSeq || residue.resSeq);
             }
         } else if (is_nucleic) {
             let c4_atom = residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
@@ -703,21 +854,24 @@ function convertParsedToFrameData(atoms) {
                 coords.push([c4_atom.x, c4_atom.y, c4_atom.z]);
                 plddts.push(c4_atom.b);
                 atom_chains.push(c4_atom.chain);
-                atom_types.push(
-                    rna_bases.includes(residue.resName) || residue.resName.startsWith('R') ? 'R' : 'D'
-                );
-                residues.push(c4_atom.res_name);
-                residue_index.push(c4_atom.res_seq);
+                // Determine DNA vs RNA: check for O2' (RNA-specific) or residue name patterns
+                const hasO2 = residue.atoms.some(a => a.atomName === "O2'" || a.atomName === "O2*");
+                const atomType = hasO2 || residue.resName.startsWith('R') || rna_bases.some(base => residue.resName.includes(base)) ?
+                    'R' : (residue.resName.startsWith('D') || residue.resName.includes('DT') || residue.resName.includes('DA') || residue.resName.includes('DG') || residue.resName.includes('DC') ? 'D' : 'R');
+                atom_types.push(atomType);
+                residues.push(c4_atom.res_name || c4_atom.resName || residue.resName);
+                residue_index.push(c4_atom.res_seq || c4_atom.resSeq || residue.resSeq);
             }
         } else if (residue.record === 'HETATM') {
+            // HETATM without backbone atoms - treat as ligand
             for (const atom of residue.atoms) {
                 if (atom.element !== 'H' && atom.element !== 'D') {
                     coords.push([atom.x, atom.y, atom.z]);
                     plddts.push(atom.b);
                     atom_chains.push(atom.chain);
                     atom_types.push('L');
-                    residues.push(atom.res_name);
-                    residue_index.push(atom.res_seq);
+                    residues.push(atom.res_name || atom.resName || residue.resName);
+                    residue_index.push(atom.res_seq || atom.resSeq || residue.resSeq);
                 }
             }
         }
@@ -749,7 +903,7 @@ function convertParsedToFrameData(atoms) {
  * @param {object} paeJson - PAE JSON data
  * @returns {Array<Array<number>>|null} - PAE matrix or null
  */
-function extractPaeFromJSON(paeJson) {
+function extractPaeFromJSON(paeJson, warnIfMissing = false) {
     if (!paeJson) return null;
     if (paeJson.pae && Array.isArray(paeJson.pae)) return paeJson.pae;
     if (paeJson.predicted_aligned_error && Array.isArray(paeJson.predicted_aligned_error)) {
@@ -758,7 +912,18 @@ function extractPaeFromJSON(paeJson) {
     if (Array.isArray(paeJson) && paeJson.length > 0 && paeJson[0].predicted_aligned_error) {
         return paeJson[0].predicted_aligned_error;
     }
-    console.warn("Could not find PAE matrix in JSON.");
+    // Check for AlphaFold3 format: paeJson might have a nested structure
+    if (paeJson.predicted_aligned_error && typeof paeJson.predicted_aligned_error === 'object') {
+        // Try nested structure
+        const nested = paeJson.predicted_aligned_error;
+        if (nested.pae && Array.isArray(nested.pae)) return nested.pae;
+        if (nested.predicted_aligned_error && Array.isArray(nested.predicted_aligned_error)) {
+            return nested.predicted_aligned_error;
+        }
+    }
+    if (warnIfMissing) {
+        console.warn("Could not find PAE matrix in JSON.");
+    }
     return null;
 }
 
@@ -1030,9 +1195,48 @@ function buildBioFromCIF(text) {
     const loops = parseMinimalCIF_light(text);
     const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
 
+    // Parse chemical component table to identify modified residues
+    const chemCompMap = new Map();
+    const chemCompL = getLoop('_chem_comp.id');
+    if (chemCompL) {
+        const chemCompCols = chemCompL[0], chemCompRows = chemCompL[1];
+        const ccol_id = chemCompCols.indexOf('_chem_comp.id');
+        const ccol_type = chemCompCols.indexOf('_chem_comp.type');
+        const ccol_mon_nstd = chemCompCols.indexOf('_chem_comp.mon_nstd_flag');
+        
+        if (ccol_id >= 0 && ccol_type >= 0) {
+            for (const row of chemCompRows) {
+                const resName = row[ccol_id]?.trim();
+                const type = row[ccol_type]?.trim();
+                const mon_nstd = ccol_mon_nstd >= 0 ? row[ccol_mon_nstd]?.trim() : null;
+                
+                if (resName && type) {
+                    // Map residue type: 'RNA linking' -> 'R', 'DNA linking' -> 'D', 'L-peptide linking' -> 'P'
+                    let mappedType = null;
+                    if (type.includes('RNA linking')) {
+                        mappedType = 'R';
+                    } else if (type.includes('DNA linking')) {
+                        mappedType = 'D';
+                    } else if (type.includes('peptide linking') || type.includes('L-peptide linking')) {
+                        mappedType = 'P';
+                    }
+                    
+                    // Store: is it a modified (non-standard) residue?
+                    // mon_nstd_flag = 'n' means non-standard (modified)
+                    const isModified = mon_nstd === 'n' || mon_nstd === 'y' || mon_nstd === 'Y';
+                    chemCompMap.set(resName, { type: mappedType, isModified, originalType: type });
+                }
+            }
+        }
+    }
+    
+    // Store chemCompMap in a global or pass it through
+    // For now, we'll attach it to the returned object so convertParsedToFrameData can use it
+    window._lastChemCompMap = chemCompMap;
+
     // Atom table
     const atomL = loops.find(([cols]) => cols.some(c => c.startsWith('_atom_site.')));
-    if (!atomL) return { atoms: [], meta: { source: 'mmcif', assembly: 'empty' } };
+    if (!atomL) return { atoms: [], meta: { source: 'mmcif', assembly: 'empty' }, chemCompMap };
 
     const atomCols = atomL[0], atomRows = atomL[1];
     const acol = (n) => atomCols.indexOf(n);
@@ -1114,7 +1318,7 @@ function buildBioFromCIF(text) {
         candidates = [asmL[1][0]];
     }
     if (candidates.length === 0) {
-        return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' } };
+        return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' }, chemCompMap: chemCompMap };
     }
 
     // Assemble
@@ -1173,6 +1377,7 @@ function buildBioFromCIF(text) {
             source: 'mmcif',
             assembly: '1',
             chains: [...seen]
-        }
+        },
+        chemCompMap: chemCompMap
     };
 }

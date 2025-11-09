@@ -12,7 +12,7 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     package_data={
-        'py2Dmol': ['resources/py2Dmol_viewer.html','resources/py2Dmol.js'],
+        'py2Dmol': ['resources/viewer.html','resources/viewer.js'],
     },
     license='BEER-WARE',
     classifiers=[
