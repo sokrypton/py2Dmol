@@ -762,6 +762,9 @@ function initializePy2DmolViewer(containerElement) {
                         this.cachedTints = null;
                     }
                     
+                    // Restart animate loop after dragging ends (needed for inertia and auto-rotation)
+                    requestAnimationFrame(() => this.animate());
+                    
                     const now = performance.now();
                     const timeDelta = now - this.lastDragTime;
                     
@@ -769,6 +772,7 @@ function initializePy2DmolViewer(containerElement) {
                         this.spinVelocityX = 0;
                         this.spinVelocityY = 0;
                     }
+                    // Else, the velocity from the last touchmove is used by the animate loop
                 }
                 
                 // Handle end of pinch
@@ -779,7 +783,19 @@ function initializePy2DmolViewer(containerElement) {
                 // If all touches are up, reset dragging
                 if (e.touches.length === 0) {
                     this.isDragging = false;
+                    // Restart animation loop if it was stopped
+                    requestAnimationFrame(() => this.animate());
                 }
+            });
+            
+            this.canvas.addEventListener('touchcancel', (e) => {
+                // Handle touch cancellation (e.g., system gesture interference)
+                if (this.isDragging) {
+                    this.isDragging = false;
+                    // Restart animation loop
+                    requestAnimationFrame(() => this.animate());
+                }
+                this.initialPinchDistance = 0;
             });
         }
         
@@ -3387,6 +3403,14 @@ function initializePy2DmolViewer(containerElement) {
             });
             
             window.addEventListener('touchend', handleEnd);
+            
+            window.addEventListener('touchcancel', (e) => {
+                // Handle touch cancellation for PAE selection
+                if (this.isDragging) {
+                    this.isDragging = false;
+                    handleEnd(e);
+                }
+            });
         }
 
         setData(paeData) {

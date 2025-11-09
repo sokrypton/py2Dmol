@@ -249,7 +249,7 @@ function setupEventListeners() {
         }
     }
     
-    // Initialize button state
+    // Initialize button state to reflect default sequence mode
     updateSequenceModeButton();
     
     if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); selectAllResidues(); });
@@ -1271,13 +1271,13 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
             if (a.record !== 'HETATM') return true;
             if (proteinResidues.has(a.resName) || nucleicResidues.has(a.resName)) return true;
             
-            // For HETATM: include if it has backbone atoms (modified residue) or as ligand
+            // For HETATM: include if it has backbone atoms (modified residue)
             const resKey = `${a.chain}:${a.resSeq}:${a.resName}`;
             const residue = residueMap.get(resKey);
             if (residue && isModifiedStandardResidue(residue)) return true;
             
-            // HETATM without backbone atoms are kept as ligands (not filtered)
-            return true;
+            // HETATM without backbone atoms are ligands - filter them out when ignoreLigands is true
+            return false;
         });
     }
 
@@ -1875,7 +1875,7 @@ let sequenceHTMLData = null; // Unified structure: { unifiedContainer, allResidu
 // Sequence view mode state
 // If false: show only chain labels (inline)
 // If true: show both chain labels (inline) and sequence
-let sequenceViewMode = false;  // Default: show only chain labels
+let sequenceViewMode = true;  // Default: show sequence
 
 function buildSequenceView() {
     const sequenceViewEl = document.getElementById('sequenceView');
