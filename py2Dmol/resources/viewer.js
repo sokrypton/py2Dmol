@@ -151,7 +151,7 @@ function initializePy2DmolViewer(containerElement) {
             this.ctx = canvas.getContext('2d');
             
             // Unified cutoff for performance optimizations (inertia, caching, grid-based shadows)
-            this.LARGE_MOLECULE_CUTOFF = 5000;
+            this.LARGE_MOLECULE_CUTOFF = 1000;
             
             // Store display dimensions (CSS size) for calculations
             // Internal resolution is scaled by devicePixelRatio, but we work in display pixels
