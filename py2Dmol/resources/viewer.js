@@ -1169,6 +1169,27 @@ function initializePy2DmolViewer(containerElement) {
             this.setUIEnabled(true); // Make sure controls are enabled
         }
         
+        // Check if PAE data is valid
+        _isValidPAE(pae) {
+            return pae && Array.isArray(pae) && pae.length > 0;
+        }
+        
+        // Find PAE container with fallback logic
+        _findPAEContainer() {
+            if (this.paeContainer) return this.paeContainer;
+            
+            if (this.canvas && this.canvas.parentElement) {
+                const mainContainer = this.canvas.parentElement.closest('#mainContainer');
+                if (mainContainer) {
+                    this.paeContainer = mainContainer.querySelector('#paeContainer');
+                    if (this.paeContainer) return this.paeContainer;
+                }
+            }
+            
+            this.paeContainer = document.querySelector('#paeContainer');
+            return this.paeContainer;
+        }
+        
         // Check if an object has PAE data (can be called with object name or uses current object)
         objectHasPAE(objectName = null) {
             const name = objectName || this.currentObjectName;
@@ -1177,43 +1198,18 @@ function initializePy2DmolViewer(containerElement) {
             const object = this.objectsData[name];
             if (!object.frames || object.frames.length === 0) return false;
             
-            // Check if any frame has PAE data
-            for (const frame of object.frames) {
-                if (frame.pae && Array.isArray(frame.pae) && frame.pae.length > 0) {
-                    return true;
-                }
-            }
-            return false;
+            // Check if any frame has valid PAE data
+            return object.frames.some(frame => this._isValidPAE(frame.pae));
         }
         
         // Update PAE container visibility based on current object's PAE data
-        // This method can be called from both Python interface and web interface
         updatePAEContainerVisibility() {
-            if (!this.paeRenderer) return; // PAE not enabled
-            
-            // Use stored reference or find PAE container
-            let paeContainer = this.paeContainer;
-            if (!paeContainer) {
-                // Fallback: try to find it
-                if (this.canvas && this.canvas.parentElement) {
-                    const mainContainer = this.canvas.parentElement.closest('#mainContainer');
-                    if (mainContainer) {
-                        paeContainer = mainContainer.querySelector('#paeContainer');
-                    }
-                }
-                if (!paeContainer) {
-                    paeContainer = document.querySelector('#paeContainer');
-                }
-            }
+            const paeContainer = this._findPAEContainer();
             if (!paeContainer) return;
             
-            // Use unified method to check if current object has PAE
             const hasPAE = this.objectHasPAE();
-            
-            // Show/hide PAE container based on data availability
             paeContainer.style.display = hasPAE ? 'flex' : 'none';
             
-            // Also update canvas visibility
             const paeCanvas = paeContainer.querySelector('#paeCanvas');
             if (paeCanvas) {
                 paeCanvas.style.display = hasPAE ? 'block' : 'none';
@@ -3803,39 +3799,29 @@ function initializePy2DmolViewer(containerElement) {
         console.warn("py2dmol: ResizeObserver not supported. Canvas resizing will not work.");
     }
     
-    // 4. Setup PAE Renderer (if enabled) with high-DPI scaling
-    // Container visibility is controlled by app.js based on actual PAE data availability
+    // 4. Setup PAE Renderer (if enabled)
     if (config.pae) {
         try {
             const paeContainer = containerElement.querySelector('#paeContainer');
             const paeCanvas = containerElement.querySelector('#paeCanvas');
             if (!paeContainer || !paeCanvas) {
                 console.warn("PAE container or canvas not found");
-                return;
-            }
-            
-            // Keep container hidden initially - app.js will show it when PAE data is available
-            paeContainer.style.display = 'none';
-            
-            // Keep PAE at fixed DPI of 1 (not scaled by currentDPR)
-            paeCanvas.width = paeDisplayWidth;
-            paeCanvas.height = paeDisplayHeight;
-            // Canvas will be stretched by CSS to fill container
-            
-            // No scaling - keep PAE at 1x DPI
-            const paeCtx = paeCanvas.getContext('2d');
-            paeCtx.setTransform(1, 0, 0, 1, 0, 0);
-            
-            // Wait for container to be laid out, then create renderer
-            requestAnimationFrame(() => {
-                const paeRenderer = new PAERenderer(paeCanvas, renderer);
-                // Use canvas internal size for rendering (canvas will be stretched by CSS)
-                // This ensures mouse coordinates and rendering coordinates match
-                paeRenderer.size = paeCanvas.width; // Use canvas.width (internal resolution)
-                renderer.setPAERenderer(paeRenderer);
-                // Store reference to PAE container for visibility updates
+            } else {
                 renderer.paeContainer = paeContainer;
-            });
+                paeContainer.style.display = 'none';
+                
+                paeCanvas.width = paeDisplayWidth;
+                paeCanvas.height = paeDisplayHeight;
+                const paeCtx = paeCanvas.getContext('2d');
+                paeCtx.setTransform(1, 0, 0, 1, 0, 0);
+                
+                requestAnimationFrame(() => {
+                    const paeRenderer = new PAERenderer(paeCanvas, renderer);
+                    paeRenderer.size = paeCanvas.width;
+                    renderer.setPAERenderer(paeRenderer);
+                    renderer.updatePAEContainerVisibility();
+                });
+            }
         } catch (e) {
             console.error("Failed to initialize PAE renderer:", e);
         }

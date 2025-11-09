@@ -899,6 +899,32 @@ function convertParsedToFrameData(atoms) {
 }
 
 /**
+ * Filter PAE matrix to remove ligand positions
+ * @param {Array<Array<number>>} paeData - Original PAE matrix
+ * @param {Array<boolean>} isLigandPosition - Boolean array indicating ligand positions
+ * @returns {Array<Array<number>>} - Filtered PAE matrix
+ */
+function filterPAEForLigands(paeData, isLigandPosition) {
+    if (!paeData || !isLigandPosition || isLigandPosition.length === 0) {
+        return paeData ? paeData.map(row => [...row]) : null;
+    }
+    
+    const filteredPae = [];
+    for (let rowIdx = 0; rowIdx < paeData.length; rowIdx++) {
+        if (!isLigandPosition[rowIdx]) {
+            const filteredRow = [];
+            for (let colIdx = 0; colIdx < paeData[rowIdx].length; colIdx++) {
+                if (!isLigandPosition[colIdx]) {
+                    filteredRow.push(paeData[rowIdx][colIdx]);
+                }
+            }
+            filteredPae.push(filteredRow);
+        }
+    }
+    return filteredPae;
+}
+
+/**
  * Extract PAE matrix from JSON object
  * @param {object} paeJson - PAE JSON data
  * @returns {Array<Array<number>>|null} - PAE matrix or null

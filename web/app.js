@@ -7,8 +7,19 @@
 // ============================================================================
 
 let viewerApi = null;
-let objectsWithPAE = new Set();
+let objectsWithPAE = new Set(); // Fallback for backward compatibility
 let batchedObjects = [];
+
+// Helper function to check if PAE data is valid
+function isValidPAE(pae) {
+    return pae && Array.isArray(pae) && pae.length > 0;
+}
+
+// Helper function to check if object data has PAE (checks frames directly)
+function checkObjectHasPAE(objData) {
+    if (!objData || !objData.frames || objData.frames.length === 0) return false;
+    return objData.frames.some(frame => isValidPAE(frame.pae));
+}
 // Removed selectedResiduesSet - now using renderer.selectionModel as single source of truth
 let previewSelectionSet = null;       // NEW: live drag preview selection (temporary during drag)
 
@@ -340,22 +351,11 @@ function handleObjectChange() {
         viewerApi.renderer.resetToDefault();
     }
     
-    // Use renderer's unified method to update PAE container visibility
-    // This works for both web interface and Python interface
     if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
         viewerApi.renderer.updatePAEContainerVisibility();
     } else {
         // Fallback: use objectsWithPAE Set (for backward compatibility)
-        const paeCanvas = document.getElementById('paeCanvas');
-        const paeContainer = document.getElementById('paeContainer');
-        const hasPAE = objectsWithPAE.has(selectedObject);
-        
-        if (paeContainer) {
-            paeContainer.style.display = hasPAE ? 'flex' : 'none';
-        }
-        if (paeCanvas) {
-            paeCanvas.style.display = hasPAE ? 'block' : 'none';
-        }
+        updatePAEContainerVisibilityFallback(selectedObject);
     }
     
     // Rebuild sequence view for the new object
@@ -364,6 +364,20 @@ function handleObjectChange() {
     
     // Note: updateColorMode() is a placeholder, removed to avoid confusion
     // Color mode is managed by the renderer and persists across object changes
+}
+
+// Fallback PAE container visibility update (for backward compatibility)
+function updatePAEContainerVisibilityFallback(objectName) {
+    const paeCanvas = document.getElementById('paeCanvas');
+    const paeContainer = document.getElementById('paeContainer');
+    const hasPAE = objectsWithPAE.has(objectName);
+    
+    if (paeContainer) {
+        paeContainer.style.display = hasPAE ? 'flex' : 'none';
+    }
+    if (paeCanvas) {
+        paeCanvas.style.display = hasPAE ? 'block' : 'none';
+    }
 }
 
 function updateColorMode() {
@@ -1207,7 +1221,6 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
         // Only clear frames if we're NOT loading as frames (i.e., replacing, not adding)
         if (!isLoadAsFrames) {
             targetObject.frames = [];
-            targetObject.hasPAE = false;
         }
         // If loading as frames, keep existing frames and append new ones
     }
@@ -1298,23 +1311,10 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
         if (paeData) {
             const ignoreLigands = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
             if (ignoreLigands && isLigandPosition.length > 0) {
-                const filteredPae = [];
-                for (let rowIdx = 0; rowIdx < paeData.length; rowIdx++) {
-                    if (!isLigandPosition[rowIdx]) {
-                        const filteredRow = [];
-                        for (let colIdx = 0; colIdx < paeData[rowIdx].length; colIdx++) {
-                            if (!isLigandPosition[colIdx]) {
-                                filteredRow.push(paeData[rowIdx][colIdx]);
-                            }
-                        }
-                        filteredPae.push(filteredRow);
-                    }
-                }
-                frameData.pae = filteredPae;
+                frameData.pae = filterPAEForLigands(paeData, isLigandPosition);
             } else {
                 frameData.pae = paeData.map(row => [...row]);
             }
-            targetObject.hasPAE = true;
         } else {
             frameData.pae = null;
         }
@@ -1526,12 +1526,13 @@ function updateViewerFromGlobalBatch() {
                 viewerApi.handlePythonUpdate(JSON.stringify(frame), obj.name);
                 totalFrames++;
             }
-            if (obj.hasPAE) objectsWithPAE.add(obj.name);
+            // Update objectsWithPAE Set (fallback for backward compatibility)
+            if (checkObjectHasPAE(obj)) {
+                objectsWithPAE.add(obj.name);
+            }
         }
     }
     
-    // Update PAE container visibility after loading all objects
-    // Use renderer's unified method if available
     if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
         viewerApi.renderer.updatePAEContainerVisibility();
     }
@@ -3378,7 +3379,7 @@ function saveViewerState() {
             objects.push({
                 name: objectName,
                 frames: frames,
-                hasPAE: objectData.hasPAE || false
+                hasPAE: checkObjectHasPAE({frames: frames}) // Check frames for compatibility
             });
         }
         
@@ -3615,14 +3616,8 @@ async function loadViewerState(stateData) {
                 // Restore playing state
                 renderer.isPlaying = wasPlaying;
                 
-                // Check if any frame has PAE data (more reliable than just hasPAE flag)
-                let hasPAEData = objData.hasPAE || false;
-                if (!hasPAEData && objData.frames && objData.frames.length > 0) {
-                    // Check if any frame actually has PAE data
-                    hasPAEData = objData.frames.some(frame => frame.pae && Array.isArray(frame.pae) && frame.pae.length > 0);
-                }
-                
-                if (hasPAEData) {
+                // Check if object has PAE data (checks frames directly)
+                if (checkObjectHasPAE(objData)) {
                     objectsWithPAE.add(objData.name);
                 }
             }

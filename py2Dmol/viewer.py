@@ -594,6 +594,54 @@ class view:
         print(f"Error: File or PDB ID '{pdb_id}' not found.")
         return None
 
+    def _parse_pae_json(self, pae_filepath):
+        """
+        Parses PAE JSON file with support for multiple formats (matching JavaScript extractPaeFromJSON).
+        
+        Args:
+            pae_filepath (str): Path to PAE JSON file
+            
+        Returns:
+            np.array or None: PAE matrix as numpy array, or None if parsing fails
+        """
+        try:
+            with open(pae_filepath, 'r') as f:
+                pae_data = json.load(f)
+            
+            # Try different PAE JSON formats (matching JavaScript extractPaeFromJSON)
+            pae_matrix = None
+            
+            # Format 1: Direct pae array
+            if isinstance(pae_data, dict) and 'pae' in pae_data and isinstance(pae_data['pae'], list):
+                pae_matrix = np.array(pae_data['pae'])
+            
+            # Format 2: Direct predicted_aligned_error array
+            elif isinstance(pae_data, dict) and 'predicted_aligned_error' in pae_data:
+                if isinstance(pae_data['predicted_aligned_error'], list):
+                    pae_matrix = np.array(pae_data['predicted_aligned_error'])
+                # Format 3: Nested structure (AlphaFold3)
+                elif isinstance(pae_data['predicted_aligned_error'], dict):
+                    nested = pae_data['predicted_aligned_error']
+                    if 'pae' in nested and isinstance(nested['pae'], list):
+                        pae_matrix = np.array(nested['pae'])
+                    elif 'predicted_aligned_error' in nested and isinstance(nested['predicted_aligned_error'], list):
+                        pae_matrix = np.array(nested['predicted_aligned_error'])
+            
+            # Format 4: List containing dict with predicted_aligned_error (AlphaFold DB format)
+            elif isinstance(pae_data, list) and len(pae_data) > 0:
+                if isinstance(pae_data[0], dict) and 'predicted_aligned_error' in pae_data[0]:
+                    pae_matrix = np.array(pae_data[0]['predicted_aligned_error'])
+            
+            if pae_matrix is not None:
+                return pae_matrix
+            else:
+                print(f"Warning: PAE JSON file '{pae_filepath}' has an unexpected format.")
+                return None
+                
+        except Exception as e:
+            print(f"Error parsing PAE JSON '{pae_filepath}': {e}")
+            return None
+
     def _get_filepath_from_afdb_id(self, uniprot_id, download_pae=False):
         """
         Downloads a structure from AlphaFold DB given a UniProt ID.
@@ -688,16 +736,7 @@ class view:
         # --- Parse PAE if downloaded ---
         pae_matrix = None
         if pae_filepath:
-            try:
-                with open(pae_filepath, 'r') as f:
-                    pae_data = json.load(f)
-                    # AFDB PAE JSON is a list containing one dict
-                    if isinstance(pae_data, list) and len(pae_data) > 0 and 'predicted_aligned_error' in pae_data[0]:
-                        pae_matrix = np.array(pae_data[0]['predicted_aligned_error'])
-                    else:
-                        print(f"Warning: PAE JSON file '{pae_filepath}' has an unexpected format. Expected list with dict containing 'predicted_aligned_error'.")
-            except Exception as e:
-                print(f"Error parsing PAE JSON '{pae_filepath}': {e}")
+            pae_matrix = self._parse_pae_json(pae_filepath)
         
         # --- Add PDB (and PAE if loaded) ---
         if struct_filepath:
