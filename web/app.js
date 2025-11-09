@@ -329,8 +329,6 @@ function updateObjectNavigationButtons() {
 
 function handleObjectChange() {
     const objectSelect = document.getElementById('objectSelect');
-    const paeCanvas = document.getElementById('paeCanvas');
-    const paeContainer = document.getElementById('paeContainer');
     
     const selectedObject = objectSelect.value;
     if (!selectedObject) return;
@@ -342,14 +340,22 @@ function handleObjectChange() {
         viewerApi.renderer.resetToDefault();
     }
     
-    const hasPAE = objectsWithPAE.has(selectedObject);
-    
-    // Show/hide both container and canvas based on PAE data availability
-    if (paeContainer) {
-        paeContainer.style.display = hasPAE ? 'flex' : 'none';
-    }
-    if (paeCanvas) {
-        paeCanvas.style.display = hasPAE ? 'block' : 'none';
+    // Use renderer's unified method to update PAE container visibility
+    // This works for both web interface and Python interface
+    if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
+        viewerApi.renderer.updatePAEContainerVisibility();
+    } else {
+        // Fallback: use objectsWithPAE Set (for backward compatibility)
+        const paeCanvas = document.getElementById('paeCanvas');
+        const paeContainer = document.getElementById('paeContainer');
+        const hasPAE = objectsWithPAE.has(selectedObject);
+        
+        if (paeContainer) {
+            paeContainer.style.display = hasPAE ? 'flex' : 'none';
+        }
+        if (paeCanvas) {
+            paeCanvas.style.display = hasPAE ? 'block' : 'none';
+        }
     }
     
     // Rebuild sequence view for the new object
@@ -1522,6 +1528,12 @@ function updateViewerFromGlobalBatch() {
             }
             if (obj.hasPAE) objectsWithPAE.add(obj.name);
         }
+    }
+    
+    // Update PAE container visibility after loading all objects
+    // Use renderer's unified method if available
+    if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
+        viewerApi.renderer.updatePAEContainerVisibility();
     }
     
     if (batchedObjects.length > 0) {

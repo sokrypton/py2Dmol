@@ -837,6 +837,9 @@ function initializePy2DmolViewer(containerElement) {
                     this.currentObjectName = newObjectName;
                     this.setFrame(0);
                     // setFrame will call resetToDefault() after loading new object data
+                    
+                    // Update PAE container visibility based on current object
+                    this.updatePAEContainerVisibility();
                 });
             }
 
@@ -1094,6 +1097,9 @@ function initializePy2DmolViewer(containerElement) {
             }
             this.updateUIControls();
             
+            // Update PAE container visibility when frames are added
+            this.updatePAEContainerVisibility();
+            
             // If this is the first frame being loaded, we need to
             // Recalculate focal length if perspective is enabled and object size changed
             if (object.frames.length === 1 && this.perspectiveEnabled && this.orthoSlider) {
@@ -1157,7 +1163,61 @@ function initializePy2DmolViewer(containerElement) {
             this.render(); // Render once
             this.lastRenderedFrame = frameIndex;
             
+            // Update PAE container visibility
+            this.updatePAEContainerVisibility();
+            
             this.setUIEnabled(true); // Make sure controls are enabled
+        }
+        
+        // Check if an object has PAE data (can be called with object name or uses current object)
+        objectHasPAE(objectName = null) {
+            const name = objectName || this.currentObjectName;
+            if (!name || !this.objectsData[name]) return false;
+            
+            const object = this.objectsData[name];
+            if (!object.frames || object.frames.length === 0) return false;
+            
+            // Check if any frame has PAE data
+            for (const frame of object.frames) {
+                if (frame.pae && Array.isArray(frame.pae) && frame.pae.length > 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        // Update PAE container visibility based on current object's PAE data
+        // This method can be called from both Python interface and web interface
+        updatePAEContainerVisibility() {
+            if (!this.paeRenderer) return; // PAE not enabled
+            
+            // Use stored reference or find PAE container
+            let paeContainer = this.paeContainer;
+            if (!paeContainer) {
+                // Fallback: try to find it
+                if (this.canvas && this.canvas.parentElement) {
+                    const mainContainer = this.canvas.parentElement.closest('#mainContainer');
+                    if (mainContainer) {
+                        paeContainer = mainContainer.querySelector('#paeContainer');
+                    }
+                }
+                if (!paeContainer) {
+                    paeContainer = document.querySelector('#paeContainer');
+                }
+            }
+            if (!paeContainer) return;
+            
+            // Use unified method to check if current object has PAE
+            const hasPAE = this.objectHasPAE();
+            
+            // Show/hide PAE container based on data availability
+            paeContainer.style.display = hasPAE ? 'flex' : 'none';
+            
+            // Also update canvas visibility
+            const paeCanvas = paeContainer.querySelector('#paeCanvas');
+            if (paeCanvas) {
+                paeCanvas.style.display = hasPAE ? 'block' : 'none';
+            }
         }
 
         // Update UI element states (e.g., disabled)
@@ -3773,6 +3833,8 @@ function initializePy2DmolViewer(containerElement) {
                 // This ensures mouse coordinates and rendering coordinates match
                 paeRenderer.size = paeCanvas.width; // Use canvas.width (internal resolution)
                 renderer.setPAERenderer(paeRenderer);
+                // Store reference to PAE container for visibility updates
+                renderer.paeContainer = paeContainer;
             });
         } catch (e) {
             console.error("Failed to initialize PAE renderer:", e);
@@ -3967,6 +4029,8 @@ function initializePy2DmolViewer(containerElement) {
                 renderer.currentObjectName = window.staticObjectData[0].name;
                 renderer.objectSelect.value = window.staticObjectData[0].name;
                 renderer.setFrame(0);
+                // Update PAE container visibility after initial load
+                renderer.updatePAEContainerVisibility();
             }
         } catch (error) {
             console.error("Error loading static object data:", error);
