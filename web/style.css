@@ -7,6 +7,10 @@
     --color-primary-dark: #1d4ed8;
     --color-success: #10b981;
     --color-success-hover: #059669;
+    --color-success-dark: #047857;
+    --color-danger: #ef4444;
+    --color-danger-hover: #dc2626;
+    --color-danger-dark: #b91c1c;
     --color-gray-50: #f9fafb;
     --color-gray-100: #f3f4f6;
     --color-gray-200: #e5e7eb;
@@ -36,6 +40,8 @@
     --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    --container-padding: 12px;
+    --container-gap: 10px;
 }
 
 /* ============================================================================
@@ -43,6 +49,23 @@
    ============================================================================ */
 .py2dmol-viewer-instance * { 
     box-sizing: border-box; 
+}
+
+/* ============================================================================
+   STANDARD CONTAINER BOX
+   ============================================================================ */
+.container-box {
+    background: #ffffff;
+    border: 1px solid var(--color-gray-200);
+    border-radius: var(--radius-lg);
+    padding: var(--container-padding);
+    box-shadow: var(--shadow-md);
+    transition: box-shadow var(--transition-base), border-color var(--transition-base);
+}
+
+.container-box:hover {
+    box-shadow: var(--shadow-lg);
+    border-color: var(--color-gray-300);
 }
 
 /* [EDIT] Centered viewer on the page */
@@ -68,28 +91,22 @@
 .py2dmol-viewer-instance #viewerColumn {
     display: flex;
     flex-direction: column;
-    gap: 12px; 
+    gap: 10px; 
     min-width: 600px; 
 }
 
 .py2dmol-viewer-instance #canvasContainer {
     display: inline-block;
-    border: 1px solid #e5e7eb; 
-    border-radius: 10px;
     overflow: auto; 
-    background: #ffffff;
     resize: both; 
     width: 600px; 
     height: 600px; 
     min-width: 200px; 
     min-height: 200px;
-    box-shadow: var(--shadow-md);
-    transition: box-shadow var(--transition-base), border-color var(--transition-base);
 }
 
-.py2dmol-viewer-instance #canvasContainer:hover {
-    box-shadow: var(--shadow-lg);
-    border-color: var(--color-gray-300);
+.py2dmol-viewer-instance #canvasContainer.container-box {
+    /* Inherits all container-box styles */
 }
 
 .py2dmol-viewer-instance #canvas {
@@ -116,17 +133,11 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: 340px; 
-    border: 1px solid #e5e7eb;
-    border-radius: 10px; 
-    padding: 12px; 
-    background: #ffffff; 
-    box-shadow: var(--shadow-md);
-    transition: box-shadow var(--transition-base);
+    width: 340px;
 }
 
-.py2dmol-viewer-instance #rightPanelContainer:hover {
-    box-shadow: var(--shadow-lg);
+.py2dmol-viewer-instance #rightPanelContainer.container-box {
+    /* Inherits all container-box styles */
 }
 
 /* ============================================================================
@@ -212,28 +223,28 @@
 }
 
 .btn-success {
-    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
 }
 
 .btn-success:hover:not(:disabled) {
-    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
 }
 
 .btn-success:focus-visible {
-    outline: 2px solid #10b981;
+    outline: 2px solid var(--color-success);
     outline-offset: 2px;
 }
 
 .btn-danger {
-    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger-hover) 100%);
 }
 
 .btn-danger:hover:not(:disabled) {
-    background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+    background: linear-gradient(135deg, var(--color-danger-hover) 0%, var(--color-danger-dark) 100%);
 }
 
 .btn-danger:focus-visible {
-    outline: 2px solid #ef4444;
+    outline: 2px solid var(--color-danger);
     outline-offset: 2px;
 }
 
@@ -259,24 +270,43 @@
 
 .btn-grey.active:hover:not(:disabled),
 .nav-button.active:hover:not(:disabled) {
-    background: linear-gradient(135deg, var(--color-success-hover) 0%, #047857 100%);
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
 }
 
 
-.btn-blue {
-    background: linear-gradient(135deg, #3b82f6, #2563eb);
-}
-
-.btn-blue:hover:not(:disabled) {
-    background: linear-gradient(135deg, #2563eb, #1d4ed8);
-}
+/* .btn-blue removed - use .btn-primary instead */
 
 .btn-disabled {
-    background: linear-gradient(135deg, #e5e7eb, #d1d5db);
-    color: #9ca3af;
+    background: linear-gradient(135deg, var(--color-gray-200), var(--color-gray-300));
+    color: var(--color-gray-400);
 }
 
-/* Specific button overrides (min-width, flex, etc.) */
+/* Button utility classes */
+.btn-flex {
+    flex: 1;
+}
+
+.btn-no-margin {
+    margin: 0;
+}
+
+.btn-icon-only {
+    min-width: 36px; /* Prevent collapsing below minimum for icon buttons */
+}
+
+.btn-min-width-sm {
+    min-width: 80px;
+}
+
+.btn-min-width-md {
+    min-width: 100px;
+}
+
+.btn-min-width-lg {
+    min-width: 170px;
+}
+
+/* Specific button overrides (for backward compatibility) */
 #fetch-btn {
     min-width: 100px;
 }
@@ -290,15 +320,7 @@
     flex: 1;
 }
 
-/* Control buttons (Play button) */
-.py2dmol-viewer-instance .controlButton {
-    min-width: 80px;
-}
-
-.py2dmol-viewer-instance .controlButton i {
-    font-size: 14px;
-    line-height: 1;
-}
+/* Control buttons (Play button) - now uses .btn-primary with min-width utility */
 
 /* ============================================================================
    NAVIGATION BUTTONS (TOOLBAR)
@@ -452,61 +474,56 @@
     gap: 8px;
     box-shadow: var(--shadow-sm);
     transition: all 0.2s;
-    background: #e5e7eb;
-    color: #374151;
+    background: var(--color-gray-200);
+    color: var(--color-gray-700);
     box-sizing: border-box;
 }
 
 .py2dmol-viewer-instance .btn-toggle input:checked + span {
-    background: #10b981;
+    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
     color: #fff;
 }
 
 .py2dmol-viewer-instance .btn-toggle input:not(:checked) + span:hover {
-    background: #d1d5db;
+    background: var(--color-gray-300);
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
 }
 
 .py2dmol-viewer-instance .btn-toggle input:checked + span:hover {
-    background: #059669;
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
 }
 
 /* Icon button styles (record, save SVG, etc.) - unified with base button styles */
-.py2dmol-viewer-instance #recordButton.btn-toggle > span,
-.py2dmol-viewer-instance #saveSvgButton.btn-toggle > span {
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only > span {
     min-width: 36px; /* Prevent collapsing below minimum */
 }
 
-.py2dmol-viewer-instance #recordButton.btn-toggle > span > i,
-.py2dmol-viewer-instance #saveSvgButton.btn-toggle > span > i {
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only > span > i {
     font-size: 1em;
     line-height: 1;
 }
 
-.py2dmol-viewer-instance #recordButton.btn-toggle:hover:not(:disabled) > span,
-.py2dmol-viewer-instance #saveSvgButton.btn-toggle:hover:not(:disabled) > span {
-    background: #d1d5db;
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only:hover:not(:disabled) > span {
+    background: var(--color-gray-300);
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
 }
 
-.py2dmol-viewer-instance #recordButton.btn-toggle:active:not(:disabled) > span,
-.py2dmol-viewer-instance #saveSvgButton.btn-toggle:active:not(:disabled) > span {
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only:active:not(:disabled) > span {
     transform: translateY(0);
     box-shadow: var(--shadow-sm);
 }
 
-.py2dmol-viewer-instance #recordButton.btn-toggle:disabled {
+.py2dmol-viewer-instance .btn-toggle:disabled {
     opacity: 0.6;
     cursor: not-allowed;
 }
 
-.py2dmol-viewer-instance #recordButton.btn-toggle:disabled > span,
-.py2dmol-viewer-instance #saveSvgButton.btn-toggle:disabled > span {
-    background: #e5e7eb;
+.py2dmol-viewer-instance .btn-toggle:disabled > span {
+    background: var(--color-gray-200);
     box-shadow: none;
     transform: none;
     cursor: not-allowed;
@@ -713,14 +730,14 @@
     display: flex; 
     flex-wrap: nowrap;
     align-items: center;
-    padding: 12px 16px; 
     width: 100%;
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
-    border-radius: 12px; 
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06); 
     font-family: 'Inter', sans-serif;
     font-size: 14px;
+}
+
+.py2dmol-viewer-instance #controlsContainer.container-box {
+    /* Inherits all container-box styles, padding can be overridden if needed */
+    padding: var(--container-padding) 16px; /* Slightly more horizontal padding for controls */
 }
 
 .py2dmol-viewer-instance #navigationControls.toolbar {
@@ -760,7 +777,7 @@
     font-size: 14px;
 }
 
-/* #top-panel-container display is controlled by JS */
+/* #sequence-viewer-container display is controlled by JS */
 
 /* [EDIT] Removed old #sequenceViewContainer styles */
 
@@ -863,17 +880,12 @@
     aspect-ratio: 1;
     position: relative;
     overflow: hidden;
-    border: 1px solid #e5e7eb;
-    border-radius: 10px;
-    background: #ffffff;
-    box-shadow: var(--shadow-md);
-    transition: box-shadow var(--transition-base), border-color var(--transition-base);
     flex-shrink: 0;
 }
 
-.py2dmol-viewer-instance #paeContainer:hover {
-    box-shadow: var(--shadow-lg);
-    border-color: var(--color-gray-300);
+.py2dmol-viewer-instance #paeContainer.container-box {
+    /* Inherits all container-box styles */
+    padding: 0; /* PAE canvas needs no padding */
 }
 
 .py2dmol-viewer-instance #paeCanvas {
@@ -888,7 +900,7 @@
 }
 
 /* Object select in sequence header */
-#top-panel-container #objectSelect {
+#sequence-viewer-container #objectSelect {
     border: 1px solid #d1d5db;
     border-radius: 8px;
     padding: 6px 12px;
@@ -900,11 +912,11 @@
     min-width: 150px;
 }
 
-#top-panel-container #objectSelect:hover {
+#sequence-viewer-container #objectSelect:hover {
     border-color: #9ca3af;
 }
 
-#top-panel-container #objectSelect:focus {
+#sequence-viewer-container #objectSelect:focus {
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
     outline: none;
@@ -1125,12 +1137,12 @@ table.layout-table td {
 /* [EDIT] Appended new styles for accordion, pills, and sequence view */
 /* Sequence section container with box */
 .sequence-section-container {
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 12px;
-  box-shadow: var(--shadow-md);
-  margin-bottom: 8px;
+    margin-top: var(--container-gap);
+    margin-bottom: 8px;
+}
+
+.sequence-section-container.container-box {
+    /* Inherits all container-box styles from .container-box */
 }
 
 /* Reduce bottom margin when collapsed to remove extra white space */

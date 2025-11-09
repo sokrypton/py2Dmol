@@ -37,7 +37,7 @@
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">py2Dmol</h1>
         <p class="text-gray-500 mb-4">Upload a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
 
-        <div class="bg-white mb-2" style="width: 948px; padding: 12px; border-radius: 10px; border: 1px solid #e5e7eb; box-shadow: var(--shadow-md);">
+        <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
             
             <!-- Use table for reliable layout -->
             <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 0;">
@@ -141,11 +141,11 @@
             <div id="mainContainer">
                 
                 <div id="viewerColumn">
-                    <div id="canvasContainer">
+                    <div id="canvasContainer" class="container-box">
                         <canvas id="canvas"></canvas>
                     </div>
-                    <div id="controlsContainer">
-                        <button id="playButton" class="controlButton btn btn-blue"><i class="fa-solid fa-play"></i></button>
+                    <div id="controlsContainer" class="container-box">
+                        <button id="playButton" class="btn btn-primary btn-min-width-sm"><i class="fa-solid fa-play"></i></button>
                         <input type="range" id="frameSlider" min="0" max="0" value="0">
                         <span id="frameCounter">Frame: 0 / 0</span>
                         <select id="speedSelect">
@@ -158,42 +158,42 @@
                 
                 <!-- Right side panels container -->
                 <div id="rightPanelsContainer">
-                    <div id="rightPanelContainer">
+                    <div id="rightPanelContainer" class="container-box">
                         
                         <!-- Toolbar (two rows) -->
                         <div id="navigationControls" class="toolbar" style="margin-bottom: 4px;">
                           <div class="toolbar-row">
-                            <label class="btn-toggle" id="orientToggle" style="flex: 1;" title="Orient to best view">
+                            <label class="btn-toggle btn-flex" id="orientToggle" title="Orient to best view">
                               <input type="checkbox" style="display: none;">
-                              <span><i class="fa-solid fa-crosshairs" style="font-size: 1em; margin-right: 4px;"></i>Orient</span>
+                              <span><i class="fa-solid fa-crosshairs"></i>Orient</span>
                             </label>
 
                             <!-- Rotate: checkbox styled as a button -->
-                            <label class="btn-toggle" id="rotateToggle" style="flex: 1;" title="Toggle auto-rotation">
+                            <label class="btn-toggle btn-flex" id="rotateToggle" title="Toggle auto-rotation">
                               <input type="checkbox" id="rotationCheckbox">
-                              <span><i class="fa-solid fa-rotate" style="font-size: 1em; margin-right: 4px;"></i>Rotate</span>
+                              <span><i class="fa-solid fa-rotate"></i>Rotate</span>
                             </label>
                           </div>
 
                           <!-- New second row -->
                           <div class="toolbar-row">
-                            <label class="btn-toggle" title="Toggle shadow" style="flex: 1;">
+                            <label class="btn-toggle btn-flex" title="Toggle shadow">
                               <input type="checkbox" id="shadowEnabledCheckbox" checked>
                               <span>Shadow</span>
                             </label>
 
-                            <label class="btn-toggle" title="Toggle outline" style="flex: 1;">
+                            <label class="btn-toggle btn-flex" title="Toggle outline">
                               <input type="checkbox" id="outlineEnabledCheckbox" checked>
                               <span>Outline</span>
                             </label>
                             
-                            <button id="recordButton" class="btn-toggle" title="Record animation to video file" style="flex: 1;">
+                            <button id="recordButton" class="btn-toggle btn-flex btn-icon-only" title="Record animation to video file">
                               <span>
                                 <i class="fa-solid fa-video"></i>
                               </span>
                             </button>
                             
-                            <button id="saveSvgButton" class="btn-toggle" title="Save as SVG" style="flex: 1;">
+                            <button id="saveSvgButton" class="btn-toggle btn-flex btn-icon-only" title="Save as SVG">
                               <span>
                                 <i class="fa-solid fa-camera"></i>
                               </span>
@@ -211,7 +211,7 @@
                                     <option value="rainbow">Rainbow</option>
                                     <option value="chain">Chain</option>
                                 </select>
-                                <label class="btn-toggle" title="Colorblind-safe colors" style="margin: 0;">
+                                <label class="btn-toggle btn-no-margin" title="Colorblind-safe colors">
                                     <input type="checkbox" id="colorblindCheckbox">
                                     <span>Colorblind</span>
                                 </label>
@@ -232,7 +232,7 @@
                     </div>
                     
                     <!-- PAE Canvas Container -->
-                    <div id="paeContainer" style="display: none;">
+                    <div id="paeContainer" class="container-box" style="display: none;">
                         <canvas id="paeCanvas" style="cursor: crosshair;"></canvas>
                     </div>
                 </div>
@@ -241,7 +241,7 @@
         </div>
 
         <!-- Sequence container with box and toggle -->
-        <div id="top-panel-container" class="sequence-section-container" style="width: 948px; display: none;">
+        <div id="sequence-viewer-container" class="container-box sequence-section-container" style="width: 948px; display: none;">
           <div id="sequenceHeader" class="sequence-header">
             <!-- Action buttons and sequence button aligned to the left -->
             <div style="display: flex; gap: 8px; align-items: center;">

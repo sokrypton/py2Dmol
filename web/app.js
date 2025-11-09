@@ -211,7 +211,7 @@ function setupEventListeners() {
     // Sequence panel is always visible now
     if (sequenceView) {
       sequenceView.classList.remove('hidden');
-      const container = document.getElementById('top-panel-container');
+      const container = document.getElementById('sequence-viewer-container');
       if (container) {
         container.classList.remove('collapsed');
       }
@@ -1525,7 +1525,7 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
 
 function updateViewerFromGlobalBatch() {
     const viewerContainer = document.getElementById('viewer-container');
-    const topPanelContainer = document.getElementById('top-panel-container');
+    const topPanelContainer = document.getElementById('sequence-viewer-container');
     const objectSelect = document.getElementById('objectSelect');
     
     viewerApi.handlePythonClearAll();
@@ -1858,7 +1858,7 @@ function clearAllObjects() {
     
     // Hide viewer and top panel
     const viewerContainer = document.getElementById('viewer-container');
-    const topPanelContainer = document.getElementById('top-panel-container');
+    const topPanelContainer = document.getElementById('sequence-viewer-container');
     if (viewerContainer) {
         viewerContainer.style.display = 'none';
     }
@@ -3654,7 +3654,7 @@ async function loadViewerState(stateData) {
         
         // Ensure viewer container is visible
         const viewerContainer = document.getElementById('viewer-container');
-        const topPanelContainer = document.getElementById('top-panel-container');
+        const topPanelContainer = document.getElementById('sequence-viewer-container');
         if (viewerContainer) viewerContainer.style.display = 'flex';
         if (topPanelContainer) topPanelContainer.style.display = 'block';
         
