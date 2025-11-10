@@ -182,10 +182,9 @@
                               <span>Shadow</span>
                             </label>
 
-                            <label class="btn-toggle btn-flex" title="Toggle outline">
-                              <input type="checkbox" id="outlineEnabledCheckbox" checked>
+                            <button id="outlineModeButton" class="btn-toggle btn-flex" title="Cycle outline mode: none → partial → full">
                               <span>Outline</span>
-                            </label>
+                            </button>
                             
                             <button id="recordButton" class="btn-toggle btn-flex btn-icon-only" title="Record animation to video file">
                               <span>
@@ -223,7 +222,13 @@
                             </div>
                             <div class="toggle-item">
                                 <label for="orthoSlider" class="font-medium text-gray-700">Ortho:</label>
-                                <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01">
+                                <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
+                            </div>
+                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                <label for="objectSelect" class="font-medium text-gray-700">Object:</label>
+                                <select id="objectSelect" style="flex: 1;">
+                                    <!-- Initially empty -->
+                                </select>
                             </div>
                                                     
                         </div>
@@ -243,22 +248,15 @@
         <!-- Sequence container with box and toggle -->
         <div id="sequence-viewer-container" class="container-box sequence-section-container" style="width: 948px; display: none;">
           <div id="sequenceHeader" class="sequence-header">
-            <!-- Action buttons and sequence button aligned to the left -->
-            <div style="display: flex; gap: 8px; align-items: center;">
-              <!-- Sequence toggle button (first) -->
-              <button id="toggleSequenceMode" class="btn btn-grey btn-small">Sequence</button>
-              
-              <!-- Action buttons that appear when sequence is shown -->
-            <div class="sequence-actions">
-                <button id="selectAllResidues" class="btn btn-grey btn-small">Select all</button>
-                <button id="clearAllResidues" class="btn btn-grey btn-small">Clear all</button>
-              </div>
-            </div>
+            <!-- Sequence toggle button on the left -->
+            <button id="toggleSequenceMode" class="btn btn-grey btn-small">Sequence</button>
             
-            <!-- Object selection dropdown aligned to the right -->
-            <select id="objectSelect" style="min-width: 150px; margin-left: auto;">
-              <!-- Initially empty -->
-            </select>
+            <!-- Action buttons aligned to the right -->
+            <div class="sequence-actions" style="margin-left: auto;">
+                <button id="selectAllResidues" class="btn btn-grey btn-small">Show all</button>
+                <button id="clearAllResidues" class="btn btn-grey btn-small">Hide all</button>
+                <button id="copySelectionButton" class="btn btn-grey btn-small" disabled>Copy selection</button>
+            </div>
           </div>
           <div id="sequenceView" class="sequence-content hidden"></div>
         </div>
@@ -267,7 +265,9 @@
     
     <!-- Load scripts in order -->
     <script src="web/utils.js"></script>
-    <script src="py2Dmol/resources/viewer.js"></script>
+    <script src="py2Dmol/resources/viewer-mol.js"></script>
+    <script src="py2Dmol/resources/viewer-pae.js"></script>
+    <script src="py2Dmol/resources/viewer-seq.js"></script>
     <script src="web/app.js"></script>
 
 </body>

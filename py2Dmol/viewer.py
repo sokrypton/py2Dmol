@@ -44,7 +44,7 @@ def align_a_to_b(a, b):
 class view:
     def __init__(self, size=(300,300), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
-        outline=True, width=3.0, ortho=0.5, rotate=False, autoplay=False,
+        outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
         pae=False, pae_size=300, reuse_js=False,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
@@ -299,9 +299,18 @@ class view:
         </script>
         """
         if not self._reuse_js:
-            with importlib.resources.open_text(py2dmol_resources, 'viewer.js') as f:
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
                 js_content = f.read() 
             container_html = f"<script>{js_content}</script>\n" + container_html
+            
+            # Conditionally load PAE module if enabled
+            if self.config.get("pae", False):
+                try:
+                    with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
+                        pae_js_content = f.read()
+                    container_html = f"<script>{pae_js_content}</script>\n" + container_html
+                except FileNotFoundError:
+                    print("Warning: viewer-pae.js not found. PAE functionality will not be available.")
 
         return container_html
 
@@ -832,11 +841,11 @@ class view:
             "color_mode": self.config.get("color", "auto"),
             "line_width": self.config.get("width", 3.0),
             "shadow_enabled": self.config.get("shadow", True),
-            "outline_enabled": self.config.get("outline", True),
+            "outline_mode": self.config.get("outline", "full"),  # "none", "partial", or "full"
             "colorblind_mode": self.config.get("colorblind", False),
             "pastel_level": self.config.get("pastel", 0.25),
             "perspective_enabled": False,
-            "ortho_slider_value": self.config.get("ortho", 0.5), # Normalized 0-1 range
+            "ortho_slider_value": self.config.get("ortho", 1.0), # Normalized 0-1 range
             "animation_speed": 100
         }
         
@@ -922,8 +931,11 @@ class view:
                 self.config["width"] = vs["line_width"]
             if "shadow_enabled" in vs:
                 self.config["shadow"] = vs["shadow_enabled"]
-            if "outline_enabled" in vs:
-                self.config["outline"] = vs["outline_enabled"]
+            if "outline_mode" in vs:
+                self.config["outline"] = vs["outline_mode"]
+            elif "outline_enabled" in vs:
+                # Legacy boolean support
+                self.config["outline"] = "full" if vs["outline_enabled"] else "none"
             if "colorblind_mode" in vs:
                 self.config["colorblind"] = vs["colorblind_mode"]
             if vs.get("pastel_level"):

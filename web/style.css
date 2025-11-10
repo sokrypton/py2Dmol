@@ -781,14 +781,13 @@
 
 /* [EDIT] Removed old #sequenceViewContainer styles */
 
-/* [EDIT] Updated #sequenceView styles */
+/* [EDIT] Updated #sequenceView styles for canvas-based rendering */
 #sequenceView {
-    display: flex; /* Changed from inline-flex */
-    flex-direction: column; /* Stack chains vertically */
-    gap: 4px; /* [EDIT] Tighter spacing between chains */
+    display: block;
     max-height: 400px; /* Fixed height with scrollbar */
     overflow-y: auto; /* Always show scrollbar when content exceeds height */
     overflow-x: hidden; /* Prevent horizontal scrollbar */
+    position: relative;
 }
 
 /* Make scrollbar visible and styled */
@@ -811,64 +810,17 @@
     background: #555; /* Darker color on hover */
 }
 
-/* [EDIT] Chain container with two columns: chain button and sequence */
-.chain-container {
-    margin-bottom: 4px;
-    overflow: hidden; /* Prevent overflow */
-    display: flex;
-    flex-direction: row;
-    align-items: flex-start;
-    gap: 4px;
-}
-
-.chain-button-column {
-    flex-shrink: 0;
-}
-
-
-.chain-container canvas {
-    /* width and height are set inline by JavaScript - don't override */
+/* Canvas element for sequence viewer */
+#sequenceCanvas {
+    cursor: crosshair;
+    display: block;
     margin: 0;
     padding: 0;
-    display: block;
-    /* Prevent any CSS from affecting canvas dimensions */
+    /* width and height are set inline by JavaScript - don't override */
     box-sizing: border-box;
-}
-
-.chain-residues {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1px;
+    touch-action: none; /* Prevent default touch behaviors */
 }
 /* [END EDIT] */
-
-
-#sequenceView .residue-span {
-    cursor: pointer;
-    padding: 3px 5px;
-    border-radius: var(--radius-sm);
-    font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', monospace;
-    font-size: 13px;
-    font-weight: 500;
-    transition: all var(--transition-fast);
-    user-select: none;
-    position: relative;
-}
-
-#sequenceView .residue-span:hover {
-    background-color: var(--color-gray-100);
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-sm);
-}
-
-/* Style for selected residues */
-#sequenceView .residue-span.selected {
-    /* background-color set by JS */
-    /* color set by JS */
-    border-radius: var(--radius-sm);
-    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
-    font-weight: 600;
-}
 
 
 /* ============================================================================
@@ -1211,15 +1163,8 @@ table.layout-table td {
 
 /* Removed - now handled by .btn-small modifier above */
 
-/* Chain buttons are now drawn on canvas - no CSS needed */
+/* Chain buttons and residue characters are now drawn on canvas - no CSS needed for HTML elements */
 
 /* Sequence view container */
-/* [EDIT] Removed border, background, and padding from #sequenceView */
-#sequenceView .residue-span { padding:2px 3px; }
-
-/* Selected residue – background set inline via JS; keep CSS minimal */
-#sequenceView .residue-span.selected {
-  border-radius: 4px;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.08);
-}
+/* [EDIT] Canvas-based rendering - no HTML element styles needed */
 /* [END EDIT] */

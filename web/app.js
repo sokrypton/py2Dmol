@@ -66,6 +66,15 @@ function initializeApp() {
     // Get viewer API reference
     viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
     
+    // Initialize highlight overlay after viewer is created
+    if (viewerApi?.renderer && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+        // Trigger initialization by calling drawHighlights (which will initialize if needed)
+        const renderer = viewerApi.renderer;
+        if (renderer.canvas) {
+            window.SequenceViewer.drawHighlights();
+        }
+    }
+    
     // Setup all event listeners
     setupEventListeners();
     
@@ -93,7 +102,7 @@ function initializeViewerConfig() {
         shadow: true,
         outline: true,
         width: 3.0,
-        ortho: 0.5, // Normalized 0-1 range (0.5 = 50% toward orthographic)
+        ortho: 1.0, // Normalized 0-1 range (1.0 = full orthographic)
         rotate: false,
         controls: true,
         autoplay: false,
@@ -177,6 +186,18 @@ function setupEventListeners() {
         saveSvgButton.addEventListener('click', saveViewerAsSvg);
     }
     
+    // Copy selection button (moved to sequence actions)
+    const copySelectionButton = document.getElementById('copySelectionButton');
+    if (copySelectionButton) {
+        copySelectionButton.addEventListener('click', () => {
+            if (viewerApi && viewerApi.renderer && viewerApi.renderer.extractSelection) {
+                viewerApi.renderer.extractSelection();
+            } else {
+                console.warn("Copy selection feature not available");
+            }
+        });
+    }
+    
     // Navigation buttons
     const orientToggle = document.getElementById('orientToggle');
     const prevObjectButton = document.getElementById('prevObjectButton');
@@ -197,15 +218,15 @@ function setupEventListeners() {
     
     // Object and color select
     const objectSelect = document.getElementById('objectSelect');
-    // Note: colorSelect event listener is handled in viewer.js initializePy2DmolViewer()
+    // Note: colorSelect event listener is handled in viewer-mol.js initializePy2DmolViewer()
     // We don't need a duplicate listener here
     
     if (objectSelect) objectSelect.addEventListener('change', handleObjectChange);
 
     // Attach sequence controls
     const sequenceView = document.getElementById('sequenceView');
-    const selectAllBtn = document.getElementById('selectAllResidues');
-    const clearAllBtn  = document.getElementById('clearAllResidues');
+    const selectAllBtn = document.getElementById('selectAllResidues'); // Button ID kept for compatibility, but shows "Show all"
+    const clearAllBtn  = document.getElementById('clearAllResidues'); // Button ID kept for compatibility, but shows "Hide all"
     const sequenceActions = document.querySelector('.sequence-actions');
     
     // Sequence panel is always visible now
@@ -225,7 +246,11 @@ function setupEventListeners() {
     if (toggleSequenceModeBtn) {
         toggleSequenceModeBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            sequenceViewMode = !sequenceViewMode;
+            // Toggle sequence view mode using module
+            if (window.SequenceViewer) {
+                const newMode = !window.SequenceViewer.getSequenceViewMode();
+                window.SequenceViewer.setSequenceViewMode(newMode);
+            }
             updateSequenceModeButton();
             // Always try to rebuild - buildSequenceView() will return early if no data is available
             buildSequenceView();
@@ -240,12 +265,18 @@ function setupEventListeners() {
                 toggleSequenceModeBtn.style.minWidth = '100px'; // Fixed min width for both texts
             }
             // Only change the text, no color changes
-            if (sequenceViewMode) {
+            const currentMode = window.SequenceViewer ? window.SequenceViewer.getSequenceViewMode() : false;
+            if (currentMode) {
                 toggleSequenceModeBtn.textContent = 'Chain'; // Show "Chain" when sequence is visible
             } else {
                 toggleSequenceModeBtn.textContent = 'Sequence'; // Show "Sequence" when only chains are visible
             }
         }
+    }
+    
+    // Initialize sequence mode to enabled by default
+    if (window.SequenceViewer) {
+        window.SequenceViewer.setSequenceViewMode(true);
     }
     
     // Initialize button state to reflect default sequence mode
@@ -275,8 +306,80 @@ function setupEventListeners() {
     // Start monitoring frame changes
     requestAnimationFrame(checkFrameChange);
     
-    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); selectAllResidues(); });
-    if (clearAllBtn)  clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); clearAllResidues(); });
+    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); showAllResidues(); });
+    if (clearAllBtn)  clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); hideAllResidues(); });
+    
+    // Update copy selection button state when selection changes
+    function updateCopySelectionButtonState() {
+        const copyBtn = document.getElementById('copySelectionButton');
+        if (!copyBtn || !viewerApi?.renderer) return;
+        
+        const renderer = viewerApi.renderer;
+        const objectName = renderer.currentObjectName;
+        if (!objectName) {
+            copyBtn.disabled = true;
+            return;
+        }
+        
+        const object = renderer.objectsData[objectName];
+        if (!object || !object.frames || object.frames.length === 0) {
+            copyBtn.disabled = true;
+            return;
+        }
+        
+        const frame = object.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
+        if (!frame || !frame.coords) {
+            copyBtn.disabled = true;
+            return;
+        }
+        
+        const totalAtoms = frame.coords.length;
+        const selection = renderer.getSelection();
+        
+        // Get selected atoms
+        let selectedAtoms = new Set();
+        if (selection && selection.atoms && selection.atoms.size > 0) {
+            selectedAtoms = new Set(selection.atoms);
+        } else if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
+            selectedAtoms = new Set(renderer.visibilityMask);
+        } else {
+            // No selection or all atoms visible (default mode)
+            selectedAtoms = new Set();
+            for (let i = 0; i < totalAtoms; i++) {
+                selectedAtoms.add(i);
+            }
+        }
+        
+        // Enable only if selection is non-zero and non-full-length
+        const hasSelection = selectedAtoms.size > 0;
+        const isPartialSelection = selectedAtoms.size > 0 && selectedAtoms.size < totalAtoms;
+        copyBtn.disabled = !(hasSelection && isPartialSelection);
+    }
+    
+    // Update button state on selection changes
+    // Listen for selection change events (add listener globally, will work after viewer is initialized)
+    document.addEventListener('py2dmol-selection-change', updateCopySelectionButtonState);
+    
+    // Also update on object/frame changes (set up after viewer is initialized)
+    function setupCopyButtonStateUpdates() {
+        if (viewerApi && viewerApi.renderer) {
+            if (viewerApi.renderer.objectSelect) {
+                viewerApi.renderer.objectSelect.addEventListener('change', updateCopySelectionButtonState);
+            }
+            // Also update when frame changes
+            const frameSlider = document.getElementById('frameSlider');
+            if (frameSlider) {
+                frameSlider.addEventListener('input', updateCopySelectionButtonState);
+                frameSlider.addEventListener('change', updateCopySelectionButtonState);
+            }
+        }
+    }
+    
+    // Set up after viewer is initialized
+    setTimeout(() => {
+        setupCopyButtonStateUpdates();
+        updateCopySelectionButtonState();
+    }, 200);
 
     // Clear all objects button
     const clearAllButton = document.getElementById('clearAllButton');
@@ -730,7 +833,7 @@ function animateRotation() {
         renderer.rotationMatrix = rotationAnimation.targetMatrix;
         
         if (rotationAnimation.targetCenter) {
-            // Vec3 is defined in viewer.js - access via window or use object literal
+            // Vec3 is defined in viewer-mol.js - access via window or use object literal
             const target = rotationAnimation.targetCenter;
             renderer.temporaryCenter = { x: target.x, y: target.y, z: target.z };
             renderer.temporaryExtent = rotationAnimation.targetExtent;
@@ -916,265 +1019,10 @@ function animateRotation() {
 // STRUCTURE PROCESSING
 // ============================================================================
 
-/**
- * Extract biounit operations from PDB or CIF file (once for all models)
- * @param {string} text - File text
- * @param {boolean} isCIF - Whether file is CIF format
- * @returns {Array<object>|null} - Array of {R, t, chains} operations or null
- */
-function extractBiounitOperations(text, isCIF) {
-    if (isCIF) {
-        return extractCIFBiounitOperations(text);
-    } else {
-        return extractPDBBiounitOperations(text);
-    }
-}
+// Biounit extraction and application functions are now in utils.js
+// Using unified functions: extractBiounitOperations, applyBiounitOperationsToAtoms
 
-/**
- * Extract biounit operations from CIF file
- * @param {string} text - CIF text
- * @returns {Array<object>|null} - Array of operations or null
- */
-
-function extractCIFBiounitOperations(text) {
-    // Fast-negative: require both loops to be present
-    if (!/_pdbx_struct_assembly_gen\./.test(text) || !/_pdbx_struct_oper_list\./.test(text)) {
-        return null;
-    }
-
-    const loops = parseMinimalCIF_light(text);
-    const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
-
-    const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
-    const operL = getLoop('_pdbx_struct_oper_list.id');
-
-    if (!asmL) return null;
-
-    // Build operator map {id -> {R,t}}
-    const opMap = new Map();
-    if (operL) {
-        const opCols = operL[0];
-        const opRows = operL[1];
-        const o = (n) => opCols.indexOf(n);
-        for (const r of opRows) {
-            const id = (r[o('_pdbx_struct_oper_list.id')] || '').toString();
-            const R = [
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][1]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][2]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][3]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][1]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][2]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][3]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][1]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][2]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][3]')])
-            ];
-            const t = [
-                parseFloat(r[o('_pdbx_struct_oper_list.vector[1]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.vector[2]')]),
-                parseFloat(r[o('_pdbx_struct_oper_list.vector[3]')])
-            ];
-            if (Number.isFinite(R[0])) opMap.set(id, { R, t });
-        }
-    }
-    if (opMap.size === 0) {
-        opMap.set('1', { R: [1,0,0, 0,1,0, 0,0,1], t: [0,0,0] });
-    }
-
-    // Helpers to compose sequences of operators: Rb*Ra, tb + Rb*ta
-    function mulR(Rb, Ra) {
-        return [
-            Rb[0]*Ra[0] + Rb[1]*Ra[3] + Rb[2]*Ra[6],
-            Rb[0]*Ra[1] + Rb[1]*Ra[4] + Rb[2]*Ra[7],
-            Rb[0]*Ra[2] + Rb[1]*Ra[5] + Rb[2]*Ra[8],
-            Rb[3]*Ra[0] + Rb[4]*Ra[3] + Rb[5]*Ra[6],
-            Rb[3]*Ra[1] + Rb[4]*Ra[4] + Rb[5]*Ra[7],
-            Rb[3]*Ra[2] + Rb[4]*Ra[5] + Rb[5]*Ra[8],
-            Rb[6]*Ra[0] + Rb[7]*Ra[3] + Rb[8]*Ra[6],
-            Rb[6]*Ra[1] + Rb[7]*Ra[4] + Rb[8]*Ra[7],
-            Rb[6]*Ra[2] + Rb[7]*Ra[5] + Rb[8]*Ra[8],
-        ];
-    }
-    function mulRt(R, t) {
-        return [
-            R[0]*t[0] + R[1]*t[1] + R[2]*t[2],
-            R[3]*t[0] + R[4]*t[1] + R[5]*t[2],
-            R[6]*t[0] + R[7]*t[1] + R[8]*t[2],
-        ];
-    }
-    function composeSeq(seq) {
-        // Apply operators left-to-right: x' = O_n(...O_2(O_1(x))...)
-        let R = [1,0,0, 0,1,0, 0,0,1];
-        let t = [0,0,0];
-        for (const id of seq) {
-            const op = opMap.get(id) || opMap.get('1');
-            const Rb = op.R, tb = op.t;
-            // new = Rb * (R*x + t) + tb = (Rb*R) x + (Rb*t + tb)
-            const R_new = mulR(Rb, R);
-            const Rt = mulRt(Rb, t);
-            const t_new = [Rt[0] + tb[0], Rt[1] + tb[1], Rt[2] + tb[2]];
-            R = R_new;
-            t = t_new;
-        }
-        return { R, t };
-    }
-
-    // Choose assembly 1 (or fall back to first row)
-    const a = (n) => asmL[0].indexOf(n);
-    let candidates = asmL[1].filter(r => (r[a('_pdbx_struct_assembly_gen.assembly_id')] || '') === '1');
-    if (candidates.length === 0 && asmL[1].length > 0) candidates = [asmL[1][0]];
-    if (candidates.length === 0) return null;
-
-    const chainSet = new Set();
-    const operations = [];
-    const seenRT = new Set();
-
-    for (const r of candidates) {
-        const asymList = (r[a('_pdbx_struct_assembly_gen.asym_id_list')] ||
-            r[a('_pdbx_struct_assembly_gen.oper_asym_id_list')] || '').toString();
-        const asymIds = asymList.split(',').map(s => s.trim()).filter(Boolean);
-        asymIds.forEach(c => chainSet.add(c));
-
-        const operExpr = (r[a('_pdbx_struct_assembly_gen.oper_expression')] || '').toString();
-        const seqs = (operExpr && typeof expandOperExpr_light === 'function')
-            ? expandOperExpr_light(operExpr) : [['1']];
-
-        for (const seq of seqs) {
-            const { R, t } = composeSeq(seq);
-            const key = R.map(v => Number.isFinite(v)? v.toFixed(6) : 'nan').join(',') + '|' +
-                        t.map(v => Number.isFinite(v)? v.toFixed(6) : 'nan').join(',');
-            if (!seenRT.has(key)) {
-                seenRT.add(key);
-                operations.push({ id: seq.join('*') || '1', R, t, chains: [] });
-            }
-        }
-    }
-
-    const chains = [...chainSet];
-    operations.forEach(op => op.chains = chains);
-    return operations.length > 0 ? operations : null;
-}
-
-/**
-
- * Extract biounit operations from PDB REMARK 350
- * @param {string} text - PDB text
- * @returns {Array<object>} - Array of {R, t, chains} operations
- */
-/**
- * Extract biounit operations from PDB REMARK 350
- * @param {string} text - PDB text
- * @returns {Array<object>|null} - Array of {R, t, chains} operations or null if none found
- */
-function extractPDBBiounitOperations(text) {
-    // Fast-negative: no REMARK 350? no biounit.
-    if (!/REMARK 350/.test(text)) return null;
-    const lines = text.split(/\r?\n/);
-
-    let inTargetBio = false;
-    const targetBioId = 1;
-    const chains = new Set();
-    const opRows = {};
-    
-    for (const L of lines) {
-        if (!L.startsWith('REMARK 350')) continue;
-        
-        if (/REMARK 350\s+BIOMOLECULE:\s*(\d+)/.test(L)) {
-            const id = parseInt(L.match(/REMARK 350\s+BIOMOLECULE:\s*(\d+)/)[1], 10);
-            inTargetBio = (id === targetBioId);
-            continue;
-        }
-        
-        if (!inTargetBio) continue;
-        
-        if (/:/.test(L) && /(APPLY THE FOLLOWING TO|AND|ALSO)\s+CHAIN[S]?:/i.test(L)) {
-            const after = L.split(':')[1] || '';
-            after.split(/[, ]+/)
-                .map(s => s.replace(/[^A-Za-z0-9]/g, '').trim())
-                .filter(Boolean)
-                .forEach(c => chains.add(c));
-            continue;
-        }
-        
-        if (/REMARK 350\s+BIOMT[123]/.test(L)) {
-            const rowChar = L.substring(18, 19);
-            const rowNum = parseInt(rowChar, 10);
-            const opIdx = parseInt(L.substring(19, 24), 10);
-            if (!(rowNum >= 1 && rowNum <= 3) || isNaN(opIdx)) continue;
-            
-            const a1 = parseFloat(L.substring(23, 33));
-            const a2 = parseFloat(L.substring(33, 43));
-            const a3 = parseFloat(L.substring(43, 53));
-            const t = parseFloat(L.substring(53, 68));
-            if ([a1, a2, a3, t].some(v => Number.isNaN(v))) continue;
-            
-            const row = [a1, a2, a3, t];
-            opRows[opIdx] = opRows[opIdx] || [null, null, null];
-            opRows[opIdx][rowNum - 1] = row;
-        }
-    }
-    
-    const ops = [];
-    Object.keys(opRows).forEach(k => {
-        const r = opRows[k];
-        if (r[0] && r[1] && r[2]) {
-            const R = [
-                r[0][0], r[0][1], r[0][2],
-                r[1][0], r[1][1], r[1][2],
-                r[2][0], r[2][1], r[2][2]
-            ];
-            const t = [r[0][3], r[1][3], r[2][3]];
-            ops.push({ id: String(k), R, t, chains: [...chains] });
-        }
-    });
-    
-    return ops.length > 0 ? ops : null;
-}
-
-/**
- * Apply biounit operations to a single model
- * @param {Array<object>} atoms - Model atoms
- * @param {Array<object>} operations - Biounit operations
- * @returns {Array<object>} - Assembled atoms
- */
-function applyBiounitOperationsToModel(atoms, operations) {
-    if (operations.length === 0) return atoms;
-    
-    // Get chains from operations, or use all chains if none specified
-    let targetChains = new Set();
-    operations.forEach(op => {
-        if (op.chains && op.chains.length > 0) {
-            op.chains.forEach(c => targetChains.add(c));
-        }
-    });
-    
-    if (targetChains.size === 0) {
-        // No chains specified, use all
-        atoms.forEach(a => {
-            if (a.chain) targetChains.add(a.chain);
-        });
-    }
-    
-    const out = [];
-    for (const op of operations) {
-        for (const atom of atoms) {
-            if (targetChains.size === 0 || targetChains.has(atom.chain)) {
-                const transformed = {
-                    ...atom,
-                    x: op.R[0] * atom.x + op.R[1] * atom.y + op.R[2] * atom.z + op.t[0],
-                    y: op.R[3] * atom.x + op.R[4] * atom.y + op.R[5] * atom.z + op.t[1],
-                    z: op.R[6] * atom.x + op.R[7] * atom.y + op.R[8] * atom.z + op.t[2],
-                    chain: (op.id === '1') ? 
-                        String(atom.chain || '') : 
-                        (String(atom.chain || '') + '|' + op.id)
-                };
-                out.push(transformed);
-            }
-        }
-    }
-    
-    return out.length > 0 ? out : atoms;
-}
+// Legacy function stubs removed - use utils.js functions directly
 
 function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
     let models;
@@ -1184,7 +1032,13 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         const isCIF = /^\s*data_/m.test(text) || /_atom_site\./.test(text);
         
         // Parse all models first
-        models = isCIF ? parseCIF(text) : parsePDB(text);
+        let parseResult;
+        if (isCIF) {
+            models = parseCIF(text);
+        } else {
+            parseResult = parsePDB(text);
+            models = parseResult.models;
+        }
         
         if (!models || models.length === 0 || models.every(m => m.length === 0)) {
             throw new Error(`Could not parse any models or atoms from ${name}.`);
@@ -1195,17 +1049,16 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             const startTime = performance.now();
             
             // Fast-negative: only scan for BU if the file hints it's present
-const hasBiounitHints = isCIF
-    ? /_pdbx_struct_(assembly_gen|oper_list)\./.test(text)
-    : /REMARK 350/.test(text);
-// Extract operations ONCE for all models
-const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : null;
+            const hasBiounitHints = isCIF
+                ? /_pdbx_struct_(assembly_gen|oper_list)\./.test(text)
+                : /REMARK 350/.test(text);
+            // Extract operations ONCE for all models using unified function
+            const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : null;
 
-            
             if (operations && operations.length > 0) {
-                // Apply operations to each model
+                // Apply operations to each model using unified function
                 models = models.map(modelAtoms => 
-                    applyBiounitOperationsToModel(modelAtoms, operations)
+                    applyBiounitOperationsToAtoms(modelAtoms, operations)
                 );
                 const elapsed = performance.now() - startTime;
             }
@@ -1256,13 +1109,9 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
         const ignore = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
         if (!ignore) return atoms;
         
-        const proteinResidues = new Set([
-            "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS", "ILE",
-            "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "SEC", "PYL"
-        ]);
-        const nucleicResidues = new Set([
-            "A", "C", "G", "U", "T", "DA", "DC", "DG", "DT", "RA", "RC", "RG", "RU"
-        ]);
+        // Get MODRES and chemCompMap from global storage (set by parsePDB/parseCIF)
+        const modresMap = (typeof window !== 'undefined' && window._lastModresMap) ? window._lastModresMap : null;
+        const chemCompMap = (typeof window !== 'undefined' && window._lastChemCompMap) ? window._lastChemCompMap : null;
         
         // Group atoms by residue to check for structural characteristics
         const residueMap = new Map();
@@ -1273,34 +1122,48 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
                 residueMap.set(resKey, {
                     resName: atom.resName,
                     record: atom.record,
+                    chain: atom.chain,
+                    resSeq: atom.resSeq,
                     atoms: []
                 });
             }
             residueMap.get(resKey).atoms.push(atom);
         }
         
-        // Check if a residue is a modified standard residue (has backbone atoms)
-        function isModifiedStandardResidue(residue) {
-            if (residue.record === 'HETATM') {
-                const hasCA = residue.atoms.some(a => a.atomName === 'CA');
-                const hasC4 = residue.atoms.some(a => a.atomName === "C4'" || a.atomName === "C4*");
-                return hasCA || hasC4;
-            }
-            return false;
-        }
+        // Convert residueMap to array for connectivity checks
+        const allResidues = Array.from(residueMap.values());
         
+        // Sort residues by chain and resSeq for proper neighbor checking
+        allResidues.sort((a, b) => {
+            if (a.chain !== b.chain) {
+                return a.chain.localeCompare(b.chain);
+            }
+            return a.resSeq - b.resSeq;
+        });
+        
+        // Use the same classification logic as convertParsedToFrameData
+        // to ensure consistency (with connectivity checks)
         return atoms.filter(a => {
             if (!a) return false;
+            // ATOM records are always kept (standard protein/nucleic)
             if (a.record !== 'HETATM') return true;
-            if (proteinResidues.has(a.resName) || nucleicResidues.has(a.resName)) return true;
             
-            // For HETATM: include if it has backbone atoms (modified residue)
+            // For HETATM: check if it's a real amino acid or nucleic acid
             const resKey = `${a.chain}:${a.resSeq}:${a.resName}`;
             const residue = residueMap.get(resKey);
-            if (residue && isModifiedStandardResidue(residue)) return true;
+            if (!residue) return false;
             
-            // HETATM without backbone atoms are ligands - filter them out when ignoreLigands is true
-            return false;
+            // Find residue index in allResidues array
+            const residueIndex = allResidues.findIndex(r => 
+                r.chain === residue.chain && r.resSeq === residue.resSeq && r.resName === residue.resName
+            );
+            
+            // Use the unified classification functions from utils.js with connectivity checks
+            const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, residueIndex);
+            const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, residueIndex);
+            
+            // Keep if it's a real protein or nucleic acid, filter out if it's a ligand
+            return is_protein || (nucleicType !== null);
         });
     }
 
@@ -1318,23 +1181,134 @@ const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : nul
             }
         }
 
-        // First, convert original model to identify which positions are ligands
+        // Convert original model to identify which positions are ligands
         // This is needed to filter PAE matrix correctly
-        const originalFrameData = convertParsedToFrameData(models[i]);
-        const isLigandPosition = originalFrameData.atom_types ? 
-            originalFrameData.atom_types.map(type => type === 'L') : 
-            Array(originalFrameData.coords.length).fill(false);
+        // We need to identify ligands in the ORIGINAL model to map PAE positions correctly
+        // IMPORTANT: includeAllResidues=true ensures ALL residues are included to match PAE matrix size
+        const originalFrameData = convertParsedToFrameData(models[i], null, null, true);
+        
+        // Calculate ligand positions using the same robust classification logic
+        // This ensures consistency with maybeFilterLigands and catches misclassified ligands
+        const modresMap = (typeof window !== 'undefined' && window._lastModresMap) ? window._lastModresMap : null;
+        const chemCompMap = (typeof window !== 'undefined' && window._lastChemCompMap) ? window._lastChemCompMap : null;
+        
+        // Build residue map from original model for classification
+        const originalResidueMap = new Map();
+        for (const atom of models[i]) {
+            if (!atom || atom.resName === 'HOH') continue;
+            const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
+            if (!originalResidueMap.has(resKey)) {
+                originalResidueMap.set(resKey, {
+                    resName: atom.resName,
+                    record: atom.record,
+                    chain: atom.chain,
+                    resSeq: atom.resSeq,
+                    atoms: []
+                });
+            }
+            originalResidueMap.get(resKey).atoms.push(atom);
+        }
+        
+        // Convert to array for connectivity checks
+        const originalAllResidues = Array.from(originalResidueMap.values());
+        originalAllResidues.sort((a, b) => {
+            if (a.chain !== b.chain) {
+                return a.chain.localeCompare(b.chain);
+            }
+            return a.resSeq - b.resSeq;
+        });
+        
+        // Map each position in originalFrameData to its residue and check if it's a ligand
+        const originalIsLigandPosition = [];
+        if (originalFrameData.atom_types && originalFrameData.residues && originalFrameData.residue_index) {
+            for (let idx = 0; idx < originalFrameData.atom_types.length; idx++) {
+                const atomType = originalFrameData.atom_types[idx];
+                const resName = originalFrameData.residues[idx];
+                const resSeq = originalFrameData.residue_index[idx];
+                const chain = originalFrameData.chains ? originalFrameData.chains[idx] : '';
+                
+                // Find the residue in the original model
+                const resKey = `${chain}:${resSeq}:${resName}`;
+                const residue = originalResidueMap.get(resKey);
+                
+                if (residue) {
+                    // Find residue index in allResidues array
+                    const residueIndex = originalAllResidues.findIndex(r => 
+                        r.chain === residue.chain && r.resSeq === residue.resSeq && r.resName === residue.resName
+                    );
+                    
+                    // Use the same classification logic as maybeFilterLigands (with connectivity checks)
+                    const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex);
+                    const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex);
+                    // It's a ligand if it's NOT protein AND NOT nucleic acid
+                    originalIsLigandPosition.push(!is_protein && nucleicType === null);
+                } else {
+                    // If we can't find the residue, use the atom type as fallback
+                    originalIsLigandPosition.push(atomType === 'L');
+                }
+            }
+        } else {
+            // Fallback: use atom_types if available
+            originalIsLigandPosition.push(...(originalFrameData.atom_types ? 
+                originalFrameData.atom_types.map(type => type === 'L') : 
+                Array(originalFrameData.coords.length).fill(false)));
+        }
         
         // Filter ligands from model
         const model = maybeFilterLigands(models[i]);
+        
+        // Convert filtered model to get final frame data
         let frameData = convertParsedToFrameData(model);
         if (frameData.coords.length === 0) continue;
 
         // Store PAE data
         if (paeData) {
             const ignoreLigands = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
-            if (ignoreLigands && isLigandPosition.length > 0) {
-                frameData.pae = filterPAEForLigands(paeData, isLigandPosition);
+            if (ignoreLigands && originalIsLigandPosition.length > 0) {
+                // PAE matrix indices map directly to atom indices in originalFrameData
+                // We need to filter out ligand positions from the PAE matrix
+                
+                // Count total ligands identified
+                const totalLigands = originalIsLigandPosition.filter(x => x).length;
+                
+                // First, check if PAE size matches originalFrameData size
+                if (paeData.length === originalIsLigandPosition.length) {
+                    // Sizes match - PAE includes all positions, filter out ligands
+                    frameData.pae = filterPAEForLigands(paeData, originalIsLigandPosition);
+                    if (totalLigands > 0) {
+                        console.log(`Filtered ${totalLigands} ligand positions from PAE matrix (size ${paeData.length} -> ${frameData.pae.length})`);
+                    }
+                } else if (paeData.length < originalIsLigandPosition.length) {
+                    // PAE is smaller - it might already exclude ligands, but we need to verify
+                    // Count how many ligands are in the first paeData.length positions
+                    let ligandCountInPAERange = 0;
+                    for (let i = 0; i < paeData.length; i++) {
+                        if (originalIsLigandPosition[i]) {
+                            ligandCountInPAERange++;
+                        }
+                    }
+                    
+                    if (ligandCountInPAERange > 0) {
+                        // PAE includes some ligands in its range, filter them out
+                        // Create a truncated ligand position array for the PAE range
+                        const truncatedLigandPositions = originalIsLigandPosition.slice(0, paeData.length);
+                        frameData.pae = filterPAEForLigands(paeData, truncatedLigandPositions);
+                        console.log(`Filtered ${ligandCountInPAERange} ligand positions from PAE matrix (size ${paeData.length} -> ${frameData.pae.length})`);
+                    } else {
+                        // No ligands in PAE range - PAE already excludes ligands, use as-is
+                        frameData.pae = paeData.map(row => [...row]);
+                        if (totalLigands > 0) {
+                            console.log(`PAE matrix (size ${paeData.length}) already excludes ${totalLigands} ligands found in structure`);
+                        }
+                    }
+                } else {
+                    // PAE is larger - truncate to match originalFrameData size, then filter
+                    console.warn(`PAE matrix size (${paeData.length}) is larger than frame data size (${originalIsLigandPosition.length}). Truncating and filtering...`);
+                    const truncatedPae = paeData.slice(0, originalIsLigandPosition.length).map(row => 
+                        row.slice(0, originalIsLigandPosition.length)
+                    );
+                    frameData.pae = filterPAEForLigands(truncatedPae, originalIsLigandPosition);
+                }
             } else {
                 frameData.pae = paeData.map(row => [...row]);
             }
@@ -1752,11 +1726,9 @@ function toggleChainResidues(chain) {
 // [NEW] This function updates the chain buttons and sequence view
 // based on the renderer's selection model
 function syncChainPillsToSelection() {
-    // Chain buttons are now HTML elements, update them via updateSequenceViewSelectionState
-    if (sequenceHTMLData) {
-        lastSequenceUpdateHash = null; // Force redraw
-        updateSequenceViewSelectionState();
-    }
+    // Chain buttons and sequence are now drawn on canvas, update via updateSequenceViewSelectionState
+    // The function will check internally if canvas data exists
+    updateSequenceViewSelectionState();
 }
 
 function applySelection(previewAtoms = null) {
@@ -1813,7 +1785,10 @@ function highlightAtom(atomIndex) {
         viewerApi.renderer.highlightedAtom = atomIndex;
         viewerApi.renderer.highlightedAtoms = null; // Clear multi-atom highlight
         viewerApi.renderer.highlightedResidue = null; // Clear legacy highlight
-        viewerApi.renderer.render();
+        // Draw highlights on overlay canvas without re-rendering main scene
+        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            window.SequenceViewer.drawHighlights();
+        }
     }
 }
 
@@ -1822,7 +1797,10 @@ function highlightAtoms(atomIndices) {
         viewerApi.renderer.highlightedAtoms = atomIndices instanceof Set ? atomIndices : new Set(atomIndices);
         viewerApi.renderer.highlightedAtom = null; // Clear single atom highlight
         viewerApi.renderer.highlightedResidue = null; // Clear legacy highlight
-        viewerApi.renderer.render();
+        // Draw highlights on overlay canvas without re-rendering main scene
+        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            window.SequenceViewer.drawHighlights();
+        }
     }
 }
 
@@ -1831,20 +1809,23 @@ function clearHighlight() {
         viewerApi.renderer.highlightedResidue = null;
         viewerApi.renderer.highlightedAtom = null;
         viewerApi.renderer.highlightedAtoms = null;
-        viewerApi.renderer.render();
+        // Clear highlights on overlay canvas without re-rendering main scene
+        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            window.SequenceViewer.drawHighlights();
+        }
     }
 }
 
-function selectAllResidues() {
+function showAllResidues() {
   if (!viewerApi?.renderer) return;
-  // Reset to default (all residues/chains) - this also clears PAE boxes
+  // Reset to default (show all residues/chains) - this also clears PAE boxes
   viewerApi.renderer.resetToDefault();
   // UI will update via event listener
 }
 
-function clearAllResidues() {
+function hideAllResidues() {
   if (!viewerApi?.renderer) return;
-  // Use renderer's clearSelection method
+  // Use renderer's clearSelection method to hide all
   viewerApi.renderer.clearSelection();
   // UI will update via event listener
 }
@@ -1892,1087 +1873,67 @@ function clearAllObjects() {
     }
 }
 
-// HTML-based sequence renderer data
-let sequenceHTMLData = null; // Unified structure: { unifiedContainer, allResidues, chainBoundaries, charsPerLine, mode, sideChainButtons }
-let lastSequenceFrameIndex = -1; // Track which frame the sequence view is showing
-
-// Sequence view mode state
-// If false: show only chain labels (inline)
-// If true: show both chain labels (inline) and sequence
-let sequenceViewMode = false;  // Default: show only chains
-
-// Check if sequence differs between frames
-function sequencesDiffer(frame1, frame2) {
-    if (!frame1 || !frame2) return true;
-    if (!frame1.residues || !frame2.residues) return true;
-    if (frame1.residues.length !== frame2.residues.length) return true;
-    
-    // Check if residues, chains, or atom_types differ
-    for (let i = 0; i < frame1.residues.length; i++) {
-        if (frame1.residues[i] !== frame2.residues[i]) return true;
-        if (frame1.chains && frame2.chains && frame1.chains[i] !== frame2.chains[i]) return true;
-        if (frame1.atom_types && frame2.atom_types && frame1.atom_types[i] !== frame2.atom_types[i]) return true;
-    }
-    return false;
-}
-
-function buildSequenceView() {
-    const sequenceViewEl = document.getElementById('sequenceView');
-    if (!sequenceViewEl) return;
-
-    // Clear cache when rebuilding
-    cachedSequenceSpans = null;
-    lastSequenceUpdateHash = null;
-    sequenceHTMLData = null;
-
-    sequenceViewEl.innerHTML = '';
-
-    // Get object name from dropdown first, fallback to renderer's currentObjectName
-    const objectSelect = document.getElementById('objectSelect');
-    const objectName = objectSelect?.value || viewerApi?.renderer?.currentObjectName;
-    if (!objectName || !viewerApi?.renderer) return;
-
-    const object = viewerApi.renderer.objectsData[objectName];
-    if (!object || !object.frames || object.frames.length === 0) return;
-
-    // Use current frame instead of always first frame (for animation support)
-    const currentFrameIndex = viewerApi.renderer.currentFrame >= 0 ? viewerApi.renderer.currentFrame : 0;
-    const currentFrame = object.frames[currentFrameIndex];
-    if (!currentFrame || !currentFrame.residues) return;
-
-    // Check if sequence actually changed - only rebuild if it did
-    const lastFrame = lastSequenceFrameIndex >= 0 && lastSequenceFrameIndex < object.frames.length 
-        ? object.frames[lastSequenceFrameIndex] 
-        : null;
-    
-    // Only rebuild if sequence changed or this is first build
-    if (lastFrame && !sequencesDiffer(currentFrame, lastFrame) && sequenceHTMLData) {
-        // Sequence hasn't changed, just update colors and selection
-        updateSequenceViewColors();
-        updateSequenceViewSelectionState();
-        lastSequenceFrameIndex = currentFrameIndex;
-        return;
-    }
-
-    lastSequenceFrameIndex = currentFrameIndex;
-
-    const { residues, residue_index, chains, atom_types } = currentFrame;
-
-    // Create one entry per atom (one atom = one position, no collapsing)
-    const atomEntries = [];
-    for (let i = 0; i < residues.length; i++) {
-        atomEntries.push({
-            chain: chains[i],
-            resName: residues[i],
-            resSeq: residue_index[i],
-            atomIndex: i, // Direct atom index
-            atomType: atom_types && atom_types[i] ? atom_types[i] : 'P' // Store atom type
-        });
-    }
-
-    // Sort by chain, then by atom index (maintains order within chain) - UNIFIED ORDER
-    const sortedAtomEntries = atomEntries.sort((a, b) => {
-        if (a.chain < b.chain) return -1;
-        if (a.chain > b.chain) return 1;
-        return a.atomIndex - b.atomIndex;
+// Sequence viewer is now in viewer-seq.js module
+// Set up callbacks to connect module to web app functions
+if (window.SequenceViewer) {
+    window.SequenceViewer.setCallbacks({
+        getRenderer: () => viewerApi?.renderer || null,
+        getObjectSelect: () => document.getElementById('objectSelect'),
+        toggleChainResidues: toggleChainResidues,
+        setChainResiduesSelected: setChainResiduesSelected,
+        highlightAtom: highlightAtom,
+        highlightAtoms: highlightAtoms,
+        clearHighlight: clearHighlight,
+        applySelection: applySelection,
+        getPreviewSelectionSet: () => previewSelectionSet,
+        setPreviewSelectionSet: (set) => { previewSelectionSet = set; }
     });
     
-    // Track chain boundaries for unified sequence
-    const chainBoundaries = [];
-    let currentChain = null;
-    let chainStart = 0;
-    for (let i = 0; i < sortedAtomEntries.length; i++) {
-        if (sortedAtomEntries[i].chain !== currentChain) {
-            if (currentChain !== null) {
-                chainBoundaries.push({
-                    chain: currentChain,
-                    startIndex: chainStart,
-                    endIndex: i - 1
-                });
+    // Initialize highlight overlay after viewer is created
+    // This will be called after initializePy2DmolViewer completes
+    function initializeHighlightOverlayIfNeeded() {
+        if (viewerApi?.renderer && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            // Trigger initialization by calling drawHighlights (which will initialize if needed)
+            // But first make sure we have a renderer with canvas
+            const renderer = viewerApi.renderer;
+            if (renderer.canvas) {
+                // Force initialization by calling the internal function
+                // We'll do this by calling drawHighlights which will lazy-init
+                window.SequenceViewer.drawHighlights();
             }
-            currentChain = sortedAtomEntries[i].chain;
-            chainStart = i;
         }
     }
-    // Add last chain
-    if (currentChain !== null) {
-        chainBoundaries.push({
-            chain: currentChain,
-            startIndex: chainStart,
-            endIndex: sortedAtomEntries.length - 1
-        });
+    
+    // Initialize overlay when viewer is ready
+    if (viewerApi?.renderer) {
+        initializeHighlightOverlayIfNeeded();
     }
-
-    // Protein amino acid mapping (3-letter to 1-letter)
-    const threeToOne = {
-        'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 'HIS':'H', 'ILE':'I',
-        'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V',
-        'SEC':'U', 'PYL':'O'
-    };
-
-    // DNA nucleotide mapping
-    const dnaMapping = {
-        'DA':'A', 'DT':'T', 'DC':'C', 'DG':'G',
-        'A':'A', 'T':'T', 'C':'C', 'G':'G',  // Alternative naming
-        'ADE':'A', 'THY':'T', 'CYT':'C', 'GUA':'G'  // Alternative naming
-    };
-    
-    // RNA nucleotide mapping
-    const rnaMapping = {
-        'A':'A', 'U':'U', 'C':'C', 'G':'G',
-        'RA':'A', 'RU':'U', 'RC':'C', 'RG':'G',  // Alternative naming
-        'ADE':'A', 'URA':'U', 'CYT':'C', 'GUA':'G',  // Alternative naming
-        'URI':'U', 'UMP':'U', 'URD':'U',  // Uridine variations
-        'RURA':'U', 'RURI':'U'  // More RNA uracil variations
-    };
-    
-    // Detect sequence type based on residue names
-    const detectSequenceType = (residues) => {
-        if (residues.length === 0) return 'protein';
-        
-        let dnaCount = 0;
-        let rnaCount = 0;
-        let proteinCount = 0;
-        
-        // First pass: check for unambiguous indicators (U = RNA, T/DT = DNA)
-        let hasU = false;
-        let hasT = false;
-        
-        for (const resName of residues) {
-            const upperResName = (resName || '').toString().trim().toUpperCase();
-            
-            // RNA-specific: U is RNA-only
-            if (upperResName === 'U' || upperResName.startsWith('RU') || upperResName.includes('URI') || upperResName.includes('URA')) {
-                hasU = true;
-                rnaCount++;
-            }
-            // DNA-specific: T or DT is DNA-only
-            else if (upperResName === 'T' || upperResName === 'DT' || upperResName.startsWith('DT')) {
-                hasT = true;
-                dnaCount++;
-            }
-            // Check mappings (A, C, G are in both)
-            else if (dnaMapping[upperResName]) {
-                dnaCount++;
-            }
-            else if (rnaMapping[upperResName]) {
-                rnaCount++;
-            }
-            // Check protein
-            else if (threeToOne[upperResName]) {
-                proteinCount++;
-            }
-        }
-        
-        // If we found U (RNA-specific) and no T, it's definitely RNA
-        if (hasU && !hasT) {
-            return 'rna';
-        }
-        // If we found T/DT (DNA-specific) and no U, it's DNA
-        if (hasT && !hasU) {
-            return 'dna';
-        }
-        
-        // Otherwise, determine type based on majority
-        if (dnaCount > rnaCount && dnaCount > proteinCount) {
-            return 'dna';
-        } else if (rnaCount > dnaCount && rnaCount > proteinCount) {
-            return 'rna';
-        } else {
-            return 'protein';
-        }
-    };
-    
-    // Build chain-to-sequence-type mapping for unified sequence
-    const chainSequenceTypes = {};
-    for (const boundary of chainBoundaries) {
-        const chainResidues = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-        const chainResidueNames = chainResidues.map(r => r.resName);
-        chainSequenceTypes[boundary.chain] = detectSequenceType(chainResidueNames);
-    }
-    
-    // Helper function to get residue letter based on chain's sequence type
-    const getResidueLetter = (atom) => {
-        const chainType = chainSequenceTypes[atom.chain] || 'protein';
-        const upper = (atom.resName || '').toString().trim().toUpperCase();
-        
-        if (chainType === 'dna') {
-            return dnaMapping[upper] || 'N';
-        } else if (chainType === 'rna') {
-            if (rnaMapping[upper]) return rnaMapping[upper];
-            if (upper === 'U') return 'U';
-            if (upper.includes('U') || upper.includes('URI') || upper.includes('URA')) return 'U';
-            if (upper.includes('A') && !upper.includes('D')) return 'A';
-            if (upper.includes('C') && !upper.includes('D')) return 'C';
-            if (upper.includes('G') && !upper.includes('D')) return 'G';
-            return 'N';
-        } else {
-            return threeToOne[upper] || 'X';
-        }
-    };
-    
-    // Helper function to create inline chain label
-    const createChainLabel = (chainId, atomIndex, fixedWidth) => {
-        const label = document.createElement('span');
-        label.className = 'chain-label';
-        label.textContent = chainId;
-        label.dataset.chain = chainId;
-        label.dataset.atomIndex = atomIndex;
-        label.style.display = 'block'; // Use block to avoid inline alignment issues
-        label.style.width = fixedWidth + 'px'; // Fixed width for all buttons
-        label.style.boxSizing = 'border-box';
-        label.style.borderBottom = '1px solid transparent'; // Always reserve border space to prevent jumping
-        label.style.height = charHeight + 'px'; // Same height as sequence characters (border included in height)
-        label.style.textAlign = 'center';
-        label.style.lineHeight = (charHeight - 1) + 'px'; // Line height excludes border (1px)
-        label.style.fontSize = '12px';
-        label.style.fontFamily = 'monospace';
-        label.style.cursor = 'pointer';
-        label.style.userSelect = 'none';
-        label.style.padding = '0 ' + Math.round(10 * 2 / 3) + 'px'; // Scaled horizontal padding (2/3 of original)
-        label.style.margin = '0'; // No margins
-        
-        // Get chain color and apply
-        const chainColor = renderer?.getChainColorForChainId?.(chainId) || {r: 128, g: 128, b: 128};
-        const current = viewerApi?.renderer?.getSelection();
-        const isSelected = current?.chains?.has(chainId) || 
-            (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-        
-        if (isSelected) {
-            label.style.backgroundColor = `rgb(${chainColor.r}, ${chainColor.g}, ${chainColor.b})`;
-            // Calculate contrast color
-            const luminance = (0.299 * chainColor.r + 0.587 * chainColor.g + 0.114 * chainColor.b) / 255;
-            label.style.color = luminance > 0.5 ? '#000000' : '#ffffff';
-            label.style.borderBottom = '1px solid #000000'; // Add black border when selected
-        } else {
-            // Dim unselected chains
-            const dimmed = {
-                r: Math.round(chainColor.r * 0.3 + 255 * 0.7),
-                g: Math.round(chainColor.g * 0.3 + 255 * 0.7),
-                b: Math.round(chainColor.b * 0.3 + 255 * 0.7)
-            };
-            label.style.backgroundColor = `rgb(${dimmed.r}, ${dimmed.g}, ${dimmed.b})`;
-            label.style.color = '#000000';
-            label.style.borderBottom = '1px solid transparent'; // Keep border space to prevent jumping
-        }
-        
-        // Click handler (only in sequence mode - in chain mode, drag selection is handled by table mousedown)
-        if (sequenceViewMode) {
-            label.addEventListener('click', (e) => {
-                const current = viewerApi?.renderer?.getSelection();
-                const isSelected = current?.chains?.has(chainId) || 
-                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                if (e.altKey) {
-                    toggleChainResidues(chainId);
-                } else {
-                    setChainResiduesSelected(chainId, !isSelected);
-                }
-                lastSequenceUpdateHash = null;
-                updateSequenceViewSelectionState();
-            });
-        }
-        
-        return label;
-    };
-
-    // HTML text rendering settings
-    const charWidth = 10; // Monospace character width
-    const charHeight = 14; // Line height
-    
-    // Chain button uses same dimensions as sequence characters
-    // Find the maximum chain ID length to make all buttons the same size
-    const maxChainIdLength = Math.max(...chainBoundaries.map(b => b.chain.length), 3);
-    const chainButtonWidth = (charWidth * maxChainIdLength + 20) * 2 / 3; // Fixed width for all buttons (2/3 of original size)
-    
-    // Calculate dynamic line breaks based on container width
-    const containerWidth = sequenceViewEl ? sequenceViewEl.offsetWidth || 900 : 900;
-    const sequenceWidth = containerWidth;
-    const charsPerLine = Math.floor(sequenceWidth / charWidth);
-
-    const fragment = document.createDocumentFragment();
-    const renderer = viewerApi?.renderer;
-    const hasGetAtomColor = renderer?.getAtomColor;
-    
-    // Create table for sequence display
-    const table = document.createElement('table');
-    table.style.borderCollapse = 'separate'; // Use separate to allow border-spacing
-    table.style.borderSpacing = '4px'; // 4px spacing in all directions (rows and columns)
-    table.style.width = '100%';
-    table.style.fontFamily = 'monospace';
-    table.style.fontSize = '12px';
-    table.style.verticalAlign = 'top'; // Align table to top
-    
-    // Store all residue elements
-    const allResidues = [];
-    
-    if (sequenceViewMode) {
-        // SEQUENCE MODE: One row per chain
-        // <tr><td>chain</td><td>sequence</td></tr>
-        
-        for (const boundary of chainBoundaries) {
-            const chainId = boundary.chain;
-            const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-            
-            const row = document.createElement('tr');
-            row.style.verticalAlign = 'top'; // Align row to top
-            row.style.margin = '0';
-            row.style.padding = '0';
-            
-            // Chain label cell
-            const chainCell = document.createElement('td');
-            chainCell.style.verticalAlign = 'top';
-            chainCell.style.padding = '0';
-            chainCell.style.margin = '0';
-            chainCell.style.border = 'none';
-            // Set width to match actual button width (button width + scaled padding)
-            const actualButtonWidth = chainButtonWidth + Math.round(4 * 2 / 3); // Button width + scaled padding (2/3 of original)
-            chainCell.style.width = actualButtonWidth + 'px';
-            const chainLabel = createChainLabel(chainId, chainAtoms[0].atomIndex, chainButtonWidth);
-            chainCell.appendChild(chainLabel);
-            row.appendChild(chainCell);
-            
-            // Sequence cell
-            const seqCell = document.createElement('td');
-            seqCell.style.verticalAlign = 'top';
-            seqCell.style.padding = '0';
-            seqCell.style.margin = '0';
-            seqCell.style.border = 'none';
-            seqCell.style.cursor = 'crosshair';
-            seqCell.style.display = 'flex';
-            seqCell.style.flexWrap = 'wrap';
-            seqCell.style.gap = '0';
-            seqCell.style.lineHeight = charHeight + 'px'; // Set line height on container
-            seqCell.style.alignItems = 'flex-start'; // Align items to top
-            seqCell.style.alignContent = 'flex-start'; // Align wrapped lines to top
-            seqCell.style.width = '100%'; // Ensure cell takes full width for proper wrapping
-            
-            // Build sequence for this chain
-            let charCount = 0;
-            let lastResSeq = null;
-            let lastAtomType = null;
-            
-            for (let i = 0; i < chainAtoms.length; i++) {
-                const atom = chainAtoms[i];
-                
-                // Add spacing/gaps (same logic as before)
-                if (i > 0) {
-                    const prevAtom = chainAtoms[i - 1];
-                    const atomTypeChanged = prevAtom.atomType !== atom.atomType;
-                    const ligandResSeqChanged = atom.atomType === 'L' && prevAtom.atomType === 'L' && prevAtom.resSeq !== atom.resSeq;
-                    const sameAtomType = prevAtom.atomType === atom.atomType;
-                    const resSeqDiff = atom.resSeq - prevAtom.resSeq;
-                    const resSeqChanged = atom.resSeq !== prevAtom.resSeq;
-                    const isChainBreak = sameAtomType && 
-                                         resSeqChanged &&
-                                         (prevAtom.atomType === 'P' || prevAtom.atomType === 'D' || prevAtom.atomType === 'R') &&
-                                         resSeqDiff > 1;
-                    
-                    if (atomTypeChanged || ligandResSeqChanged) {
-                        const spacer = document.createElement('span');
-                        spacer.style.display = 'inline-block';
-                        spacer.style.width = charWidth + 'px';
-                        spacer.style.height = charHeight + 'px';
-                        seqCell.appendChild(spacer);
-                    } else if (isChainBreak) {
-                        const numMissingResidues = resSeqDiff - 1;
-                        for (let g = 0; g < numMissingResidues; g++) {
-                            const gapSpan = document.createElement('span');
-                            gapSpan.className = 'residue-char';
-                            gapSpan.textContent = '-';
-                            gapSpan.style.display = 'inline-block';
-                            gapSpan.style.width = charWidth + 'px';
-                            gapSpan.style.height = charHeight + 'px';
-                            gapSpan.style.textAlign = 'center';
-                            gapSpan.style.lineHeight = charHeight + 'px';
-                            gapSpan.style.verticalAlign = 'middle';
-                            gapSpan.style.color = '#666666';
-                            gapSpan.style.backgroundColor = '#f0f0f0';
-                            gapSpan.style.userSelect = 'none';
-                            gapSpan.style.boxSizing = 'border-box';
-                            gapSpan.style.borderBottom = 'none';
-                            seqCell.appendChild(gapSpan);
-                            charCount++;
-                            // Let flexbox handle wrapping automatically - no manual line breaks
-                        }
-                    }
-                }
-                
-                // Update tracking
-                lastResSeq = atom.resSeq;
-                lastAtomType = atom.atomType;
-                
-                // Get letter and color
-                const letter = getResidueLetter(atom);
-                let color = { r: 80, g: 80, b: 80 };
-                if (hasGetAtomColor && !Number.isNaN(atom.atomIndex)) {
-                    color = renderer.getAtomColor(atom.atomIndex);
-                }
-                
-                // Create atom span
-                const span = document.createElement('span');
-                span.className = 'residue-char';
-                span.textContent = letter;
-                span.dataset.atomIndex = atom.atomIndex;
-                span.style.display = 'inline-block';
-                span.style.width = charWidth + 'px';
-                span.style.height = charHeight + 'px';
-                span.style.textAlign = 'center';
-                span.style.lineHeight = charHeight + 'px'; // Match height exactly
-                span.style.verticalAlign = 'top'; // Align to top to avoid extra space
-                span.style.color = '#000000';
-                span.style.backgroundColor = `rgb(${color.r}, ${color.g}, ${color.b})`;
-                span.style.userSelect = 'none';
-                span.style.boxSizing = 'border-box';
-                span.style.borderBottom = 'none';
-                span.style.margin = '0'; // Remove any default margins
-                span.style.padding = '0'; // Remove any default padding
-                
-                seqCell.appendChild(span);
-                charCount++;
-                // Let flexbox handle wrapping automatically - no manual line breaks
-                
-                allResidues.push({
-                    element: span,
-                    atomIndex: atom.atomIndex,
-                    letter,
-                    color,
-                    resSeq: atom.resSeq,
-                    chain: atom.chain
-                });
-            }
-            
-            row.appendChild(seqCell);
-            table.appendChild(row);
-        }
-    } else {
-        // CHAIN MODE: Inline chain buttons that wrap, with drag selection support
-        // Simple flex container with chain labels as inline elements
-        
-        const row = document.createElement('tr');
-        const chainCell = document.createElement('td');
-        chainCell.style.verticalAlign = 'top';
-        chainCell.style.padding = '0';
-        chainCell.style.margin = '0';
-        chainCell.style.border = 'none';
-        chainCell.style.cursor = 'crosshair'; // Enable drag selection
-        chainCell.style.display = 'flex';
-        chainCell.style.flexWrap = 'wrap';
-        chainCell.style.gap = '4px'; // Small gap between chain buttons
-        chainCell.style.alignItems = 'flex-start';
-        chainCell.style.alignContent = 'flex-start';
-        chainCell.colSpan = 2; // Span both columns (chain and sequence)
-        
-        // Add chain labels as inline elements
-        for (const boundary of chainBoundaries) {
-            const chainId = boundary.chain;
-            const chainLabel = createChainLabel(chainId, sortedAtomEntries[boundary.startIndex].atomIndex, chainButtonWidth);
-            // Make chain labels selectable for drag selection
-            chainLabel.style.cursor = 'crosshair';
-            chainLabel.dataset.selectable = 'true'; // Mark as selectable for drag selection
-            chainCell.appendChild(chainLabel);
-        }
-        
-        row.appendChild(chainCell);
-        table.appendChild(row);
-    }
-    
-    fragment.appendChild(table);
-    
-    sequenceViewEl.appendChild(fragment);
-    
-    // Store structure
-    sequenceHTMLData = {
-        table,
-        unifiedContainer: table, // For compatibility with event handlers
-        allResidues: sequenceViewMode ? allResidues : [], // Only store residues if sequence is shown
-        chainBoundaries,
-        sortedAtomEntries, // Store for chain mode drag selection
-        charsPerLine,
-        mode: sequenceViewMode
-    };
-    
-    // Setup HTML event handlers
-    setupHTMLSequenceEvents();
-    
-    updateSequenceViewSelectionState();
 }
+
+// Wrapper functions that delegate to SequenceViewer module
+function buildSequenceView() {
+    if (window.SequenceViewer) {
+        window.SequenceViewer.buildSequenceView();
+    }
+}
+
+// Old sequence viewer code removed - now in viewer-seq.js module
 
 // HTML-based sequence event handlers using event delegation
+// Now handled by viewer-seq.js module
 
-function setupHTMLSequenceEvents() {
-    if (!sequenceHTMLData) return;
-    
-    // Store drag state (shared across all chains)
-    const dragState = { isDragging: false, dragStart: null, dragEnd: null, hasMoved: false, dragUnselectMode: false };
-    
-    const { table, allResidues, chainBoundaries, sortedAtomEntries } = sequenceHTMLData;
-    
-    // Table event delegation (works for both sequence and chain cells)
-    table.addEventListener('mousedown', (e) => {
-        // In chain mode, allow drag selection on chain labels
-        // In sequence mode, chain labels have their own click handlers (toggle chain)
-        if (e.target.classList.contains('chain-label')) {
-            if (sequenceViewMode) {
-                // In sequence mode, chain labels toggle chain selection (existing behavior)
-                return; // Let the click handler in createChainLabel handle it
-            } else {
-                // In chain mode, enable drag selection on chain labels
-                const chainLabel = e.target;
-                const chainId = chainLabel.dataset.chain;
-                const atomIndexStr = chainLabel.dataset.atomIndex;
-                
-                if (!atomIndexStr) return;
-                const atomIndex = parseInt(atomIndexStr);
-                if (isNaN(atomIndex)) return;
-                
-                // Find the chain boundary to get all atoms in this chain
-                const boundary = chainBoundaries.find(b => b.chain === chainId);
-                if (!boundary) return;
-                
-                // Get all atoms in this chain
-                const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                if (chainAtoms.length === 0) return;
-                
-                dragState.isDragging = true;
-                dragState.hasMoved = false;
-                dragState.dragStart = chainAtoms[0];
-                dragState.dragEnd = chainAtoms[chainAtoms.length - 1];
-                
-                const current = viewerApi?.renderer?.getSelection();
-                // Determine drag mode: if chain is selected, we're in unselect mode
-                dragState.dragUnselectMode = current?.chains?.has(chainId) || 
-                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                
-                // Don't toggle immediately - wait to see if user drags or just clicks
-                // The toggle will happen in mouseup if hasMoved is false
-                return;
-            }
-        }
-        
-        const span = e.target.closest('.residue-char');
-        if (!span) return;
-        
-        const atomIndexStr = span.dataset.atomIndex;
-        if (atomIndexStr === undefined || atomIndexStr === null) return;
-        const atomIndex = parseInt(atomIndexStr);
-        if (isNaN(atomIndex)) return;
-        
-        const residue = allResidues.find(r => r.atomIndex === atomIndex);
-        if (!residue) return;
-        
-        dragState.isDragging = true;
-        dragState.hasMoved = false;
-        dragState.dragStart = residue;
-        dragState.dragEnd = residue;
-        
-        const current = viewerApi?.renderer?.getSelection();
-        dragState.dragUnselectMode = current?.atoms?.has(atomIndex) || false;
-        
-        // Toggle single atom on click
-        const newAtoms = new Set(current?.atoms || []);
-        if (newAtoms.has(atomIndex)) {
-            newAtoms.delete(atomIndex);
-        } else {
-            newAtoms.add(atomIndex);
-        }
-        
-        // Update chains to include all chains that have selected atoms
-        const objectName = viewerApi.renderer.currentObjectName;
-        const obj = viewerApi.renderer.objectsData[objectName];
-        const frame = obj?.frames?.[0];
-        const newChains = new Set();
-        if (frame?.chains) {
-            for (const atomIdx of newAtoms) {
-                const atomChain = frame.chains[atomIdx];
-                if (atomChain) {
-                    newChains.add(atomChain);
-                }
-            }
-        }
-        
-        // Determine if we have partial selections
-        const totalAtoms = frame?.chains?.length || 0;
-        const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-        
-        // Clear PAE boxes when editing sequence selection
-        // (sequence selection is already reflected in PAE via colors)
-        viewerApi.renderer.setSelection({ 
-            atoms: newAtoms,
-            chains: newChains,
-            selectionMode: hasPartialSelections ? 'explicit' : 'default',
-            paeBoxes: [] 
-        });
-        // Force update to reflect changes
-        lastSequenceUpdateHash = null;
-        updateSequenceViewSelectionState();
-    });
-    
-    table.addEventListener('mousemove', (e) => {
-        const span = e.target.closest('.residue-char');
-        const chainLabel = e.target.closest('.chain-label');
-        
-        if (!dragState.isDragging) {
-            if (span) {
-                const atomIndexStr = span.dataset.atomIndex;
-                if (atomIndexStr !== undefined && atomIndexStr !== null) {
-                    const atomIndex = parseInt(atomIndexStr);
-                    if (!isNaN(atomIndex)) {
-                        // Use atom index directly for highlighting (works for ligands too)
-                        highlightAtom(atomIndex);
-                    }
-                }
-            } else if (chainLabel && !sequenceViewMode) {
-                // In chain mode, highlight entire chain on hover
-                const chainId = chainLabel.dataset.chain;
-                const boundary = chainBoundaries.find(b => b.chain === chainId);
-                if (boundary) {
-                    const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    if (chainAtoms.length > 0) {
-                        const atomIndices = new Set(chainAtoms.map(a => a.atomIndex));
-                        highlightAtoms(atomIndices);
-                    }
-                }
-            } else {
-                clearHighlight();
-            }
-            return;
-        }
-        
-        // Handle drag selection
-        if (span) {
-            const atomIndexStr = span.dataset.atomIndex;
-            if (atomIndexStr === undefined || atomIndexStr === null) return;
-            const atomIndex = parseInt(atomIndexStr);
-            if (isNaN(atomIndex)) return;
-            
-            const residue = allResidues.find(r => r.atomIndex === atomIndex);
-            if (residue && residue !== dragState.dragEnd) {
-                dragState.dragEnd = residue;
-                const startIdx = allResidues.findIndex(r => r.atomIndex === dragState.dragStart.atomIndex);
-                const endIdx = allResidues.findIndex(r => r.atomIndex === dragState.dragEnd.atomIndex);
-                if (startIdx !== -1 && endIdx !== -1) {
-                    dragState.hasMoved = true;
-                    const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                    const current = viewerApi?.renderer?.getSelection();
-                    const newAtoms = new Set(current?.atoms || []);
-                    for (let i = min; i <= max; i++) {
-                        const res = allResidues[i];
-                        if (dragState.dragUnselectMode) {
-                            newAtoms.delete(res.atomIndex);
-                        } else {
-                            newAtoms.add(res.atomIndex);
-                        }
-                    }
-                    previewSelectionSet = newAtoms;
-                    lastSequenceUpdateHash = null;
-                    updateSequenceViewSelectionState();
-                    // Update 3D viewer in real-time during drag
-                    applySelection(previewSelectionSet);
-                }
-            }
-        } else if (chainLabel && !sequenceViewMode) {
-            // In chain mode, handle drag over chain labels
-            const chainId = chainLabel.dataset.chain;
-            const boundary = chainBoundaries.find(b => b.chain === chainId);
-            if (!boundary) return;
-            
-            const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-            if (chainAtoms.length === 0) return;
-            
-            // Find the end chain atom
-            const endAtom = chainAtoms[chainAtoms.length - 1];
-            if (endAtom && endAtom !== dragState.dragEnd) {
-                dragState.dragEnd = endAtom;
-                dragState.hasMoved = true;
-                
-                // Get all atoms from start to end (including all chains in between)
-                const startChainId = dragState.dragStart.chain;
-                const startBoundary = chainBoundaries.find(b => b.chain === startChainId);
-                const endBoundary = boundary;
-                
-                if (startBoundary && endBoundary) {
-                    const startBoundaryIdx = chainBoundaries.findIndex(b => b.chain === startChainId);
-                    const endBoundaryIdx = chainBoundaries.findIndex(b => b.chain === chainId);
-                    const [minBoundary, maxBoundary] = [Math.min(startBoundaryIdx, endBoundaryIdx), Math.max(startBoundaryIdx, endBoundaryIdx)];
-                    
-                    const currentSelection = viewerApi?.renderer?.getSelection();
-                    const newAtoms = new Set(currentSelection?.atoms || []);
-                    
-                    // Add all atoms from all chains in the drag range
-                    for (let bIdx = minBoundary; bIdx <= maxBoundary; bIdx++) {
-                        const b = chainBoundaries[bIdx];
-                        const atomsInChain = sortedAtomEntries.slice(b.startIndex, b.endIndex + 1);
-                        for (const atom of atomsInChain) {
-                            if (dragState.dragUnselectMode) {
-                                newAtoms.delete(atom.atomIndex);
-                            } else {
-                                newAtoms.add(atom.atomIndex);
-                            }
-                        }
-                    }
-                    
-                    previewSelectionSet = newAtoms;
-                    lastSequenceUpdateHash = null;
-                    updateSequenceViewSelectionState();
-                    
-                    // Update 3D viewer in real-time during drag
-                    // Calculate chains from selected atoms
-                    const objectName = viewerApi.renderer.currentObjectName;
-                    const obj = viewerApi.renderer.objectsData[objectName];
-                    const frame = obj?.frames?.[0];
-                    const newChains = new Set();
-                    if (frame?.chains) {
-                        for (const atomIdx of newAtoms) {
-                            const atomChain = frame.chains[atomIdx];
-                            if (atomChain) {
-                                newChains.add(atomChain);
-                            }
-                        }
-                    }
-                    
-                    // Update selection in real-time during drag
-                    viewerApi.renderer.setSelection({
-                        atoms: newAtoms,
-                        chains: newChains,
-                        selectionMode: currentSelection?.selectionMode || 'explicit',
-                        paeBoxes: currentSelection?.paeBoxes || []
-                    });
-                }
-            }
-        }
-    });
-    
-    const handleMouseUp = () => {
-        if (dragState.hasMoved && previewSelectionSet) {
-            // User dragged - apply the drag selection
-            // Update chains to include all chains that have selected atoms
-            const objectName = viewerApi.renderer.currentObjectName;
-            const obj = viewerApi.renderer.objectsData[objectName];
-            const frame = obj?.frames?.[0];
-            const newChains = new Set();
-            if (frame?.chains) {
-                for (const atomIdx of previewSelectionSet) {
-                    const atomChain = frame.chains[atomIdx];
-                    if (atomChain) {
-                        newChains.add(atomChain);
-                    }
-                }
-            }
-            
-            // Determine if we have partial selections
-            const totalAtoms = frame?.chains?.length || 0;
-            const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalAtoms;
-            
-            // Clear PAE boxes when finishing drag selection
-            // (sequence selection is already reflected in PAE via colors)
-            viewerApi.renderer.setSelection({ 
-                atoms: previewSelectionSet,
-                chains: newChains,
-                selectionMode: hasPartialSelections ? 'explicit' : 'default',
-                paeBoxes: [] 
-            });
-        } else if (dragState.isDragging && !sequenceViewMode && dragState.dragStart && dragState.dragStart.chain) {
-            // User clicked (no drag) on a chain label in chain mode - toggle that chain
-            const chainId = dragState.dragStart.chain;
-            const boundary = chainBoundaries.find(b => b.chain === chainId);
-            if (boundary) {
-                const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                const current = viewerApi?.renderer?.getSelection();
-                const newAtoms = new Set(current?.atoms || []);
-                const allChainAtomsSelected = chainAtoms.every(a => newAtoms.has(a.atomIndex));
-                
-                if (allChainAtomsSelected) {
-                    // Deselect all atoms in chain
-                    chainAtoms.forEach(a => newAtoms.delete(a.atomIndex));
-                } else {
-                    // Select all atoms in chain
-                    chainAtoms.forEach(a => newAtoms.add(a.atomIndex));
-                }
-                
-                // Update chains to include all chains that have selected atoms
-                const objectName = viewerApi.renderer.currentObjectName;
-                const obj = viewerApi.renderer.objectsData[objectName];
-                const frame = obj?.frames?.[0];
-                const newChains = new Set();
-                if (frame?.chains) {
-                    for (const atomIdx of newAtoms) {
-                        const atomChain = frame.chains[atomIdx];
-                        if (atomChain) {
-                            newChains.add(atomChain);
-                        }
-                    }
-                }
-                
-                // Determine if we have partial selections
-                const totalAtoms = frame?.chains?.length || 0;
-                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                
-                viewerApi.renderer.setSelection({ 
-                    atoms: newAtoms,
-                    chains: newChains,
-                    selectionMode: hasPartialSelections ? 'explicit' : 'default',
-                    paeBoxes: [] 
-                });
-            }
-        }
-        previewSelectionSet = null;
-        dragState.isDragging = false;
-        dragState.dragStart = null;
-        dragState.dragEnd = null;
-        dragState.hasMoved = false;
-        dragState.dragUnselectMode = false;
-        // Force update to reflect changes
-        lastSequenceUpdateHash = null;
-        updateSequenceViewSelectionState();
-    };
-
-    table.addEventListener('mouseup', handleMouseUp);
-    table.addEventListener('mouseleave', () => {
-        handleMouseUp();
-        clearHighlight();
-    });
-    
-    // Touch event handlers for mobile devices
-    const getTouchTarget = (e) => {
-        const touch = e.touches && e.touches[0] ? e.touches[0] : e.changedTouches[0];
-        const element = document.elementFromPoint(touch.clientX, touch.clientY);
-        return element ? element.closest('.residue-char') : null;
-    };
-    
-    table.addEventListener('touchstart', (e) => {
-        if (e.touches.length !== 1) return; // Only single touch
-        e.preventDefault(); // Prevent scrolling
-        
-        const span = getTouchTarget(e);
-        if (!span) return;
-        
-        const atomIndexStr = span.dataset.atomIndex;
-        if (atomIndexStr === undefined || atomIndexStr === null) return;
-        const atomIndex = parseInt(atomIndexStr);
-        if (isNaN(atomIndex)) return;
-        
-        const residue = allResidues.find(r => r.atomIndex === atomIndex);
-        if (!residue) return;
-        
-        dragState.isDragging = true;
-        dragState.hasMoved = false;
-        dragState.dragStart = residue;
-        dragState.dragEnd = residue;
-        
-        const current = viewerApi?.renderer?.getSelection();
-        dragState.dragUnselectMode = current?.atoms?.has(atomIndex) || false;
-        
-        // Toggle single atom on tap
-        const newAtoms = new Set(current?.atoms || []);
-        if (newAtoms.has(atomIndex)) {
-            newAtoms.delete(atomIndex);
-        } else {
-            newAtoms.add(atomIndex);
-        }
-        
-        // Update chains to include all chains that have selected atoms
-        const objectName = viewerApi.renderer.currentObjectName;
-        const obj = viewerApi.renderer.objectsData[objectName];
-        const frame = obj?.frames?.[0];
-        const newChains = new Set();
-        if (frame?.chains) {
-            for (const atomIdx of newAtoms) {
-                const atomChain = frame.chains[atomIdx];
-                if (atomChain) {
-                    newChains.add(atomChain);
-                }
-            }
-        }
-        
-        // Determine if we have partial selections
-        const totalAtoms = frame?.chains?.length || 0;
-        const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-        
-        // Clear PAE boxes when editing sequence selection
-        viewerApi.renderer.setSelection({ 
-            atoms: newAtoms,
-            chains: newChains,
-            selectionMode: hasPartialSelections ? 'explicit' : 'default',
-            paeBoxes: [] 
-        });
-        // Force update to reflect changes
-        lastSequenceUpdateHash = null;
-        updateSequenceViewSelectionState();
-    });
-    
-    table.addEventListener('touchmove', (e) => {
-        if (!dragState.isDragging) return;
-        if (e.touches.length !== 1) return;
-        e.preventDefault(); // Prevent scrolling
-        
-        const span = getTouchTarget(e);
-        if (span) {
-            const atomIndexStr = span.dataset.atomIndex;
-            if (atomIndexStr === undefined || atomIndexStr === null) return;
-            const atomIndex = parseInt(atomIndexStr);
-            if (isNaN(atomIndex)) return;
-            
-            const residue = allResidues.find(r => r.atomIndex === atomIndex);
-            if (residue && residue !== dragState.dragEnd) {
-                dragState.dragEnd = residue;
-                const startIdx = allResidues.findIndex(r => r.atomIndex === dragState.dragStart.atomIndex);
-                const endIdx = allResidues.findIndex(r => r.atomIndex === dragState.dragEnd.atomIndex);
-                if (startIdx !== -1 && endIdx !== -1) {
-                    dragState.hasMoved = true;
-                    const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                    const current = viewerApi?.renderer?.getSelection();
-                    const newAtoms = new Set(current?.atoms || []);
-                    for (let i = min; i <= max; i++) {
-                        const res = allResidues[i];
-                        if (dragState.dragUnselectMode) {
-                            newAtoms.delete(res.atomIndex);
-                        } else {
-                            newAtoms.add(res.atomIndex);
-                        }
-                    }
-                    previewSelectionSet = newAtoms;
-                    lastSequenceUpdateHash = null;
-                    updateSequenceViewSelectionState();
-                }
-            }
-        }
-    });
-    
-    table.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        handleMouseUp();
-    });
-    
-    table.addEventListener('touchcancel', (e) => {
-        e.preventDefault();
-        handleMouseUp();
-    });
-}
-
-// Cache for sequence view spans to avoid repeated DOM queries
-let cachedSequenceSpans = null;
-let lastSequenceUpdateHash = null;
-
-// Update colors in sequence view when color mode changes
+// Sequence viewer functions now in viewer-seq.js module
+// Wrapper functions for backward compatibility
 function updateSequenceViewColors() {
-  if (!sequenceHTMLData || !viewerApi?.renderer) return;
-  
-  const renderer = viewerApi.renderer;
-  const hasGetAtomColor = renderer?.getAtomColor;
-  
-  // Update colors for all residues in unified structure
-  if (sequenceHTMLData.allResidues) {
-    for (const res of sequenceHTMLData.allResidues) {
-      if (hasGetAtomColor && !Number.isNaN(res.atomIndex)) {
-        res.color = renderer.getAtomColor(res.atomIndex);
-        // Update element background color
-        res.element.style.backgroundColor = `rgb(${res.color.r}, ${res.color.g}, ${res.color.b})`;
-      }
+    if (window.SequenceViewer) {
+        window.SequenceViewer.updateSequenceViewColors();
     }
-  }
-  
-  // Invalidate hash to force redraw with new colors
-  lastSequenceUpdateHash = null;
 }
 
 function updateSequenceViewSelectionState() {
-  if (!sequenceHTMLData) return;
-
-  // Determine what's actually visible from the unified model or visibilityMask
-  // Use previewSelectionSet during drag for live feedback
-  let visibleAtoms = new Set();
-  
-  if (previewSelectionSet && previewSelectionSet.size > 0) {
-    // During drag, use preview selection for live feedback (already atom indices)
-    visibleAtoms = new Set(previewSelectionSet);
-  } else if (viewerApi?.renderer) {
-    const renderer = viewerApi.renderer;
-    
-    // Use atoms directly from selection model
-    if (renderer.selectionModel && renderer.selectionModel.atoms && renderer.selectionModel.atoms.size > 0) {
-      visibleAtoms = new Set(renderer.selectionModel.atoms);
-    } else if (renderer.visibilityMask === null) {
-      // null mask means all atoms are visible (default mode)
-      const n = renderer.coords ? renderer.coords.length : 0;
-      for (let i = 0; i < n; i++) {
-        visibleAtoms.add(i);
-      }
-    } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
-      // Non-empty Set means some atoms are visible
-      visibleAtoms = new Set(renderer.visibilityMask);
+    if (window.SequenceViewer) {
+        window.SequenceViewer.updateSequenceViewSelectionState();
     }
-  }
-
-  // Create hash to detect if selection actually changed
-  // Include previewSelectionSet in hash to ensure live feedback during drag
-  const renderer = viewerApi?.renderer;
-  const previewHash = previewSelectionSet ? previewSelectionSet.size : 0;
-  const currentHash = visibleAtoms.size + previewHash + (renderer?.visibilityMask === null ? 'all' : 'some');
-  if (currentHash === lastSequenceUpdateHash && !previewSelectionSet) {
-    return; // No change, skip update (unless we have preview selection for live feedback)
-  }
-  lastSequenceUpdateHash = currentHash;
-
-  // Update HTML elements with selection state
-  const dimFactor = 0.3; // Same as PAE plot - dim unselected to 30% brightness
-  const { allResidues, table } = sequenceHTMLData;
-  
-  // Update residue background colors and borders (only if sequence is shown)
-  if (allResidues && allResidues.length > 0) {
-    for (const res of allResidues) {
-      let r = res.color.r;
-      let g = res.color.g;
-      let b = res.color.b;
-      const isVisible = visibleAtoms.has(res.atomIndex);
-      
-      if (!isVisible) {
-        // Unselected: dim by mixing with white (similar to PAE plot)
-        r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
-        g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
-        b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
-        // Remove border for unselected positions
-        res.element.style.borderBottom = 'none';
-      } else {
-        // Selected: use full color (already has pastel applied via getAtomColor)
-        // Add black underline (1px bottom border) for visible positions
-        res.element.style.borderBottom = '1px solid #000000';
-      }
-      res.element.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
-    }
-  }
-  
-  // Update chain labels (always shown, in table cells)
-  if (table) {
-    const current = viewerApi?.renderer?.getSelection();
-    const renderer = viewerApi?.renderer;
-    
-    const chainLabels = table.querySelectorAll('.chain-label');
-    for (const label of chainLabels) {
-      const chainId = label.dataset.chain;
-      if (!chainId) continue;
-      
-      const isSelected = current?.chains?.has(chainId) || 
-          (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-      
-      const chainColor = renderer?.getChainColorForChainId?.(chainId) || {r: 128, g: 128, b: 128};
-      
-      if (isSelected) {
-        label.style.backgroundColor = `rgb(${chainColor.r}, ${chainColor.g}, ${chainColor.b})`;
-        const luminance = (0.299 * chainColor.r + 0.587 * chainColor.g + 0.114 * chainColor.b) / 255;
-        label.style.color = luminance > 0.5 ? '#000000' : '#ffffff';
-        label.style.borderBottom = '1px solid #000000'; // Add black border when selected
-      } else {
-        const dimmed = {
-          r: Math.round(chainColor.r * 0.3 + 255 * 0.7),
-          g: Math.round(chainColor.g * 0.3 + 255 * 0.7),
-          b: Math.round(chainColor.b * 0.3 + 255 * 0.7)
-        };
-        label.style.backgroundColor = `rgb(${dimmed.r}, ${dimmed.g}, ${dimmed.b})`;
-        label.style.color = '#000000';
-        label.style.borderBottom = '1px solid transparent'; // Keep border space to prevent jumping
-      }
-    }
-  }
 }
 
 // Removed setupDragToSelect - replaced by canvas-based sequence rendering (setupCanvasSequenceEvents)
@@ -3236,48 +2197,112 @@ async function handleZipUpload(file, loadAsFrames) {
         const zip = new JSZip();
         const content = await zip.loadAsync(file);
 
-        const fileList = [];
+        // Group files by directory (folder)
+        // Key: directory path (empty string for root), Value: array of files in that directory
+        const filesByDirectory = new Map();
+        
         content.forEach((relativePath, zipEntry) => {
             if (relativePath.startsWith('__MACOSX/') ||
                 relativePath.startsWith('._') ||
                 zipEntry.dir) return;
             
-            // Only process files in the main folder (root level), ignore subdirectories
-            // A file is in the root if it doesn't contain '/' (or only at the start/end)
             const normalizedPath = relativePath.replace(/^\/+|\/+$/g, ''); // Remove leading/trailing slashes
-            if (normalizedPath.includes('/')) return; // Skip files in subdirectories
+            const fileName = normalizedPath.split('/').pop(); // Get just the filename
             
-            fileList.push({
-                name: relativePath,
-                readAsync: (type) => zipEntry.async(type)
-            });
-        });
-
-        // Check if this is a state file zip (contains a .json file with py2dmol_version)
-        const jsonFiles = fileList.filter(f => f.name.toLowerCase().endsWith('.json'));
-        if (jsonFiles.length > 0) {
-            // Try to load as state file first
-            try {
-                const jsonText = await jsonFiles[0].readAsync("text");
-                const stateData = JSON.parse(jsonText);
-                if (stateData.py2dmol_version) {
-                    await loadViewerState(stateData);
-                    return;
-                }
-            } catch (e) {
-                // Not a state file, continue with normal processing
+            // Check if it's a structural or JSON file by extension
+            const nameLower = fileName.toLowerCase();
+            if (!nameLower.match(/\.(cif|pdb|ent|json)$/)) {
+                // Not a structural or JSON file, skip it
+                return;
             }
+            
+            // Determine directory path (empty string for root)
+            const dirPath = normalizedPath.includes('/') 
+                ? normalizedPath.substring(0, normalizedPath.lastIndexOf('/'))
+                : ''; // Root directory
+            
+            const fileEntry = {
+                name: fileName, // Use just the filename, not the full path
+                readAsync: (type) => zipEntry.async(type)
+            };
+            
+            // Group by directory
+            if (!filesByDirectory.has(dirPath)) {
+                filesByDirectory.set(dirPath, []);
+            }
+            filesByDirectory.get(dirPath).push(fileEntry);
+        });
+        
+        // If no files found, throw error
+        if (filesByDirectory.size === 0) {
+            throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
+        }
+        
+        // Determine which directories to process
+        // Only go to subdirectories if no files found in root
+        const rootFiles = filesByDirectory.get('');
+        const directoriesToProcess = [];
+        
+        if (rootFiles && rootFiles.length > 0) {
+            // Root has files, only process root
+            directoriesToProcess.push('');
+        } else {
+            // Root has no files, process all subdirectories
+            const subdirs = Array.from(filesByDirectory.keys()).filter(path => path !== '').sort();
+            directoriesToProcess.push(...subdirs);
+        }
+        
+        // If still no directories to process, throw error
+        if (directoriesToProcess.length === 0) {
+            throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
+        }
+        
+        // Process each directory separately
+        let totalObjectsLoaded = 0;
+        let totalFramesAdded = 0;
+        let totalPaePairedCount = 0;
+        
+        for (const dirPath of directoriesToProcess) {
+            const fileList = filesByDirectory.get(dirPath);
+            
+            // Determine group name: use directory name if in subdirectory, otherwise use ZIP filename
+            const groupName = dirPath 
+                ? cleanObjectName(dirPath.split('/').pop()) // Use folder name
+                : cleanObjectName(file.name.replace(/\.zip$/i, '')); // Use ZIP filename for root
+
+            // Check if this directory contains a state file (only check once for root)
+            if (dirPath === '') {
+                const jsonFiles = fileList.filter(f => f.name.toLowerCase().endsWith('.json'));
+                if (jsonFiles.length > 0) {
+                    // Try to load as state file first
+                    try {
+                        const jsonText = await jsonFiles[0].readAsync("text");
+                        const stateData = JSON.parse(jsonText);
+                        if (stateData.py2dmol_version) {
+                            await loadViewerState(stateData);
+                            return;
+                        }
+                    } catch (e) {
+                        // Not a state file, continue with normal processing
+                    }
+                }
+            }
+
+            // Process files in this directory as a separate object
+            const stats = await processFiles(fileList, loadAsFrames, groupName);
+            
+            totalObjectsLoaded += (stats.isTrajectory ? 1 : stats.objectsLoaded);
+            totalFramesAdded += stats.framesAdded;
+            totalPaePairedCount += stats.paePairedCount;
         }
 
-        const stats = await processFiles(fileList, loadAsFrames, cleanObjectName(file.name));
-
-        const objectsLoaded = stats.isTrajectory ? 1 : stats.objectsLoaded;
-        const paeMessage = stats.paePairedCount > 0 ?
-            ` (${stats.paePairedCount}/${stats.structureCount} PAE matrices paired)` : '';
+        // Update status with totals
+        const paeMessage = totalPaePairedCount > 0 ?
+            ` (${totalPaePairedCount} PAE matrices paired)` : '';
 
         setStatus(
-            `Successfully loaded ${objectsLoaded} new object(s) from ${file.name} ` +
-            `(${stats.framesAdded} total frame${stats.framesAdded !== 1 ? 's' : ''}${paeMessage}).`
+            `Successfully loaded ${totalObjectsLoaded} new object(s) from ${file.name} ` +
+            `(${totalFramesAdded} total frame${totalFramesAdded !== 1 ? 's' : ''}${paeMessage}).`
         );
     } catch (e) {
         console.error("ZIP processing failed:", e);
@@ -3426,8 +2451,18 @@ function saveViewerState() {
                 // Copy other fields as-is (omit null/undefined)
                 if (frame.chains) frameData.chains = frame.chains;
                 if (frame.atom_types) frameData.atom_types = frame.atom_types;
-                if (frame.residues) frameData.residues = frame.residues;
                 if (frame.residue_index) frameData.residue_index = frame.residue_index;
+                
+                // Map modified residues to standard equivalents (e.g., MSE -> MET)
+                if (frame.residues) {
+                    frameData.residues = frame.residues.map(resName => {
+                        // Use getStandardResidueName from utils.js if available
+                        if (typeof getStandardResidueName === 'function') {
+                            return getStandardResidueName(resName);
+                        }
+                        return resName; // Fallback if function not available
+                    });
+                }
                 
                 // Round PAE to 1 decimal place
                 if (frame.pae) {
@@ -3448,7 +2483,7 @@ function saveViewerState() {
         
         // Get viewer state
         const orthoSlider = document.getElementById('orthoSlider');
-        const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 0.5;
+        const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 1.0;
         
         const viewerState = {
             current_object_name: renderer.currentObjectName,
@@ -3458,7 +2493,7 @@ function saveViewerState() {
             color_mode: renderer.colorMode || 'auto',
             line_width: renderer.lineWidth || 3.0,
             shadow_enabled: renderer.shadowEnabled !== false,
-            outline_enabled: renderer.outlineEnabled !== false,
+            outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
             pastel_level: renderer.pastelLevel || 0.25,
             perspective_enabled: renderer.perspectiveEnabled || false,
@@ -3753,14 +2788,14 @@ async function loadViewerState(stateData) {
                 }
             }
             
-            // Restore outline
-            if (typeof vs.outline_enabled === 'boolean') {
-                renderer.outlineEnabled = vs.outline_enabled;
-                const outlineCheckbox = document.getElementById('outlineEnabledCheckbox');
-                if (outlineCheckbox) {
-                    outlineCheckbox.checked = vs.outline_enabled;
-                    outlineCheckbox.dispatchEvent(new Event('change'));
-                }
+            // Restore outline mode
+            if (typeof vs.outline_mode === 'string' && ['none', 'partial', 'full'].includes(vs.outline_mode)) {
+                renderer.outlineMode = vs.outline_mode;
+                renderer.updateOutlineButtonStyle();
+            } else if (typeof vs.outline_enabled === 'boolean') {
+                // Legacy boolean support
+                renderer.outlineMode = vs.outline_enabled ? 'full' : 'none';
+                renderer.updateOutlineButtonStyle();
             }
             
             // Restore colorblind mode

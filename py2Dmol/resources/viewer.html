@@ -302,7 +302,7 @@
                 <!-- Ortho -->
                 <div class="toggle-item">
                     <label for="orthoSlider" style="width: 50px;">Ortho:</label>
-                    <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01">
+                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
                 </div>
                 <!-- Shadow -->
                 <div class="toggle-item">
@@ -311,8 +311,12 @@
                 </div>
                 <!-- Outline -->
                 <div class="toggle-item">
-                     <input type="checkbox" id="outlineEnabledCheckbox">
-                     <label for="outlineEnabledCheckbox">Outline</label>
+                    <label for="outlineModeSelect" style="width: 50px;">Outline:</label>
+                    <select id="outlineModeSelect" style="flex-grow: 1;">
+                        <option value="none">None</option>
+                        <option value="partial">Partial</option>
+                        <option value="full">Full</option>
+                    </select>
                 </div>
                 <!-- ADDED: Colorblind Checkbox -->
                 <div class="toggle-item">

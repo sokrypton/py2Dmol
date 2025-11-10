@@ -15,7 +15,7 @@ function initializePy2DmolViewer(containerElement) {
     
     // Helper function to normalize ortho value from old (50-200) or new (0-1) format
     function normalizeOrthoValue(value) {
-        if (typeof value !== 'number') return 0.5; // Default
+        if (typeof value !== 'number') return 1.0; // Default
         if (value >= 50 && value <= 200) {
             // Old format: convert 50-200 to 0-1
             return (value - 50) / 150;
@@ -100,47 +100,8 @@ function initializePy2DmolViewer(containerElement) {
 
     function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
     
-    function getPAEColor(value) {
-        // 0 (blue) to 15 (white) to 30 (red)
-        const v = Math.max(0, Math.min(30, (value || 0)));
-        
-        if (v <= 15.0) {
-            // 0 (blue) -> 15 (white)
-            // Hue is 240 (blue)
-            // Saturation goes from 1.0 down to 0.0
-            const norm_blue = v / 15.0; // 0 to 1
-            const saturation = 1.0 - norm_blue;
-            return hsvToRgb(240, saturation, 1.0);
-        } else {
-            // 15 (white) -> 30 (red)
-            // Hue is 0 (red)
-            // Saturation goes from 0.0 up to 1.0
-            const norm_red = (v - 15.0) / 15.0; // 0 to 1
-            const saturation = norm_red;
-            return hsvToRgb(0, saturation, 1.0);
-        }
-    }
-    
-    function getPAEColor_Colorblind(value) {
-        // 0 (blue) to 15 (white) to 30 (orange)
-        const v = Math.max(0, Math.min(30, (value || 0)));
-        
-        if (v <= 15.0) {
-            // 0 (blue) -> 15 (white)
-            // Hue is 240 (blue)
-            // Saturation goes from 1.0 down to 0.0
-            const norm_blue = v / 15.0; // 0 to 1
-            const saturation = 1.0 - norm_blue;
-            return hsvToRgb(240, saturation, 1.0);
-        } else {
-            // 15 (white) -> 30 (orange)
-            // Hue is 30 (orange)
-            // Saturation goes from 0.0 up to 1.0
-            const norm_red = (v - 15.0) / 15.0; // 0 to 1
-            const saturation = norm_red;
-            return hsvToRgb(30, saturation, 1.0); // Use 30 for Orange
-        }
-    }
+    // PAE color functions moved to viewer-pae.js
+    // Use window.getPAEColor and window.getPAEColor_Colorblind if available
 
     // ============================================================================
     // PSEUDO-3D RENDERER
@@ -149,6 +110,11 @@ function initializePy2DmolViewer(containerElement) {
         constructor(canvas) {
             this.canvas = canvas;
             this.ctx = canvas.getContext('2d');
+            
+            // Store screen positions of atoms for fast highlight drawing
+            // Array of {x, y, radius} for each atom index, updated during render()
+            // Used by sequence viewer to draw highlights on overlay canvas
+            this.atomScreenPositions = null;
             
             // Unified cutoff for performance optimizations (inertia, caching, grid-based shadows)
             this.LARGE_MOLECULE_CUTOFF = 1000;
@@ -207,7 +173,15 @@ function initializePy2DmolViewer(containerElement) {
             
             // Set defaults from config, with fallback
             this.shadowEnabled = (typeof config.shadow === 'boolean') ? config.shadow : true;
-            this.outlineEnabled = (typeof config.outline === 'boolean') ? config.outline : true;
+            // Outline mode: 'none', 'partial', or 'full'
+            if (typeof config.outline === 'string' && ['none', 'partial', 'full'].includes(config.outline)) {
+                this.outlineMode = config.outline;
+            } else if (typeof config.outline === 'boolean') {
+                // Legacy boolean support: true -> 'full', false -> 'none'
+                this.outlineMode = config.outline ? 'full' : 'none';
+            } else {
+                this.outlineMode = 'full'; // Default to full
+            }
             this.pastelLevel = (typeof config.pastel === 'number') ? config.pastel : 0.25;
             this.colorblindMode = (typeof config.colorblind === 'boolean') ? config.colorblind : false;
             
@@ -231,6 +205,11 @@ function initializePy2DmolViewer(containerElement) {
             this.currentObjectName = null;
             this.previousObjectName = null; // Track previous object to detect changes
             this.currentFrame = -1;
+            
+            // Cache segment indices per frame (bonds don't change within a frame)
+            this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesFrame = -1;
+            this.cachedSegmentIndicesObjectName = null;
             
             // Playback
             this.isPlaying = false;
@@ -288,7 +267,8 @@ function initializePy2DmolViewer(containerElement) {
             this.rotationCheckbox = null;
             this.lineWidthSlider = null;
             this.shadowEnabledCheckbox = null; 
-            this.outlineEnabledCheckbox = null; 
+            this.outlineModeButton = null; // Button that cycles through outline modes (index.html)
+            this.outlineModeSelect = null; // Dropdown for outline modes (viewer.html)
             this.colorblindCheckbox = null;
             this.orthoSlider = null;
             
@@ -580,12 +560,23 @@ function initializePy2DmolViewer(containerElement) {
                     return; // No movement, skip render
                 }
 
-                // Store velocity for inertia (disabled for large molecules)
+                // Store velocity for inertia (disabled for large molecules based on visible segments)
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                const segmentCount = object && object.frames && object.frames[this.currentFrame] 
+                const totalSegmentCount = object && object.frames && object.frames[this.currentFrame] 
                     ? (this.segmentIndices ? this.segmentIndices.length : 0)
                     : 0;
-                const enableInertia = segmentCount <= this.LARGE_MOLECULE_CUTOFF;
+                // Count visible segments for inertia determination
+                let visibleSegmentCount = totalSegmentCount;
+                if (this.visibilityMask && this.segmentIndices) {
+                    visibleSegmentCount = 0;
+                    for (let i = 0; i < this.segmentIndices.length; i++) {
+                        const seg = this.segmentIndices[i];
+                        if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                            visibleSegmentCount++;
+                        }
+                    }
+                }
+                const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
                 
                 if (enableInertia && timeDelta > 0) {
                     // Weighted average to smooth out jerky movements
@@ -693,12 +684,23 @@ function initializePy2DmolViewer(containerElement) {
                     if (dy !== 0) { const rot = rotationMatrixX(dy * 0.01); this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); }
                     if (dx !== 0) { const rot = rotationMatrixY(dx * 0.01); this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); }
 
-                    // Store velocity for inertia (disabled for large molecules)
+                    // Store velocity for inertia (disabled for large molecules based on visible segments)
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const segmentCount = object && object.frames && object.frames[this.currentFrame] 
+                    const totalSegmentCount = object && object.frames && object.frames[this.currentFrame] 
                         ? (this.segmentIndices ? this.segmentIndices.length : 0)
                         : 0;
-                    const enableInertia = segmentCount <= this.LARGE_MOLECULE_CUTOFF;
+                    // Count visible segments for inertia determination
+                    let visibleSegmentCount = totalSegmentCount;
+                    if (this.visibilityMask && this.segmentIndices) {
+                        visibleSegmentCount = 0;
+                        for (let i = 0; i < this.segmentIndices.length; i++) {
+                            const seg = this.segmentIndices[i];
+                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                                visibleSegmentCount++;
+                            }
+                        }
+                    }
+                    const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
                     
                     if (enableInertia && timeDelta > 0) {
                         const smoothing = 0.5;
@@ -714,7 +716,6 @@ function initializePy2DmolViewer(containerElement) {
                     this.lastDragY = touch.clientY;
                     this.lastDragTime = now;
                     
-                    // Throttle renders during dragging using requestAnimationFrame
                     this.render(); 
                 } else if (e.touches.length === 2) {
                     // Zoom/Pinch
@@ -744,11 +745,22 @@ function initializePy2DmolViewer(containerElement) {
                 if (e.touches.length === 0 && this.isDragging) {
                     this.isDragging = false;
                     
-                    // For large molecules, immediately recalculate shadows
+                    // For large molecules (based on visible segments), immediately recalculate shadows
                     // since inertia is disabled and rotation has stopped
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const segmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
-                    const isLargeMolecule = segmentCount > this.LARGE_MOLECULE_CUTOFF;
+                    const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
+                    // Count visible segments
+                    let visibleSegmentCount = totalSegmentCount;
+                    if (this.visibilityMask && this.segmentIndices) {
+                        visibleSegmentCount = 0;
+                        for (let i = 0; i < this.segmentIndices.length; i++) {
+                            const seg = this.segmentIndices[i];
+                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                                visibleSegmentCount++;
+                            }
+                        }
+                    }
+                    const isLargeMolecule = visibleSegmentCount > this.LARGE_MOLECULE_CUTOFF;
                     
                     if (isLargeMolecule) {
                         // Clear shadow cache to force recalculation on next render
@@ -806,7 +818,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, recordButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineEnabledCheckbox, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, recordButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.recordButton = recordButton;
@@ -817,7 +829,8 @@ function initializePy2DmolViewer(containerElement) {
             this.rotationCheckbox = rotationCheckbox;
             this.lineWidthSlider = lineWidthSlider;
             this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
-            this.outlineEnabledCheckbox = outlineEnabledCheckbox;
+            this.outlineModeButton = outlineModeButton;
+            this.outlineModeSelect = outlineModeSelect;
             this.colorblindCheckbox = colorblindCheckbox;
             this.orthoSlider = orthoSlider;
             this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
@@ -932,11 +945,26 @@ function initializePy2DmolViewer(containerElement) {
                 });
             }
 
-            if (this.outlineEnabledCheckbox) {
-                this.outlineEnabledCheckbox.addEventListener('change', (e) => {
-                    this.outlineEnabled = e.target.checked;
+            if (this.outlineModeButton) {
+                // Button mode (index.html) - cycles through modes
+                this.outlineModeButton.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    // Cycle through modes: none -> partial -> full -> none
+                    if (this.outlineMode === 'none') {
+                        this.outlineMode = 'partial';
+                    } else if (this.outlineMode === 'partial') {
+                        this.outlineMode = 'full';
+                    } else { // full
+                        this.outlineMode = 'none';
+                    }
+                    this.updateOutlineButtonStyle();
                     this.render();
                 });
+                // Initialize button style
+                this.updateOutlineButtonStyle();
+            } else if (this.outlineModeSelect) {
+                // Dropdown mode (viewer.html) - already handled in initialization
+                this.outlineModeSelect.value = this.outlineMode || 'full';
             }
             
             if (this.colorblindCheckbox) {
@@ -985,7 +1013,7 @@ function initializePy2DmolViewer(containerElement) {
             // Also prevent canvas drag when interacting with other controls
             const allControls = [this.playButton, this.objectSelect, this.speedSelect,
                                  this.rotationCheckbox, this.lineWidthSlider, 
-                                 this.shadowEnabledCheckbox, this.outlineEnabledCheckbox,
+                                 this.shadowEnabledCheckbox, this.outlineModeButton, this.outlineModeSelect,
                                  this.colorblindCheckbox, this.orthoSlider];
             allControls.forEach(control => {
                 if (control) {
@@ -1029,6 +1057,11 @@ function initializePy2DmolViewer(containerElement) {
             this.currentObjectName = name;
             this.currentFrame = -1;
             this.lastRenderedFrame = -1; // Reset frame tracking on object change
+            
+            // Clear segment indices cache when object changes
+            this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesFrame = -1;
+            this.cachedSegmentIndicesObjectName = null;
             
             if (this.objectSelect) {
                 this.objectSelect.value = name;
@@ -1132,6 +1165,218 @@ function initializePy2DmolViewer(containerElement) {
             }
         }
 
+        // Extract current selection to a new object
+        extractSelection() {
+            // Check if we have a current object and frame
+            if (!this.currentObjectName) {
+                console.warn("No object loaded. Cannot extract selection.");
+                return;
+            }
+
+            const object = this.objectsData[this.currentObjectName];
+            if (!object || !object.frames || object.frames.length === 0) {
+                console.warn("No frames available. Cannot extract selection.");
+                return;
+            }
+
+            const currentFrameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
+            const frame = object.frames[currentFrameIndex];
+            if (!frame || !frame.coords) {
+                console.warn("Current frame has no coordinates. Cannot extract selection.");
+                return;
+            }
+
+            // Get selected atoms
+            let selectedAtoms = new Set();
+            
+            // Check selectionModel first (explicit selection)
+            if (this.selectionModel && this.selectionModel.atoms && this.selectionModel.atoms.size > 0) {
+                selectedAtoms = new Set(this.selectionModel.atoms);
+            } else if (this.visibilityMask !== null && this.visibilityMask.size > 0) {
+                // Use visibilityMask if available
+                selectedAtoms = new Set(this.visibilityMask);
+            } else {
+                // No selection - all atoms visible (could extract all, but warn user)
+                console.warn("No selection found. All atoms are visible. Extracting all atoms.");
+                // Extract all atoms
+                for (let i = 0; i < frame.coords.length; i++) {
+                    selectedAtoms.add(i);
+                }
+            }
+
+            if (selectedAtoms.size === 0) {
+                console.warn("Selection is empty. Cannot extract.");
+                return;
+            }
+
+            // Convert to sorted array for consistent ordering
+            const selectedIndices = Array.from(selectedAtoms).sort((a, b) => a - b);
+
+            // Extract frame data for selected atoms
+            const extractedFrame = {
+                coords: [],
+                chains: frame.chains ? [] : undefined,
+                plddts: frame.plddts ? [] : undefined,
+                atom_types: frame.atom_types ? [] : undefined,
+                residues: frame.residues ? [] : undefined,
+                residue_index: frame.residue_index ? [] : undefined,
+                pae: undefined // Will be handled separately
+            };
+
+            // Extract data for each selected atom
+            for (const idx of selectedIndices) {
+                if (idx >= 0 && idx < frame.coords.length) {
+                    extractedFrame.coords.push(frame.coords[idx]);
+                    
+                    if (frame.chains && idx < frame.chains.length) {
+                        extractedFrame.chains.push(frame.chains[idx]);
+                    }
+                    if (frame.plddts && idx < frame.plddts.length) {
+                        extractedFrame.plddts.push(frame.plddts[idx]);
+                    }
+                    if (frame.atom_types && idx < frame.atom_types.length) {
+                        extractedFrame.atom_types.push(frame.atom_types[idx]);
+                    }
+                    if (frame.residues && idx < frame.residues.length) {
+                        extractedFrame.residues.push(frame.residues[idx]);
+                    }
+                    if (frame.residue_index && idx < frame.residue_index.length) {
+                        extractedFrame.residue_index.push(frame.residue_index[idx]);
+                    }
+                }
+            }
+
+            // Filter PAE matrix if present
+            if (frame.pae && Array.isArray(frame.pae) && frame.pae.length > 0) {
+                // Create mapping from original index to new index
+                const indexMap = new Map();
+                selectedIndices.forEach((originalIdx, newIdx) => {
+                    indexMap.set(originalIdx, newIdx);
+                });
+
+                // Create new PAE matrix with only selected positions
+                const newPAE = [];
+                for (let i = 0; i < selectedIndices.length; i++) {
+                    const row = [];
+                    for (let j = 0; j < selectedIndices.length; j++) {
+                        const originalI = selectedIndices[i];
+                        const originalJ = selectedIndices[j];
+                        if (originalI < frame.pae.length && originalJ < frame.pae[originalI].length) {
+                            row.push(frame.pae[originalI][originalJ]);
+                        } else {
+                            row.push(0); // Default value if out of bounds
+                        }
+                    }
+                    newPAE.push(row);
+                }
+                extractedFrame.pae = newPAE;
+            }
+
+            // Generate object name with chain ranges: name_A1-100_B10-20 or name_A_B (if entire chains)
+            const baseName = this.currentObjectName;
+            
+            // Group selected atoms by chain and find residue ranges
+            const chainRanges = new Map(); // chain -> {min, max, selectedCount, totalCount}
+            
+            // First, count total atoms per chain in original frame
+            const chainTotalCounts = new Map(); // chain -> total atom count
+            if (frame.chains) {
+                for (let i = 0; i < frame.chains.length; i++) {
+                    const chain = frame.chains[i];
+                    chainTotalCounts.set(chain, (chainTotalCounts.get(chain) || 0) + 1);
+                }
+            }
+            
+            // Then, count selected atoms per chain and find ranges
+            const chainSelectedCounts = new Map(); // chain -> selected atom count
+            if (frame.chains && frame.residue_index) {
+                for (const idx of selectedIndices) {
+                    if (idx < frame.chains.length && idx < frame.residue_index.length) {
+                        const chain = frame.chains[idx];
+                        const resIdx = frame.residue_index[idx];
+                        
+                        chainSelectedCounts.set(chain, (chainSelectedCounts.get(chain) || 0) + 1);
+                        
+                        if (!chainRanges.has(chain)) {
+                            chainRanges.set(chain, { min: resIdx, max: resIdx });
+                        } else {
+                            const range = chainRanges.get(chain);
+                            range.min = Math.min(range.min, resIdx);
+                            range.max = Math.max(range.max, resIdx);
+                        }
+                    }
+                }
+            }
+            
+            // Build name with chain ranges (or just chain IDs if entire chains are selected)
+            let extractName = baseName;
+            if (chainRanges.size > 0) {
+                const chainParts = [];
+                // Sort chains for consistent ordering
+                const sortedChains = Array.from(chainRanges.keys()).sort();
+                for (const chain of sortedChains) {
+                    const range = chainRanges.get(chain);
+                    const selectedCount = chainSelectedCounts.get(chain) || 0;
+                    const totalCount = chainTotalCounts.get(chain) || 0;
+                    
+                    // If entire chain is selected, just use chain ID
+                    if (selectedCount === totalCount && totalCount > 0) {
+                        chainParts.push(chain);
+                    } else {
+                        // Partial selection, use range format
+                        chainParts.push(`${chain}${range.min}-${range.max}`);
+                    }
+                }
+                extractName = `${baseName}_${chainParts.join('_')}`;
+            } else {
+                // Fallback if no chain/residue info
+                extractName = `${baseName}_extracted`;
+            }
+            
+            // Ensure unique name
+            let originalExtractName = extractName;
+            let extractCounter = 1;
+            while (this.objectsData[extractName] !== undefined) {
+                extractName = `${originalExtractName}_${extractCounter}`;
+                extractCounter++;
+            }
+
+            // Create new object and add extracted frame
+            this.addObject(extractName);
+            this.addFrame(extractedFrame, extractName);
+
+            // Reset selection to show all atoms in extracted object
+            this.setSelection({
+                atoms: new Set(),
+                chains: new Set(),
+                paeBoxes: [],
+                selectionMode: 'default'
+            });
+
+            // Update UI controls to reflect new object
+            this.updateUIControls();
+
+            // Update PAE container visibility
+            this.updatePAEContainerVisibility();
+
+            // Force sequence viewer to rebuild for the new object
+            if (typeof window !== 'undefined' && window.SequenceViewer && window.SequenceViewer.buildSequenceView) {
+                // Clear sequence viewer cache to force rebuild
+                if (window.SequenceViewer.clear) {
+                    window.SequenceViewer.clear();
+                }
+                // Rebuild sequence view for the new extracted object
+                window.SequenceViewer.buildSequenceView();
+            }
+
+            // Trigger object change event to ensure all UI updates
+            if (this.objectSelect) {
+                this.objectSelect.dispatchEvent(new Event('change'));
+            }
+
+            console.log(`Extracted ${selectedIndices.length} atoms to new object: ${extractName}`);
+        }
+
         // Set the current frame and render it
         setFrame(frameIndex) {
             frameIndex = parseInt(frameIndex);
@@ -1232,6 +1477,47 @@ function initializePy2DmolViewer(containerElement) {
             }
         }
 
+        // Update outline button style based on current mode
+        updateOutlineButtonStyle() {
+            if (!this.outlineModeButton) return;
+            
+            // Get the inner span element (the actual styled element)
+            const spanElement = this.outlineModeButton.querySelector('span');
+            if (!spanElement) return;
+            
+            // Remove all mode classes from button
+            this.outlineModeButton.classList.remove('outline-none', 'outline-partial', 'outline-full');
+            
+            // Reset all inline styles first (on the span, not the button)
+            spanElement.style.backgroundColor = '';
+            spanElement.style.border = '';
+            spanElement.style.color = '';
+            spanElement.style.fontWeight = '';
+            spanElement.style.transition = 'none'; // Disable animations
+            
+            // Apply appropriate class and style based on mode
+            // All modes use grey background, only border style differs
+            if (this.outlineMode === 'none') {
+                this.outlineModeButton.classList.add('outline-none');
+                spanElement.style.backgroundColor = '#e5e7eb'; // light grey background
+                spanElement.style.border = '3px solid #e5e7eb'; // match background color to make border invisible
+                spanElement.style.color = '#000000';
+                spanElement.style.fontWeight = '500';
+            } else if (this.outlineMode === 'partial') {
+                this.outlineModeButton.classList.add('outline-partial');
+                spanElement.style.backgroundColor = '#e5e7eb'; // grey background
+                spanElement.style.border = '3px dashed #000000';
+                spanElement.style.color = '#000000';
+                spanElement.style.fontWeight = '500';
+            } else { // full
+                this.outlineModeButton.classList.add('outline-full');
+                spanElement.style.backgroundColor = '#e5e7eb'; // grey background
+                spanElement.style.border = '3px solid #000000';
+                spanElement.style.color = '#000000';
+                spanElement.style.fontWeight = '500';
+            }
+        }
+
         // Update UI element states (e.g., disabled)
         setUIEnabled(enabled) {
              this.playButton.disabled = !enabled;
@@ -1241,7 +1527,8 @@ function initializePy2DmolViewer(containerElement) {
              this.rotationCheckbox.disabled = !enabled;
              this.lineWidthSlider.disabled = !enabled;
              if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
-             if (this.outlineEnabledCheckbox) this.outlineEnabledCheckbox.disabled = !enabled;
+             if (this.outlineModeButton) this.outlineModeButton.disabled = !enabled;
+             if (this.outlineModeSelect) this.outlineModeSelect.disabled = !enabled;
              if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled;
              if (this.orthoSlider) this.orthoSlider.disabled = !enabled;
              this.canvas.style.cursor = enabled ? 'grab' : 'wait';
@@ -1681,7 +1968,7 @@ function initializePy2DmolViewer(containerElement) {
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
             this.shadowEnabled = true;
-            this.outlineEnabled = true;
+            this.outlineMode = 'full';
             this.autoRotate = false;
             this.colorblindMode = false;
             this.lineWidth = 3.0;
@@ -1691,8 +1978,12 @@ function initializePy2DmolViewer(containerElement) {
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.checked = true;
             }
-            if (this.outlineEnabledCheckbox) {
-                this.outlineEnabledCheckbox.checked = true;
+            if (this.outlineModeButton) {
+                this.outlineMode = 'full';
+                this.updateOutlineButtonStyle();
+            } else if (this.outlineModeSelect) {
+                this.outlineMode = 'full';
+                this.outlineModeSelect.value = 'full';
             }
             if (this.rotationCheckbox) {
                 this.rotationCheckbox.checked = false;
@@ -1704,7 +1995,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.lineWidthSlider.value = '3.0';
             }
             if (this.orthoSlider) {
-                this.orthoSlider.value = '0.5';
+                this.orthoSlider.value = '1.0';
                 // Update camera perspective - trigger input event to update camera
                 this.orthoSlider.dispatchEvent(new Event('input'));
             }
@@ -1846,8 +2137,18 @@ function initializePy2DmolViewer(containerElement) {
                 this.rotatedCoords = Array.from({ length: n }, () => new Vec3(0, 0, 0));
             }
 
-            // Generate Segment Definitions ONCE
-            this.segmentIndices = [];
+            // Check if we can reuse cached segment indices (bonds don't change within a frame)
+            const canUseCache = this.cachedSegmentIndices !== null &&
+                                this.cachedSegmentIndicesFrame === this.currentFrame &&
+                                this.cachedSegmentIndicesObjectName === this.currentObjectName &&
+                                this.cachedSegmentIndices.length > 0;
+            
+            if (canUseCache) {
+                // Reuse cached segment indices (deep copy to avoid mutation)
+                this.segmentIndices = this.cachedSegmentIndices.map(seg => ({ ...seg }));
+            } else {
+                // Generate Segment Definitions ONCE
+                this.segmentIndices = [];
             const proteinChainbreak = 5.0;
             const nucleicChainbreak = 7.5;
             const ligandBondCutoff = 2.0;
@@ -1997,6 +2298,12 @@ function initializePy2DmolViewer(containerElement) {
                         len: 0 // Zero length indicates disconnected atom
                     });
                 }
+            }
+            
+                // Cache the calculated segment indices for this frame
+                this.cachedSegmentIndices = this.segmentIndices.map(seg => ({ ...seg }));
+                this.cachedSegmentIndicesFrame = this.currentFrame;
+                this.cachedSegmentIndicesObjectName = this.currentObjectName;
             }
             
             // Pre-allocate segData array
@@ -2278,6 +2585,11 @@ function initializePy2DmolViewer(containerElement) {
         _updateCanvasDimensions() {
             this.displayWidth = parseInt(this.canvas.style.width) || this.canvas.width;
             this.displayHeight = parseInt(this.canvas.style.height) || this.canvas.height;
+            
+            // Update highlight overlay canvas size to match (managed by sequence viewer)
+            if (window.SequenceViewer && window.SequenceViewer.updateHighlightOverlaySize) {
+                window.SequenceViewer.updateHighlightOverlaySize();
+            }
         }
         
         // RENDER (Core drawing logic)
@@ -2355,14 +2667,34 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
+            // Get visibility mask early to build visible segment list
+            const visibilityMask = this.visibilityMask;
+            
+            // Build list of visible segment indices early - this is the key optimization
+            // A segment is visible if both atoms are visible (or no mask = all visible)
+            const visibleSegmentIndices = [];
+            for (let i = 0; i < n; i++) {
+                const segInfo = segments[i];
+                if (!visibilityMask || (visibilityMask.has(segInfo.idx1) && visibilityMask.has(segInfo.idx2))) {
+                    visibleSegmentIndices.push(i);
+                }
+            }
+            const numVisibleSegments = visibleSegmentIndices.length;
+            
             // Combine Z-value/norm and update segData
+            // Only calculate z-values for visible segments to avoid unnecessary computation
             const zValues = new Float32Array(n);
             let zMin = Infinity;
             let zMax = -Infinity;
+            // Also track min/max from actual atom positions (for outline width calculation)
+            let zMinAtoms = Infinity;
+            let zMaxAtoms = -Infinity;
             const segData = this.segData; // Use pre-allocated array
 
-            for (let i = 0; i < n; i++) {
-                const segInfo = segments[i];
+            // Only calculate z-values and segData for visible segments
+            for (let i = 0; i < numVisibleSegments; i++) {
+                const segIdx = visibleSegmentIndices[i];
+                const segInfo = segments[segIdx];
                 const start = rotated[segInfo.idx1];
                 const end = rotated[segInfo.idx2];
                 
@@ -2371,12 +2703,18 @@ function initializePy2DmolViewer(containerElement) {
                 const midZ = (start.z + end.z) * 0.5;
                 const z = midZ; // zValue is just midZ
                 
-                zValues[i] = z;
+                zValues[segIdx] = z;
                 if (z < zMin) zMin = z;
                 if (z > zMax) zMax = z;
                 
+                // Track atom z-coordinates for outline calculation
+                if (start.z < zMinAtoms) zMinAtoms = start.z;
+                if (start.z > zMaxAtoms) zMaxAtoms = start.z;
+                if (end.z < zMinAtoms) zMinAtoms = end.z;
+                if (end.z > zMaxAtoms) zMaxAtoms = end.z;
+                
                 // Update pre-allocated segData object
-                const s = segData[i];
+                const s = segData[segIdx];
                 s.x = midX;
                 s.y = midY;
                 s.z = midZ;
@@ -2386,13 +2724,73 @@ function initializePy2DmolViewer(containerElement) {
             }
             
             const zNorm = new Float32Array(n);
-            const zRange = zMax - zMin;
-            if (zRange > 1e-6) {
-                for (let i = 0; i < n; i++) {
-                    zNorm[i] = (zValues[i] - zMin) / zRange;
+            
+            // Count visible atoms for performance mode determination
+            let numVisibleAtoms;
+            if (!visibilityMask) {
+                // All atoms are visible
+                numVisibleAtoms = this.coords.length;
+            } else {
+                // Count atoms in visibility mask
+                numVisibleAtoms = visibilityMask.size;
+            }
+            
+            // Collect z-values from visible segments only (for depth calculation)
+            const visibleZValues = [];
+            for (let i = 0; i < numVisibleSegments; i++) {
+                const segIdx = visibleSegmentIndices[i];
+                visibleZValues.push(zValues[segIdx]);
+            }
+            
+            // Calculate mean and std only from visible segments
+            const numVisible = visibleZValues.length;
+            let zSum = 0;
+            for (let i = 0; i < numVisible; i++) {
+                zSum += visibleZValues[i];
+            }
+            const zMean = numVisible > 0 ? zSum / numVisible : 0;
+            
+            // Calculate standard deviation from visible segments only
+            let varianceSum = 0;
+            for (let i = 0; i < numVisible; i++) {
+                const diff = visibleZValues[i] - zMean;
+                varianceSum += diff * diff;
+            }
+            const zVariance = numVisible > 0 ? varianceSum / numVisible : 0;
+            const zStd = Math.sqrt(zVariance);
+            
+            // Map using std: zMean - 2*std → 0, zMean + 2*std → 1
+            // Formula: zNorm = (z - (zMean - 2*std)) / (4*std)
+            // Only normalize visible segments to avoid unnecessary computation
+            if (zStd > 1e-6) {
+                const zFront = zMean - 2.0 * zStd; // 2 std below mean (front)
+                const zBack = zMean + 2.0 * zStd;  // 2 std above mean (back)
+                const zRangeStd = 4.0 * zStd;  // Range is 4*std
+                
+                // Only normalize visible segments
+                for (let i = 0; i < numVisibleSegments; i++) {
+                    const segIdx = visibleSegmentIndices[i];
+                    // Map zMean - 2*std to 0, zMean + 2*std to 1
+                    zNorm[segIdx] = (zValues[segIdx] - zFront) / zRangeStd;
+                    // Clamp to [0, 1] for values outside ±2 std
+                    zNorm[segIdx] = Math.max(0, Math.min(1, zNorm[segIdx]));
                 }
             } else {
-                zNorm.fill(0);
+                // Fallback: if std is too small, use min/max approach
+                const zRange = zMax - zMin;
+                if (zRange > 1e-6) {
+                    // Only normalize visible segments
+                    for (let i = 0; i < numVisibleSegments; i++) {
+                        const segIdx = visibleSegmentIndices[i];
+                        zNorm[segIdx] = (zValues[segIdx] - zMin) / zRange;
+                    }
+                } else {
+                    // Only set visible segments to 0.5
+                    for (let i = 0; i < numVisibleSegments; i++) {
+                        const segIdx = visibleSegmentIndices[i];
+                        zNorm[segIdx] = 0.5;
+                    }
+                }
             }
             
             const renderShadows = this.shadowEnabled;
@@ -2400,36 +2798,50 @@ function initializePy2DmolViewer(containerElement) {
 
             const shadows = new Float32Array(n);
             const tints = new Float32Array(n);
+            
+            // Initialize shadows and tints to default values (no shadow, no tint)
+            // This ensures non-visible segments have correct defaults
+            shadows.fill(1.0);
+            tints.fill(1.0);
+            
+            // Only sort visible segments - major performance improvement
+            const visibleOrder = visibleSegmentIndices
+                .map(i => ({ idx: i, z: zValues[i] }))
+                .sort((a, b) => a.z - b.z)
+                .map(item => item.idx);
+            
+            // Keep full order array for compatibility (but only visible segments will be used)
+            // NOTE: This array should NOT be used for calculations - use visibleOrder instead
+            // zValues for non-visible segments are uninitialized (0), so sorting is incorrect
             const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
             
-            const visibilityMask = this.visibilityMask; // Cache for performance
+            // visibilityMask already declared above for depth calculation
             
-            // For small molecules, always recalculate shadows (no caching)
-            // For large molecules, skip expensive shadow calculations during dragging or zooming - use cached
-            // During zoom, shadows don't change, so reuse cached values
-            // During drag, use cached for performance, but recalculate after drag stops for large molecules
+            // Determine fast/slow mode based on visible atoms (not total segments)
+            // Fast mode: skip expensive operations when many visible atoms
+            // Slow mode: full quality rendering when few visible atoms
+            const isFastMode = numVisibleAtoms > this.LARGE_MOLECULE_CUTOFF;
             const isLargeMolecule = n > this.LARGE_MOLECULE_CUTOFF;
-            const skipShadowCalc = isLargeMolecule && (this.isDragging || this.isZooming) && this.cachedShadows && this.cachedShadows.length === n;
+            
+            // For fast mode (many visible atoms), skip expensive shadow calculations during dragging or zooming - use cached
+            // During zoom, shadows don't change, so reuse cached values
+            // During drag, use cached for performance, but recalculate after drag stops
+            const skipShadowCalc = isFastMode && (this.isDragging || this.isZooming) && this.cachedShadows && this.cachedShadows.length === n;
             
             if (renderShadows && !skipShadowCalc) {
-                if (n <= this.LARGE_MOLECULE_CUTOFF) {
-                    for (let i_idx = n - 1; i_idx >= 0; i_idx--) {
-                        const i = order[i_idx]; 
+                // Use fast mode threshold based on visible atoms, not total segments
+                if (!isFastMode) {
+                    // Only process visible segments in outer loop
+                    for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
+                        const i = visibleOrder[i_idx]; 
                         let shadowSum = 0;
                         let maxTint = 0;
                         const s1 = segData[i];
                         const segInfoI = segments[i]; // Cache segment info
 
-                        for (let j_idx = i_idx + 1; j_idx < n; j_idx++) {
-                            const j = order[j_idx];
-                            
-                            // Early visibility check (before accessing segData)
-                            if (visibilityMask) {
-                                const segInfoJ = segments[j]; // Cache segment info
-                                if (!visibilityMask.has(segInfoJ.idx1) || !visibilityMask.has(segInfoJ.idx2)) {
-                                    continue; // This segment is hidden, it can't cast a shadow
-                                }
-                            }
+                        // Only check visible segments (already filtered)
+                        for (let j_idx = i_idx + 1; j_idx < visibleOrder.length; j_idx++) {
+                            const j = visibleOrder[j_idx];
                             
                             // Early exit: if maxTint is already 1.0, no need to check for more tint
                             if (maxTint >= 1.0 && shadowSum > 50) {
@@ -2446,8 +2858,8 @@ function initializePy2DmolViewer(containerElement) {
                         shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
                         tints[i] = 1 - maxTint;
                     }
-                } else { // n > LARGE_MOLECULE_CUTOFF
-                    let GRID_DIM = Math.ceil(Math.sqrt(n / 10)); 
+                } else { // Fast mode: many visible atoms, use grid-based optimization
+                    let GRID_DIM = Math.ceil(Math.sqrt(numVisibleSegments / 10)); 
                     GRID_DIM = Math.max(10, Math.min(100, GRID_DIM)); 
                     
                     const gridSize = GRID_DIM * GRID_DIM;
@@ -2460,8 +2872,10 @@ function initializePy2DmolViewer(containerElement) {
                     if (gridCellSize > 1e-6) {
                         const invCellSize = 1.0 / gridCellSize; 
                         
-                        for (let i = 0; i < n; i++) {
-                            const s = segData[i];
+                        // Only calculate grid positions for visible segments
+                        for (let i = 0; i < numVisibleSegments; i++) {
+                            const segIdx = visibleSegmentIndices[i];
+                            const s = segData[segIdx];
                             const gx = Math.floor((s.x - gridMin) * invCellSize);
                             const gy = Math.floor((s.y - gridMin) * invCellSize);
                             
@@ -2474,12 +2888,23 @@ function initializePy2DmolViewer(containerElement) {
                             }
                         }
                         
-                        for (let i_idx = n - 1; i_idx >= 0; i_idx--) {
-                            const i = order[i_idx]; 
+                        // Populate grid with all visible segments BEFORE calculating shadows
+                        // This ensures segments in front are already in the grid when we process segments behind them
+                        for (let i = 0; i < numVisibleSegments; i++) {
+                            const segIdx = visibleSegmentIndices[i];
+                            const s = segData[segIdx];
+                            if (s.gx >= 0 && s.gy >= 0) {
+                                const gridIndex = s.gx + s.gy * GRID_DIM;
+                                grid[gridIndex].push(segIdx);
+                            }
+                        }
+                        
+                        // Only process visible segments in outer loop
+                        for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
+                            const i = visibleOrder[i_idx]; 
                             let shadowSum = 0;
                             let maxTint = 0;
                             const s1 = segData[i];
-                            const segInfoI = segments[i]; // Get segment info for visibility check
                             const gx1 = s1.gx;
                             const gy1 = s1.gy;
 
@@ -2504,9 +2929,14 @@ function initializePy2DmolViewer(containerElement) {
                                     
                                     for (let k = 0; k < cellLen; k++) {
                                         const j = cell[k]; 
-                                        // Visibility check is implicitly handled
-                                        // because only visible segments are pushed to the grid
+                                        // Only visible segments are in the grid, so no visibility check needed
                                         const s2 = segData[j];
+                                        
+                                        // CRITICAL: Only check segments that are in FRONT of i (closer to camera)
+                                        // Segment j casts shadow on i only if j.z > i.z (j is in front)
+                                        if (s2.z <= s1.z) {
+                                            continue; // Skip segments that are behind or at same depth
+                                        }
                                         
                                         // Call helper function
                                         const { shadow, tint } = this._calculateShadowTint(s1, s2);
@@ -2518,12 +2948,6 @@ function initializePy2DmolViewer(containerElement) {
                             
                             shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
                             tints[i] = 1 - maxTint;
-
-                            const gridIndex = gx1 + gy1 * GRID_DIM;
-                            // Only add segment to grid if it's visible
-                            if (!visibilityMask || (visibilityMask.has(segInfoI.idx1) && visibilityMask.has(segInfoI.idx2))) {
-                                grid[gridIndex].push(i);
-                            }
                         }
                     } else {
                          shadows.fill(1.0);
@@ -2619,8 +3043,11 @@ function initializePy2DmolViewer(containerElement) {
             // DETECT OUTER ENDPOINTS - For rounded edges on outer segments
             // ====================================================================
             // Build a map of atom connections to identify outer endpoints
+            // Only count connections for visible segments
             const atomConnections = new Map();
-            for (const segInfo of segments) {
+            for (let i = 0; i < numVisibleSegments; i++) {
+                const segIdx = visibleSegmentIndices[i];
+                const segInfo = segments[segIdx];
                 // Count how many times each atom appears as an endpoint
                 atomConnections.set(segInfo.idx1, (atomConnections.get(segInfo.idx1) || 0) + 1);
                 atomConnections.set(segInfo.idx2, (atomConnections.get(segInfo.idx2) || 0) + 1);
@@ -2636,28 +3063,31 @@ function initializePy2DmolViewer(containerElement) {
             
             // Build a map of atom index -> list of segment indices that use that atom as an endpoint
             // This helps us detect if an endpoint is covered by another segment
+            // Only add visible segments to the map
             const atomToSegments = new Map();
-            for (let i = 0; i < n; i++) {
-                const segInfo = segments[i];
+            for (let i = 0; i < numVisibleSegments; i++) {
+                const segIdx = visibleSegmentIndices[i];
+                const segInfo = segments[segIdx];
                 if (!atomToSegments.has(segInfo.idx1)) {
                     atomToSegments.set(segInfo.idx1, []);
                 }
-                atomToSegments.get(segInfo.idx1).push(i);
+                atomToSegments.get(segInfo.idx1).push(segIdx);
                 
                 if (segInfo.idx1 !== segInfo.idx2) {
                     // Only add idx2 if it's different from idx1 (not zero-sized)
                     if (!atomToSegments.has(segInfo.idx2)) {
                         atomToSegments.set(segInfo.idx2, []);
                     }
-                    atomToSegments.get(segInfo.idx2).push(i);
+                    atomToSegments.get(segInfo.idx2).push(segIdx);
                 }
             }
             
             // Build a map from segment index to its position in the render order
             // Segments later in order are closer to camera (rendered on top)
+            // Only map visible segments since we only draw visible ones and atomToSegments only contains visible segments
             const segmentOrderMap = new Map();
-            for (let orderIdx = 0; orderIdx < order.length; orderIdx++) {
-                segmentOrderMap.set(order[orderIdx], orderIdx);
+            for (let orderIdx = 0; orderIdx < visibleOrder.length; orderIdx++) {
+                segmentOrderMap.set(visibleOrder[orderIdx], orderIdx);
             }
             
             // ====================================================================
@@ -2683,14 +3113,10 @@ function initializePy2DmolViewer(containerElement) {
                 }
             };
             
-            for (const idx of order) {
+            // Only iterate over visible segments - no need for visibility check inside loop
+            for (const idx of visibleOrder) {
                 // --- 1. COMMON CALCULATIONS (Do these ONCE) ---
                 const segInfo = segments[idx];
-
-                // Visibility Check
-                if (visibilityMask && (!visibilityMask.has(segInfo.idx1) || !visibilityMask.has(segInfo.idx2))) {
-                    continue;
-                }
 
                 // Color Calculation
                 let { r, g, b } = colors[idx];
@@ -2801,8 +3227,35 @@ function initializePy2DmolViewer(containerElement) {
                 // Check if end endpoint should be rounded
                 const hasOuterEnd = shouldRoundEndpoint(segInfo.idx2);
                 
-                if (this.outlineEnabled) {
-                    // --- 2-STEP DRAW (Outline) - Background segment 3px larger ---
+                if (this.outlineMode === 'none') {
+                    // --- 1-STEP DRAW (No Outline) ---
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x1, y1);
+                    this.ctx.lineTo(x2, y2);
+                    setCanvasProps(color, currentLineWidth, 'round');
+                    this.ctx.stroke();
+                } else if (this.outlineMode === 'partial') {
+                    // --- 2-STEP DRAW (Partial Outline) - Background segment with butt caps only (no rounded caps) ---
+                    const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
+                    const totalOutlineWidth = currentLineWidth + 3.0;
+
+                    // Pass 1: Gap filler outline (3px larger than main line) with butt caps only
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x1, y1);
+                    this.ctx.lineTo(x2, y2);
+                    setCanvasProps(gapFillerColor, totalOutlineWidth, 'butt');
+                    this.ctx.stroke();
+                    
+                    // No rounded caps in partial mode
+
+                    // Pass 2: Main colored line (always round caps)
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x1, y1);
+                    this.ctx.lineTo(x2, y2);
+                    setCanvasProps(color, currentLineWidth, 'round');
+                    this.ctx.stroke();
+                } else { // this.outlineMode === 'full'
+                    // --- 2-STEP DRAW (Full Outline) - Background segment with rounded caps at outer endpoints ---
                     const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
                     const totalOutlineWidth = currentLineWidth + 3.0;
 
@@ -2835,14 +3288,6 @@ function initializePy2DmolViewer(containerElement) {
                     this.ctx.lineTo(x2, y2);
                     setCanvasProps(color, currentLineWidth, 'round');
                     this.ctx.stroke();
-
-                } else {
-                    // --- 1-STEP DRAW (No Outline) ---
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
-                    setCanvasProps(color, currentLineWidth, 'round');
-                    this.ctx.stroke();
                 }
             }
             // ====================================================================
@@ -2850,144 +3295,60 @@ function initializePy2DmolViewer(containerElement) {
             // ====================================================================
 
             // ====================================================================
-            // HIGHLIGHTING PASS - Draw yellow circles at atom positions
+            // STORE ATOM SCREEN POSITIONS for fast highlight drawing
             // ====================================================================
-            // Highlight multiple atoms if specified (preferred method)
-            // Highlighting works regardless of visibility mask
-            if (this.highlightedAtoms !== null && this.highlightedAtoms instanceof Set && this.highlightedAtoms.size > 0) {
-                // Cache highlight style properties (set once, used for all atoms)
-                const highlightFillStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
-                const highlightStrokeStyle = 'rgba(255, 255, 0, 1.0)'; // Yellow border
-                const highlightLineWidth = 1;
-                
-                for (const atomIdx of this.highlightedAtoms) {
-                    if (atomIdx >= 0 && atomIdx < rotated.length && rotated[atomIdx]) {
-                        const atom = rotated[atomIdx];
-                        let x, y;
-                        let perspectiveScale = 1.0;
-                        
-                        // Get atom type to determine appropriate line width multiplier
-                        let widthMultiplier = 1.0;
-                        if (this.atomTypes && atomIdx < this.atomTypes.length) {
-                            const type = this.atomTypes[atomIdx];
-                            if (type === 'L') {
-                                widthMultiplier = 0.4 * 2 / 3; // Ligands are thinner (2/3 of original)
-                            } else if (type === 'D' || type === 'R') {
-                                widthMultiplier = 1.6; // DNA/RNA are thicker
-                            }
-                        }
-                        let atomLineWidth = baseLineWidthPixels * widthMultiplier;
-                        
-                        if (this.perspectiveEnabled) {
-                            const z = this.focalLength - atom.z;
-                            if (z < 0.01) {
-                                // Behind camera, skip
-                                continue;
-                            } else {
-                                perspectiveScale = this.focalLength / z;
-                                x = centerX + (atom.x * scale * perspectiveScale);
-                                y = centerY - (atom.y * scale * perspectiveScale);
-                                atomLineWidth *= perspectiveScale;
-                                
-                                // Highlight radius should be slightly larger than the line width for this atom type
-                                const highlightRadius = Math.max(2, atomLineWidth * 0.5);
-                                
-                                // Batch canvas property changes
-                                this.ctx.fillStyle = highlightFillStyle;
-                                this.ctx.strokeStyle = highlightStrokeStyle;
-                                this.ctx.lineWidth = highlightLineWidth;
-                                
-                                this.ctx.beginPath();
-                                this.ctx.arc(x, y, highlightRadius, 0, Math.PI * 2);
-                                this.ctx.fill();
-                                this.ctx.stroke();
-                            }
-                        } else {
-                            // Orthographic projection
-                            x = centerX + atom.x * scale;
-                            y = centerY - atom.y * scale;
-                            
-                            // Highlight radius should be slightly larger than the line width for this atom type
-                            const highlightRadius = Math.max(2, atomLineWidth * 0.5);
-                            
-                            // Batch canvas property changes
-                            this.ctx.fillStyle = highlightFillStyle;
-                            this.ctx.strokeStyle = highlightStrokeStyle;
-                            this.ctx.lineWidth = highlightLineWidth;
-                            
-                            this.ctx.beginPath();
-                            this.ctx.arc(x, y, highlightRadius, 0, Math.PI * 2);
-                            this.ctx.fill();
-                            this.ctx.stroke();
-                        }
-                    }
-                }
-            } else if (this.highlightedAtom !== null && this.highlightedAtom !== undefined && typeof this.highlightedAtom === 'number') {
-                const atomIdx = this.highlightedAtom;
-                if (atomIdx >= 0 && atomIdx < rotated.length && rotated[atomIdx]) {
+            // Store screen positions of all atoms for overlay highlight drawing
+            // This allows us to draw highlights without re-rendering the entire scene
+            const numAtoms = rotated.length;
+            this.atomScreenPositions = new Array(numAtoms);
+            
+            for (let atomIdx = 0; atomIdx < numAtoms; atomIdx++) {
+                if (atomIdx < rotated.length && rotated[atomIdx]) {
                     const atom = rotated[atomIdx];
-                    let x, y;
-                    let perspectiveScale = 1.0;
+                    let x, y, radius;
                     
                     // Get atom type to determine appropriate line width multiplier
                     let widthMultiplier = 1.0;
                     if (this.atomTypes && atomIdx < this.atomTypes.length) {
                         const type = this.atomTypes[atomIdx];
                         if (type === 'L') {
-                            widthMultiplier = 0.4; // Ligands are thinner
+                            widthMultiplier = 0.4 * 2 / 3; // Ligands are thinner
                         } else if (type === 'D' || type === 'R') {
                             widthMultiplier = 1.6; // DNA/RNA are thicker
                         }
                     }
                     let atomLineWidth = baseLineWidthPixels * widthMultiplier;
                     
-                    // Cache highlight style properties (set once, used for both paths)
-                    const highlightFillStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
-                    const highlightStrokeStyle = 'rgba(255, 255, 0, 1.0)'; // Yellow border
-                    const highlightLineWidth = 1;
-                    
                     if (this.perspectiveEnabled) {
                         const z = this.focalLength - atom.z;
                         if (z < 0.01) {
-                            // Behind camera, skip
+                            // Behind camera, mark as invalid
+                            this.atomScreenPositions[atomIdx] = null;
+                            continue;
                         } else {
-                            perspectiveScale = this.focalLength / z;
+                            const perspectiveScale = this.focalLength / z;
                             x = centerX + (atom.x * scale * perspectiveScale);
                             y = centerY - (atom.y * scale * perspectiveScale);
                             atomLineWidth *= perspectiveScale;
-                            
-                            // Highlight radius should be slightly larger than the line width for this atom type
-                            const highlightRadius = Math.max(2, atomLineWidth * 0.5);
-                            
-                            // Batch canvas property changes
-                            this.ctx.fillStyle = highlightFillStyle;
-                            this.ctx.strokeStyle = highlightStrokeStyle;
-                            this.ctx.lineWidth = highlightLineWidth;
-                            
-                            this.ctx.beginPath();
-                            this.ctx.arc(x, y, highlightRadius, 0, Math.PI * 2);
-                            this.ctx.fill();
-                            this.ctx.stroke();
+                            radius = Math.max(2, atomLineWidth * 0.5);
                         }
                     } else {
                         // Orthographic projection
                         x = centerX + atom.x * scale;
                         y = centerY - atom.y * scale;
-                        
-                        // Highlight radius should be slightly larger than the line width for this atom type
-                        const highlightRadius = Math.max(2, atomLineWidth * 0.5);
-                        
-                        // Batch canvas property changes
-                        this.ctx.fillStyle = highlightFillStyle;
-                        this.ctx.strokeStyle = highlightStrokeStyle;
-                        this.ctx.lineWidth = highlightLineWidth;
-                        
-                        this.ctx.beginPath();
-                        this.ctx.arc(x, y, highlightRadius, 0, Math.PI * 2);
-                        this.ctx.fill();
-                        this.ctx.stroke();
+                        radius = Math.max(2, atomLineWidth * 0.5);
                     }
+                    
+                    this.atomScreenPositions[atomIdx] = { x, y, radius };
+                } else {
+                    this.atomScreenPositions[atomIdx] = null;
                 }
+            }
+            
+            // Draw highlights on overlay canvas (doesn't require full render)
+            // Highlight overlay is now managed by sequence viewer
+            if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+                window.SequenceViewer.drawHighlights();
             }
         }
 
@@ -3004,10 +3365,21 @@ function initializePy2DmolViewer(containerElement) {
 
             // 1. Handle inertia/spin - disabled during recording and for large molecules
             if (!this.isRecording) {
-                // Check if object is large (disable inertia for performance)
+                // Check if object is large (disable inertia for performance based on visible segments)
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                const segmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
-                const enableInertia = segmentCount <= this.LARGE_MOLECULE_CUTOFF;
+                const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
+                // Count visible segments for inertia determination
+                let visibleSegmentCount = totalSegmentCount;
+                if (this.visibilityMask && this.segmentIndices) {
+                    visibleSegmentCount = 0;
+                    for (let i = 0; i < this.segmentIndices.length; i++) {
+                        const seg = this.segmentIndices[i];
+                        if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                            visibleSegmentCount++;
+                        }
+                    }
+                }
+                const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
                 
                 if (enableInertia) {
                     const INERTIA_THRESHOLD = 0.0001; // Stop when velocity is below this
@@ -3075,648 +3447,8 @@ function initializePy2DmolViewer(containerElement) {
     // ============================================================================
     // PAE RENDERER
     // ============================================================================
-    class PAERenderer {
-        constructor(canvas, mainRenderer) {
-            this.canvas = canvas;
-            this.ctx = canvas.getContext('2d');
-            this.mainRenderer = mainRenderer; // Reference to Pseudo3DRenderer
-            
-            this.paeData = null;
-            // Use canvas internal width for size (canvas may be stretched by CSS)
-            // This ensures rendering coordinates match mouse coordinates
-            this.size = canvas.width;
-            
-            this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
-            this.isDragging = false;
-            this.isAdding = false; // Track if Shift is held for additive selection
-            
-            // Performance optimization: cache base image and selection state
-            this.baseImageData = null; // Cached base PAE image (no selection overlay)
-            this.lastSelectionHash = null; // Hash of last selection state to detect changes
-            this.renderScheduled = false; // Flag to prevent multiple queued renders
-            this.cachedSequencePositions = null; // Cache sequence selected positions
-            
-            this.setupInteraction();
-            
-            // Listen for selection changes to re-render PAE with sequence selections
-            if (typeof document !== 'undefined') {
-                this.selectionChangeHandler = () => {
-                    if (this.paeData) {
-                        // Invalidate cache when selection changes
-                        this.lastSelectionHash = null;
-                        this.cachedSequencePositions = null;
-                        this.scheduleRender();
-                    }
-                };
-                document.addEventListener('py2dmol-selection-change', this.selectionChangeHandler);
-            }
-        }
-        
-        // Schedule render using requestAnimationFrame to throttle
-        scheduleRender() {
-            if (this.renderScheduled) return;
-            this.renderScheduled = true;
-            requestAnimationFrame(() => {
-                this.renderScheduled = false;
-                this.render();
-            });
-        }
-
-        getMousePos(e) {
-            const rect = this.canvas.getBoundingClientRect();
-            // Support both mouse and touch events
-            const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : e.changedTouches[0].clientX);
-            const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : e.changedTouches[0].clientY);
-            
-            // Get mouse position relative to canvas (in display pixels)
-            const displayX = clientX - rect.left;
-            const displayY = clientY - rect.top;
-            
-            // Scale to canvas logical coordinates (canvas may be stretched by CSS)
-            // Canvas internal size vs displayed size
-            const scaleX = this.canvas.width / rect.width;
-            const scaleY = this.canvas.height / rect.height;
-            
-            return { 
-                x: displayX * scaleX, 
-                y: displayY * scaleY 
-            };
-        }
-        
-        getCellIndices(e) {
-            const { x, y } = this.getMousePos(e);
-            if (!this.paeData) return { i: -1, j: -1 };
-            
-            const n = this.paeData.length;
-            if (n === 0) return { i: -1, j: -1 };
-            
-            const cellSize = this.size / n;
-            
-            const i = Math.floor(y / cellSize);
-            const j = Math.floor(x / cellSize);
-            
-            return { i, j };
-        }
-
-        setupInteraction() {
-            this.canvas.addEventListener('mousedown', (e) => {
-                if (e.button !== 0) return; // Only left click
-                if (!this.paeData) return; // No data to select
-                
-                // Check if Shift is held for additive selection
-                this.isAdding = e.shiftKey;
-                
-                if (!this.isAdding) {
-                    // Clear sequence selection when starting a new PAE selection (non-additive)
-                    // This ensures only the PAE box selection is active
-                    this.mainRenderer.setSelection({ 
-                        paeBoxes: [],
-                        atoms: new Set(),
-                        chains: new Set(),
-                        selectionMode: 'explicit'
-                    });
-                }
-                // If Shift is held, preserve existing selections and add to them
-                
-                this.isDragging = true;
-                const { i, j } = this.getCellIndices(e);
-                this.selection.x1 = j;
-                this.selection.y1 = i;
-                this.selection.x2 = j;
-                this.selection.y2 = i;
-                // Invalidate cache when starting new selection
-                this.lastSelectionHash = null;
-                this.scheduleRender(); // Throttled render
-            });
-            
-            window.addEventListener('mousemove', (e) => {
-                if (!this.isDragging) return;
-                if (!this.paeData) return; // No data to select
-                
-                // Get cell indices - handle case where mouse might be outside canvas
-                let cellIndices;
-                try {
-                    cellIndices = this.getCellIndices(e);
-                } catch (err) {
-                    return; // Mouse outside canvas, ignore
-                }
-                const { i, j } = cellIndices;
-
-                // Clamp selection to canvas bounds
-                const n = this.paeData.length;
-                const newX2 = Math.max(0, Math.min(n - 1, j));
-                const newY2 = Math.max(0, Math.min(n - 1, i));
-                
-                // Only update if selection actually changed
-                if (this.selection.x2 !== newX2 || this.selection.y2 !== newY2) {
-                    this.selection.x2 = newX2;
-                    this.selection.y2 = newY2;
-                    this.scheduleRender(); // Throttled render
-                }
-            });
-            
-            const handleEnd = (e) => {
-                if (!this.isDragging) return;
-                this.isDragging = false;
-                
-                let i_start = Math.min(this.selection.y1, this.selection.y2);
-                let i_end = Math.max(this.selection.y1, this.selection.y2);
-                let j_start = Math.min(this.selection.x1, this.selection.x2);
-                let j_end = Math.max(this.selection.x1, this.selection.x2);
-
-                // Clamp to valid range
-                const n = this.paeData.length;
-                if (n === 0 || i_start < 0 || j_start < 0) {
-                    this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
-                    this.render();
-                    return;
-                }
-
-                // Check for a single-click
-                const isClick = (i_start === i_end && j_start === j_end);
-
-                if (isClick) {
-                    // Single click: Clear both PAE and sequence selection
-                    this.mainRenderer.setSelection({ 
-                        paeBoxes: [],
-                        atoms: new Set(),
-                        chains: new Set(),
-                        selectionMode: 'default'
-                    });
-                    // Invalidate PAE cache
-                    this.cachedSequencePositions = null;
-                    this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
-                } else {
-                    // Create new box
-                    const newBox = {
-                        i_start: i_start,
-                        i_end: i_end,
-                        j_start: j_start,
-                        j_end: j_end
-                    };
-                    
-                    // Get current selection state
-                    const currentSelection = this.mainRenderer.getSelection();
-                    const existingBoxes = currentSelection.paeBoxes || [];
-                    const existingAtoms = currentSelection.atoms || new Set();
-                    
-                    // Convert PAE box to atom indices
-                    // PAE positions map directly to atom indices (one atom = one position)
-                    const newAtoms = new Set();
-                    
-                    // Get atom indices from PAE box (i and j ranges)
-                    for (let r = i_start; r <= i_end; r++) {
-                        if (r >= 0 && r < this.mainRenderer.chains.length) {
-                            newAtoms.add(r);
-                        }
-                    }
-                    for (let r = j_start; r <= j_end; r++) {
-                        if (r >= 0 && r < this.mainRenderer.chains.length) {
-                            newAtoms.add(r);
-                        }
-                    }
-                    
-                    // If Shift is held, add to existing selection; otherwise replace
-                    if (this.isAdding) {
-                        // Additive: combine with existing boxes and atoms
-                        const combinedBoxes = [...existingBoxes, newBox];
-                        const combinedAtoms = new Set([...existingAtoms, ...newAtoms]);
-                        
-                        // Update chains to include all chains that have selected atoms
-                        const newChains = new Set();
-                        if (this.mainRenderer.chains && this.mainRenderer.chains.length > 0) {
-                            for (const atomIdx of combinedAtoms) {
-                                if (atomIdx >= 0 && atomIdx < this.mainRenderer.chains.length) {
-                                    const atomChain = this.mainRenderer.chains[atomIdx];
-                                    if (atomChain) {
-                                        newChains.add(atomChain);
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Determine if we have partial selections
-                        const totalAtoms = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
-                        const hasPartialSelections = combinedAtoms.size > 0 && combinedAtoms.size < totalAtoms;
-                        
-                        this.mainRenderer.setSelection({
-                            paeBoxes: combinedBoxes,
-                            atoms: combinedAtoms,
-                            chains: newChains, // Include all chains with selected atoms
-                            selectionMode: hasPartialSelections ? 'explicit' : 'default'
-                        });
-                    } else {
-                        // Replace: use only the new box and atoms
-                        
-                        // Update chains to include all chains that have selected atoms
-                        const newChains = new Set();
-                        if (this.mainRenderer.chains && this.mainRenderer.chains.length > 0) {
-                            for (const atomIdx of newAtoms) {
-                                if (atomIdx >= 0 && atomIdx < this.mainRenderer.chains.length) {
-                                    const atomChain = this.mainRenderer.chains[atomIdx];
-                                    if (atomChain) {
-                                        newChains.add(atomChain);
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Determine if we have partial selections
-                        const totalAtoms = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
-                        const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                        
-                        this.mainRenderer.setSelection({
-                            paeBoxes: [newBox],
-                            atoms: newAtoms,
-                            chains: newChains, // Include all chains with selected atoms
-                            selectionMode: hasPartialSelections ? 'explicit' : 'default'
-                        });
-                    }
-                    
-                    // Invalidate PAE cache so colors update immediately
-                    this.cachedSequencePositions = null;
-                }
-                
-                this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
-                // Invalidate cache after selection change
-                this.lastSelectionHash = null;
-                this.cachedSequencePositions = null;
-                this.scheduleRender(); // Throttled render
-            };
-            
-            window.addEventListener('mouseup', handleEnd);
-            
-            // Touch event handlers for mobile devices
-            this.canvas.addEventListener('touchstart', (e) => {
-                if (e.touches.length !== 1) return; // Only single touch
-                if (!this.paeData) return; // No data to select
-                e.preventDefault(); // Prevent scrolling
-                
-                // Check if Shift is held for additive selection (not available on touch)
-                this.isAdding = false;
-                
-                // Clear sequence selection when starting a new PAE selection
-                this.mainRenderer.setSelection({ 
-                    paeBoxes: [],
-                    atoms: new Set(),
-                    chains: new Set(),
-                    selectionMode: 'explicit'
-                });
-                
-                this.isDragging = true;
-                const { i, j } = this.getCellIndices(e);
-                this.selection.x1 = j;
-                this.selection.y1 = i;
-                this.selection.x2 = j;
-                this.selection.y2 = i;
-                // Invalidate cache when starting new selection
-                this.lastSelectionHash = null;
-                this.scheduleRender(); // Throttled render
-            });
-            
-            window.addEventListener('touchmove', (e) => {
-                if (!this.isDragging) return;
-                if (!this.paeData) return; // No data to select
-                if (e.touches.length !== 1) return;
-                e.preventDefault(); // Prevent scrolling
-                
-                // Get cell indices - handle case where touch might be outside canvas
-                let cellIndices;
-                try {
-                    cellIndices = this.getCellIndices(e);
-                } catch (err) {
-                    return; // Touch outside canvas, ignore
-                }
-                const { i, j } = cellIndices;
-
-                // Clamp selection to canvas bounds
-                const n = this.paeData.length;
-                const newX2 = Math.max(0, Math.min(n - 1, j));
-                const newY2 = Math.max(0, Math.min(n - 1, i));
-                
-                // Only update if selection actually changed
-                if (this.selection.x2 !== newX2 || this.selection.y2 !== newY2) {
-                    this.selection.x2 = newX2;
-                    this.selection.y2 = newY2;
-                    this.scheduleRender(); // Throttled render
-                }
-            });
-            
-            window.addEventListener('touchend', handleEnd);
-            
-            window.addEventListener('touchcancel', (e) => {
-                // Handle touch cancellation for PAE selection
-                if (this.isDragging) {
-                    this.isDragging = false;
-                    handleEnd(e);
-                }
-            });
-        }
-
-        setData(paeData) {
-            // Only clear selection if data actually changed (not just same data on new frame)
-            // For most structures, PAE data is the same across frames, so preserve selection
-            const dataChanged = this.paeData !== paeData && 
-                (this.paeData === null || paeData === null || 
-                 (this.paeData.length !== paeData.length));
-            
-            // If data structure changed, clear selection
-            if (dataChanged) {
-                this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
-                // [PATCH] Check unified model
-                if (this.mainRenderer.selectionModel.paeBoxes.length > 0) {
-                     this.mainRenderer.setResidueVisibility(null);
-                }
-            }
-            
-            this.paeData = paeData;
-            
-            // Invalidate cache when data changes (or on any frame change for color updates)
-            this.baseImageData = null;
-            this.lastSelectionHash = null;
-            this.cachedSequencePositions = null;
-            this.render();
-        }
-
-        // Helper function to compute which PAE positions are selected from sequence space
-        // Returns a Set of PAE matrix indices (0-based) that correspond to selected atoms/chains
-        // Only returns positions for explicit selections (not default "all" state)
-        getSequenceSelectedPAEPositions() {
-            const selectedPositions = new Set();
-            const renderer = this.mainRenderer;
-            
-            if (!this.paeData || this.paeData.length === 0) {
-                return selectedPositions;
-            }
-            
-            const selectionModel = renderer.selectionModel;
-            const hasAtomSelection = selectionModel.atoms && selectionModel.atoms.size > 0;
-            const hasChainSelection = selectionModel.chains && selectionModel.chains.size > 0;
-            const mode = selectionModel.selectionMode || 'default';
-            
-            // Only return positions for explicit selections
-            // In default mode with no explicit selection, return empty (show all at full brightness)
-            if (mode === 'default') {
-                // In default mode, only highlight if there's an explicit atom selection
-                // (not just "all chains" which is the default)
-                if (!hasAtomSelection) {
-                    return selectedPositions; // No explicit selection = show all
-                }
-            }
-            
-            // If no sequence selection, return empty set
-            if (!hasAtomSelection && !hasChainSelection) {
-                return selectedPositions;
-            }
-            
-            // Determine allowed chains
-            let allowedChains;
-            if (hasChainSelection) {
-                allowedChains = selectionModel.chains;
-            } else {
-                // All chains allowed
-                allowedChains = new Set(renderer.chains);
-            }
-            
-            // Map sequence selections to PAE positions
-            // PAE positions map directly to atom indices (one atom = one position)
-            const n = this.paeData.length;
-            for (let r = 0; r < n; r++) {
-                // PAE position r corresponds to atom index r
-                if (r >= renderer.chains.length) continue;
-                
-                const chain = renderer.chains[r];
-                
-                // Check if this PAE position is selected
-                const chainMatches = allowedChains.has(chain);
-                const atomMatches = !hasAtomSelection || selectionModel.atoms.has(r);
-                
-                if (chainMatches && atomMatches) {
-                    selectedPositions.add(r);
-                }
-            }
-            
-            return selectedPositions;
-        }
-
-        // Helper function to check if a cell (i, j) is in any selected box
-        // Visual symmetry is handled in rendering, but selection boxes are not symmetric internally
-        isCellSelected(i, j, boxes, previewBox = null, sequenceSelectedPositions = null) {
-            // Check active boxes (non-symmetric - only check if (i,j) is in the box)
-            for (const box of boxes) {
-                const i_start = Math.min(box.i_start, box.i_end);
-                const i_end = Math.max(box.i_start, box.i_end);
-                const j_start = Math.min(box.j_start, box.j_end);
-                const j_end = Math.max(box.j_start, box.j_end);
-                
-                // Check if (i, j) is directly in this box
-                const inBox = (i >= i_start && i <= i_end && j >= j_start && j <= j_end);
-                
-                if (inBox) {
-                    return true;
-                }
-            }
-            
-            // Check preview box if dragging (non-symmetric)
-            if (previewBox) {
-                const i_start = Math.min(previewBox.y1, previewBox.y2);
-                const i_end = Math.max(previewBox.y1, previewBox.y2);
-                const j_start = Math.min(previewBox.x1, previewBox.x2);
-                const j_end = Math.max(previewBox.x1, previewBox.x2);
-                
-                const inBox = (i >= i_start && i <= i_end && j >= j_start && j <= j_end);
-                
-                if (inBox) {
-                    return true;
-                }
-            }
-            
-            // Check if cell is in a sequence-selected region
-            // Only highlight cells where BOTH i AND j are in selected positions
-            // This shows only the specific interactions between selected residues
-            if (sequenceSelectedPositions && sequenceSelectedPositions.size > 0) {
-                // Both row i and column j must be selected
-                if (sequenceSelectedPositions.has(i) && sequenceSelectedPositions.has(j)) {
-                    return true;
-                }
-            }
-            
-            return false;
-        }
-
-        render() {
-            this.ctx.clearRect(0, 0, this.size, this.size);
-            
-            if (!this.paeData || this.paeData.length === 0) {
-                this.ctx.fillStyle = '#f9f9f9';
-                this.ctx.fillRect(0, 0, this.size, this.size);
-                this.ctx.fillStyle = '#999';
-                this.ctx.textAlign = 'center';
-                this.ctx.textBaseline = 'middle';
-                this.ctx.font = '14px sans-serif';
-                this.ctx.fillText('No PAE Data', this.size / 2, this.size / 2);
-                return;
-            }
-
-            const n = this.paeData.length;
-            if (n === 0) return;
-            
-            const cellSize = this.size / n;
-            
-            // Get active boxes and preview box
-            const activeBoxes = this.mainRenderer.selectionModel.paeBoxes || [];
-            const previewBox = (this.isDragging && this.selection.x1 !== -1) ? this.selection : null;
-            
-            // Cache sequence-selected PAE positions (only recompute if selection changed)
-            if (this.cachedSequencePositions === null) {
-                this.cachedSequencePositions = this.getSequenceSelectedPAEPositions();
-            }
-            const sequenceSelectedPositions = this.cachedSequencePositions;
-            
-            // Check selection mode
-            const mode = this.mainRenderer.selectionModel?.selectionMode || 'default';
-            
-            // Determine if we should dim non-selected cells
-            // - If there's an active selection (boxes or sequence), dim non-selected
-            // - If in explicit mode with no selection, dim everything (nothing selected)
-            // - If in default mode with no selection, show everything at full brightness
-            const hasActiveSelection = activeBoxes.length > 0 || previewBox !== null || sequenceSelectedPositions.size > 0;
-            const hasSelection = hasActiveSelection || (mode === 'explicit' && !hasActiveSelection);
-            
-            // Dim factor for non-selected cells (0.0 = fully dim, 1.0 = no dimming)
-            const dimFactor = 0.3; // Non-selected cells will be 30% of original brightness
-            
-            // Use createImageData for faster rendering
-            const imageData = this.ctx.createImageData(this.size, this.size);
-            const data = imageData.data;
-            const paeFunc = this.mainRenderer.colorblindMode ? getPAEColor_Colorblind : getPAEColor;
-            
-            for (let i = 0; i < n; i++) { // y
-                for (let j = 0; j < n; j++) { // x
-                    const value = this.paeData[i][j];
-                    let { r, g, b } = paeFunc(value);
-                    
-                    // Check if this cell is selected (or if nothing is selected, show all)
-                    const isSelected = !hasSelection || this.isCellSelected(i, j, activeBoxes, previewBox, sequenceSelectedPositions);
-                    
-                    // Dim non-selected cells by mixing with white
-                    if (!isSelected) {
-                        // Mix with white: dimmed = original * dimFactor + white * (1 - dimFactor)
-                        r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
-                        g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
-                        b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
-                    }
-                    
-                    // Fill all pixels in the cell
-                    const startX = Math.floor(j * cellSize);
-                    const endX = Math.floor((j + 1) * cellSize);
-                    const startY = Math.floor(i * cellSize);
-                    const endY = Math.floor((i + 1) * cellSize);
-
-                    for (let y = startY; y < endY && y < this.size; y++) {
-                        for (let x = startX; x < endX && x < this.size; x++) {
-                            const idx = (y * this.size + x) * 4;
-                            data[idx]     = r;
-                            data[idx + 1] = g;
-                            data[idx + 2] = b;
-                            data[idx + 3] = 255; // alpha
-                        }
-                    }
-                }
-            }
-            this.ctx.putImageData(imageData, 0, 0);
-            
-            // Draw selection boxes around selected regions
-            this._drawSelectionBoxes(activeBoxes, previewBox, n, cellSize);
-            
-            // Draw chain boundary lines
-            this._drawChainBoundaries(n, cellSize);
-        }
-        
-        // Helper to draw selection boxes around selected regions
-        _drawSelectionBoxes(activeBoxes, previewBox, n, cellSize) {
-            this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)'; // Black box
-            this.ctx.lineWidth = 2;
-            this.ctx.setLineDash([]);
-            
-            // Draw active boxes
-            for (const box of activeBoxes) {
-                const i_start = Math.min(box.i_start, box.i_end);
-                const i_end = Math.max(box.i_start, box.i_end);
-                const j_start = Math.min(box.j_start, box.j_end);
-                const j_end = Math.max(box.j_start, box.j_end);
-                
-                const x1 = Math.floor(j_start * cellSize);
-                const y1 = Math.floor(i_start * cellSize);
-                const x2 = Math.floor((j_end + 1) * cellSize);
-                const y2 = Math.floor((i_end + 1) * cellSize);
-                
-                this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-            }
-            
-            // Draw preview box if dragging
-            if (previewBox && previewBox.x1 !== -1) {
-                const i_start = Math.min(previewBox.y1, previewBox.y2);
-                const i_end = Math.max(previewBox.y1, previewBox.y2);
-                const j_start = Math.min(previewBox.x1, previewBox.x2);
-                const j_end = Math.max(previewBox.x1, previewBox.x2);
-                
-                const x1 = Math.floor(j_start * cellSize);
-                const y1 = Math.floor(i_start * cellSize);
-                const x2 = Math.floor((j_end + 1) * cellSize);
-                const y2 = Math.floor((i_end + 1) * cellSize);
-                
-                // Dashed line for preview
-                this.ctx.setLineDash([5, 5]);
-                this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)'; // Lighter black for preview
-                this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-                this.ctx.setLineDash([]);
-            }
-        }
-        
-        // Helper to draw chain boundary lines in PAE plot
-        _drawChainBoundaries(n, cellSize) {
-            const renderer = this.mainRenderer;
-            if (!renderer.chains || renderer.chains.length === 0) return;
-            
-            const boundaries = new Set(); // Set of PAE positions where chain changes
-            
-            // Find chain boundaries
-            // PAE positions map directly to atom indices (one atom = one position)
-            for (let r = 0; r < n - 1 && r < renderer.chains.length - 1; r++) {
-                const chain1 = renderer.chains[r];
-                const chain2 = renderer.chains[r + 1];
-                
-                if (chain1 !== chain2) {
-                    // Chain boundary at position r+1 (draw line before this position)
-                    boundaries.add(r + 1);
-                }
-            }
-            
-            if (boundaries.size === 0) return; // No boundaries to draw
-            
-            // Draw vertical and horizontal lines at chain boundaries
-            this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)'; // More visible black lines
-            this.ctx.lineWidth = 2;
-            this.ctx.setLineDash([]); // Solid lines
-            
-            for (const pos of boundaries) {
-                const coord = Math.floor(pos * cellSize);
-                
-                // Vertical line
-                this.ctx.beginPath();
-                this.ctx.moveTo(coord, 0);
-                this.ctx.lineTo(coord, this.size);
-                this.ctx.stroke();
-                
-                // Horizontal line
-                this.ctx.beginPath();
-                this.ctx.moveTo(0, coord);
-                this.ctx.lineTo(this.size, coord);
-                this.ctx.stroke();
-            }
-        }
-    }
+    // PAERenderer class moved to viewer-pae.js
+    // Use window.PAERenderer if available (loaded from viewer-pae.js)
 
     // ============================================================================
     // MAIN APP & COLAB COMMUNICATION
@@ -3827,8 +3559,8 @@ function initializePy2DmolViewer(containerElement) {
         console.warn("py2dmol: ResizeObserver not supported. Canvas resizing will not work.");
     }
     
-    // 4. Setup PAE Renderer (if enabled)
-    if (config.pae) {
+    // 4. Setup PAE Renderer (if enabled and PAE module is loaded)
+    if (config.pae && window.PAERenderer) {
         try {
             const paeContainer = containerElement.querySelector('#paeContainer');
             const paeCanvas = containerElement.querySelector('#paeCanvas');
@@ -3838,14 +3570,43 @@ function initializePy2DmolViewer(containerElement) {
                 renderer.paeContainer = paeContainer;
                 paeContainer.style.display = 'none';
                 
-                paeCanvas.width = paeDisplayWidth;
-                paeCanvas.height = paeDisplayHeight;
-                const paeCtx = paeCanvas.getContext('2d');
-                paeCtx.setTransform(1, 0, 0, 1, 0, 0);
+                // Function to update PAE canvas size based on container
+                const updatePAECanvasSize = () => {
+                    const containerRect = paeContainer.getBoundingClientRect();
+                    const paeContainerWidth = containerRect.width || 340;
+                    const paeContainerHeight = containerRect.height || paeContainerWidth;
+                    
+                    // Set canvas size to match container
+                    paeCanvas.width = paeContainerWidth;
+                    paeCanvas.height = paeContainerHeight;
+                    
+                    // Use 100% to fill container
+                    paeCanvas.style.width = '100%';
+                    paeCanvas.style.height = '100%';
+                    
+                    // Update context
+                    const paeCtx = paeCanvas.getContext('2d');
+                    paeCtx.setTransform(1, 0, 0, 1, 0, 0);
+                    
+                    // Update PAE renderer size if it exists
+                    if (renderer.paeRenderer) {
+                        renderer.paeRenderer.size = paeContainerWidth;
+                        renderer.paeRenderer.scheduleRender();
+                    }
+                    
+                    return paeContainerWidth;
+                };
                 
+                // Set initial size (will be updated when container is visible)
+                updatePAECanvasSize();
+                
+                // Update size when container becomes visible (in case it was hidden)
                 requestAnimationFrame(() => {
-                    const paeRenderer = new PAERenderer(paeCanvas, renderer);
-                    paeRenderer.size = paeCanvas.width;
+                    updatePAECanvasSize();
+                    
+                    const paeRenderer = new window.PAERenderer(paeCanvas, renderer);
+                    const containerRect = paeContainer.getBoundingClientRect();
+                    paeRenderer.size = containerRect.width || 340;
                     renderer.setPAERenderer(paeRenderer);
                     // If static data was already loaded, set PAE data for current frame
                     if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
@@ -3863,6 +3624,8 @@ function initializePy2DmolViewer(containerElement) {
         } catch (e) {
             console.error("Failed to initialize PAE renderer:", e);
         }
+    } else if (config.pae && !window.PAERenderer) {
+        console.warn("PAE is enabled but viewer-pae.js is not loaded. PAE functionality will not be available.");
     }
     
     // 5. Setup general controls
@@ -3901,9 +3664,20 @@ function initializePy2DmolViewer(containerElement) {
     const shadowEnabledCheckbox = containerElement.querySelector('#shadowEnabledCheckbox'); 
     shadowEnabledCheckbox.checked = renderer.shadowEnabled; // Set default from renderer
     
-    // Setup outlineEnabledCheckbox
-    const outlineEnabledCheckbox = containerElement.querySelector('#outlineEnabledCheckbox'); 
-    outlineEnabledCheckbox.checked = renderer.outlineEnabled; // Set default from renderer
+    // Setup outline control - can be either a button (index.html) or dropdown (viewer.html)
+    const outlineModeButton = containerElement.querySelector('#outlineModeButton');
+    const outlineModeSelect = containerElement.querySelector('#outlineModeSelect');
+    
+    if (outlineModeButton) {
+        // Button mode (index.html) - style will be set by updateOutlineButtonStyle() in setUIControls
+    } else if (outlineModeSelect) {
+        // Dropdown mode (viewer.html)
+        outlineModeSelect.value = renderer.outlineMode || 'full';
+        outlineModeSelect.addEventListener('change', (e) => {
+            renderer.outlineMode = e.target.value;
+            renderer.render();
+        });
+    }
     
     // Setup colorblindCheckbox
     const colorblindCheckbox = containerElement.querySelector('#colorblindCheckbox');
@@ -3933,7 +3707,7 @@ function initializePy2DmolViewer(containerElement) {
         controlsContainer, playButton, recordButton,
         frameSlider, frameCounter, objectSelect,
         speedSelect, rotationCheckbox, lineWidthSlider,
-        shadowEnabledCheckbox, outlineEnabledCheckbox,
+        shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
         colorblindCheckbox, orthoSlider
     );
     

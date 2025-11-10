@@ -512,16 +512,30 @@ function lerpRotationMatrix(M1, M2, t) {
 // ============================================================================
 
 /**
- * Parse PDB file into models
+ * Parse PDB file into models and MODRES records
  * @param {string} text - PDB file content
- * @returns {Array<Array<object>>} - Array of models, each containing atoms
+ * @returns {object} - {models: Array<Array<object>>, modresMap: Map<string, string>}
  */
 function parsePDB(text) {
     const models = [];
     let currentModelAtoms = [];
     const lines = text.split('\n');
     
+    // Parse MODRES records: MODRES resName chainID resSeq stdResName comment
+    // Columns: 12-15 (resName), 17 (chainID), 19-22 (resSeq), 25-27 (stdResName)
+    const modresMap = new Map(); // resName -> stdResName
+    
     for (const line of lines) {
+        if (line.startsWith('MODRES')) {
+            // MODRES format: columns 12-15 (resName), 17 (chainID), 19-22 (resSeq), 25-27 (stdResName)
+            const resName = line.substring(11, 15).trim();
+            const stdResName = line.substring(24, 27).trim();
+            if (resName && stdResName) {
+                // Store mapping: modified residue name -> standard residue name
+                modresMap.set(resName, stdResName);
+            }
+        }
+        
         if (line.startsWith('MODEL')) {
             if (currentModelAtoms.length > 0) {
                 models.push(currentModelAtoms);
@@ -562,7 +576,10 @@ function parsePDB(text) {
         models.push(currentModelAtoms);
     }
     
-    return models;
+    // Store MODRES map globally for use in convertParsedToFrameData
+    window._lastModresMap = modresMap;
+    
+    return { models, modresMap };
 }
 
 /**
@@ -686,117 +703,351 @@ function parseCIF(text) {
 }
 
 /**
+ * Standard amino acid codes (20 standard)
+ */
+const STANDARD_AMINO_ACIDS = new Set([
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL"
+]);
+
+/**
+ * Standard nucleic acid codes
+ * Includes standard RNA (A, C, G, U) and DNA (DA, DC, DG, DT, T) codes
+ * Also includes alternative notation (RA, RC, RG, RU for RNA)
+ */
+const STANDARD_NUCLEIC_ACIDS = new Set([
+    // RNA codes
+    "A", "C", "G", "U",
+    "RA", "RC", "RG", "RU",  // Alternative RNA notation
+    // DNA codes
+    "DA", "DC", "DG", "DT", "T",  // T is DNA-specific (thymine)
+    // Additional common codes
+    "I",   // Inosine (can be RNA or DNA, but more common in RNA)
+    "DI"   // Deoxyinosine (DNA)
+]);
+
+// NUCLEOTIDE_LIGANDS set removed - no longer needed with simplified classification
+// Ligands are now identified by not being connected to chains, not by name exclusion
+
+/**
+ * Check if a residue is connected to neighboring residues in the same chain
+ * Uses the same distance cutoffs as viewer-mol.js for consistency
+ * @param {object} residue - Residue object with resName, record, atoms, chain, resSeq
+ * @param {Array} allResidues - Array of all residue objects (for finding neighbors)
+ * @param {number} residueIndex - Index of current residue in allResidues array
+ * @param {string} type - 'P' for protein, 'D' for DNA, 'R' for RNA
+ * @returns {boolean} - True if residue is connected to at least one neighbor
+ */
+function isResidueConnected(residue, allResidues, residueIndex, type) {
+    if (!residue || !residue.atoms || !allResidues || residueIndex < 0 || residueIndex >= allResidues.length) {
+        return false;
+    }
+    
+    // Distance cutoffs (from viewer-mol.js)
+    const PROTEIN_CHAINBREAK = 5.0;  // CA-CA distance
+    const NUCLEIC_CHAINBREAK = 7.5;  // C4'-C4' distance
+    const cutoff = (type === 'P') ? PROTEIN_CHAINBREAK : NUCLEIC_CHAINBREAK;
+    const cutoffSq = cutoff * cutoff;
+    
+    // Get backbone atom for distance calculation
+    let backboneAtom = null;
+    if (type === 'P') {
+        backboneAtom = residue.atoms.find(a => a.atomName === 'CA');
+    } else {
+        backboneAtom = residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
+    }
+    
+    if (!backboneAtom) {
+        return false;  // No backbone atom found
+    }
+    
+    const backbonePos = [backboneAtom.x, backboneAtom.y, backboneAtom.z];
+    
+    // Check neighbors in the same chain
+    // Look at previous and next residues in the same chain
+    for (let i = Math.max(0, residueIndex - 2); i < Math.min(allResidues.length, residueIndex + 3); i++) {
+        if (i === residueIndex) continue;
+        
+        const neighbor = allResidues[i];
+        if (!neighbor || neighbor.chain !== residue.chain) continue;
+        
+        // Get neighbor's backbone atom
+        let neighborBackboneAtom = null;
+        if (type === 'P') {
+            neighborBackboneAtom = neighbor.atoms.find(a => a.atomName === 'CA');
+        } else {
+            neighborBackboneAtom = neighbor.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
+        }
+        
+        if (!neighborBackboneAtom) continue;
+        
+        // Calculate squared distance
+        const dx = neighborBackboneAtom.x - backbonePos[0];
+        const dy = neighborBackboneAtom.y - backbonePos[1];
+        const dz = neighborBackboneAtom.z - backbonePos[2];
+        const distSq = dx * dx + dy * dy + dz * dz;
+        
+        if (distSq < cutoffSq) {
+            return true;  // Found a connected neighbor
+        }
+    }
+    
+    return false;  // No connected neighbors found
+}
+
+/**
+ * Check if a residue is a real amino acid (standard or modified)
+ * Simplified: only canonical amino acids + common modifications (MSE, etc.) + MODRES/CIF-defined if connected
+ * @param {object} residue - Residue object with resName, record, atoms
+ * @param {Map} modresMap - MODRES mapping (from PDB)
+ * @param {Map} chemCompMap - Chemical component map (from CIF)
+ * @param {Array} allResidues - Array of all residue objects (for connectivity check)
+ * @param {number} residueIndex - Index of current residue in allResidues array
+ * @returns {boolean} - True if residue is a real amino acid
+ */
+function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResidues = null, residueIndex = -1) {
+    const resName = residue.resName;
+    
+    // 1. Check if it's a standard amino acid (always allowed, no connectivity check needed)
+    if (STANDARD_AMINO_ACIDS.has(resName)) {
+        return true;
+    }
+    
+    // 2. Check common modifications dictionary (e.g., MSE->MET)
+    const modifiedType = getModifiedResidueType(resName);
+    if (modifiedType && modifiedType.type === 'P') {
+        // Common modifications require connectivity check
+        if (allResidues && residueIndex >= 0) {
+            return isResidueConnected(residue, allResidues, residueIndex, 'P');
+        }
+        // If no allResidues provided, allow it (backward compatibility, but less strict)
+        return true;
+    }
+    
+    // 3. Check MODRES map (from PDB) - requires connectivity
+    if (modresMap && modresMap.has(resName)) {
+        const stdResName = modresMap.get(resName);
+        if (STANDARD_AMINO_ACIDS.has(stdResName)) {
+            // MODRES-defined modifications require connectivity check
+            if (allResidues && residueIndex >= 0) {
+                return isResidueConnected(residue, allResidues, residueIndex, 'P');
+            }
+            // If no allResidues provided, allow it (backward compatibility)
+            return true;
+        }
+    }
+    
+    // 4. Check CIF chemical component map - requires connectivity
+    if (chemCompMap && chemCompMap.has(resName)) {
+        const compInfo = chemCompMap.get(resName);
+        if (compInfo.type === 'P') {
+            // Check if it maps to a standard amino acid
+            const stdResName = compInfo.stdResName || compInfo.parent;
+            if (stdResName && STANDARD_AMINO_ACIDS.has(stdResName)) {
+                // CIF-defined modifications require connectivity check
+                if (allResidues && residueIndex >= 0) {
+                    return isResidueConnected(residue, allResidues, residueIndex, 'P');
+                }
+                // If no allResidues provided, allow it (backward compatibility)
+                return true;
+            }
+        }
+    }
+    
+    // No other cases - return false (removed all "last resort" checks)
+    return false;
+}
+
+/**
+ * Check if a residue is a real nucleic acid (standard or modified)
+ * Simplified: only canonical DNA/RNA + common modifications + MODRES/CIF-defined if connected
+ * @param {object} residue - Residue object with resName, record, atoms
+ * @param {Map} modresMap - MODRES mapping (from PDB)
+ * @param {Map} chemCompMap - Chemical component map (from CIF)
+ * @param {Array} allResidues - Array of all residue objects (for connectivity check)
+ * @param {number} residueIndex - Index of current residue in allResidues array
+ * @returns {string|null} - 'D' for DNA, 'R' for RNA, or null if not a real nucleic acid
+ */
+function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allResidues = null, residueIndex = -1) {
+    const resName = residue.resName;
+    
+    // 1. Check if it's a standard nucleic acid (always allowed, no connectivity check needed)
+    if (STANDARD_NUCLEIC_ACIDS.has(resName)) {
+        // Determine DNA vs RNA
+        // DNA-specific codes: T (thymine), DA, DC, DG, DT, DI (deoxyinosine)
+        // RNA-specific codes: U (uracil), A, C, G (when not prefixed with D), RA, RC, RG, RU
+        if (resName === 'T' || resName.startsWith('D') || resName === 'DI') {
+            return 'D';
+        }
+        // RNA codes: U, A, C, G (without D prefix), RA, RC, RG, RU, I (inosine, more common in RNA)
+        return 'R';
+    }
+    
+    // 2. Check common modifications dictionary - requires connectivity
+    const modifiedType = getModifiedResidueType(resName);
+    if (modifiedType && (modifiedType.type === 'D' || modifiedType.type === 'R')) {
+        // Common modifications require connectivity check
+        if (allResidues && residueIndex >= 0) {
+            if (isResidueConnected(residue, allResidues, residueIndex, modifiedType.type)) {
+                return modifiedType.type;
+            }
+            return null;  // Not connected
+        }
+        // If no allResidues provided, allow it (backward compatibility, but less strict)
+        return modifiedType.type;
+    }
+    
+    // 3. Check MODRES map (from PDB) - requires connectivity
+    if (modresMap && modresMap.has(resName)) {
+        const stdResName = modresMap.get(resName);
+        if (STANDARD_NUCLEIC_ACIDS.has(stdResName)) {
+            // Determine DNA vs RNA
+            let nucleicType;
+            if (stdResName === 'T' || stdResName.startsWith('D') || stdResName === 'DI') {
+                nucleicType = 'D';
+            } else {
+                nucleicType = 'R';
+            }
+            // MODRES-defined modifications require connectivity check
+            if (allResidues && residueIndex >= 0) {
+                if (isResidueConnected(residue, allResidues, residueIndex, nucleicType)) {
+                    return nucleicType;
+                }
+                return null;  // Not connected
+            }
+            // If no allResidues provided, allow it (backward compatibility)
+            return nucleicType;
+        }
+    }
+    
+    // 4. Check CIF chemical component map - requires connectivity
+    if (chemCompMap && chemCompMap.has(resName)) {
+        const compInfo = chemCompMap.get(resName);
+        if (compInfo.type === 'D' || compInfo.type === 'R') {
+            // Check if it maps to a standard nucleic acid
+            const stdResName = compInfo.stdResName || compInfo.parent;
+            if (stdResName && STANDARD_NUCLEIC_ACIDS.has(stdResName)) {
+                // CIF-defined modifications require connectivity check
+                if (allResidues && residueIndex >= 0) {
+                    if (isResidueConnected(residue, allResidues, residueIndex, compInfo.type)) {
+                        return compInfo.type;
+                    }
+                    return null;  // Not connected
+                }
+                // If no allResidues provided, allow it (backward compatibility)
+                return compInfo.type;
+            }
+        }
+    }
+    
+    // No other cases - return null (removed all "last resort" checks and NUCLEOTIDE_LIGANDS exclusion)
+    return null;
+}
+
+/**
  * Map modified residue codes to their parent types
  * Returns 'P' for protein, 'D' for DNA, 'R' for RNA, or null if not a modified standard residue
  */
 function getModifiedResidueType(resName) {
-    // Comprehensive mapping of modified residues to their parent types
+    // Simplified mapping of common modified residues to their parent types
+    // Only includes the most common modifications (e.g., MSE->MET)
     // Format: modified_code -> {type: 'P'|'D'|'R', parent: standard_code}
     const modifiedResidueMap = {
-        // Modified amino acids (protein)
-        'MSE': {type: 'P', parent: 'MET'}, // Selenomethionine
+        // Common modified amino acids (protein)
+        'MSE': {type: 'P', parent: 'MET'}, // Selenomethionine (most common)
         'PTR': {type: 'P', parent: 'TYR'}, // Phosphotyrosine
         'SEP': {type: 'P', parent: 'SER'}, // Phosphoserine
         'TPO': {type: 'P', parent: 'THR'}, // Phosphothreonine
-        'M3L': {type: 'P', parent: 'LYS'}, // N-methyllysine
         'FME': {type: 'P', parent: 'MET'}, // N-formylmethionine
-        'OMY': {type: 'P', parent: 'TYR'}, // O-methyltyrosine
-        'OMT': {type: 'P', parent: 'THR'}, // O-methylthreonine
-        'OMG': {type: 'P', parent: 'GLY'}, // O-methylglycine
-        'OMU': {type: 'P', parent: 'SER'}, // O-methylserine
-        'CME': {type: 'P', parent: 'CYS'}, // S-(carboxymethyl)cysteine
-        'CSO': {type: 'P', parent: 'CYS'}, // S-hydroxycysteine
-        'CSD': {type: 'P', parent: 'CYS'}, // S-sulfocysteine
-        'CSX': {type: 'P', parent: 'CYS'}, // Cysteine sulfonic acid
-        'CAS': {type: 'P', parent: 'CYS'}, // S-(dimethylarsenic)cysteine
-        'CCS': {type: 'P', parent: 'CYS'}, // Carboxyethylcysteine
-        'CEA': {type: 'P', parent: 'CYS'}, // S-carbamoyl-cysteine
-        'CGU': {type: 'P', parent: 'GLU'}, // Carboxyglutamic acid
-        'CMH': {type: 'P', parent: 'HIS'}, // N-methylhistidine
-        'HIP': {type: 'P', parent: 'HIS'}, // Protonated histidine
-        'HIC': {type: 'P', parent: 'HIS'}, // 4-methylhistidine
-        'HIE': {type: 'P', parent: 'HIS'}, // Histidine epsilon
-        'HID': {type: 'P', parent: 'HIS'}, // Histidine delta
-        'MEN': {type: 'P', parent: 'ASN'}, // N-methylasparagine
-        'MGN': {type: 'P', parent: 'GLN'}, // N-methylglutamine
-        'PCA': {type: 'P', parent: 'GLU'}, // Pyroglutamic acid
-        'SCH': {type: 'P', parent: 'CYS'}, // S-methylcysteine
-        'SCY': {type: 'P', parent: 'CYS'}, // S-ethylcysteine
-        'SCS': {type: 'P', parent: 'CYS'}, // S-methylthiocysteine
-        'KCX': {type: 'P', parent: 'LYS'}, // Lysine with modified side chain
-        'LLP': {type: 'P', parent: 'LYS'}, // Lysine with lipoyl group
-        'MLY': {type: 'P', parent: 'LYS'}, // N-dimethyllysine
-        'MLZ': {type: 'P', parent: 'LYS'}, // N-trimethyllysine
-        'ALY': {type: 'P', parent: 'LYS'}, // N-acetyllysine
-        'LYZ': {type: 'P', parent: 'LYS'}, // N-methyl-N-acetyllysine
-        'STY': {type: 'P', parent: 'TYR'}, // Sulfotyrosine
-        'TYI': {type: 'P', parent: 'TYR'}, // Iodotyrosine
-        'TYS': {type: 'P', parent: 'TYR'}, // Sulfotyrosine
-        'IYR': {type: 'P', parent: 'TYR'}, // 3-iodotyrosine
-        'TRN': {type: 'P', parent: 'TRP'}, // N-methyltryptophan
-        'TRQ': {type: 'P', parent: 'TRP'}, // N-formyltryptophan
-        'HTR': {type: 'P', parent: 'TRP'}, // Hydroxytryptophan
-        'PHI': {type: 'P', parent: 'PHE'}, // Iodophenylalanine
-        'PHL': {type: 'P', parent: 'PHE'}, // Hydroxyphenylalanine
-        'DPN': {type: 'P', parent: 'PHE'}, // D-phenylalanine
-        'DPR': {type: 'P', parent: 'PRO'}, // D-proline
         'HYP': {type: 'P', parent: 'PRO'}, // 4-hydroxyproline
-        '3HP': {type: 'P', parent: 'PRO'}, // 3-hydroxyproline
-        '4HP': {type: 'P', parent: 'PRO'}, // 4-hydroxyproline
-        'PFF': {type: 'P', parent: 'PHE'}, // 4-fluorophenylalanine
-        // Modified nucleotides (DNA)
-        '5MU': {type: 'D', parent: 'DT'}, // 5-methyluridine (DNA)
-        '5MC': {type: 'D', parent: 'DC'}, // 5-methylcytidine (DNA)
-        '5MG': {type: 'D', parent: 'DG'}, // 5-methylguanosine (DNA)
-        '5MA': {type: 'D', parent: 'DA'}, // 5-methyladenosine (DNA)
-        'OMC': {type: 'D', parent: 'DC'}, // O-methylcytidine (DNA)
-        'OMG': {type: 'D', parent: 'DG'}, // O-methylguanosine (DNA)
-        'OMA': {type: 'D', parent: 'DA'}, // O-methyladenosine (DNA)
-        'OMT': {type: 'D', parent: 'DT'}, // O-methylthymidine (DNA)
-        // Modified nucleotides (RNA)
-        '1MA': {type: 'R', parent: 'A'}, // 1-methyladenosine
-        '2MA': {type: 'R', parent: 'A'}, // 2-methyladenosine
-        '5MU': {type: 'R', parent: 'U'}, // 5-methyluridine
-        '5MC': {type: 'R', parent: 'C'}, // 5-methylcytidine
-        '5MG': {type: 'R', parent: 'G'}, // 5-methylguanosine
-        'OMC': {type: 'R', parent: 'C'}, // O-methylcytidine
-        'OMG': {type: 'R', parent: 'G'}, // O-methylguanosine
-        'OMA': {type: 'R', parent: 'A'}, // O-methyladenosine
-        'OMU': {type: 'R', parent: 'U'}, // O-methyluridine
-        'PSU': {type: 'R', parent: 'U'}, // Pseudouridine
-        '1MG': {type: 'R', parent: 'G'}, // 1-methylguanosine
-        '2MG': {type: 'R', parent: 'G'}, // 2-methylguanosine
-        '7MG': {type: 'R', parent: 'G'}, // 7-methylguanosine
-        'M2G': {type: 'R', parent: 'G'}, // N2-methylguanosine
-        'QUO': {type: 'R', parent: 'G'}, // Queuosine
-        'Y': {type: 'R', parent: 'U'}, // Pseudouridine (alternative code)
-        'I': {type: 'R', parent: 'A'}, // Inosine
-        'DI': {type: 'D', parent: 'DA'}, // Deoxyinosine
+        'PCA': {type: 'P', parent: 'GLU'}, // Pyroglutamic acid
+        'ALY': {type: 'P', parent: 'LYS'}, // N-acetyllysine
+        // Common modified nucleotides (DNA)
+        '5MDA': {type: 'D', parent: 'DA'}, // 5-methyldeoxyadenosine
+        '5MDC': {type: 'D', parent: 'DC'}, // 5-methyldeoxycytidine
+        '5MDG': {type: 'D', parent: 'DG'}, // 5-methyldeoxyguanosine
+        // Common modified nucleotides (RNA)
+        'M6A': {type: 'R', parent: 'A'}, // N6-methyladenosine
+        'M5C': {type: 'R', parent: 'C'}, // 5-methylcytidine
+        'M7G': {type: 'R', parent: 'G'}, // 7-methylguanosine
+        'PSU': {type: 'R', parent: 'U'}  // Pseudouridine
     };
     
     return modifiedResidueMap[resName] || null;
 }
 
 /**
+ * Get the standard (unmodified) residue name for a given residue
+ * Maps modified residues (e.g., MSE) to their standard equivalents (e.g., MET)
+ * @param {string} resName - Residue name (may be modified)
+ * @returns {string} - Standard residue name, or original if not a known modification
+ */
+function getStandardResidueName(resName) {
+    if (!resName) return resName;
+    
+    // Check if it's a standard residue (no modification needed)
+    if (STANDARD_AMINO_ACIDS.has(resName) || STANDARD_NUCLEIC_ACIDS.has(resName)) {
+        return resName;
+    }
+    
+    // Check if it's a known modification
+    const modifiedType = getModifiedResidueType(resName);
+    if (modifiedType && modifiedType.parent) {
+        return modifiedType.parent;
+    }
+    
+    // Check MODRES map (from PDB)
+    if (typeof window !== 'undefined' && window._lastModresMap) {
+        const modresMap = window._lastModresMap;
+        if (modresMap.has(resName)) {
+            const stdResName = modresMap.get(resName);
+            if (STANDARD_AMINO_ACIDS.has(stdResName) || STANDARD_NUCLEIC_ACIDS.has(stdResName)) {
+                return stdResName;
+            }
+        }
+    }
+    
+    // Check CIF chemical component map
+    if (typeof window !== 'undefined' && window._lastChemCompMap) {
+        const chemCompMap = window._lastChemCompMap;
+        if (chemCompMap.has(resName)) {
+            const compInfo = chemCompMap.get(resName);
+            const stdResName = compInfo.stdResName || compInfo.parent;
+            if (stdResName && (STANDARD_AMINO_ACIDS.has(stdResName) || STANDARD_NUCLEIC_ACIDS.has(stdResName))) {
+                return stdResName;
+            }
+        }
+    }
+    
+    // Not a known modification, return original
+    return resName;
+}
+
+/**
  * Convert parsed atoms to frame data format, omitting keys for data that is not present.
  * @param {Array<object>} atoms - Parsed atoms
+ * @param {Map} modresMap - Optional MODRES mapping from PDB (resName -> stdResName)
+ * @param {Map} chemCompMap - Optional chemical component map from CIF
+ * @param {boolean} includeAllResidues - If true, include all residues (even unconnected) for PAE mapping. If false, filter based on connectivity.
  * @returns {object} - Frame data with coords, and optional plddts, chains, atom_types
  */
-function convertParsedToFrameData(atoms) {
+function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, includeAllResidues = false) {
     const coords = [];
     const plddts = [];
     const atom_chains = [];
     const atom_types = [];
     const residues = [];
     const residue_index = [];
-    const rna_bases = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU'];
-    const proteinResidues = new Set([
-        "ALA", "ARG", "ASN", "ASP", "CYS", "GLU", "GLN", "GLY", "HIS", "ILE",
-        "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL"
-    ]);
-    const nucleicResidues = new Set([
-        "A", "C", "G", "U", "T", "DA", "DC", "DG", "DT", "RA", "RC", "RG", "RU"
-    ]);
+    
+    // Use global MODRES map if not provided (for backward compatibility)
+    if (!modresMap && typeof window !== 'undefined' && window._lastModresMap) {
+        modresMap = window._lastModresMap;
+    }
+    
+    // Use global CIF chemCompMap if not provided (for backward compatibility)
+    if (!chemCompMap && typeof window !== 'undefined' && window._lastChemCompMap) {
+        chemCompMap = window._lastChemCompMap;
+    }
 
     const residueMap = new Map();
     for (const atom of atoms) {
@@ -814,28 +1065,32 @@ function convertParsedToFrameData(atoms) {
         residueMap.get(resKey).atoms.push(atom);
     }
 
-    for (const [, residue] of residueMap.entries()) {
-        // Check if it's a standard residue by name
-        let is_protein = proteinResidues.has(residue.resName);
-        let is_nucleic = nucleicResidues.has(residue.resName);
+    // Convert residueMap to array for connectivity checks
+    const allResidues = Array.from(residueMap.values());
+    
+    // Sort residues by chain and resSeq for proper neighbor checking
+    allResidues.sort((a, b) => {
+        if (a.chain !== b.chain) {
+            return a.chain.localeCompare(b.chain);
+        }
+        return a.resSeq - b.resSeq;
+    });
+
+    for (let idx = 0; idx < allResidues.length; idx++) {
+        const residue = allResidues[idx];
         
-        // For HETATM records, check if it has backbone atoms (CA or C4')
-        // If it has backbone atoms, treat as modified protein/nucleic acid
-        // If it doesn't, keep as ligand
-        if (residue.record === 'HETATM' && !is_protein && !is_nucleic) {
-            // Check if it has CA atom (characteristic of amino acids)
-            const hasCA = residue.atoms.some(a => a.atomName === 'CA');
-            // Check if it has C4' atom (characteristic of nucleotides)
-            const hasC4 = residue.atoms.some(a => a.atomName === "C4'" || a.atomName === "C4*");
-            
-            if (hasCA) {
-                // Has CA atom - treat as modified amino acid (protein)
-                is_protein = true;
-            } else if (hasC4) {
-                // Has C4' atom - treat as modified nucleotide
-                is_nucleic = true;
-            }
-            // If no backbone atoms, it will be treated as ligand below
+        // Use unified classification functions
+        // If includeAllResidues is true, skip connectivity checks (for PAE mapping)
+        // Otherwise, use connectivity checks (for normal filtering)
+        let is_protein, nucleicType;
+        if (includeAllResidues) {
+            // For PAE mapping: include all residues, skip connectivity checks
+            is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, null, -1);
+            nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, null, -1);
+        } else {
+            // Normal mode: use connectivity checks
+            is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, idx);
+            nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, idx);
         }
 
         if (is_protein) {
@@ -848,22 +1103,20 @@ function convertParsedToFrameData(atoms) {
                 residues.push(ca.res_name || ca.resName || residue.resName);
                 residue_index.push(ca.res_seq || ca.resSeq || residue.resSeq);
             }
-        } else if (is_nucleic) {
+        } else if (nucleicType) {
             let c4_atom = residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
             if (c4_atom) {
                 coords.push([c4_atom.x, c4_atom.y, c4_atom.z]);
                 plddts.push(c4_atom.b);
                 atom_chains.push(c4_atom.chain);
-                // Determine DNA vs RNA: check for O2' (RNA-specific) or residue name patterns
-                const hasO2 = residue.atoms.some(a => a.atomName === "O2'" || a.atomName === "O2*");
-                const atomType = hasO2 || residue.resName.startsWith('R') || rna_bases.some(base => residue.resName.includes(base)) ?
-                    'R' : (residue.resName.startsWith('D') || residue.resName.includes('DT') || residue.resName.includes('DA') || residue.resName.includes('DG') || residue.resName.includes('DC') ? 'D' : 'R');
-                atom_types.push(atomType);
+                atom_types.push(nucleicType);
                 residues.push(c4_atom.res_name || c4_atom.resName || residue.resName);
                 residue_index.push(c4_atom.res_seq || c4_atom.resSeq || residue.resSeq);
             }
-        } else if (residue.record === 'HETATM') {
-            // HETATM without backbone atoms - treat as ligand
+        } else if (includeAllResidues || residue.record === 'HETATM') {
+            // If includeAllResidues is true, include everything (even unclassified residues)
+            // Otherwise, only include HETATM records as ligands
+            // For ligands or unclassified residues, use all non-H atoms (like Python code)
             for (const atom of residue.atoms) {
                 if (atom.element !== 'H' && atom.element !== 'D') {
                     coords.push([atom.x, atom.y, atom.z]);
@@ -1116,21 +1369,25 @@ function applyOp_light(atom, R, t) {
  * @param {string} text - Structure file content
  * @returns {object} - {atoms, meta}
  */
-function parseFirstBioAssembly(text) {
-    const isCIF = /^\s*data_/i.test(text) || /_atom_site\./i.test(text);
-    return isCIF ? buildBioFromCIF(text) : buildBioFromPDB(text);
-}
+// ============================================================================
+// UNIFIED BIOUNIT OPERATION EXTRACTION
+// ============================================================================
 
-function buildBioFromPDB(text) {
-    const models = parsePDB(text);
-    const atoms = (models && models[0]) ? models[0] : [];
+/**
+ * Extract biounit operations from PDB REMARK 350
+ * @param {string} text - PDB file text
+ * @returns {Array<object>|null} - Array of {id, R, t, chains} operations or null
+ */
+function extractPDBBiounitOperations(text) {
+    // Fast-negative: no REMARK 350? no biounit.
+    if (!/REMARK 350/.test(text)) return null;
     const lines = text.split(/\r?\n/);
 
     let inTargetBio = false;
     const targetBioId = 1;
     const chains = new Set();
     const opRows = {};
-
+    
     for (const L of lines) {
         if (!L.startsWith('REMARK 350')) continue;
         
@@ -1179,39 +1436,255 @@ function buildBioFromPDB(text) {
                 r[2][0], r[2][1], r[2][2]
             ];
             const t = [r[0][3], r[1][3], r[2][3]];
-            ops.push({ id: String(k), R, t });
+            ops.push({ id: String(k), R, t, chains: [...chains] });
         }
     });
     
-    if (ops.length === 0) {
+    return ops.length > 0 ? ops : null;
+}
+
+/**
+ * Multiply two rotation matrices: Rb * Ra
+ * @param {Array<number>} Rb - 9-element rotation matrix
+ * @param {Array<number>} Ra - 9-element rotation matrix
+ * @returns {Array<number>} - 9-element rotation matrix
+ */
+function multiplyRotationMatrices(Rb, Ra) {
+    return [
+        Rb[0]*Ra[0] + Rb[1]*Ra[3] + Rb[2]*Ra[6],
+        Rb[0]*Ra[1] + Rb[1]*Ra[4] + Rb[2]*Ra[7],
+        Rb[0]*Ra[2] + Rb[1]*Ra[5] + Rb[2]*Ra[8],
+        Rb[3]*Ra[0] + Rb[4]*Ra[3] + Rb[5]*Ra[6],
+        Rb[3]*Ra[1] + Rb[4]*Ra[4] + Rb[5]*Ra[7],
+        Rb[3]*Ra[2] + Rb[4]*Ra[5] + Rb[5]*Ra[8],
+        Rb[6]*Ra[0] + Rb[7]*Ra[3] + Rb[8]*Ra[6],
+        Rb[6]*Ra[1] + Rb[7]*Ra[4] + Rb[8]*Ra[7],
+        Rb[6]*Ra[2] + Rb[7]*Ra[5] + Rb[8]*Ra[8],
+    ];
+}
+
+/**
+ * Multiply rotation matrix by translation vector: R * t
+ * @param {Array<number>} R - 9-element rotation matrix
+ * @param {Array<number>} t - 3-element translation vector
+ * @returns {Array<number>} - 3-element translation vector
+ */
+function multiplyRotationByTranslation(R, t) {
+    return [
+        R[0]*t[0] + R[1]*t[1] + R[2]*t[2],
+        R[3]*t[0] + R[4]*t[1] + R[5]*t[2],
+        R[6]*t[0] + R[7]*t[1] + R[8]*t[2],
+    ];
+}
+
+/**
+ * Compose a sequence of biounit operations
+ * @param {Array<string>} seq - Sequence of operator IDs
+ * @param {Map} opMap - Map of operator ID to {R, t}
+ * @returns {object} - Composed {R, t}
+ */
+function composeBiounitOperations(seq, opMap) {
+    // Apply operators left-to-right: x' = O_n(...O_2(O_1(x))...)
+    let R = [1,0,0, 0,1,0, 0,0,1];
+    let t = [0,0,0];
+    for (const id of seq) {
+        const op = opMap.get(id) || opMap.get('1');
+        if (!op) continue;
+        const Rb = op.R, tb = op.t;
+        // new = Rb * (R*x + t) + tb = (Rb*R) x + (Rb*t + tb)
+        const R_new = multiplyRotationMatrices(Rb, R);
+        const Rt = multiplyRotationByTranslation(Rb, t);
+        const t_new = [Rt[0] + tb[0], Rt[1] + tb[1], Rt[2] + tb[2]];
+        R = R_new;
+        t = t_new;
+    }
+    return { R, t };
+}
+
+/**
+ * Extract biounit operations from CIF file
+ * @param {string} text - CIF file text
+ * @returns {Array<object>|null} - Array of {id, R, t, chains} operations or null
+ */
+function extractCIFBiounitOperations(text) {
+    // Fast-negative: require both loops to be present
+    if (!/_pdbx_struct_assembly_gen\./.test(text) || !/_pdbx_struct_oper_list\./.test(text)) {
+        return null;
+    }
+
+    const loops = parseMinimalCIF_light(text);
+    const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
+
+    const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
+    const operL = getLoop('_pdbx_struct_oper_list.id');
+
+    if (!asmL) return null;
+
+    // Build operator map {id -> {R,t}}
+    const opMap = new Map();
+    if (operL) {
+        const opCols = operL[0];
+        const opRows = operL[1];
+        const o = (n) => opCols.indexOf(n);
+        for (const r of opRows) {
+            const id = (r[o('_pdbx_struct_oper_list.id')] || '').toString();
+            const R = [
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][1]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][2]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][3]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][1]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][2]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][3]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][1]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][2]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][3]')])
+            ];
+            const t = [
+                parseFloat(r[o('_pdbx_struct_oper_list.vector[1]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.vector[2]')]),
+                parseFloat(r[o('_pdbx_struct_oper_list.vector[3]')])
+            ];
+            if (Number.isFinite(R[0])) opMap.set(id, { R, t });
+        }
+    }
+    if (opMap.size === 0) {
+        opMap.set('1', { R: [1,0,0, 0,1,0, 0,0,1], t: [0,0,0] });
+    }
+
+    // Choose assembly 1 (or fall back to first row)
+    const a = (n) => asmL[0].indexOf(n);
+    let candidates = asmL[1].filter(r => (r[a('_pdbx_struct_assembly_gen.assembly_id')] || '') === '1');
+    if (candidates.length === 0 && asmL[1].length > 0) candidates = [asmL[1][0]];
+    if (candidates.length === 0) return null;
+
+    const chainSet = new Set();
+    const operations = [];
+    const seenRT = new Set();
+
+    for (const r of candidates) {
+        const asymList = (r[a('_pdbx_struct_assembly_gen.asym_id_list')] ||
+            r[a('_pdbx_struct_assembly_gen.oper_asym_id_list')] || '').toString();
+        const asymIds = asymList.split(',').map(s => s.trim()).filter(Boolean);
+        asymIds.forEach(c => chainSet.add(c));
+
+        const operExpr = (r[a('_pdbx_struct_assembly_gen.oper_expression')] || '').toString();
+        const seqs = (operExpr && typeof expandOperExpr_light === 'function')
+            ? expandOperExpr_light(operExpr) : [['1']];
+
+        for (const seq of seqs) {
+            const { R, t } = composeBiounitOperations(seq, opMap);
+            const key = R.map(v => Number.isFinite(v)? v.toFixed(6) : 'nan').join(',') + '|' +
+                        t.map(v => Number.isFinite(v)? v.toFixed(6) : 'nan').join(',');
+            if (!seenRT.has(key)) {
+                seenRT.add(key);
+                operations.push({ id: seq.join('*') || '1', R, t, chains: [] });
+            }
+        }
+    }
+
+    const chains = [...chainSet];
+    operations.forEach(op => op.chains = chains);
+    return operations.length > 0 ? operations : null;
+}
+
+/**
+ * Convenience wrapper to extract biounit operations from PDB or CIF
+ * @param {string} text - File text
+ * @param {boolean} isCIF - Whether file is CIF format
+ * @returns {Array<object>|null} - Array of operations or null
+ */
+function extractBiounitOperations(text, isCIF) {
+    if (isCIF) {
+        return extractCIFBiounitOperations(text);
+    } else {
+        return extractPDBBiounitOperations(text);
+    }
+}
+
+/**
+ * Apply biounit operations to an array of atoms
+ * @param {Array<object>} atoms - Array of atom objects
+ * @param {Array<object>} operations - Array of {id, R, t, chains} operations
+ * @returns {Array<object>} - Transformed atoms
+ */
+function applyBiounitOperationsToAtoms(atoms, operations) {
+    if (!operations || operations.length === 0) return atoms;
+    
+    // Get chains from operations, or use all chains if none specified
+    let targetChains = new Set();
+    operations.forEach(op => {
+        if (op.chains && op.chains.length > 0) {
+            op.chains.forEach(c => targetChains.add(c));
+        }
+    });
+    
+    if (targetChains.size === 0) {
+        // No chains specified, use all
+        atoms.forEach(a => {
+            if (a.chain) targetChains.add(a.chain);
+        });
+    }
+    
+    const out = [];
+    for (const op of operations) {
+        for (const atom of atoms) {
+            if (targetChains.size === 0 || targetChains.has(atom.chain)) {
+                const transformed = {
+                    ...atom,
+                    x: op.R[0] * atom.x + op.R[1] * atom.y + op.R[2] * atom.z + op.t[0],
+                    y: op.R[3] * atom.x + op.R[4] * atom.y + op.R[5] * atom.z + op.t[1],
+                    z: op.R[6] * atom.x + op.R[7] * atom.y + op.R[8] * atom.z + op.t[2],
+                    chain: (op.id === '1') ? 
+                        String(atom.chain || '') : 
+                        (String(atom.chain || '') + '|' + op.id)
+                };
+                out.push(transformed);
+            }
+        }
+    }
+    
+    return out.length > 0 ? out : atoms;
+}
+
+function parseFirstBioAssembly(text) {
+    const isCIF = /^\s*data_/i.test(text) || /_atom_site\./i.test(text);
+    return isCIF ? buildBioFromCIF(text) : buildBioFromPDB(text);
+}
+
+function buildBioFromPDB(text) {
+    const parseResult = parsePDB(text);
+    const models = parseResult.models;
+    const atoms = (models && models[0]) ? models[0] : [];
+    
+    // Extract biounit operations using unified function
+    const operations = extractPDBBiounitOperations(text);
+    
+    if (!operations || operations.length === 0) {
         return { atoms, meta: { source: 'pdb', assembly: 'asymmetric_unit' } };
     }
     
+    // Collect chains from operations or atoms
+    const chains = new Set();
+    operations.forEach(op => {
+        if (op.chains && op.chains.length > 0) {
+            op.chains.forEach(c => chains.add(c));
+        }
+    });
     if (chains.size === 0) {
         for (const a of atoms) {
             if (a.chain) chains.add(a.chain);
         }
     }
     
-    const out = [];
-    for (const op of ops) {
-        for (const a of atoms) {
-            if (!chains.size || chains.has(a.chain)) {
-                const ax = applyOp_light(a, op.R, op.t);
-                ax.chain = (op.id === '1') ?
-                    String(a.chain || '') :
-                    (String(a.chain || '') + '|' + op.id);
-                out.push(ax);
-            }
-        }
-    }
+    // Apply operations using unified function
+    const out = applyBiounitOperationsToAtoms(atoms, operations);
     
     return {
         atoms: out,
         meta: {
             source: 'pdb',
-            assembly: String(targetBioId),
-            ops: ops.length,
+            assembly: '1',
+            ops: operations.length,
             chains: [...chains]
         }
     };
@@ -1296,18 +1769,40 @@ function buildBioFromCIF(text) {
         element: (r[ixEl] || '').toUpperCase()
     }));
 
-    // Assembly generator
-    const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
-    if (!asmL) {
-        return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' } };
+    // Extract biounit operations using unified function
+    const operations = extractCIFBiounitOperations(text);
+    
+    if (!operations || operations.length === 0) {
+        return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' }, chemCompMap: chemCompMap };
     }
 
-    // Operator list
+    // CIF-specific assembly: need to map operations to asym_id_list and apply with lchain filtering
+    const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
+    if (!asmL) {
+        // Fallback: use unified application function
+        const out = applyBiounitOperationsToAtoms(baseAtoms, operations);
+        const chains = new Set();
+        operations.forEach(op => {
+            if (op.chains && op.chains.length > 0) {
+                op.chains.forEach(c => chains.add(c));
+            }
+        });
+        return {
+            atoms: out,
+            meta: {
+                source: 'mmcif',
+                assembly: '1',
+                chains: [...chains]
+            },
+            chemCompMap: chemCompMap
+        };
+    }
+
+    // Build operator map for composition
     const operL = getLoop('_pdbx_struct_oper_list.id');
     const opCols = operL ? operL[0] : [];
     const opRows = operL ? operL[1] : [];
     const o = (n) => opCols.indexOf(n);
-
     const opMap = new Map();
     for (const r of opRows) {
         const id = (r[o('_pdbx_struct_oper_list.id')] || '').toString();
@@ -1331,8 +1826,7 @@ function buildBioFromCIF(text) {
             opMap.set(id, { R, t });
         }
     }
-    
-    if (!operL || opMap.size === 0) {
+    if (opMap.size === 0) {
         opMap.set('1', { R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] });
     }
 
@@ -1347,7 +1841,7 @@ function buildBioFromCIF(text) {
         return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' }, chemCompMap: chemCompMap };
     }
 
-    // Assemble
+    // Assemble using CIF-specific logic (filter by lchain/asymIds)
     const out = [];
     const seen = new Set();
     for (const r of candidates) {
@@ -1362,29 +1856,7 @@ function buildBioFromCIF(text) {
 
         for (const seq of seqsUse) {
             const seqLabel = seq.join('x');
-            let R = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-            let t = [0, 0, 0];
-            
-            for (const id of seq) {
-                const op = opMap.get(id);
-                if (!op) continue;
-                t = [
-                    op.R[0] * t[0] + op.R[1] * t[1] + op.R[2] * t[2] + op.t[0],
-                    op.R[3] * t[0] + op.R[4] * t[1] + op.R[5] * t[2] + op.t[1],
-                    op.R[6] * t[0] + op.R[7] * t[1] + op.R[8] * t[2] + op.t[2]
-                ];
-                R = [
-                    op.R[0] * R[0] + op.R[1] * R[3] + op.R[2] * R[6],
-                    op.R[0] * R[1] + op.R[1] * R[4] + op.R[2] * R[7],
-                    op.R[0] * R[2] + op.R[1] * R[5] + op.R[2] * R[8],
-                    op.R[3] * R[0] + op.R[4] * R[3] + op.R[5] * R[6],
-                    op.R[3] * R[1] + op.R[4] * R[4] + op.R[5] * R[7],
-                    op.R[3] * R[2] + op.R[4] * R[5] + op.R[5] * R[8],
-                    op.R[6] * R[0] + op.R[7] * R[3] + op.R[8] * R[6],
-                    op.R[6] * R[1] + op.R[7] * R[4] + op.R[8] * R[7],
-                    op.R[6] * R[2] + op.R[7] * R[5] + op.R[8] * R[8]
-                ];
-            }
+            const { R, t } = composeBiounitOperations(seq, opMap);
             
             for (const aAtom of baseAtoms) {
                 if (!asymIds.includes(aAtom.lchain)) continue;

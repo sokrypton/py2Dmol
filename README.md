@@ -64,8 +64,9 @@ viewer = py2Dmol.view(
     pastel=0.25,         # lighten the colors
     colorblind=False,    # use colorbind friendly colors
     shadow=True,         # show shadow
-    outline=True,        # show outline
+    outline='full',      # outline mode: ["none","partial","full"]
     width=3.0,           # line width
+    ortho=1.0,          # orthographic projection (0.0=perspective, 1.0=orthographic)
     rotate=False,        # auto-rotation
     autoplay=False,      # auto-play (if trajectory or multiple models)
     box=True,           # show box around molecule
@@ -242,6 +243,16 @@ The viewer supports multiple coloring schemes:
 - **rainbow**: Colors atoms sequentially from N-terminus to C-terminus (or 5' to 3' for nucleic acids)
 - **plddt**: Colors based on B-factor/pLDDT scores (useful for AlphaFold predictions)
 - **chain**: Each chain receives a distinct color
+
+### Outline Modes
+
+The viewer supports three outline rendering modes:
+
+- **none**: No outline is drawn around segments
+- **partial**: Outline is drawn with butt caps only (no rounded caps at outer endpoints)
+- **full** (default): Outline is drawn with rounded caps at outer endpoints for a complete cartoon appearance
+
+The outline mode can be set via the `outline` parameter in the `view()` constructor, or toggled using the outline button in the control panel.
 
 ### Supported File Formats
 
