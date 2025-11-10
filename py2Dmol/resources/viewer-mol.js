@@ -2543,59 +2543,16 @@ function initializePy2DmolViewer(containerElement) {
         }
         
         // Calculate segment colors (chain or rainbow)
+        // Uses getAtomColor() as single source of truth for all color logic
         _calculateSegmentColors() {
             const m = this.segmentIndices.length;
             if (m === 0) return [];
 
-            const effectiveColorMode = this._getEffectiveColorMode();
-            const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
-            const chainColors = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
-            const grey = {r: 128, g: 128, b: 128};
-
+            // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
             return this.segmentIndices.map(segInfo => {
-                let color;
-                const i = segInfo.origIndex;
-                const type = segInfo.type;
-                const chainId = this.chains[i] || segInfo.chainId || 'A';
-                const isLigandOnlyChain = this.ligandOnlyChains && this.ligandOnlyChains.has(chainId);
-
-                if (type === 'L') {
-                    if (effectiveColorMode === 'chain' && isLigandOnlyChain) {
-                        // Ligands in ligand-only chains get chain color in chain mode
-                        if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
-                            const chainIndex = this.chainIndexMap.get(chainId);
-                            const hex = chainColors[chainIndex % chainColors.length];
-                            color = hexToRgb(hex);
-                        } else {
-                            // Fallback: use a default color if chainIndexMap is not initialized
-                            const hex = chainColors[0]; // Use first color as default
-                            color = hexToRgb(hex);
-                        }
-                    } else {
-                        // Ligands are grey in rainbow mode, or in mixed chains in chain mode
-                        color = grey;
-                    }
-                } else if (effectiveColorMode === 'chain') {
-                    if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
-                        const chainIndex = this.chainIndexMap.get(chainId);
-                        const hex = chainColors[chainIndex % chainColors.length];
-                        color = hexToRgb(hex);
-                    } else {
-                        // Fallback: use a default color if chainIndexMap is not initialized
-                        const hex = chainColors[0]; // Use first color as default
-                        color = hexToRgb(hex);
-                    }
-                } else { // 'rainbow' or other modes
-                    const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
-                    if (scale && scale.min !== Infinity && scale.max !== -Infinity) {
-                        color = rainbowFunc(segInfo.colorIndex, scale.min, scale.max);
-                    } else {
-                        // Fallback: if scale not found, use a default rainbow based on colorIndex
-                        // This handles cases where scales weren't properly initialized
-                        color = rainbowFunc(segInfo.colorIndex || 0, 0, Math.max(1, segInfo.colorIndex || 1));
-                    }
-                }
-                return this._applyPastel(color);
+                const atomIndex = segInfo.origIndex;
+                // getAtomColor() already handles all color modes, ligands, ligand-only chains, pastel, etc.
+                return this.getAtomColor(atomIndex);
             });
         }
 
