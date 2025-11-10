@@ -1560,20 +1560,34 @@ function initializePy2DmolViewer(containerElement) {
                 this.controlsContainer.style.display = 'flex';
             }
             
+            // Get container element from canvas (for finding parent containers)
+            const containerElement = this.canvas ? this.canvas.closest('.py2dmol-container') || 
+                this.canvas.parentElement?.closest('#mainContainer')?.parentElement : null;
+            
+            // Count number of objects
+            const objectCount = Object.keys(this.objectsData).length;
+            
             // Handle object selection dropdown visibility
             if (this.objectSelect) {
-                // Try to find the mainControlsContainer (new structure in viewer.html)
-                // or fall back to objectContainer (old structure)
-                // Note: index.html has objectSelect in styleAppearanceContainer, so we don't hide that
-                const mainControlsContainer = containerElement.querySelector('#mainControlsContainer');
-                const objectContainer = containerElement.querySelector('#objectContainer');
+                // Hide object dropdown if only 1 object
+                const objectSelectParent = this.objectSelect.closest('.toggle-item') || 
+                                          this.objectSelect.parentElement;
+                if (objectSelectParent) {
+                    objectSelectParent.style.display = (objectCount <= 1) ? 'none' : 'flex';
+                }
                 
-                // Prioritize new structure, then old structure
-                // Don't hide styleAppearanceContainer as it contains other controls in index.html
-                const containerToShow = mainControlsContainer || objectContainer;
-                if (containerToShow) {
-                    // Always show if controls are enabled (regardless of number of objects)
-                    containerToShow.style.display = config.controls ? 'flex' : 'none';
+                // Also handle container visibility (for backward compatibility)
+                if (containerElement) {
+                    const mainControlsContainer = containerElement.querySelector('#mainControlsContainer');
+                    const objectContainer = containerElement.querySelector('#objectContainer');
+                    
+                    // Prioritize new structure, then old structure
+                    // Don't hide styleAppearanceContainer as it contains other controls in index.html
+                    const containerToShow = mainControlsContainer || objectContainer;
+                    if (containerToShow) {
+                        // Always show if controls are enabled (regardless of number of objects)
+                        containerToShow.style.display = config.controls ? 'flex' : 'none';
+                    }
                 }
             }
 
@@ -1615,6 +1629,17 @@ function initializePy2DmolViewer(containerElement) {
                     this.objectsData[this.currentObjectName] && 
                     this.objectsData[this.currentObjectName].frames.length >= 2;
                 this.recordButton.disabled = !canRecord;
+                
+                // Hide record button if only 1 frame
+                // Try to find .toggle-item parent first (viewer.html structure)
+                const recordButtonParent = this.recordButton.closest('.toggle-item');
+                if (recordButtonParent) {
+                    // viewer.html: hide the toggle-item container
+                    recordButtonParent.style.display = (total <= 1) ? 'none' : 'flex';
+                } else {
+                    // index.html: hide the button itself (it's in a toolbar row with other buttons)
+                    this.recordButton.style.display = (total <= 1) ? 'none' : '';
+                }
             }
         }
 
