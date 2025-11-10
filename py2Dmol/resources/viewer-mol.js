@@ -1562,11 +1562,18 @@ function initializePy2DmolViewer(containerElement) {
             
             // Handle object selection dropdown visibility
             if (this.objectSelect) {
-                // Find the objectContainer relative to the main container
+                // Try to find the mainControlsContainer (new structure in viewer.html)
+                // or fall back to objectContainer (old structure)
+                // Note: index.html has objectSelect in styleAppearanceContainer, so we don't hide that
+                const mainControlsContainer = containerElement.querySelector('#mainControlsContainer');
                 const objectContainer = containerElement.querySelector('#objectContainer');
-                if (objectContainer) {
+                
+                // Prioritize new structure, then old structure
+                // Don't hide styleAppearanceContainer as it contains other controls in index.html
+                const containerToShow = mainControlsContainer || objectContainer;
+                if (containerToShow) {
                     // Always show if controls are enabled (regardless of number of objects)
-                    objectContainer.style.display = config.controls ? 'flex' : 'none';
+                    containerToShow.style.display = config.controls ? 'flex' : 'none';
                 }
             }
 

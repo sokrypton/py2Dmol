@@ -196,6 +196,58 @@
             color: #333;
         }
         
+        /* Main Controls Container */
+        #mainControlsContainer {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        /* Advanced Options Container */
+        #advancedOptionsContainer {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        /* Advanced Options Toggle Button */
+        #advancedOptionsToggle {
+            width: 100%;
+            padding: 6px 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            background: #f0f0f0;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: background-color 0.2s;
+        }
+        #advancedOptionsToggle:hover {
+            background: #e0e0e0;
+        }
+        #advancedOptionsToggle .toggle-icon {
+            transition: transform 0.3s ease;
+            font-size: 10px;
+            color: #666;
+        }
+        #advancedOptionsToggle.expanded .toggle-icon {
+            transform: rotate(180deg);
+        }
+        
+        /* Advanced Options Content */
+        #advancedOptionsContent {
+            display: none;
+            flex-direction: column;
+            gap: 6px;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+        #advancedOptionsContent.visible {
+            display: flex;
+        }
+        
         #paeContainer {
             display: none; /* JS will manage visibility */
             width: 300px;
@@ -282,50 +334,14 @@
         <!-- Right Column -->
         <div id="rightPanelContainer">
             
-            <!-- Style Group -->
-            <div id="styleAppearanceContainer" class="control-group">
-                <!-- Color Select -->
+            <!-- Main Controls (always visible) -->
+            <div id="mainControlsContainer" class="control-group">
+                <!-- Object Dropdown -->
                 <div class="toggle-item">
-                    <label for="colorSelect" style="width: 50px;">Color:</label>
-                    <select id="colorSelect" style="flex-grow: 1;">
-                        <option value="auto">Auto</option>
-                        <option value="plddt">pLDDT</option>
-                        <option value="rainbow">Rainbow</option>
-                        <option value="chain">Chain</option>
+                    <label for="objectSelect" style="width: 50px;">Object:</label>
+                    <select id="objectSelect" style="flex-grow: 1;">
+                        <!-- Initially empty -->
                     </select>
-                </div>
-                <!-- Width -->
-                <div class="toggle-item">
-                    <label for="lineWidthSlider" style="width: 50px;">Width:</label>
-                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
-                </div>
-                <!-- Ortho -->
-                <div class="toggle-item">
-                    <label for="orthoSlider" style="width: 50px;">Ortho:</label>
-                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
-                </div>
-                <!-- Shadow -->
-                <div class="toggle-item">
-                     <input type="checkbox" id="shadowEnabledCheckbox">
-                     <label for="shadowEnabledCheckbox">Shadow</label>
-                </div>
-                <!-- Outline -->
-                <div class="toggle-item">
-                    <label for="outlineModeSelect" style="width: 50px;">Outline:</label>
-                    <select id="outlineModeSelect" style="flex-grow: 1;">
-                        <option value="none">None</option>
-                        <option value="partial">Partial</option>
-                        <option value="full">Full</option>
-                    </select>
-                </div>
-                <!-- ADDED: Colorblind Checkbox -->
-                <div class="toggle-item">
-                     <input type="checkbox" id="colorblindCheckbox">
-                     <label for="colorblindCheckbox">Colorblind</label>
-                </div>
-                <div class="toggle-item"> 
-                    <input type="checkbox" id="rotationCheckbox">
-                    <label for="rotationCheckbox">Rotate</label>
                 </div>
                 <!-- Record Button -->
                 <div class="toggle-item">
@@ -333,18 +349,137 @@
                         <i class="fa-solid fa-video"></i> Record
                     </button>
                 </div>
+                <!-- Rotate Checkbox -->
+                <div class="toggle-item"> 
+                    <input type="checkbox" id="rotationCheckbox">
+                    <label for="rotationCheckbox">Rotate</label>
+                </div>
             </div>
 
-            <!-- Object Group -->
-            <div id="objectContainer" class="control-group">
-                <select id="objectSelect">
-                    <!-- Initially empty -->
-                </select>
+            <!-- Advanced Options (collapsible) -->
+            <div id="advancedOptionsContainer" class="control-group">
+                <button id="advancedOptionsToggle" class="controlButton">
+                    <span>⚙️ Advanced</span>
+                    <span class="toggle-icon">▼</span>
+                </button>
+                <div id="advancedOptionsContent">
+                    <!-- Color Select -->
+                    <div class="toggle-item">
+                        <label for="colorSelect" style="width: 50px;">Color:</label>
+                        <select id="colorSelect" style="flex-grow: 1;">
+                            <option value="auto">Auto</option>
+                            <option value="plddt">pLDDT</option>
+                            <option value="rainbow">Rainbow</option>
+                            <option value="chain">Chain</option>
+                        </select>
+                    </div>
+                    <!-- Width -->
+                    <div class="toggle-item">
+                        <label for="lineWidthSlider" style="width: 50px;">Width:</label>
+                        <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
+                    </div>
+                    <!-- Ortho -->
+                    <div class="toggle-item">
+                        <label for="orthoSlider" style="width: 50px;">Ortho:</label>
+                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
+                    </div>
+                    <!-- Shadow -->
+                    <div class="toggle-item">
+                         <input type="checkbox" id="shadowEnabledCheckbox">
+                         <label for="shadowEnabledCheckbox">Shadow</label>
+                    </div>
+                    <!-- Outline -->
+                    <div class="toggle-item">
+                        <label for="outlineModeSelect" style="width: 50px;">Outline:</label>
+                        <select id="outlineModeSelect" style="flex-grow: 1;">
+                            <option value="none">None</option>
+                            <option value="partial">Partial</option>
+                            <option value="full">Full</option>
+                        </select>
+                    </div>
+                    <!-- Colorblind Checkbox -->
+                    <div class="toggle-item">
+                         <input type="checkbox" id="colorblindCheckbox">
+                         <label for="colorblindCheckbox">Colorblind</label>
+                    </div>
+                </div>
             </div>
         </div>
 
     </div>    
     <!-- DATA_INJECTION_POINT -->
+    
+    <!-- Script to handle Advanced Options toggle -->
+    <script>
+        (function() {
+            const initializedToggles = new WeakSet();
+            
+            // Function to initialize toggle for a specific container
+            function initAdvancedToggle(container) {
+                const toggleButton = container.querySelector('#advancedOptionsToggle');
+                const advancedContent = container.querySelector('#advancedOptionsContent');
+                
+                if (toggleButton && advancedContent && !initializedToggles.has(toggleButton)) {
+                    initializedToggles.add(toggleButton);
+                    
+                    toggleButton.addEventListener('click', function() {
+                        const isVisible = advancedContent.classList.contains('visible');
+                        if (isVisible) {
+                            advancedContent.classList.remove('visible');
+                            toggleButton.classList.remove('expanded');
+                        } else {
+                            advancedContent.classList.add('visible');
+                            toggleButton.classList.add('expanded');
+                        }
+                    });
+                }
+            }
+            
+            // Initialize for all existing containers
+            function initAllToggles() {
+                // Try to find containers in the document
+                const containers = document.querySelectorAll('.py2dmol-container, body');
+                containers.forEach(container => {
+                    initAdvancedToggle(container);
+                });
+            }
+            
+            // Try to initialize immediately
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initAllToggles);
+            } else {
+                initAllToggles();
+            }
+            
+            // Also try after delays in case the viewer is injected dynamically
+            setTimeout(initAllToggles, 100);
+            setTimeout(initAllToggles, 500);
+            
+            // Use MutationObserver to watch for dynamically added viewers
+            const observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    mutation.addedNodes.forEach(function(node) {
+                        if (node.nodeType === 1) { // Element node
+                            if (node.classList && node.classList.contains('py2dmol-container')) {
+                                initAdvancedToggle(node);
+                            } else if (node.querySelector && node.querySelector('.py2dmol-container')) {
+                                initAdvancedToggle(node.querySelector('.py2dmol-container'));
+                            }
+                            // Also check if the node itself contains the toggle
+                            if (node.querySelector && node.querySelector('#advancedOptionsToggle')) {
+                                initAdvancedToggle(node);
+                            }
+                        }
+                    });
+                });
+            });
+            
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        })();
+    </script>
 
 </body>
 </html>
