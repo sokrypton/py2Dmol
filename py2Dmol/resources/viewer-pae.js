@@ -129,6 +129,18 @@
             });
         }
 
+        // Expand ligand atoms: if any ligand atom is selected, select all atoms in that ligand
+        // Uses shared utility function for consistent grouping with sequence viewer
+        expandLigandAtoms(atomIndices) {
+            // Use shared utility function if available, otherwise return original selection
+            if (typeof expandLigandSelection === 'function' && this.mainRenderer.ligandGroups) {
+                return expandLigandSelection(atomIndices, this.mainRenderer.ligandGroups);
+            }
+            
+            // Fallback: return original selection if utility function not available
+            return new Set(atomIndices);
+        }
+
         getMousePos(e) {
             const rect = this.canvas.getBoundingClientRect();
             // Support both mouse and touch events
@@ -283,11 +295,16 @@
                         }
                     }
                     
+                    // Expand ligand atoms: if any ligand atom is selected, select all atoms in that ligand
+                    const expandedNewAtoms = this.expandLigandAtoms(newAtoms);
+                    
                     // If Shift is held, add to existing selection; otherwise replace
                     if (this.isAdding) {
                         // Additive: combine with existing boxes and atoms
+                        // Also expand any ligand atoms in existing selection
+                        const expandedExistingAtoms = this.expandLigandAtoms(existingAtoms);
                         const combinedBoxes = [...existingBoxes, newBox];
-                        const combinedAtoms = new Set([...existingAtoms, ...newAtoms]);
+                        const combinedAtoms = new Set([...expandedExistingAtoms, ...expandedNewAtoms]);
                         
                         // Update chains to include all chains that have selected atoms
                         const newChains = new Set();
@@ -313,12 +330,12 @@
                             selectionMode: hasPartialSelections ? 'explicit' : 'default'
                         });
                     } else {
-                        // Replace: use only the new box and atoms
+                        // Replace: use only the new box and atoms (with ligand expansion)
                         
                         // Update chains to include all chains that have selected atoms
                         const newChains = new Set();
                         if (this.mainRenderer.chains && this.mainRenderer.chains.length > 0) {
-                            for (const atomIdx of newAtoms) {
+                            for (const atomIdx of expandedNewAtoms) {
                                 if (atomIdx >= 0 && atomIdx < this.mainRenderer.chains.length) {
                                     const atomChain = this.mainRenderer.chains[atomIdx];
                                     if (atomChain) {
@@ -330,11 +347,11 @@
                         
                         // Determine if we have partial selections
                         const totalAtoms = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
-                        const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                        const hasPartialSelections = expandedNewAtoms.size > 0 && expandedNewAtoms.size < totalAtoms;
                         
                         this.mainRenderer.setSelection({
                             paeBoxes: [newBox],
-                            atoms: newAtoms,
+                            atoms: expandedNewAtoms,
                             chains: newChains, // Include all chains with selected atoms
                             selectionMode: hasPartialSelections ? 'explicit' : 'default'
                         });

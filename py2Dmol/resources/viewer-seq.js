@@ -95,7 +95,7 @@
         
         for (const pos of layout.residuePositions) {
             if (x >= pos.x && x < pos.x + pos.width && y >= pos.y && y < pos.y + pos.height) {
-                return pos.residueData;
+                return pos; // Return position object with residueData
             }
         }
         return null;
@@ -195,6 +195,45 @@
         }
     }
 
+    // Draw ligand token on canvas (collapsed ligand representation)
+    function drawLigandTokenOnCanvas(ctx, ligandName, x, y, width, height, color, isSelected, dimFactor) {
+        // Apply dimming if not selected
+        let r = color.r;
+        let g = color.g;
+        let b = color.b;
+        
+        if (!isSelected) {
+            r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
+            g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
+            b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
+        }
+        
+        // Draw background
+        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+        ctx.fillRect(x, y, width, height);
+        
+        // Draw text (smaller font, truncated to fit in 2 char widths)
+        ctx.fillStyle = '#000000';
+        ctx.font = '9px monospace'; // Smaller font for ligand name
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // Truncate ligand name to fit in 2 character widths (approximately 20px)
+        const maxLength = 8; // Approximate max chars that fit in 2 char widths with smaller font
+        const displayName = ligandName.length > maxLength ? ligandName.substring(0, maxLength - 1) + '…' : ligandName;
+        ctx.fillText(displayName, x + width / 2, y + height / 2);
+        
+        // Draw border if selected
+        if (isSelected) {
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, y + height);
+            ctx.lineTo(x + width, y + height);
+            ctx.stroke();
+        }
+    }
+
     // Main canvas rendering function
     function renderSequenceCanvas() {
         if (!sequenceCanvasData) return;
@@ -251,26 +290,46 @@
             }
         }
         
-        // Draw residue characters
+        // Draw residue characters and ligand tokens
         if (layout.residuePositions && allResidueData) {
             for (const pos of layout.residuePositions) {
                 const residueData = pos.residueData;
                 if (!residueData) continue;
                 
-                const isSelected = visibleAtoms.has(residueData.atomIndex);
-                const color = residueData.color || {r: 80, g: 80, b: 80};
-                
-                drawResidueCharOnCanvas(
-                    ctx,
-                    residueData.letter,
-                    pos.x,
-                    pos.y,
-                    pos.width,
-                    pos.height,
-                    color,
-                    isSelected,
-                    dimFactor
-                );
+                // Check if this is a ligand token (has atomIndices array)
+                if (residueData.isLigandToken && residueData.atomIndices) {
+                    // For ligand tokens, check if any atom in the ligand is selected
+                    const isSelected = residueData.atomIndices.some(atomIdx => visibleAtoms.has(atomIdx));
+                    const color = residueData.color || {r: 80, g: 80, b: 80};
+                    
+                    drawLigandTokenOnCanvas(
+                        ctx,
+                        residueData.ligandName || 'LIG',
+                        pos.x,
+                        pos.y,
+                        pos.width,
+                        pos.height,
+                        color,
+                        isSelected,
+                        dimFactor
+                    );
+                } else if (residueData.atomIndex >= 0) {
+                    // Regular residue character
+                    const isSelected = visibleAtoms.has(residueData.atomIndex);
+                    const color = residueData.color || {r: 80, g: 80, b: 80};
+                    
+                    drawResidueCharOnCanvas(
+                        ctx,
+                        residueData.letter,
+                        pos.x,
+                        pos.y,
+                        pos.width,
+                        pos.height,
+                        color,
+                        isSelected,
+                        dimFactor
+                    );
+                }
             }
         }
         
@@ -325,6 +384,9 @@
         lastSequenceFrameIndex = currentFrameIndex;
 
         const { residues, residue_index, chains, atom_types } = currentFrame;
+        
+        // Check if residue names are available - if not, we can't group ligands with names
+        const hasResidueNames = residues && residues.length > 0;
 
         // Create one entry per atom (one atom = one position, no collapsing)
         const atomEntries = [];
@@ -572,28 +634,116 @@
                 
                 let lastResSeq = null;
                 let lastAtomType = null;
+                const ligandTokenWidth = charWidth * 2; // Ligand tokens take 2 character widths
                 
-                for (let i = 0; i < chainAtoms.length; i++) {
+                // Get ligand groups from renderer (computed using shared utility)
+                const ligandGroups = renderer?.ligandGroups || new Map();
+                
+                // Create reverse map: atom index -> ligand group key (for quick lookup)
+                const atomToLigandGroup = new Map();
+                for (const [groupKey, atomIndicesInGroup] of ligandGroups) {
+                    for (const atomIdx of atomIndicesInGroup) {
+                        atomToLigandGroup.set(atomIdx, groupKey);
+                    }
+                }
+                
+                // Track which ligand groups we've already processed
+                const processedLigandGroups = new Set();
+                
+                // Group atoms into display items (regular atoms or ligand tokens)
+                const displayItems = [];
+                let i = 0;
+                while (i < chainAtoms.length) {
                     const atom = chainAtoms[i];
                     
+                    // Check if this atom belongs to a ligand group
+                    const ligandGroupKey = atomToLigandGroup.get(atom.atomIndex);
+                    
+                    if (ligandGroupKey && !processedLigandGroups.has(ligandGroupKey)) {
+                        // This atom is part of a ligand group - create ligand token
+                        const ligandAtomIndices = ligandGroups.get(ligandGroupKey);
+                        if (ligandAtomIndices && ligandAtomIndices.length > 0) {
+                            // Find the first atom of this ligand group in chainAtoms (for ordering)
+                            let firstAtomInChain = null;
+                            let firstAtomIdxInChain = -1;
+                            for (let j = 0; j < chainAtoms.length; j++) {
+                                if (ligandAtomIndices.includes(chainAtoms[j].atomIndex)) {
+                                    firstAtomInChain = chainAtoms[j];
+                                    firstAtomIdxInChain = chainAtoms[j].atomIndex;
+                                    break;
+                                }
+                            }
+                            
+                            if (firstAtomInChain) {
+                                // Only create ligand token if residue name is available (for display)
+                                if (hasResidueNames && firstAtomInChain.resName) {
+                                    let ligandColor = { r: 80, g: 80, b: 80 };
+                                    // Use first atom's color for the ligand token
+                                    if (hasGetAtomColor && !Number.isNaN(firstAtomIdxInChain)) {
+                                        ligandColor = renderer.getAtomColor(firstAtomIdxInChain);
+                                    }
+                                    
+                                    // Create ligand token
+                                    displayItems.push({
+                                        type: 'ligand',
+                                        resSeq: firstAtomInChain.resSeq,
+                                        resName: firstAtomInChain.resName,
+                                        atomIndices: ligandAtomIndices,
+                                        color: ligandColor,
+                                        chain: firstAtomInChain.chain
+                                    });
+                                    
+                                    // Mark this ligand group as processed
+                                    processedLigandGroups.add(ligandGroupKey);
+                                    
+                                    // Skip all atoms in this ligand group
+                                    while (i < chainAtoms.length && ligandAtomIndices.includes(chainAtoms[i].atomIndex)) {
+                                        i++;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Regular atom (or ligand without residue names - render as individual X)
+                    displayItems.push({
+                        type: 'atom',
+                        atom: atom
+                    });
+                    i++;
+                }
+                
+                // Now render display items
+                for (let itemIdx = 0; itemIdx < displayItems.length; itemIdx++) {
+                    const item = displayItems[itemIdx];
+                    const prevItem = itemIdx > 0 ? displayItems[itemIdx - 1] : null;
+                    
+                    // Determine width for this item
+                    const itemWidth = item.type === 'ligand' ? ligandTokenWidth : charWidth;
+                    
                     // Check if we need to wrap
-                    if (currentX + charWidth > containerWidth - spacing) {
+                    if (currentX + itemWidth > containerWidth - spacing) {
                         currentX = lineStartX;
                         lineY += charHeight; // No extra spacing between wrapped lines in same chain
                         maxLineY = Math.max(maxLineY, lineY);
                     }
                     
-                    // Add spacing/gaps (same logic as before)
-                    if (i > 0) {
-                        const prevAtom = chainAtoms[i - 1];
-                        const atomTypeChanged = prevAtom.atomType !== atom.atomType;
-                        const ligandResSeqChanged = atom.atomType === 'L' && prevAtom.atomType === 'L' && prevAtom.resSeq !== atom.resSeq;
-                        const sameAtomType = prevAtom.atomType === atom.atomType;
-                        const resSeqDiff = atom.resSeq - prevAtom.resSeq;
-                        const resSeqChanged = atom.resSeq !== prevAtom.resSeq;
+                    // Add spacing/gaps between items
+                    if (prevItem) {
+                        const prevResSeq = prevItem.type === 'ligand' ? prevItem.resSeq : prevItem.atom.resSeq;
+                        const prevAtomType = prevItem.type === 'ligand' ? 'L' : prevItem.atom.atomType;
+                        const currResSeq = item.type === 'ligand' ? item.resSeq : item.atom.resSeq;
+                        const currAtomType = item.type === 'ligand' ? 'L' : item.atom.atomType;
+                        
+                        const atomTypeChanged = prevAtomType !== currAtomType;
+                        const ligandResSeqChanged = currAtomType === 'L' && prevAtomType === 'L' && prevResSeq !== currResSeq;
+                        const sameAtomType = prevAtomType === currAtomType;
+                        const resSeqDiff = currResSeq - prevResSeq;
+                        const resSeqChanged = prevResSeq !== currResSeq;
                         const isChainBreak = sameAtomType && 
                                              resSeqChanged &&
-                                             (prevAtom.atomType === 'P' || prevAtom.atomType === 'D' || prevAtom.atomType === 'R') &&
+                                             (prevAtomType === 'P' || prevAtomType === 'D' || prevAtomType === 'R') &&
                                              resSeqDiff > 1;
                         
                         if (atomTypeChanged || ligandResSeqChanged) {
@@ -615,8 +765,8 @@
                                         atomIndex: -1, // Gap marker
                                         letter: '-',
                                         color: {r: 240, g: 240, b: 240},
-                                        resSeq: prevAtom.resSeq + g + 1,
-                                        chain: atom.chain
+                                        resSeq: prevResSeq + g + 1,
+                                        chain: item.chain
                                     },
                                     x: currentX,
                                     y: lineY,
@@ -628,43 +778,72 @@
                         }
                     }
                     
-                    // Check wrap before adding residue
-                    if (currentX + charWidth > containerWidth - spacing) {
+                    // Check wrap before adding item
+                    if (currentX + itemWidth > containerWidth - spacing) {
                         currentX = lineStartX;
                         lineY += charHeight; // No extra spacing between wrapped lines in same chain
                         maxLineY = Math.max(maxLineY, lineY);
                     }
                     
-                    // Get letter and color
-                    const letter = getResidueLetter(atom);
-                    let color = { r: 80, g: 80, b: 80 };
-                    if (hasGetAtomColor && !Number.isNaN(atom.atomIndex)) {
-                        color = renderer.getAtomColor(atom.atomIndex);
+                    if (item.type === 'ligand') {
+                        // Create ligand token data
+                        const ligandTokenData = {
+                            isLigandToken: true,
+                            atomIndices: item.atomIndices,
+                            ligandName: item.resName,
+                            color: item.color,
+                            resSeq: item.resSeq,
+                            chain: item.chain,
+                            resName: item.resName
+                        };
+                        allResidueData.push(ligandTokenData);
+                        
+                        // Store position
+                        layout.residuePositions.push({
+                            residueData: ligandTokenData,
+                            x: currentX,
+                            y: lineY,
+                            width: itemWidth,
+                            height: charHeight
+                        });
+                    } else {
+                        // Regular atom
+                        const atom = item.atom;
+                        const letter = getResidueLetter(atom);
+                        let color = { r: 80, g: 80, b: 80 };
+                        if (hasGetAtomColor && !Number.isNaN(atom.atomIndex)) {
+                            color = renderer.getAtomColor(atom.atomIndex);
+                        }
+                        
+                        // Store residue data
+                        const residueData = {
+                            atomIndex: atom.atomIndex,
+                            letter,
+                            color,
+                            resSeq: atom.resSeq,
+                            chain: atom.chain,
+                            resName: atom.resName // Store residue name for tooltip
+                        };
+                        allResidueData.push(residueData);
+                        
+                        // Store position
+                        layout.residuePositions.push({
+                            residueData,
+                            x: currentX,
+                            y: lineY,
+                            width: itemWidth,
+                            height: charHeight
+                        });
                     }
                     
-                    // Store residue data
-                    const residueData = {
-                        atomIndex: atom.atomIndex,
-                        letter,
-                        color,
-                        resSeq: atom.resSeq,
-                        chain: atom.chain,
-                        resName: atom.resName // Store residue name for tooltip
-                    };
-                    allResidueData.push(residueData);
-                    
-                    // Store position
-                    layout.residuePositions.push({
-                        residueData,
-                        x: currentX,
-                        y: lineY,
-                        width: charWidth,
-                        height: charHeight
-                    });
-                    
-                    currentX += charWidth;
-                    lastResSeq = atom.resSeq;
-                    lastAtomType = atom.atomType;
+                    currentX += itemWidth;
+                    if (item.type === 'ligand') {
+                        lastResSeq = item.resSeq;
+                        lastAtomType = 'L';
+                    } else {
+                        lastResSeq = item.atom.resSeq;
+                        lastAtomType = item.atom.atomType;
+                    }
                 }
                 
                 // Update currentY for next chain (use maxLineY to account for wrapping)
@@ -818,58 +997,134 @@
                 }
             }
             
-            if (residuePos && residuePos.atomIndex >= 0) {
-                const atomIndex = residuePos.atomIndex;
-                const residueData = allResidueData.find(r => r.atomIndex === atomIndex);
-                if (!residueData) return;
+            if (residuePos && residuePos.residueData) {
+                const residueData = residuePos.residueData;
                 
-                dragState.isDragging = true;
-                dragState.hasMoved = false;
-                dragState.dragStart = residueData;
-                dragState.dragEnd = residueData;
-                
-                const current = renderer?.getSelection();
-                const isInitiallySelected = current?.atoms?.has(atomIndex) || false;
-                dragState.dragUnselectMode = isInitiallySelected;
-                // Store initial selection state for toggling during drag
-                dragState.initialSelectionState = new Set(current?.atoms || []);
-                
-                // Toggle single atom on click
-                const newAtoms = new Set(current?.atoms || []);
-                if (newAtoms.has(atomIndex)) {
-                    newAtoms.delete(atomIndex);
-                } else {
-                    newAtoms.add(atomIndex);
-                }
-                
-                // Update chains to include all chains that have selected atoms
-                const objectName = renderer.currentObjectName;
-                const obj = renderer.objectsData[objectName];
-                const frame = obj?.frames?.[0];
-                const newChains = new Set();
-                if (frame?.chains) {
-                    for (const atomIdx of newAtoms) {
-                        const atomChain = frame.chains[atomIdx];
-                        if (atomChain) {
-                            newChains.add(atomChain);
+                // Handle ligand token clicks
+                if (residueData.isLigandToken && residueData.atomIndices) {
+                    const current = renderer?.getSelection();
+                    const ligandAtomIndices = residueData.atomIndices;
+                    
+                    // Check if all atoms in ligand are selected
+                    const allSelected = ligandAtomIndices.length > 0 && 
+                                       ligandAtomIndices.every(atomIdx => current?.atoms?.has(atomIdx));
+                    
+                    dragState.isDragging = true;
+                    dragState.hasMoved = false;
+                    // Use first atom as drag start for ligand token
+                    dragState.dragStart = { atomIndex: ligandAtomIndices[0], isLigandToken: true, atomIndices: ligandAtomIndices };
+                    dragState.dragEnd = { atomIndex: ligandAtomIndices[ligandAtomIndices.length - 1], isLigandToken: true, atomIndices: ligandAtomIndices };
+                    dragState.dragUnselectMode = allSelected;
+                    dragState.initialSelectionState = new Set(current?.atoms || []);
+                    
+                    // Toggle all atoms in ligand
+                    const newAtoms = new Set(current?.atoms || []);
+                    if (allSelected) {
+                        // Deselect all atoms in ligand
+                        ligandAtomIndices.forEach(atomIdx => newAtoms.delete(atomIdx));
+                    } else {
+                        // Select all atoms in ligand
+                        ligandAtomIndices.forEach(atomIdx => newAtoms.add(atomIdx));
+                    }
+                    
+                    // Update chains to include all chains that have selected atoms
+                    const objectName = renderer.currentObjectName;
+                    const obj = renderer.objectsData[objectName];
+                    const frame = obj?.frames?.[0];
+                    const newChains = new Set();
+                    if (frame?.chains) {
+                        for (const atomIdx of newAtoms) {
+                            const atomChain = frame.chains[atomIdx];
+                            if (atomChain) {
+                                newChains.add(atomChain);
+                            }
                         }
                     }
+                    
+                    // Determine if we have partial selections
+                    const totalAtoms = frame?.chains?.length || 0;
+                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                    // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
+                    const allChains = new Set(frame.chains);
+                    const allChainsSelected = newChains.size === allChains.size && 
+                                            Array.from(newChains).every(c => allChains.has(c));
+                    // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
+                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                    // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+                    // Otherwise, keep explicit chain selection (allows empty chains)
+                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                    
+                    // Clear PAE boxes when editing sequence selection
+                    renderer.setSelection({ 
+                        atoms: newAtoms,
+                        chains: chainsToSet,
+                        selectionMode: selectionMode,
+                        paeBoxes: [] 
+                    });
+                    // Force update to reflect changes
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
+                } else if (residueData.atomIndex >= 0) {
+                    // Regular atom
+                    const atomIndex = residueData.atomIndex;
+                    
+                    dragState.isDragging = true;
+                    dragState.hasMoved = false;
+                    dragState.dragStart = residueData;
+                    dragState.dragEnd = residueData;
+                    
+                    const current = renderer?.getSelection();
+                    const isInitiallySelected = current?.atoms?.has(atomIndex) || false;
+                    dragState.dragUnselectMode = isInitiallySelected;
+                    // Store initial selection state for toggling during drag
+                    dragState.initialSelectionState = new Set(current?.atoms || []);
+                    
+                    // Toggle single atom on click
+                    const newAtoms = new Set(current?.atoms || []);
+                    if (newAtoms.has(atomIndex)) {
+                        newAtoms.delete(atomIndex);
+                    } else {
+                        newAtoms.add(atomIndex);
+                    }
+                    
+                    // Update chains to include all chains that have selected atoms
+                    const objectName = renderer.currentObjectName;
+                    const obj = renderer.objectsData[objectName];
+                    const frame = obj?.frames?.[0];
+                    const newChains = new Set();
+                    if (frame?.chains) {
+                        for (const atomIdx of newAtoms) {
+                            const atomChain = frame.chains[atomIdx];
+                            if (atomChain) {
+                                newChains.add(atomChain);
+                            }
+                        }
+                    }
+                    
+                    // Determine if we have partial selections
+                    const totalAtoms = frame?.chains?.length || 0;
+                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                    // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
+                    const allChains = new Set(frame.chains);
+                    const allChainsSelected = newChains.size === allChains.size && 
+                                            Array.from(newChains).every(c => allChains.has(c));
+                    // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
+                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                    // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+                    // Otherwise, keep explicit chain selection (allows empty chains)
+                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                    
+                    // Clear PAE boxes when editing sequence selection
+                    renderer.setSelection({ 
+                        atoms: newAtoms,
+                        chains: chainsToSet,
+                        selectionMode: selectionMode,
+                        paeBoxes: [] 
+                    });
+                    // Force update to reflect changes
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
                 }
-                
-                // Determine if we have partial selections
-                const totalAtoms = frame?.chains?.length || 0;
-                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                
-                // Clear PAE boxes when editing sequence selection
-                renderer.setSelection({ 
-                    atoms: newAtoms,
-                    chains: newChains,
-                    selectionMode: hasPartialSelections ? 'explicit' : 'default',
-                    paeBoxes: [] 
-                });
-                // Force update to reflect changes
-                lastSequenceUpdateHash = null;
-                scheduleRender();
             }
         });
         
@@ -882,11 +1137,19 @@
             const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
             
             if (!dragState.isDragging) {
-                if (residuePos && residuePos.atomIndex >= 0 && callbacks.highlightAtom) {
-                    callbacks.highlightAtom(residuePos.atomIndex);
-                    // Store hovered residue info for tooltip
-                    const residueData = sequenceCanvasData.allResidueData.find(r => r.atomIndex === residuePos.atomIndex);
-                    if (residueData) {
+                if (residuePos && residuePos.residueData) {
+                    const residueData = residuePos.residueData;
+                    if (residueData.isLigandToken && residueData.atomIndices && callbacks.highlightAtoms) {
+                        // Highlight all atoms in ligand
+                        callbacks.highlightAtoms(new Set(residueData.atomIndices));
+                        hoveredResidueInfo = {
+                            chain: residueData.chain,
+                            resName: residueData.ligandName || residueData.resName,
+                            resSeq: residueData.resSeq
+                        };
+                    } else if (residueData.atomIndex >= 0 && callbacks.highlightAtom) {
+                        callbacks.highlightAtom(residueData.atomIndex);
+                        // Store hovered residue info for tooltip
                         hoveredResidueInfo = {
                             chain: residueData.chain,
                             resName: residueData.resName,
@@ -919,33 +1182,94 @@
             }
             
             // Handle drag selection
-            if (residuePos && residuePos.atomIndex >= 0) {
-                const atomIndex = residuePos.atomIndex;
-                const residueData = sequenceCanvasData.allResidueData.find(r => r.atomIndex === atomIndex);
-                if (residueData && residueData !== dragState.dragEnd) {
-                    dragState.dragEnd = residueData;
-                    const startIdx = sequenceCanvasData.allResidueData.findIndex(r => r.atomIndex === dragState.dragStart.atomIndex);
-                    const endIdx = sequenceCanvasData.allResidueData.findIndex(r => r.atomIndex === dragState.dragEnd.atomIndex);
-                    if (startIdx !== -1 && endIdx !== -1) {
+            if (residuePos && residuePos.residueData) {
+                const residueData = residuePos.residueData;
+                const startResidueData = dragState.dragStart;
+                
+                // Handle ligand tokens in drag
+                if (residueData.isLigandToken && residueData.atomIndices) {
+                    if (residueData !== dragState.dragEnd) {
+                        dragState.dragEnd = residueData;
                         dragState.hasMoved = true;
-                        const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                        // Start from initial selection state, not current selection
-                        const newAtoms = new Set(dragState.initialSelectionState);
-                        for (let i = min; i <= max; i++) {
-                            const res = allResidueData[i];
-                            // Toggle items in the drag range to match the initial drag mode
-                            // If we started in unselect mode, we remove items; if select mode, we add items
-                            if (dragState.dragUnselectMode) {
-                                newAtoms.delete(res.atomIndex);
-                            } else {
-                                newAtoms.add(res.atomIndex);
+                        
+                        // Find indices in allResidueData
+                        const startIdx = sequenceCanvasData.allResidueData.findIndex(r => 
+                            (r.isLigandToken && r.atomIndices && r.atomIndices[0] === startResidueData.atomIndices?.[0]) ||
+                            (r.atomIndex === startResidueData.atomIndex && !r.isLigandToken)
+                        );
+                        const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
+                            (r.isLigandToken && r.atomIndices && r.atomIndices[0] === residueData.atomIndices[0]) ||
+                            (r.atomIndex === residueData.atomIndices?.[0] && !r.isLigandToken)
+                        );
+                        
+                        if (startIdx !== -1 && endIdx !== -1) {
+                            const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
+                            const newAtoms = new Set(dragState.initialSelectionState);
+                            
+                            for (let i = min; i <= max; i++) {
+                                const res = allResidueData[i];
+                                if (res.isLigandToken && res.atomIndices) {
+                                    // Handle ligand token - toggle all atoms in ligand
+                                    if (dragState.dragUnselectMode) {
+                                        res.atomIndices.forEach(atomIdx => newAtoms.delete(atomIdx));
+                                    } else {
+                                        res.atomIndices.forEach(atomIdx => newAtoms.add(atomIdx));
+                                    }
+                                } else if (res.atomIndex >= 0) {
+                                    // Handle regular atom
+                                    if (dragState.dragUnselectMode) {
+                                        newAtoms.delete(res.atomIndex);
+                                    } else {
+                                        newAtoms.add(res.atomIndex);
+                                    }
+                                }
                             }
+                            
+                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
+                            lastSequenceUpdateHash = null;
+                            scheduleRender();
+                            if (callbacks.applySelection) callbacks.applySelection(newAtoms);
                         }
-                        if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
-                        lastSequenceUpdateHash = null;
-                        scheduleRender();
-                        // Update 3D viewer in real-time during drag
-                        if (callbacks.applySelection) callbacks.applySelection(newAtoms);
+                    }
+                } else if (residueData.atomIndex >= 0) {
+                    // Regular atom drag
+                    if (residueData !== dragState.dragEnd) {
+                        dragState.dragEnd = residueData;
+                        const startIdx = sequenceCanvasData.allResidueData.findIndex(r => 
+                            (r.isLigandToken && r.atomIndices && r.atomIndices[0] === startResidueData.atomIndices?.[0]) ||
+                            (r.atomIndex === startResidueData.atomIndex && !r.isLigandToken)
+                        );
+                        const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
+                            (r.isLigandToken && r.atomIndices && r.atomIndices.includes(residueData.atomIndex)) ||
+                            (r.atomIndex === residueData.atomIndex && !r.isLigandToken)
+                        );
+                        if (startIdx !== -1 && endIdx !== -1) {
+                            dragState.hasMoved = true;
+                            const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
+                            const newAtoms = new Set(dragState.initialSelectionState);
+                            for (let i = min; i <= max; i++) {
+                                const res = allResidueData[i];
+                                if (res.isLigandToken && res.atomIndices) {
+                                    // Handle ligand token
+                                    if (dragState.dragUnselectMode) {
+                                        res.atomIndices.forEach(atomIdx => newAtoms.delete(atomIdx));
+                                    } else {
+                                        res.atomIndices.forEach(atomIdx => newAtoms.add(atomIdx));
+                                    }
+                                } else if (res.atomIndex >= 0) {
+                                    // Handle regular atom
+                                    if (dragState.dragUnselectMode) {
+                                        newAtoms.delete(res.atomIndex);
+                                    } else {
+                                        newAtoms.add(res.atomIndex);
+                                    }
+                                }
+                            }
+                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
+                            lastSequenceUpdateHash = null;
+                            scheduleRender();
+                            if (callbacks.applySelection) callbacks.applySelection(newAtoms);
+                        }
                     }
                 }
             } else if (chainLabelPos && !sequenceViewMode) {
@@ -1191,67 +1515,118 @@
                 }
             }
             
-            if (residuePos && residuePos.atomIndex >= 0) {
-                const atomIndex = residuePos.atomIndex;
-                const residueData = allResidueData.find(r => r.atomIndex === atomIndex);
-                if (!residueData) return;
+            if (residuePos && residuePos.residueData) {
+                const residueData = residuePos.residueData;
                 
-                dragState.isDragging = true;
-                dragState.hasMoved = false;
-                dragState.dragStart = residueData;
-                dragState.dragEnd = residueData;
-                
-                const current = renderer?.getSelection();
-                const isInitiallySelected = current?.atoms?.has(atomIndex) || false;
-                dragState.dragUnselectMode = isInitiallySelected;
-                // Store initial selection state for toggling during drag
-                dragState.initialSelectionState = new Set(current?.atoms || []);
-                
-                // Toggle single atom on tap
-                const newAtoms = new Set(current?.atoms || []);
-                if (newAtoms.has(atomIndex)) {
-                    newAtoms.delete(atomIndex);
-                } else {
-                    newAtoms.add(atomIndex);
-                }
-                
-                // Update chains to include all chains that have selected atoms
-                const objectName = renderer.currentObjectName;
-                const obj = renderer.objectsData[objectName];
-                const frame = obj?.frames?.[0];
-                const newChains = new Set();
-                if (frame?.chains) {
-                    for (const atomIdx of newAtoms) {
-                        const atomChain = frame.chains[atomIdx];
-                        if (atomChain) {
-                            newChains.add(atomChain);
+                // Handle ligand token taps
+                if (residueData.isLigandToken && residueData.atomIndices) {
+                    const current = renderer?.getSelection();
+                    const ligandAtomIndices = residueData.atomIndices;
+                    
+                    // Check if all atoms in ligand are selected
+                    const allSelected = ligandAtomIndices.length > 0 && 
+                                       ligandAtomIndices.every(atomIdx => current?.atoms?.has(atomIdx));
+                    
+                    dragState.isDragging = true;
+                    dragState.hasMoved = false;
+                    dragState.dragStart = { atomIndex: ligandAtomIndices[0], isLigandToken: true, atomIndices: ligandAtomIndices };
+                    dragState.dragEnd = { atomIndex: ligandAtomIndices[ligandAtomIndices.length - 1], isLigandToken: true, atomIndices: ligandAtomIndices };
+                    dragState.dragUnselectMode = allSelected;
+                    dragState.initialSelectionState = new Set(current?.atoms || []);
+                    
+                    // Toggle all atoms in ligand
+                    const newAtoms = new Set(current?.atoms || []);
+                    if (allSelected) {
+                        ligandAtomIndices.forEach(atomIdx => newAtoms.delete(atomIdx));
+                    } else {
+                        ligandAtomIndices.forEach(atomIdx => newAtoms.add(atomIdx));
+                    }
+                    
+                    // Update chains to include all chains that have selected atoms
+                    const objectName = renderer.currentObjectName;
+                    const obj = renderer.objectsData[objectName];
+                    const frame = obj?.frames?.[0];
+                    const newChains = new Set();
+                    if (frame?.chains) {
+                        for (const atomIdx of newAtoms) {
+                            const atomChain = frame.chains[atomIdx];
+                            if (atomChain) {
+                                newChains.add(atomChain);
+                            }
                         }
                     }
+                    
+                    // Determine if we have partial selections
+                    const totalAtoms = frame?.chains?.length || 0;
+                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                    const allChains = new Set(frame.chains);
+                    const allChainsSelected = newChains.size === allChains.size && 
+                                            Array.from(newChains).every(c => allChains.has(c));
+                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                    
+                    renderer.setSelection({ 
+                        atoms: newAtoms,
+                        chains: chainsToSet,
+                        selectionMode: selectionMode,
+                        paeBoxes: [] 
+                    });
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
+                } else if (residueData.atomIndex >= 0) {
+                    // Regular atom
+                    const atomIndex = residueData.atomIndex;
+                    
+                    dragState.isDragging = true;
+                    dragState.hasMoved = false;
+                    dragState.dragStart = residueData;
+                    dragState.dragEnd = residueData;
+                    
+                    const current = renderer?.getSelection();
+                    const isInitiallySelected = current?.atoms?.has(atomIndex) || false;
+                    dragState.dragUnselectMode = isInitiallySelected;
+                    dragState.initialSelectionState = new Set(current?.atoms || []);
+                    
+                    // Toggle single atom on tap
+                    const newAtoms = new Set(current?.atoms || []);
+                    if (newAtoms.has(atomIndex)) {
+                        newAtoms.delete(atomIndex);
+                    } else {
+                        newAtoms.add(atomIndex);
+                    }
+                    
+                    // Update chains to include all chains that have selected atoms
+                    const objectName = renderer.currentObjectName;
+                    const obj = renderer.objectsData[objectName];
+                    const frame = obj?.frames?.[0];
+                    const newChains = new Set();
+                    if (frame?.chains) {
+                        for (const atomIdx of newAtoms) {
+                            const atomChain = frame.chains[atomIdx];
+                            if (atomChain) {
+                                newChains.add(atomChain);
+                            }
+                        }
+                    }
+                    
+                    // Determine if we have partial selections
+                    const totalAtoms = frame?.chains?.length || 0;
+                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                    const allChains = new Set(frame.chains);
+                    const allChainsSelected = newChains.size === allChains.size && 
+                                            Array.from(newChains).every(c => allChains.has(c));
+                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                    
+                    renderer.setSelection({ 
+                        atoms: newAtoms,
+                        chains: chainsToSet,
+                        selectionMode: selectionMode,
+                        paeBoxes: [] 
+                    });
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
                 }
-                
-                // Determine if we have partial selections
-                const totalAtoms = frame?.chains?.length || 0;
-                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
-                const allChains = new Set(frame.chains);
-                const allChainsSelected = newChains.size === allChains.size && 
-                                        Array.from(newChains).every(c => allChains.has(c));
-                // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
-                const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
-                // Otherwise, keep explicit chain selection (allows empty chains)
-                const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
-                
-                // Clear PAE boxes when editing sequence selection
-                renderer.setSelection({ 
-                    atoms: newAtoms,
-                    chains: chainsToSet,
-                    selectionMode: selectionMode,
-                    paeBoxes: [] 
-                });
-                // Force update to reflect changes
-                lastSequenceUpdateHash = null;
-                scheduleRender();
             }
         });
         

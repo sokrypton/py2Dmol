@@ -1023,6 +1023,142 @@ function getStandardResidueName(resName) {
     return resName;
 }
 
+// ============================================================================
+// LIGAND GROUPING UTILITIES
+// ============================================================================
+
+/**
+ * Create a unique key for a ligand group
+ * @param {string} chain - Chain ID
+ * @param {number} resSeq - Residue sequence number
+ * @param {string} resName - Residue name (optional)
+ * @param {number} atomIndex - Atom index (fallback)
+ * @returns {string} - Ligand group key
+ */
+function createLigandGroupKey(chain, resSeq, resName, atomIndex) {
+    if (resName) {
+        // Primary: chain + resSeq + resName (most specific)
+        return `${chain}:${resSeq}:${resName}`;
+    } else if (resSeq !== undefined && resSeq !== null) {
+        // Secondary: chain + resSeq
+        return `${chain}:${resSeq}`;
+    } else {
+        // Fallback: chain + atomIndex (for consecutive atoms)
+        return `${chain}:${atomIndex}`;
+    }
+}
+
+/**
+ * Group ligand atoms into ligand groups based on chain, residue_index, and residue_name
+ * @param {Array<string>} chains - Array of chain IDs for each atom
+ * @param {Array<string>} atomTypes - Array of atom types ('P', 'D', 'R', 'L')
+ * @param {Array<number>} residueIndex - Array of residue indices (optional)
+ * @param {Array<string>} residues - Array of residue names (optional)
+ * @returns {Map<string, Array<number>>} - Map of ligand group keys to arrays of atom indices
+ * 
+ * Grouping priority:
+ * 1. If residue_name available: "chain:resSeq:resName"
+ * 2. If only residue_index available: "chain:resSeq"
+ * 3. If neither available: "chain:firstAtomIndex" (groups consecutive atoms)
+ */
+function groupLigandAtoms(chains, atomTypes, residueIndex, residues) {
+    const ligandGroups = new Map();
+    
+    if (!chains || !atomTypes || chains.length !== atomTypes.length) {
+        return ligandGroups; // Return empty map if invalid data
+    }
+    
+    const hasResidueIndex = residueIndex && residueIndex.length === chains.length;
+    const hasResidues = residues && residues.length === chains.length;
+    
+    // Track current ligand group for fallback grouping (consecutive atoms)
+    let currentLigandKey = null;
+    let currentLigandStart = -1;
+    
+    for (let i = 0; i < atomTypes.length; i++) {
+        if (atomTypes[i] === 'L') {
+            const chain = chains[i];
+            const resSeq = hasResidueIndex ? residueIndex[i] : null;
+            const resName = hasResidues ? residues[i] : null;
+            
+            // Create group key based on available data
+            let groupKey;
+            if (resName) {
+                // Primary: use chain + resSeq + resName
+                groupKey = createLigandGroupKey(chain, resSeq, resName, i);
+            } else if (resSeq !== undefined && resSeq !== null) {
+                // Secondary: use chain + resSeq
+                groupKey = createLigandGroupKey(chain, resSeq, null, i);
+            } else {
+                // Fallback: group consecutive ligand atoms in same chain
+                if (currentLigandKey && chain === chains[i - 1]) {
+                    // Continue current ligand group
+                    groupKey = currentLigandKey;
+                } else {
+                    // Start new ligand group
+                    groupKey = createLigandGroupKey(chain, null, null, i);
+                    currentLigandKey = groupKey;
+                    currentLigandStart = i;
+                }
+            }
+            
+            // Add atom to ligand group
+            if (!ligandGroups.has(groupKey)) {
+                ligandGroups.set(groupKey, []);
+            }
+            ligandGroups.get(groupKey).push(i);
+        } else {
+            // Not a ligand atom, reset consecutive grouping
+            currentLigandKey = null;
+            currentLigandStart = -1;
+        }
+    }
+    
+    return ligandGroups;
+}
+
+/**
+ * Expand atom selection to include all atoms in any ligand groups that contain selected atoms
+ * @param {Set<number>|Array<number>} atomIndices - Selected atom indices
+ * @param {Map<string, Array<number>>} ligandGroups - Ligand groups from groupLigandAtoms()
+ * @returns {Set<number>} - Expanded set of atom indices
+ */
+function expandLigandSelection(atomIndices, ligandGroups) {
+    const expandedAtoms = new Set(atomIndices);
+    
+    if (!ligandGroups || ligandGroups.size === 0) {
+        return expandedAtoms; // No ligand groups, return original selection
+    }
+    
+    // Create reverse map: atom index -> ligand group key
+    const atomToGroup = new Map();
+    for (const [groupKey, atomIndicesInGroup] of ligandGroups) {
+        for (const atomIdx of atomIndicesInGroup) {
+            atomToGroup.set(atomIdx, groupKey);
+        }
+    }
+    
+    // Find all ligand groups that contain selected atoms
+    const selectedGroups = new Set();
+    for (const atomIdx of atomIndices) {
+        if (atomToGroup.has(atomIdx)) {
+            selectedGroups.add(atomToGroup.get(atomIdx));
+        }
+    }
+    
+    // Add all atoms from selected ligand groups
+    for (const groupKey of selectedGroups) {
+        const atomsInGroup = ligandGroups.get(groupKey);
+        if (atomsInGroup) {
+            for (const atomIdx of atomsInGroup) {
+                expandedAtoms.add(atomIdx);
+            }
+        }
+    }
+    
+    return expandedAtoms;
+}
+
 /**
  * Convert parsed atoms to frame data format, omitting keys for data that is not present.
  * @param {Array<object>} atoms - Parsed atoms

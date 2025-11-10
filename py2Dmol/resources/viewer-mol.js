@@ -256,6 +256,10 @@ function initializePy2DmolViewer(containerElement) {
                 selectionMode: 'default' // Start in default mode (show all)
             };
 
+            // Ligand groups: Map of ligand group keys to arrays of atom indices
+            // Computed when frame data is loaded, used by sequence and PAE viewers
+            this.ligandGroups = new Map();
+
             // UI elements
             this.playButton = null;
             this.recordButton = null;
@@ -2131,6 +2135,20 @@ function initializePy2DmolViewer(containerElement) {
                     scale.max = Math.max(scale.max, colorIndex);
                 }
             }
+
+            // Compute ligand groups using shared utility function
+            // This groups ligands by chain, residue_index, and residue_name (if available)
+            if (typeof groupLigandAtoms === 'function') {
+                this.ligandGroups = groupLigandAtoms(
+                    this.chains,
+                    this.atomTypes,
+                    this.residue_index,
+                    this.residues
+                );
+            } else {
+                // Fallback: empty map if utility function not available
+                this.ligandGroups = new Map();
+            }
             
             // Pre-allocate rotatedCoords array
             if (this.rotatedCoords.length !== n) {
@@ -2245,28 +2263,66 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
 
-            // Iterate over each chain's ligands separately
-            for (const [chainId, ligandIndices] of ligandIndicesByChain.entries()) {
-                for (let i = 0; i < ligandIndices.length; i++) {
-                    for (let j = i + 1; j < ligandIndices.length; j++) {
-                        const idx1 = ligandIndices[i];
-                        const idx2 = ligandIndices[j];
-                        
-                        // All atoms here are guaranteed to be in the same chain (chainId)
-                        
-                        const start = this.coords[idx1];
-                        const end = this.coords[idx2];
-                        const distSq = start.distanceToSq(end);
-                        if (distSq < ligandBondCutoffSq) {
-                             this.segmentIndices.push({ 
-                                 idx1: idx1, 
-                                 idx2: idx2,
-                                 colorIndex: 0, 
-                                 origIndex: idx1, 
-                                 chainId: chainId, // Use the chainId from the map key
-                                 type: 'L',
-                                 len: Math.sqrt(distSq)
-                            });
+            // Compute ligand bonds
+            // If ligand groups are available, only compute distances within each group
+            // Otherwise, fall back to computing distances within each chain
+            if (this.ligandGroups && this.ligandGroups.size > 0) {
+                // Use ligand groups: only compute distances within each group
+                for (const [groupKey, ligandAtomIndices] of this.ligandGroups.entries()) {
+                    // Compute pairwise distances only within this ligand group
+                    for (let i = 0; i < ligandAtomIndices.length; i++) {
+                        for (let j = i + 1; j < ligandAtomIndices.length; j++) {
+                            const idx1 = ligandAtomIndices[i];
+                            const idx2 = ligandAtomIndices[j];
+                            
+                            // Skip if indices are out of bounds
+                            if (idx1 < 0 || idx1 >= this.coords.length || 
+                                idx2 < 0 || idx2 >= this.coords.length) {
+                                continue;
+                            }
+                            
+                            const start = this.coords[idx1];
+                            const end = this.coords[idx2];
+                            const distSq = start.distanceToSq(end);
+                            if (distSq < ligandBondCutoffSq) {
+                                const chainId = this.chains[idx1] || 'A';
+                                this.segmentIndices.push({ 
+                                    idx1: idx1, 
+                                    idx2: idx2,
+                                    colorIndex: 0, 
+                                    origIndex: idx1, 
+                                    chainId: chainId,
+                                    type: 'L',
+                                    len: Math.sqrt(distSq)
+                                });
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: iterate over each chain's ligands separately (old behavior)
+                for (const [chainId, ligandIndices] of ligandIndicesByChain.entries()) {
+                    for (let i = 0; i < ligandIndices.length; i++) {
+                        for (let j = i + 1; j < ligandIndices.length; j++) {
+                            const idx1 = ligandIndices[i];
+                            const idx2 = ligandIndices[j];
+                            
+                            // All atoms here are guaranteed to be in the same chain (chainId)
+                            
+                            const start = this.coords[idx1];
+                            const end = this.coords[idx2];
+                            const distSq = start.distanceToSq(end);
+                            if (distSq < ligandBondCutoffSq) {
+                                 this.segmentIndices.push({ 
+                                     idx1: idx1, 
+                                     idx2: idx2,
+                                     colorIndex: 0, 
+                                     origIndex: idx1, 
+                                     chainId: chainId, // Use the chainId from the map key
+                                     type: 'L',
+                                     len: Math.sqrt(distSq)
+                                });
+                            }
                         }
                     }
                 }
