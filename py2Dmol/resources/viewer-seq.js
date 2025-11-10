@@ -302,7 +302,10 @@
                 // Compute color dynamically based on current renderer state
                 let color = {r: 128, g: 128, b: 128}; // Default fallback grey
                 
-                if (residueData.isLigandToken && residueData.atomIndices && residueData.atomIndices.length > 0) {
+                if (residueData.atomIndex === -1) {
+                    // Gap markers (missing residues) use stored light grey color
+                    color = residueData.color || {r: 240, g: 240, b: 240};
+                } else if (residueData.isLigandToken && residueData.atomIndices && residueData.atomIndices.length > 0) {
                     // For ligand tokens, use first atom's color
                     const firstAtomIndex = residueData.atomIndices[0];
                     if (hasGetAtomColor && !Number.isNaN(firstAtomIndex) && firstAtomIndex >= 0) {
@@ -602,8 +605,6 @@
         canvas.style.cursor = 'crosshair';
         canvas.style.display = 'block';
         canvas.style.width = '100%';
-        
-        const hasGetAtomColor = renderer?.getAtomColor;
         
         // Store all residue data (not elements)
         const allResidueData = [];
