@@ -2452,15 +2452,18 @@ function initializePy2DmolViewer(containerElement) {
             }
 
             const effectiveColorMode = this._getEffectiveColorMode();
-            const type = this.atomTypes[atomIndex];
+            const type = (this.atomTypes && atomIndex < this.atomTypes.length) ? this.atomTypes[atomIndex] : undefined;
             let color;
+
+            // Ligands should always be grey in chain and rainbow modes (not plddt)
+            const isLigand = type === 'L';
 
             if (effectiveColorMode === 'plddt') {
                 const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtFunc(plddt);
             } else if (effectiveColorMode === 'chain') {
-                if (type === 'L') {
+                if (isLigand) {
                     color = { r: 128, g: 128, b: 128 }; // Ligands are grey
                 } else {
                     const chainId = this.chains[atomIndex] || 'A';
@@ -2477,18 +2480,18 @@ function initializePy2DmolViewer(containerElement) {
                     }
                 }
             } else { // rainbow
-                if (type === 'L') {
+                if (isLigand) {
                     color = { r: 128, g: 128, b: 128 }; // Ligands are grey
                 } else {
                     const chainId = this.chains[atomIndex] || 'A';
                     const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
                     const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
                     if (scale && scale.min !== Infinity && scale.max !== -Infinity) {
-                        const colorIndex = this.perChainIndices[atomIndex];
+                        const colorIndex = this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0;
                         color = rainbowFunc(colorIndex, scale.min, scale.max);
                     } else {
                         // Fallback: if scale not found, use a default rainbow based on colorIndex
-                        const colorIndex = this.perChainIndices[atomIndex] || 0;
+                        const colorIndex = (this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0) || 0;
                         color = rainbowFunc(colorIndex, 0, Math.max(1, colorIndex));
                     }
                 }

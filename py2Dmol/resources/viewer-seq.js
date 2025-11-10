@@ -292,15 +292,33 @@
         
         // Draw residue characters and ligand tokens
         if (layout.residuePositions && allResidueData) {
+            // Get renderer's getAtomColor function for dynamic color computation
+            const hasGetAtomColor = renderer?.getAtomColor;
+            
             for (const pos of layout.residuePositions) {
                 const residueData = pos.residueData;
                 if (!residueData) continue;
+                
+                // Compute color dynamically based on current renderer state
+                let color = {r: 128, g: 128, b: 128}; // Default fallback grey
+                
+                if (residueData.isLigandToken && residueData.atomIndices && residueData.atomIndices.length > 0) {
+                    // For ligand tokens, use first atom's color
+                    const firstAtomIndex = residueData.atomIndices[0];
+                    if (hasGetAtomColor && !Number.isNaN(firstAtomIndex) && firstAtomIndex >= 0) {
+                        color = renderer.getAtomColor(firstAtomIndex);
+                    }
+                } else if (residueData.atomIndex >= 0) {
+                    // For regular residues, use atom's color
+                    if (hasGetAtomColor && !Number.isNaN(residueData.atomIndex)) {
+                        color = renderer.getAtomColor(residueData.atomIndex);
+                    }
+                }
                 
                 // Check if this is a ligand token (has atomIndices array)
                 if (residueData.isLigandToken && residueData.atomIndices) {
                     // For ligand tokens, check if any atom in the ligand is selected
                     const isSelected = residueData.atomIndices.some(atomIdx => visibleAtoms.has(atomIdx));
-                    const color = residueData.color || {r: 80, g: 80, b: 80};
                     
                     drawLigandTokenOnCanvas(
                         ctx,
@@ -316,7 +334,6 @@
                 } else if (residueData.atomIndex >= 0) {
                     // Regular residue character
                     const isSelected = visibleAtoms.has(residueData.atomIndex);
-                    const color = residueData.color || {r: 80, g: 80, b: 80};
                     
                     drawResidueCharOnCanvas(
                         ctx,
@@ -677,19 +694,12 @@
                             if (firstAtomInChain) {
                                 // Only create ligand token if residue name is available (for display)
                                 if (hasResidueNames && firstAtomInChain.resName) {
-                                    let ligandColor = { r: 80, g: 80, b: 80 };
-                                    // Use first atom's color for the ligand token
-                                    if (hasGetAtomColor && !Number.isNaN(firstAtomIdxInChain)) {
-                                        ligandColor = renderer.getAtomColor(firstAtomIdxInChain);
-                                    }
-                                    
-                                    // Create ligand token
+                                    // Create ligand token (color will be computed dynamically at render time)
                                     displayItems.push({
                                         type: 'ligand',
                                         resSeq: firstAtomInChain.resSeq,
                                         resName: firstAtomInChain.resName,
                                         atomIndices: ligandAtomIndices,
-                                        color: ligandColor,
                                         chain: firstAtomInChain.chain
                                     });
                                     
@@ -786,12 +796,11 @@
                     }
                     
                     if (item.type === 'ligand') {
-                        // Create ligand token data
+                        // Create ligand token data (color will be computed dynamically at render time)
                         const ligandTokenData = {
                             isLigandToken: true,
                             atomIndices: item.atomIndices,
                             ligandName: item.resName,
-                            color: item.color,
                             resSeq: item.resSeq,
                             chain: item.chain,
                             resName: item.resName
@@ -810,16 +819,11 @@
                         // Regular atom
                         const atom = item.atom;
                         const letter = getResidueLetter(atom);
-                        let color = { r: 80, g: 80, b: 80 };
-                        if (hasGetAtomColor && !Number.isNaN(atom.atomIndex)) {
-                            color = renderer.getAtomColor(atom.atomIndex);
-                        }
                         
-                        // Store residue data
+                        // Store residue data (color will be computed dynamically at render time)
                         const residueData = {
                             atomIndex: atom.atomIndex,
                             letter,
-                            color,
                             resSeq: atom.resSeq,
                             chain: atom.chain,
                             resName: atom.resName // Store residue name for tooltip
@@ -1762,24 +1766,11 @@
     }
 
     // Update colors in sequence view when color mode changes
+    // Colors are now computed dynamically in renderSequenceCanvas(), so we just need to trigger a re-render
     function updateSequenceViewColors() {
         if (!sequenceCanvasData) return;
         
-        const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-        if (!renderer) return;
-        
-        const hasGetAtomColor = renderer?.getAtomColor;
-        
-        // Update colors for all residues
-        if (sequenceCanvasData.allResidueData) {
-            for (const residueData of sequenceCanvasData.allResidueData) {
-                if (hasGetAtomColor && !Number.isNaN(residueData.atomIndex)) {
-                    residueData.color = renderer.getAtomColor(residueData.atomIndex);
-                }
-            }
-        }
-        
-        // Invalidate hash to force redraw with new colors
+        // Invalidate hash to force redraw with new colors (computed dynamically)
         lastSequenceUpdateHash = null;
         scheduleRender();
     }
