@@ -191,6 +191,7 @@ function initializePy2DmolViewer(containerElement) {
             this.chainRainbowScales = {};
             this.perChainIndices = [];
             this.chainIndexMap = new Map(); // Initialize chain index map
+            this.ligandOnlyChains = new Set(); // Chains that contain only ligands (no P/D/R atoms)
             this.rotatedCoords = []; 
             this.segmentIndices = []; 
             this.segData = []; 
@@ -2094,6 +2095,8 @@ function initializePy2DmolViewer(containerElement) {
 
             // Create the definitive chain index map for this dataset.
             this.chainIndexMap = new Map();
+            // Track which chains contain only ligands (no P/D/R atoms)
+            this.ligandOnlyChains = new Set();
             if (this.chains.length > 0) {
                 // Use a sorted list of unique chain IDs to ensure a consistent order
                 const sortedUniqueChains = [...uniqueChains].sort();
@@ -2102,34 +2105,58 @@ function initializePy2DmolViewer(containerElement) {
                         this.chainIndexMap.set(chainId, this.chainIndexMap.size);
                     }
                 }
+                
+                // Check each chain to see if it contains only ligands
+                for (const chainId of sortedUniqueChains) {
+                    let hasNonLigand = false;
+                    for (let i = 0; i < n; i++) {
+                        if (this.chains[i] === chainId) {
+                            const type = this.atomTypes[i];
+                            if (type === 'P' || type === 'D' || type === 'R') {
+                                hasNonLigand = true;
+                                break;
+                            }
+                        }
+                    }
+                    // If chain has no P/D/R atoms, it's ligand-only
+                    if (!hasNonLigand) {
+                        this.ligandOnlyChains.add(chainId);
+                    }
+                }
             }
 
             // No longer need polymerAtomIndices - all atoms are treated the same
             // (One atom = one position, no distinction between polymer/ligand)
 
             // Pre-calculate per-chain indices for rainbow coloring (N-to-C)
+            // Include ligands in ligand-only chains for rainbow coloring
             this.perChainIndices = new Array(n);
             const chainIndices = {}; // Temporary tracker
             for (let i = 0; i < n; i++) {
                 const type = this.atomTypes[i];
-                if (type === 'P' || type === 'D' || type === 'R') {
-                    const chainId = this.chains[i] || 'A';
+                const chainId = this.chains[i] || 'A';
+                const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
+                
+                if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
                     if (chainIndices[chainId] === undefined) {
                         chainIndices[chainId] = 0;
                     }
                     this.perChainIndices[i] = chainIndices[chainId];
                     chainIndices[chainId]++;
                 } else {
-                    this.perChainIndices[i] = 0; // Default for ligands
+                    this.perChainIndices[i] = 0; // Default for ligands in mixed chains
                 }
             }
 
             // Pre-calculate rainbow scales
+            // Include ligands in ligand-only chains for rainbow coloring
             this.chainRainbowScales = {};
             for (let i = 0; i < this.atomTypes.length; i++) {
                 const type = this.atomTypes[i];
-                if (type === 'P' || type === 'D' || type === 'R') {
-                    const chainId = this.chains[i] || 'A';
+                const chainId = this.chains[i] || 'A';
+                const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
+                
+                if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
                     if (!this.chainRainbowScales[chainId]) { 
                         this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity }; 
                     }
@@ -2463,10 +2490,12 @@ function initializePy2DmolViewer(containerElement) {
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtFunc(plddt);
             } else if (effectiveColorMode === 'chain') {
-                if (isLigand) {
-                    color = { r: 128, g: 128, b: 128 }; // Ligands are grey
+                const chainId = this.chains[atomIndex] || 'A';
+                if (isLigand && !this.ligandOnlyChains.has(chainId)) {
+                    // Ligands in chains with P/D/R atoms are grey
+                    color = { r: 128, g: 128, b: 128 };
                 } else {
-                    const chainId = this.chains[atomIndex] || 'A';
+                    // Regular atoms, or ligands in ligand-only chains, get chain color
                     if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
                         const chainIndex = this.chainIndexMap.get(chainId);
                         const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
@@ -2481,8 +2510,10 @@ function initializePy2DmolViewer(containerElement) {
                 }
             } else { // rainbow
                 if (isLigand) {
-                    color = { r: 128, g: 128, b: 128 }; // Ligands are grey
+                    // All ligands are grey in rainbow mode
+                    color = { r: 128, g: 128, b: 128 };
                 } else {
+                    // Regular atoms get rainbow color
                     const chainId = this.chains[atomIndex] || 'A';
                     const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
                     const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
@@ -2525,11 +2556,26 @@ function initializePy2DmolViewer(containerElement) {
                 let color;
                 const i = segInfo.origIndex;
                 const type = segInfo.type;
+                const chainId = this.chains[i] || segInfo.chainId || 'A';
+                const isLigandOnlyChain = this.ligandOnlyChains && this.ligandOnlyChains.has(chainId);
 
                 if (type === 'L') {
-                    color = grey;
+                    if (effectiveColorMode === 'chain' && isLigandOnlyChain) {
+                        // Ligands in ligand-only chains get chain color in chain mode
+                        if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
+                            const chainIndex = this.chainIndexMap.get(chainId);
+                            const hex = chainColors[chainIndex % chainColors.length];
+                            color = hexToRgb(hex);
+                        } else {
+                            // Fallback: use a default color if chainIndexMap is not initialized
+                            const hex = chainColors[0]; // Use first color as default
+                            color = hexToRgb(hex);
+                        }
+                    } else {
+                        // Ligands are grey in rainbow mode, or in mixed chains in chain mode
+                        color = grey;
+                    }
                 } else if (effectiveColorMode === 'chain') {
-                    const chainId = this.chains[i] || 'A';
                     if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
                         const chainIndex = this.chainIndexMap.get(chainId);
                         const hex = chainColors[chainIndex % chainColors.length];
@@ -2540,7 +2586,6 @@ function initializePy2DmolViewer(containerElement) {
                         color = hexToRgb(hex);
                     }
                 } else { // 'rainbow' or other modes
-                    const chainId = segInfo.chainId || 'A';
                     const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
                     if (scale && scale.min !== Infinity && scale.max !== -Infinity) {
                         color = rainbowFunc(segInfo.colorIndex, scale.min, scale.max);

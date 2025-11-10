@@ -41,15 +41,40 @@
     // Check if sequence differs between frames
     function sequencesDiffer(frame1, frame2) {
         if (!frame1 || !frame2) return true;
-        if (!frame1.residues || !frame2.residues) return true;
-        if (frame1.residues.length !== frame2.residues.length) return true;
         
-        // Check if residues, chains, or atom_types differ
-        for (let i = 0; i < frame1.residues.length; i++) {
-            if (frame1.residues[i] !== frame2.residues[i]) return true;
-            if (frame1.chains && frame2.chains && frame1.chains[i] !== frame2.chains[i]) return true;
-            if (frame1.atom_types && frame2.atom_types && frame1.atom_types[i] !== frame2.atom_types[i]) return true;
+        // Check coords length first (base requirement)
+        const n1 = frame1.coords ? frame1.coords.length : 0;
+        const n2 = frame2.coords ? frame2.coords.length : 0;
+        if (n1 !== n2) return true;
+        if (n1 === 0) return false; // Both empty, consider same
+        
+        // Check if residues differ (if available)
+        const residues1 = frame1.residues || [];
+        const residues2 = frame2.residues || [];
+        if (residues1.length > 0 && residues2.length > 0) {
+            for (let i = 0; i < Math.min(residues1.length, residues2.length, n1); i++) {
+                if (residues1[i] !== residues2[i]) return true;
+            }
         }
+        
+        // Check if chains differ (if available)
+        const chains1 = frame1.chains || [];
+        const chains2 = frame2.chains || [];
+        if (chains1.length > 0 && chains2.length > 0) {
+            for (let i = 0; i < Math.min(chains1.length, chains2.length, n1); i++) {
+                if (chains1[i] !== chains2[i]) return true;
+            }
+        }
+        
+        // Check if atom_types differ (if available)
+        const atom_types1 = frame1.atom_types || [];
+        const atom_types2 = frame2.atom_types || [];
+        if (atom_types1.length > 0 && atom_types2.length > 0) {
+            for (let i = 0; i < Math.min(atom_types1.length, atom_types2.length, n1); i++) {
+                if (atom_types1[i] !== atom_types2[i]) return true;
+            }
+        }
+        
         return false;
     }
 
@@ -385,7 +410,7 @@
         // Use current frame instead of always first frame (for animation support)
         const currentFrameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
         const currentFrame = object.frames[currentFrameIndex];
-        if (!currentFrame || !currentFrame.residues) return;
+        if (!currentFrame || !currentFrame.coords || currentFrame.coords.length === 0) return;
 
         // Check if sequence actually changed - only rebuild if it did
         const lastFrame = lastSequenceFrameIndex >= 0 && lastSequenceFrameIndex < object.frames.length 
@@ -403,20 +428,28 @@
 
         lastSequenceFrameIndex = currentFrameIndex;
 
-        const { residues, residue_index, chains, atom_types } = currentFrame;
+        // Get data with fallbacks for missing information
+        const n = currentFrame.coords ? currentFrame.coords.length : 0;
+        if (n === 0) return;
+        
+        const residues = currentFrame.residues || [];
+        const residue_index = currentFrame.residue_index || [];
+        const chains = currentFrame.chains || [];
+        const atom_types = currentFrame.atom_types || [];
         
         // Check if residue names are available - if not, we can't group ligands with names
-        const hasResidueNames = residues && residues.length > 0;
-
+        const hasResidueNames = residues && residues.length === n;
+        
         // Create one entry per atom (one atom = one position, no collapsing)
+        // Default to chain 'A', residue name 'UNK', sequential residue index, and type 'P' (protein)
         const atomEntries = [];
-        for (let i = 0; i < residues.length; i++) {
+        for (let i = 0; i < n; i++) {
             atomEntries.push({
-                chain: chains[i],
-                resName: residues[i],
-                resSeq: residue_index[i],
+                chain: (chains && chains.length > i && chains[i]) ? chains[i] : 'A',
+                resName: (residues && residues.length > i && residues[i]) ? residues[i] : 'UNK',
+                resSeq: (residue_index && residue_index.length > i && residue_index[i] != null) ? residue_index[i] : (i + 1),
                 atomIndex: i, // Direct atom index
-                atomType: atom_types && atom_types[i] ? atom_types[i] : 'P' // Store atom type
+                atomType: (atom_types && atom_types.length > i && atom_types[i]) ? atom_types[i] : 'P' // Default to protein
             });
         }
 
