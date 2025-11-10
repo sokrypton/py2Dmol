@@ -1661,12 +1661,13 @@ function setChainResiduesSelected(chain, selected) {
   const hasPartialSelections = newAtoms.size > 0 && 
                                newAtoms.size < frame0.chains.length;
   
-  // Use explicit mode if we have partial selections OR if not all chains are selected
-  const selectionMode = (allChainsSelected && !hasPartialSelections) ? 'default' : 'explicit';
+  // Use explicit mode if we have partial selections OR if not all chains are selected OR if no atoms are selected
+  // This allows all chains to be deselected (empty chains set with explicit mode)
+  const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
   
-  // If all chains are selected AND no partial selections, use empty chains set with default mode
-  // Otherwise, keep explicit chain selection to preserve partial atom selections
-  const chainsToSet = (allChainsSelected && !hasPartialSelections) ? new Set() : newChains;
+  // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+  // Otherwise, keep explicit chain selection (allows empty chains)
+  const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
   
   viewerApi.renderer.setSelection({ 
     chains: chainsToSet,

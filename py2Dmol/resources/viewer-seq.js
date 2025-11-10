@@ -1009,11 +1009,22 @@
                         }
                         
                         // Update selection in real-time during drag
+                        const current = renderer?.getSelection();
+                        const allChains = new Set(frame.chains);
+                        const allChainsSelected = newChains.size === allChains.size && 
+                                                Array.from(newChains).every(c => allChains.has(c));
+                        const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < frame.chains.length;
+                        // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
+                        const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                        // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+                        // Otherwise, keep explicit chain selection (allows empty chains)
+                        const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                        
                         renderer.setSelection({
                             atoms: newAtoms,
-                            chains: newChains,
-                            selectionMode: currentSelection?.selectionMode || 'explicit',
-                            paeBoxes: currentSelection?.paeBoxes || []
+                            chains: chainsToSet,
+                            selectionMode: selectionMode,
+                            paeBoxes: []
                         });
                     }
                 }
@@ -1041,12 +1052,21 @@
                 // Determine if we have partial selections
                 const totalAtoms = frame?.chains?.length || 0;
                 const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalAtoms;
+                // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
+                const allChains = new Set(frame.chains);
+                const allChainsSelected = newChains.size === allChains.size && 
+                                        Array.from(newChains).every(c => allChains.has(c));
+                // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
+                const selectionMode = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? 'default' : 'explicit';
+                // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+                // Otherwise, keep explicit chain selection (allows empty chains)
+                const chainsToSet = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? new Set() : newChains;
                 
                 // Clear PAE boxes when finishing drag selection
                 renderer.setSelection({ 
                     atoms: previewSelectionSet,
-                    chains: newChains,
-                    selectionMode: hasPartialSelections ? 'explicit' : 'default',
+                    chains: chainsToSet,
+                    selectionMode: selectionMode,
                     paeBoxes: [] 
                 });
             } else if (dragState.isDragging && !sequenceViewMode && dragState.dragStart && dragState.dragStart.chain) {
@@ -1084,11 +1104,20 @@
                     // Determine if we have partial selections
                     const totalAtoms = frame?.chains?.length || 0;
                     const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                    // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
+                    const allChains = new Set(frame.chains);
+                    const allChainsSelected = newChains.size === allChains.size && 
+                                            Array.from(newChains).every(c => allChains.has(c));
+                    // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
+                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                    // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+                    // Otherwise, keep explicit chain selection (allows empty chains)
+                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
                     
                     renderer.setSelection({ 
                         atoms: newAtoms,
-                        chains: newChains,
-                        selectionMode: hasPartialSelections ? 'explicit' : 'default',
+                        chains: chainsToSet,
+                        selectionMode: selectionMode,
                         paeBoxes: [] 
                     });
                 }
@@ -1122,7 +1151,45 @@
             e.preventDefault(); // Prevent scrolling
             
             const pos = getCanvasPositionFromMouse(e, newCanvas);
+            const chainLabelPos = getChainLabelAtCanvasPosition(pos.x, pos.y, layout);
             const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
+            
+            if (chainLabelPos) {
+                if (sequenceViewMode) {
+                    // In sequence mode, chain labels toggle chain selection
+                    const chainId = chainLabelPos.chainId;
+                    const current = renderer?.getSelection();
+                    const isSelected = current?.chains?.has(chainId) || 
+                        (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+                    if (callbacks.setChainResiduesSelected) {
+                        callbacks.setChainResiduesSelected(chainId, !isSelected);
+                    }
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
+                    return;
+                } else {
+                    // In chain mode, enable drag selection on chain labels
+                    const chainId = chainLabelPos.chainId;
+                    const boundary = chainBoundaries.find(b => b.chain === chainId);
+                    if (!boundary) return;
+                    
+                    const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                    if (chainAtoms.length === 0) return;
+                    
+                    dragState.isDragging = true;
+                    dragState.hasMoved = false;
+                    dragState.dragStart = chainAtoms[0];
+                    dragState.dragEnd = chainAtoms[chainAtoms.length - 1];
+                    
+                    const current = renderer?.getSelection();
+                    const isInitiallySelected = current?.chains?.has(chainId) || 
+                        (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+                    dragState.dragUnselectMode = isInitiallySelected;
+                    // Store initial selection state for toggling during drag
+                    dragState.initialSelectionState = new Set(current?.atoms || []);
+                    return;
+                }
+            }
             
             if (residuePos && residuePos.atomIndex >= 0) {
                 const atomIndex = residuePos.atomIndex;
@@ -1165,12 +1232,21 @@
                 // Determine if we have partial selections
                 const totalAtoms = frame?.chains?.length || 0;
                 const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
+                const allChains = new Set(frame.chains);
+                const allChainsSelected = newChains.size === allChains.size && 
+                                        Array.from(newChains).every(c => allChains.has(c));
+                // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
+                const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+                // Otherwise, keep explicit chain selection (allows empty chains)
+                const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
                 
                 // Clear PAE boxes when editing sequence selection
                 renderer.setSelection({ 
                     atoms: newAtoms,
-                    chains: newChains,
-                    selectionMode: hasPartialSelections ? 'explicit' : 'default',
+                    chains: chainsToSet,
+                    selectionMode: selectionMode,
                     paeBoxes: [] 
                 });
                 // Force update to reflect changes
@@ -1187,9 +1263,90 @@
             e.preventDefault(); // Prevent scrolling
             
             const pos = getCanvasPositionFromMouse(e, newCanvas);
+            const chainLabelPos = getChainLabelAtCanvasPosition(pos.x, pos.y, layout);
             const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
             
-            if (residuePos && residuePos.atomIndex >= 0) {
+            if (chainLabelPos && !sequenceViewMode) {
+                // In chain mode, handle drag over chain labels
+                const chainId = chainLabelPos.chainId;
+                const boundary = chainBoundaries.find(b => b.chain === chainId);
+                if (!boundary) return;
+                
+                const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                if (chainAtoms.length === 0) return;
+                
+                // Find the end chain atom
+                const endAtom = chainAtoms[chainAtoms.length - 1];
+                if (endAtom && endAtom !== dragState.dragEnd) {
+                    dragState.dragEnd = endAtom;
+                    dragState.hasMoved = true;
+                    
+                    // Get all atoms from start to end (including all chains in between)
+                    const startChainId = dragState.dragStart.chain;
+                    const startBoundary = chainBoundaries.find(b => b.chain === startChainId);
+                    const endBoundary = boundary;
+                    
+                    if (startBoundary && endBoundary) {
+                        const startBoundaryIdx = chainBoundaries.findIndex(b => b.chain === startChainId);
+                        const endBoundaryIdx = chainBoundaries.findIndex(b => b.chain === chainId);
+                        const [minBoundary, maxBoundary] = [Math.min(startBoundaryIdx, endBoundaryIdx), Math.max(startBoundaryIdx, endBoundaryIdx)];
+                        
+                        // Start from initial selection state, not current selection
+                        const newAtoms = new Set(dragState.initialSelectionState);
+                        
+                        // Add all atoms from all chains in the drag range
+                        for (let bIdx = minBoundary; bIdx <= maxBoundary; bIdx++) {
+                            const b = chainBoundaries[bIdx];
+                            const atomsInChain = sortedAtomEntries.slice(b.startIndex, b.endIndex + 1);
+                            for (const atom of atomsInChain) {
+                                // Toggle items in the drag range to match the initial drag mode
+                                if (dragState.dragUnselectMode) {
+                                    newAtoms.delete(atom.atomIndex);
+                                } else {
+                                    newAtoms.add(atom.atomIndex);
+                                }
+                            }
+                        }
+                        
+                        if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
+                        lastSequenceUpdateHash = null;
+                        scheduleRender();
+                        
+                        // Update 3D viewer in real-time during drag
+                        const objectName = renderer.currentObjectName;
+                        const obj = renderer.objectsData[objectName];
+                        const frame = obj?.frames?.[0];
+                        const newChains = new Set();
+                        if (frame?.chains) {
+                            for (const atomIdx of newAtoms) {
+                                const atomChain = frame.chains[atomIdx];
+                                if (atomChain) {
+                                    newChains.add(atomChain);
+                                }
+                            }
+                        }
+                        
+                        // Update selection in real-time during drag
+                        const current = renderer?.getSelection();
+                        const allChains = new Set(frame.chains);
+                        const allChainsSelected = newChains.size === allChains.size && 
+                                                Array.from(newChains).every(c => allChains.has(c));
+                        const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < frame.chains.length;
+                        // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
+                        const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                        // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+                        // Otherwise, keep explicit chain selection (allows empty chains)
+                        const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                        
+                        renderer.setSelection({
+                            atoms: newAtoms,
+                            chains: chainsToSet,
+                            selectionMode: selectionMode,
+                            paeBoxes: []
+                        });
+                    }
+                }
+            } else if (residuePos && residuePos.atomIndex >= 0) {
                 const atomIndex = residuePos.atomIndex;
                 const residueData = allResidueData.find(r => r.atomIndex === atomIndex);
                 if (residueData && residueData !== dragState.dragEnd) {
