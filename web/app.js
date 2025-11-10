@@ -2603,21 +2603,33 @@ function getViewerSvgString() {
         throw new Error("canvas2svg library not loaded");
     }
     
-    // Get canvas dimensions
-    const width = canvas.width;
-    const height = canvas.height;
+    // Get display dimensions (not internal canvas dimensions which include DPI scaling)
+    // Use renderer's displayWidth/displayHeight if available, otherwise fall back to canvas style dimensions
+    const width = renderer.displayWidth || parseInt(canvas.style.width) || canvas.width;
+    const height = renderer.displayHeight || parseInt(canvas.style.height) || canvas.height;
     
-    // Create SVG context using canvas2svg
+    // Create SVG context using canvas2svg with display dimensions
+    // The SVG context should not be scaled since we're using display dimensions
     const svgCtx = new C2S(width, height);
     
-    // Store original context
+    // Store original context and dimensions
     const originalCtx = renderer.ctx;
+    const originalDisplayWidth = renderer.displayWidth;
+    const originalDisplayHeight = renderer.displayHeight;
+    
+    // Temporarily update renderer's display dimensions to match SVG
+    renderer.displayWidth = width;
+    renderer.displayHeight = height;
     
     // Temporarily replace the renderer's context with SVG context
     renderer.ctx = svgCtx;
     
     // Re-render the scene to the SVG context
     renderer.render();
+    
+    // Restore original display dimensions
+    renderer.displayWidth = originalDisplayWidth;
+    renderer.displayHeight = originalDisplayHeight;
     
     // Get the SVG string
     const svgString = svgCtx.getSerializedSvg();
