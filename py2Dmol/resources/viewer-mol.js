@@ -1183,14 +1183,14 @@ function initializePy2DmolViewer(containerElement) {
                 return;
             }
 
-            const currentFrameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
-            const frame = object.frames[currentFrameIndex];
-            if (!frame || !frame.coords) {
-                console.warn("Current frame has no coordinates. Cannot extract selection.");
+            // Use first frame to determine selection (selection is frame-independent)
+            const firstFrame = object.frames[0];
+            if (!firstFrame || !firstFrame.coords) {
+                console.warn("First frame has no coordinates. Cannot extract selection.");
                 return;
             }
 
-            // Get selected atoms
+            // Get selected atoms (selection is frame-independent, so use first frame to determine indices)
             let selectedAtoms = new Set();
             
             // Check selectionModel first (explicit selection)
@@ -1203,7 +1203,7 @@ function initializePy2DmolViewer(containerElement) {
                 // No selection - all atoms visible (could extract all, but warn user)
                 console.warn("No selection found. All atoms are visible. Extracting all atoms.");
                 // Extract all atoms
-                for (let i = 0; i < frame.coords.length; i++) {
+                for (let i = 0; i < firstFrame.coords.length; i++) {
                     selectedAtoms.add(i);
                 }
             }
@@ -1216,88 +1216,28 @@ function initializePy2DmolViewer(containerElement) {
             // Convert to sorted array for consistent ordering
             const selectedIndices = Array.from(selectedAtoms).sort((a, b) => a - b);
 
-            // Extract frame data for selected atoms
-            const extractedFrame = {
-                coords: [],
-                chains: frame.chains ? [] : undefined,
-                plddts: frame.plddts ? [] : undefined,
-                atom_types: frame.atom_types ? [] : undefined,
-                residues: frame.residues ? [] : undefined,
-                residue_index: frame.residue_index ? [] : undefined,
-                pae: undefined // Will be handled separately
-            };
-
-            // Extract data for each selected atom
-            for (const idx of selectedIndices) {
-                if (idx >= 0 && idx < frame.coords.length) {
-                    extractedFrame.coords.push(frame.coords[idx]);
-                    
-                    if (frame.chains && idx < frame.chains.length) {
-                        extractedFrame.chains.push(frame.chains[idx]);
-                    }
-                    if (frame.plddts && idx < frame.plddts.length) {
-                        extractedFrame.plddts.push(frame.plddts[idx]);
-                    }
-                    if (frame.atom_types && idx < frame.atom_types.length) {
-                        extractedFrame.atom_types.push(frame.atom_types[idx]);
-                    }
-                    if (frame.residues && idx < frame.residues.length) {
-                        extractedFrame.residues.push(frame.residues[idx]);
-                    }
-                    if (frame.residue_index && idx < frame.residue_index.length) {
-                        extractedFrame.residue_index.push(frame.residue_index[idx]);
-                    }
-                }
-            }
-
-            // Filter PAE matrix if present
-            if (frame.pae && Array.isArray(frame.pae) && frame.pae.length > 0) {
-                // Create mapping from original index to new index
-                const indexMap = new Map();
-                selectedIndices.forEach((originalIdx, newIdx) => {
-                    indexMap.set(originalIdx, newIdx);
-                });
-
-                // Create new PAE matrix with only selected positions
-                const newPAE = [];
-                for (let i = 0; i < selectedIndices.length; i++) {
-                    const row = [];
-                    for (let j = 0; j < selectedIndices.length; j++) {
-                        const originalI = selectedIndices[i];
-                        const originalJ = selectedIndices[j];
-                        if (originalI < frame.pae.length && originalJ < frame.pae[originalI].length) {
-                            row.push(frame.pae[originalI][originalJ]);
-                        } else {
-                            row.push(0); // Default value if out of bounds
-                        }
-                    }
-                    newPAE.push(row);
-                }
-                extractedFrame.pae = newPAE;
-            }
-
             // Generate object name with chain ranges: name_A1-100_B10-20 or name_A_B (if entire chains)
             const baseName = this.currentObjectName;
             
-            // Group selected atoms by chain and find residue ranges
+            // Group selected atoms by chain and find residue ranges (use first frame for naming)
             const chainRanges = new Map(); // chain -> {min, max, selectedCount, totalCount}
             
             // First, count total atoms per chain in original frame
             const chainTotalCounts = new Map(); // chain -> total atom count
-            if (frame.chains) {
-                for (let i = 0; i < frame.chains.length; i++) {
-                    const chain = frame.chains[i];
+            if (firstFrame.chains) {
+                for (let i = 0; i < firstFrame.chains.length; i++) {
+                    const chain = firstFrame.chains[i];
                     chainTotalCounts.set(chain, (chainTotalCounts.get(chain) || 0) + 1);
                 }
             }
             
             // Then, count selected atoms per chain and find ranges
             const chainSelectedCounts = new Map(); // chain -> selected atom count
-            if (frame.chains && frame.residue_index) {
+            if (firstFrame.chains && firstFrame.residue_index) {
                 for (const idx of selectedIndices) {
-                    if (idx < frame.chains.length && idx < frame.residue_index.length) {
-                        const chain = frame.chains[idx];
-                        const resIdx = frame.residue_index[idx];
+                    if (idx < firstFrame.chains.length && idx < firstFrame.residue_index.length) {
+                        const chain = firstFrame.chains[idx];
+                        const resIdx = firstFrame.residue_index[idx];
                         
                         chainSelectedCounts.set(chain, (chainSelectedCounts.get(chain) || 0) + 1);
                         
@@ -1345,9 +1285,73 @@ function initializePy2DmolViewer(containerElement) {
                 extractCounter++;
             }
 
-            // Create new object and add extracted frame
+            // Create new object
             this.addObject(extractName);
-            this.addFrame(extractedFrame, extractName);
+
+            // Extract all frames, not just the current one
+            for (let frameIndex = 0; frameIndex < object.frames.length; frameIndex++) {
+                const frame = object.frames[frameIndex];
+                if (!frame || !frame.coords) {
+                    continue; // Skip invalid frames
+                }
+
+                // Extract frame data for selected atoms
+                const extractedFrame = {
+                    coords: [],
+                    chains: frame.chains ? [] : undefined,
+                    plddts: frame.plddts ? [] : undefined,
+                    atom_types: frame.atom_types ? [] : undefined,
+                    residues: frame.residues ? [] : undefined,
+                    residue_index: frame.residue_index ? [] : undefined,
+                    pae: undefined // Will be handled separately
+                };
+
+                // Extract data for each selected atom
+                for (const idx of selectedIndices) {
+                    if (idx >= 0 && idx < frame.coords.length) {
+                        extractedFrame.coords.push(frame.coords[idx]);
+                        
+                        if (frame.chains && idx < frame.chains.length) {
+                            extractedFrame.chains.push(frame.chains[idx]);
+                        }
+                        if (frame.plddts && idx < frame.plddts.length) {
+                            extractedFrame.plddts.push(frame.plddts[idx]);
+                        }
+                        if (frame.atom_types && idx < frame.atom_types.length) {
+                            extractedFrame.atom_types.push(frame.atom_types[idx]);
+                        }
+                        if (frame.residues && idx < frame.residues.length) {
+                            extractedFrame.residues.push(frame.residues[idx]);
+                        }
+                        if (frame.residue_index && idx < frame.residue_index.length) {
+                            extractedFrame.residue_index.push(frame.residue_index[idx]);
+                        }
+                    }
+                }
+
+                // Filter PAE matrix if present (copy PAE for all frames if available)
+                if (frame.pae && Array.isArray(frame.pae) && frame.pae.length > 0) {
+                    // Create new PAE matrix with only selected positions
+                    const newPAE = [];
+                    for (let i = 0; i < selectedIndices.length; i++) {
+                        const row = [];
+                        for (let j = 0; j < selectedIndices.length; j++) {
+                            const originalI = selectedIndices[i];
+                            const originalJ = selectedIndices[j];
+                            if (originalI < frame.pae.length && originalJ < frame.pae[originalI].length) {
+                                row.push(frame.pae[originalI][originalJ]);
+                            } else {
+                                row.push(0); // Default value if out of bounds
+                            }
+                        }
+                        newPAE.push(row);
+                    }
+                    extractedFrame.pae = newPAE;
+                }
+
+                // Add extracted frame to new object
+                this.addFrame(extractedFrame, extractName);
+            }
 
             // Reset selection to show all atoms in extracted object
             this.setSelection({
@@ -1378,7 +1382,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.objectSelect.dispatchEvent(new Event('change'));
             }
 
-            console.log(`Extracted ${selectedIndices.length} atoms to new object: ${extractName}`);
+            console.log(`Extracted ${selectedIndices.length} atoms from ${object.frames.length} frame(s) to new object: ${extractName}`);
         }
 
         // Set the current frame and render it
