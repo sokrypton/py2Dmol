@@ -53,12 +53,18 @@
             cursor: grabbing;
         }
 
-        #colorSelect {
+        /* Consistent form controls */
+        select {
             font-size: 12px;
-            padding: 4px 8px;
+            padding: 2px 6px;
             border: 1px solid #ccc;
             border-radius: 4px;
-            width: 100%; /* Make it fill its new container */
+            height: 28px;
+            background: #fff;
+        }
+        select:focus {
+            outline: none;
+            border-color: #999;
         }
 
         #optionsContainer {
@@ -73,22 +79,20 @@
             display: flex;
             align-items: center;
             gap: 4px;
-            width: 100%; 
+            width: 100%;
         }
         .toggle-item label { 
             cursor: pointer; 
             white-space: nowrap;
-            width: 50px; /* Give label a fixed width */
+            width: 50px;
             flex-shrink: 0;
-            font-size: 12px; /* Ensure label font size matches */
+            font-size: 12px;
         }
-        /* Style for the shadow/outline/pastel checkbox labels */
+        /* Checkbox labels don't need fixed width */
         .toggle-item label[for="shadowEnabledCheckbox"],
-        .toggle-item label[for="outlineEnabledCheckbox"],
-        .toggle-item label[for="colorblindCheckbox"],
-        .toggle-item label[for="rotationCheckbox"] {
-            width: auto; /* Let it be auto-sized */
-            margin-left: 5px; /* Add space next to the slider */
+        .toggle-item label[for="colorblindCheckbox"] {
+            width: auto;
+            margin-left: 4px;
         }
         .toggle-item input[type="range"] {
             cursor: pointer;
@@ -118,22 +122,73 @@
             font-size: 12px;
         }
         
+        /* Simple compact button styles - no shadows, no animations */
         .controlButton {
-            padding: 5px 10px;
-            border-radius: 4px;
+            position: relative;
+            padding: 0 8px;
             border: 1px solid #ccc;
+            border-radius: 4px;
             background: #f0f0f0;
+            height: 28px;
+            min-width: 50px;
             cursor: pointer;
-            min-width: 60px;
             font-size: 12px;
-            vertical-align: middle;
-            margin-right: 5px;
+            font-weight: 500;
+            color: #1f2937;
             flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+        }
+        /* Record and Play buttons - smaller for emoji/symbol */
+        #recordButton, #playButton {
+            min-width: 32px;
+            padding: 0 6px;
+        }
+        /* Span styling for toggle buttons only */
+        .controlButton.btn-toggle > span {
+            display: inline;
+            color: inherit;
+        }
+        .controlButton:hover:not(:disabled) {
+            background: #e0e0e0;
+        }
+        .controlButton:active:not(:disabled) {
+            background: #d0d0d0;
         }
         .controlButton:disabled {
+            opacity: 0.6;
             cursor: not-allowed;
-            background: #eee;
-            color: #999;
+            background: #f0f0f0;
+        }
+        /* Toggle button (Rotate) - checked state */
+        .controlButton.btn-toggle {
+            padding: 0 8px;
+        }
+        .controlButton.btn-toggle input[type="checkbox"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            margin: 0;
+            cursor: pointer;
+            z-index: 1;
+        }
+        .controlButton.btn-toggle input:checked + span {
+            background: #10b981;
+            color: #fff;
+        }
+        .controlButton.btn-toggle:has(input:checked) {
+            background: #10b981;
+            color: #fff;
+        }
+        .controlButton.btn-toggle input:not(:checked) + span {
+            background: transparent;
+            color: #1f2937;
+        }
+        .controlButton.btn-toggle:has(input:not(:checked)) {
+            background: #f0f0f0;
+            color: #1f2937;
         }
         #frameSlider {
             flex-grow: 1; 
@@ -188,7 +243,7 @@
         .control-group {
             display: flex;
             flex-direction: column;
-            gap: 6px;
+            gap: 4px;
         }
         .control-group > label {
             font-weight: 600;
@@ -200,7 +255,7 @@
         #mainControlsContainer {
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 4px;
         }
         
         /* Advanced Options Container */
@@ -211,26 +266,11 @@
         }
         
         /* Advanced Options Toggle Button */
-        #advancedOptionsToggle {
-            width: 100%;
-            padding: 6px 10px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            background: #f0f0f0;
-            cursor: pointer;
-            font-size: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            transition: background-color 0.2s;
-        }
-        #advancedOptionsToggle:hover {
-            background: #e0e0e0;
-        }
+        /* Advanced Options toggle uses .controlButton styles */
         #advancedOptionsToggle .toggle-icon {
-            transition: transform 0.3s ease;
             font-size: 10px;
             color: #666;
+            margin-left: 4px;
         }
         #advancedOptionsToggle.expanded .toggle-icon {
             transform: rotate(180deg);
@@ -242,7 +282,6 @@
             flex-direction: column;
             gap: 6px;
             overflow: hidden;
-            transition: max-height 0.3s ease-out;
         }
         #advancedOptionsContent.visible {
             display: flex;
@@ -315,7 +354,8 @@
 
             <!-- Animation Controls -->
             <div id="controlsContainer">
-                <button id="playButton" class="controlButton">Play</button>
+                <button id="playButton" class="controlButton">▶︎</button>
+                <button id="recordButton" class="controlButton" title="Record animation to video file">🔴</button>
                 <input type="range" id="frameSlider" min="0" max="0" value="0">
                 <span id="frameCounter">Frame: 0 / 0</span>
                 <select id="speedSelect">
@@ -336,6 +376,20 @@
             
             <!-- Main Controls (always visible) -->
             <div id="mainControlsContainer" class="control-group">
+                <!-- Action Buttons Row (at top) -->
+                <div style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
+                    <!-- Save SVG Button -->
+                    <div class="toggle-item" style="width: auto; margin: 0;">
+                        <button id="saveSvgButton" class="controlButton" title="Save as SVG">SVG</button>
+                    </div>
+                    <!-- Rotate Toggle Button -->
+                    <div class="toggle-item" style="width: auto; margin: 0;">
+                        <label class="controlButton btn-toggle" title="Toggle auto-rotation">
+                            <input type="checkbox" id="rotationCheckbox">
+                            <span>Rotate</span>
+                        </label>
+                    </div>
+                </div>
                 <!-- Object Dropdown -->
                 <div class="toggle-item">
                     <label for="objectSelect" style="width: 50px;">Object:</label>
@@ -343,30 +397,12 @@
                         <!-- Initially empty -->
                     </select>
                 </div>
-                <!-- Record Button -->
-                <div class="toggle-item">
-                    <button id="recordButton" class="controlButton" style="width: 100%;" title="Record animation to video file">
-                        <i class="fa-solid fa-video"></i> Record
-                    </button>
-                </div>
-                <!-- Save SVG Button -->
-                <div class="toggle-item">
-                    <button id="saveSvgButton" class="controlButton" style="width: 100%;" title="Save as SVG">
-                        <i class="fa-solid fa-camera"></i> Save SVG
-                    </button>
-                </div>
-                <!-- Rotate Checkbox -->
-                <div class="toggle-item"> 
-                    <input type="checkbox" id="rotationCheckbox">
-                    <label for="rotationCheckbox">Rotate</label>
-                </div>
             </div>
 
             <!-- Advanced Options (collapsible) -->
             <div id="advancedOptionsContainer" class="control-group">
                 <button id="advancedOptionsToggle" class="controlButton">
-                    <span>⚙️ Advanced</span>
-                    <span class="toggle-icon">▼</span>
+                    <span>Advanced <span class="toggle-icon">▼</span></span>
                 </button>
                 <div id="advancedOptionsContent">
                     <!-- Color Select -->

@@ -1770,15 +1770,16 @@ function initializePy2DmolViewer(containerElement) {
             }
             
             this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
-            // Update play button - use icons if available (web version), otherwise use text (Colab)
+            // Update play button - use symbols
             if (this.playButton) {
                 const hasIcon = this.playButton.querySelector('i');
                 if (hasIcon) {
-                    // Web version with Font Awesome - use icons
+                    // Web version with Font Awesome - use icons (innerHTML clears everything)
                     this.playButton.innerHTML = this.isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
                 } else {
-                    // Colab version without Font Awesome - use text
-                    this.playButton.textContent = this.isPlaying ? 'Pause' : 'Play';
+                    // Use symbols for play/pause - clear all content first
+                    this.playButton.innerHTML = '';
+                    this.playButton.textContent = this.isPlaying ? '⏸' : '▶︎';
                 }
             }
             
@@ -1786,6 +1787,7 @@ function initializePy2DmolViewer(containerElement) {
             if (this.recordButton) {
                 const span = this.recordButton.querySelector('span');
                 if (span) {
+                    // index.html: has span with Font Awesome icons
                     if (this.isRecording) {
                         span.innerHTML = '<i class="fa-solid fa-stop"></i>';
                         span.style.background = '#ef4444';
@@ -1794,6 +1796,17 @@ function initializePy2DmolViewer(containerElement) {
                         span.innerHTML = '<i class="fa-solid fa-video"></i>';
                         span.style.background = '#e5e7eb';
                         span.style.color = '#374151';
+                    }
+                } else {
+                    // viewer.html: just emoji, change button background color
+                    if (this.isRecording) {
+                        this.recordButton.style.background = '#ef4444';
+                        this.recordButton.style.color = '#fff';
+                        this.recordButton.style.borderColor = '#dc2626';
+                    } else {
+                        this.recordButton.style.background = '#f0f0f0';
+                        this.recordButton.style.color = '#1f2937';
+                        this.recordButton.style.borderColor = '#ccc';
                     }
                 }
                 const canRecord = this.currentObjectName && 
@@ -2037,6 +2050,9 @@ function initializePy2DmolViewer(containerElement) {
                 // Start recording
                 this.mediaRecorder.start(100); // Collect data every 100ms
                 
+                // Update UI to show recording state
+                this.updateUIControls();
+                
                 // Stop any existing animation first
                 this.stopAnimation();
                 
@@ -2219,7 +2235,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.frameCounter.textContent = 'Frame: 0/0';
             }
             if (this.playButton) {
-                this.playButton.textContent = '▶';
+                this.playButton.textContent = '▶︎';
             }
             if (this.recordButton) {
                 this.recordButton.classList.remove('btn-toggle');
