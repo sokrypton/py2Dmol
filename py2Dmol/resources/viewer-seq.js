@@ -359,6 +359,19 @@
                         isSelected,
                         dimFactor
                     );
+                } else if (residueData.atomIndex === -1) {
+                    // Gap marker (missing residues) - draw as "-"
+                    drawResidueCharOnCanvas(
+                        ctx,
+                        residueData.letter || '-',
+                        pos.x,
+                        pos.y,
+                        pos.width,
+                        pos.height,
+                        color,
+                        false, // Gaps are never selected
+                        dimFactor
+                    );
                 } else if (residueData.atomIndex >= 0) {
                     // Regular residue character
                     const isSelected = visibleAtoms.has(residueData.atomIndex);
