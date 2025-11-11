@@ -6,13 +6,10 @@
     <title>py2Dmol_viewer</title>
     <style>
         * { box-sizing: border-box; }
-        /* Make the container relative to position the init-error message */
-        .py2dmol-container {
-            position: relative;
-        }
+        
         body {
             margin: 0;
-            padding: 8px; /* Add some padding around the whole thing */
+            padding: 8px;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: transparent;
         }
@@ -20,275 +17,356 @@
         #mainContainer {
             display: flex;
             flex-direction: row;
-            align-items: flex-start; /* Align tops */
-            gap: 15px; /* Space between canvas column and controls column */
+            align-items: flex-start;
+            gap: 15px;
             background: transparent;
         }
         
         #viewerColumn {
             display: flex;
             flex-direction: column;
-            gap: 10px; /* Space between canvas and anim controls */
+            gap: 10px;
         }
 
         #canvasContainer {
             display: inline-block;
             border: 1px solid #ddd;
             border-radius: 12px;
-            overflow: auto; /* REQUIRED for resize to work. Was 'hidden' */
+            overflow: auto;
             background: #ffffff;
-            resize: both; /* ADDED: This enables the resize handle */
-            /* ADDED: Set a minimum size so it doesn't disappear */
+            resize: both;
             min-width: 150px; 
             min-height: 150px;
         }
+        
         #canvas {
             background: #ffffff;
             cursor: grab;
             display: block;
-            /* Prevent touch actions like scrolling on the canvas */
             touch-action: none;
         }
+        
         #canvas:active {
             cursor: grabbing;
         }
 
-        /* Consistent form controls */
-        select {
+        /* Base styles for all form elements (except range) */
+        select,
+        .controlButton {
             font-size: 12px;
-            padding: 2px 6px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
+            padding: 4px 8px;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
             height: 28px;
-            background: #fff;
-        }
-        select:focus {
-            outline: none;
-            border-color: #999;
-        }
-
-        #optionsContainer {
-            font-size: 12px;
-            color: #333;
-            display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 8px; /* Increased gap for clarity */
-        }
-        .toggle-item {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            width: 100%;
-        }
-        .toggle-item label { 
-            cursor: pointer; 
-            white-space: nowrap;
-            width: 50px;
-            flex-shrink: 0;
-            font-size: 12px;
-        }
-        /* Checkbox labels don't need fixed width */
-        .toggle-item label[for="shadowEnabledCheckbox"],
-        .toggle-item label[for="colorblindCheckbox"] {
-            width: auto;
-            margin-left: 4px;
-        }
-        .toggle-item input[type="range"] {
+            background: white;
+            color: #374151;
             cursor: pointer;
-            flex-grow: 1; /* Let slider fill the rest */
-            width: auto; /* Let flexbox handle it */
-            min-width: 0; /* Fix for flexbox overflow */
-        }
-        .toggle-item input[type="checkbox"] { 
-            cursor: pointer; 
-            margin: 0;
-            flex-shrink: 0; /* Prevent checkbox from shrinking */
-        }
-
-
-        /* Animation Controls Container */
-        #controlsContainer {
-            display: flex;
-            flex-wrap: nowrap;
-            align-items: center;
-            padding: 0 10px;
-            width: 100%;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            font-size: 12px;
+            font-family: inherit;
         }
         
-        #objectContainer {
-            font-size: 12px;
+        select:hover,
+        .controlButton:hover:not(:disabled) {
+            border-color: #d1d5db;
+            background: #f9fafb;
         }
         
-        /* Simple compact button styles - no shadows, no animations */
+        select:active,
+        .controlButton:active:not(:disabled) {
+            background: #f3f4f6;
+        }
+        
+        select:focus,
+        .controlButton:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        
+        select:disabled,
+        .controlButton:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            background: #f3f4f6;
+            color: #9ca3af;
+        }
+        
+        /* Ensure range inputs have no border/outline */
+        input[type="range"] {
+            border: none !important;
+            outline: none !important;
+            box-shadow: none !important;
+        }
+
+        /* Button specific styles */
         .controlButton {
             position: relative;
-            padding: 0 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            background: #f0f0f0;
-            height: 28px;
             min-width: 50px;
-            cursor: pointer;
-            font-size: 12px;
             font-weight: 500;
-            color: #1f2937;
-            flex-shrink: 0;
             display: inline-flex;
             align-items: center;
             justify-content: center;
             white-space: nowrap;
-        }
-        /* Record and Play buttons - smaller for emoji/symbol */
-        #recordButton, #playButton {
-            min-width: 32px;
-            padding: 0 6px;
-        }
-        /* Span styling for toggle buttons only */
-        .controlButton.btn-toggle > span {
-            display: inline;
-            color: inherit;
-        }
-        .controlButton:hover:not(:disabled) {
-            background: #e0e0e0;
-        }
-        .controlButton:active:not(:disabled) {
-            background: #d0d0d0;
-        }
-        .controlButton:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            background: #f0f0f0;
-        }
-        /* Toggle button (Rotate) - checked state */
-        .controlButton.btn-toggle {
-            padding: 0 8px;
-        }
-        .controlButton.btn-toggle input[type="checkbox"] {
-            position: absolute;
-            inset: 0;
-            opacity: 0;
             margin: 0;
-            cursor: pointer;
-            z-index: 1;
         }
-        .controlButton.btn-toggle input:checked + span {
-            background: #10b981;
-            color: #fff;
+        
+        .controlButton:not(.btn-toggle) {
+            /* Regular buttons get padding */
         }
-        .controlButton.btn-toggle:has(input:checked) {
-            background: #10b981;
-            color: #fff;
-        }
-        .controlButton.btn-toggle input:not(:checked) + span {
+        
+        .btn-toggle {
+            /* Toggle buttons have no padding - label has it */
+            padding: 0;
+            border: none;
             background: transparent;
-            color: #1f2937;
         }
-        .controlButton.btn-toggle:has(input:not(:checked)) {
-            background: #f0f0f0;
-            color: #1f2937;
+        
+        .btn-toggle:hover {
+            border: none;
+            background: transparent;
         }
+        
+        #recordButton, 
+        #playButton {
+            min-width: 28px;
+            padding: 0 5px;
+        }
+        
+        #recordButton {
+            color: #ef4444;
+            font-size: 14px;
+            line-height: 1;
+        }
+        
+        #recordButton:hover:not(:disabled) {
+            color: #dc2626;
+            background: #fef2f2;
+        }
+        
+        #recordButton:active:not(:disabled) {
+            color: #b91c1c;
+            background: #fee2e2;
+        }
+
+        /* Toggle button styles */
+        .btn-toggle {
+            overflow: hidden;
+            padding: 0;
+            display: block;
+            width: 100%;
+        }
+        
+        .btn-toggle input[type="checkbox"] {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+            pointer-events: none;
+        }
+        
+        .btn-toggle .btn-label {
+            display: block;
+            padding: 4px 8px;
+            cursor: pointer;
+            background: white;
+            color: #374151;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            text-align: center;
+            width: 100%;
+            height: 28px;
+            line-height: 18px;
+            box-sizing: border-box;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .btn-toggle .btn-label:hover {
+            background: #f9fafb;
+            border-color: #d1d5db;
+        }
+        
+        .btn-toggle .btn-label:active {
+            background: #f3f4f6;
+        }
+        
+        /* Checked state for toggle buttons */
+        .btn-toggle input[type="checkbox"]:checked + .btn-label {
+            background: #e5e7eb;
+            border-color: #d1d5db;
+            color: #374151;
+        }
+        
+        .btn-toggle input[type="checkbox"]:checked + .btn-label:hover {
+            background: #d1d5db;
+            border-color: #9ca3af;
+            color: #374151;
+        }
+        
+        .btn-toggle input[type="checkbox"]:checked + .btn-label:active {
+            background: #9ca3af;
+            border-color: #6b7280;
+            color: #374151;
+        }
+
+        /* Layout containers */
+        #controlsContainer {
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            width: 100%;
+            gap: 5px;
+            flex-wrap: nowrap;
+        }
+        
         #frameSlider {
             flex-grow: 1; 
             width: auto;
-            margin: 0 10px;
-            vertical-align: middle;
+            min-width: 100px;
+            margin: 0;
+            border: none !important;
+            outline: none !important;
+            box-shadow: none !important;
         }
+        
         #frameCounter {
-            color: #333;
-            vertical-align: middle;
-            min-width: 80px;
-            display: inline-block;
-            flex-shrink: 0;
-        }
-        #speedSelect {
+            color: #374151;
+            min-width: 90px;
             font-size: 12px;
-            padding: 4px 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            vertical-align: middle;
-            margin-left: 10px;
             flex-shrink: 0;
         }
         
-        #objectSelect {
-            font-size: 12px;
-            padding: 4px 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            vertical-align: middle;
-            width: 100%;
+        #speedSelect {
+            min-width: 60px;
         }
-        #objectSelect:disabled {
-             cursor: not-allowed;
-            background: #eee;
-        }
-
-        /* Right panel for all other controls */
+        
         #rightPanelContainer {
             display: flex;
             flex-direction: column;
-            gap: 15px; /* Space between control groups */
-            width: 160px; /* Give it a fixed width */
-            border: 1px solid #e0e0e0;
-            border-radius: 12px; /* Changed from 8px */
-            padding: 12px;
-            background: #fdfdfd;
-            flex-shrink: 0; /* Don't let it shrink */
+            gap: 5px;
+            width: 180px;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 8px;
+            background: #f9fafb;
+            flex-shrink: 0;
         }
         
-        /* Styling for groups in the right panel */
+        /* Control groups and items */
         .control-group {
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 5px;
         }
-        .control-group > label {
-            font-weight: 600;
+        
+        .toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            width: 100%;
+        }
+        
+        .toggle-item label {
             font-size: 12px;
-            color: #333;
+            font-weight: 500;
+            color: #6b7280;
+            width: 52px;
+            flex-shrink: 0;
+            white-space: nowrap;
         }
         
-        /* Main Controls Container */
-        #mainControlsContainer {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
+        .toggle-item select {
+            flex-grow: 1;
         }
         
-        /* Advanced Options Container */
-        #advancedOptionsContainer {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
+        .btn-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 5px;
         }
         
-        /* Advanced Options Toggle Button */
-        /* Advanced Options toggle uses .controlButton styles */
-        #advancedOptionsToggle .toggle-icon {
-            font-size: 10px;
-            color: #666;
-            margin-left: 4px;
-        }
-        #advancedOptionsToggle.expanded .toggle-icon {
-            transform: rotate(180deg);
+        .btn-row .controlButton {
+            width: 100%;
+            min-width: 0;
+            height: 28px;
         }
         
-        /* Advanced Options Content */
-        #advancedOptionsContent {
-            display: none;
-            flex-direction: column;
-            gap: 6px;
-            overflow: hidden;
-        }
-        #advancedOptionsContent.visible {
-            display: flex;
+        .btn-row .btn-toggle {
+            display: block;
         }
         
+        .btn-row .btn-toggle .btn-label {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        /* Range sliders */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            background: transparent;
+            flex-grow: 1;
+            cursor: pointer;
+            margin: 0;
+            padding: 0;
+        }
+        
+        input[type="range"]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 5px;
+            background: #e5e7eb;
+            border-radius: 3px;
+        }
+        
+        input[type="range"]::-moz-range-track {
+            width: 100%;
+            height: 5px;
+            background: #e5e7eb;
+            border-radius: 3px;
+            border: none;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+            margin-top: -4.5px;
+        }
+        
+        input[type="range"]::-moz-range-thumb {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+        }
+        
+        input[type="range"]:hover::-webkit-slider-thumb {
+            background: #2563eb;
+        }
+        
+        input[type="range"]:hover::-moz-range-thumb {
+            background: #2563eb;
+        }
+        
+        input[type="range"]:active::-webkit-slider-thumb {
+            background: #1d4ed8;
+        }
+        
+        input[type="range"]:active::-moz-range-thumb {
+            background: #1d4ed8;
+        }
+        
+        /* PAE Container */
         #paeContainer {
-            display: none; /* JS will manage visibility */
+            display: none;
             width: 300px;
             height: 300px;
             min-width: 300px;
@@ -308,41 +386,45 @@
             position: absolute;
             top: 0;
             left: 0;
-            touch-action: none; /* Prevent scrolling on PAE canvas */
+            touch-action: none;
         }
         
-        /* Style for the initialization error message */
+        /* Error message styles */
+        .py2dmol-container {
+            position: relative;
+        }
+        
         .py2dmol-init-error {
-            display: none; /* Hidden by default */
+            display: none;
             position: absolute;
             top: 0;
             left: 0;
             right: 0;
             bottom: 0;
             background: rgba(255, 255, 255, 0.9);
-            color: #b91c1c; /* Red text */
+            color: #b91c1c;
             padding: 20px;
             text-align: center;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            border: 2px dashed #f87171; /* Red dashed border */
+            border: 2px dashed #f87171;
             border-radius: 12px;
             z-index: 100;
         }
+        
         .py2dmol-init-error p {
             margin: 0;
             font-weight: 500;
         }
+        
         .py2dmol-init-error code {
             background: #fee2e2;
             padding: 2px 5px;
             border-radius: 4px;
             font-family: Consolas, 'Courier New', monospace;
         }
-
     </style>
 </head>
 <body>
-    <!-- Main container to hold viewer and controls -->
     <div id="mainContainer">
         
         <!-- Left Column -->
@@ -354,8 +436,8 @@
 
             <!-- Animation Controls -->
             <div id="controlsContainer">
-                <button id="playButton" class="controlButton">▶︎</button>
-                <button id="recordButton" class="controlButton" title="Record animation to video file">🔴</button>
+                <button id="playButton" class="controlButton">▶</button>
+                <button id="recordButton" class="controlButton" title="Record animation to video file">⏺</button>
                 <input type="range" id="frameSlider" min="0" max="0" value="0">
                 <span id="frameCounter">Frame: 0 / 0</span>
                 <select id="speedSelect">
@@ -367,163 +449,77 @@
         </div>
         
         <!-- PAE Canvas -->
-        <div id="paeContainer" style="display: none;">
+        <div id="paeContainer">
             <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
         </div>
         
-        <!-- Right Column -->
+        <!-- Right Panel -->
         <div id="rightPanelContainer">
-            
-            <!-- Main Controls (always visible) -->
-            <div id="mainControlsContainer" class="control-group">
-                <!-- Action Buttons Row (at top) -->
-                <div style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
-                    <!-- Save SVG Button -->
-                    <div class="toggle-item" style="width: auto; margin: 0;">
-                        <button id="saveSvgButton" class="controlButton" title="Save as SVG">SVG</button>
-                    </div>
-                    <!-- Rotate Toggle Button -->
-                    <div class="toggle-item" style="width: auto; margin: 0;">
-                        <label class="controlButton btn-toggle" title="Toggle auto-rotation">
-                            <input type="checkbox" id="rotationCheckbox">
-                            <span>Rotate</span>
-                        </label>
-                    </div>
-                </div>
-                <!-- Object Dropdown -->
+            <div class="control-group">
+                
+                <!-- Object Selection -->
                 <div class="toggle-item">
-                    <label for="objectSelect" style="width: 50px;">Object:</label>
-                    <select id="objectSelect" style="flex-grow: 1;">
-                        <!-- Initially empty -->
+                    <select id="objectSelect" style="flex-grow: 1; width: 100%;">
+                        <!-- Populated by JS -->
                     </select>
                 </div>
-            </div>
-
-            <!-- Advanced Options (collapsible) -->
-            <div id="advancedOptionsContainer" class="control-group">
-                <button id="advancedOptionsToggle" class="controlButton">
-                    <span>Advanced <span class="toggle-icon">▼</span></span>
-                </button>
-                <div id="advancedOptionsContent">
-                    <!-- Color Select -->
-                    <div class="toggle-item">
-                        <label for="colorSelect" style="width: 50px;">Color:</label>
-                        <select id="colorSelect" style="flex-grow: 1;">
-                            <option value="auto">Auto</option>
-                            <option value="plddt">pLDDT</option>
-                            <option value="rainbow">Rainbow</option>
-                            <option value="chain">Chain</option>
-                        </select>
-                    </div>
-                    <!-- Width -->
-                    <div class="toggle-item">
-                        <label for="lineWidthSlider" style="width: 50px;">Width:</label>
-                        <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
-                    </div>
-                    <!-- Ortho -->
-                    <div class="toggle-item">
-                        <label for="orthoSlider" style="width: 50px;">Ortho:</label>
-                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
-                    </div>
-                    <!-- Shadow -->
-                    <div class="toggle-item">
-                         <input type="checkbox" id="shadowEnabledCheckbox">
-                         <label for="shadowEnabledCheckbox">Shadow</label>
-                    </div>
-                    <!-- Outline -->
-                    <div class="toggle-item">
-                        <label for="outlineModeSelect" style="width: 50px;">Outline:</label>
-                        <select id="outlineModeSelect" style="flex-grow: 1;">
-                            <option value="none">None</option>
-                            <option value="partial">Partial</option>
-                            <option value="full">Full</option>
-                        </select>
-                    </div>
-                    <!-- Colorblind Checkbox -->
-                    <div class="toggle-item">
-                         <input type="checkbox" id="colorblindCheckbox">
-                         <label for="colorblindCheckbox">Colorblind</label>
-                    </div>
+                
+                <!-- Appearance & Rendering -->
+                <div class="toggle-item">
+                    <label for="colorSelect">Color:</label>
+                    <select id="colorSelect">
+                        <option value="auto">Auto</option>
+                        <option value="plddt">pLDDT</option>
+                        <option value="rainbow">Rainbow</option>
+                        <option value="chain">Chain</option>
+                    </select>
                 </div>
+                
+                <div class="toggle-item">
+                    <label for="outlineModeSelect">Outline:</label>
+                    <select id="outlineModeSelect">
+                        <option value="none">None</option>
+                        <option value="partial">Partial</option>
+                        <option value="full">Full</option>
+                    </select>
+                </div>
+                
+                <!-- Visual Effects -->
+                <div class="btn-row">
+                    <label class="controlButton btn-toggle" title="Toggle shadow">
+                        <input type="checkbox" id="shadowEnabledCheckbox">
+                        <span class="btn-label">Shadow</span>
+                    </label>
+                    <label class="controlButton btn-toggle" title="Toggle colorblind mode">
+                        <input type="checkbox" id="colorblindCheckbox">
+                        <span class="btn-label">Colorblind</span>
+                    </label>
+                </div>
+                
+                <!-- Sliders -->
+                <div class="toggle-item" style="margin-top: 3px;">
+                    <label for="lineWidthSlider">Width:</label>
+                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
+                </div>
+                
+                <div class="toggle-item" style="margin-top: 3px;">
+                    <label for="orthoSlider">Ortho:</label>
+                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
+                </div>
+                
+                <!-- Actions -->
+                <div class="btn-row" style="margin-top: 6px;">
+                    <label class="controlButton btn-toggle" title="Toggle auto-rotation">
+                        <input type="checkbox" id="rotationCheckbox">
+                        <span class="btn-label">Rotate</span>
+                    </label>
+                    <button id="saveSvgButton" class="controlButton" title="Save as SVG">Save SVG</button>
+                </div>
+                
             </div>
         </div>
 
-    </div>    
+    </div>
     <!-- DATA_INJECTION_POINT -->
-    
-    <!-- Script to handle Advanced Options toggle -->
-    <script>
-        (function() {
-            const initializedToggles = new WeakSet();
-            
-            // Function to initialize toggle for a specific container
-            function initAdvancedToggle(container) {
-                const toggleButton = container.querySelector('#advancedOptionsToggle');
-                const advancedContent = container.querySelector('#advancedOptionsContent');
-                
-                if (toggleButton && advancedContent && !initializedToggles.has(toggleButton)) {
-                    initializedToggles.add(toggleButton);
-                    
-                    toggleButton.addEventListener('click', function() {
-                        const isVisible = advancedContent.classList.contains('visible');
-                        if (isVisible) {
-                            advancedContent.classList.remove('visible');
-                            toggleButton.classList.remove('expanded');
-                        } else {
-                            advancedContent.classList.add('visible');
-                            toggleButton.classList.add('expanded');
-                        }
-                    });
-                }
-            }
-            
-            // Initialize for all existing containers
-            function initAllToggles() {
-                // Try to find containers in the document
-                const containers = document.querySelectorAll('.py2dmol-container, body');
-                containers.forEach(container => {
-                    initAdvancedToggle(container);
-                });
-            }
-            
-            // Try to initialize immediately
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', initAllToggles);
-            } else {
-                initAllToggles();
-            }
-            
-            // Also try after delays in case the viewer is injected dynamically
-            setTimeout(initAllToggles, 100);
-            setTimeout(initAllToggles, 500);
-            
-            // Use MutationObserver to watch for dynamically added viewers
-            const observer = new MutationObserver(function(mutations) {
-                mutations.forEach(function(mutation) {
-                    mutation.addedNodes.forEach(function(node) {
-                        if (node.nodeType === 1) { // Element node
-                            if (node.classList && node.classList.contains('py2dmol-container')) {
-                                initAdvancedToggle(node);
-                            } else if (node.querySelector && node.querySelector('.py2dmol-container')) {
-                                initAdvancedToggle(node.querySelector('.py2dmol-container'));
-                            }
-                            // Also check if the node itself contains the toggle
-                            if (node.querySelector && node.querySelector('#advancedOptionsToggle')) {
-                                initAdvancedToggle(node);
-                            }
-                        }
-                    });
-                });
-            });
-            
-            observer.observe(document.body, {
-                childList: true,
-                subtree: true
-            });
-        })();
-    </script>
-    
-    <!-- SVG export is now handled in viewer-mol.js (same as Record button) -->
-
 </body>
 </html>
