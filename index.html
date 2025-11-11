@@ -176,22 +176,27 @@
 
                           <!-- New second row -->
                           <div class="toolbar-row">
-                            <label class="btn-toggle btn-flex" title="Toggle shadow">
+                            <label class="btn-toggle btn-flex btn-small" title="Toggle shadow">
                               <input type="checkbox" id="shadowEnabledCheckbox" checked>
                               <span>Shadow</span>
                             </label>
 
-                            <button id="outlineModeButton" class="btn-toggle btn-flex" title="Cycle outline mode: none → partial → full">
+                            <label class="btn-toggle btn-flex btn-small" title="Toggle depth-based coloring">
+                              <input type="checkbox" id="depthCheckbox" checked>
+                              <span>Depth</span>
+                            </label>
+
+                            <button id="outlineModeButton" class="btn-toggle btn-flex btn-small" title="Cycle outline mode: none → partial → full">
                               <span>Outline</span>
                             </button>
                             
-                            <button id="recordButton" class="btn-toggle btn-flex btn-icon-only" title="Record animation to video file">
+                            <button id="recordButton" class="btn-toggle btn-flex btn-icon-only btn-small" title="Record animation to video file">
                               <span>
                                 <i class="fa-solid fa-video"></i>
                               </span>
                             </button>
                             
-                            <button id="saveSvgButton" class="btn-toggle btn-flex btn-icon-only" title="Save as SVG">
+                            <button id="saveSvgButton" class="btn-toggle btn-flex btn-icon-only btn-small" title="Save as SVG">
                               <span>
                                 <i class="fa-solid fa-camera"></i>
                               </span>
@@ -202,30 +207,32 @@
                         <div id="styleAppearanceContainer" class="control-group">
                             
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="colorSelect" class="font-medium text-gray-700">Color:</label>
-                                <select id="colorSelect" style="flex: 1;">
+                                <label for="colorSelect" class="font-medium text-gray-700" style="font-size: 12px;">Color:</label>
+                                <select id="colorSelect" style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
                                     <option value="auto">Auto</option>
                                     <option value="plddt">pLDDT</option>
                                     <option value="rainbow">Rainbow</option>
                                     <option value="chain">Chain</option>
                                 </select>
-                                <label class="btn-toggle btn-no-margin" title="Colorblind-safe colors">
+                                <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors">
                                     <input type="checkbox" id="colorblindCheckbox">
                                     <span>Colorblind</span>
                                 </label>
                             </div>
 
-                            <div class="toggle-item">
-                                <label for="lineWidthSlider" class="font-medium text-gray-700">Width:</label>
-                                <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
-                            </div>
-                            <div class="toggle-item">
-                                <label for="orthoSlider" class="font-medium text-gray-700">Ortho:</label>
-                                <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
+                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <label for="lineWidthSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Width:</label>
+                                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1" style="flex: 1; min-width: 0;">
+                                </div>
+                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <label for="orthoSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
+                                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01" style="flex: 1; min-width: 0;">
+                                </div>
                             </div>
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="objectSelect" class="font-medium text-gray-700">Object:</label>
-                                <select id="objectSelect" style="flex: 1;">
+                                <label for="objectSelect" class="font-medium text-gray-700" style="font-size: 12px;">Object:</label>
+                                <select id="objectSelect" style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
                                     <!-- Initially empty -->
                                 </select>
                             </div>

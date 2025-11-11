@@ -43,7 +43,7 @@ def align_a_to_b(a, b):
 
 class view:
     def __init__(self, size=(300,300), controls=True, box=True,
-        color="auto", colorblind=False, pastel=0.25, shadow=True,
+        color="auto", colorblind=False, pastel=0.25, shadow=True, depth=True,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
         pae=False, pae_size=300, reuse_js=False,
     ):
@@ -61,6 +61,7 @@ class view:
             "colorblind": colorblind,
             "pastel": pastel,
             "shadow": shadow,
+            "depth": depth,
             "outline": outline,
             "width": width,
             "ortho": ortho,
@@ -841,6 +842,7 @@ class view:
             "color_mode": self.config.get("color", "auto"),
             "line_width": self.config.get("width", 3.0),
             "shadow_enabled": self.config.get("shadow", True),
+            "depth_enabled": self.config.get("depth", True),
             "outline_mode": self.config.get("outline", "full"),  # "none", "partial", or "full"
             "colorblind_mode": self.config.get("colorblind", False),
             "pastel_level": self.config.get("pastel", 0.25),
@@ -931,6 +933,8 @@ class view:
                 self.config["width"] = vs["line_width"]
             if "shadow_enabled" in vs:
                 self.config["shadow"] = vs["shadow_enabled"]
+            if "depth_enabled" in vs:
+                self.config["depth"] = vs["depth_enabled"]
             if "outline_mode" in vs:
                 self.config["outline"] = vs["outline_mode"]
             elif "outline_enabled" in vs:

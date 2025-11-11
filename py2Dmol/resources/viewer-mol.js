@@ -265,6 +265,37 @@ function initializePy2DmolViewer(containerElement) {
     // Use window.getPAEColor and window.getPAEColor_Colorblind if available
 
     // ============================================================================
+    // RENDERING CONSTANTS
+    // ============================================================================
+    
+    // Type-specific baseline multipliers (maintains visual hierarchy)
+    const TYPE_BASELINES = {
+        'L': 0.4,   // Ligands: thinner baseline
+        'P': 1.0,   // Proteins: standard baseline
+        'D': 1.6,   // DNA: thicker baseline
+        'R': 1.6    // RNA: thicker baseline
+    };
+    
+    // Reference lengths for length normalization (typical segment lengths in Å)
+    const REF_LENGTHS = {
+        'L': 1.5,   // Typical ligand bond
+        'P': 3.8,   // Typical protein CA-CA distance
+        'D': 5.9,   // Typical DNA C4'-C4' distance (adjacent nucleotides)
+        'R': 5.9    // Typical RNA C4'-C4' distance (adjacent nucleotides)
+    };
+    
+    // Width calculation parameters
+    const ATOM_WIDTH_MULTIPLIER = 0.5;      // Fixed width for atoms (zero-length segments)
+    
+    // Shadow/tint parameters
+    const SHADOW_CUTOFF_MULTIPLIER = 2.0;   // shadow_cutoff = avgLen * 2.0
+    const TINT_CUTOFF_MULTIPLIER = 0.5;     // tint_cutoff = avgLen * 0.5
+    const SHADOW_OFFSET_MULTIPLIER = 2.5;   // Proportional offset multiplier
+    const TINT_OFFSET_MULTIPLIER = 2.5;     // Proportional offset multiplier
+    const WIDTH_RATIO_CLAMP_MIN = 0.01;     // Minimum width ratio for shadow/tint
+    const WIDTH_RATIO_CLAMP_MAX = 10.0;     // Maximum width ratio for shadow/tint
+
+    // ============================================================================
     // PSEUDO-3D RENDERER
     // ============================================================================
     class Pseudo3DRenderer {
@@ -334,6 +365,7 @@ function initializePy2DmolViewer(containerElement) {
             
             // Set defaults from config, with fallback
             this.shadowEnabled = (typeof config.shadow === 'boolean') ? config.shadow : true;
+            this.depthEnabled = (typeof config.depth === 'boolean') ? config.depth : true;
             // Outline mode: 'none', 'partial', or 'full'
             if (typeof config.outline === 'string' && ['none', 'partial', 'full'].includes(config.outline)) {
                 this.outlineMode = config.outline;
@@ -345,6 +377,8 @@ function initializePy2DmolViewer(containerElement) {
             }
             this.pastelLevel = (typeof config.pastel === 'number') ? config.pastel : 0.25;
             this.colorblindMode = (typeof config.colorblind === 'boolean') ? config.colorblind : false;
+            
+            // Width multipliers are now always based on TYPE_BASELINES (no robust scaling)
             
             this.isTransparent = false; // Default to white background
             
@@ -436,6 +470,7 @@ function initializePy2DmolViewer(containerElement) {
             this.shadowEnabledCheckbox = null; 
             this.outlineModeButton = null; // Button that cycles through outline modes (index.html)
             this.outlineModeSelect = null; // Dropdown for outline modes (viewer.html)
+            this.depthCheckbox = null;
             this.colorblindCheckbox = null;
             this.orthoSlider = null;
             
@@ -450,6 +485,14 @@ function initializePy2DmolViewer(containerElement) {
             this.cachedShadows = null;
             this.cachedTints = null;
             this.isZooming = false; // Track zoom state to skip shadow recalculation
+            this.lastShadowRotationMatrix = null; // Track rotation matrix for shadow caching
+
+            // Width multipliers are now always based on TYPE_BASELINES (no scaling factors needed)
+
+            // Cached width multipliers per type (calculated once per molecule load)
+            this.typeWidthMultipliers = {
+                'atom': ATOM_WIDTH_MULTIPLIER
+            };
 
             this.setupInteraction();
         }
@@ -460,7 +503,7 @@ function initializePy2DmolViewer(containerElement) {
         }
         
         // [PATCH] --- Unified Selection API ---
-        setSelection(patch) {
+        setSelection(patch, skip3DRender = false) {
             if (!patch) return;
             if (patch.atoms !== undefined) {
                 const a = patch.atoms;
@@ -485,7 +528,7 @@ function initializePy2DmolViewer(containerElement) {
             if (patch.selectionMode !== undefined) {
                 this.selectionModel.selectionMode = patch.selectionMode;
             }
-            this._composeAndApplyMask();
+            this._composeAndApplyMask(skip3DRender);
         }
 
         getSelection() {
@@ -544,11 +587,13 @@ function initializePy2DmolViewer(containerElement) {
             });
         }
 
-        _composeAndApplyMask() {
+        _composeAndApplyMask(skip3DRender = false) {
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
                 this.visibilityMask = null;
-                this.render();
+                if (!skip3DRender) {
+                    this.render();
+                }
                 return;
             }
 
@@ -612,6 +657,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // (4) Apply based on selection mode
             const mode = this.selectionModel.selectionMode || 'default';
+            const oldVisibilityMask = this.visibilityMask;
             if (combined && combined.size > 0) {
                 // We have some selection - use it
                 this.visibilityMask = combined;
@@ -626,9 +672,26 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
-            this.render();
+            // Clear shadow cache when visibility changes (selection/deselection)
+            // Visibility changes affect which segments are visible, so shadows need recalculation
+            // Compare by reference and size (simple check - if different objects or different sizes, changed)
+            const visibilityChanged = (
+                oldVisibilityMask !== this.visibilityMask && 
+                (oldVisibilityMask === null || this.visibilityMask === null || 
+                 oldVisibilityMask.size !== this.visibilityMask.size)
+            );
+            if (visibilityChanged && !skip3DRender) {
+                this.cachedShadows = null;
+                this.cachedTints = null;
+                this.lastShadowRotationMatrix = null; // Force recalculation
+            }
             
-            // Dispatch event to notify UI of selection change
+            // Only render 3D viewer if not skipping (e.g., during PAE drag)
+            if (!skip3DRender) {
+                this.render();
+            }
+            
+            // Always dispatch event to notify UI of selection change (sequence/PAE viewers need this)
             if (typeof document !== 'undefined') {
                 try {
                     document.dispatchEvent(new CustomEvent('py2dmol-selection-change', {
@@ -767,6 +830,11 @@ function initializePy2DmolViewer(containerElement) {
                 if (!this.isDragging) return;
                 this.isDragging = false;
                 
+                // Clear shadow cache when dragging ends (shadows need recalculation)
+                this.cachedShadows = null;
+                this.cachedTints = null;
+                this.lastShadowRotationMatrix = null; // Force recalculation
+                
                 // For large molecules, immediately recalculate shadows
                 // since inertia is disabled and rotation has stopped
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
@@ -774,15 +842,8 @@ function initializePy2DmolViewer(containerElement) {
                 const isLargeMolecule = segmentCount > this.LARGE_MOLECULE_CUTOFF;
                 
                 if (isLargeMolecule) {
-                    // Clear shadow cache to force recalculation on next render
-                    this.cachedShadows = null;
-                    this.cachedTints = null;
                     // Render immediately with fresh shadows
                     this.render();
-                } else {
-                    // For small proteins, clear cache but let inertia handle the render
-                    this.cachedShadows = null;
-                    this.cachedTints = null;
                 }
                 
                 // Restart animate loop after dragging ends
@@ -912,6 +973,11 @@ function initializePy2DmolViewer(containerElement) {
                 if (e.touches.length === 0 && this.isDragging) {
                     this.isDragging = false;
                     
+                    // Clear shadow cache when dragging ends (shadows need recalculation)
+                    this.cachedShadows = null;
+                    this.cachedTints = null;
+                    this.lastShadowRotationMatrix = null; // Force recalculation
+                    
                     // For large molecules (based on visible segments), immediately recalculate shadows
                     // since inertia is disabled and rotation has stopped
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
@@ -930,15 +996,8 @@ function initializePy2DmolViewer(containerElement) {
                     const isLargeMolecule = visibleSegmentCount > this.LARGE_MOLECULE_CUTOFF;
                     
                     if (isLargeMolecule) {
-                        // Clear shadow cache to force recalculation on next render
-                        this.cachedShadows = null;
-                        this.cachedTints = null;
                         // Render immediately with fresh shadows
                         this.render();
-                    } else {
-                        // For small proteins, clear cache but let inertia handle the render
-                        this.cachedShadows = null;
-                        this.cachedTints = null;
                     }
                     
                     // Restart animate loop after dragging ends (needed for inertia and auto-rotation)
@@ -961,7 +1020,16 @@ function initializePy2DmolViewer(containerElement) {
                 
                 // If all touches are up, reset dragging
                 if (e.touches.length === 0) {
+                    const wasDragging = this.isDragging;
                     this.isDragging = false;
+                    
+                    // Clear shadow cache when dragging ends (shadows need recalculation)
+                    if (wasDragging) {
+                        this.cachedShadows = null;
+                        this.cachedTints = null;
+                        this.lastShadowRotationMatrix = null; // Force recalculation
+                    }
+                    
                     // Restart animation loop if it was stopped
                     requestAnimationFrame(() => this.animate());
                 }
@@ -971,6 +1039,12 @@ function initializePy2DmolViewer(containerElement) {
                 // Handle touch cancellation (e.g., system gesture interference)
                 if (this.isDragging) {
                     this.isDragging = false;
+                    
+                    // Clear shadow cache when dragging ends (shadows need recalculation)
+                    this.cachedShadows = null;
+                    this.cachedTints = null;
+                    this.lastShadowRotationMatrix = null; // Force recalculation
+                    
                     // Restart animation loop
                     requestAnimationFrame(() => this.animate());
                 }
@@ -985,7 +1059,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.recordButton = recordButton;
@@ -999,6 +1073,7 @@ function initializePy2DmolViewer(containerElement) {
             this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
             this.outlineModeButton = outlineModeButton;
             this.outlineModeSelect = outlineModeSelect;
+            this.depthCheckbox = depthCheckbox;
             this.colorblindCheckbox = colorblindCheckbox;
             this.orthoSlider = orthoSlider;
             this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
@@ -1141,6 +1216,13 @@ function initializePy2DmolViewer(containerElement) {
             } else if (this.outlineModeSelect) {
                 // Dropdown mode (viewer.html) - already handled in initialization
                 this.outlineModeSelect.value = this.outlineMode || 'full';
+            }
+            
+            if (this.depthCheckbox) {
+                this.depthCheckbox.addEventListener('change', (e) => {
+                    this.depthEnabled = e.target.checked;
+                    this.render();
+                });
             }
             
             if (this.colorblindCheckbox) {
@@ -1817,6 +1899,7 @@ function initializePy2DmolViewer(containerElement) {
              if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
              if (this.outlineModeButton) this.outlineModeButton.disabled = !enabled;
              if (this.outlineModeSelect) this.outlineModeSelect.disabled = !enabled;
+             if (this.depthCheckbox) this.depthCheckbox.disabled = !enabled;
              if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled;
              if (this.orthoSlider) this.orthoSlider.disabled = !enabled;
              this.canvas.style.cursor = enabled ? 'grab' : 'wait';
@@ -2314,6 +2397,9 @@ function initializePy2DmolViewer(containerElement) {
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.checked = true;
             }
+            if (this.depthCheckbox) {
+                this.depthCheckbox.checked = true;
+            }
             if (this.outlineModeButton) {
                 this.outlineMode = 'full';
                 this.updateOutlineButtonStyle();
@@ -2714,6 +2800,22 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
+            // Clear shadow cache when molecule changes (rotation comparison becomes invalid)
+            this.cachedShadows = null;
+            this.cachedTints = null;
+            this.lastShadowRotationMatrix = null;
+            
+            // Always use reference lengths (no robust scaling)
+            
+            // Calculate and cache width multipliers per type (O(4) instead of O(N))
+            // This avoids recalculating width for each segment during rendering and shadow/tint
+            this.typeWidthMultipliers = {
+                'atom': ATOM_WIDTH_MULTIPLIER
+            };
+            for (const type of ['L', 'P', 'D', 'R']) {
+                this.typeWidthMultipliers[type] = this._calculateTypeWidthMultiplier(type);
+            }
+            
                 // Cache the calculated segment indices for this frame
                 this.cachedSegmentIndices = this.segmentIndices.map(seg => ({ ...seg }));
                 this.cachedSegmentIndicesFrame = this.currentFrame;
@@ -2923,21 +3025,109 @@ function initializePy2DmolViewer(containerElement) {
             return colors;
         }
 
+        /**
+         * Compares two rotation matrices for equality.
+         * @param {Array} m1 - First rotation matrix
+         * @param {Array} m2 - Second rotation matrix
+         * @returns {boolean} True if matrices are equal (within tolerance)
+         */
+        _rotationMatricesEqual(m1, m2) {
+            if (!m1 || !m2) return false;
+            const tolerance = 1e-6;
+            for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 3; j++) {
+                    if (Math.abs(m1[i][j] - m2[i][j]) > tolerance) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        /**
+         * Creates a deep copy of a rotation matrix.
+         * @param {Array} matrix - Rotation matrix to copy
+         * @returns {Array} Deep copy of matrix
+         */
+        _deepCopyMatrix(matrix) {
+            return [
+                [matrix[0][0], matrix[0][1], matrix[0][2]],
+                [matrix[1][0], matrix[1][1], matrix[1][2]],
+                [matrix[2][0], matrix[2][1], matrix[2][2]]
+            ];
+        }
+
+        /**
+         * Calculates width multiplier for a given molecule type.
+         * Always uses TYPE_BASELINES (no length-based scaling).
+         * @param {string} type - Molecule type ('L', 'P', 'D', 'R')
+         * @returns {number} Width multiplier
+         */
+        _calculateTypeWidthMultiplier(type) {
+            // Always use baseline (no length-based scaling)
+            const baseline = TYPE_BASELINES[type] ?? TYPE_BASELINES['P'];
+            return baseline;
+        }
+
+        /**
+         * Gets width multiplier for a segment.
+         * Uses cached type-based width (calculated once per molecule load).
+         * @param {object} segData - Segment data (not used, kept for API compatibility)
+         * @param {object} segInfo - Segment info (has type, idx1, idx2)
+         * @returns {number} Width multiplier
+         */
+        _calculateSegmentWidthMultiplier(segData, segInfo) {
+            // Handle zero-length segments (atoms)
+            if (segInfo.idx1 === segInfo.idx2) {
+                return this.typeWidthMultipliers?.atom ?? ATOM_WIDTH_MULTIPLIER;
+            }
+            
+            // Use cached width multiplier for this type (O(1) lookup)
+            const type = segInfo.type;
+            return this.typeWidthMultipliers?.[type] ?? this._calculateTypeWidthMultiplier(type);
+        }
+
         // Helper function for shadow calculation
         /**
          * Calculates the shadow and tint contribution for a pair of segments.
          * @param {object} s1 - The segment being shaded (further back).
          * @param {object} s2 - The segment casting the shadow (further forward).
+         * @param {object} segInfo1 - Segment info for s1 (has type, idx1, idx2)
+         * @param {object} segInfo2 - Segment info for s2 (has type, idx1, idx2)
          * @returns {{shadow: number, tint: number}}
          */
-        _calculateShadowTint(s1, s2) {
+        _calculateShadowTint(s1, s2, segInfo1, segInfo2) {
             // Cache segment lengths
             const len1 = s1.len;
             const len2 = s2.len;
-            const avgLen = (len1 + len2) * 0.5;
-            const shadow_cutoff = avgLen * 2.0;
-            const tint_cutoff = avgLen * 0.5;
-            const max_cutoff = shadow_cutoff + 10.0;
+            
+            // Handle zero-length segments (atoms)
+            // Use type-based reference length for atoms to ensure proper shadow/tint calculation
+            const isAtom1 = segInfo1.idx1 === segInfo1.idx2;
+            const isAtom2 = segInfo2.idx1 === segInfo2.idx2;
+            
+            // Calculate effective lengths for cutoff calculation
+            let effectiveLen1 = len1;
+            let effectiveLen2 = len2;
+            
+            if (isAtom1) {
+                // For atoms, use type-based reference length
+                effectiveLen1 = REF_LENGTHS[segInfo1.type] ?? REF_LENGTHS['P'];
+            }
+            if (isAtom2) {
+                effectiveLen2 = REF_LENGTHS[segInfo2.type] ?? REF_LENGTHS['P'];
+            }
+            
+            const avgLen = (effectiveLen1 + effectiveLen2) * 0.5;
+            const shadow_cutoff = avgLen * SHADOW_CUTOFF_MULTIPLIER;
+            const tint_cutoff = avgLen * TINT_CUTOFF_MULTIPLIER;
+            
+            // Always use reference length for receiving segment type
+            const refLen = REF_LENGTHS[segInfo1.type] ?? REF_LENGTHS['P'];
+            const shadow_offset = refLen * SHADOW_OFFSET_MULTIPLIER;
+            const tint_offset = refLen * TINT_OFFSET_MULTIPLIER;
+            
+            const max_cutoff = shadow_cutoff + shadow_offset;
             const max_cutoff_sq = max_cutoff * max_cutoff;
             
             // Use properties from the segment data objects
@@ -2964,7 +3154,7 @@ function initializePy2DmolViewer(containerElement) {
             }
             
             // Only calculate tint if 2D distance is within cutoff
-            const tint_max_cutoff = tint_cutoff + 10.0;
+            const tint_max_cutoff = tint_cutoff + tint_offset;
             const tint_max_cutoff_sq = tint_max_cutoff * tint_max_cutoff;
             
             if (dist2D_sq < tint_max_cutoff_sq) {
@@ -2972,7 +3162,27 @@ function initializePy2DmolViewer(containerElement) {
                 tint = sigmoid(tint_cutoff - dist2D);
             }
 
-            return { shadow, tint };
+            // Early exit: if both shadow and tint are zero, no need to calculate width
+            if (shadow === 0 && tint === 0) {
+                return { shadow: 0, tint: 0 };
+            }
+
+            // Weight shadow/tint by relative segment widths
+            // Small segments have weak effect on large segments
+            const width1 = this._calculateSegmentWidthMultiplier(s1, segInfo1);
+            const width2 = this._calculateSegmentWidthMultiplier(s2, segInfo2);
+            
+            // Relative width ratio: small segments have weak effect on large segments
+            const widthRatio = width2 / width1;
+            
+            // Clamp to prevent extreme values
+            const clampedRatio = Math.max(WIDTH_RATIO_CLAMP_MIN, Math.min(WIDTH_RATIO_CLAMP_MAX, widthRatio));
+            
+            // Apply width weighting
+            const weightedShadow = shadow * clampedRatio;
+            const weightedTint = tint * clampedRatio;
+            
+            return { shadow: weightedShadow, tint: weightedTint };
         }
 
 
@@ -3095,7 +3305,7 @@ function initializePy2DmolViewer(containerElement) {
             let zMaxAtoms = -Infinity;
             const segData = this.segData; // Use pre-allocated array
 
-            // Only calculate z-values and segData for visible segments
+            // Calculate z-values without clamping (preserve actual range)
             for (let i = 0; i < numVisibleSegments; i++) {
                 const segIdx = visibleSegmentIndices[i];
                 const segInfo = segments[segIdx];
@@ -3105,7 +3315,8 @@ function initializePy2DmolViewer(containerElement) {
                 const midX = (start.x + end.x) * 0.5;
                 const midY = (start.y + end.y) * 0.5;
                 const midZ = (start.z + end.z) * 0.5;
-                const z = midZ; // zValue is just midZ
+                // Store raw z-value (no clamping) to detect actual range
+                const z = midZ;
                 
                 zValues[segIdx] = z;
                 if (z < zMin) zMin = z;
@@ -3167,26 +3378,50 @@ function initializePy2DmolViewer(containerElement) {
             // Formula: zNorm = (z - (zMean - 2*std)) / (4*std)
             // Only normalize visible segments to avoid unnecessary computation
             if (zStd > 1e-6) {
-                const zFront = zMean - 2.0 * zStd; // 2 std below mean (front)
-                const zBack = zMean + 2.0 * zStd;  // 2 std above mean (back)
-                const zRangeStd = 4.0 * zStd;  // Range is 4*std
+                let zFront = zMean - 2.0 * zStd; // 2 std below mean (front)
+                let zBack = zMean + 2.0 * zStd;  // 2 std above mean (back)
+                
+                // Apply symmetric range expansion: ensure minimum range of 64 units
+                // Expand symmetrically around center if range is too small
+                const DEPTH_RANGE = 64; // Minimum range (from -32 to +32)
+                const zCenter = (zFront + zBack) / 2;
+                const zRange = zBack - zFront;
+                if (zRange < DEPTH_RANGE) {
+                    // Expand symmetrically around center
+                    zFront = zCenter - DEPTH_RANGE / 2;  // zCenter - 32
+                    zBack = zCenter + DEPTH_RANGE / 2;   // zCenter + 32
+                }
+                const zRangeStd = zBack - zFront;  // Recalculate range
                 
                 // Only normalize visible segments
                 for (let i = 0; i < numVisibleSegments; i++) {
                     const segIdx = visibleSegmentIndices[i];
-                    // Map zMean - 2*std to 0, zMean + 2*std to 1
+                    // Map zFront to 0, zBack to 1
                     zNorm[segIdx] = (zValues[segIdx] - zFront) / zRangeStd;
-                    // Clamp to [0, 1] for values outside ±2 std
+                    // Clamp to [0, 1] for values outside range
                     zNorm[segIdx] = Math.max(0, Math.min(1, zNorm[segIdx]));
                 }
             } else {
                 // Fallback: if std is too small, use min/max approach
+                // Apply symmetric range expansion: ensure minimum range of 64 units
+                const DEPTH_RANGE = 64; // Minimum range (from -32 to +32)
+                let expandedZMin = zMin;
+                let expandedZMax = zMax;
+                
+                const zCenter = (zMin + zMax) / 2;
                 const zRange = zMax - zMin;
-                if (zRange > 1e-6) {
+                if (zRange < DEPTH_RANGE) {
+                    // Expand symmetrically around center
+                    expandedZMin = zCenter - DEPTH_RANGE / 2;  // zCenter - 32
+                    expandedZMax = zCenter + DEPTH_RANGE / 2;   // zCenter + 32
+                }
+                const finalRange = expandedZMax - expandedZMin;
+                
+                if (finalRange > 1e-6) {
                     // Only normalize visible segments
                     for (let i = 0; i < numVisibleSegments; i++) {
                         const segIdx = visibleSegmentIndices[i];
-                        zNorm[segIdx] = (zValues[segIdx] - zMin) / zRange;
+                        zNorm[segIdx] = (zValues[segIdx] - expandedZMin) / finalRange;
                     }
                 } else {
                     // Only set visible segments to 0.5
@@ -3204,7 +3439,7 @@ function initializePy2DmolViewer(containerElement) {
             const tints = new Float32Array(n);
             
             // Initialize shadows and tints to default values (no shadow, no tint)
-            // This ensures non-visible segments have correct defaults
+            // These will be overwritten by shadow calculation or cache, but initialize for safety
             shadows.fill(1.0);
             tints.fill(1.0);
             
@@ -3227,10 +3462,18 @@ function initializePy2DmolViewer(containerElement) {
             const isFastMode = numVisibleAtoms > this.LARGE_MOLECULE_CUTOFF;
             const isLargeMolecule = n > this.LARGE_MOLECULE_CUTOFF;
             
+            // Check if rotation changed (shadows depend on 3D positions, not width/ortho)
+            // Shadows only need recalculation when rotation changes, not when width/ortho changes
+            const rotationChanged = !this._rotationMatricesEqual(this.rotationMatrix, this.lastShadowRotationMatrix);
+            
             // For fast mode (many visible atoms), skip expensive shadow calculations during dragging or zooming - use cached
             // During zoom, shadows don't change, so reuse cached values
             // During drag, use cached for performance, but recalculate after drag stops
-            const skipShadowCalc = isFastMode && (this.isDragging || this.isZooming) && this.cachedShadows && this.cachedShadows.length === n;
+            // Also skip if rotation hasn't changed (width/ortho changes don't affect shadows)
+            const skipShadowCalc = (
+                (isFastMode && (this.isDragging || this.isZooming) && this.cachedShadows && this.cachedShadows.length === n) ||
+                (!rotationChanged && this.cachedShadows && this.cachedShadows.length === n)
+            );
             
             if (renderShadows && !skipShadowCalc) {
                 // Use fast mode threshold based on visible atoms, not total segments
@@ -3253,9 +3496,10 @@ function initializePy2DmolViewer(containerElement) {
                             }
                             
                             const s2 = segData[j];
+                            const segInfo2 = segments[j];
                             
-                            // Call helper function
-                            const { shadow, tint } = this._calculateShadowTint(s1, s2);
+                            // Call helper function with segment info for width weighting
+                            const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
                             shadowSum += shadow;
                             maxTint = Math.max(maxTint, tint);
                         }
@@ -3342,8 +3586,10 @@ function initializePy2DmolViewer(containerElement) {
                                             continue; // Skip segments that are behind or at same depth
                                         }
                                         
-                                        // Call helper function
-                                        const { shadow, tint } = this._calculateShadowTint(s1, s2);
+                                        const segInfo2 = segments[j];
+                                        
+                                        // Call helper function with segment info for width weighting
+                                        const { shadow, tint } = this._calculateShadowTint(s1, s2, segments[i], segInfo2);
                                         shadowSum += shadow;
                                         maxTint = Math.max(maxTint, tint);
                                     }
@@ -3359,24 +3605,36 @@ function initializePy2DmolViewer(containerElement) {
                     }
                 }
                 
-                // Cache shadows/tints only for large molecules during dragging/zooming
+                // Cache shadows/tints when rotation hasn't changed (for reuse on width/ortho changes)
+                // Store rotation matrix after calculation
+                this.lastShadowRotationMatrix = this._deepCopyMatrix(this.rotationMatrix);
+                
+                // Cache shadows/tints for reuse
                 if (isLargeMolecule && !this.isDragging && !this.isZooming) {
                     this.cachedShadows = new Float32Array(shadows);
                     this.cachedTints = new Float32Array(tints);
                 } else if (!isLargeMolecule) {
-                    // Small molecules: don't cache, always recalculate
-                    this.cachedShadows = null;
-                    this.cachedTints = null;
+                    // Small molecules: cache if rotation hasn't changed
+                    if (!rotationChanged) {
+                        this.cachedShadows = new Float32Array(shadows);
+                        this.cachedTints = new Float32Array(tints);
+                    } else {
+                        // Rotation changed, clear cache
+                        this.cachedShadows = null;
+                        this.cachedTints = null;
+                    }
                 }
-            } else if (skipShadowCalc) {
-                // Use cached shadows during dragging/zooming for large molecules only
+            } else if (skipShadowCalc && this.cachedShadows && this.cachedShadows.length === n) {
+                // Use cached shadows (rotation hasn't changed, or dragging/zooming)
                 shadows.set(this.cachedShadows);
                 tints.set(this.cachedTints);
-            } else {
+            } else if (!renderShadows) {
                 // Shadows disabled - use defaults (no shadows/tints)
                 shadows.fill(1.0);
                 tints.fill(1.0);
             }
+            // If skipShadowCalc is true but cache is invalid, shadows/tints remain uninitialized
+            // This should not happen, but if it does, they'll be filled with defaults elsewhere
             
             // dataRange is just the molecule's extent in Angstroms
             // Use temporary extent if set (for orienting to visible atoms), otherwise use object's maxExtent
@@ -3530,15 +3788,22 @@ function initializePy2DmolViewer(containerElement) {
                 const zNormVal = zNorm[idx];
 
                 if (renderShadows) {
-                    const tintFactor = (0.50 * zNormVal + 0.50 * tints[idx]) / 3;
+                    const tintFactor = this.depthEnabled
+                        ? (0.50 * zNormVal + 0.50 * tints[idx]) / 3
+                        : (0.50 * tints[idx]) / 3;
                     r = r + (1 - r) * tintFactor;
                     g = g + (1 - g) * tintFactor;
                     b = b + (1 - b) * tintFactor;
-                    const shadowFactor = 0.20 + 0.25 * zNormVal + 0.55 * shadows[idx];
+                    const shadowFactor = this.depthEnabled 
+                        ? (0.20 + 0.25 * zNormVal + 0.55 * shadows[idx])
+                        : (0.20 + 0.80 * shadows[idx]);
                     r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
                 } else {
-                    const depthFactor = 0.70 + 0.30 * zNormVal;
-                    r *= depthFactor; g *= depthFactor; b *= depthFactor;
+                    if (this.depthEnabled) {
+                        const depthFactor = 0.70 + 0.30 * zNormVal;
+                        r *= depthFactor; g *= depthFactor; b *= depthFactor;
+                    }
+                    // If depth coloring disabled, keep original colors unchanged
                 }
                 
                 // Projection
@@ -3572,9 +3837,9 @@ function initializePy2DmolViewer(containerElement) {
                     y2 = centerY - end.y * scale;
                 }
 
-                // Width Calculation (use ternary for faster lookup)
-                const type = segInfo.type;
-                const widthMultiplier = (type === 'L') ? (0.4 * 2 / 3) : ((type === 'D' || type === 'R') ? 1.6 : 1.0);
+                // Width Calculation: unified approach using helper
+                const s = segData[idx];
+                const widthMultiplier = this._calculateSegmentWidthMultiplier(s, segInfo);
                 let currentLineWidth = baseLineWidthPixels * widthMultiplier;
 
                 if (this.perspectiveEnabled) {
@@ -3712,14 +3977,19 @@ function initializePy2DmolViewer(containerElement) {
                     let x, y, radius;
                     
                     // Get atom type to determine appropriate line width multiplier
-                    let widthMultiplier = 1.0;
+                    // Atoms are zero-length segments, so use unified helper
+                    let widthMultiplier = 0.5; // Default for atoms
                     if (this.atomTypes && atomIdx < this.atomTypes.length) {
                         const type = this.atomTypes[atomIdx];
-                        if (type === 'L') {
-                            widthMultiplier = 0.4 * 2 / 3; // Ligands are thinner
-                        } else if (type === 'D' || type === 'R') {
-                            widthMultiplier = 1.6; // DNA/RNA are thicker
-                        }
+                        // Create dummy segInfo for atom (zero-length segment)
+                        const dummySegInfo = {
+                            type: type,
+                            idx1: atomIdx,
+                            idx2: atomIdx, // Same index = zero-length
+                            len: 0
+                        };
+                        const dummySegData = { len: 0, x: atom.x, y: atom.y, z: atom.z };
+                        widthMultiplier = this._calculateSegmentWidthMultiplier(dummySegData, dummySegInfo);
                     }
                     let atomLineWidth = baseLineWidthPixels * widthMultiplier;
                     
@@ -4151,6 +4421,12 @@ function initializePy2DmolViewer(containerElement) {
         });
     }
     
+    // Setup depthCheckbox
+    const depthCheckbox = containerElement.querySelector('#depthCheckbox');
+    if (depthCheckbox) {
+        depthCheckbox.checked = renderer.depthEnabled; // Set default from renderer
+    }
+    
     // Setup colorblindCheckbox
     const colorblindCheckbox = containerElement.querySelector('#colorblindCheckbox');
     colorblindCheckbox.checked = renderer.colorblindMode; // Set default from renderer
@@ -4181,7 +4457,7 @@ function initializePy2DmolViewer(containerElement) {
         frameSlider, frameCounter, objectSelect,
         speedSelect, rotationCheckbox, lineWidthSlider,
         shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
-        colorblindCheckbox, orthoSlider
+        depthCheckbox, colorblindCheckbox, orthoSlider
     );
     
     // Setup save state button (for Python interface only - web interface handles it in app.js)

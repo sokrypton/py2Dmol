@@ -406,6 +406,17 @@ function setupEventListeners() {
     
     // Update navigation button states
     updateObjectNavigationButtons();
+    
+    // Depth toggle
+    const depthCheckbox = document.getElementById('depthCheckbox');
+    if (depthCheckbox) {
+        depthCheckbox.addEventListener('change', (e) => {
+            if (viewerApi && viewerApi.renderer) {
+                viewerApi.renderer.depthEnabled = e.target.checked;
+                viewerApi.renderer.render();
+            }
+        });
+    }
 }
 
 // ============================================================================

@@ -188,12 +188,13 @@
                 if (!this.isAdding) {
                     // Clear sequence selection when starting a new PAE selection (non-additive)
                     // This ensures only the PAE box selection is active
+                    // Skip 3D render during drag - only update sequence/PAE viewers
                     this.mainRenderer.setSelection({ 
                         paeBoxes: [],
                         atoms: new Set(),
                         chains: new Set(),
                         selectionMode: 'explicit'
-                    });
+                    }, true); // skip3DRender = true
                 }
                 // If Shift is held, preserve existing selections and add to them
                 
@@ -256,12 +257,13 @@
 
                 if (isClick) {
                     // Single click: Clear both PAE and sequence selection
+                    // Render 3D viewer now that drag is complete
                     this.mainRenderer.setSelection({ 
                         paeBoxes: [],
                         atoms: new Set(),
                         chains: new Set(),
                         selectionMode: 'default'
-                    });
+                    }, false); // skip3DRender = false - update 3D viewer
                     // Invalidate PAE cache
                     this.cachedSequencePositions = null;
                     this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
@@ -323,12 +325,13 @@
                         const totalAtoms = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
                         const hasPartialSelections = combinedAtoms.size > 0 && combinedAtoms.size < totalAtoms;
                         
+                        // Render 3D viewer now that drag is complete
                         this.mainRenderer.setSelection({
                             paeBoxes: combinedBoxes,
                             atoms: combinedAtoms,
                             chains: newChains, // Include all chains with selected atoms
                             selectionMode: hasPartialSelections ? 'explicit' : 'default'
-                        });
+                        }, false); // skip3DRender = false - update 3D viewer
                     } else {
                         // Replace: use only the new box and atoms (with ligand expansion)
                         
@@ -349,12 +352,13 @@
                         const totalAtoms = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
                         const hasPartialSelections = expandedNewAtoms.size > 0 && expandedNewAtoms.size < totalAtoms;
                         
+                        // Render 3D viewer now that drag is complete
                         this.mainRenderer.setSelection({
                             paeBoxes: [newBox],
                             atoms: expandedNewAtoms,
                             chains: newChains, // Include all chains with selected atoms
                             selectionMode: hasPartialSelections ? 'explicit' : 'default'
-                        });
+                        }, false); // skip3DRender = false - update 3D viewer
                     }
                     
                     // Invalidate PAE cache so colors update immediately
@@ -380,12 +384,13 @@
                 this.isAdding = false;
                 
                 // Clear sequence selection when starting a new PAE selection
+                // Skip 3D render during drag - only update sequence/PAE viewers
                 this.mainRenderer.setSelection({ 
                     paeBoxes: [],
                     atoms: new Set(),
                     chains: new Set(),
                     selectionMode: 'explicit'
-                });
+                }, true); // skip3DRender = true
                 
                 this.isDragging = true;
                 const { i, j } = this.getCellIndices(e);

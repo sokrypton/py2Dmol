@@ -106,7 +106,9 @@
 }
 
 .py2dmol-viewer-instance #canvasContainer.container-box {
-    /* Inherits all container-box styles */
+    /* Inherits all container-box styles from .container-box */
+    /* Intentionally empty - styles inherited from .container-box */
+    display: block; /* Prevent empty ruleset warning */
 }
 
 .py2dmol-viewer-instance #canvas {
@@ -137,7 +139,9 @@
 }
 
 .py2dmol-viewer-instance #rightPanelContainer.container-box {
-    /* Inherits all container-box styles */
+    /* Inherits all container-box styles from .container-box */
+    /* Intentionally empty - styles inherited from .container-box */
+    display: flex; /* Prevent empty ruleset warning */
 }
 
 /* ============================================================================
@@ -479,6 +483,17 @@
     box-sizing: border-box;
 }
 
+/* Small button toggle variant */
+.py2dmol-viewer-instance .btn-toggle.btn-small {
+    height: var(--btn-height-small);
+}
+
+.py2dmol-viewer-instance .btn-toggle.btn-small > span {
+    height: var(--btn-height-small);
+    padding: 0 var(--btn-padding-x-small);
+    font-size: var(--btn-font-size-small);
+}
+
 .py2dmol-viewer-instance .btn-toggle input:checked + span {
     background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
     color: #fff;
@@ -499,6 +514,10 @@
 /* Icon button styles (record, save SVG, etc.) - unified with base button styles */
 .py2dmol-viewer-instance .btn-toggle.btn-icon-only > span {
     min-width: 36px; /* Prevent collapsing below minimum */
+}
+
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only.btn-small > span {
+    min-width: 28px; /* Smaller min-width for small icon buttons */
 }
 
 .py2dmol-viewer-instance .btn-toggle.btn-icon-only > span > i {
@@ -687,6 +706,15 @@
     width: 170px;
     min-width: 150px;
     flex-shrink: 0;
+}
+
+/* Small color/object select (matches btn-small height) */
+.py2dmol-viewer-instance #colorSelect[style*="height: 28px"],
+.py2dmol-viewer-instance #objectSelect[style*="height: 28px"] {
+    height: 28px;
+    font-size: 12px;
+    padding: 0 8px;
+    min-width: 100px;
 }
 
 .py2dmol-viewer-instance #colorSelect:hover, 
@@ -1095,6 +1123,8 @@ table.layout-table td {
 
 .sequence-section-container.container-box {
     /* Inherits all container-box styles from .container-box */
+    /* Intentionally empty - styles inherited from .container-box */
+    display: block; /* Prevent empty ruleset warning */
 }
 
 /* Reduce bottom margin when collapsed to remove extra white space */
