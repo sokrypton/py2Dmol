@@ -726,31 +726,34 @@
                             }
                             
                             if (firstAtomInChain) {
-                                // Only create ligand token if residue name is available (for display)
-                                if (hasResidueNames && firstAtomInChain.resName) {
-                                    // Create ligand token (color will be computed dynamically at render time)
-                                    displayItems.push({
-                                        type: 'ligand',
-                                        resSeq: firstAtomInChain.resSeq,
-                                        resName: firstAtomInChain.resName,
-                                        atomIndices: ligandAtomIndices,
-                                        chain: firstAtomInChain.chain
-                                    });
-                                    
-                                    // Mark this ligand group as processed
-                                    processedLigandGroups.add(ligandGroupKey);
-                                    
-                                    // Skip all atoms in this ligand group
-                                    while (i < chainAtoms.length && ligandAtomIndices.includes(chainAtoms[i].atomIndex)) {
-                                        i++;
-                                    }
-                                    continue;
+                                // Create ligand token even if residue name is missing (use fallback name)
+                                // This ensures ligands are grouped even when residue_index/residue are missing
+                                const ligandResName = (hasResidueNames && firstAtomInChain.resName && firstAtomInChain.resName !== 'UNK') 
+                                    ? firstAtomInChain.resName 
+                                    : 'LIG'; // Fallback name for ligands without residue names
+                                
+                                // Create ligand token (color will be computed dynamically at render time)
+                                displayItems.push({
+                                    type: 'ligand',
+                                    resSeq: firstAtomInChain.resSeq,
+                                    resName: ligandResName,
+                                    atomIndices: ligandAtomIndices,
+                                    chain: firstAtomInChain.chain
+                                });
+                                
+                                // Mark this ligand group as processed
+                                processedLigandGroups.add(ligandGroupKey);
+                                
+                                // Skip all atoms in this ligand group
+                                while (i < chainAtoms.length && ligandAtomIndices.includes(chainAtoms[i].atomIndex)) {
+                                    i++;
                                 }
+                                continue;
                             }
                         }
                     }
                     
-                    // Regular atom (or ligand without residue names - render as individual X)
+                    // Regular atom (ligands with grouping are handled above)
                     displayItems.push({
                         type: 'atom',
                         atom: atom

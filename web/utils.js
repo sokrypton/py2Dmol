@@ -1071,46 +1071,69 @@ function groupLigandAtoms(chains, atomTypes, residueIndex, residues) {
     const hasResidueIndex = residueIndex && residueIndex.length === chains.length;
     const hasResidues = residues && residues.length === chains.length;
     
-    // Track current ligand group for fallback grouping (consecutive atoms)
-    let currentLigandKey = null;
-    let currentLigandStart = -1;
+    // Detect if residue_index appears to be default sequential values (1, 2, 3, ...)
+    // This happens when residue_index was missing and defaults were created
+    let isDefaultSequential = false;
+    if (hasResidueIndex) {
+        // Check if all values are strictly sequential starting from 1
+        isDefaultSequential = residueIndex.every((val, idx) => val === idx + 1);
+    }
     
-    for (let i = 0; i < atomTypes.length; i++) {
-        if (atomTypes[i] === 'L') {
-            const chain = chains[i];
-            const resSeq = hasResidueIndex ? residueIndex[i] : null;
-            const resName = hasResidues ? residues[i] : null;
-            
-            // Create group key based on available data
-            let groupKey;
-            if (resName) {
-                // Primary: use chain + resSeq + resName
-                groupKey = createLigandGroupKey(chain, resSeq, resName, i);
-            } else if (resSeq !== undefined && resSeq !== null) {
-                // Secondary: use chain + resSeq
-                groupKey = createLigandGroupKey(chain, resSeq, null, i);
-            } else {
-                // Fallback: group consecutive ligand atoms in same chain
-                if (currentLigandKey && chain === chains[i - 1]) {
-                    // Continue current ligand group
-                    groupKey = currentLigandKey;
-                } else {
-                    // Start new ligand group
-                    groupKey = createLigandGroupKey(chain, null, null, i);
-                    currentLigandKey = groupKey;
-                    currentLigandStart = i;
+    // For ligands, if residue_index is default sequential AND residues are missing or all 'UNK',
+    // treat it as if residue_index is missing (use fallback grouping)
+    const useFallbackGrouping = !hasResidueIndex || 
+        (isDefaultSequential && (!hasResidues || residues.every(r => !r || r === 'UNK')));
+    
+    // If using fallback grouping, group ALL ligand atoms in each chain as one ligand
+    if (useFallbackGrouping) {
+        // Group by chain: all ligand atoms in same chain = one ligand group
+        const chainLigandGroups = new Map(); // chain -> array of atom indices
+        
+        for (let i = 0; i < atomTypes.length; i++) {
+            if (atomTypes[i] === 'L') {
+                const chain = chains[i];
+                if (!chainLigandGroups.has(chain)) {
+                    chainLigandGroups.set(chain, []);
                 }
+                chainLigandGroups.get(chain).push(i);
             }
-            
-            // Add atom to ligand group
-            if (!ligandGroups.has(groupKey)) {
-                ligandGroups.set(groupKey, []);
+        }
+        
+        // Create group keys for each chain's ligand atoms
+        for (const [chain, atomIndices] of chainLigandGroups) {
+            if (atomIndices.length > 0) {
+                // Use first atom index as the group key identifier
+                const groupKey = createLigandGroupKey(chain, null, null, atomIndices[0]);
+                ligandGroups.set(groupKey, atomIndices);
             }
-            ligandGroups.get(groupKey).push(i);
-        } else {
-            // Not a ligand atom, reset consecutive grouping
-            currentLigandKey = null;
-            currentLigandStart = -1;
+        }
+    } else {
+        // Normal grouping: use residue_index and residue names when available
+        for (let i = 0; i < atomTypes.length; i++) {
+            if (atomTypes[i] === 'L') {
+                const chain = chains[i];
+                const resSeq = hasResidueIndex ? residueIndex[i] : null;
+                const resName = hasResidues ? residues[i] : null;
+                
+                // Create group key based on available data
+                let groupKey;
+                if (resName && resName !== 'UNK') {
+                    // Primary: use chain + resSeq + resName
+                    groupKey = createLigandGroupKey(chain, resSeq, resName, i);
+                } else if (resSeq !== undefined && resSeq !== null) {
+                    // Secondary: use chain + resSeq
+                    groupKey = createLigandGroupKey(chain, resSeq, null, i);
+                } else {
+                    // Should not happen if useFallbackGrouping is false, but handle gracefully
+                    groupKey = createLigandGroupKey(chain, null, null, i);
+                }
+                
+                // Add atom to ligand group
+                if (!ligandGroups.has(groupKey)) {
+                    ligandGroups.set(groupKey, []);
+                }
+                ligandGroups.get(groupKey).push(i);
+            }
         }
     }
     

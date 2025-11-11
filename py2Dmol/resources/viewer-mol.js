@@ -4556,15 +4556,19 @@ function initializePy2DmolViewer(containerElement) {
                     for (let i = 0; i < obj.frames.length; i++) {
                         const lightFrame = obj.frames[i];
                         
-                        // Re-construct the full frame data, keys might be undefined
+                        // Robust resolution: frame-level > object-level > undefined (will use defaults)
+                        const n = lightFrame.coords ? lightFrame.coords.length : 0;
+                        
+                        // Re-construct the full frame data with proper inheritance
                         const fullFrameData = {
-                            coords: lightFrame.coords,
-                            plddts: lightFrame.plddts,
-                            pae: lightFrame.pae,
-                            chains: staticChains,
-                            atom_types: staticAtomTypes,
-                            residues: lightFrame.residues,
-                            residue_index: lightFrame.residue_index
+                            coords: lightFrame.coords,  // Required
+                            // Resolve with fallbacks: frame-level > object-level > undefined
+                            chains: lightFrame.chains || staticChains || undefined,
+                            atom_types: lightFrame.atom_types || staticAtomTypes || undefined,
+                            plddts: lightFrame.plddts || undefined,  // Will use inheritance or default in setCoords
+                            pae: lightFrame.pae || undefined,  // Will use inheritance or default
+                            residues: lightFrame.residues || undefined,  // Will default in setCoords
+                            residue_index: lightFrame.residue_index || undefined  // Will default in setCoords
                         };
                         
                         renderer.addFrame(fullFrameData, obj.name);

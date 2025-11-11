@@ -2430,6 +2430,39 @@ function preventDefaults(e) {
 // SAVE/LOAD STATE
 // ============================================================================
 
+function detectRedundantFields(frames) {
+    /**
+     * Detect fields that are identical across all frames.
+     * Returns object with field_name: value for redundant fields.
+     */
+    if (!frames || frames.length === 0) return {};
+    
+    const redundant = {};
+    for (const field of ['chains', 'atom_types']) {
+        // Find first non-null value
+        let firstValue = null;
+        for (const frame of frames) {
+            if (frame[field] != null) {
+                firstValue = frame[field];
+                break;
+            }
+        }
+        
+        if (firstValue == null) continue;
+        
+        // Check if all frames have same value (or null/undefined)
+        const allSame = frames.every(f => 
+            f[field] == null || JSON.stringify(f[field]) === JSON.stringify(firstValue)
+        );
+        
+        if (allSame) {
+            redundant[field] = firstValue;
+        }
+    }
+    
+    return redundant;
+}
+
 function saveViewerState() {
     if (!viewerApi || !viewerApi.renderer) {
         setStatus("Error: No viewer data to save.", true);
@@ -2442,7 +2475,9 @@ function saveViewerState() {
         // Collect all objects
         const objects = [];
         for (const [objectName, objectData] of Object.entries(renderer.objectsData)) {
-            const frames = [];
+            const frameDataList = [];
+            
+            // Collect all frame data
             for (const frame of objectData.frames) {
                 const frameData = {};
                 
@@ -2481,14 +2516,35 @@ function saveViewerState() {
                     );
                 }
                 
-                frames.push(frameData);
+                frameDataList.push(frameData);
             }
             
-            objects.push({
+            // Detect redundant fields (same across all frames)
+            const redundant = detectRedundantFields(frameDataList);
+            
+            // Remove redundant fields from frames (only if identical)
+            const frames = [];
+            for (const frameData of frameDataList) {
+                const cleanedFrame = {...frameData};
+                for (const field in redundant) {
+                    if (cleanedFrame[field] != null && 
+                        JSON.stringify(cleanedFrame[field]) === JSON.stringify(redundant[field])) {
+                        delete cleanedFrame[field];
+                    }
+                }
+                frames.push(cleanedFrame);
+            }
+            
+            // Create object with redundant fields at object level
+            const objToSave = {
                 name: objectName,
                 frames: frames,
-                hasPAE: checkObjectHasPAE({frames: frames}) // Check frames for compatibility
-            });
+                hasPAE: checkObjectHasPAE({frames: frames})
+            };
+            // Add redundant fields to object level (only if detected)
+            Object.assign(objToSave, redundant);
+            
+            objects.push(objToSave);
         }
         
         // Get viewer state
@@ -2503,6 +2559,7 @@ function saveViewerState() {
             color_mode: renderer.colorMode || 'auto',
             line_width: renderer.lineWidth || 3.0,
             shadow_enabled: renderer.shadowEnabled !== false,
+            depth_enabled: renderer.depthEnabled !== false,
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
             pastel_level: renderer.pastelLevel || 0.25,
@@ -2522,7 +2579,7 @@ function saveViewerState() {
         
         // Create state object
         const stateData = {
-            py2dmol_version: "1.0",
+            py2dmol_version: "2.0",
             objects: objects,
             viewer_state: viewerState,
             selection_state: selectionState
@@ -2608,8 +2665,9 @@ async function loadViewerState(stateData) {
     
     try {
         // Validate version
-        if (stateData.py2dmol_version && stateData.py2dmol_version !== "1.0") {
-            console.warn(`State file version ${stateData.py2dmol_version} may not be fully compatible.`);
+        const version = stateData.py2dmol_version || "2.0";
+        if (version !== "2.0") {
+            console.warn(`State file version ${version} may not be fully compatible. Expected 2.0.`);
         }
         
         // Clear existing objects
@@ -2630,6 +2688,10 @@ async function loadViewerState(stateData) {
                     continue;
                 }
                 
+                // Get object-level defaults (may be undefined)
+                const objChains = objData.chains;
+                const objAtomTypes = objData.atom_types;
+                
                 renderer.addObject(objData.name);
                 
                 // Temporarily disable auto frame setting during batch load
@@ -2637,7 +2699,24 @@ async function loadViewerState(stateData) {
                 renderer.isPlaying = true; // Prevent setFrame from being called during addFrame
                 
                 for (const frameData of objData.frames) {
-                    renderer.addFrame(frameData, objData.name);
+                    // Robust resolution: frame-level > object-level > undefined (will use defaults)
+                    if (!frameData.coords || frameData.coords.length === 0) {
+                        console.warn("Skipping frame with no coordinates");
+                        continue;
+                    }
+                    
+                    // Resolve with fallbacks (undefined will trigger defaults in addFrame/setCoords)
+                    const resolvedFrame = {
+                        coords: frameData.coords,
+                        chains: frameData.chains || objChains,  // undefined if both missing
+                        atom_types: frameData.atom_types || objAtomTypes,  // undefined if both missing
+                        plddts: frameData.plddts,  // undefined if missing (will use inheritance or default)
+                        pae: frameData.pae,  // undefined if missing (will use inheritance or default)
+                        residues: frameData.residues,  // undefined if missing (will default)
+                        residue_index: frameData.residue_index  // undefined if missing (will default)
+                    };
+                    
+                    renderer.addFrame(resolvedFrame, objData.name);
                 }
                 
                 // Restore playing state
@@ -2714,6 +2793,16 @@ async function loadViewerState(stateData) {
                 if (shadowCheckbox) {
                     shadowCheckbox.checked = vs.shadow_enabled;
                     shadowCheckbox.dispatchEvent(new Event('change'));
+                }
+            }
+            
+            // Restore depth
+            if (typeof vs.depth_enabled === 'boolean') {
+                renderer.depthEnabled = vs.depth_enabled;
+                const depthCheckbox = document.getElementById('depthCheckbox');
+                if (depthCheckbox) {
+                    depthCheckbox.checked = vs.depth_enabled;
+                    depthCheckbox.dispatchEvent(new Event('change'));
                 }
             }
             

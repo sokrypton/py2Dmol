@@ -249,6 +249,11 @@ class view:
                         light_frame["residues"] = frame["residues"]
                     if "residue_index" in frame and frame["residue_index"] is not None:
                         light_frame["residue_index"] = frame["residue_index"]
+                    # Include atom_types and chains at frame level for proper inheritance
+                    if "atom_types" in frame and frame["atom_types"] is not None:
+                        light_frame["atom_types"] = frame["atom_types"]
+                    if "chains" in frame and frame["chains"] is not None:
+                        light_frame["chains"] = frame["chains"]
                     light_frames.append(light_frame)
 
                 # For static data, we still need to provide chains and atom_types
@@ -789,6 +794,40 @@ class view:
             self._display_html(html_to_display)
             self._is_live = True
 
+    def _detect_redundant_fields(self, frames):
+        """
+        Detect fields that are identical across all frames.
+        Returns dict of field_name: value for redundant fields.
+        """
+        if not frames or len(frames) == 0:
+            return {}
+        
+        redundant = {}
+        for field in ['chains', 'atom_types']:
+            # Skip if not present in any frame
+            if not any(field in frame and frame[field] is not None for frame in frames):
+                continue
+            
+            # Get first non-None value
+            first_value = None
+            for frame in frames:
+                if field in frame and frame[field] is not None:
+                    first_value = frame[field]
+                    break
+            
+            if first_value is None:
+                continue
+            
+            # Check if all frames have same value (or are missing/None)
+            if all(
+                (field in frame and frame[field] == first_value) or 
+                (field not in frame or frame[field] is None)
+                for frame in frames
+            ):
+                redundant[field] = first_value
+        
+        return redundant
+
     def save_state(self, filepath):
         """
         Saves the current viewer state (objects, frames, viewer settings, selection) to a JSON file.
@@ -827,11 +866,25 @@ class view:
                 
                 frames.append(frame_data)
             
-            objects.append({
+            # Detect redundant fields (same across all frames)
+            redundant_fields = self._detect_redundant_fields(frames)
+            
+            # Remove redundant fields from frames (only if identical)
+            for frame in frames:
+                for field in redundant_fields:
+                    if field in frame and frame[field] == redundant_fields[field]:
+                        del frame[field]
+            
+            # Create object with redundant fields at object level
+            obj_to_serialize = {
                 "name": obj.get("name", "unknown"),
                 "frames": frames,
                 "hasPAE": any(f.get("pae") is not None for f in frames)
-            })
+            }
+            # Add redundant fields to object level (only if detected)
+            obj_to_serialize.update(redundant_fields)
+            
+            objects.append(obj_to_serialize)
         
         # Get viewer state (limited - Python doesn't have access to all JS state)
         viewer_state = {
@@ -861,7 +914,7 @@ class view:
         
         # Create state object
         state_data = {
-            "py2dmol_version": "1.0",
+            "py2dmol_version": "2.0",
             "objects": objects,
             "viewer_state": viewer_state,
             "selection_state": selection_state
@@ -884,8 +937,9 @@ class view:
             state_data = json.load(f)
         
         # Validate version
-        if state_data.get("py2dmol_version") != "1.0":
-            print(f"Warning: State file version {state_data.get('py2dmol_version')} may not be fully compatible.")
+        version = state_data.get("py2dmol_version", "2.0")
+        if version != "2.0":
+            print(f"Warning: State file version {version} may not be fully compatible. Expected 2.0.")
         
         # Clear existing objects
         self.objects = []
@@ -898,31 +952,41 @@ class view:
                     print(f"Warning: Skipping invalid object in state file: {obj_data}")
                     continue
                 
+                # Get object-level defaults (may be None)
+                obj_chains = obj_data.get("chains")
+                obj_atom_types = obj_data.get("atom_types")
+                
                 self.new_obj(obj_data["name"])
                 
                 for frame_data in obj_data["frames"]:
                     # Convert frame data to numpy arrays
                     coords = np.array(frame_data.get("coords", []))
-                    plddts = np.array(frame_data.get("plddts", []))
-                    chains = frame_data.get("chains")
-                    atom_types = frame_data.get("atom_types")
+                    
+                    if len(coords) == 0:
+                        print(f"Warning: Skipping frame with no coordinates")
+                        continue
+                    
+                    # Robust resolution: frame-level > object-level > None (will use defaults in add())
+                    chains = frame_data.get("chains") or obj_chains
+                    atom_types = frame_data.get("atom_types") or obj_atom_types
+                    plddts = np.array(frame_data.get("plddts", [])) if frame_data.get("plddts") else None
                     residues = frame_data.get("residues")
                     residue_index = frame_data.get("residue_index")
                     pae = np.array(frame_data.get("pae")) if frame_data.get("pae") else None
                     
-                    if len(coords) > 0:
-                        self.add(
-                            coords,
-                            plddts if len(plddts) > 0 else None,
-                            chains,
-                            atom_types,
-                            pae=pae,
-                            new_obj=False,
-                            name=None,
-                            align=False,  # Don't re-align loaded data
-                            residues=residues,
-                            residue_index=residue_index
-                        )
+                    # add() will apply defaults for None values
+                    self.add(
+                        coords,
+                        plddts if plddts is not None and len(plddts) > 0 else None,
+                        chains,
+                        atom_types,
+                        pae=pae,
+                        new_obj=False,
+                        name=None,
+                        align=False,  # Don't re-align loaded data
+                        residues=residues,
+                        residue_index=residue_index
+                    )
         
         # Restore viewer config from state (if available)
         if "viewer_state" in state_data:
