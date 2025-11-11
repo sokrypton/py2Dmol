@@ -181,10 +181,8 @@ function setupEventListeners() {
     }
     
     // Save SVG button (camera button)
-    const saveSvgButton = document.getElementById('saveSvgButton');
-    if (saveSvgButton) {
-        saveSvgButton.addEventListener('click', saveViewerAsSvg);
-    }
+    // Save SVG button is now handled by viewer-mol.js via setUIControls (same as Record button)
+    // No need to set up listener here - renderer handles it
     
     // Copy selection button (moved to sequence actions)
     const copySelectionButton = document.getElementById('copySelectionButton');
@@ -2585,102 +2583,9 @@ function saveViewerState() {
 // ============================================================================
 // SVG EXPORT
 // ============================================================================
-
-// Helper function to get SVG string from renderer
-function getViewerSvgString() {
-    if (!viewerApi || !viewerApi.renderer) {
-        throw new Error("No viewer data available");
-    }
-    
-    const renderer = viewerApi.renderer;
-    const canvas = renderer.canvas;
-    
-    if (!canvas) {
-        throw new Error("Canvas not found");
-    }
-    
-    // Check if C2S (canvas2svg) is available
-    if (typeof C2S === 'undefined') {
-        throw new Error("canvas2svg library not loaded");
-    }
-    
-    // Get display dimensions (not internal canvas dimensions which include DPI scaling)
-    // Use renderer's displayWidth/displayHeight if available, otherwise fall back to canvas style dimensions
-    const width = renderer.displayWidth || parseInt(canvas.style.width) || canvas.width;
-    const height = renderer.displayHeight || parseInt(canvas.style.height) || canvas.height;
-    
-    // Create SVG context using canvas2svg with display dimensions
-    // The SVG context should not be scaled since we're using display dimensions
-    const svgCtx = new C2S(width, height);
-    
-    // Store original context and dimensions
-    const originalCtx = renderer.ctx;
-    const originalDisplayWidth = renderer.displayWidth;
-    const originalDisplayHeight = renderer.displayHeight;
-    
-    // Temporarily update renderer's display dimensions to match SVG
-    renderer.displayWidth = width;
-    renderer.displayHeight = height;
-    
-    // Temporarily replace the renderer's context with SVG context
-    renderer.ctx = svgCtx;
-    
-    // Re-render the scene to the SVG context
-    renderer.render();
-    
-    // Restore original display dimensions
-    renderer.displayWidth = originalDisplayWidth;
-    renderer.displayHeight = originalDisplayHeight;
-    
-    // Get the SVG string
-    const svgString = svgCtx.getSerializedSvg();
-    
-    // Restore original context
-    renderer.ctx = originalCtx;
-    
-    // Re-render to canvas to restore display
-    renderer.render();
-    
-    return svgString;
-}
-
-function saveViewerAsSvg() {
-    try {
-        const svgString = getViewerSvgString();
-        const renderer = viewerApi.renderer;
-        
-        // Create filename with object name and timestamp
-        const now = new Date();
-        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
-        
-        // Get object name and sanitize it for filename
-        let objectName = renderer.currentObjectName || 'viewer';
-        // Sanitize object name: remove invalid filename characters
-        objectName = objectName.replace(/[^a-zA-Z0-9_-]/g, '_');
-        // Limit length to avoid overly long filenames
-        if (objectName.length > 50) {
-            objectName = objectName.substring(0, 50);
-        }
-        
-        const svgFilename = `py2dmol_${objectName}_${timestamp}.svg`;
-        
-        // Download the SVG file
-        const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = svgFilename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        
-        setStatus(`SVG exported to ${svgFilename}`);
-    } catch (e) {
-        console.error("Failed to export SVG:", e);
-        setStatus(`Error exporting SVG: ${e.message}`, true);
-    }
-}
+// SVG export is now handled by renderer.saveAsSvg() in viewer-mol.js
+// The renderer automatically detects if setStatus() is available (index.html) 
+// or uses console.log/alert (viewer.html)
 
 async function loadViewerState(stateData) {
     if (!viewerApi || !viewerApi.renderer) {

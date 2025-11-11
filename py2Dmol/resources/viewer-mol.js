@@ -6,6 +6,167 @@ if (!window.py2dmol_viewers) {
     window.py2dmol_viewers = {};
 }
 
+// ============================================================================
+// SIMPLE CANVAS2SVG FOR PY2DMOL
+// ============================================================================
+// Minimal canvas2svg implementation for py2Dmol viewer.
+// Only supports: lines (moveTo/lineTo/stroke), circles (arc/fill), rectangles (fillRect)
+
+(function() {
+    'use strict';
+
+    function SimpleCanvas2SVG(width, height) {
+        this.width = width;
+        this.height = height;
+        this.strokeStyle = '#000000';
+        this.fillStyle = '#000000';
+        this.lineWidth = 1;
+        this.lineCap = 'butt';
+        this.currentPath = null;
+        this.operations = [];
+    }
+
+    // Path operations
+    SimpleCanvas2SVG.prototype.beginPath = function() {
+        this.currentPath = [];
+    };
+    
+    SimpleCanvas2SVG.prototype.moveTo = function(x, y) {
+        if (!this.currentPath) this.beginPath();
+        this.currentPath.push({ type: 'M', x: x, y: y });
+    };
+    
+    SimpleCanvas2SVG.prototype.lineTo = function(x, y) {
+        if (!this.currentPath) this.beginPath();
+        this.currentPath.push({ type: 'L', x: x, y: y });
+    };
+    
+    SimpleCanvas2SVG.prototype.arc = function(x, y, radius, startAngle, endAngle) {
+        if (!this.currentPath) this.beginPath();
+        // py2Dmol only uses full circles (0 to 2π)
+        this.currentPath.push({ type: 'CIRCLE', x: x, y: y, radius: radius });
+    };
+
+    // Drawing operations
+    SimpleCanvas2SVG.prototype.stroke = function() {
+        if (!this.currentPath || this.currentPath.length === 0) return;
+        
+        let pathData = '';
+        for (let i = 0; i < this.currentPath.length; i++) {
+            const cmd = this.currentPath[i];
+            if (cmd.type === 'M') pathData += `M ${cmd.x} ${cmd.y} `;
+            else if (cmd.type === 'L') pathData += `L ${cmd.x} ${cmd.y} `;
+        }
+        
+        this.operations.push({
+            type: 'stroke',
+            pathData: pathData.trim(),
+            strokeStyle: this.strokeStyle,
+            lineWidth: this.lineWidth,
+            lineCap: this.lineCap
+        });
+        this.currentPath = null;
+    };
+    
+    SimpleCanvas2SVG.prototype.fill = function() {
+        if (!this.currentPath || this.currentPath.length === 0) return;
+        
+        // Check if single full circle (atoms)
+        if (this.currentPath.length === 1 && this.currentPath[0].type === 'CIRCLE') {
+            const c = this.currentPath[0];
+            this.operations.push({
+                type: 'circle',
+                x: c.x,
+                y: c.y,
+                radius: c.radius,
+                fillStyle: this.fillStyle
+            });
+        } else {
+            // Path fill (shouldn't happen in py2Dmol, but handle it)
+            let pathData = '';
+            for (let i = 0; i < this.currentPath.length; i++) {
+                const cmd = this.currentPath[i];
+                if (cmd.type === 'M') pathData += `M ${cmd.x} ${cmd.y} `;
+                else if (cmd.type === 'L') pathData += `L ${cmd.x} ${cmd.y} `;
+            }
+            this.operations.push({
+                type: 'fill',
+                pathData: pathData.trim(),
+                fillStyle: this.fillStyle
+            });
+        }
+        this.currentPath = null;
+    };
+    
+    SimpleCanvas2SVG.prototype.fillRect = function(x, y, w, h) {
+        this.operations.push({
+            type: 'rect',
+            x: x, y: y, width: w, height: h,
+            fillStyle: this.fillStyle
+        });
+    };
+    
+    SimpleCanvas2SVG.prototype.clearRect = function() {
+        // Ignore - we add white background in SVG
+    };
+
+    // Stub methods (not used in rendering)
+    SimpleCanvas2SVG.prototype.save = function() {};
+    SimpleCanvas2SVG.prototype.restore = function() {};
+    SimpleCanvas2SVG.prototype.scale = function() {};
+    SimpleCanvas2SVG.prototype.setTransform = function() {};
+    SimpleCanvas2SVG.prototype.translate = function() {};
+    SimpleCanvas2SVG.prototype.rotate = function() {};
+
+    // Color conversion: rgb(r,g,b) -> #rrggbb
+    function rgbToHex(color) {
+        if (!color || color.startsWith('#')) return color || '#000000';
+        const m = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (m) {
+            const r = parseInt(m[1]).toString(16).padStart(2, '0');
+            const g = parseInt(m[2]).toString(16).padStart(2, '0');
+            const b = parseInt(m[3]).toString(16).padStart(2, '0');
+            return `#${r}${g}${b}`;
+        }
+        return color;
+    }
+
+    // Generate SVG
+    SimpleCanvas2SVG.prototype.getSerializedSvg = function() {
+        let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}" viewBox="0 0 ${this.width} ${this.height}">\n`;
+        svg += `  <rect width="${this.width}" height="${this.height}" fill="#ffffff"/>\n`;
+        
+        for (let i = 0; i < this.operations.length; i++) {
+            const op = this.operations[i];
+            if (op.type === 'rect') {
+                svg += `  <rect x="${op.x}" y="${op.y}" width="${op.width}" height="${op.height}" fill="${rgbToHex(op.fillStyle)}"/>\n`;
+            } else if (op.type === 'circle') {
+                svg += `  <circle cx="${op.x}" cy="${op.y}" r="${op.radius}" fill="${rgbToHex(op.fillStyle)}"/>\n`;
+            } else if (op.type === 'stroke') {
+                const cap = op.lineCap === 'round' ? 'round' : 'butt';
+                svg += `  <path d="${op.pathData}" stroke="${rgbToHex(op.strokeStyle)}" stroke-width="${op.lineWidth}" stroke-linecap="${cap}" fill="none"/>\n`;
+            } else if (op.type === 'fill') {
+                svg += `  <path d="${op.pathData}" fill="${rgbToHex(op.fillStyle)}"/>\n`;
+            }
+        }
+        svg += '</svg>';
+        return svg;
+    };
+
+    // Export as C2S for compatibility with existing code
+    if (typeof window !== 'undefined') {
+        window.C2S = SimpleCanvas2SVG;
+    }
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = SimpleCanvas2SVG;
+    }
+
+})();
+
+// ============================================================================
+// VIEWER INITIALIZATION
+// ============================================================================
+
 /**
  * Initializes a py2dmol viewer instance within a specific container.
  * All logic is scoped to this container.
@@ -264,6 +425,7 @@ function initializePy2DmolViewer(containerElement) {
             // UI elements
             this.playButton = null;
             this.recordButton = null;
+            this.saveSvgButton = null;
             this.frameSlider = null;
             this.frameCounter = null;
             this.objectSelect = null;
@@ -823,10 +985,11 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, recordButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.recordButton = recordButton;
+            this.saveSvgButton = saveSvgButton;
             this.frameSlider = frameSlider;
             this.frameCounter = frameCounter;
             this.objectSelect = objectSelect;
@@ -854,6 +1017,14 @@ function initializePy2DmolViewer(containerElement) {
                 });
             } else {
                 console.warn("Record button not found - recording will not be available");
+            }
+            
+            if (this.saveSvgButton) {
+                this.saveSvgButton.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.saveAsSvg();
+                });
             }
 
             if (this.objectSelect) {
@@ -2691,16 +2862,17 @@ function initializePy2DmolViewer(containerElement) {
         
         // RENDER (Core drawing logic)
         render() {
-            // Use cached display dimensions (updated on resize)
-            const displayWidth = this.displayWidth;
-            const displayHeight = this.displayHeight;
-            
+            this._renderToContext(this.ctx, this.displayWidth, this.displayHeight);
+        }
+        
+        // Core rendering logic - can render to any context (canvas, SVG, etc.)
+        _renderToContext(ctx, displayWidth, displayHeight) {
             // Use clearRect or fillRect based on transparency
             if (this.isTransparent) {
-                this.ctx.clearRect(0, 0, displayWidth, displayHeight);
+                ctx.clearRect(0, 0, displayWidth, displayHeight);
             } else {
-                this.ctx.fillStyle = '#ffffff';
-                this.ctx.fillRect(0, 0, displayWidth, displayHeight);
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, displayWidth, displayHeight);
             }
             
             // Check segment length
@@ -3197,15 +3369,15 @@ function initializePy2DmolViewer(containerElement) {
             
             const setCanvasProps = (strokeStyle, lineWidth, lineCap) => {
                 if (strokeStyle !== lastStrokeStyle) {
-                    this.ctx.strokeStyle = strokeStyle;
+                    ctx.strokeStyle = strokeStyle;
                     lastStrokeStyle = strokeStyle;
                 }
                 if (lineWidth !== lastLineWidth) {
-                    this.ctx.lineWidth = lineWidth;
+                    ctx.lineWidth = lineWidth;
                     lastLineWidth = lineWidth;
                 }
                 if (lineCap !== lastLineCap) {
-                    this.ctx.lineCap = lineCap;
+                    ctx.lineCap = lineCap;
                     lastLineCap = lineCap;
                 }
             };
@@ -3326,31 +3498,31 @@ function initializePy2DmolViewer(containerElement) {
                 
                 if (this.outlineMode === 'none') {
                     // --- 1-STEP DRAW (No Outline) ---
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
                     setCanvasProps(color, currentLineWidth, 'round');
-                    this.ctx.stroke();
+                    ctx.stroke();
                 } else if (this.outlineMode === 'partial') {
                     // --- 2-STEP DRAW (Partial Outline) - Background segment with butt caps only (no rounded caps) ---
                     const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
                     const totalOutlineWidth = currentLineWidth + 3.0;
 
                     // Pass 1: Gap filler outline (3px larger than main line) with butt caps only
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
                     setCanvasProps(gapFillerColor, totalOutlineWidth, 'butt');
-                    this.ctx.stroke();
+                    ctx.stroke();
                     
                     // No rounded caps in partial mode
 
                     // Pass 2: Main colored line (always round caps)
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
                     setCanvasProps(color, currentLineWidth, 'round');
-                    this.ctx.stroke();
+                    ctx.stroke();
                 } else { // this.outlineMode === 'full'
                     // --- 2-STEP DRAW (Full Outline) - Background segment with rounded caps at outer endpoints ---
                     const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
@@ -3358,33 +3530,33 @@ function initializePy2DmolViewer(containerElement) {
 
                     // Pass 1: Gap filler outline (3px larger than main line)
                     // Draw line with butt caps, then add rounded caps manually at outer endpoints
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
                     setCanvasProps(gapFillerColor, totalOutlineWidth, 'butt');
-                    this.ctx.stroke();
+                    ctx.stroke();
                     
                     // Add rounded caps at outer endpoints
                     const outlineRadius = totalOutlineWidth / 2;
                     if (hasOuterStart) {
-                        this.ctx.beginPath();
-                        this.ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
-                        this.ctx.fillStyle = gapFillerColor;
-                        this.ctx.fill();
+                        ctx.beginPath();
+                        ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
+                        ctx.fillStyle = gapFillerColor;
+                        ctx.fill();
                     }
                     if (hasOuterEnd) {
-                        this.ctx.beginPath();
-                        this.ctx.arc(x2, y2, outlineRadius, 0, Math.PI * 2);
-                        this.ctx.fillStyle = gapFillerColor;
-                        this.ctx.fill();
+                        ctx.beginPath();
+                        ctx.arc(x2, y2, outlineRadius, 0, Math.PI * 2);
+                        ctx.fillStyle = gapFillerColor;
+                        ctx.fill();
                     }
 
                     // Pass 2: Main colored line (always round caps)
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x1, y1);
-                    this.ctx.lineTo(x2, y2);
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
                     setCanvasProps(color, currentLineWidth, 'round');
-                    this.ctx.stroke();
+                    ctx.stroke();
                 }
             }
             // ====================================================================
@@ -3538,6 +3710,74 @@ function initializePy2DmolViewer(containerElement) {
 
             // 5. Loop
             requestAnimationFrame(() => this.animate());
+        }
+        
+        // Save as SVG
+        saveAsSvg() {
+            try {
+                if (typeof C2S === 'undefined') {
+                    throw new Error("canvas2svg library not loaded");
+                }
+                
+                const canvas = this.canvas;
+                if (!canvas) {
+                    throw new Error("Canvas not found");
+                }
+                
+                // Get display dimensions
+                const width = this.displayWidth || parseInt(canvas.style.width) || canvas.width;
+                const height = this.displayHeight || parseInt(canvas.style.height) || canvas.height;
+                
+                // Create SVG context and render directly to it - no context switching needed!
+                const svgCtx = new C2S(width, height);
+                this._renderToContext(svgCtx, width, height);
+                
+                // Get SVG string and download
+                const svgString = svgCtx.getSerializedSvg();
+                this._downloadSvg(svgString, this.currentObjectName);
+            } catch (e) {
+                console.error("Failed to export SVG:", e);
+                const errorMsg = `Error exporting SVG: ${e.message}`;
+                if (typeof setStatus === 'function') {
+                    setStatus(errorMsg, true);
+                } else {
+                    alert(errorMsg);
+                }
+            }
+        }
+        
+        // Helper method to download SVG file
+        _downloadSvg(svgString, objectName) {
+            // Create filename with object name and timestamp
+            const now = new Date();
+            const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+            
+            // Sanitize object name for filename
+            let name = objectName || 'viewer';
+            name = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+            if (name.length > 50) {
+                name = name.substring(0, 50);
+            }
+            
+            const svgFilename = `py2dmol_${name}_${timestamp}.svg`;
+            
+            // Download the SVG file
+            const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = svgFilename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            // Use setStatus if available (index.html), otherwise console.log (viewer.html)
+            if (typeof setStatus === 'function') {
+                setStatus(`SVG exported to ${svgFilename}`);
+            } else {
+                console.log(`SVG exported to ${svgFilename}`);
+            }
         }
     }
     
@@ -3783,8 +4023,9 @@ function initializePy2DmolViewer(containerElement) {
     // 6. Setup animation and object controls
     const controlsContainer = containerElement.querySelector('#controlsContainer');
     const playButton = containerElement.querySelector('#playButton');
-    // recordButton might be in containerElement or in document (web app vs embedded)
+    // recordButton and saveSvgButton might be in containerElement or in document (web app vs embedded)
     const recordButton = containerElement.querySelector('#recordButton') || document.querySelector('#recordButton');
+    const saveSvgButton = containerElement.querySelector('#saveSvgButton') || document.querySelector('#saveSvgButton');
     const frameSlider = containerElement.querySelector('#frameSlider');
     const frameCounter = containerElement.querySelector('#frameCounter');
     // objectSelect is now in the sequence header, query from document
@@ -3801,7 +4042,7 @@ function initializePy2DmolViewer(containerElement) {
 
     // Pass ALL controls to the renderer
     renderer.setUIControls(
-        controlsContainer, playButton, recordButton,
+        controlsContainer, playButton, recordButton, saveSvgButton,
         frameSlider, frameCounter, objectSelect,
         speedSelect, rotationCheckbox, lineWidthSlider,
         shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,

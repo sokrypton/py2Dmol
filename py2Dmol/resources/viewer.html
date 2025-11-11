@@ -349,6 +349,12 @@
                         <i class="fa-solid fa-video"></i> Record
                     </button>
                 </div>
+                <!-- Save SVG Button -->
+                <div class="toggle-item">
+                    <button id="saveSvgButton" class="controlButton" style="width: 100%;" title="Save as SVG">
+                        <i class="fa-solid fa-camera"></i> Save SVG
+                    </button>
+                </div>
                 <!-- Rotate Checkbox -->
                 <div class="toggle-item"> 
                     <input type="checkbox" id="rotationCheckbox">
@@ -480,6 +486,8 @@
             });
         })();
     </script>
+    
+    <!-- SVG export is now handled in viewer-mol.js (same as Record button) -->
 
 </body>
 </html>
