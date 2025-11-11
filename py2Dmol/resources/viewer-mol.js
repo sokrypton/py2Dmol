@@ -294,6 +294,7 @@ function initializePy2DmolViewer(containerElement) {
     const TINT_OFFSET_MULTIPLIER = 2.5;     // Proportional offset multiplier
     const WIDTH_RATIO_CLAMP_MIN = 0.01;     // Minimum width ratio for shadow/tint
     const WIDTH_RATIO_CLAMP_MAX = 10.0;     // Maximum width ratio for shadow/tint
+    const MAX_SHADOW_SUM = 12;              // Maximum accumulated shadow sum (saturating accumulation)
 
     // ============================================================================
     // PSEUDO-3D RENDERER
@@ -3490,9 +3491,9 @@ function initializePy2DmolViewer(containerElement) {
                         for (let j_idx = i_idx + 1; j_idx < visibleOrder.length; j_idx++) {
                             const j = visibleOrder[j_idx];
                             
-                            // Early exit: if maxTint is already 1.0, no need to check for more tint
-                            if (maxTint >= 1.0 && shadowSum > 50) {
-                                break; // Shadow sum is high enough, tint is maxed, skip remaining segments
+                            // Early exit: if shadow is already saturated or tint is maxed
+                            if (shadowSum >= MAX_SHADOW_SUM || (maxTint >= 1.0 && shadowSum >= MAX_SHADOW_SUM)) {
+                                break; // Shadow sum is saturated, skip remaining segments
                             }
                             
                             const s2 = segData[j];
@@ -3500,7 +3501,8 @@ function initializePy2DmolViewer(containerElement) {
                             
                             // Call helper function with segment info for width weighting
                             const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
-                            shadowSum += shadow;
+                            // Saturating accumulation: naturally caps at MAX_SHADOW_SUM
+                            shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
                             maxTint = Math.max(maxTint, tint);
                         }
                         shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
@@ -3562,6 +3564,7 @@ function initializePy2DmolViewer(containerElement) {
                                 continue; 
                             }
 
+                            // Process grid cells to accumulate shadows
                             for (let dy = -1; dy <= 1; dy++) {
                                 const gy2 = gy1 + dy;
                                 if (gy2 < 0 || gy2 >= GRID_DIM) continue;
@@ -3575,6 +3578,11 @@ function initializePy2DmolViewer(containerElement) {
                                     const cell = grid[gridIndex];
                                     const cellLen = cell.length;
                                     
+                                    // Early exit: if shadow is already saturated, skip this cell
+                                    if (shadowSum >= MAX_SHADOW_SUM) {
+                                        continue;
+                                    }
+                                    
                                     for (let k = 0; k < cellLen; k++) {
                                         const j = cell[k]; 
                                         // Only visible segments are in the grid, so no visibility check needed
@@ -3586,11 +3594,17 @@ function initializePy2DmolViewer(containerElement) {
                                             continue; // Skip segments that are behind or at same depth
                                         }
                                         
+                                        // Early exit: if shadow is already saturated, skip remaining segments in this cell
+                                        if (shadowSum >= MAX_SHADOW_SUM) {
+                                            break;
+                                        }
+                                        
                                         const segInfo2 = segments[j];
                                         
                                         // Call helper function with segment info for width weighting
                                         const { shadow, tint } = this._calculateShadowTint(s1, s2, segments[i], segInfo2);
-                                        shadowSum += shadow;
+                                        // Saturating accumulation: naturally caps at MAX_SHADOW_SUM
+                                        shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
                                         maxTint = Math.max(maxTint, tint);
                                     }
                                 }
