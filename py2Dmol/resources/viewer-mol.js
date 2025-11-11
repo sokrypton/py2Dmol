@@ -1214,9 +1214,20 @@ function initializePy2DmolViewer(containerElement) {
                 this.objectsData[name].stdDev = 0;
                 this.objectsData[name].globalCenterSum = new Vec3(0,0,0);
                 this.objectsData[name].totalAtoms = 0;
+                // Reset inheritance tracking
+                this.objectsData[name]._lastPlddtFrame = -1;
+                this.objectsData[name]._lastPaeFrame = -1;
             } else {
-                // Create new object
-                this.objectsData[name] = { maxExtent: 0, stdDev: 0, frames: [], globalCenterSum: new Vec3(0,0,0), totalAtoms: 0 };
+                // Create new object with inheritance tracking initialized
+                this.objectsData[name] = { 
+                    maxExtent: 0, 
+                    stdDev: 0, 
+                    frames: [], 
+                    globalCenterSum: new Vec3(0,0,0), 
+                    totalAtoms: 0,
+                    _lastPlddtFrame: -1,
+                    _lastPaeFrame: -1
+                };
                 
                 // Add to dropdown only if option doesn't already exist
                 if (this.objectSelect) {
@@ -1269,6 +1280,21 @@ function initializePy2DmolViewer(containerElement) {
             }
 
             const object = this.objectsData[targetObjectName];
+            const newFrameIndex = object.frames.length; // Index of frame we're about to add
+            
+            // Update object-level tracking (for optimization during resolution)
+            if (this._hasPlddtData(data)) {
+                object._lastPlddtFrame = newFrameIndex;
+            } else if (newFrameIndex === 0) {
+                object._lastPlddtFrame = -1; // No plddt in first frame
+            }
+            
+            if (this._hasPaeData(data)) {
+                object._lastPaeFrame = newFrameIndex;
+            } else if (newFrameIndex === 0) {
+                object._lastPaeFrame = -1; // No PAE in first frame
+            }
+            
             object.frames.push(data);
 
             // Set view to this object
@@ -1467,11 +1493,19 @@ function initializePy2DmolViewer(containerElement) {
                     continue; // Skip invalid frames
                 }
 
+                // Resolve inherited plddt and PAE data before extracting
+                const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
+                const resolvedPae = this._resolvePaeData(object, frameIndex);
+                
+                // Use resolved data if available, otherwise use frame's own data
+                const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
+                const sourcePae = resolvedPae !== null ? resolvedPae : frame.pae;
+
                 // Extract frame data for selected atoms
                 const extractedFrame = {
                     coords: [],
                     chains: frame.chains ? [] : undefined,
-                    plddts: frame.plddts ? [] : undefined,
+                    plddts: sourcePlddt ? [] : undefined,
                     atom_types: frame.atom_types ? [] : undefined,
                     residues: frame.residues ? [] : undefined,
                     residue_index: frame.residue_index ? [] : undefined,
@@ -1486,8 +1520,8 @@ function initializePy2DmolViewer(containerElement) {
                         if (frame.chains && idx < frame.chains.length) {
                             extractedFrame.chains.push(frame.chains[idx]);
                         }
-                        if (frame.plddts && idx < frame.plddts.length) {
-                            extractedFrame.plddts.push(frame.plddts[idx]);
+                        if (sourcePlddt && idx < sourcePlddt.length) {
+                            extractedFrame.plddts.push(sourcePlddt[idx]);
                         }
                         if (frame.atom_types && idx < frame.atom_types.length) {
                             extractedFrame.atom_types.push(frame.atom_types[idx]);
@@ -1501,8 +1535,8 @@ function initializePy2DmolViewer(containerElement) {
                     }
                 }
 
-                // Filter PAE matrix if present (copy PAE for all frames if available)
-                if (frame.pae && Array.isArray(frame.pae) && frame.pae.length > 0) {
+                // Filter PAE matrix if present (use resolved PAE data)
+                if (sourcePae && Array.isArray(sourcePae) && sourcePae.length > 0) {
                     // Create new PAE matrix with only selected positions
                     const newPAE = [];
                     for (let i = 0; i < selectedIndices.length; i++) {
@@ -1510,8 +1544,8 @@ function initializePy2DmolViewer(containerElement) {
                         for (let j = 0; j < selectedIndices.length; j++) {
                             const originalI = selectedIndices[i];
                             const originalJ = selectedIndices[j];
-                            if (originalI < frame.pae.length && originalJ < frame.pae[originalI].length) {
-                                row.push(frame.pae[originalI][originalJ]);
+                            if (originalI < sourcePae.length && originalJ < sourcePae[originalI].length) {
+                                row.push(sourcePae[originalI][originalJ]);
                             } else {
                                 row.push(0); // Default value if out of bounds
                             }
@@ -1615,6 +1649,70 @@ function initializePy2DmolViewer(containerElement) {
             return pae && Array.isArray(pae) && pae.length > 0;
         }
         
+        // Check if frame has valid plddt data
+        _hasPlddtData(frame) {
+            return frame && frame.plddts && Array.isArray(frame.plddts) && frame.plddts.length > 0;
+        }
+
+        // Check if frame has valid PAE data
+        _hasPaeData(frame) {
+            return this._isValidPAE(frame && frame.pae);
+        }
+
+        // Resolve plddt data for a frame (returns actual data or null)
+        // Searches backward from frameIndex to find most recent frame with plddt
+        _resolvePlddtData(object, frameIndex) {
+            if (frameIndex < 0 || frameIndex >= object.frames.length) return null;
+            
+            // Check current frame first
+            if (this._hasPlddtData(object.frames[frameIndex])) {
+                return object.frames[frameIndex].plddts;
+            }
+            
+            // Use object-level tracking for optimization (if available and valid)
+            if (object._lastPlddtFrame >= 0 && object._lastPlddtFrame < frameIndex) {
+                if (this._hasPlddtData(object.frames[object._lastPlddtFrame])) {
+                    return object.frames[object._lastPlddtFrame].plddts;
+                }
+            }
+            
+            // Search backward for most recent frame with plddt
+            for (let i = frameIndex - 1; i >= 0; i--) {
+                if (this._hasPlddtData(object.frames[i])) {
+                    return object.frames[i].plddts;
+                }
+            }
+            
+            return null;
+        }
+
+        // Resolve PAE data for a frame (returns actual data or null)
+        // Searches backward from frameIndex to find most recent frame with PAE
+        _resolvePaeData(object, frameIndex) {
+            if (frameIndex < 0 || frameIndex >= object.frames.length) return null;
+            
+            // Check current frame first
+            if (this._hasPaeData(object.frames[frameIndex])) {
+                return object.frames[frameIndex].pae;
+            }
+            
+            // Use object-level tracking for optimization (if available and valid)
+            if (object._lastPaeFrame >= 0 && object._lastPaeFrame < frameIndex) {
+                if (this._hasPaeData(object.frames[object._lastPaeFrame])) {
+                    return object.frames[object._lastPaeFrame].pae;
+                }
+            }
+            
+            // Search backward for most recent frame with PAE
+            for (let i = frameIndex - 1; i >= 0; i--) {
+                if (this._hasPaeData(object.frames[i])) {
+                    return object.frames[i].pae;
+                }
+            }
+            
+            return null;
+        }
+        
         // Find PAE container with fallback logic
         _findPAEContainer() {
             if (this.paeContainer) return this.paeContainer;
@@ -1639,8 +1737,18 @@ function initializePy2DmolViewer(containerElement) {
             const object = this.objectsData[name];
             if (!object.frames || object.frames.length === 0) return false;
             
-            // Check if any frame has valid PAE data
-            return object.frames.some(frame => this._isValidPAE(frame.pae));
+            // Check if any frame has valid PAE data (directly or via inheritance)
+            // If first frame has PAE, all frames can inherit; otherwise check if any frame has it
+            if (object.frames.length > 0) {
+                // Check first frame - if it has PAE, all can inherit
+                if (this._hasPaeData(object.frames[0])) {
+                    return true;
+                }
+                // Otherwise, check if any frame has PAE
+                return object.frames.some(frame => this._hasPaeData(frame));
+            }
+            
+            return false;
         }
         
         // Update PAE container visibility based on current object's PAE data
@@ -2651,12 +2759,23 @@ function initializePy2DmolViewer(containerElement) {
             
             const data = object.frames[frameIndex];
             
-            // Load 3D data (with skipRender option)
-            this._loadDataIntoRenderer(data, skipRender);
+            // Resolve inherited plddt and PAE data
+            const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
+            const resolvedPae = this._resolvePaeData(object, frameIndex);
             
-            // Load PAE data
+            // Create resolved data object (use resolved values if frame doesn't have its own)
+            const resolvedData = {
+                ...data,
+                plddts: resolvedPlddt !== null ? resolvedPlddt : data.plddts,
+                pae: resolvedPae !== null ? resolvedPae : data.pae
+            };
+            
+            // Load 3D data (with skipRender option)
+            this._loadDataIntoRenderer(resolvedData, skipRender);
+            
+            // Load PAE data (use resolved value)
             if (this.paeRenderer) {
-                this.paeRenderer.setData(data.pae || null);
+                this.paeRenderer.setData(resolvedPae !== null ? resolvedPae : (data.pae || null));
             }
             
             // Reset selection to default (show all) when loading a new object's frame
