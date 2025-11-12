@@ -2309,48 +2309,6 @@ async function handleFetch() {
             }
         }
 
-        // Download MSA for AlphaFold DB predictions (non-blocking, in background)
-        if (isAFDB && window.MSAViewer) {
-            // Skip MSA download if running from file:// protocol (CORS won't work)
-            if (window.location.protocol === 'file:') {
-                console.warn("MSA download skipped: CORS not available when running from file:// protocol. Please use a web server (http:// or https://).");
-            } else {
-                // Don't await - let it load in background while structure is displayed
-                (async () => {
-                    const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
-                    
-                    let msaText = null;
-                    
-                    // Use allorigins proxy directly
-                    try {
-                        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(msaUrl)}`;
-                        const proxyResponse = await fetch(proxyUrl);
-                        if (proxyResponse.ok) {
-                            msaText = await proxyResponse.text();
-                            console.log("MSA loaded via CORS proxy");
-                        }
-                    } catch (proxyError) {
-                        console.warn("MSA proxy failed:", proxyError.message);
-                    }
-                    
-                    // Parse and load MSA if we got the data
-                    if (msaText) {
-                        try {
-                            const msaData = window.MSAViewer.parseA3M(msaText);
-                            if (msaData) {
-                                window.MSAViewer.setMSAData(msaData);
-                                console.log(`MSA loaded from AlphaFold DB (${msaData.sequences.length} sequences)`);
-                            }
-                        } catch (parseError) {
-                            console.warn("Could not parse MSA data:", parseError.message);
-                        }
-                    } else {
-                        console.warn("Could not fetch MSA data from any source");
-                    }
-                })();
-            }
-        }
-
         const framesAdded = processStructureToTempBatch(
             structText,
             name,
