@@ -2319,49 +2319,18 @@ async function handleFetch() {
                 (async () => {
                     const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
                     
-                    // Use custom proxy if available (e.g., your own server with CORS headers)
-                    // Set window.msaProxyUrl to your proxy endpoint, e.g., '/api/msa-proxy?url='
-                    const customProxy = window.msaProxyUrl;
-                    
                     let msaText = null;
                     
-                    // Try direct fetch first (fastest if CORS allows)
+                    // Use allorigins proxy directly
                     try {
-                        const directResponse = await fetch(msaUrl);
-                        if (directResponse.ok) {
-                            msaText = await directResponse.text();
+                        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(msaUrl)}`;
+                        const proxyResponse = await fetch(proxyUrl);
+                        if (proxyResponse.ok) {
+                            msaText = await proxyResponse.text();
+                            console.log("MSA loaded via CORS proxy");
                         }
-                    } catch (e) {
-                        // Direct fetch failed (likely CORS), try proxies
-                        console.log("Direct MSA fetch failed, trying proxy...");
-                        
-                        // Try custom proxy first if configured
-                        if (customProxy && !msaText) {
-                            try {
-                                const proxyResponse = await fetch(`${customProxy}${encodeURIComponent(msaUrl)}`);
-                                if (proxyResponse.ok) {
-                                    msaText = await proxyResponse.text();
-                                    console.log("MSA loaded via custom proxy");
-                                }
-                            } catch (proxyError) {
-                                console.warn("Custom proxy failed:", proxyError.message);
-                            }
-                        }
-                        
-                        // Fallback to public proxy
-                        if (!msaText) {
-                            try {
-                                const publicProxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(msaUrl)}`;
-                                const proxyResponse = await fetch(publicProxyUrl);
-                                if (proxyResponse.ok) {
-                                    const proxyData = await proxyResponse.json();
-                                    msaText = proxyData.contents;
-                                    console.log("MSA loaded via public CORS proxy");
-                                }
-                            } catch (proxyError) {
-                                console.warn("Public proxy also failed:", proxyError.message);
-                            }
-                        }
+                    } catch (proxyError) {
+                        console.warn("MSA proxy failed:", proxyError.message);
                     }
                     
                     // Parse and load MSA if we got the data
