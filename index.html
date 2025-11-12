@@ -62,7 +62,7 @@
                                          <span>Choose Files</span>
                                      </button>
                                      
-                                     <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json" multiple class="hidden">
+                                     <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json,.a3m" multiple class="hidden">
                                 </div>
                             </div>
                             
@@ -267,6 +267,33 @@
           <div id="sequenceView" class="sequence-content hidden"></div>
         </div>
 
+        <!-- MSA container with box and toggle -->
+        <div id="msa-viewer-container" class="container-box sequence-section-container" style="width: 948px; display: none;">
+            <div id="msaHeader" class="sequence-header">
+                <!-- Mode dropdown on the left -->
+                <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px;">
+                    <option value="msa" selected>MSA</option>
+                    <option value="pssm">PSSM</option>
+                    <option value="weblogo">Weblogo</option>
+                </select>
+                
+                <!-- Filter controls aligned to the right -->
+                <div class="sequence-actions" style="display: flex; align-items: center; gap: 16px; margin-left: auto;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="coverageSlider" style="font-size: 12px; color: #666; white-space: nowrap;">Coverage:</label>
+                        <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5" style="width: 150px;">
+                        <span id="coverageValue" style="font-size: 12px; color: #666; min-width: 40px; text-align: right;">75%</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="identitySlider" style="font-size: 12px; color: #666; white-space: nowrap;">Identity:</label>
+                        <input type="range" id="identitySlider" min="0" max="100" value="15" step="5" style="width: 150px;">
+                        <span id="identityValue" style="font-size: 12px; color: #666; min-width: 40px; text-align: right;">15%</span>
+                    </div>
+                </div>
+              </div>
+          <div id="msaView" class="sequence-content hidden"></div>
+        </div>
+
     </div>
     
     <!-- Load scripts in order -->
@@ -274,6 +301,7 @@
     <script src="py2Dmol/resources/viewer-mol.js"></script>
     <script src="py2Dmol/resources/viewer-pae.js"></script>
     <script src="py2Dmol/resources/viewer-seq.js"></script>
+    <script src="py2Dmol/resources/viewer-msa.js"></script>
     <script src="web/app.js"></script>
 
 </body>

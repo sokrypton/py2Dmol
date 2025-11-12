@@ -402,6 +402,10 @@ function setupEventListeners() {
         syncChainPillsToSelection();
         // Update sequence view
         updateSequenceViewSelectionState();
+        // Update MSA view
+        if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
+            window.MSAViewer.updateMSAViewSelectionState();
+        }
     });
     
     // Update navigation button states
@@ -2056,6 +2060,173 @@ if (window.SequenceViewer) {
     }
 }
 
+// MSA viewer initialization
+if (window.MSAViewer) {
+    window.MSAViewer.setCallbacks({
+        getRenderer: () => viewerApi?.renderer || null,
+        getObjectSelect: () => document.getElementById('objectSelect'),
+        highlightAtom: highlightAtom,
+        highlightAtoms: highlightAtoms,
+        clearHighlight: clearHighlight,
+        applySelection: applySelection,
+        getPreviewSelectionSet: () => previewSelectionSet,
+        setPreviewSelectionSet: (set) => { previewSelectionSet = set; }
+    });
+}
+
+// MSA viewer controls - simplified (no show/hide, just mode toggle)
+// Expose functions globally for use in other parts of the codebase
+window.MSAViewerControls = {
+    isVisible: function() {
+        const msaView = document.getElementById('msaView');
+        if (!msaView) return false;
+        return !msaView.classList.contains('hidden');
+    },
+    
+    show: function() {
+        const msaContainer = document.getElementById('msa-viewer-container');
+        
+        // Ensure container is visible
+        if (msaContainer) {
+            msaContainer.style.setProperty('display', 'block', 'important');
+        }
+        
+        // Show and rebuild the view
+        const msaView = document.getElementById('msaView');
+        if (msaView) {
+            msaView.classList.remove('hidden');
+            
+            // Rebuild view if MSA data exists
+            if (window.MSAViewer) {
+                const currentMode = window.MSAViewer.getMSAMode ? window.MSAViewer.getMSAMode() : 'msa';
+                window.MSAViewer.setMSAMode(currentMode);
+            }
+        }
+    },
+    
+    hide: function() {
+        const msaContainer = document.getElementById('msa-viewer-container');
+        
+        // Keep container visible (so header/button remains visible)
+        if (msaContainer) {
+            msaContainer.style.setProperty('display', 'block', 'important');
+        }
+        
+        // Hide and clear the view content only
+        const msaView = document.getElementById('msaView');
+        if (msaView) {
+            msaView.classList.add('hidden');
+            msaView.innerHTML = ''; // Clear rendered content
+        }
+    }
+};
+
+function initializeMSAViewer() {
+    const msaContainer = document.getElementById('msa-viewer-container');
+    const msaModeSelect = document.getElementById('msaModeSelect');
+    const coverageSlider = document.getElementById('coverageSlider');
+    const coverageValue = document.getElementById('coverageValue');
+    const identitySlider = document.getElementById('identitySlider');
+    const identityValue = document.getElementById('identityValue');
+    
+    // MSA viewer will be shown/hidden based on whether MSA data exists
+    // Container starts hidden, will be shown when MSA data is loaded
+    
+    // Initialize coverage slider
+    if (coverageSlider && coverageValue && window.MSAViewer) {
+        // Set initial value (75% = 0.75)
+        const initialCutoff = window.MSAViewer.getCoverageCutoff ? window.MSAViewer.getCoverageCutoff() : 0.75;
+        coverageSlider.value = Math.round(initialCutoff * 100);
+        coverageValue.textContent = Math.round(initialCutoff * 100) + '%';
+        
+        let isDragging = false;
+        
+        // Update preview value during drag
+        coverageSlider.addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            coverageValue.textContent = value + '%';
+            const cutoff = value / 100;
+            if (window.MSAViewer && window.MSAViewer.setPreviewCoverageCutoff) {
+                window.MSAViewer.setPreviewCoverageCutoff(cutoff);
+            }
+            isDragging = true;
+        });
+        
+        // Apply on mouseup
+        coverageSlider.addEventListener('mouseup', () => {
+            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
+                window.MSAViewer.applyPreviewCoverageCutoff();
+                isDragging = false;
+            }
+        });
+        
+        // Also handle touch events for mobile
+        coverageSlider.addEventListener('touchend', () => {
+            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
+                window.MSAViewer.applyPreviewCoverageCutoff();
+                isDragging = false;
+            }
+        });
+    }
+    
+    // Initialize identity slider
+    if (identitySlider && identityValue && window.MSAViewer) {
+        // Set initial value (15% = 0.15)
+        const initialCutoff = window.MSAViewer.getIdentityCutoff ? window.MSAViewer.getIdentityCutoff() : 0.15;
+        identitySlider.value = Math.round(initialCutoff * 100);
+        identityValue.textContent = Math.round(initialCutoff * 100) + '%';
+        
+        let isDragging = false;
+        
+        // Update preview value during drag
+        identitySlider.addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            identityValue.textContent = value + '%';
+            const cutoff = value / 100;
+            if (window.MSAViewer && window.MSAViewer.setPreviewIdentityCutoff) {
+                window.MSAViewer.setPreviewIdentityCutoff(cutoff);
+            }
+            isDragging = true;
+        });
+        
+        // Apply on mouseup
+        identitySlider.addEventListener('mouseup', () => {
+            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
+                window.MSAViewer.applyPreviewIdentityCutoff();
+                isDragging = false;
+            }
+        });
+        
+        // Also handle touch events for mobile
+        identitySlider.addEventListener('touchend', () => {
+            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
+                window.MSAViewer.applyPreviewIdentityCutoff();
+                isDragging = false;
+            }
+        });
+    }
+    
+    // Handle MSA mode dropdown selection
+    if (msaModeSelect && window.MSAViewer) {
+        // Set initial value
+        const initialMode = window.MSAViewer.getMSAMode ? window.MSAViewer.getMSAMode() : 'msa';
+        msaModeSelect.value = initialMode;
+        
+        // Handle mode change
+        msaModeSelect.addEventListener('change', (e) => {
+            const newMode = e.target.value;
+            window.MSAViewer.setMSAMode(newMode);
+        });
+    }
+}
+
+// Initialize MSA viewer on DOM ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeMSAViewer);
+} else {
+    initializeMSAViewer();
+}
+
 // Wrapper functions that delegate to SequenceViewer module
 function buildSequenceView() {
     if (window.SequenceViewer) {
@@ -2138,6 +2309,26 @@ async function handleFetch() {
             }
         }
 
+        // Download MSA for AlphaFold DB predictions
+        if (isAFDB && window.MSAViewer) {
+            try {
+                const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
+                const msaResponse = await fetch(msaUrl);
+                if (msaResponse.ok) {
+                    const msaText = await msaResponse.text();
+                    const msaData = window.MSAViewer.parseA3M(msaText);
+                    if (msaData) {
+                        window.MSAViewer.setMSAData(msaData);
+                        console.log(`MSA loaded from AlphaFold DB (${msaData.sequences.length} sequences)`);
+                    }
+                } else {
+                    console.warn(`MSA data not found (HTTP ${msaResponse.status}).`);
+                }
+            } catch (e) {
+                console.warn("Could not fetch MSA data:", e.message);
+            }
+        }
+
         const framesAdded = processStructureToTempBatch(
             structText,
             name,
@@ -2172,8 +2363,9 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     const structureFiles = [];
     const jsonFiles = [];
     const stateFiles = [];
+    const msaFiles = [];
 
-    // First pass: identify state files
+    // First pass: identify state files and MSA files
     for (const file of files) {
         const nameLower = file.name.toLowerCase();
         if (file.name.startsWith('__MACOSX/') || file.name.startsWith('._')) continue;
@@ -2185,6 +2377,26 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             jsonFiles.push(file);
         } else if (nameLower.match(/\.(cif|pdb|ent)$/)) {
             structureFiles.push(file);
+        } else if (nameLower.endsWith('.a3m')) {
+            msaFiles.push(file);
+        }
+    }
+    
+    // Process MSA files
+    if (msaFiles.length > 0) {
+        for (const msaFile of msaFiles) {
+            try {
+                const msaText = await msaFile.readAsync("text");
+                        const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText) : null;
+                        if (msaData && window.MSAViewer) {
+                            window.MSAViewer.setMSAData(msaData);
+                            // Container will be shown automatically by setMSAData
+                            setStatus(`Loaded MSA from ${msaFile.name} (${msaData.sequences.length} sequences)`);
+                        }
+            } catch (e) {
+                console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
+                setStatus(`Error parsing MSA file ${msaFile.name}: ${e.message}`, true);
+            }
         }
     }
 
@@ -2355,10 +2567,10 @@ async function handleZipUpload(file, loadAsFrames) {
             const normalizedPath = relativePath.replace(/^\/+|\/+$/g, ''); // Remove leading/trailing slashes
             const fileName = normalizedPath.split('/').pop(); // Get just the filename
             
-            // Check if it's a structural or JSON file by extension
+            // Check if it's a structural, JSON, or MSA file by extension
             const nameLower = fileName.toLowerCase();
-            if (!nameLower.match(/\.(cif|pdb|ent|json)$/)) {
-                // Not a structural or JSON file, skip it
+            if (!nameLower.match(/\.(cif|pdb|ent|json|a3m)$/)) {
+                // Not a structural, JSON, or MSA file, skip it
                 return;
             }
             
