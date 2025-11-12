@@ -207,34 +207,46 @@
                 // Invalidate cache when starting new selection
                 this.lastSelectionHash = null;
                 this.scheduleRender(); // Throttled render
-            });
-            
-            window.addEventListener('mousemove', (e) => {
-                if (!this.isDragging) return;
-                if (!this.paeData) return; // No data to select
                 
-                // Get cell indices - handle case where mouse might be outside canvas
-                let cellIndices;
-                try {
-                    cellIndices = this.getCellIndices(e);
-                } catch (err) {
-                    return; // Mouse outside canvas, ignore
-                }
-                const { i, j } = cellIndices;
+                // Add temporary window listeners for drag outside canvas
+                const handleMove = (e) => {
+                    if (!this.isDragging) return;
+                    if (!this.paeData) return;
+                    
+                    // Get cell indices
+                    let cellIndices;
+                    try {
+                        cellIndices = this.getCellIndices(e);
+                    } catch (err) {
+                        return; // Mouse outside canvas bounds
+                    }
+                    const { i, j } = cellIndices;
 
-                // Clamp selection to canvas bounds
-                const n = this.paeData.length;
-                const newX2 = Math.max(0, Math.min(n - 1, j));
-                const newY2 = Math.max(0, Math.min(n - 1, i));
+                    // Clamp selection to canvas bounds
+                    const n = this.paeData.length;
+                    const newX2 = Math.max(0, Math.min(n - 1, j));
+                    const newY2 = Math.max(0, Math.min(n - 1, i));
+                    
+                    // Only update if selection actually changed
+                    if (this.selection.x2 !== newX2 || this.selection.y2 !== newY2) {
+                        this.selection.x2 = newX2;
+                        this.selection.y2 = newY2;
+                        this.scheduleRender();
+                    }
+                };
                 
-                // Only update if selection actually changed
-                if (this.selection.x2 !== newX2 || this.selection.y2 !== newY2) {
-                    this.selection.x2 = newX2;
-                    this.selection.y2 = newY2;
-                    this.scheduleRender(); // Throttled render
-                }
+                const handleUp = (e) => {
+                    if (!this.isDragging) return;
+                    handleEnd(e);
+                    window.removeEventListener('mousemove', handleMove);
+                    window.removeEventListener('mouseup', handleUp);
+                };
+                
+                window.addEventListener('mousemove', handleMove);
+                window.addEventListener('mouseup', handleUp);
             });
             
+            // Define handleEnd before it's used
             const handleEnd = (e) => {
                 if (!this.isDragging) return;
                 this.isDragging = false;
@@ -372,7 +384,8 @@
                 this.scheduleRender(); // Throttled render
             };
             
-            window.addEventListener('mouseup', handleEnd);
+            // Canvas-bound mouseup (fallback, but window listener handles it)
+            this.canvas.addEventListener('mouseup', handleEnd);
             
             // Touch event handlers for mobile devices
             this.canvas.addEventListener('touchstart', (e) => {
@@ -401,44 +414,59 @@
                 // Invalidate cache when starting new selection
                 this.lastSelectionHash = null;
                 this.scheduleRender(); // Throttled render
-            });
-            
-            window.addEventListener('touchmove', (e) => {
-                if (!this.isDragging) return;
-                if (!this.paeData) return; // No data to select
-                if (e.touches.length !== 1) return;
-                e.preventDefault(); // Prevent scrolling
                 
-                // Get cell indices - handle case where touch might be outside canvas
-                let cellIndices;
-                try {
-                    cellIndices = this.getCellIndices(e);
-                } catch (err) {
-                    return; // Touch outside canvas, ignore
-                }
-                const { i, j } = cellIndices;
+                // Add temporary window listeners for touch drag outside canvas
+                const handleTouchMove = (e) => {
+                    if (!this.isDragging) return;
+                    if (!this.paeData) return;
+                    if (e.touches.length !== 1) return;
+                    e.preventDefault();
+                    
+                    // Get cell indices
+                    let cellIndices;
+                    try {
+                        cellIndices = this.getCellIndices(e.touches[0]);
+                    } catch (err) {
+                        return; // Touch outside canvas bounds
+                    }
+                    const { i, j } = cellIndices;
 
-                // Clamp selection to canvas bounds
-                const n = this.paeData.length;
-                const newX2 = Math.max(0, Math.min(n - 1, j));
-                const newY2 = Math.max(0, Math.min(n - 1, i));
+                    // Clamp selection to canvas bounds
+                    const n = this.paeData.length;
+                    const newX2 = Math.max(0, Math.min(n - 1, j));
+                    const newY2 = Math.max(0, Math.min(n - 1, i));
+                    
+                    // Only update if selection actually changed
+                    if (this.selection.x2 !== newX2 || this.selection.y2 !== newY2) {
+                        this.selection.x2 = newX2;
+                        this.selection.y2 = newY2;
+                        this.scheduleRender();
+                    }
+                };
                 
-                // Only update if selection actually changed
-                if (this.selection.x2 !== newX2 || this.selection.y2 !== newY2) {
-                    this.selection.x2 = newX2;
-                    this.selection.y2 = newY2;
-                    this.scheduleRender(); // Throttled render
-                }
-            });
-            
-            window.addEventListener('touchend', handleEnd);
-            
-            window.addEventListener('touchcancel', (e) => {
-                // Handle touch cancellation for PAE selection
-                if (this.isDragging) {
-                    this.isDragging = false;
+                const handleTouchEnd = (e) => {
+                    if (!this.isDragging) return;
+                    e.preventDefault();
                     handleEnd(e);
-                }
+                    window.removeEventListener('touchmove', handleTouchMove);
+                    window.removeEventListener('touchend', handleTouchEnd);
+                    window.removeEventListener('touchcancel', handleTouchCancel);
+                };
+                
+                const handleTouchCancel = (e) => {
+                    if (!this.isDragging) return;
+                    e.preventDefault();
+                    this.isDragging = false;
+                    this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
+                    this.render();
+                    window.removeEventListener('touchmove', handleTouchMove);
+                    window.removeEventListener('touchend', handleTouchEnd);
+                    window.removeEventListener('touchcancel', handleTouchCancel);
+                };
+                
+                window.addEventListener('touchmove', handleTouchMove, { passive: false });
+                window.addEventListener('touchend', handleTouchEnd, { passive: false });
+                window.addEventListener('touchcancel', handleTouchCancel, { passive: false });
             });
         }
 

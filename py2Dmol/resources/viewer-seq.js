@@ -137,6 +137,64 @@
         }
         return null;
     }
+    
+    // Unified detection function for all selectable items
+    function getSelectableItemAtPosition(x, y, layout, sequenceViewMode) {
+        if (!layout || !layout.selectableItems) return null;
+        
+        // Filter items based on mode
+        let items = layout.selectableItems;
+        if (!sequenceViewMode) {
+            // In chain mode, only chain items are selectable
+            items = items.filter(item => item.type === 'chain');
+        }
+        
+        // Separate items by type for priority checking
+        const residueLigandItems = items.filter(item => item.type === 'residue' || item.type === 'ligand');
+        const chainItems = items.filter(item => item.type === 'chain');
+        
+        // Priority 1: Check residue/ligand items first (exact bounds)
+        // These should take precedence over chain items in sequence mode
+        for (const item of residueLigandItems) {
+            const bounds = item.bounds;
+            if (x >= bounds.x && x < bounds.x + bounds.width &&
+                y >= bounds.y && y < bounds.y + bounds.height) {
+                return item;
+            }
+        }
+        
+        // Priority 2: Check chain items
+        // In sequence mode, only match if clicking in the actual chain button area
+        // In chain mode, match if both X and Y are within button bounds (preserve column position)
+        for (const item of chainItems) {
+            const bounds = item.bounds;
+            
+            if (sequenceViewMode) {
+                // In sequence mode, only match chain button if clicking in button area
+                // Use chainLabelPositions to get actual button bounds
+                const chainPos = layout.chainLabelPositions?.find(p => p.chainId === item.chainId);
+                if (chainPos) {
+                    if (x >= chainPos.x && x < chainPos.x + chainPos.width &&
+                        y >= chainPos.y && y < chainPos.y + chainPos.height) {
+                        return item;
+                    }
+                }
+            } else {
+                // In chain mode, check if BOTH X and Y are within button bounds
+                // This preserves column position when dragging vertically between rows
+                // Use chainLabelPositions to get actual button bounds (not full row)
+                const chainPos = layout.chainLabelPositions?.find(p => p.chainId === item.chainId);
+                if (chainPos) {
+                    if (x >= chainPos.x && x < chainPos.x + chainPos.width &&
+                        y >= chainPos.y && y < chainPos.y + chainPos.height) {
+                        return item;
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }
 
     // ============================================================================
     // CANVAS RENDERING FUNCTIONS
@@ -270,24 +328,31 @@
         // Clear canvas
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
-        // Get selection state
-        const current = renderer.getSelection();
+        // Get selection state - use selectionModel directly to avoid expensive getSelection() copy
+        const selectionModel = renderer.selectionModel;
         const previewSelectionSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
         
-        // Determine visible atoms
-        let visibleAtoms = new Set();
+        // Determine visible atoms - avoid unnecessary Set copies
+        let visibleAtoms;
         if (previewSelectionSet && previewSelectionSet.size > 0) {
-            visibleAtoms = new Set(previewSelectionSet);
+            // Use preview selection directly (already a Set, no need to copy)
+            visibleAtoms = previewSelectionSet;
         } else {
-            if (renderer.selectionModel && renderer.selectionModel.atoms && renderer.selectionModel.atoms.size > 0) {
-                visibleAtoms = new Set(renderer.selectionModel.atoms);
+            if (selectionModel && selectionModel.atoms && selectionModel.atoms.size > 0) {
+                // Use selectionModel directly (no copy needed for read-only access)
+                visibleAtoms = selectionModel.atoms;
             } else if (renderer.visibilityMask === null) {
+                // All atoms visible - create Set only if needed (lazy)
                 const n = renderer.coords ? renderer.coords.length : 0;
+                visibleAtoms = new Set();
                 for (let i = 0; i < n; i++) {
                     visibleAtoms.add(i);
                 }
             } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
-                visibleAtoms = new Set(renderer.visibilityMask);
+                // Use visibilityMask directly (no copy needed for read-only access)
+                visibleAtoms = renderer.visibilityMask;
+            } else {
+                visibleAtoms = new Set();
             }
         }
         
@@ -295,10 +360,44 @@
         
         // Draw chain labels
         if (layout.chainLabelPositions) {
+            // During drag, compute chain selection from preview atoms
+            let chainSelection = selectionModel?.chains;
+            let selectionMode = selectionModel?.selectionMode;
+            
+            // Check if we're in a drag operation (previewSelectionSet exists, even if empty Set)
+            const isDragging = previewSelectionSet !== null;
+            
+            if (isDragging) {
+                // Compute chains from preview atoms during drag (even if previewSelectionSet is empty)
+                const objectName = renderer.currentObjectName;
+                const obj = renderer.objectsData[objectName];
+                const frame = obj?.frames?.[0];
+                const previewChains = new Set();
+                if (frame?.chains && previewSelectionSet) {
+                    // previewSelectionSet can be empty Set (unselect case) or have atoms (select case)
+                    for (const atomIdx of previewSelectionSet) {
+                        const atomChain = frame.chains[atomIdx];
+                        if (atomChain) {
+                            previewChains.add(atomChain);
+                        }
+                    }
+                }
+                // Use preview chains for visual feedback during drag
+                // If previewSelectionSet is empty, previewChains will be empty (all chains unselected)
+                chainSelection = previewChains;
+                // Determine selection mode based on preview
+                const totalAtoms = frame?.chains?.length || 0;
+                const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalAtoms;
+                const allChains = new Set(frame?.chains || []);
+                const allChainsSelected = previewChains.size === allChains.size && 
+                                        Array.from(previewChains).every(c => allChains.has(c));
+                selectionMode = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? 'default' : 'explicit';
+            }
+            
             for (const chainPos of layout.chainLabelPositions) {
                 const chainId = chainPos.chainId;
-                const isSelected = current?.chains?.has(chainId) || 
-                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+                const isSelected = chainSelection?.has(chainId) || 
+                    (selectionMode === 'default' && (!chainSelection || chainSelection.size === 0));
                 const chainColor = renderer?.getChainColorForChainId?.(chainId) || {r: 128, g: 128, b: 128};
                 
                 drawChainLabelOnCanvas(
@@ -360,10 +459,10 @@
                         dimFactor
                     );
                 } else if (residueData.atomIndex === -1) {
-                    // Gap marker (missing residues) - draw as "-"
+                    // Gap marker (missing residues) - always draw as "-"
                     drawResidueCharOnCanvas(
                         ctx,
-                        residueData.letter || '-',
+                        '-', // Always use "-" for gaps
                         pos.x,
                         pos.y,
                         pos.width,
@@ -663,7 +762,8 @@
             chainButtonWidth,
             charsPerLine,
             chainLabelPositions: [],
-            residuePositions: []
+            residuePositions: [],
+            selectableItems: [] // Unified selectable items array
         };
         
         let currentY = spacing;
@@ -936,6 +1036,88 @@
             currentY = lineY + charHeight + spacing;
         }
         
+        // Build unified selectableItems array
+        let itemIndex = 0;
+        
+        // Add chain items (one per chain)
+        for (const chainPos of layout.chainLabelPositions) {
+            const chainId = chainPos.chainId;
+            const boundary = chainBoundaries.find(b => b.chain === chainId);
+            if (boundary) {
+                const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                const atomIndices = chainAtoms.map(a => a.atomIndex);
+                
+                // For chain items, expand hit box to full row height to eliminate gaps
+                // Find the row height (next chain's Y - this chain's Y, or end of canvas)
+                let rowHeight = chainPos.height;
+                if (sequenceViewMode) {
+                    // In sequence mode, each chain is one row
+                    // Find next chain's Y position
+                    let nextChainY = Infinity;
+                    for (const nextChainPos of layout.chainLabelPositions) {
+                        if (nextChainPos.y > chainPos.y) {
+                            nextChainY = Math.min(nextChainY, nextChainPos.y);
+                        }
+                    }
+                    if (nextChainY !== Infinity) {
+                        rowHeight = nextChainY - chainPos.y;
+                    } else {
+                        // Last chain - use charHeight as minimum
+                        rowHeight = Math.max(charHeight, rowHeight);
+                    }
+                }
+                
+                layout.selectableItems.push({
+                    type: 'chain',
+                    id: `chain-${chainId}`,
+                    chainId: chainId,
+                    atomIndices: atomIndices,
+                    bounds: {
+                        x: chainPos.x,
+                        y: chainPos.y,
+                        width: chainPos.width,
+                        height: rowHeight // Full row height to eliminate gaps
+                    },
+                    index: itemIndex++
+                });
+            }
+        }
+        
+        // Add residue and ligand items (only in sequence mode, or if we want them in chain mode too)
+        if (sequenceViewMode) {
+            for (const residuePos of layout.residuePositions) {
+                const residueData = residuePos.residueData;
+                let atomIndices;
+                let type;
+                
+                if (residueData.isLigandToken && residueData.atomIndices) {
+                    type = 'ligand';
+                    atomIndices = residueData.atomIndices;
+                } else if (residueData.atomIndex >= 0) {
+                    type = 'residue';
+                    atomIndices = [residueData.atomIndex];
+                } else {
+                    continue; // Skip invalid items
+                }
+                
+                layout.selectableItems.push({
+                    type: type,
+                    id: type === 'ligand' 
+                        ? `ligand-${residueData.atomIndices[0]}` 
+                        : `residue-${residueData.atomIndex}`,
+                    atomIndices: atomIndices,
+                    residueData: residueData,
+                    bounds: {
+                        x: residuePos.x,
+                        y: residuePos.y,
+                        width: residuePos.width,
+                        height: residuePos.height
+                    },
+                    index: itemIndex++
+                });
+            }
+        }
+        
         // Get actual container width to fill it completely
         const actualContainerRect = sequenceViewEl ? sequenceViewEl.getBoundingClientRect() : null;
         const displayWidth = actualContainerRect && actualContainerRect.width > 0 ? actualContainerRect.width : containerWidth;
@@ -989,7 +1171,18 @@
         // Store drag state (shared across all chains)
         // initialSelectionState: tracks the selection state at drag start
         // dragUnselectMode: true if we started on a selected item (unselect mode), false if we started on unselected (select mode)
-        const dragState = { isDragging: false, dragStart: null, dragEnd: null, hasMoved: false, dragUnselectMode: false, initialSelectionState: new Set() };
+        // dragStartItem: the selectable item where drag started (unified system)
+        // dragEndItemIndex: the index of the selectable item where drag currently ends
+        const dragState = { 
+            isDragging: false, 
+            dragStart: null, // Legacy - keep for compatibility during transition
+            dragEnd: null, // Legacy - keep for compatibility during transition
+            dragStartItem: null, // Unified: selectable item where drag started
+            dragEndItemIndex: -1, // Unified: index of current end item
+            hasMoved: false, 
+            dragUnselectMode: false, 
+            initialSelectionState: new Set()
+        };
         
         const { canvas, allResidueData, chainBoundaries, sortedAtomEntries, layout } = sequenceCanvasData;
         
@@ -1004,183 +1197,176 @@
         const dpiMultiplier = targetDPI / standardDPI;
         sequenceCanvasData.ctx.scale(dpiMultiplier, dpiMultiplier);
         
-        // Mouse down handler
+        // Mouse down handler - using unified selectable items
         newCanvas.addEventListener('mousedown', (e) => {
             if (e.button !== 0) return; // Only left click
             
             const pos = getCanvasPositionFromMouse(e, newCanvas);
-            const chainLabelPos = getChainLabelAtCanvasPosition(pos.x, pos.y, layout);
-            const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
+            const selectedItem = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
             
-            if (chainLabelPos) {
-                if (sequenceViewMode) {
-                    // In sequence mode, chain labels toggle chain selection
-                    const chainId = chainLabelPos.chainId;
-                    const current = renderer?.getSelection();
-                    const isSelected = current?.chains?.has(chainId) || 
-                        (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                    if (e.altKey && callbacks.toggleChainResidues) {
-                        callbacks.toggleChainResidues(chainId);
-                    } else if (callbacks.setChainResiduesSelected) {
-                        callbacks.setChainResiduesSelected(chainId, !isSelected);
-                    }
-                    lastSequenceUpdateHash = null;
-                    scheduleRender();
-                    return;
-                } else {
-                    // In chain mode, enable drag selection on chain labels
-                    const chainId = chainLabelPos.chainId;
-                    const boundary = chainBoundaries.find(b => b.chain === chainId);
-                    if (!boundary) return;
-                    
+            if (!selectedItem) return;
+            
+            // Handle chain items in sequence mode (toggle on click, no drag)
+            if (selectedItem.type === 'chain' && sequenceViewMode) {
+                const chainId = selectedItem.chainId;
+                const current = renderer?.getSelection();
+                const isSelected = current?.chains?.has(chainId) || 
+                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+                if (e.altKey && callbacks.toggleChainResidues) {
+                    callbacks.toggleChainResidues(chainId);
+                } else if (callbacks.setChainResiduesSelected) {
+                    callbacks.setChainResiduesSelected(chainId, !isSelected);
+                }
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+                return;
+            }
+            
+            // For all other items (chain in chain mode, residue, ligand), enable drag
+            const current = renderer?.getSelection();
+            
+            // Determine if item is initially selected
+            let isInitiallySelected = false;
+            if (selectedItem.type === 'chain') {
+                isInitiallySelected = current?.chains?.has(selectedItem.chainId) || 
+                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+            } else {
+                // For residue/ligand, check if all atoms are selected
+                isInitiallySelected = selectedItem.atomIndices.length > 0 && 
+                    selectedItem.atomIndices.every(atomIdx => current?.atoms?.has(atomIdx));
+            }
+            
+            dragState.isDragging = true;
+            dragState.hasMoved = false;
+            dragState.dragStartItem = selectedItem;
+            dragState.dragEndItemIndex = selectedItem.index;
+            dragState.dragUnselectMode = isInitiallySelected;
+            dragState.initialSelectionState = new Set(current?.atoms || []);
+            
+            // Legacy fields for compatibility
+            if (selectedItem.type === 'chain') {
+                const boundary = chainBoundaries.find(b => b.chain === selectedItem.chainId);
+                if (boundary) {
                     const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    if (chainAtoms.length === 0) return;
-                    
-                    dragState.isDragging = true;
-                    dragState.hasMoved = false;
                     dragState.dragStart = chainAtoms[0];
                     dragState.dragEnd = chainAtoms[chainAtoms.length - 1];
-                    
-                    const current = renderer?.getSelection();
-                    const isInitiallySelected = current?.chains?.has(chainId) || 
-                        (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                    dragState.dragUnselectMode = isInitiallySelected;
-                    // Store initial selection state for toggling during drag
-                    dragState.initialSelectionState = new Set(current?.atoms || []);
-                    return;
+                }
+            } else if (selectedItem.residueData) {
+                dragState.dragStart = selectedItem.residueData;
+                dragState.dragEnd = selectedItem.residueData;
+            }
+            
+            // Add temporary window listeners for drag outside canvas
+            const handleMove = (e) => handleDragMove(e, newCanvas);
+            const handleUp = () => {
+                handleMouseUp();
+                window.removeEventListener('mousemove', handleMove);
+                window.removeEventListener('mouseup', handleUp);
+            };
+            window.addEventListener('mousemove', handleMove);
+            window.addEventListener('mouseup', handleUp);
+            
+            // Handle click (no drag) - toggle selection immediately
+            if (selectedItem.type === 'ligand' || (selectedItem.type === 'residue' && selectedItem.atomIndices.length === 1)) {
+                const newAtoms = new Set(current?.atoms || []);
+                selectedItem.atomIndices.forEach(atomIdx => {
+                    if (newAtoms.has(atomIdx)) {
+                        newAtoms.delete(atomIdx);
+                    } else {
+                        newAtoms.add(atomIdx);
+                    }
+                });
+                
+                // Update chains to include all chains that have selected atoms
+                const objectName = renderer.currentObjectName;
+                const obj = renderer.objectsData[objectName];
+                const frame = obj?.frames?.[0];
+                const newChains = new Set();
+                if (frame?.chains) {
+                    for (const atomIdx of newAtoms) {
+                        const atomChain = frame.chains[atomIdx];
+                        if (atomChain) {
+                            newChains.add(atomChain);
+                        }
+                    }
+                }
+                
+                // Determine if we have partial selections
+                const totalAtoms = frame?.chains?.length || 0;
+                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                const allChains = new Set(frame.chains);
+                const allChainsSelected = newChains.size === allChains.size && 
+                                        Array.from(newChains).every(c => allChains.has(c));
+                const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                
+                // Clear PAE boxes when editing sequence selection
+                renderer.setSelection({ 
+                    atoms: newAtoms,
+                    chains: chainsToSet,
+                    selectionMode: selectionMode,
+                    paeBoxes: [] 
+                });
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+            }
+        });
+        
+        // Unified selection computation from item range
+        const computeSelectionFromItemRange = (startItemIndex, endItemIndex, selectableItems, initialSelection, unselectMode) => {
+            const [min, max] = [Math.min(startItemIndex, endItemIndex), Math.max(startItemIndex, endItemIndex)];
+            const newAtoms = new Set(initialSelection);
+            
+            for (let i = min; i <= max; i++) {
+                const item = selectableItems[i];
+                if (item && item.atomIndices) {
+                    item.atomIndices.forEach(atomIdx => {
+                        if (unselectMode) {
+                            newAtoms.delete(atomIdx);
+                        } else {
+                            newAtoms.add(atomIdx);
+                        }
+                    });
                 }
             }
             
-            if (residuePos && residuePos.residueData) {
-                const residueData = residuePos.residueData;
+            return newAtoms;
+        };
+        
+        // Helper function to handle drag logic (can be called from canvas or window listeners)
+        const handleDragMove = (e, canvas) => {
+            if (!dragState.isDragging) return;
+            if (!sequenceCanvasData || sequenceCanvasData.canvas !== canvas) return;
+            
+            const pos = getCanvasPositionFromMouse(e, canvas);
+            const selectedItem = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+            
+            // Handle drag selection using unified items
+            if (selectedItem && dragState.dragStartItem) {
+                const startItem = dragState.dragStartItem;
+                const endItem = selectedItem;
                 
-                // Handle ligand token clicks
-                if (residueData.isLigandToken && residueData.atomIndices) {
-                    const current = renderer?.getSelection();
-                    const ligandAtomIndices = residueData.atomIndices;
+                // Only update if we moved to a different item
+                if (endItem.index !== dragState.dragEndItemIndex) {
+                    dragState.dragEndItemIndex = endItem.index;
+                    dragState.hasMoved = true;
                     
-                    // Check if all atoms in ligand are selected
-                    const allSelected = ligandAtomIndices.length > 0 && 
-                                       ligandAtomIndices.every(atomIdx => current?.atoms?.has(atomIdx));
+                    // Compute selection from item range
+                    const newAtoms = computeSelectionFromItemRange(
+                        startItem.index,
+                        endItem.index,
+                        layout.selectableItems,
+                        dragState.initialSelectionState,
+                        dragState.dragUnselectMode
+                    );
                     
-                    dragState.isDragging = true;
-                    dragState.hasMoved = false;
-                    // Use first atom as drag start for ligand token
-                    dragState.dragStart = { atomIndex: ligandAtomIndices[0], isLigandToken: true, atomIndices: ligandAtomIndices };
-                    dragState.dragEnd = { atomIndex: ligandAtomIndices[ligandAtomIndices.length - 1], isLigandToken: true, atomIndices: ligandAtomIndices };
-                    dragState.dragUnselectMode = allSelected;
-                    dragState.initialSelectionState = new Set(current?.atoms || []);
-                    
-                    // Toggle all atoms in ligand
-                    const newAtoms = new Set(current?.atoms || []);
-                    if (allSelected) {
-                        // Deselect all atoms in ligand
-                        ligandAtomIndices.forEach(atomIdx => newAtoms.delete(atomIdx));
-                    } else {
-                        // Select all atoms in ligand
-                        ligandAtomIndices.forEach(atomIdx => newAtoms.add(atomIdx));
-                    }
-                    
-                    // Update chains to include all chains that have selected atoms
-                    const objectName = renderer.currentObjectName;
-                    const obj = renderer.objectsData[objectName];
-                    const frame = obj?.frames?.[0];
-                    const newChains = new Set();
-                    if (frame?.chains) {
-                        for (const atomIdx of newAtoms) {
-                            const atomChain = frame.chains[atomIdx];
-                            if (atomChain) {
-                                newChains.add(atomChain);
-                            }
-                        }
-                    }
-                    
-                    // Determine if we have partial selections
-                    const totalAtoms = frame?.chains?.length || 0;
-                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                    // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
-                    const allChains = new Set(frame.chains);
-                    const allChainsSelected = newChains.size === allChains.size && 
-                                            Array.from(newChains).every(c => allChains.has(c));
-                    // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
-                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                    // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
-                    // Otherwise, keep explicit chain selection (allows empty chains)
-                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
-                    
-                    // Clear PAE boxes when editing sequence selection
-                    renderer.setSelection({ 
-                        atoms: newAtoms,
-                        chains: chainsToSet,
-                        selectionMode: selectionMode,
-                        paeBoxes: [] 
-                    });
-                    // Force update to reflect changes
+                    if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
                     lastSequenceUpdateHash = null;
                     scheduleRender();
-                } else if (residueData.atomIndex >= 0) {
-                    // Regular atom
-                    const atomIndex = residueData.atomIndex;
-                    
-                    dragState.isDragging = true;
-                    dragState.hasMoved = false;
-                    dragState.dragStart = residueData;
-                    dragState.dragEnd = residueData;
-                    
-                    const current = renderer?.getSelection();
-                    const isInitiallySelected = current?.atoms?.has(atomIndex) || false;
-                    dragState.dragUnselectMode = isInitiallySelected;
-                    // Store initial selection state for toggling during drag
-                    dragState.initialSelectionState = new Set(current?.atoms || []);
-                    
-                    // Toggle single atom on click
-                    const newAtoms = new Set(current?.atoms || []);
-                    if (newAtoms.has(atomIndex)) {
-                        newAtoms.delete(atomIndex);
-                    } else {
-                        newAtoms.add(atomIndex);
-                    }
-                    
-                    // Update chains to include all chains that have selected atoms
-                    const objectName = renderer.currentObjectName;
-                    const obj = renderer.objectsData[objectName];
-                    const frame = obj?.frames?.[0];
-                    const newChains = new Set();
-                    if (frame?.chains) {
-                        for (const atomIdx of newAtoms) {
-                            const atomChain = frame.chains[atomIdx];
-                            if (atomChain) {
-                                newChains.add(atomChain);
-                            }
-                        }
-                    }
-                    
-                    // Determine if we have partial selections
-                    const totalAtoms = frame?.chains?.length || 0;
-                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                    // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
-                    const allChains = new Set(frame.chains);
-                    const allChainsSelected = newChains.size === allChains.size && 
-                                            Array.from(newChains).every(c => allChains.has(c));
-                    // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
-                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                    // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
-                    // Otherwise, keep explicit chain selection (allows empty chains)
-                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
-                    
-                    // Clear PAE boxes when editing sequence selection
-                    renderer.setSelection({ 
-                        atoms: newAtoms,
-                        chains: chainsToSet,
-                        selectionMode: selectionMode,
-                        paeBoxes: [] 
-                    });
-                    // Force update to reflect changes
-                    lastSequenceUpdateHash = null;
-                    scheduleRender();
+                    // Don't apply selection during drag - wait until mouseup to reduce lag
                 }
             }
-        });
+        };
         
         // Mouse move handler - attach to canvas, not window, to avoid firing when mouse moves over mol viewer
         newCanvas.addEventListener('mousemove', (e) => {
@@ -1253,7 +1439,7 @@
                         );
                         const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
                             (r.isLigandToken && r.atomIndices && r.atomIndices[0] === residueData.atomIndices[0]) ||
-                            (r.atomIndex === residueData.atomIndices?.[0] && !r.isLigandToken)
+                            (r.atomIndex === residueData.atomIndices?.[0] || r.isLigandToken)
                         );
                         
                         if (startIdx !== -1 && endIdx !== -1) {
@@ -1282,7 +1468,7 @@
                             if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
                             lastSequenceUpdateHash = null;
                             scheduleRender();
-                            if (callbacks.applySelection) callbacks.applySelection(newAtoms);
+                            // Don't apply selection during drag - wait until mouseup to reduce lag
                         }
                     }
                 } else if (residueData.atomIndex >= 0) {
@@ -1301,6 +1487,7 @@
                             dragState.hasMoved = true;
                             const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
                             const newAtoms = new Set(dragState.initialSelectionState);
+                            
                             for (let i = min; i <= max; i++) {
                                 const res = allResidueData[i];
                                 if (res.isLigandToken && res.atomIndices) {
@@ -1319,10 +1506,11 @@
                                     }
                                 }
                             }
+                            
                             if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
                             lastSequenceUpdateHash = null;
                             scheduleRender();
-                            if (callbacks.applySelection) callbacks.applySelection(newAtoms);
+                            // Don't apply selection during drag - wait until mouseup to reduce lag
                         }
                     }
                 }
@@ -1371,39 +1559,8 @@
                         if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
                         lastSequenceUpdateHash = null;
                         scheduleRender();
-                        
-                        // Update 3D viewer in real-time during drag
-                        const objectName = renderer.currentObjectName;
-                        const obj = renderer.objectsData[objectName];
-                        const frame = obj?.frames?.[0];
-                        const newChains = new Set();
-                        if (frame?.chains) {
-                            for (const atomIdx of newAtoms) {
-                                const atomChain = frame.chains[atomIdx];
-                                if (atomChain) {
-                                    newChains.add(atomChain);
-                                }
-                            }
-                        }
-                        
-                        // Update selection in real-time during drag
-                        const current = renderer?.getSelection();
-                        const allChains = new Set(frame.chains);
-                        const allChainsSelected = newChains.size === allChains.size && 
-                                                Array.from(newChains).every(c => allChains.has(c));
-                        const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < frame.chains.length;
-                        // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
-                        const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                        // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
-                        // Otherwise, keep explicit chain selection (allows empty chains)
-                        const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
-                        
-                        renderer.setSelection({
-                            atoms: newAtoms,
-                            chains: chainsToSet,
-                            selectionMode: selectionMode,
-                            paeBoxes: []
-                        });
+                        // Don't apply selection during drag - wait until mouseup to reduce lag
+                        // This prevents PAE and molecular viewers from updating continuously during drag
                     }
                 }
             }
@@ -1447,63 +1604,57 @@
                     selectionMode: selectionMode,
                     paeBoxes: [] 
                 });
-            } else if (dragState.isDragging && !sequenceViewMode && dragState.dragStart && dragState.dragStart.chain) {
-                // User clicked (no drag) on a chain label in chain mode - toggle that chain
-                const chainId = dragState.dragStart.chain;
-                const boundary = chainBoundaries.find(b => b.chain === chainId);
-                if (boundary) {
-                    const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    const current = renderer?.getSelection();
-                    const newAtoms = new Set(current?.atoms || []);
-                    const allChainAtomsSelected = chainAtoms.every(a => newAtoms.has(a.atomIndex));
-                    
-                    if (allChainAtomsSelected) {
-                        // Deselect all atoms in chain
-                        chainAtoms.forEach(a => newAtoms.delete(a.atomIndex));
+            } else if (dragState.isDragging && !dragState.hasMoved && dragState.dragStartItem) {
+                // User clicked (no drag) - toggle the item
+                const item = dragState.dragStartItem;
+                const current = renderer?.getSelection();
+                const newAtoms = new Set(current?.atoms || []);
+                
+                // Toggle all atoms in the item
+                item.atomIndices.forEach(atomIdx => {
+                    if (newAtoms.has(atomIdx)) {
+                        newAtoms.delete(atomIdx);
                     } else {
-                        // Select all atoms in chain
-                        chainAtoms.forEach(a => newAtoms.add(a.atomIndex));
+                        newAtoms.add(atomIdx);
                     }
-                    
-                    // Update chains to include all chains that have selected atoms
-                    const objectName = renderer.currentObjectName;
-                    const obj = renderer.objectsData[objectName];
-                    const frame = obj?.frames?.[0];
-                    const newChains = new Set();
-                    if (frame?.chains) {
-                        for (const atomIdx of newAtoms) {
-                            const atomChain = frame.chains[atomIdx];
-                            if (atomChain) {
-                                newChains.add(atomChain);
-                            }
+                });
+                
+                // Update chains to include all chains that have selected atoms
+                const objectName = renderer.currentObjectName;
+                const obj = renderer.objectsData[objectName];
+                const frame = obj?.frames?.[0];
+                const newChains = new Set();
+                if (frame?.chains) {
+                    for (const atomIdx of newAtoms) {
+                        const atomChain = frame.chains[atomIdx];
+                        if (atomChain) {
+                            newChains.add(atomChain);
                         }
                     }
-                    
-                    // Determine if we have partial selections
-                    const totalAtoms = frame?.chains?.length || 0;
-                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                    // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
-                    const allChains = new Set(frame.chains);
-                    const allChainsSelected = newChains.size === allChains.size && 
-                                            Array.from(newChains).every(c => allChains.has(c));
-                    // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
-                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                    // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
-                    // Otherwise, keep explicit chain selection (allows empty chains)
-                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
-                    
-                    renderer.setSelection({ 
-                        atoms: newAtoms,
-                        chains: chainsToSet,
-                        selectionMode: selectionMode,
-                        paeBoxes: [] 
-                    });
                 }
+                
+                // Determine if we have partial selections
+                const totalAtoms = frame?.chains?.length || 0;
+                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                const allChains = new Set(frame.chains);
+                const allChainsSelected = newChains.size === allChains.size && 
+                                        Array.from(newChains).every(c => allChains.has(c));
+                const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                
+                renderer.setSelection({ 
+                    atoms: newAtoms,
+                    chains: chainsToSet,
+                    selectionMode: selectionMode,
+                    paeBoxes: [] 
+                });
             }
             if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
             dragState.isDragging = false;
             dragState.dragStart = null;
             dragState.dragEnd = null;
+            dragState.dragStartItem = null;
+            dragState.dragEndItemIndex = -1;
             dragState.hasMoved = false;
             dragState.dragUnselectMode = false;
             dragState.initialSelectionState = new Set();
@@ -1523,287 +1674,139 @@
             }
         });
         
-        // Touch event handlers for mobile devices
+        // Touch event handlers for mobile devices - using unified selectable items
         newCanvas.addEventListener('touchstart', (e) => {
             if (e.touches.length !== 1) return; // Only single touch
             e.preventDefault(); // Prevent scrolling
             
-            const pos = getCanvasPositionFromMouse(e, newCanvas);
-            const chainLabelPos = getChainLabelAtCanvasPosition(pos.x, pos.y, layout);
-            const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
+            const touch = e.touches[0];
+            const pos = getCanvasPositionFromMouse(touch, newCanvas);
+            const selectedItem = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
             
-            if (chainLabelPos) {
-                if (sequenceViewMode) {
-                    // In sequence mode, chain labels toggle chain selection
-                    const chainId = chainLabelPos.chainId;
-                    const current = renderer?.getSelection();
-                    const isSelected = current?.chains?.has(chainId) || 
-                        (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                    if (callbacks.setChainResiduesSelected) {
-                        callbacks.setChainResiduesSelected(chainId, !isSelected);
-                    }
-                    lastSequenceUpdateHash = null;
-                    scheduleRender();
-                    return;
-                } else {
-                    // In chain mode, enable drag selection on chain labels
-                    const chainId = chainLabelPos.chainId;
-                    const boundary = chainBoundaries.find(b => b.chain === chainId);
-                    if (!boundary) return;
-                    
+            if (!selectedItem) return;
+            
+            // Handle chain items in sequence mode (toggle on tap, no drag)
+            if (selectedItem.type === 'chain' && sequenceViewMode) {
+                const chainId = selectedItem.chainId;
+                const current = renderer?.getSelection();
+                const isSelected = current?.chains?.has(chainId) || 
+                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+                if (callbacks.setChainResiduesSelected) {
+                    callbacks.setChainResiduesSelected(chainId, !isSelected);
+                }
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+                return;
+            }
+            
+            // For all other items (chain in chain mode, residue, ligand), enable drag
+            const current = renderer?.getSelection();
+            
+            // Determine if item is initially selected
+            let isInitiallySelected = false;
+            if (selectedItem.type === 'chain') {
+                isInitiallySelected = current?.chains?.has(selectedItem.chainId) || 
+                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+            } else {
+                // For residue/ligand, check if all atoms are selected
+                isInitiallySelected = selectedItem.atomIndices.length > 0 && 
+                    selectedItem.atomIndices.every(atomIdx => current?.atoms?.has(atomIdx));
+            }
+            
+            dragState.isDragging = true;
+            dragState.hasMoved = false;
+            dragState.dragStartItem = selectedItem;
+            dragState.dragEndItemIndex = selectedItem.index;
+            dragState.dragUnselectMode = isInitiallySelected;
+            dragState.initialSelectionState = new Set(current?.atoms || []);
+            
+            // Legacy fields for compatibility
+            if (selectedItem.type === 'chain') {
+                const boundary = chainBoundaries.find(b => b.chain === selectedItem.chainId);
+                if (boundary) {
                     const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    if (chainAtoms.length === 0) return;
-                    
-                    dragState.isDragging = true;
-                    dragState.hasMoved = false;
                     dragState.dragStart = chainAtoms[0];
                     dragState.dragEnd = chainAtoms[chainAtoms.length - 1];
-                    
-                    const current = renderer?.getSelection();
-                    const isInitiallySelected = current?.chains?.has(chainId) || 
-                        (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                    dragState.dragUnselectMode = isInitiallySelected;
-                    // Store initial selection state for toggling during drag
-                    dragState.initialSelectionState = new Set(current?.atoms || []);
-                    return;
                 }
+            } else if (selectedItem.residueData) {
+                dragState.dragStart = selectedItem.residueData;
+                dragState.dragEnd = selectedItem.residueData;
             }
             
-            if (residuePos && residuePos.residueData) {
-                const residueData = residuePos.residueData;
+            // Add temporary window listeners for touch drag outside canvas
+            const handleTouchMove = (e) => {
+                if (e.touches.length !== 1) return;
+                e.preventDefault();
+                const touch = e.touches[0];
+                handleDragMove(touch, newCanvas);
+            };
+            const handleTouchEnd = (e) => {
+                e.preventDefault();
+                handleMouseUp();
+                window.removeEventListener('touchmove', handleTouchMove);
+                window.removeEventListener('touchend', handleTouchEnd);
+                window.removeEventListener('touchcancel', handleTouchCancel);
+            };
+            const handleTouchCancel = (e) => {
+                e.preventDefault();
+                handleMouseUp();
+                window.removeEventListener('touchmove', handleTouchMove);
+                window.removeEventListener('touchend', handleTouchEnd);
+                window.removeEventListener('touchcancel', handleTouchCancel);
+            };
+            window.addEventListener('touchmove', handleTouchMove, { passive: false });
+            window.addEventListener('touchend', handleTouchEnd, { passive: false });
+            window.addEventListener('touchcancel', handleTouchCancel, { passive: false });
+            
+            // Handle tap (no drag) - toggle selection immediately
+            if (selectedItem.type === 'ligand' || (selectedItem.type === 'residue' && selectedItem.atomIndices.length === 1)) {
+                const newAtoms = new Set(current?.atoms || []);
+                selectedItem.atomIndices.forEach(atomIdx => {
+                    if (newAtoms.has(atomIdx)) {
+                        newAtoms.delete(atomIdx);
+                    } else {
+                        newAtoms.add(atomIdx);
+                    }
+                });
                 
-                // Handle ligand token taps
-                if (residueData.isLigandToken && residueData.atomIndices) {
-                    const current = renderer?.getSelection();
-                    const ligandAtomIndices = residueData.atomIndices;
-                    
-                    // Check if all atoms in ligand are selected
-                    const allSelected = ligandAtomIndices.length > 0 && 
-                                       ligandAtomIndices.every(atomIdx => current?.atoms?.has(atomIdx));
-                    
-                    dragState.isDragging = true;
-                    dragState.hasMoved = false;
-                    dragState.dragStart = { atomIndex: ligandAtomIndices[0], isLigandToken: true, atomIndices: ligandAtomIndices };
-                    dragState.dragEnd = { atomIndex: ligandAtomIndices[ligandAtomIndices.length - 1], isLigandToken: true, atomIndices: ligandAtomIndices };
-                    dragState.dragUnselectMode = allSelected;
-                    dragState.initialSelectionState = new Set(current?.atoms || []);
-                    
-                    // Toggle all atoms in ligand
-                    const newAtoms = new Set(current?.atoms || []);
-                    if (allSelected) {
-                        ligandAtomIndices.forEach(atomIdx => newAtoms.delete(atomIdx));
-                    } else {
-                        ligandAtomIndices.forEach(atomIdx => newAtoms.add(atomIdx));
-                    }
-                    
-                    // Update chains to include all chains that have selected atoms
-                    const objectName = renderer.currentObjectName;
-                    const obj = renderer.objectsData[objectName];
-                    const frame = obj?.frames?.[0];
-                    const newChains = new Set();
-                    if (frame?.chains) {
-                        for (const atomIdx of newAtoms) {
-                            const atomChain = frame.chains[atomIdx];
-                            if (atomChain) {
-                                newChains.add(atomChain);
-                            }
+                // Update chains to include all chains that have selected atoms
+                const objectName = renderer.currentObjectName;
+                const obj = renderer.objectsData[objectName];
+                const frame = obj?.frames?.[0];
+                const newChains = new Set();
+                if (frame?.chains) {
+                    for (const atomIdx of newAtoms) {
+                        const atomChain = frame.chains[atomIdx];
+                        if (atomChain) {
+                            newChains.add(atomChain);
                         }
                     }
-                    
-                    // Determine if we have partial selections
-                    const totalAtoms = frame?.chains?.length || 0;
-                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                    const allChains = new Set(frame.chains);
-                    const allChainsSelected = newChains.size === allChains.size && 
-                                            Array.from(newChains).every(c => allChains.has(c));
-                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
-                    
-                    renderer.setSelection({ 
-                        atoms: newAtoms,
-                        chains: chainsToSet,
-                        selectionMode: selectionMode,
-                        paeBoxes: [] 
-                    });
-                    lastSequenceUpdateHash = null;
-                    scheduleRender();
-                } else if (residueData.atomIndex >= 0) {
-                    // Regular atom
-                    const atomIndex = residueData.atomIndex;
-                    
-                    dragState.isDragging = true;
-                    dragState.hasMoved = false;
-                    dragState.dragStart = residueData;
-                    dragState.dragEnd = residueData;
-                    
-                    const current = renderer?.getSelection();
-                    const isInitiallySelected = current?.atoms?.has(atomIndex) || false;
-                    dragState.dragUnselectMode = isInitiallySelected;
-                    dragState.initialSelectionState = new Set(current?.atoms || []);
-                    
-                    // Toggle single atom on tap
-                    const newAtoms = new Set(current?.atoms || []);
-                    if (newAtoms.has(atomIndex)) {
-                        newAtoms.delete(atomIndex);
-                    } else {
-                        newAtoms.add(atomIndex);
-                    }
-                    
-                    // Update chains to include all chains that have selected atoms
-                    const objectName = renderer.currentObjectName;
-                    const obj = renderer.objectsData[objectName];
-                    const frame = obj?.frames?.[0];
-                    const newChains = new Set();
-                    if (frame?.chains) {
-                        for (const atomIdx of newAtoms) {
-                            const atomChain = frame.chains[atomIdx];
-                            if (atomChain) {
-                                newChains.add(atomChain);
-                            }
-                        }
-                    }
-                    
-                    // Determine if we have partial selections
-                    const totalAtoms = frame?.chains?.length || 0;
-                    const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
-                    const allChains = new Set(frame.chains);
-                    const allChainsSelected = newChains.size === allChains.size && 
-                                            Array.from(newChains).every(c => allChains.has(c));
-                    const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                    const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
-                    
-                    renderer.setSelection({ 
-                        atoms: newAtoms,
-                        chains: chainsToSet,
-                        selectionMode: selectionMode,
-                        paeBoxes: [] 
-                    });
-                    lastSequenceUpdateHash = null;
-                    scheduleRender();
                 }
+                
+                // Determine if we have partial selections
+                const totalAtoms = frame?.chains?.length || 0;
+                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                const allChains = new Set(frame.chains);
+                const allChainsSelected = newChains.size === allChains.size && 
+                                        Array.from(newChains).every(c => allChains.has(c));
+                const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
+                const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                
+                renderer.setSelection({ 
+                    atoms: newAtoms,
+                    chains: chainsToSet,
+                    selectionMode: selectionMode,
+                    paeBoxes: [] 
+                });
+                lastSequenceUpdateHash = null;
+                scheduleRender();
             }
         });
         
-        // Touch move handler - attach to canvas, not window, to avoid firing when touching elsewhere
-        newCanvas.addEventListener('touchmove', (e) => {
-            if (!sequenceCanvasData || sequenceCanvasData.canvas !== newCanvas) return;
-            if (!dragState.isDragging) return;
-            if (e.touches.length !== 1) return;
-            e.preventDefault(); // Prevent scrolling
-            
-            const pos = getCanvasPositionFromMouse(e, newCanvas);
-            const chainLabelPos = getChainLabelAtCanvasPosition(pos.x, pos.y, layout);
-            const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
-            
-            if (chainLabelPos && !sequenceViewMode) {
-                // In chain mode, handle drag over chain labels
-                const chainId = chainLabelPos.chainId;
-                const boundary = chainBoundaries.find(b => b.chain === chainId);
-                if (!boundary) return;
-                
-                const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                if (chainAtoms.length === 0) return;
-                
-                // Find the end chain atom
-                const endAtom = chainAtoms[chainAtoms.length - 1];
-                if (endAtom && endAtom !== dragState.dragEnd) {
-                    dragState.dragEnd = endAtom;
-                    dragState.hasMoved = true;
-                    
-                    // Get all atoms from start to end (including all chains in between)
-                    const startChainId = dragState.dragStart.chain;
-                    const startBoundary = chainBoundaries.find(b => b.chain === startChainId);
-                    const endBoundary = boundary;
-                    
-                    if (startBoundary && endBoundary) {
-                        const startBoundaryIdx = chainBoundaries.findIndex(b => b.chain === startChainId);
-                        const endBoundaryIdx = chainBoundaries.findIndex(b => b.chain === chainId);
-                        const [minBoundary, maxBoundary] = [Math.min(startBoundaryIdx, endBoundaryIdx), Math.max(startBoundaryIdx, endBoundaryIdx)];
-                        
-                        // Start from initial selection state, not current selection
-                        const newAtoms = new Set(dragState.initialSelectionState);
-                        
-                        // Add all atoms from all chains in the drag range
-                        for (let bIdx = minBoundary; bIdx <= maxBoundary; bIdx++) {
-                            const b = chainBoundaries[bIdx];
-                            const atomsInChain = sortedAtomEntries.slice(b.startIndex, b.endIndex + 1);
-                            for (const atom of atomsInChain) {
-                                // Toggle items in the drag range to match the initial drag mode
-                                if (dragState.dragUnselectMode) {
-                                    newAtoms.delete(atom.atomIndex);
-                                } else {
-                                    newAtoms.add(atom.atomIndex);
-                                }
-                            }
-                        }
-                        
-                        if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
-                        lastSequenceUpdateHash = null;
-                        scheduleRender();
-                        
-                        // Update 3D viewer in real-time during drag
-                        const objectName = renderer.currentObjectName;
-                        const obj = renderer.objectsData[objectName];
-                        const frame = obj?.frames?.[0];
-                        const newChains = new Set();
-                        if (frame?.chains) {
-                            for (const atomIdx of newAtoms) {
-                                const atomChain = frame.chains[atomIdx];
-                                if (atomChain) {
-                                    newChains.add(atomChain);
-                                }
-                            }
-                        }
-                        
-                        // Update selection in real-time during drag
-                        const current = renderer?.getSelection();
-                        const allChains = new Set(frame.chains);
-                        const allChainsSelected = newChains.size === allChains.size && 
-                                                Array.from(newChains).every(c => allChains.has(c));
-                        const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < frame.chains.length;
-                        // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
-                        const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                        // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
-                        // Otherwise, keep explicit chain selection (allows empty chains)
-                        const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
-                        
-                        renderer.setSelection({
-                            atoms: newAtoms,
-                            chains: chainsToSet,
-                            selectionMode: selectionMode,
-                            paeBoxes: []
-                        });
-                    }
-                }
-            } else if (residuePos && residuePos.atomIndex >= 0) {
-                const atomIndex = residuePos.atomIndex;
-                const residueData = allResidueData.find(r => r.atomIndex === atomIndex);
-                if (residueData && residueData !== dragState.dragEnd) {
-                    dragState.dragEnd = residueData;
-                    const startIdx = allResidueData.findIndex(r => r.atomIndex === dragState.dragStart.atomIndex);
-                    const endIdx = allResidueData.findIndex(r => r.atomIndex === dragState.dragEnd.atomIndex);
-                    if (startIdx !== -1 && endIdx !== -1) {
-                        dragState.hasMoved = true;
-                        const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                        // Start from initial selection state, not current selection
-                        const newAtoms = new Set(dragState.initialSelectionState);
-                        for (let i = min; i <= max; i++) {
-                            const res = allResidueData[i];
-                            // Toggle items in the drag range to match the initial drag mode
-                            if (dragState.dragUnselectMode) {
-                                newAtoms.delete(res.atomIndex);
-                            } else {
-                                newAtoms.add(res.atomIndex);
-                            }
-                        }
-                        if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
-                        lastSequenceUpdateHash = null;
-                        scheduleRender();
-                    }
-                }
-            }
-        });
+        // Touch move handler removed - using window listeners for drag instead
+        // Old handler code removed - unified system handles drag via window listeners
         
+        // Touch end/cancel handlers - window listeners handle cleanup, but keep these as fallback
         newCanvas.addEventListener('touchend', (e) => {
             e.preventDefault();
             handleMouseUp();
@@ -1940,6 +1943,11 @@
     function drawHighlights() {
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer || !renderer.canvas) {
+            return;
+        }
+        
+        // Skip drawing highlights during dragging to prevent interference with drag operations
+        if (renderer.isDragging) {
             return;
         }
         

@@ -635,6 +635,7 @@ function applyBestViewRotation(animate = true) {
         rotationAnimation.visibleStdDev = null;
         rotationAnimation.originalStdDev = null;
     }
+    
     const Rcur = renderer.rotationMatrix;
     
     // Get canvas dimensions to determine longest axis
@@ -815,13 +816,37 @@ function applyBestViewRotation(animate = true) {
     
     // Start animation
     rotationAnimation.active = true;
+    // Set renderer flag to skip shadow/tint updates during orient animation for large systems
+    if (renderer) {
+        renderer.isOrientAnimating = true;
+    }
     requestAnimationFrame(animateRotation);
 }
 
 function animateRotation() {
-    if (!rotationAnimation.active) return;
+    if (!rotationAnimation.active) {
+        // Animation ended, clear flag and cache
+        if (viewerApi && viewerApi.renderer) {
+            const renderer = viewerApi.renderer;
+            renderer.isOrientAnimating = false;
+            // Clear shadow/tint cache to force recalculation
+            renderer.cachedShadows = null;
+            renderer.cachedTints = null;
+            renderer.lastShadowRotationMatrix = null;
+        }
+        return;
+    }
     if (!viewerApi || !viewerApi.renderer) {
         rotationAnimation.active = false;
+        // Clear orient animation flag and cache
+        if (viewerApi && viewerApi.renderer) {
+            const renderer = viewerApi.renderer;
+            renderer.isOrientAnimating = false;
+            // Clear shadow/tint cache to force recalculation
+            renderer.cachedShadows = null;
+            renderer.cachedTints = null;
+            renderer.lastShadowRotationMatrix = null;
+        }
         return;
     }
 
@@ -877,6 +902,12 @@ function animateRotation() {
             }
         }
         
+        // Clear orient animation flag before rendering
+        renderer.isOrientAnimating = false;
+        // Clear shadow/tint cache to force recalculation with new rotation
+        renderer.cachedShadows = null;
+        renderer.cachedTints = null;
+        renderer.lastShadowRotationMatrix = null;
         // Ensure all parameters are set before rendering
         renderer.render();
         rotationAnimation.active = false;
@@ -1035,15 +1066,18 @@ function animateRotation() {
 
 function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
     let models;
-    
     try {
         const wantBU = !!(window.viewerConfig && window.viewerConfig.biounit);
         const isCIF = /^\s*data_/m.test(text) || /_atom_site\./.test(text);
         
+        
         // Parse all models first
         let parseResult;
+        let cachedLoops = null;
         if (isCIF) {
             models = parseCIF(text);
+            // Get cached loops from parseCIF result (attached as _cachedLoops property)
+            cachedLoops = models._cachedLoops || window._lastCIFLoops || null;
         } else {
             parseResult = parsePDB(text);
             models = parseResult.models;
@@ -1055,21 +1089,23 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         
         // Apply biounit transformation to all models if requested
         if (wantBU && models.length > 0) {
-            const startTime = performance.now();
             
             // Fast-negative: only scan for BU if the file hints it's present
             const hasBiounitHints = isCIF
                 ? /_pdbx_struct_(assembly_gen|oper_list)\./.test(text)
                 : /REMARK 350/.test(text);
+            
             // Extract operations ONCE for all models using unified function
-            const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF) : null;
+            // Pass cached loops to avoid re-parsing
+            const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF, cachedLoops) : null;
+            if (hasBiounitHints) {
+            }
 
             if (operations && operations.length > 0) {
                 // Apply operations to each model using unified function
                 models = models.map(modelAtoms => 
                     applyBiounitOperationsToAtoms(modelAtoms, operations)
                 );
-                const elapsed = performance.now() - startTime;
             }
             // If no operations found, models stay as-is (no transformation needed)
         }
@@ -1118,6 +1154,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         const ignore = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
         if (!ignore) return atoms;
         
+        
         // Get MODRES and chemCompMap from global storage (set by parsePDB/parseCIF)
         const modresMap = (typeof window !== 'undefined' && window._lastModresMap) ? window._lastModresMap : null;
         const chemCompMap = (typeof window !== 'undefined' && window._lastChemCompMap) ? window._lastChemCompMap : null;
@@ -1152,7 +1189,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         
         // Use the same classification logic as convertParsedToFrameData
         // to ensure consistency (with connectivity checks)
-        return atoms.filter(a => {
+        const result = atoms.filter(a => {
             if (!a) return false;
             // ATOM records are always kept (standard protein/nucleic)
             if (a.record !== 'HETATM') return true;
@@ -1174,6 +1211,9 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             // Keep if it's a real protein or nucleic acid, filter out if it's a ligand
             return is_protein || (nucleicType !== null);
         });
+        
+        
+        return result;
     }
 
     // ========================================================================
@@ -1229,6 +1269,18 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         
         // Map each position in originalFrameData to its residue and check if it's a ligand
         const originalIsLigandPosition = [];
+        
+        // Build residue index map to avoid expensive findIndex calls
+        const residueIndexMap = new Map(); // resKey -> residueIndex
+        for (let i = 0; i < originalAllResidues.length; i++) {
+            const residue = originalAllResidues[i];
+            const resKey = residue.chain + ':' + residue.resSeq + ':' + residue.resName;
+            residueIndexMap.set(resKey, i);
+        }
+        
+        // Cache classification results per residue to avoid re-classifying the same residue
+        const residueClassificationCache = new Map(); // resKey -> {is_protein, nucleicType}
+        
         if (originalFrameData.atom_types && originalFrameData.residues && originalFrameData.residue_index) {
             for (let idx = 0; idx < originalFrameData.atom_types.length; idx++) {
                 const atomType = originalFrameData.atom_types[idx];
@@ -1237,20 +1289,28 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                 const chain = originalFrameData.chains ? originalFrameData.chains[idx] : '';
                 
                 // Find the residue in the original model
-                const resKey = `${chain}:${resSeq}:${resName}`;
+                const resKey = chain + ':' + resSeq + ':' + resName;
                 const residue = originalResidueMap.get(resKey);
                 
                 if (residue) {
-                    // Find residue index in allResidues array
-                    const residueIndex = originalAllResidues.findIndex(r => 
-                        r.chain === residue.chain && r.resSeq === residue.resSeq && r.resName === residue.resName
-                    );
+                    // Check cache first to avoid re-classifying the same residue
+                    let classification = residueClassificationCache.get(resKey);
+                    if (!classification) {
+                        // Get residue index from map (much faster than findIndex)
+                        const residueIndex = residueIndexMap.get(resKey);
+                        
+                        // Use the same classification logic as maybeFilterLigands (with connectivity checks)
+                        // Note: We pass originalAllResidues and residueIndex for connectivity checks
+                        const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex !== undefined ? residueIndex : -1);
+                        const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex !== undefined ? residueIndex : -1);
+                        
+                        // Cache the result
+                        classification = { is_protein, nucleicType };
+                        residueClassificationCache.set(resKey, classification);
+                    }
                     
-                    // Use the same classification logic as maybeFilterLigands (with connectivity checks)
-                    const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex);
-                    const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex);
                     // It's a ligand if it's NOT protein AND NOT nucleic acid
-                    originalIsLigandPosition.push(!is_protein && nucleicType === null);
+                    originalIsLigandPosition.push(!classification.is_protein && classification.nucleicType === null);
                 } else {
                     // If we can't find the residue, use the atom type as fallback
                     originalIsLigandPosition.push(atomType === 'L');
@@ -1265,6 +1325,8 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         
         // Filter ligands from model
         const model = maybeFilterLigands(models[i]);
+        const originalAtomCount = models[i].length;
+        const filteredAtomCount = model.length;
         
         // Convert filtered model to get final frame data
         let frameData = convertParsedToFrameData(model);
@@ -1336,6 +1398,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             pae: frameData.pae
         });
     }
+    
 
     if (rawFrames.length === 0) {
         setStatus(`Warning: Found models, but no backbone atoms in ${name}.`, true);
@@ -1524,19 +1587,43 @@ function updateViewerFromGlobalBatch() {
     let totalFrames = 0;
     let lastObjectName = null;
 
+    // Enable batch loading mode to skip renders during addFrame
+    if (viewerApi?.renderer) {
+        viewerApi.renderer._batchLoading = true;
+    }
+    
     for (const obj of batchedObjects) {
         if (obj.frames.length > 0) {
             viewerApi.handlePythonNewObject(obj.name);
+            
             lastObjectName = obj.name;
+            
+            let jsonStringifyTime = 0;
+            let updateTime = 0;
             for (const frame of obj.frames) {
-                viewerApi.handlePythonUpdate(JSON.stringify(frame), obj.name);
+                const stringifyStart = performance.now();
+                const frameJson = JSON.stringify(frame);
+                const stringifyEnd = performance.now();
+                jsonStringifyTime += (stringifyEnd - stringifyStart);
+                
+                const updateStart = performance.now();
+                viewerApi.handlePythonUpdate(frameJson, obj.name);
+                const updateEnd = performance.now();
+                updateTime += (updateEnd - updateStart);
+                
                 totalFrames++;
             }
+            
             // Update objectsWithPAE Set (fallback for backward compatibility)
             if (checkObjectHasPAE(obj)) {
                 objectsWithPAE.add(obj.name);
             }
         }
+    }
+    
+    // Disable batch loading mode
+    if (viewerApi?.renderer) {
+        viewerApi.renderer._batchLoading = false;
     }
     
     if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
@@ -1556,28 +1643,58 @@ function updateViewerFromGlobalBatch() {
                 if (object && object.frames.length > 0) {
                     viewerApi.renderer.currentFrame = 0;
                     viewerApi.renderer._loadFrameData(0, true); // Load without render
-                    viewerApi.renderer.lastRenderedFrame = 0;
+                    viewerApi.renderer.lastRenderedFrame = -1; // Mark as needing render
                 }
             }
             
             // Now set the select value (this will trigger change event, but we've already set everything up)
             objectSelect.value = lastObjectName;
-            handleObjectChange();
-            updateObjectNavigationButtons();
-            buildSequenceView();
-            updateChainSelectionUI(); // This sets up default selection and calls applySelection
             
-            // Update UI controls
+            // Skip handleObjectChange during initial load - we'll do the work directly
+            // handleObjectChange() does: resetToDefault(), updatePAEContainerVisibility(), buildSequenceView(), updateChainSelectionUI()
+            // But we've already loaded the frame data, so we can skip resetToDefault and do the rest directly
+            
+            // Only update PAE visibility (resetToDefault is not needed for initial load)
+            if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
+                viewerApi.renderer.updatePAEContainerVisibility();
+            }
+            
+            
+            updateObjectNavigationButtons();
+            
+            buildSequenceView();
+            
+            // Skip updateChainSelectionUI during initial load - setSelection is expensive
+            // The renderer already defaults to showing all atoms, so we don't need to explicitly set it
+            // We'll let it default naturally, or set it after the first render
+            // Defer updateChainSelectionUI - it's expensive and not needed for initial display
+            // The structure will render with default "all atoms visible" state
+            // We can call it later if needed, or skip it entirely since default is "all"
+            // updateChainSelectionUI(); // Skip during initial load for performance
+            
+            
+            // Update UI controls first
             if (viewerApi && viewerApi.renderer) {
                 viewerApi.renderer.updateUIControls();
             }
             
             // Auto-orient to the newly loaded object (no animation for initial load)
             // This will render after orient is complete
+            // We do this BEFORE the initial render so the structure appears in the correct orientation
             if (viewerApi && viewerApi.renderer && viewerApi.renderer.currentObjectName === lastObjectName) {
                 const object = viewerApi.renderer.objectsData[lastObjectName];
                 if (object && object.frames.length > 0) {
                     applyBestViewRotation(false); // Skip animation for initial orient, renders after
+                }
+            }
+            
+            // Render once at the end (after orientation is complete)
+            // applyBestViewRotation already renders, but we ensure it's rendered here too
+            if (viewerApi && viewerApi.renderer && viewerApi.renderer.currentObjectName === lastObjectName) {
+                const object = viewerApi.renderer.objectsData[lastObjectName];
+                if (object && object.frames.length > 0 && viewerApi.renderer.lastRenderedFrame !== viewerApi.renderer.currentFrame) {
+                    viewerApi.renderer.render();
+                    viewerApi.renderer.lastRenderedFrame = viewerApi.renderer.currentFrame;
                 }
             }
         }
@@ -1585,6 +1702,7 @@ function updateViewerFromGlobalBatch() {
         setStatus("Error: No valid structures were loaded to display.", true);
         viewerContainer.style.display = 'none';
     }
+    
 }
 
 
@@ -1600,12 +1718,30 @@ function updateChainSelectionUI() {
   const frame0 = obj.frames[0];
   if (!frame0?.residue_index || !frame0?.chains) return;
 
+  // Optimize: Use more efficient Set construction
+  // Instead of adding one by one, build chains Set first, then atoms
+  const allChains = new Set(frame0.chains);
+  
+  // For atoms, if we're selecting all, we can use a more efficient approach
+  // Check if selection is already "all" (default mode with no explicit atoms)
+  const currentSelection = viewerApi.renderer.getSelection();
+  const isAlreadyAll = currentSelection.selectionMode === 'default' && 
+                       currentSelection.atoms.size === 0 &&
+                       (currentSelection.chains.size === 0 || 
+                        currentSelection.chains.size === allChains.size);
+  
+  if (isAlreadyAll) {
+    // Already in default "all" state, no need to update
+    return;
+  }
+
   // Select all by default using renderer API (use atoms, not residues)
+  // Optimize: Build Set more efficiently
+  const n = frame0.chains.length;
   const allAtoms = new Set();
-  const allChains = new Set();
-  for (let i = 0; i < frame0.chains.length; i++) {
+  // Pre-allocate Set capacity hint (not standard JS, but helps some engines)
+  for (let i = 0; i < n; i++) {
     allAtoms.add(i); // One atom = one position
-    allChains.add(frame0.chains[i]);
   }
 
   viewerApi.renderer.setSelection({

@@ -486,6 +486,7 @@ function initializePy2DmolViewer(containerElement) {
             this.cachedShadows = null;
             this.cachedTints = null;
             this.isZooming = false; // Track zoom state to skip shadow recalculation
+            this.isOrientAnimating = false; // Track orient animation state to skip shadow recalculation
             this.lastShadowRotationMatrix = null; // Track rotation matrix for shadow caching
 
             // Width multipliers are now always based on TYPE_BASELINES (no scaling factors needed)
@@ -746,8 +747,10 @@ function initializePy2DmolViewer(containerElement) {
         setupInteraction() {
             // Add inertia logic
             this.canvas.addEventListener('mousedown', (e) => {
-                // Only start dragging if we clicked directly on the canvas
-                if (e.target !== this.canvas) return;
+                // Only start dragging if we clicked directly on the canvas or the highlight overlay
+                // (the overlay has pointer-events: none, but we check for it just in case)
+                const isHighlightOverlay = e.target.id === 'highlightOverlay';
+                if (e.target !== this.canvas && !isHighlightOverlay) return;
                 
                 this.isDragging = true;
                 this.spinVelocityX = 0;
@@ -759,75 +762,89 @@ function initializePy2DmolViewer(containerElement) {
                     this.autoRotate = false;
                     if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
                 }
-            });
-
-            window.addEventListener('mousemove', (e) => {
-                if (!this.isDragging) return;
                 
-                // Stop canvas drag if interacting with controls (cache tagName check)
-                const tagName = e.target.tagName;
-                if (tagName === 'INPUT' || tagName === 'SELECT' || tagName === 'BUTTON') {
-                    this.isDragging = false;
-                    return;
-                }
-                
-                const now = performance.now();
-                const timeDelta = now - this.lastDragTime;
-
-                const dx = e.clientX - this.lastDragX;
-                const dy = e.clientY - this.lastDragY;
-
-                // Only update rotation if there's actual movement
-                if (dy !== 0 || dx !== 0) {
-                    if (dy !== 0) { 
-                        const rot = rotationMatrixX(dy * 0.01); 
-                        this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); 
+                // Add temporary window listeners for drag outside canvas
+                const handleMove = (e) => {
+                    if (!this.isDragging) return;
+                    
+                    // Stop canvas drag if interacting with controls
+                    const tagName = e.target.tagName;
+                    if (tagName === 'INPUT' || tagName === 'SELECT' || tagName === 'BUTTON') {
+                        this.isDragging = false;
+                        window.removeEventListener('mousemove', handleMove);
+                        window.removeEventListener('mouseup', handleUp);
+                        return;
                     }
-                    if (dx !== 0) { 
-                        const rot = rotationMatrixY(dx * 0.01); 
-                        this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); 
-                    }
-                } else {
-                    return; // No movement, skip render
-                }
+                    
+                    const now = performance.now();
+                    const timeDelta = now - this.lastDragTime;
 
-                // Store velocity for inertia (disabled for large molecules based on visible segments)
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                const totalSegmentCount = object && object.frames && object.frames[this.currentFrame] 
-                    ? (this.segmentIndices ? this.segmentIndices.length : 0)
-                    : 0;
-                // Count visible segments for inertia determination
-                let visibleSegmentCount = totalSegmentCount;
-                if (this.visibilityMask && this.segmentIndices) {
-                    visibleSegmentCount = 0;
-                    for (let i = 0; i < this.segmentIndices.length; i++) {
-                        const seg = this.segmentIndices[i];
-                        if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
-                            visibleSegmentCount++;
+                    const dx = e.clientX - this.lastDragX;
+                    const dy = e.clientY - this.lastDragY;
+
+                    // Only update rotation if there's actual movement
+                    if (dy !== 0 || dx !== 0) {
+                        if (dy !== 0) { 
+                            const rot = rotationMatrixX(dy * 0.01); 
+                            this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); 
+                        }
+                        if (dx !== 0) { 
+                            const rot = rotationMatrixY(dx * 0.01); 
+                            this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); 
+                        }
+                    } else {
+                        return; // No movement, skip render
+                    }
+
+                    // Store velocity for inertia (disabled for large molecules based on visible segments)
+                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+                    const totalSegmentCount = object && object.frames && object.frames[this.currentFrame] 
+                        ? (this.segmentIndices ? this.segmentIndices.length : 0)
+                        : 0;
+                    // Count visible segments for inertia determination
+                    let visibleSegmentCount = totalSegmentCount;
+                    if (this.visibilityMask && this.segmentIndices) {
+                        visibleSegmentCount = 0;
+                        for (let i = 0; i < this.segmentIndices.length; i++) {
+                            const seg = this.segmentIndices[i];
+                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                                visibleSegmentCount++;
+                            }
                         }
                     }
-                }
-                const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
-                
-                if (enableInertia && timeDelta > 0) {
-                    // Weighted average to smooth out jerky movements
-                    const smoothing = 0.5;
-                    this.spinVelocityX = (this.spinVelocityX * (1-smoothing)) + ((dx / timeDelta * 20) * smoothing);
-                    this.spinVelocityY = (this.spinVelocityY * (1-smoothing)) + ((dy / timeDelta * 20) * smoothing);
-                } else {
-                    // Disable inertia for large objects
-                    this.spinVelocityX = 0;
-                    this.spinVelocityY = 0;
-                }
+                    const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
+                    
+                    if (enableInertia && timeDelta > 0) {
+                        // Weighted average to smooth out jerky movements
+                        const smoothing = 0.5;
+                        this.spinVelocityX = (this.spinVelocityX * (1-smoothing)) + ((dx / timeDelta * 20) * smoothing);
+                        this.spinVelocityY = (this.spinVelocityY * (1-smoothing)) + ((dy / timeDelta * 20) * smoothing);
+                    } else {
+                        // Disable inertia for large objects
+                        this.spinVelocityX = 0;
+                        this.spinVelocityY = 0;
+                    }
 
-                this.lastDragX = e.clientX;
-                this.lastDragY = e.clientY;
-                this.lastDragTime = now;
+                    this.lastDragX = e.clientX;
+                    this.lastDragY = e.clientY;
+                    this.lastDragTime = now;
+                    
+                    this.render(); 
+                };
                 
-                this.render(); 
+                const handleUp = () => {
+                    if (!this.isDragging) return;
+                    this.isDragging = false;
+                    window.removeEventListener('mousemove', handleMove);
+                    window.removeEventListener('mouseup', handleUp);
+                };
+                
+                window.addEventListener('mousemove', handleMove);
+                window.addEventListener('mouseup', handleUp);
             });
             
-            window.addEventListener('mouseup', () => {
+            // Canvas-bound mouseup (fallback, but window listener handles it)
+            this.canvas.addEventListener('mouseup', () => {
                 if (!this.isDragging) return;
                 this.isDragging = false;
                 
@@ -1342,7 +1359,6 @@ function initializePy2DmolViewer(containerElement) {
 
         // Add a frame (data is raw parsed JSON)
         addFrame(data, objectName) {
-            
             let targetObjectName = objectName;
             if (!targetObjectName) {
                 console.warn("addFrame called without objectName, using current view.");
@@ -1377,7 +1393,6 @@ function initializePy2DmolViewer(containerElement) {
             } else if (newFrameIndex === 0) {
                 object._lastPaeFrame = -1; // No PAE in first frame
             }
-            
             object.frames.push(data);
 
             // Set view to this object
@@ -1426,9 +1441,16 @@ function initializePy2DmolViewer(containerElement) {
             // Calculate standard deviation: sqrt(mean of squared distances)
             object.stdDev = atomCount > 0 ? Math.sqrt(sumDistSq / atomCount) : 0;
 
-            if (!this.isPlaying) {
+            // Skip setFrame during batch loading to avoid expensive renders
+            // We'll render once at the end in updateViewerFromGlobalBatch
+            if (!this.isPlaying && !this._batchLoading) {
                 this.setFrame(object.frames.length - 1);
+            } else if (!this.isPlaying) {
+                // During batch loading, just update the frame index without rendering
+                this.currentFrame = object.frames.length - 1;
+                this.lastRenderedFrame = -1; // Mark as needing render
             }
+            
             this.updateUIControls();
             
             // Update PAE container visibility when frames are added
@@ -3098,6 +3120,10 @@ function initializePy2DmolViewer(containerElement) {
          * @returns {{shadow: number, tint: number}}
          */
         _calculateShadowTint(s1, s2, segInfo1, segInfo2) {
+            // Fast approximation: skip expensive calculations (sqrt, sigmoid, width)
+            // Uses rational function approximation: cutoff² / (cutoff² + dist² * alpha)
+            // This avoids sqrt and sigmoid while maintaining similar visual quality
+            
             // Cache segment lengths
             const len1 = s1.len;
             const len2 = s2.len;
@@ -3148,42 +3174,29 @@ function initializePy2DmolViewer(containerElement) {
             const dz = s1.z - s2.z;
             const dist3D_sq = dist2D_sq + dz * dz;
             
-            // Only calculate shadow if 3D distance is within cutoff
+            // Fast approximation: rational function that approximates sigmoid(cutoff - sqrt(dist))
+            // Formula: cutoff² / (cutoff² + dist² * alpha) where alpha = 2.0
+            // This avoids sqrt and sigmoid calculations while maintaining similar visual quality
+            
+            // Shadow approximation
             if (dist3D_sq < max_cutoff_sq) {
-                const dist3D = Math.sqrt(dist3D_sq);
-                shadow = sigmoid(shadow_cutoff - dist3D);
+                const shadow_cutoff_sq = shadow_cutoff * shadow_cutoff;
+                const alpha = 2.0; // Tuned to match sigmoid behavior
+                shadow = shadow_cutoff_sq / (shadow_cutoff_sq + dist3D_sq * alpha);
             }
             
-            // Only calculate tint if 2D distance is within cutoff
+            // Tint approximation
             const tint_max_cutoff = tint_cutoff + tint_offset;
             const tint_max_cutoff_sq = tint_max_cutoff * tint_max_cutoff;
-            
             if (dist2D_sq < tint_max_cutoff_sq) {
-                const dist2D = Math.sqrt(dist2D_sq);
-                tint = sigmoid(tint_cutoff - dist2D);
+                const tint_cutoff_sq = tint_cutoff * tint_cutoff;
+                const alpha = 2.0; // Tuned to match sigmoid behavior
+                tint = tint_cutoff_sq / (tint_cutoff_sq + dist2D_sq * alpha);
             }
-
-            // Early exit: if both shadow and tint are zero, no need to calculate width
-            if (shadow === 0 && tint === 0) {
-                return { shadow: 0, tint: 0 };
-            }
-
-            // Weight shadow/tint by relative segment widths
-            // Small segments have weak effect on large segments
-            const width1 = this._calculateSegmentWidthMultiplier(s1, segInfo1);
-            const width2 = this._calculateSegmentWidthMultiplier(s2, segInfo2);
             
-            // Relative width ratio: small segments have weak effect on large segments
-            const widthRatio = width2 / width1;
-            
-            // Clamp to prevent extreme values
-            const clampedRatio = Math.max(WIDTH_RATIO_CLAMP_MIN, Math.min(WIDTH_RATIO_CLAMP_MAX, widthRatio));
-            
-            // Apply width weighting
-            const weightedShadow = shadow * clampedRatio;
-            const weightedTint = tint * clampedRatio;
-            
-            return { shadow: weightedShadow, tint: weightedTint };
+            // Skip width calculation for performance (use constant ratio)
+            const widthRatio = 1.0; // Assume equal widths for speed
+            return { shadow: shadow * widthRatio, tint: tint * widthRatio };
         }
 
 
@@ -3467,12 +3480,13 @@ function initializePy2DmolViewer(containerElement) {
             // Shadows only need recalculation when rotation changes, not when width/ortho changes
             const rotationChanged = !this._rotationMatricesEqual(this.rotationMatrix, this.lastShadowRotationMatrix);
             
-            // For fast mode (many visible atoms), skip expensive shadow calculations during dragging or zooming - use cached
+            // For fast mode (many visible atoms), skip expensive shadow calculations during dragging, zooming, or orient animation - use cached
             // During zoom, shadows don't change, so reuse cached values
             // During drag, use cached for performance, but recalculate after drag stops
+            // During orient animation, use cached for performance, but recalculate after animation completes
             // Also skip if rotation hasn't changed (width/ortho changes don't affect shadows)
             const skipShadowCalc = (
-                (isFastMode && (this.isDragging || this.isZooming) && this.cachedShadows && this.cachedShadows.length === n) ||
+                (isFastMode && (this.isDragging || this.isZooming || this.isOrientAnimating) && this.cachedShadows && this.cachedShadows.length === n) ||
                 (!rotationChanged && this.cachedShadows && this.cachedShadows.length === n)
             );
             
@@ -3509,8 +3523,10 @@ function initializePy2DmolViewer(containerElement) {
                         tints[i] = 1 - maxTint;
                     }
                 } else { // Fast mode: many visible atoms, use grid-based optimization
-                    let GRID_DIM = Math.ceil(Math.sqrt(numVisibleSegments / 10)); 
-                    GRID_DIM = Math.max(10, Math.min(100, GRID_DIM)); 
+                    // Increase grid resolution for large structures to reduce segments per cell
+                    // Target: ~5-10 segments per cell for better performance
+                    let GRID_DIM = Math.ceil(Math.sqrt(numVisibleSegments / 5)); 
+                    GRID_DIM = Math.max(20, Math.min(150, GRID_DIM)); // Increased max from 100 to 150
                     
                     const gridSize = GRID_DIM * GRID_DIM;
                     const grid = Array.from({ length: gridSize }, () => []);
@@ -3518,6 +3534,11 @@ function initializePy2DmolViewer(containerElement) {
                     const gridMin = -maxExtent - 1.0;
                     const gridRange = (maxExtent + 1.0) * 2;
                     const gridCellSize = gridRange / GRID_DIM;
+                    
+                    // Limit number of segments to check per cell for very large structures
+                    // This prevents excessive shadow calculations
+                    // More aggressive limit for very large structures
+                    const MAX_SEGMENTS_PER_CELL = numVisibleSegments > 15000 ? 30 : (numVisibleSegments > 10000 ? 50 : Infinity);
                     
                     if (gridCellSize > 1e-6) {
                         const invCellSize = 1.0 / gridCellSize; 
@@ -3539,13 +3560,37 @@ function initializePy2DmolViewer(containerElement) {
                         }
                         
                         // Populate grid with all visible segments BEFORE calculating shadows
-                        // This ensures segments in front are already in the grid when we process segments behind them
+                        // Sort segments within each cell by z-depth (front to back) for early exit optimization
                         for (let i = 0; i < numVisibleSegments; i++) {
                             const segIdx = visibleSegmentIndices[i];
                             const s = segData[segIdx];
                             if (s.gx >= 0 && s.gy >= 0) {
                                 const gridIndex = s.gx + s.gy * GRID_DIM;
                                 grid[gridIndex].push(segIdx);
+                            }
+                        }
+                        
+                        // Sort each grid cell by z-depth (front to back) for early exit
+                        // Only sort cells that have multiple segments (optimization)
+                        for (let cellIdx = 0; cellIdx < gridSize; cellIdx++) {
+                            const cell = grid[cellIdx];
+                            if (cell.length > 1) {
+                                // Limit cell size first (faster than sorting large arrays)
+                                if (cell.length > MAX_SEGMENTS_PER_CELL) {
+                                    // For very large cells, just take the first MAX_SEGMENTS_PER_CELL
+                                    // This is faster than sorting and then truncating
+                                    cell.length = MAX_SEGMENTS_PER_CELL;
+                                }
+                                // Sort by z-depth descending (front to back) for early exit
+                                // Only sort if cell has more than 2 segments (sorting 2 items is unnecessary)
+                                if (cell.length > 2) {
+                                    cell.sort((a, b) => segData[b].z - segData[a].z);
+                                } else if (cell.length === 2 && segData[cell[0]].z < segData[cell[1]].z) {
+                                    // Swap if needed for 2-item case
+                                    const temp = cell[0];
+                                    cell[0] = cell[1];
+                                    cell[1] = temp;
+                                }
                             }
                         }
                         
@@ -3574,27 +3619,37 @@ function initializePy2DmolViewer(containerElement) {
                                     const gx2 = gx1 + dx;
                                     if (gx2 < 0 || gx2 >= GRID_DIM) continue;
                                     
+                                    // Early exit: if shadow is already saturated, skip remaining cells
+                                    if (shadowSum >= MAX_SHADOW_SUM) {
+                                        break;
+                                    }
+                                    
                                     const gridIndex = gx2 + rowOffset;
                                     const cell = grid[gridIndex];
                                     const cellLen = cell.length;
                                     
-                                    // Early exit: if shadow is already saturated, skip this cell
-                                    if (shadowSum >= MAX_SHADOW_SUM) {
-                                        continue;
-                                    }
-                                    
+                                    // Process segments in cell (already sorted by z-depth, front to back)
+                                    // Since cells are sorted front-to-back, we can break early when we hit segments behind
                                     for (let k = 0; k < cellLen; k++) {
                                         const j = cell[k]; 
+                                        
+                                        // Early exit: if shadow is already saturated, skip remaining segments
+                                        // Check this first before accessing segData (faster)
+                                        if (shadowSum >= MAX_SHADOW_SUM && maxTint >= 1.0) {
+                                            break;
+                                        }
+                                        
                                         // Only visible segments are in the grid, so no visibility check needed
                                         const s2 = segData[j];
                                         
                                         // CRITICAL: Only check segments that are in FRONT of i (closer to camera)
                                         // Segment j casts shadow on i only if j.z > i.z (j is in front)
+                                        // Since cells are sorted front-to-back, if we hit a segment behind, we can break
                                         if (s2.z <= s1.z) {
-                                            continue; // Skip segments that are behind or at same depth
+                                            break; // All remaining segments in this cell are behind, skip them
                                         }
                                         
-                                        // Early exit: if shadow is already saturated, skip remaining segments in this cell
+                                        // Early exit: if shadow is already saturated, skip remaining segments
                                         if (shadowSum >= MAX_SHADOW_SUM) {
                                             break;
                                         }
@@ -3624,7 +3679,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.lastShadowRotationMatrix = this._deepCopyMatrix(this.rotationMatrix);
                 
                 // Cache shadows/tints for reuse
-                if (isLargeMolecule && !this.isDragging && !this.isZooming) {
+                if (isLargeMolecule && !this.isDragging && !this.isZooming && !this.isOrientAnimating) {
                     this.cachedShadows = new Float32Array(shadows);
                     this.cachedTints = new Float32Array(tints);
                 } else if (!isLargeMolecule) {
@@ -4035,7 +4090,8 @@ function initializePy2DmolViewer(containerElement) {
             
             // Draw highlights on overlay canvas (doesn't require full render)
             // Highlight overlay is now managed by sequence viewer
-            if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            // Skip drawing highlights during dragging to prevent interference
+            if (!this.isDragging && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
                 window.SequenceViewer.drawHighlights();
             }
         }

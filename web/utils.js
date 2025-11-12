@@ -156,18 +156,52 @@ function polar2x2_withScore(A) {
  * @returns {Array<Array<number>>} - Target rotation matrix
  */
 function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation, canvasWidth = null, canvasHeight = null) {
+    
     // Edge case: not enough coordinates
     if (!coords || coords.length < 2) {
         return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     }
     
     // Edge case: all coordinates are the same (degenerate case)
+    // Optimize: For large structures, sample coordinates from different parts
     const firstCoord = coords[0];
-    const allSame = coords.every(c => 
-        Math.abs(c[0] - firstCoord[0]) < 1e-10 &&
-        Math.abs(c[1] - firstCoord[1]) < 1e-10 &&
-        Math.abs(c[2] - firstCoord[2]) < 1e-10
-    );
+    let allSame = false;
+    if (coords.length < 1000) {
+        // For small structures, check all
+        allSame = coords.every(c => 
+            Math.abs(c[0] - firstCoord[0]) < 1e-10 &&
+            Math.abs(c[1] - firstCoord[1]) < 1e-10 &&
+            Math.abs(c[2] - firstCoord[2]) < 1e-10
+        );
+    } else {
+        // For large structures, sample from beginning, middle, and end
+        // This is more robust than just checking the first 10
+        allSame = true;
+        const n = coords.length;
+        const sampleSize = Math.min(100, Math.floor(n / 10)); // Sample up to 100, or 10% of coords
+        const step = Math.max(1, Math.floor(n / sampleSize));
+        
+        // Check first, middle, and last portions
+        for (let i = 0; i < n; i += step) {
+            const c = coords[i];
+            if (Math.abs(c[0] - firstCoord[0]) > 1e-10 ||
+                Math.abs(c[1] - firstCoord[1]) > 1e-10 ||
+                Math.abs(c[2] - firstCoord[2]) > 1e-10) {
+                allSame = false;
+                break;
+            }
+        }
+        // Also check the last coordinate explicitly
+        if (allSame && n > 1) {
+            const lastCoord = coords[n - 1];
+            if (Math.abs(lastCoord[0] - firstCoord[0]) > 1e-10 ||
+                Math.abs(lastCoord[1] - firstCoord[1]) > 1e-10 ||
+                Math.abs(lastCoord[2] - firstCoord[2]) > 1e-10) {
+                allSame = false;
+            }
+        }
+    }
+    
     if (allSame) {
         return currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     }
@@ -175,10 +209,46 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation, canvasWidt
     // Use Kabsch algorithm like Python best_view: kabsch(a_cent, a_cent, return_v=True)
     // This computes the eigenvectors of the covariance matrix
     const mu = mean3(coords);
-    const centeredCoords = coords.map(c => [c[0] - mu[0], c[1] - mu[1], c[2] - mu[2]]);
     
-    // Compute H = centeredCoords^T @ centeredCoords (covariance matrix)
-    const H = numeric.dot(numeric.transpose(centeredCoords), centeredCoords);
+    // Optimize: Compute covariance directly without creating centeredCoords array
+    // H[i][j] = sum_k (coords[k][i] - mu[i]) * (coords[k][j] - mu[j])
+    // This avoids creating a large intermediate array
+    const H = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const n = coords.length;
+    for (let k = 0; k < n; k++) {
+        const c = coords[k];
+        const dx = c[0] - mu[0];
+        const dy = c[1] - mu[1];
+        const dz = c[2] - mu[2];
+        // H is symmetric, so we only need to compute upper triangle
+        H[0][0] += dx * dx;
+        H[0][1] += dx * dy;
+        H[0][2] += dx * dz;
+        H[1][1] += dy * dy;
+        H[1][2] += dy * dz;
+        H[2][2] += dz * dz;
+    }
+    // Fill in lower triangle (symmetric)
+    H[1][0] = H[0][1];
+    H[2][0] = H[0][2];
+    H[2][1] = H[1][2];
+    
+    // We still need centeredCoords for the candidate evaluation loop
+    // For large structures, we can sample coordinates to speed up variance calculation
+    let centeredCoords;
+    let useSampling = n > 5000; // Sample for structures with >5000 atoms
+    if (useSampling) {
+        // Sample every Nth coordinate to speed up variance calculation
+        const sampleStep = Math.ceil(n / 2000); // Sample ~2000 coordinates max
+        centeredCoords = [];
+        for (let i = 0; i < n; i += sampleStep) {
+            const c = coords[i];
+            centeredCoords.push([c[0] - mu[0], c[1] - mu[1], c[2] - mu[2]]);
+        }
+    } else {
+        // For smaller structures, use all coordinates
+        centeredCoords = coords.map(c => [c[0] - mu[0], c[1] - mu[1], c[2] - mu[2]]);
+    }
     
     // Edge case: covariance matrix is all zeros
     const traceH = H[0][0] + H[1][1] + H[2][2];
@@ -242,6 +312,7 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation, canvasWidt
     
     const Rcur = currentRotation || [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
     const candidates = [];
+    
     
     // Try all sign combinations for eigenvectors (flipping doesn't change variance)
     // We need to try different signs because eigenvectors can point in either direction
@@ -368,20 +439,25 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation, canvasWidt
             // Verify the mapping by calculating projected variance
             // Project coordinates to screen space using this rotation
             // This matches how the renderer applies rotation: screen = R @ coords
+            // Optimize: Pre-compute R matrix row dot products
+            const R00 = R[0][0], R01 = R[0][1], R02 = R[0][2];
+            const R10 = R[1][0], R11 = R[1][1], R12 = R[1][2];
+            
             let sumX = 0, sumY = 0, sumX2 = 0, sumY2 = 0;
-            for (const c of centeredCoords) {
-                const projX = R[0][0] * c[0] + R[0][1] * c[1] + R[0][2] * c[2];
-                const projY = R[1][0] * c[0] + R[1][1] * c[1] + R[1][2] * c[2];
+            const nCentered = centeredCoords.length;
+            for (let i = 0; i < nCentered; i++) {
+                const c = centeredCoords[i];
+                const projX = R00 * c[0] + R01 * c[1] + R02 * c[2];
+                const projY = R10 * c[0] + R11 * c[1] + R12 * c[2];
                 sumX += projX;
                 sumY += projY;
                 sumX2 += projX * projX;
                 sumY2 += projY * projY;
             }
-            const n = centeredCoords.length;
-            const meanX = sumX / n;
-            const meanY = sumY / n;
-            const varX = (sumX2 / n) - (meanX * meanX);
-            const varY = (sumY2 / n) - (meanY * meanY);
+            const meanX = sumX / nCentered;
+            const meanY = sumY / nCentered;
+            const varX = (sumX2 / nCentered) - (meanX * meanX);
+            const varY = (sumY2 / nCentered) - (meanY * meanY);
             
             // Calculate rotation angle from current to target
             const angle = rotationAngleBetweenMatrices(Rcur, R);
@@ -442,12 +518,14 @@ function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation, canvasWidt
     }
     
     // If no valid candidates, return current rotation
+    
     if (candidates.length === 0) {
         return Rcur;
     }
     
     // Sort by score (higher is better - smaller angle, no flips)
     candidates.sort((a, b) => b.score - a.score);
+    
     
     // Return the best candidate
     return candidates[0].R;
@@ -525,6 +603,9 @@ function parsePDB(text) {
     // Columns: 12-15 (resName), 17 (chainID), 19-22 (resSeq), 25-27 (stdResName)
     const modresMap = new Map(); // resName -> stdResName
     
+    let atomCount = 0;
+    let modresCount = 0;
+    
     for (const line of lines) {
         if (line.startsWith('MODRES')) {
             // MODRES format: columns 12-15 (resName), 17 (chainID), 19-22 (resSeq), 25-27 (stdResName)
@@ -533,6 +614,7 @@ function parsePDB(text) {
             if (resName && stdResName) {
                 // Store mapping: modified residue name -> standard residue name
                 modresMap.set(resName, stdResName);
+                modresCount++;
             }
         }
         
@@ -558,6 +640,7 @@ function parsePDB(text) {
                 res_name: line.substring(17, 20).trim(),
                 res_seq: parseInt(line.substring(22, 26))
             });
+            atomCount++;
         }
         
         if (line.startsWith('ENDMDL')) {
@@ -588,8 +671,13 @@ function parsePDB(text) {
  * @returns {Array<Array<object>>} - Array of models, each containing atoms
  */
 function parseCIF(text) {
+    
     // Parse chemical component table first (for modified residue detection)
     const loops = parseMinimalCIF_light(text);
+    
+    // Cache loops globally for biounit extraction to reuse
+    window._lastCIFLoops = loops;
+    
     const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
     
     const chemCompMap = new Map();
@@ -629,11 +717,13 @@ function parseCIF(text) {
     
     const modelMap = new Map();
     const lines = text.split('\n');
+    
     let atomSiteLoop = false;
     const headers = [];
     const headerMap = {};
     let modelIDKey = null;
     let modelID = 1;
+    let atomCount = 0;
 
     // Find headers
     for (const line of lines) {
@@ -649,57 +739,105 @@ function parseCIF(text) {
         }
     }
 
-    // Parse data
-    for (const line of lines) {
+    // Pre-compute header indices once to avoid repeated map lookups
+    const idxRecord = headerMap['_atom_site.group_PDB'];
+    const idxAtomName = headerMap['_atom_site.label_atom_id'];
+    const idxResName = headerMap['_atom_site.label_comp_id'];
+    const idxChain = headerMap['_atom_site.auth_asym_id'];
+    const idxResSeq = headerMap['_atom_site.auth_seq_id'];
+    const idxX = headerMap['_atom_site.Cartn_x'];
+    const idxY = headerMap['_atom_site.Cartn_y'];
+    const idxZ = headerMap['_atom_site.Cartn_z'];
+    const idxB = headerMap['_atom_site.B_iso_or_equiv'];
+    const idxElement = headerMap['_atom_site.type_symbol'];
+    const idxModelID = modelIDKey ? headerMap[modelIDKey] : -1;
+
+    // Parse data - optimized for performance
+    const headerLen = headers.length;
+    let currentModelArray = null;
+    
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        const line = lines[lineIdx];
+        const lineLen = line.length;
+        
+        // Check for atom_site header
         if (line.startsWith('_atom_site.')) {
             atomSiteLoop = true;
-        } else if (atomSiteLoop && line.startsWith('#')) {
-            atomSiteLoop = false;
-        } else if (atomSiteLoop && !line.startsWith(';')) {
-            const values = line.match(/(?:[^\s"']+|"([^"]*)"|'([^']*)')+/g);
-            if (!values || values.length < headers.length) continue;
-
-            const getString = (key) => values[headerMap[key]];
-            const getFloat = (key) => parseFloat(values[headerMap[key]]);
-            const getInt = (key) => parseInt(values[headerMap[key]]);
-
-            const atomNameRaw = getString('_atom_site.label_atom_id');
-            let atomName = atomNameRaw;
-            if (atomName && atomName.length > 1 && atomName.startsWith("'") && atomName.endsWith("'")) {
-                atomName = atomName.substring(1, atomName.length - 1);
-            } else if (atomName && atomName.length > 1 && atomName.startsWith('"') && atomName.endsWith('"')) {
-                atomName = atomName.substring(1, atomName.length - 1);
-            }
-
-            const atom = {
-                record: getString('_atom_site.group_PDB'),
-                atomName: atomName,
-                resName: getString('_atom_site.label_comp_id'),
-                chain: getString('_atom_site.auth_asym_id'),
-                resSeq: getInt('_atom_site.auth_seq_id'),
-                x: getFloat('_atom_site.Cartn_x'),
-                y: getFloat('_atom_site.Cartn_y'),
-                z: getFloat('_atom_site.Cartn_z'),
-                b: getFloat('_atom_site.B_iso_or_equiv'),
-                element: getString('_atom_site.type_symbol'),
-                res_name: getString('_atom_site.label_comp_id'),
-                res_seq: getInt('_atom_site.auth_seq_id')
-            };
-
-            if (modelIDKey) {
-                modelID = getInt(modelIDKey);
-            }
-
-            if (!modelMap.has(modelID)) {
-                modelMap.set(modelID, []);
-            }
-            modelMap.get(modelID).push(atom);
+            continue;
         }
-    }
+        
+        if (!atomSiteLoop) continue;
+        
+        // Fast check for comment or end marker
+        if (lineLen > 0 && line[0] === '#') {
+            atomSiteLoop = false;
+            continue;
+        }
+        
+        // Skip semicolon lines
+        if (lineLen > 0 && line[0] === ';') continue;
+        
+        // Use faster tokenizer instead of regex for better performance
+        const values = tokenizeCIFLine_light(line);
+        if (!values || values.length < headerLen) continue;
 
-    return Array.from(modelMap.keys())
+        // Direct array access - much faster than function calls
+        // Update modelID if needed
+        if (idxModelID >= 0) {
+            const newModelID = +values[idxModelID] || modelID; // Unary + is faster than parseInt
+            if (newModelID !== modelID) {
+                modelID = newModelID;
+                currentModelArray = modelMap.get(modelID);
+                if (!currentModelArray) {
+                    currentModelArray = [];
+                    modelMap.set(modelID, currentModelArray);
+                }
+            }
+        }
+        
+        // Ensure currentModelArray is initialized (for case when idxModelID < 0 or first atom)
+        if (!currentModelArray) {
+            currentModelArray = modelMap.get(modelID);
+            if (!currentModelArray) {
+                currentModelArray = [];
+                modelMap.set(modelID, currentModelArray);
+            }
+        }
+
+        // Create atom object with direct array access and optimized number parsing
+        // Use unary + operator for numbers (faster than parseFloat/parseInt)
+        const resNameVal = idxResName >= 0 ? values[idxResName] : '';
+        const resSeqVal = idxResSeq >= 0 ? (+values[idxResSeq] || 0) : 0;
+        
+        const atom = {
+            record: idxRecord >= 0 ? values[idxRecord] : 'ATOM',
+            atomName: idxAtomName >= 0 ? values[idxAtomName] : '',
+            resName: resNameVal,
+            chain: idxChain >= 0 ? values[idxChain] : '',
+            resSeq: resSeqVal,
+            x: idxX >= 0 ? (+values[idxX] || 0) : 0,
+            y: idxY >= 0 ? (+values[idxY] || 0) : 0,
+            z: idxZ >= 0 ? (+values[idxZ] || 0) : 0,
+            b: idxB >= 0 ? (+values[idxB] || 0) : 0,
+            element: idxElement >= 0 ? values[idxElement] : '',
+            res_name: resNameVal, // Duplicate for compatibility
+            res_seq: resSeqVal // Duplicate for compatibility
+        };
+
+        currentModelArray.push(atom);
+        atomCount++;
+    }
+    
+    const modelCount = modelMap.size;
+
+    const result = Array.from(modelMap.keys())
         .sort((a, b) => a - b)
         .map(id => modelMap.get(id));
+    
+    // Attach cached loops to result for reuse
+    result._cachedLoops = loops;
+    
+    return result;
 }
 
 /**
@@ -1211,17 +1349,30 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     const residueMap = new Map();
     for (const atom of atoms) {
         if (atom.resName === 'HOH') continue;
-        const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
-        if (!residueMap.has(resKey)) {
-            residueMap.set(resKey, {
+        // Optimize string concatenation - use array join or direct concatenation
+        const resKey = atom.chain + ':' + atom.resSeq + ':' + atom.resName;
+        let residue = residueMap.get(resKey);
+        if (!residue) {
+            residue = {
                 atoms: [],
                 resName: atom.resName,
                 chain: atom.chain,
                 record: atom.record,
-                resSeq: atom.resSeq
-            });
+                resSeq: atom.resSeq,
+                caAtom: null, // Cache CA atom for proteins
+                c4Atom: null  // Cache C4' atom for nucleic acids
+            };
+            residueMap.set(resKey, residue);
         }
-        residueMap.get(resKey).atoms.push(atom);
+        residue.atoms.push(atom);
+        
+        // Cache CA and C4' atoms during building to avoid .find() later
+        if (!residue.caAtom && atom.atomName === 'CA') {
+            residue.caAtom = atom;
+        }
+        if (!residue.c4Atom && (atom.atomName === "C4'" || atom.atomName === "C4*")) {
+            residue.c4Atom = atom;
+        }
     }
 
     // Convert residueMap to array for connectivity checks
@@ -1253,7 +1404,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
         }
 
         if (is_protein) {
-            const ca = residue.atoms.find(a => a.atomName === 'CA');
+            // Use cached CA atom instead of .find()
+            const ca = residue.caAtom || residue.atoms.find(a => a.atomName === 'CA');
             if (ca) {
                 coords.push([ca.x, ca.y, ca.z]);
                 plddts.push(ca.b);
@@ -1263,7 +1415,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                 residue_index.push(ca.res_seq || ca.resSeq || residue.resSeq);
             }
         } else if (nucleicType) {
-            let c4_atom = residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
+            // Use cached C4' atom instead of .find()
+            const c4_atom = residue.c4Atom || residue.atoms.find(a => a.atomName === "C4'" || a.atomName === "C4*");
             if (c4_atom) {
                 coords.push([c4_atom.x, c4_atom.y, c4_atom.z]);
                 plddts.push(c4_atom.b);
@@ -1385,7 +1538,8 @@ function tokenizeCIFLine_light(s) {
     const n = s.length;
     
     while (i < n) {
-        while (i < n && /\s/.test(s[i])) i++;
+        // Faster whitespace skipping - avoid regex test
+        while (i < n && (s[i] === ' ' || s[i] === '\t' || s[i] === '\r' || s[i] === '\n')) i++;
         if (i >= n) break;
         
         if (s[i] === "'") {
@@ -1400,7 +1554,8 @@ function tokenizeCIFLine_light(s) {
             i = Math.min(j + 1, n);
         } else {
             let j = i;
-            while (j < n && !/\s/.test(s[j])) j++;
+            // Faster non-whitespace check - avoid regex test
+            while (j < n && s[j] !== ' ' && s[j] !== '\t' && s[j] !== '\r' && s[j] !== '\n') j++;
             const tok = s.slice(i, j);
             out.push(tok === '.' || tok === '?' ? '' : tok);
             i = j;
@@ -1413,6 +1568,8 @@ function parseMinimalCIF_light(text) {
     const lines = text.split(/\r?\n/);
     const loops = [];
     let i = 0;
+    let loopCount = 0;
+    let rowCount = 0;
     
     while (i < lines.length) {
         let L = lines[i].trim();
@@ -1444,10 +1601,12 @@ function parseMinimalCIF_light(text) {
                 
                 if (vals.length >= cols.length) {
                     rows.push(vals.slice(0, cols.length));
+                    rowCount++;
                 }
                 i++;
             }
             loops.push([cols, rows]);
+            loopCount++;
             continue;
         }
         i++;
@@ -1665,13 +1824,26 @@ function composeBiounitOperations(seq, opMap) {
  * @param {string} text - CIF file text
  * @returns {Array<object>|null} - Array of {id, R, t, chains} operations or null
  */
-function extractCIFBiounitOperations(text) {
+function extractCIFBiounitOperations(text, cachedLoops = null) {
     // Fast-negative: require both loops to be present
     if (!/_pdbx_struct_assembly_gen\./.test(text) || !/_pdbx_struct_oper_list\./.test(text)) {
         return null;
     }
 
-    const loops = parseMinimalCIF_light(text);
+    let loops;
+    if (cachedLoops) {
+        // Use cached loops if provided
+        loops = cachedLoops;
+    } else {
+        // Check global cache first
+        if (window._lastCIFLoops) {
+            loops = window._lastCIFLoops;
+        } else {
+            // Parse all loops if not cached
+            loops = parseMinimalCIF_light(text);
+        }
+    }
+    
     const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
 
     const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
@@ -1752,9 +1924,9 @@ function extractCIFBiounitOperations(text) {
  * @param {boolean} isCIF - Whether file is CIF format
  * @returns {Array<object>|null} - Array of operations or null
  */
-function extractBiounitOperations(text, isCIF) {
+function extractBiounitOperations(text, isCIF, cachedLoops = null) {
     if (isCIF) {
-        return extractCIFBiounitOperations(text);
+        return extractCIFBiounitOperations(text, cachedLoops);
     } else {
         return extractPDBBiounitOperations(text);
     }
