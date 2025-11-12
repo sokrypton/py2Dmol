@@ -2351,10 +2351,11 @@ async function handleFetch() {
                         // Fallback to public proxy
                         if (!msaText) {
                             try {
-                                const publicProxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(msaUrl)}`;
+                                const publicProxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(msaUrl)}`;
                                 const proxyResponse = await fetch(publicProxyUrl);
                                 if (proxyResponse.ok) {
-                                    msaText = await proxyResponse.text();
+                                    const proxyData = await proxyResponse.json();
+                                    msaText = proxyData.contents;
                                     console.log("MSA loaded via public CORS proxy");
                                 }
                             } catch (proxyError) {
