@@ -2309,23 +2309,75 @@ async function handleFetch() {
             }
         }
 
-        // Download MSA for AlphaFold DB predictions
+        // Download MSA for AlphaFold DB predictions (non-blocking, in background)
         if (isAFDB && window.MSAViewer) {
-            try {
-                const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
-                const msaResponse = await fetch(msaUrl);
-                if (msaResponse.ok) {
-                    const msaText = await msaResponse.text();
-                    const msaData = window.MSAViewer.parseA3M(msaText);
-                    if (msaData) {
-                        window.MSAViewer.setMSAData(msaData);
-                        console.log(`MSA loaded from AlphaFold DB (${msaData.sequences.length} sequences)`);
+            // Skip MSA download if running from file:// protocol (CORS won't work)
+            if (window.location.protocol === 'file:') {
+                console.warn("MSA download skipped: CORS not available when running from file:// protocol. Please use a web server (http:// or https://).");
+            } else {
+                // Don't await - let it load in background while structure is displayed
+                (async () => {
+                    const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
+                    
+                    // Use custom proxy if available (e.g., your own server with CORS headers)
+                    // Set window.msaProxyUrl to your proxy endpoint, e.g., '/api/msa-proxy?url='
+                    const customProxy = window.msaProxyUrl;
+                    
+                    let msaText = null;
+                    
+                    // Try direct fetch first (fastest if CORS allows)
+                    try {
+                        const directResponse = await fetch(msaUrl);
+                        if (directResponse.ok) {
+                            msaText = await directResponse.text();
+                        }
+                    } catch (e) {
+                        // Direct fetch failed (likely CORS), try proxies
+                        console.log("Direct MSA fetch failed, trying proxy...");
+                        
+                        // Try custom proxy first if configured
+                        if (customProxy && !msaText) {
+                            try {
+                                const proxyResponse = await fetch(`${customProxy}${encodeURIComponent(msaUrl)}`);
+                                if (proxyResponse.ok) {
+                                    msaText = await proxyResponse.text();
+                                    console.log("MSA loaded via custom proxy");
+                                }
+                            } catch (proxyError) {
+                                console.warn("Custom proxy failed:", proxyError.message);
+                            }
+                        }
+                        
+                        // Fallback to public proxy
+                        if (!msaText) {
+                            try {
+                                const publicProxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(msaUrl)}`;
+                                const proxyResponse = await fetch(publicProxyUrl);
+                                if (proxyResponse.ok) {
+                                    msaText = await proxyResponse.text();
+                                    console.log("MSA loaded via public CORS proxy");
+                                }
+                            } catch (proxyError) {
+                                console.warn("Public proxy also failed:", proxyError.message);
+                            }
+                        }
                     }
-                } else {
-                    console.warn(`MSA data not found (HTTP ${msaResponse.status}).`);
-                }
-            } catch (e) {
-                console.warn("Could not fetch MSA data:", e.message);
+                    
+                    // Parse and load MSA if we got the data
+                    if (msaText) {
+                        try {
+                            const msaData = window.MSAViewer.parseA3M(msaText);
+                            if (msaData) {
+                                window.MSAViewer.setMSAData(msaData);
+                                console.log(`MSA loaded from AlphaFold DB (${msaData.sequences.length} sequences)`);
+                            }
+                        } catch (parseError) {
+                            console.warn("Could not parse MSA data:", parseError.message);
+                        }
+                    } else {
+                        console.warn("Could not fetch MSA data from any source");
+                    }
+                })();
             }
         }
 
