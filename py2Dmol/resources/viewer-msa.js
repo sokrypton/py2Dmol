@@ -38,6 +38,7 @@
     const SEQUENCE_ROW_HEIGHT = 20;
     const CHAR_WIDTH = 20;
     const NAME_COLUMN_WIDTH = 200;
+    const Y_AXIS_WIDTH = 40; // For Logo mode Y-axis
     const TICK_ROW_HEIGHT = 15;
     const TICK_INTERVAL = 10;
     
@@ -416,12 +417,12 @@
         } else if (mode === 'pssm') {
             scrollableAreaX = CHAR_WIDTH;
             scrollableAreaY = TICK_ROW_HEIGHT + CHAR_WIDTH;
-            scrollableAreaWidth = logicalWidth - scrollableAreaX - SCROLLBAR_WIDTH;
+            scrollableAreaWidth = logicalWidth - scrollableAreaX; // No V-scroll
             scrollableAreaHeight = logicalHeight - scrollableAreaY - SCROLLBAR_WIDTH;
-        } else {
-            scrollableAreaX = 0;
+        } else { // logo
+            scrollableAreaX = Y_AXIS_WIDTH;
             scrollableAreaY = TICK_ROW_HEIGHT + CHAR_WIDTH;
-            scrollableAreaWidth = logicalWidth - SCROLLBAR_WIDTH;
+            scrollableAreaWidth = logicalWidth - scrollableAreaX; // No V-scroll
             scrollableAreaHeight = logicalHeight - scrollableAreaY - SCROLLBAR_WIDTH;
         }
         
@@ -445,8 +446,16 @@
     
     function clampScrollLeft(canvasWidth, charWidth) {
         if (!msaData) return;
-        const scrollableAreaX = msaViewMode === 'msa' ? NAME_COLUMN_WIDTH : (msaViewMode === 'pssm' ? CHAR_WIDTH : 0);
-        const scrollableAreaWidth = canvasWidth - scrollableAreaX;
+        let scrollableAreaX = 0;
+        if (msaViewMode === 'msa') {
+            scrollableAreaX = NAME_COLUMN_WIDTH;
+        } else if (msaViewMode === 'pssm') {
+            scrollableAreaX = CHAR_WIDTH;
+        } else if (msaViewMode === 'logo') {
+            scrollableAreaX = Y_AXIS_WIDTH;
+        }
+        
+        const scrollableAreaWidth = canvasWidth - scrollableAreaX - (msaViewMode === 'msa' ? SCROLLBAR_WIDTH : 0);
         const totalContentWidth = msaData.queryLength * charWidth;
         const maxScrollLeft = Math.max(0, totalContentWidth - scrollableAreaWidth);
         scrollLeft = Math.max(0, Math.min(scrollLeft, maxScrollLeft));
@@ -546,7 +555,7 @@
         
         // Draw underline
         const underlineY = queryY + queryRowHeight;
-        const underlineWidth = Math.min(logicalWidth, totalWidth);
+        const underlineWidth = logicalWidth; // Draw line across full canvas width
         ctx.strokeStyle = '#333';
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -1065,7 +1074,7 @@
         const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
             getScrollableAreaForMode('logo', logicalWidth, logicalHeight);
         
-        const LABEL_WIDTH = 0;
+        const LABEL_WIDTH = Y_AXIS_WIDTH;
         const visibleStartPos = Math.floor(scrollLeft / CHAR_WIDTH);
         const visibleEndPos = Math.min(data.length, visibleStartPos + Math.ceil(scrollableAreaWidth / CHAR_WIDTH) + 1);
         
@@ -1074,20 +1083,24 @@
         drawTickMarks(ctx, logicalWidth, scrollLeft, CHAR_WIDTH, LABEL_WIDTH, tickMinX, tickMaxX);
         
         const queryY = TICK_ROW_HEIGHT;
-        const logoY = scrollableAreaY + GAP_HEIGHT;
         
+        // Add padding above and below logo area for y-axis labels
+        // Reduce logo height to compensate so total area stays the same
+        const LOGO_VERTICAL_PADDING = 12;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
         const aaRowHeight = CHAR_WIDTH;
-        const logoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        const originalLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        const logoHeight = originalLogoHeight - (LOGO_VERTICAL_PADDING * 2); // Reduced to fit with padding
+        const logoY = scrollableAreaY + GAP_HEIGHT + LOGO_VERTICAL_PADDING;
         
-        const minX = 0;
+        const minX = LABEL_WIDTH;
         const maxX = logicalWidth;
         
         // STACKED LOGO MODE
         const logoData = [];
+        let maxInfoContent = 0; // For Y-axis scale
         
         if (useBitScore) {
-            let maxInfoContent = 0;
             const positionInfoContents = [];
             
             for (let pos = 0; pos < data.length; pos++) {
@@ -1156,6 +1169,78 @@
             }
         }
         
+        // Draw Y-axis
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, LABEL_WIDTH, logicalHeight);
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(LABEL_WIDTH, TICK_ROW_HEIGHT); // Start below ticks
+        ctx.lineTo(LABEL_WIDTH, logicalHeight - SCROLLBAR_WIDTH); // End above scrollbar
+        ctx.stroke();
+
+        // Y-axis labels and scale
+        const axisLabel = useBitScore ? "Bits" : "Probability";
+        // Axis range includes padding - this is the full scale range
+        const axisTopY = logoY - LOGO_VERTICAL_PADDING;
+        const axisBottomY = logoY + logoHeight + LOGO_VERTICAL_PADDING;
+        
+        // Position axis label centered vertically, offset to the left to avoid overlap with middle tick value
+        const axisLabelY = (axisTopY + axisBottomY) / 2;
+        
+        ctx.save();
+        ctx.translate(LABEL_WIDTH / 2 - 15, axisLabelY);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillStyle = '#333';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(axisLabel, 0, 0);
+        ctx.restore();
+        
+        // Y-axis ticks - map to full area including padding, so scale is accurate
+        ctx.fillStyle = '#333';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        
+        const tickValues = [];
+        if (useBitScore) {
+            const maxVal = maxInfoContent > 0 ? maxInfoContent : 1;
+            tickValues.push({ value: 0, label: '0' });
+            if (maxVal > 0) {
+                tickValues.push({ value: maxVal / 2, label: (maxVal / 2).toFixed(1) });
+                tickValues.push({ value: maxVal, label: maxVal.toFixed(1) });
+            }
+        } else {
+            tickValues.push({ value: 0, label: '0.0' });
+            tickValues.push({ value: 0.5, label: '0.5' });
+            tickValues.push({ value: 1.0, label: '1.0' });
+        }
+        
+        // Map tick values to the logo area (not including padding)
+        // Ticks map to logoHeight: 0 at bottom of logo, max at top of logo
+        const logoBottomY = logoY + logoHeight;
+        const logoTopY = logoY;
+        
+        for (const tick of tickValues) {
+            let yPos;
+            if (useBitScore) {
+                const maxVal = maxInfoContent > 0 ? maxInfoContent : 1;
+                // Map value to position: 0 at bottom of logo, max at top of logo
+                yPos = logoBottomY - (tick.value / maxVal) * logoHeight;
+            } else {
+                // Map value to position: 0 at bottom of logo, 1.0 at top of logo
+                yPos = logoBottomY - tick.value * logoHeight;
+            }
+            
+            ctx.fillText(tick.label, LABEL_WIDTH - 8, yPos);
+            ctx.beginPath();
+            ctx.moveTo(LABEL_WIDTH - 5, yPos);
+            ctx.lineTo(LABEL_WIDTH, yPos);
+            ctx.stroke();
+        }
+        
         // Draw stacked logo
         let xOffset = scrollableAreaX - (scrollLeft % CHAR_WIDTH);
         for (let pos = visibleStartPos; pos < visibleEndPos && pos < logoData.length; pos++) {
@@ -1183,13 +1268,18 @@
                     const color = getDayhoffColor(aa);
                     const r = color.r, g = color.g, b = color.b;
                     
-                    const drawX = Math.max(minX, xOffset);
-                    const drawWidth = Math.min(CHAR_WIDTH, maxX - drawX);
+                    const drawWidth = CHAR_WIDTH;
                     if (drawWidth > 0) {
                         const drawY = yOffset - drawHeight - GAP_SIZE;
                         
+                        // Clip logo rendering to the scrollable area
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.rect(minX, logoY, scrollableAreaWidth, logoHeight);
+                        ctx.clip();
+                        
                         ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                        ctx.fillRect(drawX, drawY, drawWidth, drawHeight);
+                        ctx.fillRect(xOffset, drawY, drawWidth, drawHeight);
                         
                         const fontSize = Math.min(drawHeight * 0.8, CHAR_WIDTH * 0.8);
                         if (fontSize >= 8) {
@@ -1198,8 +1288,10 @@
                             ctx.textAlign = 'center';
                             ctx.textBaseline = 'middle';
                             const textY = drawY + drawHeight / 2;
-                            ctx.fillText(aa, drawX + drawWidth / 2, textY);
+                            ctx.fillText(aa, xOffset + drawWidth / 2, textY);
                         }
+                        
+                        ctx.restore(); // Restore from clipping
                     }
                 }
                 
@@ -1615,7 +1707,7 @@
         container.style.padding = '0';
         
         const canvas = document.createElement('canvas');
-        const LABEL_WIDTH = 0;
+        const LABEL_WIDTH = Y_AXIS_WIDTH;
         const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
         
         // Use dynamic container width - canvas must fit exactly
@@ -2006,12 +2098,12 @@
                     charWidth = CHAR_WIDTH;
                 } else if (mode === 'logo' && logoCanvasData && logoCanvasData.canvas) {
                     canvasWidth = logoCanvasData.canvas.width / DPI_MULTIPLIER;
-                    scrollableAreaX = 0;
+                    scrollableAreaX = Y_AXIS_WIDTH;
                     charWidth = CHAR_WIDTH;
                 }
                 
                 if (canvasWidth > 0) {
-                    const scrollableAreaWidth = canvasWidth - scrollableAreaX - SCROLLBAR_WIDTH;
+                    const scrollableAreaWidth = canvasWidth - scrollableAreaX - (mode === 'msa' ? SCROLLBAR_WIDTH : 0);
                     const totalScrollableWidth = msaData.queryLength * charWidth;
                     const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
                     const oldScrollLeft = scrollLeft;
