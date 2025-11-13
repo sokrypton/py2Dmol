@@ -260,13 +260,19 @@
         <!-- MSA Viewer Container -->
         <div id="msa-viewer-container" class="container-box sequence-section-container" style="display: none;">
             <div id="msaHeader" class="sequence-header">
-                <!-- Left side: Mode dropdown and Bit-score checkbox -->
+                <!-- Left side: Mode dropdown, Sort checkbox, and Bit-score checkbox -->
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px;">
                         <option value="msa" selected>MSA</option>
                         <option value="pssm">PSSM</option>
                         <option value="logo">Logo</option>
                     </select>
+                    <div id="msaSortContainer" style="display: flex; align-items: center; gap: 4px;">
+                        <label for="msaSortCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="msaSortCheckbox" checked style="cursor: pointer;">
+                            <span>Sort</span>
+                        </label>
+                    </div>
                     <div id="logoBitScoreContainer" style="display: none; align-items: center; gap: 4px;">
                         <label for="logoBitScoreCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
                             <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
@@ -346,6 +352,8 @@
             
             // Mode selector
             const msaModeSelect = document.getElementById('msaModeSelect');
+            const msaSortContainer = document.getElementById('msaSortContainer');
+            const msaSortCheckbox = document.getElementById('msaSortCheckbox');
             const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
             const logoBitScoreCheckbox = document.getElementById('logoBitScoreCheckbox');
             
@@ -356,9 +364,22 @@
                         window.MSAViewer.setMSAMode(mode);
                     }
                     
+                    // Show/hide sort checkbox for MSA mode
+                    if (msaSortContainer) {
+                        msaSortContainer.style.display = (mode === 'msa') ? 'flex' : 'none';
+                    }
+                    
                     // Show/hide bit-score checkbox for logo mode
                     if (logoBitScoreContainer) {
                         logoBitScoreContainer.style.display = (mode === 'logo') ? 'flex' : 'none';
+                    }
+                });
+            }
+            
+            if (msaSortCheckbox) {
+                msaSortCheckbox.addEventListener('change', (e) => {
+                    if (window.MSAViewer) {
+                        window.MSAViewer.setSortSequences(e.target.checked);
                     }
                 });
             }
@@ -495,6 +516,16 @@
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
             initializeMSAViewer();
+            
+            // Set initial visibility for checkboxes based on default mode (MSA)
+            const msaSortContainer = document.getElementById('msaSortContainer');
+            const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
+            if (msaSortContainer) {
+                msaSortContainer.style.display = 'flex'; // Show sort checkbox for MSA mode
+            }
+            if (logoBitScoreContainer) {
+                logoBitScoreContainer.style.display = 'none'; // Hide bit-score checkbox initially
+            }
             
             // File upload button
             const uploadButton = document.getElementById('upload-button');

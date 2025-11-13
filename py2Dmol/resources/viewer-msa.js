@@ -16,6 +16,7 @@
     let logoCanvasData = null; // Canvas-based structure for Logo mode
     let msaViewMode = 'msa'; // 'msa', 'pssm', or 'logo'
     let useBitScore = true; // true for bit-score, false for probabilities
+    let sortSequences = true; // true for sorted by similarity, false for original order
     let currentChain = null; // Current chain ID
     let currentMSAType = 'unpaired'; // 'unpaired' or 'paired'
     let renderScheduled = false;
@@ -317,6 +318,7 @@
         
         return {
             sequences: sorted,
+            sequencesOriginal: sequences, // Store original order
             querySequence: querySequence,
             queryLength: queryLength,
             queryIndex: queryIndex
@@ -1859,12 +1861,18 @@
             if (originalMSAData) {
                 const oldSequenceCount = msaData ? msaData.sequences.length : 0;
                 
-                let filtered = filterSequencesByCoverage(originalMSAData.sequences, coverageCutoff);
+                // Use original order sequences for filtering
+                const sequencesToFilter = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+                let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
                 filtered = filterSequencesByIdentity(filtered, originalMSAData.querySequence, identityCutoff);
-                const sorted = sortSequencesBySimilarity(filtered, originalMSAData.querySequence);
+                
+                // Apply sorting if enabled
+                const finalSequences = sortSequences 
+                    ? sortSequencesBySimilarity(filtered, originalMSAData.querySequence)
+                    : filtered;
                 
                 msaData = {
-                    sequences: sorted,
+                    sequences: finalSequences,
                     querySequence: originalMSAData.querySequence,
                     queryLength: originalMSAData.queryLength
                 };
@@ -1912,12 +1920,18 @@
             if (originalMSAData) {
                 const oldSequenceCount = msaData ? msaData.sequences.length : 0;
                 
-                let filtered = filterSequencesByCoverage(originalMSAData.sequences, coverageCutoff);
+                // Use original order sequences for filtering
+                const sequencesToFilter = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+                let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
                 filtered = filterSequencesByIdentity(filtered, originalMSAData.querySequence, identityCutoff);
-                const sorted = sortSequencesBySimilarity(filtered, originalMSAData.querySequence);
+                
+                // Apply sorting if enabled
+                const finalSequences = sortSequences 
+                    ? sortSequencesBySimilarity(filtered, originalMSAData.querySequence)
+                    : filtered;
                 
                 msaData = {
-                    sequences: sorted,
+                    sequences: finalSequences,
                     querySequence: originalMSAData.querySequence,
                     queryLength: originalMSAData.queryLength
                 };
@@ -1978,12 +1992,18 @@
             currentMSAType = type;
             originalMSAData = data;
             
-            let filtered = filterSequencesByCoverage(originalMSAData.sequences, coverageCutoff);
+            // Use original order sequences for filtering
+            const sequencesToFilter = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+            let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
             filtered = filterSequencesByIdentity(filtered, originalMSAData.querySequence, identityCutoff);
-            const sorted = sortSequencesBySimilarity(filtered, originalMSAData.querySequence);
+            
+            // Apply sorting if enabled
+            const finalSequences = sortSequences 
+                ? sortSequencesBySimilarity(filtered, originalMSAData.querySequence)
+                : filtered;
             
             msaData = {
-                sequences: sorted,
+                sequences: finalSequences,
                 querySequence: originalMSAData.querySequence,
                 queryLength: originalMSAData.queryLength
             };
@@ -2126,6 +2146,35 @@
             }
             if (msaViewMode === 'logo') {
                 scheduleRender();
+            }
+        },
+        
+        getSortSequences: function() {
+            return sortSequences;
+        },
+        
+        setSortSequences: function(value) {
+            sortSequences = value;
+            if (originalMSAData && msaViewMode === 'msa') {
+                // Reapply filtering and sorting
+                const sequencesToFilter = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+                let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
+                filtered = filterSequencesByIdentity(filtered, originalMSAData.querySequence, identityCutoff);
+                
+                // Apply sorting if enabled
+                const finalSequences = sortSequences 
+                    ? sortSequencesBySimilarity(filtered, originalMSAData.querySequence)
+                    : filtered;
+                
+                msaData = {
+                    sequences: finalSequences,
+                    querySequence: originalMSAData.querySequence,
+                    queryLength: originalMSAData.queryLength
+                };
+                
+                if (msaCanvasData && msaCanvasData.canvas) {
+                    scheduleRender();
+                }
             }
         },
         
