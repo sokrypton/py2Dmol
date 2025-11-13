@@ -12,7 +12,8 @@
     let msaData = null; // { sequences: [], querySequence: string, queryLength: number }
     let originalMSAData = null; // Original unfiltered MSA data
     let msaCanvasData = null; // Canvas-based structure for MSA mode
-    let logoCanvasData = null; // Canvas-based structure for logo mode
+    let pssmCanvasData = null; // Canvas-based structure for PSSM mode
+    let logoCanvasData = null; // Canvas-based structure for Logo mode
     let msaViewMode = 'msa'; // 'msa', 'pssm', or 'logo'
     let useBitScore = true; // true for bit-score, false for probabilities
     let currentChain = null; // Current chain ID
@@ -142,10 +143,40 @@
             renderScheduled = false;
             if (msaViewMode === 'msa') {
                 renderMSACanvas();
-            } else if (msaViewMode === 'pssm' || msaViewMode === 'logo') {
+            } else if (msaViewMode === 'pssm') {
+                renderPSSMCanvas();
+            } else if (msaViewMode === 'logo') {
                 renderLogoCanvas();
             }
         });
+    }
+    
+    function buildViewForMode(mode) {
+        switch(mode) {
+            case 'msa':
+                buildMSAView();
+                break;
+            case 'pssm':
+                buildPSSMView();
+                break;
+            case 'logo':
+                buildLogoView();
+                break;
+        }
+    }
+    
+    function renderForMode(mode) {
+        switch(mode) {
+            case 'msa':
+                renderMSACanvas();
+                break;
+            case 'pssm':
+                renderPSSMCanvas();
+                break;
+            case 'logo':
+                renderLogoCanvas();
+                break;
+        }
     }
     
     function getCanvasPositionFromMouse(e, canvas) {
@@ -357,11 +388,7 @@
         // Rebuild the view with new dimensions
         if (!msaData) return;
         
-        if (msaViewMode === 'msa') {
-            buildMSAView();
-        } else if (msaViewMode === 'pssm' || msaViewMode === 'logo') {
-            buildLogoView();
-        }
+        buildViewForMode(msaViewMode);
     }
     
     function getContainerWidth() {
@@ -465,6 +492,94 @@
                 }
             }
             xOffset += charWidth;
+        }
+    }
+    
+    // ============================================================================
+    // SHARED UTILITIES
+    // ============================================================================
+    
+    /**
+     * Draw query sequence row (used by MSA, PSSM, and Logo modes)
+     */
+    function drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, labelWidth, totalWidth) {
+        if (!msaData || !querySeq) return;
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, queryY, logicalWidth, queryRowHeight);
+        
+        const minX = labelWidth;
+        const maxX = logicalWidth;
+        let xOffset = scrollableAreaX - (scrollLeft % CHAR_WIDTH);
+        
+        for (let pos = visibleStartPos; pos < visibleEndPos && pos < querySeq.sequence.length; pos++) {
+            if (xOffset + CHAR_WIDTH < minX) {
+                xOffset += CHAR_WIDTH;
+                continue;
+            }
+            if (xOffset >= maxX) break;
+            
+            const aa = querySeq.sequence[pos];
+            const color = getDayhoffColor(aa);
+            const r = color.r, g = color.g, b = color.b;
+            
+            if (xOffset + CHAR_WIDTH >= minX && xOffset < maxX) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(minX, queryY, maxX - minX, queryRowHeight);
+                ctx.clip();
+                
+                ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                ctx.fillRect(xOffset, queryY, CHAR_WIDTH, queryRowHeight);
+                
+                ctx.fillStyle = '#000';
+                ctx.font = '10px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(aa, xOffset + CHAR_WIDTH / 2, queryY + queryRowHeight / 2);
+                
+                ctx.restore();
+            }
+            
+            xOffset += CHAR_WIDTH;
+        }
+        
+        // Draw underline
+        const underlineY = queryY + queryRowHeight;
+        const underlineWidth = Math.min(logicalWidth, totalWidth);
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, underlineY);
+        ctx.lineTo(underlineWidth, underlineY);
+        ctx.stroke();
+    }
+    
+    /**
+     * Draw horizontal scrollbar (used by PSSM and Logo modes)
+     */
+    function drawHorizontalScrollbar(ctx, logicalWidth, logicalHeight, scrollableAreaX, scrollableAreaWidth, labelWidth, totalScrollableWidth) {
+        if (!msaData) return;
+        
+        const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
+        const hScrollbarY = logicalHeight - SCROLLBAR_WIDTH;
+        const hScrollbarWidth = logicalWidth - scrollableAreaX;
+        
+        // Fill label area
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, hScrollbarY, labelWidth, SCROLLBAR_WIDTH);
+        
+        // Draw scrollbar track
+        ctx.fillStyle = SCROLLBAR_TRACK_COLOR;
+        ctx.fillRect(scrollableAreaX, hScrollbarY, hScrollbarWidth, SCROLLBAR_WIDTH);
+        
+        if (maxScrollX > 0) {
+            const scrollRatioX = scrollLeft / maxScrollX;
+            const thumbWidth = Math.max(20, (scrollableAreaWidth / totalScrollableWidth) * scrollableAreaWidth);
+            const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
+            
+            ctx.fillStyle = SCROLLBAR_THUMB_COLOR;
+            ctx.fillRect(thumbX, hScrollbarY + SCROLLBAR_PADDING, thumbWidth, SCROLLBAR_WIDTH - SCROLLBAR_PADDING * 2);
         }
     }
     
@@ -766,6 +881,166 @@
         return logOdds;
     }
     
+    function renderPSSMCanvas() {
+        if (!pssmCanvasData || !msaData) return;
+        
+        const { canvas, ctx } = pssmCanvasData;
+        if (!canvas || !ctx) return;
+        
+        const { logicalWidth, logicalHeight } = getLogicalCanvasDimensions(canvas);
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+        
+        const frequencies = calculateFrequencies();
+        if (!frequencies) return;
+        
+        const queryRowHeight = CHAR_WIDTH;
+        const GAP_HEIGHT = 0;
+        const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
+            getScrollableAreaForMode('pssm', logicalWidth, logicalHeight);
+        
+        const LABEL_WIDTH = CHAR_WIDTH;
+        const visibleStartPos = Math.floor(scrollLeft / CHAR_WIDTH);
+        const visibleEndPos = Math.min(frequencies.length, visibleStartPos + Math.ceil(scrollableAreaWidth / CHAR_WIDTH) + 1);
+        
+        const tickMinX = LABEL_WIDTH;
+        const tickMaxX = logicalWidth;
+        drawTickMarks(ctx, logicalWidth, scrollLeft, CHAR_WIDTH, LABEL_WIDTH, tickMinX, tickMaxX);
+        
+        const queryY = TICK_ROW_HEIGHT;
+        const heatmapY = scrollableAreaY + GAP_HEIGHT;
+        
+        const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
+        const aaRowHeight = CHAR_WIDTH;
+        const heatmapHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        
+        const heatmapX = LABEL_WIDTH;
+        const heatmapWidth = logicalWidth - LABEL_WIDTH;
+        const minX = 0;
+        const maxX = logicalWidth;
+        
+        // Draw labels
+        for (let i = 0; i < NUM_AMINO_ACIDS; i++) {
+            const aa = AMINO_ACIDS_ORDERED[i];
+            const y = heatmapY + i * aaRowHeight;
+            const dayhoffColor = getDayhoffColor(aa);
+            
+            ctx.fillStyle = `rgb(${dayhoffColor.r}, ${dayhoffColor.g}, ${dayhoffColor.b})`;
+            ctx.fillRect(0, y, LABEL_WIDTH, aaRowHeight);
+            
+            ctx.fillStyle = '#000';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(aa, LABEL_WIDTH / 2, y + aaRowHeight / 2);
+        }
+        
+        // Draw heatmap
+        let xOffset = heatmapX - (scrollLeft % CHAR_WIDTH);
+        for (let pos = visibleStartPos; pos < visibleEndPos && pos < frequencies.length; pos++) {
+            if (xOffset + CHAR_WIDTH < heatmapX) {
+                xOffset += CHAR_WIDTH;
+                continue;
+            }
+            if (xOffset >= maxX) break;
+            
+            const posData = frequencies[pos];
+            
+            for (let i = 0; i < NUM_AMINO_ACIDS; i++) {
+                const aa = AMINO_ACIDS_ORDERED[i];
+                const probability = posData[aa] || 0;
+                const y = heatmapY + i * aaRowHeight;
+                
+                const white = {r: 255, g: 255, b: 255};
+                const darkBlue = {r: 0, g: 0, b: 139};
+                const finalR = Math.round(white.r + (darkBlue.r - white.r) * probability);
+                const finalG = Math.round(white.g + (darkBlue.g - white.g) * probability);
+                const finalB = Math.round(white.b + (darkBlue.b - white.b) * probability);
+                
+                if (xOffset + CHAR_WIDTH >= heatmapX && xOffset < maxX) {
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(heatmapX, heatmapY, maxX - heatmapX, heatmapHeight);
+                    ctx.clip();
+                    
+                    ctx.fillStyle = `rgb(${finalR}, ${finalG}, ${finalB})`;
+                    ctx.fillRect(xOffset, y, CHAR_WIDTH, aaRowHeight);
+                    
+                    ctx.restore();
+                }
+            }
+            
+            xOffset += CHAR_WIDTH;
+        }
+        
+        // Draw black boxes around wildtype
+        const querySeqForBoxes = msaData.sequences.length > 0 ? msaData.sequences[0].sequence : '';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+        let boxXOffset = heatmapX - (scrollLeft % CHAR_WIDTH);
+        for (let pos = visibleStartPos; pos < visibleEndPos && pos < frequencies.length; pos++) {
+            if (boxXOffset + CHAR_WIDTH < heatmapX) {
+                boxXOffset += CHAR_WIDTH;
+                continue;
+            }
+            if (boxXOffset >= maxX) break;
+            
+            const wildtypeAA = pos < querySeqForBoxes.length ? querySeqForBoxes[pos].toUpperCase() : null;
+            if (!wildtypeAA) {
+                boxXOffset += CHAR_WIDTH;
+                continue;
+            }
+            
+            const wildtypeIndex = AMINO_ACIDS_ORDERED.indexOf(wildtypeAA);
+            if (wildtypeIndex >= 0) {
+                const y = heatmapY + wildtypeIndex * aaRowHeight;
+                if (boxXOffset + CHAR_WIDTH >= heatmapX && boxXOffset < maxX) {
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(heatmapX, heatmapY, maxX - heatmapX, heatmapHeight);
+                    ctx.clip();
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(boxXOffset, y);
+                    ctx.lineTo(boxXOffset + CHAR_WIDTH, y);
+                    ctx.moveTo(boxXOffset, y + aaRowHeight);
+                    ctx.lineTo(boxXOffset + CHAR_WIDTH, y + aaRowHeight);
+                    ctx.moveTo(boxXOffset, y);
+                    ctx.lineTo(boxXOffset, y + aaRowHeight);
+                    ctx.moveTo(boxXOffset + CHAR_WIDTH, y);
+                    ctx.lineTo(boxXOffset + CHAR_WIDTH, y + aaRowHeight);
+                    ctx.stroke();
+                    
+                    ctx.restore();
+                }
+            }
+            
+            boxXOffset += CHAR_WIDTH;
+        }
+        
+        // Draw group boundaries
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        for (const boundaryIdx of DAYHOFF_GROUP_BOUNDARIES) {
+            const y = heatmapY + boundaryIdx * aaRowHeight;
+            ctx.beginPath();
+            ctx.moveTo(heatmapX, y);
+            ctx.lineTo(heatmapX + heatmapWidth, y);
+            ctx.stroke();
+        }
+        
+        // Draw query sequence on top
+        if (msaData.sequences.length > 0) {
+            const querySeq = msaData.sequences[0];
+            drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, LABEL_WIDTH, pssmCanvasData.totalWidth);
+        }
+        
+        // Draw horizontal scrollbar
+        const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
+        drawHorizontalScrollbar(ctx, logicalWidth, logicalHeight, scrollableAreaX, scrollableAreaWidth, LABEL_WIDTH, totalScrollableWidth);
+    }
+    
     function renderLogoCanvas() {
         if (!logoCanvasData || !msaData) return;
         
@@ -780,19 +1055,17 @@
         const frequencies = calculateFrequencies();
         if (!frequencies) return;
         
-        const data = msaViewMode === 'pssm' 
-            ? frequencies 
-            : (msaViewMode === 'logo' && useBitScore 
-                ? (cachedLogOdds || calculateLogOdds(frequencies))
-                : frequencies);
+        const data = useBitScore 
+            ? (cachedLogOdds || calculateLogOdds(frequencies))
+            : frequencies;
         if (!data) return;
         
         const queryRowHeight = CHAR_WIDTH;
         const GAP_HEIGHT = 0;
         const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
-            getScrollableAreaForMode(msaViewMode, logicalWidth, logicalHeight);
+            getScrollableAreaForMode('logo', logicalWidth, logicalHeight);
         
-        const LABEL_WIDTH = msaViewMode === 'pssm' ? CHAR_WIDTH : 0;
+        const LABEL_WIDTH = 0;
         const visibleStartPos = Math.floor(scrollLeft / CHAR_WIDTH);
         const visibleEndPos = Math.min(data.length, visibleStartPos + Math.ceil(scrollableAreaWidth / CHAR_WIDTH) + 1);
         
@@ -810,329 +1083,141 @@
         const minX = 0;
         const maxX = logicalWidth;
         
-        if (msaViewMode === 'pssm') {
-            // HEATMAP MODE
-            const heatmapX = LABEL_WIDTH;
-            const heatmapWidth = logicalWidth - LABEL_WIDTH;
+        // STACKED LOGO MODE
+        const logoData = [];
+        
+        if (useBitScore) {
+            let maxInfoContent = 0;
+            const positionInfoContents = [];
             
-            // Draw labels
-            for (let i = 0; i < NUM_AMINO_ACIDS; i++) {
-                const aa = AMINO_ACIDS_ORDERED[i];
-                const y = logoY + i * aaRowHeight;
-                const dayhoffColor = getDayhoffColor(aa);
+            for (let pos = 0; pos < data.length; pos++) {
+                const posFreq = frequencies[pos];
+                let infoContent = 0;
+                const contributions = {};
                 
-                ctx.fillStyle = `rgb(${dayhoffColor.r}, ${dayhoffColor.g}, ${dayhoffColor.b})`;
-                ctx.fillRect(0, y, LABEL_WIDTH, aaRowHeight);
-                
-                ctx.fillStyle = '#000';
-                ctx.font = '10px monospace';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(aa, LABEL_WIDTH / 2, y + aaRowHeight / 2);
-            }
-            
-            const querySeq = msaData.sequences.length > 0 ? msaData.sequences[0].sequence : '';
-            
-            // Draw heatmap
-            let xOffset = heatmapX - (scrollLeft % CHAR_WIDTH);
-            for (let pos = visibleStartPos; pos < visibleEndPos && pos < data.length; pos++) {
-                if (xOffset + CHAR_WIDTH < heatmapX) {
-                    xOffset += CHAR_WIDTH;
-                    continue;
-                }
-                if (xOffset >= maxX) break;
-                
-                const posData = data[pos];
-                
-                for (let i = 0; i < NUM_AMINO_ACIDS; i++) {
-                    const aa = AMINO_ACIDS_ORDERED[i];
-                    const probability = posData[aa] || 0;
-                    const y = logoY + i * aaRowHeight;
-                    
-                    const white = {r: 255, g: 255, b: 255};
-                    const darkBlue = {r: 0, g: 0, b: 139};
-                    const finalR = Math.round(white.r + (darkBlue.r - white.r) * probability);
-                    const finalG = Math.round(white.g + (darkBlue.g - white.g) * probability);
-                    const finalB = Math.round(white.b + (darkBlue.b - white.b) * probability);
-                    
-                    if (xOffset + CHAR_WIDTH >= heatmapX && xOffset < maxX) {
-                        ctx.save();
-                        ctx.beginPath();
-                        ctx.rect(heatmapX, logoY, maxX - heatmapX, logoHeight);
-                        ctx.clip();
-                        
-                        ctx.fillStyle = `rgb(${finalR}, ${finalG}, ${finalB})`;
-                        ctx.fillRect(xOffset, y, CHAR_WIDTH, aaRowHeight);
-                        
-                        ctx.restore();
+                for (const aa in posFreq) {
+                    const freq = posFreq[aa];
+                    if (freq > 0) {
+                        const backgroundFreq = getBackgroundFrequency(aa);
+                        const contribution = freq * Math.log2(freq / backgroundFreq);
+                        if (contribution > 0) {
+                            infoContent += contribution;
+                            contributions[aa] = contribution;
+                        }
                     }
                 }
                 
-                xOffset += CHAR_WIDTH;
+                positionInfoContents.push({ infoContent, contributions });
+                if (infoContent > maxInfoContent) {
+                    maxInfoContent = infoContent;
+                }
             }
             
-            // Draw black boxes around wildtype
-            const querySeqForBoxes = msaData.sequences.length > 0 ? msaData.sequences[0].sequence : '';
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 1;
-            let boxXOffset = heatmapX - (scrollLeft % CHAR_WIDTH);
-            for (let pos = visibleStartPos; pos < visibleEndPos && pos < data.length; pos++) {
-                if (boxXOffset + CHAR_WIDTH < heatmapX) {
-                    boxXOffset += CHAR_WIDTH;
-                    continue;
-                }
-                if (boxXOffset >= maxX) break;
+            for (let pos = 0; pos < positionInfoContents.length; pos++) {
+                const posInfo = positionInfoContents[pos];
+                const infoContent = posInfo.infoContent;
+                const contributions = posInfo.contributions;
                 
-                const wildtypeAA = pos < querySeqForBoxes.length ? querySeqForBoxes[pos].toUpperCase() : null;
-                if (!wildtypeAA) {
-                    boxXOffset += CHAR_WIDTH;
-                    continue;
-                }
+                const totalStackHeight = maxInfoContent > 0 
+                    ? (infoContent / maxInfoContent) * logoHeight 
+                    : 0;
                 
-                const wildtypeIndex = AMINO_ACIDS_ORDERED.indexOf(wildtypeAA);
-                if (wildtypeIndex >= 0) {
-                    const y = logoY + wildtypeIndex * aaRowHeight;
-                    if (boxXOffset + CHAR_WIDTH >= heatmapX && boxXOffset < maxX) {
-                        ctx.save();
-                        ctx.beginPath();
-                        ctx.rect(heatmapX, logoY, maxX - heatmapX, logoHeight);
-                        ctx.clip();
-                        
-                        ctx.beginPath();
-                        ctx.moveTo(boxXOffset, y);
-                        ctx.lineTo(boxXOffset + CHAR_WIDTH, y);
-                        ctx.moveTo(boxXOffset, y + aaRowHeight);
-                        ctx.lineTo(boxXOffset + CHAR_WIDTH, y + aaRowHeight);
-                        ctx.moveTo(boxXOffset, y);
-                        ctx.lineTo(boxXOffset, y + aaRowHeight);
-                        ctx.moveTo(boxXOffset + CHAR_WIDTH, y);
-                        ctx.lineTo(boxXOffset + CHAR_WIDTH, y + aaRowHeight);
-                        ctx.stroke();
-                        
-                        ctx.restore();
+                const letterHeights = {};
+                if (infoContent > 0) {
+                    for (const aa in contributions) {
+                        letterHeights[aa] = (contributions[aa] / infoContent) * totalStackHeight;
                     }
                 }
                 
-                boxXOffset += CHAR_WIDTH;
-            }
-            
-            // Draw group boundaries
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 2;
-            for (const boundaryIdx of DAYHOFF_GROUP_BOUNDARIES) {
-                const y = logoY + boundaryIdx * aaRowHeight;
-                ctx.beginPath();
-                ctx.moveTo(heatmapX, y);
-                ctx.lineTo(heatmapX + heatmapWidth, y);
-                ctx.stroke();
+                logoData.push({ infoContent, letterHeights, posData: data[pos] });
             }
         } else {
-            // STACKED LOGO MODE
-            const logoData = [];
-            
-            if (useBitScore) {
-                let maxInfoContent = 0;
-                const positionInfoContents = [];
+            const GAP_SIZE = 2;
+            for (let pos = 0; pos < frequencies.length; pos++) {
+                const posFreq = frequencies[pos];
+                const letterHeights = {};
                 
-                for (let pos = 0; pos < data.length; pos++) {
-                    const posFreq = frequencies[pos];
-                    let infoContent = 0;
-                    const contributions = {};
-                    
-                    for (const aa in posFreq) {
-                        const freq = posFreq[aa];
-                        if (freq > 0) {
-                            const backgroundFreq = getBackgroundFrequency(aa);
-                            const contribution = freq * Math.log2(freq / backgroundFreq);
-                            if (contribution > 0) {
-                                infoContent += contribution;
-                                contributions[aa] = contribution;
-                            }
-                        }
-                    }
-                    
-                    positionInfoContents.push({ infoContent, contributions });
-                    if (infoContent > maxInfoContent) {
-                        maxInfoContent = infoContent;
-                    }
+                let freqSum = 0;
+                for (const aa in posFreq) {
+                    freqSum += posFreq[aa];
                 }
                 
-                for (let pos = 0; pos < positionInfoContents.length; pos++) {
-                    const posInfo = positionInfoContents[pos];
-                    const infoContent = posInfo.infoContent;
-                    const contributions = posInfo.contributions;
-                    
-                    const totalStackHeight = maxInfoContent > 0 
-                        ? (infoContent / maxInfoContent) * logoHeight 
-                        : 0;
-                    
-                    const letterHeights = {};
-                    if (infoContent > 0) {
-                        for (const aa in contributions) {
-                            letterHeights[aa] = (contributions[aa] / infoContent) * totalStackHeight;
-                        }
-                    }
-                    
-                    logoData.push({ infoContent, letterHeights, posData: data[pos] });
+                const numAAs = Object.keys(posFreq).length;
+                const numGaps = Math.max(0, numAAs - 1);
+                const totalGapHeight = numGaps * GAP_SIZE;
+                const availableHeight = logoHeight - totalGapHeight;
+                const normalizationFactor = freqSum > 0 ? 1 / freqSum : 1;
+                
+                for (const aa in posFreq) {
+                    letterHeights[aa] = (posFreq[aa] * normalizationFactor) * availableHeight;
                 }
-            } else {
-                const GAP_SIZE = 2;
-                for (let pos = 0; pos < frequencies.length; pos++) {
-                    const posFreq = frequencies[pos];
-                    const letterHeights = {};
-                    
-                    let freqSum = 0;
-                    for (const aa in posFreq) {
-                        freqSum += posFreq[aa];
-                    }
-                    
-                    const numAAs = Object.keys(posFreq).length;
-                    const numGaps = Math.max(0, numAAs - 1);
-                    const totalGapHeight = numGaps * GAP_SIZE;
-                    const availableHeight = logoHeight - totalGapHeight;
-                    const normalizationFactor = freqSum > 0 ? 1 / freqSum : 1;
-                    
-                    for (const aa in posFreq) {
-                        letterHeights[aa] = (posFreq[aa] * normalizationFactor) * availableHeight;
-                    }
-                    
-                    logoData.push({ infoContent: 0, letterHeights, posData: data[pos] });
-                }
+                
+                logoData.push({ infoContent: 0, letterHeights, posData: data[pos] });
             }
-            
-            // Draw stacked logo
-            let xOffset = scrollableAreaX - (scrollLeft % CHAR_WIDTH);
-            for (let pos = visibleStartPos; pos < visibleEndPos && pos < logoData.length; pos++) {
-                if (xOffset + CHAR_WIDTH < minX) {
-                    xOffset += CHAR_WIDTH;
-                    continue;
-                }
-                if (xOffset >= maxX) break;
-                
-                const logoPos = logoData[pos];
-                const letterHeights = logoPos.letterHeights;
-                const aas = Object.keys(letterHeights).sort((a, b) => letterHeights[a] - letterHeights[b]);
-                
-                const GAP_SIZE = 2;
-                const maxStackY = queryY + queryRowHeight;
-                let yOffset = logoY + logoHeight;
-                
-                for (const aa of aas) {
-                    const height = letterHeights[aa];
-                    const isProbabilitiesMode = !useBitScore;
-                    const shouldDraw = isProbabilitiesMode ? true : height > 1;
-                    const drawHeight = isProbabilitiesMode && height > 0 && height < 0.5 ? 0.5 : height;
-                    
-                    if (shouldDraw && drawHeight > 0) {
-                        const color = getDayhoffColor(aa);
-                        const r = color.r, g = color.g, b = color.b;
-                        
-                        const drawX = Math.max(minX, xOffset);
-                        const drawWidth = Math.min(CHAR_WIDTH, maxX - drawX);
-                        if (drawWidth > 0) {
-                            const drawY = yOffset - drawHeight - GAP_SIZE;
-                            
-                            ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                            ctx.fillRect(drawX, drawY, drawWidth, drawHeight);
-                            
-                            const fontSize = Math.min(drawHeight * 0.8, CHAR_WIDTH * 0.8);
-                            if (fontSize >= 8) {
-                                ctx.fillStyle = '#000';
-                                ctx.font = `bold ${fontSize}px monospace`;
-                                ctx.textAlign = 'center';
-                                ctx.textBaseline = 'middle';
-                                const textY = drawY + drawHeight / 2;
-                                ctx.fillText(aa, drawX + drawWidth / 2, textY);
-                            }
-                        }
-                    }
-                    
-                    yOffset -= height + GAP_SIZE;
-                }
-                
+        }
+        
+        // Draw stacked logo
+        let xOffset = scrollableAreaX - (scrollLeft % CHAR_WIDTH);
+        for (let pos = visibleStartPos; pos < visibleEndPos && pos < logoData.length; pos++) {
+            if (xOffset + CHAR_WIDTH < minX) {
                 xOffset += CHAR_WIDTH;
+                continue;
             }
+            if (xOffset >= maxX) break;
+            
+            const logoPos = logoData[pos];
+            const letterHeights = logoPos.letterHeights;
+            const aas = Object.keys(letterHeights).sort((a, b) => letterHeights[a] - letterHeights[b]);
+            
+            const GAP_SIZE = 2;
+            const maxStackY = queryY + queryRowHeight;
+            let yOffset = logoY + logoHeight;
+            
+            for (const aa of aas) {
+                const height = letterHeights[aa];
+                const isProbabilitiesMode = !useBitScore;
+                const shouldDraw = isProbabilitiesMode ? true : height > 1;
+                const drawHeight = isProbabilitiesMode && height > 0 && height < 0.5 ? 0.5 : height;
+                
+                if (shouldDraw && drawHeight > 0) {
+                    const color = getDayhoffColor(aa);
+                    const r = color.r, g = color.g, b = color.b;
+                    
+                    const drawX = Math.max(minX, xOffset);
+                    const drawWidth = Math.min(CHAR_WIDTH, maxX - drawX);
+                    if (drawWidth > 0) {
+                        const drawY = yOffset - drawHeight - GAP_SIZE;
+                        
+                        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                        ctx.fillRect(drawX, drawY, drawWidth, drawHeight);
+                        
+                        const fontSize = Math.min(drawHeight * 0.8, CHAR_WIDTH * 0.8);
+                        if (fontSize >= 8) {
+                            ctx.fillStyle = '#000';
+                            ctx.font = `bold ${fontSize}px monospace`;
+                            ctx.textAlign = 'center';
+                            ctx.textBaseline = 'middle';
+                            const textY = drawY + drawHeight / 2;
+                            ctx.fillText(aa, drawX + drawWidth / 2, textY);
+                        }
+                    }
+                }
+                
+                yOffset -= height + GAP_SIZE;
+            }
+            
+            xOffset += CHAR_WIDTH;
         }
         
         // Draw query sequence on top
         if (msaData.sequences.length > 0) {
             const querySeq = msaData.sequences[0];
-            
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, queryY, logicalWidth, queryRowHeight);
-            
-            const minX = LABEL_WIDTH;
-            const maxX = logicalWidth;
-            let xOffset = scrollableAreaX - (scrollLeft % CHAR_WIDTH);
-            for (let pos = visibleStartPos; pos < visibleEndPos && pos < querySeq.sequence.length; pos++) {
-                if (xOffset + CHAR_WIDTH < minX) {
-                    xOffset += CHAR_WIDTH;
-                    continue;
-                }
-                if (xOffset >= maxX) break;
-                
-                const aa = querySeq.sequence[pos];
-                const color = getDayhoffColor(aa);
-                const r = color.r, g = color.g, b = color.b;
-                
-                if (xOffset + CHAR_WIDTH >= minX && xOffset < maxX) {
-                    ctx.save();
-                    ctx.beginPath();
-                    ctx.rect(minX, queryY, maxX - minX, queryRowHeight);
-                    ctx.clip();
-                    
-                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                    ctx.fillRect(xOffset, queryY, CHAR_WIDTH, queryRowHeight);
-                    
-                    ctx.fillStyle = '#000';
-                    ctx.font = '10px monospace';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(aa, xOffset + CHAR_WIDTH / 2, queryY + queryRowHeight / 2);
-                    
-                    ctx.restore();
-                }
-                
-                xOffset += CHAR_WIDTH;
-            }
-            
-            const underlineY = queryY + queryRowHeight;
-            const contentWidth = logoCanvasData.totalWidth;
-            const underlineWidth = Math.min(logicalWidth, contentWidth);
-            ctx.strokeStyle = '#333';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(0, underlineY);
-            ctx.lineTo(underlineWidth, underlineY);
-            ctx.stroke();
+            drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, LABEL_WIDTH, logoCanvasData.totalWidth);
         }
         
         // Draw horizontal scrollbar
         const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
-        const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-        const hScrollbarY = logicalHeight - SCROLLBAR_WIDTH;
-        const hScrollbarWidth = logicalWidth - scrollableAreaX; // Full width from scrollableAreaX to canvas edge
-        
-        if (maxScrollX > 0) {
-            const scrollRatioX = scrollLeft / maxScrollX;
-            const thumbWidth = Math.max(20, (scrollableAreaWidth / totalScrollableWidth) * scrollableAreaWidth);
-            const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
-            
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, hScrollbarY, LABEL_WIDTH, SCROLLBAR_WIDTH);
-            
-            ctx.fillStyle = SCROLLBAR_TRACK_COLOR;
-            ctx.fillRect(scrollableAreaX, hScrollbarY, hScrollbarWidth, SCROLLBAR_WIDTH);
-            
-            ctx.fillStyle = SCROLLBAR_THUMB_COLOR;
-            ctx.fillRect(thumbX, hScrollbarY + SCROLLBAR_PADDING, thumbWidth, SCROLLBAR_WIDTH - SCROLLBAR_PADDING * 2);
-        } else {
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, hScrollbarY, LABEL_WIDTH, SCROLLBAR_WIDTH);
-            
-            ctx.fillStyle = SCROLLBAR_TRACK_COLOR;
-            ctx.fillRect(scrollableAreaX, hScrollbarY, hScrollbarWidth, SCROLLBAR_WIDTH);
-        }
+        drawHorizontalScrollbar(ctx, logicalWidth, logicalHeight, scrollableAreaX, scrollableAreaWidth, LABEL_WIDTH, totalScrollableWidth);
     }
     
     function buildMSAView() {
@@ -1369,6 +1454,152 @@
         renderMSACanvas();
     }
     
+    function buildPSSMView() {
+        const msaViewEl = document.getElementById('msaView');
+        if (!msaViewEl || !msaData) return;
+        
+        msaViewEl.innerHTML = '';
+        msaViewEl.classList.remove('hidden');
+        
+        const container = document.createElement('div');
+        container.style.overflow = 'hidden';
+        container.style.position = 'relative';
+        container.style.backgroundColor = '#ffffff';
+        container.style.margin = '0';
+        container.style.padding = '0';
+        
+        const canvas = document.createElement('canvas');
+        const LABEL_WIDTH = CHAR_WIDTH;
+        const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
+        
+        // Use dynamic container width - canvas must fit exactly
+        const containerWidth = getContainerWidth();
+        const canvasWidth = containerWidth;
+        
+        // FIXED HEIGHT for PSSM mode
+        const queryRowHeight = CHAR_WIDTH;
+        const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
+        const heatmapHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        const canvasHeight = TICK_ROW_HEIGHT + queryRowHeight + heatmapHeight + SCROLLBAR_WIDTH;
+        
+        container.style.width = '100%'; // Fill parent exactly
+        container.style.height = canvasHeight + 'px';
+        
+        canvas.width = canvasWidth * DPI_MULTIPLIER;
+        canvas.height = canvasHeight * DPI_MULTIPLIER;
+        canvas.style.width = canvasWidth + 'px';
+        canvas.style.height = canvasHeight + 'px';
+        canvas.style.display = 'block';
+        canvas.style.position = 'relative';
+        canvas.style.pointerEvents = 'auto';
+        canvas.style.margin = '0';
+        canvas.style.padding = '0';
+        
+        container.appendChild(canvas);
+        msaViewEl.appendChild(container);
+        
+        pssmCanvasData = {
+            canvas: canvas,
+            ctx: canvas.getContext('2d'),
+            container: container,
+            totalWidth: totalWidth,
+            canvasWidth: canvasWidth,
+            totalHeight: canvasHeight
+        };
+        
+        pssmCanvasData.ctx.scale(DPI_MULTIPLIER, DPI_MULTIPLIER);
+        
+        clampScrollLeft(canvasWidth, CHAR_WIDTH);
+        
+        // Setup wheel scrolling
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
+            const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
+                getScrollableAreaForMode('pssm', canvasWidth, canvasHeight);
+            const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
+            const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
+            
+            const hasHorizontalDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+            const isShiftScroll = e.shiftKey && Math.abs(e.deltaY) > 0;
+            
+            if (hasHorizontalDelta || isShiftScroll) {
+                const delta = hasHorizontalDelta ? e.deltaX : (isShiftScroll ? e.deltaY : 0);
+                if (delta !== 0 && maxScrollX > 0) {
+                    scrollLeft = Math.max(0, Math.min(maxScrollX, scrollLeft + delta));
+                    scheduleRender();
+                }
+            }
+        }, { passive: false });
+        
+        // Setup scrollbar dragging
+        let scrollbarDragState = {
+            isDragging: false,
+            dragType: null,
+            dragStartY: 0,
+            dragStartScroll: 0
+        };
+        
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            
+            const pos = getCanvasPositionFromMouse(e, canvas);
+            const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
+            const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
+                getScrollableAreaForMode('pssm', canvasWidth, canvasHeight);
+            const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
+            const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
+            const hScrollbarY = canvasHeight - SCROLLBAR_WIDTH;
+            
+            // Check horizontal scrollbar
+            if (pos.y >= hScrollbarY && pos.y <= canvasHeight && pos.x >= scrollableAreaX && pos.x < canvasWidth) {
+                if (maxScrollX > 0) {
+                    const scrollRatioX = scrollLeft / maxScrollX;
+                    const thumbWidth = Math.max(20, (scrollableAreaWidth / totalScrollableWidth) * scrollableAreaWidth);
+                    const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
+                    
+                    if (pos.x >= thumbX && pos.x <= thumbX + thumbWidth) {
+                        scrollbarDragState.isDragging = true;
+                        scrollbarDragState.dragType = 'horizontal';
+                        scrollbarDragState.dragStartY = pos.x;
+                        scrollbarDragState.dragStartScroll = scrollLeft;
+                        e.preventDefault();
+                        
+                        const handleDrag = (e) => {
+                            if (!scrollbarDragState.isDragging) return;
+                            const dragPos = getCanvasPositionFromMouse(e, canvas);
+                            const deltaX = dragPos.x - scrollbarDragState.dragStartY;
+                            if (Math.abs(deltaX) > 2) {
+                                const scrollDelta = (deltaX / (scrollableAreaWidth - thumbWidth)) * maxScrollX;
+                                scrollLeft = Math.max(0, Math.min(maxScrollX, scrollbarDragState.dragStartScroll + scrollDelta));
+                                scheduleRender();
+                            }
+                        };
+                        
+                        const handleDragEnd = () => {
+                            scrollbarDragState.isDragging = false;
+                            scrollbarDragState.dragType = null;
+                            window.removeEventListener('mousemove', handleDrag);
+                            window.removeEventListener('mouseup', handleDragEnd);
+                        };
+                        
+                        window.addEventListener('mousemove', handleDrag);
+                        window.addEventListener('mouseup', handleDragEnd);
+                        return;
+                    } else if (pos.x >= scrollableAreaX) {
+                        const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
+                        scrollLeft = Math.max(0, Math.min(maxScrollX, newScrollRatioX * maxScrollX));
+                        scheduleRender();
+                        e.preventDefault();
+                        return;
+                    }
+                }
+            }
+        });
+        
+        renderPSSMCanvas();
+    }
+    
     function buildLogoView() {
         const msaViewEl = document.getElementById('msaView');
         if (!msaViewEl || !msaData) return;
@@ -1384,14 +1615,14 @@
         container.style.padding = '0';
         
         const canvas = document.createElement('canvas');
-        const LABEL_WIDTH = msaViewMode === 'pssm' ? CHAR_WIDTH : 0;
+        const LABEL_WIDTH = 0;
         const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
         
         // Use dynamic container width - canvas must fit exactly
         const containerWidth = getContainerWidth();
         const canvasWidth = containerWidth;
         
-        // FIXED HEIGHT for logo/PSSM modes (as required)
+        // FIXED HEIGHT for Logo mode
         const queryRowHeight = CHAR_WIDTH;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
         const logoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
@@ -1431,7 +1662,7 @@
             e.preventDefault();
             const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
             const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
-                getScrollableAreaForMode(msaViewMode, canvasWidth, canvasHeight);
+                getScrollableAreaForMode('logo', canvasWidth, canvasHeight);
             const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
             const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
             
@@ -1461,7 +1692,7 @@
             const pos = getCanvasPositionFromMouse(e, canvas);
             const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
             const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
-                getScrollableAreaForMode(msaViewMode, canvasWidth, canvasHeight);
+                getScrollableAreaForMode('logo', canvasWidth, canvasHeight);
             const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
             const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
             const hScrollbarY = canvasHeight - SCROLLBAR_WIDTH;
@@ -1559,18 +1790,14 @@
                 cachedLogOdds = null;
                 cachedDataHash = null;
                 
-                if (msaViewMode === 'msa') {
-                    if (msaCanvasData && msaCanvasData.canvas) {
-                        scheduleRender();
-                    } else {
-                        buildMSAView();
-                    }
+                if (msaCanvasData && msaCanvasData.canvas && msaViewMode === 'msa') {
+                    scheduleRender();
+                } else if (pssmCanvasData && pssmCanvasData.canvas && msaViewMode === 'pssm') {
+                    scheduleRender();
+                } else if (logoCanvasData && logoCanvasData.canvas && msaViewMode === 'logo') {
+                    scheduleRender();
                 } else {
-                    if (logoCanvasData && logoCanvasData.canvas) {
-                        scheduleRender();
-                    } else {
-                        buildLogoView();
-                    }
+                    buildViewForMode(msaViewMode);
                 }
             }
         },
@@ -1616,18 +1843,14 @@
                 cachedLogOdds = null;
                 cachedDataHash = null;
                 
-                if (msaViewMode === 'msa') {
-                    if (msaCanvasData && msaCanvasData.canvas) {
-                        scheduleRender();
-                    } else {
-                        buildMSAView();
-                    }
+                if (msaCanvasData && msaCanvasData.canvas && msaViewMode === 'msa') {
+                    scheduleRender();
+                } else if (pssmCanvasData && pssmCanvasData.canvas && msaViewMode === 'pssm') {
+                    scheduleRender();
+                } else if (logoCanvasData && logoCanvasData.canvas && msaViewMode === 'logo') {
+                    scheduleRender();
                 } else {
-                    if (logoCanvasData && logoCanvasData.canvas) {
-                        scheduleRender();
-                    } else {
-                        buildLogoView();
-                    }
+                    buildViewForMode(msaViewMode);
                 }
             }
         },
@@ -1681,7 +1904,9 @@
             let charWidth = getCharWidthForMode(msaViewMode);
             if (msaViewMode === 'msa' && msaCanvasData && msaCanvasData.canvas) {
                 canvasWidth = msaCanvasData.canvas.width / DPI_MULTIPLIER;
-            } else if ((msaViewMode === 'pssm' || msaViewMode === 'logo') && logoCanvasData && logoCanvasData.canvas) {
+            } else if (msaViewMode === 'pssm' && pssmCanvasData && pssmCanvasData.canvas) {
+                canvasWidth = pssmCanvasData.canvas.width / DPI_MULTIPLIER;
+            } else if (msaViewMode === 'logo' && logoCanvasData && logoCanvasData.canvas) {
                 canvasWidth = logoCanvasData.canvas.width / DPI_MULTIPLIER;
             }
             clampScrollLeft(canvasWidth, charWidth);
@@ -1699,11 +1924,7 @@
             // Initialize resize observer
             initResizeObserver();
             
-            if (msaViewMode === 'msa') {
-                buildMSAView();
-            } else if (msaViewMode === 'pssm' || msaViewMode === 'logo') {
-                buildLogoView();
-            }
+            buildViewForMode(msaViewMode);
         },
         
         setChain: function(chainId) {
@@ -1767,29 +1988,31 @@
                 cachedLogOdds = null;
             }
             
-            if (mode === 'msa') {
-                buildMSAView();
-                if (msaCanvasData && msaCanvasData.canvas && msaData) {
-                    const MSA_CHAR_WIDTH = CHAR_WIDTH / 2;
-                    const canvasWidth = msaCanvasData.canvas.width / DPI_MULTIPLIER;
-                    const scrollableAreaX = NAME_COLUMN_WIDTH;
-                    const scrollableAreaWidth = canvasWidth - scrollableAreaX - SCROLLBAR_WIDTH;
-                    const totalScrollableWidth = msaData.queryLength * MSA_CHAR_WIDTH;
-                    const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-                    const oldScrollLeft = scrollLeft;
-                    scrollLeft = Math.max(0, Math.min(maxScrollX, scrollLeft));
-                    if (oldScrollLeft !== scrollLeft) {
-                        scheduleRender();
-                    }
+            buildViewForMode(mode);
+            
+            // Adjust scroll position after mode switch
+            if (msaData) {
+                let canvasWidth = 916;
+                let charWidth = getCharWidthForMode(mode);
+                let scrollableAreaX = 0;
+                
+                if (mode === 'msa' && msaCanvasData && msaCanvasData.canvas) {
+                    canvasWidth = msaCanvasData.canvas.width / DPI_MULTIPLIER;
+                    scrollableAreaX = NAME_COLUMN_WIDTH;
+                    charWidth = CHAR_WIDTH / 2;
+                } else if (mode === 'pssm' && pssmCanvasData && pssmCanvasData.canvas) {
+                    canvasWidth = pssmCanvasData.canvas.width / DPI_MULTIPLIER;
+                    scrollableAreaX = CHAR_WIDTH;
+                    charWidth = CHAR_WIDTH;
+                } else if (mode === 'logo' && logoCanvasData && logoCanvasData.canvas) {
+                    canvasWidth = logoCanvasData.canvas.width / DPI_MULTIPLIER;
+                    scrollableAreaX = 0;
+                    charWidth = CHAR_WIDTH;
                 }
-            } else if (mode === 'pssm' || mode === 'logo') {
-                buildLogoView();
-                if (logoCanvasData && logoCanvasData.canvas && msaData) {
-                    const canvasWidth = logoCanvasData.canvas.width / DPI_MULTIPLIER;
-                    const LABEL_WIDTH = mode === 'pssm' ? CHAR_WIDTH : 0;
-                    const scrollableAreaX = LABEL_WIDTH;
+                
+                if (canvasWidth > 0) {
                     const scrollableAreaWidth = canvasWidth - scrollableAreaX - SCROLLBAR_WIDTH;
-                    const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
+                    const totalScrollableWidth = msaData.queryLength * charWidth;
                     const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
                     const oldScrollLeft = scrollLeft;
                     scrollLeft = Math.max(0, Math.min(maxScrollX, scrollLeft));
@@ -1824,6 +2047,7 @@
             msaData = null;
             originalMSAData = null;
             msaCanvasData = null;
+            pssmCanvasData = null;
             logoCanvasData = null;
             cachedFrequencies = null;
             cachedLogOdds = null;
@@ -1837,6 +2061,7 @@
         },
         
         buildMSAView: buildMSAView,
+        buildPSSMView: buildPSSMView,
         buildLogoView: buildLogoView
     };
     
