@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MSA Viewer - py2Dmol</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <style>
+        /* Minimal CSS for MSA viewer */
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f9fafb;
+            color: #1f2937;
+            padding: 20px;
+            margin: 0;
+        }
+        
+        .container-box {
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        
+        .sequence-section-container {
+            width: 100%;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+        
+        .sequence-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .sequence-content {
+            width: 100%;
+            overflow: hidden;
+        }
+        
+        .sequence-content.hidden {
+            display: none;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 14px;
+            font-size: 14px;
+            font-weight: 500;
+            border-radius: 6px;
+            border: 1px solid #d1d5db;
+            background: #ffffff;
+            color: #374151;
+            cursor: pointer;
+            transition: all 0.2s;
+            gap: 6px;
+        }
+        
+        .btn:hover {
+            background: #f9fafb;
+            border-color: #9ca3af;
+        }
+        
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+            border-color: #3b82f6;
+        }
+        
+        .btn-primary:hover {
+            background: #2563eb;
+            border-color: #2563eb;
+        }
+        
+        .btn-grey {
+            background: #f3f4f6;
+            border-color: #d1d5db;
+        }
+        
+        .btn-small {
+            padding: 6px 10px;
+            font-size: 12px;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        input[type="range"] {
+            width: 100px;
+            cursor: pointer;
+        }
+        
+        select {
+            padding: 6px 10px;
+            font-size: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: #ffffff;
+            cursor: pointer;
+        }
+        
+        #status-message {
+            margin-top: 12px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        #status-message.success {
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #10b981;
+        }
+        
+        #status-message.error {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #ef4444;
+        }
+        
+        #status-message.info {
+            background: #dbeafe;
+            color: #1e40af;
+            border: 1px solid #3b82f6;
+        }
+        
+        .drag-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(59, 130, 246, 0.1);
+            border: 3px dashed #3b82f6;
+            z-index: 9999;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+        
+        .drag-overlay-content {
+            background: white;
+            padding: 24px 48px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            text-align: center;
+            font-size: 18px;
+            color: #1e40af;
+            font-weight: 600;
+        }
+        
+        .upload-section {
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+            color: #111827;
+        }
+        
+        .description {
+            color: #6b7280;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div style="max-width: 1200px; margin: 0 auto;">
+        <h1>MSA Viewer</h1>
+        <p class="description">Upload A3M files to visualize multiple sequence alignments.</p>
+        
+        <!-- Upload Section -->
+        <div class="container-box upload-section">
+            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
+                Upload A3M File
+            </label>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <button id="upload-button" class="btn btn-primary">
+                    <i class="fa-solid fa-file-arrow-up"></i>
+                    <span>Choose A3M File</span>
+                </button>
+                <input type="file" id="file-upload" accept=".a3m" class="hidden">
+                <span id="file-name" style="color: #6b7280; font-size: 14px;"></span>
+            </div>
+            <div id="status-message" style="display: none;"></div>
+        </div>
+        
+        <!-- Drag overlay (shown when dragging files over the page) -->
+        <div id="drag-overlay" class="drag-overlay">
+            <div class="drag-overlay-content">
+                📁 Drop your A3M file here
+            </div>
+        </div>
+        
+        <!-- MSA Viewer Container -->
+        <div id="msa-viewer-container" class="container-box sequence-section-container" style="display: none;">
+            <div id="msaHeader" class="sequence-header">
+                <!-- Left side: Mode dropdown and Bit-score checkbox -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px;">
+                        <option value="msa" selected>MSA</option>
+                        <option value="pssm">PSSM</option>
+                        <option value="logo">Logo</option>
+                    </select>
+                    <div id="logoBitScoreContainer" style="display: none; align-items: center; gap: 4px;">
+                        <label for="logoBitScoreCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
+                            <span>Bit-score</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- Right: Filters box -->
+                <div style="display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
+                    <span style="font-size: 12px; color: #666; font-weight: 500;">Filters:</span>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <label for="coverageSlider" style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
+                        <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5" style="width: 100px;">
+                        <span id="coverageValue" style="font-size: 11px; color: #666; min-width: 35px; text-align: right;">75%</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <label for="identitySlider" style="font-size: 11px; color: #666; white-space: nowrap;">qid:</label>
+                        <input type="range" id="identitySlider" min="0" max="100" value="15" step="5" style="width: 100px;">
+                        <span id="identityValue" style="font-size: 11px; color: #666; min-width: 35px; text-align: right;">15%</span>
+                    </div>
+                    <span id="msaSequenceCount" style="font-size: 11px; color: #666; white-space: nowrap; min-width: 50px; text-align: center; margin-left: 4px;">-</span>
+                </div>
+            </div>
+            <div id="msaView" class="sequence-content hidden"></div>
+        </div>
+    </div>
+    
+    <!-- Load MSA viewer script -->
+    <script src="py2Dmol/resources/viewer-msa.js"></script>
+    
+    <script>
+        // Minimal app logic for standalone MSA viewer
+        let currentMSAFile = null;
+        
+        function setStatus(message, isError = false) {
+            const statusEl = document.getElementById('status-message');
+            if (!statusEl) return;
+            
+            statusEl.textContent = message;
+            statusEl.style.display = 'block';
+            statusEl.className = isError ? 'error' : 'info';
+            
+            // Keep success/info messages visible (don't auto-hide)
+            // Only auto-hide error messages after 5 seconds
+            if (isError) {
+                setTimeout(() => {
+                    statusEl.style.display = 'none';
+                }, 5000);
+            }
+        }
+        
+        function updateMSASequenceCount() {
+            const countEl = document.getElementById('msaSequenceCount');
+            if (!countEl || !window.MSAViewer) return;
+            
+            const counts = window.MSAViewer.getSequenceCounts();
+            if (counts) {
+                countEl.textContent = `${counts.filtered} / ${counts.total}`;
+            }
+        }
+        
+        // Initialize MSA viewer
+        function initializeMSAViewer() {
+            if (!window.MSAViewer) {
+                console.error('MSA Viewer not loaded');
+                return;
+            }
+            
+            // Set empty callbacks (MSA viewer is read-only, doesn't need renderer)
+            window.MSAViewer.setCallbacks({
+                getRenderer: () => null
+            });
+            
+            // Mode selector
+            const msaModeSelect = document.getElementById('msaModeSelect');
+            const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
+            const logoBitScoreCheckbox = document.getElementById('logoBitScoreCheckbox');
+            
+            if (msaModeSelect) {
+                msaModeSelect.addEventListener('change', (e) => {
+                    const mode = e.target.value;
+                    if (window.MSAViewer) {
+                        window.MSAViewer.setMSAMode(mode);
+                    }
+                    
+                    // Show/hide bit-score checkbox for logo mode
+                    if (logoBitScoreContainer) {
+                        logoBitScoreContainer.style.display = (mode === 'logo') ? 'flex' : 'none';
+                    }
+                });
+            }
+            
+            if (logoBitScoreCheckbox) {
+                logoBitScoreCheckbox.addEventListener('change', (e) => {
+                    if (window.MSAViewer) {
+                        window.MSAViewer.setUseBitScore(e.target.checked);
+                    }
+                });
+            }
+            
+            // Coverage slider
+            const coverageSlider = document.getElementById('coverageSlider');
+            const coverageValue = document.getElementById('coverageValue');
+            
+            if (coverageSlider && coverageValue) {
+                let isDragging = false;
+                
+                coverageSlider.addEventListener('input', (e) => {
+                    const value = parseInt(e.target.value);
+                    coverageValue.textContent = value + '%';
+                    const cutoff = value / 100;
+                    if (window.MSAViewer && window.MSAViewer.setPreviewCoverageCutoff) {
+                        window.MSAViewer.setPreviewCoverageCutoff(cutoff);
+                    }
+                    isDragging = true;
+                });
+                
+                coverageSlider.addEventListener('mouseup', () => {
+                    if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
+                        window.MSAViewer.applyPreviewCoverageCutoff();
+                        isDragging = false;
+                        updateMSASequenceCount();
+                    }
+                });
+                
+                coverageSlider.addEventListener('touchend', () => {
+                    if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
+                        window.MSAViewer.applyPreviewCoverageCutoff();
+                        isDragging = false;
+                        updateMSASequenceCount();
+                    }
+                });
+            }
+            
+            // Identity slider
+            const identitySlider = document.getElementById('identitySlider');
+            const identityValue = document.getElementById('identityValue');
+            
+            if (identitySlider && identityValue) {
+                let isDragging = false;
+                
+                identitySlider.addEventListener('input', (e) => {
+                    const value = parseInt(e.target.value);
+                    identityValue.textContent = value + '%';
+                    const cutoff = value / 100;
+                    if (window.MSAViewer && window.MSAViewer.setPreviewIdentityCutoff) {
+                        window.MSAViewer.setPreviewIdentityCutoff(cutoff);
+                    }
+                    isDragging = true;
+                });
+                
+                identitySlider.addEventListener('mouseup', () => {
+                    if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
+                        window.MSAViewer.applyPreviewIdentityCutoff();
+                        isDragging = false;
+                        updateMSASequenceCount();
+                    }
+                });
+                
+                identitySlider.addEventListener('touchend', () => {
+                    if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
+                        window.MSAViewer.applyPreviewIdentityCutoff();
+                        isDragging = false;
+                        updateMSASequenceCount();
+                    }
+                });
+            }
+        }
+        
+        // File upload handling
+        function handleFileUpload(event) {
+            const files = event.target.files;
+            if (!files || files.length === 0) return;
+            
+            const file = files[0];
+            if (!file.name.toLowerCase().endsWith('.a3m')) {
+                setStatus('Please upload an A3M file (.a3m)', true);
+                return;
+            }
+            
+            currentMSAFile = file;
+            document.getElementById('file-name').textContent = file.name;
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const msaText = e.target.result;
+                    // Determine type from filename (unpaired or paired)
+                    const type = file.name.toLowerCase().includes('paired') ? 'paired' : 'unpaired';
+                    
+                    if (window.MSAViewer && window.MSAViewer.parseA3M) {
+                        const msaData = window.MSAViewer.parseA3M(msaText, type);
+                        if (msaData && msaData.querySequence) {
+                            window.MSAViewer.setMSAData(msaData, null, type);
+                            setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+                            updateMSASequenceCount();
+                        } else {
+                            setStatus('Failed to parse MSA file', true);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error loading MSA:', error);
+                    setStatus('Error loading MSA file: ' + error.message, true);
+                }
+            };
+            reader.onerror = () => {
+                setStatus('Error reading file', true);
+            };
+            reader.readAsText(file);
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeMSAViewer();
+            
+            // File upload button
+            const uploadButton = document.getElementById('upload-button');
+            const fileUpload = document.getElementById('file-upload');
+            
+            if (uploadButton && fileUpload) {
+                uploadButton.addEventListener('click', () => {
+                    fileUpload.click();
+                });
+                
+                fileUpload.addEventListener('change', handleFileUpload);
+            }
+            
+            // Drag and drop - works anywhere on the page (similar to index.html)
+            const dragOverlay = document.getElementById('drag-overlay');
+            let dragCounter = 0;
+            
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            
+            document.body.addEventListener('dragenter', (e) => {
+                preventDefaults(e);
+                if (dragCounter === 0 && dragOverlay) {
+                    dragOverlay.style.display = 'flex';
+                }
+                dragCounter++;
+            }, false);
+            
+            document.body.addEventListener('dragleave', (e) => {
+                preventDefaults(e);
+                dragCounter--;
+                if (dragCounter === 0 || e.relatedTarget === null) {
+                    if (dragOverlay) {
+                        dragOverlay.style.display = 'none';
+                    }
+                }
+            }, false);
+            
+            document.body.addEventListener('drop', (e) => {
+                preventDefaults(e);
+                dragCounter = 0;
+                if (dragOverlay) {
+                    dragOverlay.style.display = 'none';
+                }
+                
+                const files = e.dataTransfer.files;
+                if (files && files.length > 0) {
+                    const file = files[0];
+                    if (file.name.toLowerCase().endsWith('.a3m')) {
+                        fileUpload.files = files;
+                        handleFileUpload({ target: { files: files } });
+                    } else {
+                        setStatus('Please drop an A3M file (.a3m)', true);
+                    }
+                }
+            }, false);
+            
+            document.body.addEventListener('dragover', preventDefaults, false);
+        });
+    </script>
+</body>
+</html>
+

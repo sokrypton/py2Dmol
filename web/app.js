@@ -501,8 +501,85 @@ function handleObjectChange() {
     buildSequenceView();
     updateChainSelectionUI();
     
+    // Update MSA for the new object
+    updateMSAContainerVisibility(selectedObject);
+    
     // Note: updateColorMode() is a placeholder, removed to avoid confusion
     // Color mode is managed by the renderer and persists across object changes
+}
+
+// Function to update MSA container visibility and load MSA data for an object
+function updateMSAContainerVisibility(objectName) {
+    const msaContainer = document.getElementById('msa-viewer-container');
+    if (!msaContainer || !viewerApi?.renderer) return;
+    
+    const object = viewerApi.renderer.objectsData[objectName];
+    if (!object) {
+        msaContainer.style.setProperty('display', 'none', 'important');
+        const msaView = document.getElementById('msaView');
+        if (msaView) msaView.classList.add('hidden');
+        return;
+    }
+    
+    // Check if object has MSA data
+    let hasMSA = false;
+    let msaToLoad = null;
+    let chainId = null;
+    let type = 'unpaired';
+    
+    if (object.msa) {
+        // New sequence-based structure
+        if (object.msa.msasBySequence && object.msa.chainToSequence && object.msa.availableChains) {
+            // Use default chain or first available
+            const targetChain = object.msa.defaultChain || 
+                               (object.msa.availableChains.length > 0 ? object.msa.availableChains[0] : null);
+            
+            if (targetChain && object.msa.chainToSequence[targetChain]) {
+                const querySeq = object.msa.chainToSequence[targetChain];
+                const msaEntry = object.msa.msasBySequence[querySeq];
+                
+                if (msaEntry) {
+                    msaToLoad = msaEntry.msaData;
+                    chainId = targetChain;
+                    type = msaEntry.type;
+                    hasMSA = !!msaToLoad;
+                }
+            }
+        }
+        // Legacy per-chain structure (backward compatibility)
+        else if (object.msa.chains && object.msa.availableChains && object.msa.availableChains.length > 0) {
+            const targetChain = object.msa.defaultChain || object.msa.availableChains[object.msa.availableChains.length - 1];
+            
+            if (targetChain && object.msa.chains[targetChain]) {
+                const chainMSA = object.msa.chains[targetChain];
+                msaToLoad = chainMSA.unpaired || chainMSA.paired;
+                chainId = targetChain;
+                type = chainMSA.unpaired ? 'unpaired' : 'paired';
+                hasMSA = !!msaToLoad;
+            }
+        }
+        // Legacy format (single MSA per object)
+        else if (object.msa.sequences && object.msa.sequences.length > 0) {
+            msaToLoad = object.msa;
+            hasMSA = true;
+        }
+    }
+    
+    if (hasMSA && msaToLoad && window.MSAViewer) {
+        // Load MSA data
+        window.MSAViewer.setMSAData(msaToLoad, chainId, type);
+        // Container will be shown automatically by setMSAData
+    } else {
+        // Hide MSA container if no MSA for this object
+        msaContainer.style.setProperty('display', 'none', 'important');
+        const msaView = document.getElementById('msaView');
+        if (msaView) msaView.classList.add('hidden');
+    }
+    
+    // Update chain selector UI (after MSA data is set)
+    if (typeof updateMSAChainSelector === 'function') {
+        updateMSAChainSelector();
+    }
 }
 
 // Fallback PAE container visibility update (for backward compatibility)
@@ -2157,6 +2234,7 @@ function initializeMSAViewer() {
             if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
                 window.MSAViewer.applyPreviewCoverageCutoff();
                 isDragging = false;
+                updateMSASequenceCount();
             }
         });
         
@@ -2165,6 +2243,7 @@ function initializeMSAViewer() {
             if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
                 window.MSAViewer.applyPreviewCoverageCutoff();
                 isDragging = false;
+                updateMSASequenceCount();
             }
         });
     }
@@ -2194,6 +2273,7 @@ function initializeMSAViewer() {
             if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
                 window.MSAViewer.applyPreviewIdentityCutoff();
                 isDragging = false;
+                updateMSASequenceCount();
             }
         });
         
@@ -2202,8 +2282,97 @@ function initializeMSAViewer() {
             if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
                 window.MSAViewer.applyPreviewIdentityCutoff();
                 isDragging = false;
+                updateMSASequenceCount();
             }
         });
+    }
+    
+    // Function to update chain selector UI
+    // Shows all chains from structure (like viewer-seq), highlights chains with MSAs
+    function updateMSAChainSelector() {
+        const chainSelectContainer = document.getElementById('msaChainSelectContainer');
+        const chainSelect = document.getElementById('msaChainSelect');
+        if (!chainSelect || !chainSelectContainer || !viewerApi?.renderer) return;
+        
+        const objectName = viewerApi.renderer.currentObjectName;
+        if (!objectName) {
+            chainSelectContainer.style.display = 'none';
+            return;
+        }
+        
+        const obj = viewerApi.renderer.objectsData[objectName];
+        if (!obj || !obj.frames || obj.frames.length === 0) {
+            chainSelectContainer.style.display = 'none';
+            return;
+        }
+        
+        // Get all chains from structure (from first frame, like viewer-seq does)
+        const firstFrame = obj.frames[0];
+        const allChains = new Set();
+        if (firstFrame.chains) {
+            firstFrame.chains.forEach(chain => {
+                if (chain) allChains.add(chain);
+            });
+        }
+        
+        if (allChains.size === 0) {
+            chainSelectContainer.style.display = 'none';
+            return;
+        }
+        
+        // Get chains with MSAs (for highlighting/validation)
+        const chainsWithMSA = new Set();
+        if (obj.msa) {
+            // New sequence-based structure
+            if (obj.msa.availableChains) {
+                obj.msa.availableChains.forEach(chain => chainsWithMSA.add(chain));
+            }
+            // Legacy structure
+            else if (obj.msa.chains) {
+                Object.keys(obj.msa.chains).forEach(chain => chainsWithMSA.add(chain));
+            }
+        }
+        
+        // Rebuild options if needed (sorted alphabetically, show all chains)
+        const currentOptions = Array.from(chainSelect.options).map(opt => opt.value);
+        const sortedAllChains = Array.from(allChains).sort();
+        const chainsChanged = currentOptions.length !== sortedAllChains.length ||
+                             !sortedAllChains.every(chain => currentOptions.includes(chain));
+        
+        // Preserve current selection before rebuilding
+        const preservedValue = chainSelect.value;
+        
+        if (chainsChanged) {
+            chainSelect.innerHTML = '';
+            sortedAllChains.forEach(chainId => {
+                const option = document.createElement('option');
+                option.value = chainId;
+                // Add indicator for chains with MSAs
+                const hasMSA = chainsWithMSA.has(chainId);
+                option.textContent = hasMSA ? `${chainId} ✓` : chainId;
+                option.disabled = !hasMSA; // Disable chains without MSAs
+                chainSelect.appendChild(option);
+            });
+        }
+        
+        // Get current chain from MSA viewer (source of truth)
+        const currentChain = window.MSAViewer?.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
+        
+        // Update dropdown to match current chain
+        // Priority: 1) currentChain from MSA viewer, 2) preserved value (if valid), 3) fallback
+        if (currentChain && allChains.has(currentChain) && chainsWithMSA.has(currentChain)) {
+            chainSelect.value = currentChain;
+        } else if (preservedValue && allChains.has(preservedValue) && chainsWithMSA.has(preservedValue)) {
+            // Preserve the value if it's still valid (user just selected it)
+            chainSelect.value = preservedValue;
+        } else if (!chainSelect.value || !allChains.has(chainSelect.value) || !chainsWithMSA.has(chainSelect.value)) {
+            // Fallback: use first chain with MSA, or first chain if none have MSA
+            const firstChainWithMSA = sortedAllChains.find(c => chainsWithMSA.has(c));
+            chainSelect.value = firstChainWithMSA || sortedAllChains[0];
+        }
+        
+        // Show selector if we have chains (even if only one, for consistency with viewer-seq)
+        chainSelectContainer.style.display = allChains.size > 0 ? 'flex' : 'none';
     }
     
     // Handle MSA mode dropdown selection
@@ -2216,7 +2385,125 @@ function initializeMSAViewer() {
         msaModeSelect.addEventListener('change', (e) => {
             const newMode = e.target.value;
             window.MSAViewer.setMSAMode(newMode);
+            
+            // Show/hide bit-score checkbox based on mode
+            const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
+            if (logoBitScoreContainer) {
+                logoBitScoreContainer.style.display = newMode === 'logo' ? 'flex' : 'none';
+            }
         });
+        
+        // Show/hide bit-score checkbox based on initial mode
+        const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
+        if (logoBitScoreContainer) {
+            logoBitScoreContainer.style.display = initialMode === 'logo' ? 'flex' : 'none';
+        }
+    }
+    
+    // Handle MSA chain selector
+    const msaChainSelect = document.getElementById('msaChainSelect');
+    if (msaChainSelect && window.MSAViewer && viewerApi?.renderer) {
+        msaChainSelect.addEventListener('change', (e) => {
+            const chainId = e.target.value;
+            if (!chainId) return;
+            
+            const objectName = viewerApi.renderer.currentObjectName;
+            if (!objectName) return;
+            
+            const obj = viewerApi.renderer.objectsData[objectName];
+            if (!obj || !obj.msa) return;
+            
+            // New sequence-based structure
+            if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
+                const querySeq = obj.msa.chainToSequence[chainId];
+                if (querySeq && obj.msa.msasBySequence[querySeq]) {
+                    const {msaData, type} = obj.msa.msasBySequence[querySeq];
+                    window.MSAViewer.setMSAData(msaData, chainId, type);
+                    // Ensure dropdown value is set correctly after setMSAData
+                    // (setMSAData wrapper will call updateMSAChainSelector, but we want to ensure value persists)
+                    setTimeout(() => {
+                        if (msaChainSelect.value !== chainId) {
+                            msaChainSelect.value = chainId;
+                        }
+                    }, 0);
+                }
+            }
+            // Legacy per-chain structure
+            else if (obj.msa.chains && obj.msa.chains[chainId]) {
+                const chainMSA = obj.msa.chains[chainId];
+                const msaData = chainMSA.unpaired || chainMSA.paired;
+                const type = chainMSA.unpaired ? 'unpaired' : 'paired';
+                if (msaData) {
+                    window.MSAViewer.setMSAData(msaData, chainId, type);
+                    // Ensure dropdown value is set correctly after setMSAData
+                    setTimeout(() => {
+                        if (msaChainSelect.value !== chainId) {
+                            msaChainSelect.value = chainId;
+                        }
+                    }, 0);
+                }
+            }
+        });
+    }
+    
+    // Handle bit-score checkbox
+    const logoBitScoreCheckbox = document.getElementById('logoBitScoreCheckbox');
+    if (logoBitScoreCheckbox && window.MSAViewer) {
+        // Set initial value (checked = true = bit-score mode)
+        logoBitScoreCheckbox.checked = window.MSAViewer.getUseBitScore ? window.MSAViewer.getUseBitScore() : true;
+        
+        // Handle checkbox change
+        logoBitScoreCheckbox.addEventListener('change', (e) => {
+            const useBitScore = e.target.checked;
+            if (window.MSAViewer.setUseBitScore) {
+                window.MSAViewer.setUseBitScore(useBitScore);
+            }
+        });
+    }
+    
+    // Function to update MSA sequence count display
+    function updateMSASequenceCount() {
+        const sequenceCountEl = document.getElementById('msaSequenceCount');
+        if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
+            const counts = window.MSAViewer.getSequenceCounts();
+            if (counts.total > 0) {
+                sequenceCountEl.textContent = `${counts.filtered}/${counts.total}`;
+            } else {
+                sequenceCountEl.textContent = '-';
+            }
+        }
+    }
+    
+    // Update sequence count when MSA data is set
+    if (window.MSAViewer) {
+        // Override setMSAData to update count
+        const originalSetMSAData = window.MSAViewer.setMSAData;
+        if (originalSetMSAData) {
+            window.MSAViewer.setMSAData = function(data) {
+                originalSetMSAData.call(this, data);
+                updateMSASequenceCount();
+            };
+        }
+        
+        // Initial update
+        updateMSASequenceCount();
+    }
+    
+    // Update chain selector when MSA data changes
+    if (window.MSAViewer) {
+        // Override setMSAData to update chain selector
+        const originalSetMSAData = window.MSAViewer.setMSAData;
+        if (originalSetMSAData) {
+            window.MSAViewer.setMSAData = function(data, chainId, type) {
+                originalSetMSAData.call(this, data, chainId, type);
+                // Sync dropdown after MSA viewer updates (MSA viewer is source of truth)
+                updateMSAChainSelector();
+                updateMSASequenceCount();
+            };
+        }
+        
+        // Initial chain selector update
+        updateMSAChainSelector();
     }
 }
 
@@ -2225,6 +2512,25 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initializeMSAViewer);
 } else {
     initializeMSAViewer();
+}
+
+// Set up MSA viewer callbacks after viewer is initialized
+function setupMSAViewerCallbacks() {
+    if (window.MSAViewer && viewerApi?.renderer) {
+        window.MSAViewer.setCallbacks({
+            getRenderer: () => viewerApi.renderer
+        });
+    }
+}
+
+// Set up callbacks when viewer is ready
+if (viewerApi && viewerApi.renderer) {
+    setupMSAViewerCallbacks();
+} else {
+    // Wait for viewer to be initialized
+    setTimeout(() => {
+        setupMSAViewerCallbacks();
+    }, 500);
 }
 
 // Wrapper functions that delegate to SequenceViewer module
@@ -2335,6 +2641,151 @@ async function handleFetch() {
 // FILE UPLOAD & BATCH PROCESSING
 // ============================================================================
 
+// ============================================================================
+// MSA SEQUENCE-BASED MATCHING HELPERS (Global scope for reuse)
+// ============================================================================
+
+// Residue name to single-letter amino acid code mapping
+const RESIDUE_TO_AA = {
+    'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 
+    'HIS':'H', 'ILE':'I', 'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 
+    'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V', 'SEC':'U', 'PYL':'O'
+};
+
+/**
+ * Extract sequence for each chain from frame data
+ * @param {Object} frame - Frame data with residues, chains, residue_index, atom_types
+ * @returns {Object} - Map of chainId -> sequence string
+ */
+function extractChainSequences(frame) {
+    if (!frame || !frame.chains || !frame.residues) {
+        return {};
+    }
+    
+    const chainSequences = {};
+    const chainResidues = {}; // chainId -> array of {resName, resSeq}
+    
+    // Group residues by chain
+    for (let i = 0; i < frame.chains.length; i++) {
+        const chainId = frame.chains[i];
+        const resName = frame.residues[i];
+        const resSeq = frame.residue_index ? frame.residue_index[i] : i;
+        const atomType = frame.atom_types ? frame.atom_types[i] : 'P';
+        
+        // Only process protein residues (skip ligands, nucleic acids for now)
+        if (atomType !== 'P') continue;
+        
+        if (!chainResidues[chainId]) {
+            chainResidues[chainId] = [];
+        }
+        chainResidues[chainId].push({ resName, resSeq });
+    }
+    
+    // Convert residue names to single-letter codes for each chain
+    for (const chainId of Object.keys(chainResidues)) {
+        const residues = chainResidues[chainId];
+        // Sort by residue index to maintain order
+        residues.sort((a, b) => a.resSeq - b.resSeq);
+        
+        // Convert to sequence string
+        const sequence = residues.map(r => {
+            const resName = (r.resName || '').toString().trim().toUpperCase();
+            // Handle modified residues - try to get standard name
+            let standardResName = resName;
+            if (typeof getStandardResidueName === 'function') {
+                standardResName = getStandardResidueName(resName).toUpperCase();
+            }
+            return RESIDUE_TO_AA[standardResName] || 'X'; // X for unknown
+        }).join('');
+        
+        if (sequence.length > 0) {
+            chainSequences[chainId] = sequence;
+        }
+    }
+    
+    return chainSequences;
+}
+
+/**
+ * Compare two sequences, allowing for gaps in MSA query sequence
+ * Removes gaps from MSA query sequence and compares with PDB chain sequence
+ * @param {string} msaQuerySequence - Query sequence from MSA (may contain gaps '-')
+ * @param {string} pdbChainSequence - Sequence from PDB chain (no gaps)
+ * @returns {boolean} - True if sequences match (after removing gaps from MSA)
+ */
+function sequencesMatch(msaQuerySequence, pdbChainSequence) {
+    if (!msaQuerySequence || !pdbChainSequence) return false;
+    
+    // Remove gaps from MSA query sequence
+    const msaSequenceNoGaps = msaQuerySequence.replace(/-/g, '').toUpperCase();
+    const pdbSequence = pdbChainSequence.toUpperCase();
+    
+    // Exact match
+    if (msaSequenceNoGaps === pdbSequence) return true;
+    
+    // Allow for small differences (e.g., missing terminal residues)
+    // Check if one sequence is contained in the other (with some tolerance)
+    const minLen = Math.min(msaSequenceNoGaps.length, pdbSequence.length);
+    const maxLen = Math.max(msaQuerySequence.length, pdbChainSequence.length);
+    
+    // If lengths are very different (>10%), don't match
+    if (maxLen > 0 && (maxLen - minLen) / maxLen > 0.1) {
+        return false;
+    }
+    
+    // Check if the shorter sequence is contained in the longer one
+    if (msaSequenceNoGaps.length <= pdbSequence.length) {
+        return pdbSequence.includes(msaSequenceNoGaps);
+    } else {
+        return msaSequenceNoGaps.includes(pdbSequence);
+    }
+}
+
+/**
+ * Match MSAs to chains by comparing query sequences
+ * @param {Array} msaDataList - Array of {msaData, type, filename} objects
+ * @param {Object} chainSequences - Map of chainId -> sequence string
+ * @returns {Object} - Map of chainId -> {msaData, type} for matched chains
+ */
+function matchMSAsToChains(msaDataList, chainSequences) {
+    const chainToMSA = {}; // chainId -> {msaData, type}
+    const msaToChains = {}; // querySequence -> [chainId, ...]
+    
+    for (const {msaData, type} of msaDataList) {
+        if (!msaData || !msaData.querySequence) continue;
+        
+        const msaQuerySequence = msaData.querySequence.replace(/-/g, '').toUpperCase();
+        
+        // Find all chains that match this MSA's query sequence
+        const matchedChains = [];
+        for (const [chainId, chainSequence] of Object.entries(chainSequences)) {
+            if (sequencesMatch(msaQuerySequence, chainSequence)) {
+                // Multiple chains can match the same MSA (homo-oligomers)
+                chainToMSA[chainId] = { msaData, type };
+                matchedChains.push(chainId);
+            }
+        }
+        
+        // Store which chains this MSA maps to
+        if (matchedChains.length > 0) {
+            msaToChains[msaQuerySequence] = matchedChains;
+        }
+    }
+    
+    return { chainToMSA, msaToChains };
+}
+
+// Helper function to detect if MSA file is paired or unpaired
+function detectMSAType(filename) {
+    const nameLower = filename.toLowerCase();
+    if (nameLower.includes('_paired_msa_')) {
+        return 'paired';
+    } else if (nameLower.includes('_unpaired_msa_')) {
+        return 'unpaired';
+    }
+    return 'unpaired'; // Default
+}
+
 async function processFiles(files, loadAsFrames, groupName = null) {
     const tempBatch = [];
     let overallTotalFramesAdded = 0;
@@ -2362,20 +2813,117 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         }
     }
     
-    // Process MSA files
+    // Helper functions are now in global scope (defined above)
+    // Process MSA files using sequence-based matching
     if (msaFiles.length > 0) {
-        for (const msaFile of msaFiles) {
-            try {
-                const msaText = await msaFile.readAsync("text");
-                        const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText) : null;
-                        if (msaData && window.MSAViewer) {
-                            window.MSAViewer.setMSAData(msaData);
-                            // Container will be shown automatically by setMSAData
-                            setStatus(`Loaded MSA from ${msaFile.name} (${msaData.sequences.length} sequences)`);
+        // Get current object name (or use first available)
+        const currentObjectName = viewerApi?.renderer?.currentObjectName || 
+                                 (viewerApi?.renderer?.objectsData && 
+                                  Object.keys(viewerApi.renderer.objectsData).length > 0 ?
+                                  Object.keys(viewerApi.renderer.objectsData)[0] : null);
+        
+        if (currentObjectName && viewerApi?.renderer) {
+            const object = viewerApi.renderer.objectsData[currentObjectName];
+            if (!object || !object.frames || object.frames.length === 0) {
+                setStatus("Warning: MSA files found but no structure loaded yet. Load structure first.", true);
+            } else {
+                // Extract chain sequences from first frame
+                const firstFrame = object.frames[0];
+                const chainSequences = extractChainSequences(firstFrame);
+                
+                if (Object.keys(chainSequences).length === 0) {
+                    setStatus("Warning: Could not extract sequences from structure. MSA matching skipped.", true);
+                } else {
+                    // Parse all MSA files and extract query sequences
+                    const msaDataList = [];
+                    
+                    for (const msaFile of msaFiles) {
+                        try {
+                            const msaText = await msaFile.readAsync("text");
+                            const type = detectMSAType(msaFile.name);
+                            const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText, type) : null;
+                            
+                            if (msaData && msaData.querySequence) {
+                                msaDataList.push({ msaData, type, filename: msaFile.name });
+                            }
+                        } catch (e) {
+                            console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
                         }
+                    }
+                    
+                    if (msaDataList.length > 0) {
+                        // Match MSAs to chains by sequence
+                        const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
+                        
+                        // Initialize MSA structure for object
+                        if (!object.msa) {
+                            object.msa = {
+                                // Store one MSA per unique query sequence
+                                msasBySequence: {}, // querySequence (no gaps) -> {msaData, type, chains}
+                                // Map chains to query sequences
+                                chainToSequence: {}, // chainId -> querySequence (no gaps)
+                                // All chains that have MSAs
+                                availableChains: [],
+                                defaultChain: null
+                            };
+                        }
+                        
+                        const msaObj = object.msa;
+                        
+                        // Store unique MSAs and map chains
+                        for (const [chainId, {msaData, type}] of Object.entries(chainToMSA)) {
+                            const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
+                            
+                            // Store MSA by sequence (only one per unique sequence)
+                            if (!msaObj.msasBySequence[querySeqNoGaps]) {
+                                msaObj.msasBySequence[querySeqNoGaps] = { 
+                                    msaData, 
+                                    type,
+                                    chains: msaToChains[querySeqNoGaps] || []
+                                };
+                            }
+                            
+                            // Map chain to sequence
+                            msaObj.chainToSequence[chainId] = querySeqNoGaps;
+                            
+                            // Add to available chains
+                            if (!msaObj.availableChains.includes(chainId)) {
+                                msaObj.availableChains.push(chainId);
+                            }
+                        }
+                        
+                        // Set default chain (first available, or first chain with MSA)
+                        if (msaObj.availableChains.length > 0) {
+                            msaObj.defaultChain = msaObj.availableChains[0];
+                            
+                            // Load default chain's MSA
+                            const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
+                            if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
+                                const {msaData, type} = msaObj.msasBySequence[defaultChainSeq];
+                                if (window.MSAViewer) {
+                                    window.MSAViewer.setMSAData(msaData, msaObj.defaultChain, type);
+                                    setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
+                                }
+                            }
+                        } else {
+                            setStatus("Warning: No chains matched to MSA sequences.", true);
+                        }
+                    }
+                }
+            }
+        } else {
+            // No object yet - parse first MSA for immediate display (will be rematched when structure loads)
+            const firstMSAFile = msaFiles[0];
+            try {
+                const msaText = await firstMSAFile.readAsync("text");
+                const type = detectMSAType(firstMSAFile.name);
+                const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText, type) : null;
+                if (msaData && window.MSAViewer) {
+                    window.MSAViewer.setMSAData(msaData);
+                    setStatus(`Loaded MSA from ${firstMSAFile.name} (${msaData.sequences.length} sequences). Load structure to match to chains.`);
+                }
             } catch (e) {
-                console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
-                setStatus(`Error parsing MSA file ${msaFile.name}: ${e.message}`, true);
+                console.error(`Failed to parse MSA file:`, e);
             }
         }
     }
@@ -2576,7 +3124,14 @@ async function handleZipUpload(file, loadAsFrames) {
             throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
         }
         
-        // Determine which directories to process
+        // Collect all MSA files from all directories (for AF3 structure)
+        const allMSAFiles = [];
+        for (const [dirPath, fileList] of filesByDirectory.entries()) {
+            const msaFilesInDir = fileList.filter(f => f.name.toLowerCase().endsWith('.a3m'));
+            allMSAFiles.push(...msaFilesInDir);
+        }
+        
+        // Determine which directories to process (for structure files)
         // Only go to subdirectories if no files found in root
         const rootFiles = filesByDirectory.get('');
         const directoriesToProcess = [];
@@ -2595,13 +3150,20 @@ async function handleZipUpload(file, loadAsFrames) {
             throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
         }
         
-        // Process each directory separately
+        // Process each directory separately (structure files)
         let totalObjectsLoaded = 0;
         let totalFramesAdded = 0;
         let totalPaePairedCount = 0;
+        let firstObjectName = null; // Track first object name for MSA association
         
         for (const dirPath of directoriesToProcess) {
             const fileList = filesByDirectory.get(dirPath);
+            
+            // Filter out MSA files from this directory (we'll process them separately)
+            const structureFileList = fileList.filter(f => !f.name.toLowerCase().endsWith('.a3m'));
+            
+            // Skip if no structure files in this directory
+            if (structureFileList.length === 0) continue;
             
             // Determine group name: use directory name if in subdirectory, otherwise use ZIP filename
             const groupName = dirPath 
@@ -2610,7 +3172,7 @@ async function handleZipUpload(file, loadAsFrames) {
 
             // Check if this directory contains a state file (only check once for root)
             if (dirPath === '') {
-                const jsonFiles = fileList.filter(f => f.name.toLowerCase().endsWith('.json'));
+                const jsonFiles = structureFileList.filter(f => f.name.toLowerCase().endsWith('.json'));
                 if (jsonFiles.length > 0) {
                     // Try to load as state file first
                     try {
@@ -2626,12 +3188,124 @@ async function handleZipUpload(file, loadAsFrames) {
                 }
             }
 
-            // Process files in this directory as a separate object
-            const stats = await processFiles(fileList, loadAsFrames, groupName);
+            // Process structure files in this directory as a separate object
+            const stats = await processFiles(structureFileList, loadAsFrames, groupName);
+            
+            // Track first object name for MSA association
+            if (!firstObjectName && viewerApi?.renderer?.currentObjectName) {
+                firstObjectName = viewerApi.renderer.currentObjectName;
+            }
             
             totalObjectsLoaded += (stats.isTrajectory ? 1 : stats.objectsLoaded);
             totalFramesAdded += stats.framesAdded;
             totalPaePairedCount += stats.paePairedCount;
+        }
+        
+        // Now process MSA files from all directories and associate with objects
+        if (allMSAFiles.length > 0 && viewerApi?.renderer) {
+            // Determine which object to associate MSA with
+            // Use current object (last processed), or first object if available
+            const targetObjectName = viewerApi.renderer.currentObjectName || firstObjectName;
+            
+            if (targetObjectName) {
+                // Process MSA files using the same logic as in processFiles
+                // Use sequence-based matching for all MSA files (same as processFiles)
+                const object = viewerApi.renderer.objectsData[targetObjectName];
+                if (object && object.frames && object.frames.length > 0) {
+                    // Extract chain sequences from first frame
+                    const firstFrame = object.frames[0];
+                    const chainSequences = extractChainSequences(firstFrame);
+                    
+                    if (Object.keys(chainSequences).length > 0) {
+                        // Parse all MSA files and extract query sequences
+                        const msaDataList = [];
+                        
+                        for (const msaFile of allMSAFiles) {
+                            try {
+                                const msaText = await msaFile.readAsync("text");
+                                const type = detectMSAType(msaFile.name);
+                                const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText, type) : null;
+                                
+                                if (msaData && msaData.querySequence) {
+                                    msaDataList.push({ msaData, type, filename: msaFile.name });
+                                }
+                            } catch (e) {
+                                console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
+                            }
+                        }
+                        
+                        if (msaDataList.length > 0) {
+                            // Match MSAs to chains by sequence
+                            const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
+                            
+                            // Initialize MSA structure for object
+                            if (!object.msa) {
+                                object.msa = {
+                                    msasBySequence: {},
+                                    chainToSequence: {},
+                                    availableChains: [],
+                                    defaultChain: null
+                                };
+                            }
+                            
+                            const msaObj = object.msa;
+                            
+                            // Store unique MSAs and map chains
+                            for (const [chainId, {msaData, type}] of Object.entries(chainToMSA)) {
+                                const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
+                                
+                                // Store MSA by sequence (only one per unique sequence)
+                                if (!msaObj.msasBySequence[querySeqNoGaps]) {
+                                    msaObj.msasBySequence[querySeqNoGaps] = { 
+                                        msaData, 
+                                        type,
+                                        chains: msaToChains[querySeqNoGaps] || []
+                                    };
+                                }
+                                
+                                // Map chain to sequence
+                                msaObj.chainToSequence[chainId] = querySeqNoGaps;
+                                
+                                // Add to available chains
+                                if (!msaObj.availableChains.includes(chainId)) {
+                                    msaObj.availableChains.push(chainId);
+                                }
+                            }
+                            
+                            // Set default chain (first available)
+                            if (msaObj.availableChains.length > 0) {
+                                msaObj.defaultChain = msaObj.availableChains[0];
+                                
+                                // Load default chain's MSA
+                                const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
+                                if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
+                                    const {msaData, type} = msaObj.msasBySequence[defaultChainSeq];
+                                    if (window.MSAViewer) {
+                                        window.MSAViewer.setMSAData(msaData, msaObj.defaultChain, type);
+                                        setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No structure loaded yet - parse first MSA for immediate display
+                    const firstMSAFile = allMSAFiles[0];
+                    if (firstMSAFile) {
+                        try {
+                            const msaText = await firstMSAFile.readAsync("text");
+                            const type = detectMSAType(firstMSAFile.name);
+                            const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText, type) : null;
+                            if (msaData && window.MSAViewer) {
+                                window.MSAViewer.setMSAData(msaData);
+                                setStatus(`Loaded MSA from ${firstMSAFile.name}. Load structure to match to chains.`);
+                            }
+                        } catch (e) {
+                            console.error(`Failed to parse MSA file:`, e);
+                        }
+                    }
+                }
+            }
         }
 
         // Update status with totals
@@ -2872,6 +3546,47 @@ function saveViewerState() {
             // Add redundant fields to object level (only if detected)
             Object.assign(objToSave, redundant);
             
+            // Add MSA data if it exists
+            if (object.msa) {
+                // Check if it's per-chain structure (AF3 format)
+                if (object.msa.chains && object.msa.availableChains && object.msa.availableChains.length > 0) {
+                    // Per-chain structure: save full structure
+                    objToSave.msa = {
+                        chains: {},
+                        defaultChain: object.msa.defaultChain || null,
+                        availableChains: object.msa.availableChains || []
+                    };
+                    
+                    // Save MSA data for each chain
+                    for (const chainId of object.msa.availableChains) {
+                        if (object.msa.chains[chainId]) {
+                            objToSave.msa.chains[chainId] = {};
+                            if (object.msa.chains[chainId].unpaired) {
+                                objToSave.msa.chains[chainId].unpaired = {
+                                    sequences: object.msa.chains[chainId].unpaired.sequences,
+                                    querySequence: object.msa.chains[chainId].unpaired.querySequence,
+                                    queryLength: object.msa.chains[chainId].unpaired.queryLength
+                                };
+                            }
+                            if (object.msa.chains[chainId].paired) {
+                                objToSave.msa.chains[chainId].paired = {
+                                    sequences: object.msa.chains[chainId].paired.sequences,
+                                    querySequence: object.msa.chains[chainId].paired.querySequence,
+                                    queryLength: object.msa.chains[chainId].paired.queryLength
+                                };
+                            }
+                        }
+                    }
+                } else {
+                    // Legacy format: save as single MSA
+                    objToSave.msa = {
+                        sequences: object.msa.sequences,
+                        querySequence: object.msa.querySequence,
+                        queryLength: object.msa.queryLength
+                    };
+                }
+            }
+            
             objects.push(objToSave);
         }
         
@@ -2895,6 +3610,16 @@ function saveViewerState() {
             ortho_slider_value: orthoSliderValue, // Save the normalized slider value (0.0-1.0)
             animation_speed: renderer.animationSpeed || 100
         };
+        
+        // Save MSA state (current chain and type)
+        if (window.MSAViewer) {
+            const currentChain = window.MSAViewer.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
+            const currentMSAType = window.MSAViewer.getCurrentMSAType ? window.MSAViewer.getCurrentMSAType() : 'unpaired';
+            if (currentChain) {
+                viewerState.msa_chain = currentChain;
+                viewerState.msa_type = currentMSAType;
+            }
+        }
         
         // Get selection state
         const selection = renderer.getSelection();
@@ -3053,6 +3778,38 @@ async function loadViewerState(stateData) {
                 // Check if object has PAE data (checks frames directly)
                 if (checkObjectHasPAE(objData)) {
                     objectsWithPAE.add(objData.name);
+                }
+                
+                // Store MSA data if present
+                if (objData.msa) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    // Check if it's per-chain structure (AF3 format)
+                    if (objData.msa.chains && objData.msa.availableChains) {
+                        // Per-chain structure
+                        renderer.objectsData[objData.name].msa = {
+                            chains: {},
+                            defaultChain: objData.msa.defaultChain || null,
+                            availableChains: objData.msa.availableChains || []
+                        };
+                        
+                        // Restore MSA data for each chain
+                        for (const chainId of objData.msa.availableChains) {
+                            if (objData.msa.chains[chainId]) {
+                                renderer.objectsData[objData.name].msa.chains[chainId] = {};
+                                if (objData.msa.chains[chainId].unpaired) {
+                                    renderer.objectsData[objData.name].msa.chains[chainId].unpaired = objData.msa.chains[chainId].unpaired;
+                                }
+                                if (objData.msa.chains[chainId].paired) {
+                                    renderer.objectsData[objData.name].msa.chains[chainId].paired = objData.msa.chains[chainId].paired;
+                                }
+                            }
+                        }
+                    } else {
+                        // Legacy format (single MSA per object)
+                        renderer.objectsData[objData.name].msa = objData.msa;
+                    }
                 }
             }
         } else {
@@ -3250,6 +4007,17 @@ async function loadViewerState(stateData) {
                         buildSequenceView();
                         updateChainSelectionUI();
                         updateObjectNavigationButtons();
+                        
+                        // Restore MSA state (chain and type) if available
+                        if (stateData.viewer_state) {
+                            const vs = stateData.viewer_state;
+                            if (vs.msa_chain && window.MSAViewer && window.MSAViewer.setChain) {
+                                window.MSAViewer.setChain(vs.msa_chain);
+                                if (vs.msa_type && window.MSAViewer.setMSAType) {
+                                    window.MSAViewer.setMSAType(vs.msa_type);
+                                }
+                            }
+                        }
                         
                         // Trigger object change handler to ensure UI is fully updated
                         if (renderer.objectSelect) {
