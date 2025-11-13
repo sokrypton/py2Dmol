@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MSA Viewer - py2Dmol</title>
+    <title>MSA Viewer - py2Dmol (Resizable)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
@@ -26,8 +26,51 @@
         
         .sequence-section-container {
             width: 948px;
+            height: 500px;  /* Initial height */
             margin: 0 auto;
-            resize: none;
+            position: relative;
+            /* Resizable properties */
+            resize: both;
+            overflow: hidden;
+            min-width: 600px;
+            max-width: 2400px;
+            min-height: 400px;
+            max-height: 1200px;
+        }
+        
+        /* Hide default resize handle */
+        .sequence-section-container::-webkit-resizer {
+            display: none;
+        }
+        
+        /* Custom resize handle */
+        .resize-handle {
+            position: absolute;
+            bottom: 2px;
+            right: 2px;
+            width: 16px;
+            height: 16px;
+            cursor: nwse-resize;
+            opacity: 0.4;
+            transition: opacity 0.2s;
+            z-index: 100;
+            pointer-events: none;
+        }
+        
+        .sequence-section-container:hover .resize-handle {
+            opacity: 0.8;
+        }
+        
+        .resize-handle::before {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 0;
+            height: 0;
+            border-style: solid;
+            border-width: 0 0 16px 16px;
+            border-color: transparent transparent #3b82f6 transparent;
         }
         
         .sequence-header {
@@ -42,7 +85,6 @@
         .sequence-content {
             width: 100%;
             overflow: hidden;
-            resize: none;
         }
         
         .sequence-content.hidden {
@@ -50,15 +92,14 @@
         }
         
         #msa-viewer-container {
-            width: 948px;
-            resize: none;
             overflow: hidden;
         }
         
         #msaView {
             width: 100%;
-            resize: none;
-            overflow: auto;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
         }
         
         .btn {
@@ -191,8 +232,8 @@
 </head>
 <body>
     <div class="mx-auto" style="width: 948px; position: relative;">
-        <h1>MSA Viewer</h1>
-        <p class="description">Upload A3M files to visualize multiple sequence alignments.</p>
+        <h1>MSA Viewer (Resizable)</h1>
+        <p class="description">Upload A3M files to visualize multiple sequence alignments. Drag the bottom-right corner to resize width and height.</p>
         
         <!-- Upload Section -->
         <div class="container-box upload-section" style="width: 948px; margin-bottom: 10px;">
@@ -252,6 +293,9 @@
                 </div>
             </div>
             <div id="msaView" class="sequence-content hidden"></div>
+            
+            <!-- Resize handle -->
+            <div class="resize-handle"></div>
         </div>
     </div>
     
@@ -516,4 +560,3 @@
     </script>
 </body>
 </html>
-

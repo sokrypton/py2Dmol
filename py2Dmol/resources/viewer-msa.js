@@ -120,6 +120,12 @@
         return AMINO_ACID_BACKGROUND_FREQUENCIES[aa.toUpperCase()] || (1 / 20);
     }
     
+    // Resize management
+    let resizeObserver = null;
+    let currentContainerWidth = 948;
+    let currentContainerHeight = 500;  // Initial default height
+    let resizeAnimationFrame = null;
+    
     // Callbacks
     let callbacks = {
         getRenderer: null
@@ -296,6 +302,76 @@
         return CHAR_WIDTH; // Full width for logo/PSSM
     }
     
+    // ============================================================================
+    // RESIZE MANAGEMENT
+    // ============================================================================
+    
+    function initResizeObserver() {
+        const container = document.getElementById('msa-viewer-container');
+        if (!container) return;
+        
+        if (resizeObserver) {
+            resizeObserver.disconnect();
+        }
+        
+        resizeObserver = new ResizeObserver(entries => {
+            for (let entry of entries) {
+                if (resizeAnimationFrame) {
+                    cancelAnimationFrame(resizeAnimationFrame);
+                }
+                
+                resizeAnimationFrame = requestAnimationFrame(() => {
+                    handleContainerResize(entry.contentRect);
+                    resizeAnimationFrame = null;
+                });
+            }
+        });
+        
+        resizeObserver.observe(container);
+        
+        // Get initial content dimensions (contentRect gives us content box, not border box)
+        const rect = container.getBoundingClientRect();
+        const computedStyle = window.getComputedStyle(container);
+        const paddingLeft = parseFloat(computedStyle.paddingLeft);
+        const paddingRight = parseFloat(computedStyle.paddingRight);
+        const paddingTop = parseFloat(computedStyle.paddingTop);
+        const paddingBottom = parseFloat(computedStyle.paddingBottom);
+        
+        // Content box dimensions
+        currentContainerWidth = Math.floor(rect.width - paddingLeft - paddingRight);
+        currentContainerHeight = Math.floor(rect.height - paddingTop - paddingBottom);
+    }
+    
+    function handleContainerResize(rect) {
+        // contentRect from ResizeObserver already gives us content box dimensions (no padding)
+        const newWidth = Math.floor(rect.width);
+        const newHeight = Math.floor(rect.height);
+        
+        if (newWidth === currentContainerWidth && newHeight === currentContainerHeight) {
+            return; // No actual change
+        }
+        
+        currentContainerWidth = newWidth;
+        currentContainerHeight = newHeight;
+        
+        // Rebuild the view with new dimensions
+        if (!msaData) return;
+        
+        if (msaViewMode === 'msa') {
+            buildMSAView();
+        } else if (msaViewMode === 'pssm' || msaViewMode === 'logo') {
+            buildLogoView();
+        }
+    }
+    
+    function getContainerWidth() {
+        return currentContainerWidth;
+    }
+    
+    // ============================================================================
+    // HELPER FUNCTIONS (continued)
+    // ============================================================================
+    
     function getLogicalCanvasDimensions(canvas) {
         const logicalWidth = canvas.width / DPI_MULTIPLIER;
         const logicalHeight = canvas.height / DPI_MULTIPLIER;
@@ -355,9 +431,12 @@
         clampScrollTop(canvasHeight);
         const startSequenceIndex = Math.max(1, Math.floor(scrollTop / SEQUENCE_ROW_HEIGHT));
         const visibleRows = Math.ceil(scrollableAreaHeight / SEQUENCE_ROW_HEIGHT);
-        const buffer = 10;
-        const endSequenceIndex = Math.min(msaData.sequences.length, startSequenceIndex + visibleRows + buffer);
-        return { start: startSequenceIndex, end: endSequenceIndex };
+        // Minimal buffer - just 1 sequence above and 2 below for smooth edges
+        const topBuffer = 1;
+        const bottomBuffer = 2;
+        const start = Math.max(1, startSequenceIndex - topBuffer);
+        const endSequenceIndex = Math.min(msaData.sequences.length, startSequenceIndex + visibleRows + bottomBuffer);
+        return { start: start, end: endSequenceIndex };
     }
     
     function drawTickMarks(ctx, logicalWidth, scrollLeft, charWidth, scrollableAreaX, minX, maxX) {
@@ -1076,23 +1155,32 @@
         container.style.overflow = 'hidden';
         container.style.position = 'relative';
         container.style.backgroundColor = '#ffffff';
+        container.style.margin = '0';
+        container.style.padding = '0';
         
         const MSA_CHAR_WIDTH = getCharWidthForMode('msa');
         const totalWidth = NAME_COLUMN_WIDTH + (msaData.queryLength * MSA_CHAR_WIDTH);
         const totalHeight = (msaData.sequences.length + 1) * SEQUENCE_ROW_HEIGHT;
         
         const queryRowHeight = SEQUENCE_ROW_HEIGHT;
-        const targetTotalHeight = 450;
-        const availableForSequences = targetTotalHeight - TICK_ROW_HEIGHT - queryRowHeight - SCROLLBAR_WIDTH;
-        const numSequencesToFit = Math.floor(availableForSequences / SEQUENCE_ROW_HEIGHT);
-        const exactScrollableHeight = numSequencesToFit * SEQUENCE_ROW_HEIGHT;
-        const viewportHeight = TICK_ROW_HEIGHT + queryRowHeight + exactScrollableHeight + SCROLLBAR_WIDTH;
+        
+        // Calculate actual available space
+        // Container height - header height
+        const msaHeader = document.getElementById('msaHeader');
+        const headerHeight = msaHeader ? msaHeader.offsetHeight + 8 : 40; // header + margin
+        
+        const containerHeight = currentContainerHeight || 450;
+        const availableHeightForCanvas = containerHeight - headerHeight;
+        
+        // Use ALL available height - don't snap to sequence multiples
+        const viewportHeight = availableHeightForCanvas;
         
         container.style.height = viewportHeight + 'px';
+        container.style.width = '100%'; // Fill parent width exactly
         
-        const containerEl = msaViewEl.closest('#msa-viewer-container');
-        const maxViewportWidth = containerEl ? containerEl.offsetWidth - 32 : 948;
-        const viewportWidth = Math.min(maxViewportWidth, totalWidth + SCROLLBAR_WIDTH);
+        // Calculate canvas width - must fit exactly in container
+        const containerWidth = getContainerWidth();
+        const viewportWidth = containerWidth;
         const canvasWidth = viewportWidth;
         const canvasHeight = viewportHeight;
         
@@ -1105,6 +1193,8 @@
         canvas.style.position = 'relative';
         canvas.style.pointerEvents = 'auto';
         canvas.style.cursor = 'default';
+        canvas.style.margin = '0';
+        canvas.style.padding = '0';
         
         container.appendChild(canvas);
         msaViewEl.appendChild(container);
@@ -1290,22 +1380,24 @@
         container.style.overflow = 'hidden';
         container.style.position = 'relative';
         container.style.backgroundColor = '#ffffff';
+        container.style.margin = '0';
+        container.style.padding = '0';
         
         const canvas = document.createElement('canvas');
         const LABEL_WIDTH = msaViewMode === 'pssm' ? CHAR_WIDTH : 0;
         const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
         
-        const containerEl = msaViewEl.closest('#msa-viewer-container');
-        const maxViewportWidth = containerEl ? containerEl.offsetWidth - 32 : 948;
-        const viewportWidth = Math.min(maxViewportWidth, totalWidth + SCROLLBAR_WIDTH);
-        const canvasWidth = viewportWidth;
+        // Use dynamic container width - canvas must fit exactly
+        const containerWidth = getContainerWidth();
+        const canvasWidth = containerWidth;
         
+        // FIXED HEIGHT for logo/PSSM modes (as required)
         const queryRowHeight = CHAR_WIDTH;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
         const logoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
         const canvasHeight = TICK_ROW_HEIGHT + queryRowHeight + logoHeight + SCROLLBAR_WIDTH;
         
-        container.style.width = canvasWidth + 'px';
+        container.style.width = '100%'; // Fill parent exactly
         container.style.height = canvasHeight + 'px';
         
         canvas.width = canvasWidth * DPI_MULTIPLIER;
@@ -1315,6 +1407,8 @@
         canvas.style.display = 'block';
         canvas.style.position = 'relative';
         canvas.style.pointerEvents = 'auto';
+        canvas.style.margin = '0';
+        canvas.style.padding = '0';
         
         container.appendChild(canvas);
         msaViewEl.appendChild(container);
@@ -1602,6 +1696,9 @@
                 msaViewEl.classList.remove('hidden');
             }
             
+            // Initialize resize observer
+            initResizeObserver();
+            
             if (msaViewMode === 'msa') {
                 buildMSAView();
             } else if (msaViewMode === 'pssm' || msaViewMode === 'logo') {
@@ -1731,6 +1828,12 @@
             cachedFrequencies = null;
             cachedLogOdds = null;
             cachedDataHash = null;
+            
+            // Disconnect resize observer
+            if (resizeObserver) {
+                resizeObserver.disconnect();
+                resizeObserver = null;
+            }
         },
         
         buildMSAView: buildMSAView,
