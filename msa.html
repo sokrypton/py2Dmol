@@ -472,54 +472,95 @@
 
             setStatus(`Fetching MSA for ${fetchId}...`);
 
-            // Use allorigins.win as CORS proxy
-            const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
-            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(msaUrl)}`;
-
             try {
-                const response = await fetch(proxyUrl);
-                if (!response.ok) {
-                    throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
-                }
+                // Use allorigins.win as CORS proxy - try multiple endpoints and fallbacks
+                const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
                 
-                const data = await response.json();
-                
-                // allorigins.win returns the content in a 'contents' field
-                if (!data.contents) {
-                    throw new Error('No MSA data received from server');
-                }
-                
-                const msaText = data.contents;
-                
-                // Determine type from filename (unpaired for AlphaFold DB MSAs)
-                const type = 'unpaired';
-                
-                if (window.MSAViewer && window.MSAViewer.parseA3M) {
-                    const msaData = window.MSAViewer.parseA3M(msaText, type);
-                    if (msaData && msaData.querySequence) {
-                        window.MSAViewer.setMSAData(msaData, null, type);
-                        setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
-                        updateMSASequenceCount();
-                        document.getElementById('file-name').textContent = `AF-${fetchId}-F1-msa_v6.a3m`;
-                        
-                        // Show MSA viewer container
-                        const msaContainer = document.getElementById('msa-viewer-container');
-                        if (msaContainer) {
-                            msaContainer.style.display = 'block';
+                // Try different proxy endpoints
+                const proxyEndpoints = [
+                    `https://api.allorigins.win/raw?url=${encodeURIComponent(msaUrl)}`,
+                    `https://api.allorigins.win/get?url=${encodeURIComponent(msaUrl)}`,
+                    `https://corsproxy.io/?${encodeURIComponent(msaUrl)}`
+                ];
+
+                let msaText = null;
+                let lastError = null;
+
+            // Try each proxy endpoint until one works
+            for (const proxyUrl of proxyEndpoints) {
+                try {
+                    setStatus(`Fetching MSA for ${fetchId}... (trying proxy)`);
+                    
+                    const response = await fetch(proxyUrl, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'text/plain, */*'
                         }
-                        const msaView = document.getElementById('msaView');
-                        if (msaView) {
-                            msaView.classList.remove('hidden');
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    
+                    // Check if response is JSON (allorigins.win /get endpoint) or text (raw endpoint or corsproxy)
+                    const contentType = response.headers.get('content-type') || '';
+                    if (contentType.includes('application/json')) {
+                        const data = await response.json();
+                        // allorigins.win /get returns content in 'contents' field
+                        if (data.contents) {
+                            msaText = data.contents;
+                            break;
+                        } else if (data.status && data.status.http_code === 200 && data.contents) {
+                            msaText = data.contents;
+                            break;
                         }
                     } else {
-                        setStatus('Failed to parse MSA file', true);
+                        // Raw text response
+                        msaText = await response.text();
+                        if (msaText && msaText.length > 0) {
+                            break;
+                        }
                     }
+                } catch (err) {
+                    console.log(`Proxy endpoint failed: ${proxyUrl}`, err);
+                    lastError = err;
+                    continue; // Try next endpoint
                 }
-            } catch (error) {
-                console.error('Error fetching MSA:', error);
-                setStatus(`Error fetching MSA: ${error.message}`, true);
             }
+
+            if (!msaText) {
+                throw lastError || new Error('Failed to fetch MSA from all proxy endpoints. The proxy service may be temporarily unavailable.');
+            }
+            
+            // Determine type from filename (unpaired for AlphaFold DB MSAs)
+            const type = 'unpaired';
+            
+            if (window.MSAViewer && window.MSAViewer.parseA3M) {
+                const msaData = window.MSAViewer.parseA3M(msaText, type);
+                if (msaData && msaData.querySequence) {
+                    window.MSAViewer.setMSAData(msaData, null, type);
+                    setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+                    updateMSASequenceCount();
+                    document.getElementById('file-name').textContent = `AF-${fetchId}-F1-msa_v6.a3m`;
+                    
+                    // Show MSA viewer container
+                    const msaContainer = document.getElementById('msa-viewer-container');
+                    if (msaContainer) {
+                        msaContainer.style.display = 'block';
+                    }
+                    const msaView = document.getElementById('msaView');
+                    if (msaView) {
+                        msaView.classList.remove('hidden');
+                    }
+                } else {
+                    setStatus('Failed to parse MSA file', true);
+                }
+            }
+        } catch (error) {
+            console.error('Error fetching MSA:', error);
+            setStatus(`Error fetching MSA: ${error.message}`, true);
         }
+    }
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
