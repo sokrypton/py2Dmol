@@ -6,6 +6,57 @@
 (function() {
     'use strict';
 
+    // === Letter-mode helpers (WebLogo-style glyph scaling) ===
+    const LETTER_BASE_FONT = 'bold 100px monospace'; // big base for precise metrics
+    const glyphMetricsCache = new Map();
+
+    function getGlyphMetrics(ctx, ch) {
+        const key = ch;
+        if (glyphMetricsCache.has(key)) return glyphMetricsCache.get(key);
+        ctx.save();
+        ctx.font = LETTER_BASE_FONT;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        const m = ctx.measureText(ch);
+        ctx.restore();
+        const left   = m.actualBoundingBoxLeft   ?? 0;
+        const right  = m.actualBoundingBoxRight  ?? (m.width ?? 100);
+        const ascent = m.actualBoundingBoxAscent ?? 80;
+        const desc   = m.actualBoundingBoxDescent?? 20;
+        const metrics = {
+            left,
+            width: (left + right) || (m.width || 1),
+            ascent,
+            descent: desc,
+            height: (ascent + desc) || 1
+        };
+        glyphMetricsCache.set(key, metrics);
+        return metrics;
+    }
+
+    function drawScaledLetter(ctx, ch, x, yBottom, w, h, color, clipRect) {
+        if (h <= 0 || w <= 0) return;
+        const g = getGlyphMetrics(ctx, ch);
+        const sx = w / g.width;
+        const sy = h / g.height;
+        ctx.save();
+        if (clipRect) {
+            ctx.beginPath();
+            ctx.rect(clipRect.x, clipRect.y, clipRect.w, clipRect.h);
+            ctx.clip();
+        }
+        ctx.translate(x + g.left * sx, yBottom);
+        ctx.scale(sx, sy);
+        ctx.fillStyle = color;
+        ctx.font = LETTER_BASE_FONT;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText(ch, 0, 0);
+        ctx.restore();
+    }
+
+
+
     // ============================================================================
     // INTERNAL STATE
     // ============================================================================
@@ -1254,10 +1305,11 @@
             
             const logoPos = logoData[pos];
             const letterHeights = logoPos.letterHeights;
+            // Sort ascending (smallest first) so both modes stack from bottom: smallest at bottom, tallest at top
             const aas = Object.keys(letterHeights).sort((a, b) => letterHeights[a] - letterHeights[b]);
             
-            const GAP_SIZE = 2;
             const maxStackY = queryY + queryRowHeight;
+            // Start from bottom and stack upward
             let yOffset = logoY + logoHeight;
             
             for (const aa of aas) {
@@ -1272,7 +1324,8 @@
                     
                     const drawWidth = CHAR_WIDTH;
                     if (drawWidth > 0) {
-                        const drawY = yOffset - drawHeight - GAP_SIZE;
+                        // Draw from bottom up, no gap between letters
+                        const drawY = yOffset - drawHeight;
                         
                         // Clip logo rendering to the scrollable area
                         ctx.save();
@@ -1280,24 +1333,19 @@
                         ctx.rect(minX, logoY, scrollableAreaWidth, logoHeight);
                         ctx.clip();
                         
-                        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                        ctx.fillRect(xOffset, drawY, drawWidth, drawHeight);
-                        
-                        const fontSize = Math.min(drawHeight * 0.8, CHAR_WIDTH * 0.8);
-                        if (fontSize >= 8) {
-                            ctx.fillStyle = '#000';
-                            ctx.font = `bold ${fontSize}px monospace`;
-                            ctx.textAlign = 'center';
-                            ctx.textBaseline = 'middle';
-                            const textY = drawY + drawHeight / 2;
-                            ctx.fillText(aa, xOffset + drawWidth / 2, textY);
+                        // WebLogo-style letter mode: scale glyph bbox to fill full cell
+                        const colorStr = `rgb(${r}, ${g}, ${b})`;
+                        const clipRect = { x: minX, y: logoY, w: scrollableAreaWidth, h: logoHeight };
+                        if (drawHeight > 0) {
+                            drawScaledLetter(ctx, aa, xOffset, yOffset, CHAR_WIDTH, drawHeight, colorStr, clipRect);
                         }
                         
                         ctx.restore(); // Restore from clipping
                     }
                 }
                 
-                yOffset -= height + GAP_SIZE;
+                // Update yOffset for next letter (move upward, no gap)
+                yOffset -= drawHeight;
             }
             
             xOffset += CHAR_WIDTH;
