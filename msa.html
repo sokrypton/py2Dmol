@@ -179,22 +179,47 @@
 <body>
     <div style="max-width: 1200px; margin: 0 auto;">
         <h1>MSA Viewer</h1>
-        <p class="description">Upload A3M files to visualize multiple sequence alignments.</p>
+        <p class="description">Upload A3M files or fetch from AlphaFold DB (UniProt ID) to visualize multiple sequence alignments.</p>
         
         <!-- Upload Section -->
         <div class="container-box upload-section">
-            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
-                Upload A3M File
-            </label>
-            <div style="display: flex; gap: 8px; align-items: center;">
-                <button id="upload-button" class="btn btn-primary">
-                    <i class="fa-solid fa-file-arrow-up"></i>
-                    <span>Choose A3M File</span>
-                </button>
-                <input type="file" id="file-upload" accept=".a3m" class="hidden">
-                <span id="file-name" style="color: #6b7280; font-size: 14px;"></span>
-            </div>
-            <div id="status-message" style="display: none;"></div>
+            <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 0;">
+                <tr>
+                    <!-- Left Column: Fetch + Upload -->
+                    <td style="width: 50%; padding-right: 12px; vertical-align: top;">
+                        <!-- Fetch Section -->
+                        <label for="fetch-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">UniProt ID (AlphaFold DB)</label>
+                        <div id="fetch-input-container" style="margin-bottom: 8px; display: flex; gap: 8px;">
+                            <input type="text" id="fetch-id" placeholder="e.g., A0JNW5" style="flex: 1; padding: 8px 12px; font-size: 14px; border: 1px solid #d1d5db; border-radius: 6px;">
+                            <button id="fetch-btn" class="btn btn-primary">Fetch</button>
+                        </div>
+
+                        <!-- Upload Section -->
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Upload A3M File</label>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <button id="upload-button" class="btn btn-secondary">
+                                    <i class="fa-solid fa-file-arrow-up"></i>
+                                    <span>Choose A3M File</span>
+                                </button>
+                                <input type="file" id="file-upload" accept=".a3m" class="hidden">
+                                <span id="file-name" style="color: #6b7280; font-size: 14px;"></span>
+                            </div>
+                        </div>
+                    </td>
+                    
+                    <!-- Right Column: Example -->
+                    <td style="vertical-align: top;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="example-button" class="btn btn-success">
+                                <span>A0JNW5</span>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            </table>
+            <div id="status-message" style="display: none; margin-top: 12px;"></div>
         </div>
         
         <!-- Drag overlay (shown when dragging files over the page) -->
@@ -411,6 +436,16 @@
                             window.MSAViewer.setMSAData(msaData, null, type);
                             setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
                             updateMSASequenceCount();
+                            
+                            // Show MSA viewer container
+                            const msaContainer = document.getElementById('msa-viewer-container');
+                            if (msaContainer) {
+                                msaContainer.style.display = 'block';
+                            }
+                            const msaView = document.getElementById('msaView');
+                            if (msaView) {
+                                msaView.classList.remove('hidden');
+                            }
                         } else {
                             setStatus('Failed to parse MSA file', true);
                         }
@@ -426,9 +461,97 @@
             reader.readAsText(file);
         }
         
+        // Fetch MSA from AlphaFold DB using CORS proxy
+        async function handleFetch() {
+            const fetchId = document.getElementById('fetch-id').value.trim().toUpperCase();
+            
+            if (!fetchId) {
+                setStatus('Please enter a UniProt ID.', true);
+                return;
+            }
+
+            setStatus(`Fetching MSA for ${fetchId}...`);
+
+            // Use allorigins.win as CORS proxy
+            const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
+            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(msaUrl)}`;
+
+            try {
+                const response = await fetch(proxyUrl);
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
+                }
+                
+                const data = await response.json();
+                
+                // allorigins.win returns the content in a 'contents' field
+                if (!data.contents) {
+                    throw new Error('No MSA data received from server');
+                }
+                
+                const msaText = data.contents;
+                
+                // Determine type from filename (unpaired for AlphaFold DB MSAs)
+                const type = 'unpaired';
+                
+                if (window.MSAViewer && window.MSAViewer.parseA3M) {
+                    const msaData = window.MSAViewer.parseA3M(msaText, type);
+                    if (msaData && msaData.querySequence) {
+                        window.MSAViewer.setMSAData(msaData, null, type);
+                        setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+                        updateMSASequenceCount();
+                        document.getElementById('file-name').textContent = `AF-${fetchId}-F1-msa_v6.a3m`;
+                        
+                        // Show MSA viewer container
+                        const msaContainer = document.getElementById('msa-viewer-container');
+                        if (msaContainer) {
+                            msaContainer.style.display = 'block';
+                        }
+                        const msaView = document.getElementById('msaView');
+                        if (msaView) {
+                            msaView.classList.remove('hidden');
+                        }
+                    } else {
+                        setStatus('Failed to parse MSA file', true);
+                    }
+                }
+            } catch (error) {
+                console.error('Error fetching MSA:', error);
+                setStatus(`Error fetching MSA: ${error.message}`, true);
+            }
+        }
+
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
             initializeMSAViewer();
+            
+            // Fetch button
+            const fetchButton = document.getElementById('fetch-btn');
+            if (fetchButton) {
+                fetchButton.addEventListener('click', handleFetch);
+            }
+            
+            // Fetch input - allow Enter key to trigger fetch
+            const fetchIdInput = document.getElementById('fetch-id');
+            if (fetchIdInput) {
+                fetchIdInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        handleFetch();
+                    }
+                });
+            }
+            
+            // Example button
+            const exampleButton = document.getElementById('example-button');
+            if (exampleButton) {
+                exampleButton.addEventListener('click', () => {
+                    const fetchIdInput = document.getElementById('fetch-id');
+                    if (fetchIdInput) {
+                        fetchIdInput.value = 'A0JNW5';
+                        handleFetch();
+                    }
+                });
+            }
             
             // File upload button
             const uploadButton = document.getElementById('upload-button');
