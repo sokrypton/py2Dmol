@@ -23,9 +23,18 @@
         const right  = m.actualBoundingBoxRight  ?? (m.width ?? 100);
         const ascent = m.actualBoundingBoxAscent ?? 80;
         const desc   = m.actualBoundingBoxDescent?? 20;
+        
+        // Special handling for Q: its tail can extend beyond normal bounds
+        // Use measured width for Q to get more accurate bounds
+        let glyphWidth = (left + right) || (m.width || 100);
+        if (ch === 'Q' || ch === 'q') {
+            // For Q, use the measured width which better captures the full glyph
+            glyphWidth = m.width || 100;
+        }
+        
         const metrics = {
             left,
-            width: (left + right) || (m.width || 1),
+            width: glyphWidth || 1,
             ascent,
             descent: desc,
             height: (ascent + desc) || 1
@@ -39,13 +48,19 @@
         const g = getGlyphMetrics(ctx, ch);
         const sx = w / g.width;
         const sy = h / g.height;
+        
+        // Adjust vertical position upward for all letters to keep descenders visible
+        // This ensures letters with parts extending below baseline (Q, S, G, etc.) stay within bounds
+        const yOffset = g.descent * sy * 1.0; // Move up by 100% of descent (full descent amount)
+        
         ctx.save();
+        // Apply clipRect if provided
         if (clipRect) {
             ctx.beginPath();
             ctx.rect(clipRect.x, clipRect.y, clipRect.w, clipRect.h);
             ctx.clip();
         }
-        ctx.translate(x + g.left * sx, yBottom);
+        ctx.translate(x + g.left * sx, yBottom - yOffset);
         ctx.scale(sx, sy);
         ctx.fillStyle = color;
         ctx.font = LETTER_BASE_FONT;
@@ -107,14 +122,16 @@
     const SCROLLBAR_THUMB_COLOR_NO_SCROLL = '#d0d0d0';
     
     
-    // Dayhoff 6-group classification
+    // Amino acid groups with custom colors
     const DAYHOFF_GROUP_DEFINITIONS = [
-        { name: 'group1', label: 'Cysteine', aminoAcids: ['C'], color: {r: 255, g: 200, b: 100} },
-        { name: 'group2', label: 'Small polar', aminoAcids: ['S', 'T', 'A', 'G', 'P'], color: {r: 100, g: 200, b: 255} },
-        { name: 'group3', label: 'Acidic/Amide', aminoAcids: ['D', 'E', 'Q', 'N'], color: {r: 200, g: 100, b: 255} },
-        { name: 'group4', label: 'Basic', aminoAcids: ['H', 'R', 'K'], color: {r: 255, g: 100, b: 100} },
-        { name: 'group5', label: 'Hydrophobic', aminoAcids: ['M', 'I', 'L', 'V'], color: {r: 100, g: 255, b: 100} },
-        { name: 'group6', label: 'Aromatic', aminoAcids: ['W', 'Y', 'F'], color: {r: 255, g: 255, b: 100} }
+        { name: 'group1', label: 'KR', aminoAcids: ['K', 'R'], color: {r: 212, g: 68, b: 43} }, // #d4442b
+        { name: 'group2', label: 'AFILMVW', aminoAcids: ['A', 'F', 'I', 'L', 'M', 'V', 'W'], color: {r: 61, g: 126, b: 223} }, // #3d7edf
+        { name: 'group3', label: 'NQST', aminoAcids: ['N', 'Q', 'S', 'T'], color: {r: 96, g: 201, b: 65} }, // #60c941
+        { name: 'group4', label: 'HY', aminoAcids: ['H', 'Y'], color: {r: 83, g: 177, b: 178} }, // #53b1b2
+        { name: 'group5', label: 'C', aminoAcids: ['C'], color: {r: 217, g: 133, b: 130} }, // #d98582
+        { name: 'group6', label: 'DE', aminoAcids: ['D', 'E'], color: {r: 189, g: 85, b: 198} }, // #bd55c6
+        { name: 'group7', label: 'P', aminoAcids: ['P'], color: {r: 204, g: 204, b: 65} }, // #cccc41
+        { name: 'group8', label: 'G', aminoAcids: ['G'], color: {r: 219, g: 157, b: 91} } // #db9d5b
     ];
     
     const DAYHOFF_COLORS = {};
@@ -474,9 +491,10 @@
             scrollableAreaHeight = logicalHeight - scrollableAreaY - SCROLLBAR_WIDTH;
         } else { // logo
             scrollableAreaX = Y_AXIS_WIDTH;
-            scrollableAreaY = TICK_ROW_HEIGHT + CHAR_WIDTH;
+            // Logo starts at top, query and ticks are below
+            scrollableAreaY = 0; // Logo starts from top
             scrollableAreaWidth = logicalWidth - scrollableAreaX; // No V-scroll
-            scrollableAreaHeight = logicalHeight - scrollableAreaY - SCROLLBAR_WIDTH;
+            scrollableAreaHeight = logicalHeight - SCROLLBAR_WIDTH; // Full height minus scrollbar
         }
         
         return { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight };
@@ -528,9 +546,8 @@
         return { start: start, end: endSequenceIndex };
     }
     
-    function drawTickMarks(ctx, logicalWidth, scrollLeft, charWidth, scrollableAreaX, minX, maxX) {
+    function drawTickMarks(ctx, logicalWidth, scrollLeft, charWidth, scrollableAreaX, minX, maxX, tickY = 0) {
         if (!msaData) return;
-        const tickY = 0;
         const tickRowHeight = TICK_ROW_HEIGHT;
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, tickY, logicalWidth, tickRowHeight);
@@ -564,11 +581,12 @@
     /**
      * Draw query sequence row (used by MSA, PSSM, and Logo modes)
      */
-    function drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, labelWidth, totalWidth) {
+    function drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, labelWidth, totalWidth, drawUnderline = true) {
         if (!msaData || !querySeq) return;
         
+        // Draw white background, but don't cover the y-axis area (start from labelWidth)
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, queryY, logicalWidth, queryRowHeight);
+        ctx.fillRect(labelWidth, queryY, logicalWidth - labelWidth, queryRowHeight);
         
         const minX = labelWidth;
         const maxX = logicalWidth;
@@ -606,15 +624,17 @@
             xOffset += CHAR_WIDTH;
         }
         
-        // Draw underline
-        const underlineY = queryY + queryRowHeight;
-        const underlineWidth = logicalWidth; // Draw line across full canvas width
-        ctx.strokeStyle = '#333';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(0, underlineY);
-        ctx.lineTo(underlineWidth, underlineY);
-        ctx.stroke();
+        // Draw underline (only if requested, for logo mode we draw it above)
+        if (drawUnderline) {
+            const underlineY = queryY + queryRowHeight;
+            const underlineWidth = logicalWidth; // Draw line across full canvas width
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, underlineY);
+            ctx.lineTo(underlineWidth, underlineY);
+            ctx.stroke();
+        }
     }
     
     /**
@@ -687,16 +707,16 @@
         const visibleEndPos = Math.min(msaData.queryLength, visibleStartPos + Math.ceil(scrollableAreaWidth / MSA_CHAR_WIDTH) + 1);
         
         // Draw visible sequences (virtual scrolling)
-        const currentScrollTop = scrollTop;
-        const scrollOffset = currentScrollTop % SEQUENCE_ROW_HEIGHT;
-        const startY = scrollableAreaY - scrollOffset;
-        
+        // Calculate Y position based on actual sequence index to prevent jumping
+        // Sequence 1 starts at scrollableAreaY when scrollTop = 0
+        // As we scroll down (scrollTop increases), sequences move up
         for (let i = visibleSequenceStart; i < visibleSequenceEnd && i < msaData.sequences.length; i++) {
             if (i === 0) continue; // Skip query (drawn separately)
             
             const seq = msaData.sequences[i];
-            const sequenceOffset = (i - visibleSequenceStart) * SEQUENCE_ROW_HEIGHT;
-            const y = startY + sequenceOffset;
+            // Calculate Y based on actual sequence index and scrollTop
+            // Sequence i (where i >= 1) should be at: scrollableAreaY + (i-1) * rowHeight - scrollTop
+            const y = scrollableAreaY + (i - 1) * SEQUENCE_ROW_HEIGHT - scrollTop;
             
             if (y + SEQUENCE_ROW_HEIGHT < scrollableAreaY || y > logicalHeight - SCROLLBAR_WIDTH) continue;
             
@@ -1123,7 +1143,6 @@
         if (!data) return;
         
         const queryRowHeight = CHAR_WIDTH;
-        const GAP_HEIGHT = 0;
         const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
             getScrollableAreaForMode('logo', logicalWidth, logicalHeight);
         
@@ -1131,20 +1150,17 @@
         const visibleStartPos = Math.floor(scrollLeft / CHAR_WIDTH);
         const visibleEndPos = Math.min(data.length, visibleStartPos + Math.ceil(scrollableAreaWidth / CHAR_WIDTH) + 1);
         
-        const tickMinX = LABEL_WIDTH;
-        const tickMaxX = logicalWidth;
-        drawTickMarks(ctx, logicalWidth, scrollLeft, CHAR_WIDTH, LABEL_WIDTH, tickMinX, tickMaxX);
-        
-        const queryY = TICK_ROW_HEIGHT;
-        
-        // Add padding above and below logo area for y-axis labels
-        // Reduce logo height to compensate so total area stays the same
+        // Add padding above logo area for y-axis labels, but extend logo all the way down to query
         const LOGO_VERTICAL_PADDING = 12;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
         const aaRowHeight = CHAR_WIDTH;
         const originalLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
-        const logoHeight = originalLogoHeight - (LOGO_VERTICAL_PADDING * 2); // Reduced to fit with padding
-        const logoY = scrollableAreaY + GAP_HEIGHT + LOGO_VERTICAL_PADDING;
+        
+        // New layout: Logo at top, black bar above query, query sequence below, tick marks below query, scrollbar at bottom
+        const logoY = scrollableAreaY + LOGO_VERTICAL_PADDING;
+        const queryY = logoY + originalLogoHeight; // Logo extends all the way to query with no gap
+        const effectiveLogoHeight = queryY - logoY; // Full height from logoY to queryY
+        const tickY = queryY + queryRowHeight; // Below query sequence
         
         const minX = LABEL_WIDTH;
         const maxX = logicalWidth;
@@ -1185,7 +1201,7 @@
                 const contributions = posInfo.contributions;
                 
                 const totalStackHeight = maxInfoContent > 0 
-                    ? (infoContent / maxInfoContent) * logoHeight 
+                    ? (infoContent / maxInfoContent) * effectiveLogoHeight 
                     : 0;
                 
                 const letterHeights = {};
@@ -1198,7 +1214,8 @@
                 logoData.push({ infoContent, letterHeights, posData: data[pos] });
             }
         } else {
-            const GAP_SIZE = 2;
+            // Probability mode: frequencies should sum to 1.0, and stack should fill full height
+            // No gaps between letters, so use full effectiveLogoHeight
             for (let pos = 0; pos < frequencies.length; pos++) {
                 const posFreq = frequencies[pos];
                 const letterHeights = {};
@@ -1208,14 +1225,12 @@
                     freqSum += posFreq[aa];
                 }
                 
-                const numAAs = Object.keys(posFreq).length;
-                const numGaps = Math.max(0, numAAs - 1);
-                const totalGapHeight = numGaps * GAP_SIZE;
-                const availableHeight = logoHeight - totalGapHeight;
+                // Normalize frequencies to sum to 1.0, then scale to full logo height
                 const normalizationFactor = freqSum > 0 ? 1 / freqSum : 1;
                 
                 for (const aa in posFreq) {
-                    letterHeights[aa] = (posFreq[aa] * normalizationFactor) * availableHeight;
+                    // Normalized frequency (sums to 1.0) * full height = letter height
+                    letterHeights[aa] = (posFreq[aa] * normalizationFactor) * effectiveLogoHeight;
                 }
                 
                 logoData.push({ infoContent: 0, letterHeights, posData: data[pos] });
@@ -1228,15 +1243,15 @@
         ctx.strokeStyle = '#333';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(LABEL_WIDTH, TICK_ROW_HEIGHT); // Start below ticks
-        ctx.lineTo(LABEL_WIDTH, logicalHeight - SCROLLBAR_WIDTH); // End above scrollbar
+        ctx.moveTo(LABEL_WIDTH, logoY - LOGO_VERTICAL_PADDING); // Start at top of logo area
+        ctx.lineTo(LABEL_WIDTH, queryY); // End at queryY (logo extends all the way down)
         ctx.stroke();
 
         // Y-axis labels and scale
         const axisLabel = useBitScore ? "Bits" : "Probability";
-        // Axis range includes padding - this is the full scale range
+        // Axis range: top has padding, bottom extends to queryY
         const axisTopY = logoY - LOGO_VERTICAL_PADDING;
-        const axisBottomY = logoY + logoHeight + LOGO_VERTICAL_PADDING;
+        const axisBottomY = queryY;
         
         // Position axis label centered vertically, offset to the left to avoid overlap with middle tick value
         const axisLabelY = (axisTopY + axisBottomY) / 2;
@@ -1271,20 +1286,21 @@
             tickValues.push({ value: 1.0, label: '1.0' });
         }
         
-        // Map tick values to the logo area (not including padding)
-        // Ticks map to logoHeight: 0 at bottom of logo, max at top of logo
-        const logoBottomY = logoY + logoHeight;
+        // Map tick values to the logo area (extending to queryY)
+        // Ticks map to the full logo height: 0 at bottom (queryY), max at top of logo
+        const logoBottomY = queryY; // Logo extends all the way to queryY
         const logoTopY = logoY;
+        // effectiveLogoHeight already declared above
         
         for (const tick of tickValues) {
             let yPos;
             if (useBitScore) {
                 const maxVal = maxInfoContent > 0 ? maxInfoContent : 1;
-                // Map value to position: 0 at bottom of logo, max at top of logo
-                yPos = logoBottomY - (tick.value / maxVal) * logoHeight;
+                // Map value to position: 0 at bottom (queryY), max at top of logo
+                yPos = logoBottomY - (tick.value / maxVal) * effectiveLogoHeight;
             } else {
-                // Map value to position: 0 at bottom of logo, 1.0 at top of logo
-                yPos = logoBottomY - tick.value * logoHeight;
+                // Map value to position: 0 at bottom (queryY), 1.0 at top of logo
+                yPos = logoBottomY - tick.value * effectiveLogoHeight;
             }
             
             ctx.fillText(tick.label, LABEL_WIDTH - 8, yPos);
@@ -1308,9 +1324,8 @@
             // Sort ascending (smallest first) so both modes stack from bottom: smallest at bottom, tallest at top
             const aas = Object.keys(letterHeights).sort((a, b) => letterHeights[a] - letterHeights[b]);
             
-            const maxStackY = queryY + queryRowHeight;
-            // Start from bottom and stack upward
-            let yOffset = logoY + logoHeight;
+            // Start from bottom (queryY) and stack upward - extend all the way to query with no gap
+            let yOffset = queryY;
             
             for (const aa of aas) {
                 const height = letterHeights[aa];
@@ -1327,15 +1342,16 @@
                         // Draw from bottom up, no gap between letters
                         const drawY = yOffset - drawHeight;
                         
-                        // Clip logo rendering to the scrollable area
+                        // Clip logo rendering to extend all the way to queryY (no gap)
                         ctx.save();
                         ctx.beginPath();
-                        ctx.rect(minX, logoY, scrollableAreaWidth, logoHeight);
+                        ctx.rect(minX, logoY, scrollableAreaWidth, queryY - logoY);
                         ctx.clip();
                         
                         // WebLogo-style letter mode: scale glyph bbox to fill full cell
+                        // Extend clip rect to queryY so letters can extend all the way down
                         const colorStr = `rgb(${r}, ${g}, ${b})`;
-                        const clipRect = { x: minX, y: logoY, w: scrollableAreaWidth, h: logoHeight };
+                        const clipRect = { x: minX, y: logoY, w: scrollableAreaWidth, h: queryY - logoY };
                         if (drawHeight > 0) {
                             drawScaledLetter(ctx, aa, xOffset, yOffset, CHAR_WIDTH, drawHeight, colorStr, clipRect);
                         }
@@ -1351,15 +1367,44 @@
             xOffset += CHAR_WIDTH;
         }
         
-        // Draw query sequence on top
+        // Draw query sequence
         if (msaData.sequences.length > 0) {
             const querySeq = msaData.sequences[0];
-            drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, LABEL_WIDTH, logoCanvasData.totalWidth);
+            drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, LABEL_WIDTH, logoCanvasData.totalWidth, false);
         }
         
-        // Draw horizontal scrollbar
+        // Redraw 0 tick mark to ensure it's visible (query sequence white background no longer covers it, but redraw to be safe)
+        const zeroTickY = queryY;
+        ctx.fillStyle = '#333';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        const zeroLabel = useBitScore ? '0' : '0.0';
+        ctx.fillText(zeroLabel, LABEL_WIDTH - 8, zeroTickY);
+        ctx.beginPath();
+        ctx.moveTo(LABEL_WIDTH - 5, zeroTickY);
+        ctx.lineTo(LABEL_WIDTH, zeroTickY);
+        ctx.stroke();
+        
+        // Draw tick marks below query sequence
+        const tickMinX = LABEL_WIDTH;
+        const tickMaxX = logicalWidth;
+        drawTickMarks(ctx, logicalWidth, scrollLeft, CHAR_WIDTH, LABEL_WIDTH, tickMinX, tickMaxX, tickY);
+        
+        // Draw horizontal scrollbar at bottom
         const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
         drawHorizontalScrollbar(ctx, logicalWidth, logicalHeight, scrollableAreaX, scrollableAreaWidth, LABEL_WIDTH, totalScrollableWidth);
+        
+        // Draw black bar above query sequence LAST so it appears on top (starting from scrollableAreaX, not from 0)
+        const underlineY = queryY;
+        const underlineStartX = scrollableAreaX;
+        const underlineEndX = logicalWidth;
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(underlineStartX, underlineY);
+        ctx.lineTo(underlineEndX, underlineY);
+        ctx.stroke();
     }
     
     function buildMSAView() {
@@ -1479,8 +1524,12 @@
             hasMoved: false
         };
         
-        canvas.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
+        // Shared handler for mouse and touch events
+        const handlePointerDown = (e) => {
+            // For mouse events, only handle left button
+            if (e.button !== undefined && e.button !== 0) return;
+            // For touch events, only handle single touch
+            if (e.touches && e.touches.length !== 1) return;
             
             const pos = getCanvasPositionFromMouse(e, canvas);
             const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
@@ -1508,6 +1557,7 @@
                     
                     const handleDrag = (e) => {
                         if (!scrollbarDragState.isDragging) return;
+                        e.preventDefault();
                         const dragPos = getCanvasPositionFromMouse(e, canvas);
                         const deltaY = dragPos.y - scrollbarDragState.dragStartY;
                         if (Math.abs(deltaY) > 2) {
@@ -1523,10 +1573,14 @@
                         scrollbarDragState.dragType = null;
                         window.removeEventListener('mousemove', handleDrag);
                         window.removeEventListener('mouseup', handleDragEnd);
+                        window.removeEventListener('touchmove', handleDrag);
+                        window.removeEventListener('touchend', handleDragEnd);
                     };
                     
                     window.addEventListener('mousemove', handleDrag);
                     window.addEventListener('mouseup', handleDragEnd);
+                    window.addEventListener('touchmove', handleDrag, { passive: false });
+                    window.addEventListener('touchend', handleDragEnd);
                     return;
                 } else if (pos.y >= scrollableAreaY) {
                     const newScrollRatio = Math.max(0, Math.min(1, (pos.y - scrollableAreaY - thumbHeight / 2) / (scrollableAreaHeight - thumbHeight)));
@@ -1561,6 +1615,7 @@
                         
                         const handleDrag = (e) => {
                             if (!scrollbarDragState.isDragging) return;
+                            e.preventDefault();
                             const dragPos = getCanvasPositionFromMouse(e, canvas);
                             const deltaX = dragPos.x - scrollbarDragState.dragStartY;
                             if (Math.abs(deltaX) > 2) {
@@ -1575,10 +1630,14 @@
                             scrollbarDragState.dragType = null;
                             window.removeEventListener('mousemove', handleDrag);
                             window.removeEventListener('mouseup', handleDragEnd);
+                            window.removeEventListener('touchmove', handleDrag);
+                            window.removeEventListener('touchend', handleDragEnd);
                         };
                         
                         window.addEventListener('mousemove', handleDrag);
                         window.addEventListener('mouseup', handleDragEnd);
+                        window.addEventListener('touchmove', handleDrag, { passive: false });
+                        window.addEventListener('touchend', handleDragEnd);
                         return;
                     } else if (pos.x >= scrollableAreaX) {
                         const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
@@ -1589,7 +1648,67 @@
                     }
                 }
             }
-        });
+            
+            // Grab and drag panning - check if click is in scrollable content area
+            // Reuse scrollableAreaX, scrollableAreaWidth, scrollableAreaY, and scrollableAreaHeight from above
+            
+            if (pos.x >= scrollableAreaX && pos.x < canvasWidth - SCROLLBAR_WIDTH &&
+                pos.y >= scrollableAreaY && pos.y < canvasHeight - SCROLLBAR_WIDTH) {
+                // Start pan drag
+                let panDragState = {
+                    isDragging: true,
+                    startX: pos.x,
+                    startY: pos.y,
+                    startScrollLeft: scrollLeft,
+                    startScrollTop: scrollTop
+                };
+                
+                canvas.style.cursor = 'grabbing';
+                e.preventDefault();
+                
+                const handlePanDrag = (e) => {
+                    if (!panDragState.isDragging) return;
+                    e.preventDefault();
+                    const dragPos = getCanvasPositionFromMouse(e, canvas);
+                    const deltaX = panDragState.startX - dragPos.x;
+                    const deltaY = panDragState.startY - dragPos.y;
+                    
+                    // Horizontal scrolling
+                    const totalScrollableWidth = msaData.queryLength * MSA_CHAR_WIDTH;
+                    const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
+                    scrollLeft = Math.max(0, Math.min(maxScrollX, panDragState.startScrollLeft + deltaX));
+                    
+                    // Vertical scrolling
+                    const totalScrollableHeight = (msaData.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
+                    const maxScroll = Math.max(0, totalScrollableHeight - scrollableAreaHeight);
+                    scrollTop = Math.max(0, Math.min(maxScroll, panDragState.startScrollTop + deltaY));
+                    clampScrollTop(canvasHeight);
+                    
+                    scheduleRender();
+                };
+                
+                const handlePanDragEnd = () => {
+                    panDragState.isDragging = false;
+                    canvas.style.cursor = 'default';
+                    window.removeEventListener('mousemove', handlePanDrag);
+                    window.removeEventListener('mouseup', handlePanDragEnd);
+                    window.removeEventListener('touchmove', handlePanDrag);
+                    window.removeEventListener('touchend', handlePanDragEnd);
+                };
+                
+                window.addEventListener('mousemove', handlePanDrag);
+                window.addEventListener('mouseup', handlePanDragEnd);
+                window.addEventListener('touchmove', handlePanDrag, { passive: false });
+                window.addEventListener('touchend', handlePanDragEnd);
+                return;
+            }
+        };
+        
+        canvas.addEventListener('mousedown', handlePointerDown);
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent scrolling
+            handlePointerDown(e);
+        }, { passive: false });
         
         
         // Initial render
@@ -1682,8 +1801,12 @@
             dragStartScroll: 0
         };
         
-        canvas.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
+        // Shared handler for mouse and touch events
+        const handlePointerDown = (e) => {
+            // For mouse events, only handle left button
+            if (e.button !== undefined && e.button !== 0) return;
+            // For touch events, only handle single touch
+            if (e.touches && e.touches.length !== 1) return;
             
             const pos = getCanvasPositionFromMouse(e, canvas);
             const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
@@ -1709,6 +1832,7 @@
                         
                         const handleDrag = (e) => {
                             if (!scrollbarDragState.isDragging) return;
+                            e.preventDefault();
                             const dragPos = getCanvasPositionFromMouse(e, canvas);
                             const deltaX = dragPos.x - scrollbarDragState.dragStartY;
                             if (Math.abs(deltaX) > 2) {
@@ -1723,10 +1847,14 @@
                             scrollbarDragState.dragType = null;
                             window.removeEventListener('mousemove', handleDrag);
                             window.removeEventListener('mouseup', handleDragEnd);
+                            window.removeEventListener('touchmove', handleDrag);
+                            window.removeEventListener('touchend', handleDragEnd);
                         };
                         
                         window.addEventListener('mousemove', handleDrag);
                         window.addEventListener('mouseup', handleDragEnd);
+                        window.addEventListener('touchmove', handleDrag, { passive: false });
+                        window.addEventListener('touchend', handleDragEnd);
                         return;
                     } else if (pos.x >= scrollableAreaX) {
                         const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
@@ -1737,7 +1865,58 @@
                     }
                 }
             }
-        });
+            
+            // Grab and drag panning - check if click is in scrollable content area
+            // Reuse scrollableAreaX, scrollableAreaY, scrollableAreaWidth, and scrollableAreaHeight from above
+            
+            if (pos.x >= scrollableAreaX && pos.x < canvasWidth &&
+                pos.y >= scrollableAreaY && pos.y < canvasHeight - SCROLLBAR_WIDTH) {
+                // Start pan drag
+                let panDragState = {
+                    isDragging: true,
+                    startX: pos.x,
+                    startScrollLeft: scrollLeft
+                };
+                
+                canvas.style.cursor = 'grabbing';
+                e.preventDefault();
+                
+                const handlePanDrag = (e) => {
+                    if (!panDragState.isDragging) return;
+                    e.preventDefault();
+                    const dragPos = getCanvasPositionFromMouse(e, canvas);
+                    const deltaX = panDragState.startX - dragPos.x;
+                    
+                    // Horizontal scrolling
+                    const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
+                    const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
+                    scrollLeft = Math.max(0, Math.min(maxScrollX, panDragState.startScrollLeft + deltaX));
+                    
+                    scheduleRender();
+                };
+                
+                const handlePanDragEnd = () => {
+                    panDragState.isDragging = false;
+                    canvas.style.cursor = 'default';
+                    window.removeEventListener('mousemove', handlePanDrag);
+                    window.removeEventListener('mouseup', handlePanDragEnd);
+                    window.removeEventListener('touchmove', handlePanDrag);
+                    window.removeEventListener('touchend', handlePanDragEnd);
+                };
+                
+                window.addEventListener('mousemove', handlePanDrag);
+                window.addEventListener('mouseup', handlePanDragEnd);
+                window.addEventListener('touchmove', handlePanDrag, { passive: false });
+                window.addEventListener('touchend', handlePanDragEnd);
+                return;
+            }
+        };
+        
+        canvas.addEventListener('mousedown', handlePointerDown);
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent scrolling
+            handlePointerDown(e);
+        }, { passive: false });
         
         renderPSSMCanvas();
     }
@@ -1765,10 +1944,15 @@
         const canvasWidth = containerWidth;
         
         // FIXED HEIGHT for Logo mode
+        // Layout: Logo at top (extends to query), black bar above query, query sequence below, tick marks below query, scrollbar at bottom
         const queryRowHeight = CHAR_WIDTH;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
-        const logoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
-        const canvasHeight = TICK_ROW_HEIGHT + queryRowHeight + logoHeight + SCROLLBAR_WIDTH;
+        const LOGO_VERTICAL_PADDING = 12;
+        const originalLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        const logoStartY = LOGO_VERTICAL_PADDING;
+        const queryY = logoStartY + originalLogoHeight; // Logo extends all the way to query with no gap
+        const tickY = queryY + queryRowHeight;
+        const canvasHeight = tickY + TICK_ROW_HEIGHT + SCROLLBAR_WIDTH;
         
         container.style.width = '100%'; // Fill parent exactly
         container.style.height = canvasHeight + 'px';
@@ -1828,8 +2012,12 @@
             dragStartScroll: 0
         };
         
-        canvas.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
+        // Shared handler for mouse and touch events
+        const handlePointerDown = (e) => {
+            // For mouse events, only handle left button
+            if (e.button !== undefined && e.button !== 0) return;
+            // For touch events, only handle single touch
+            if (e.touches && e.touches.length !== 1) return;
             
             const pos = getCanvasPositionFromMouse(e, canvas);
             const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
@@ -1855,6 +2043,7 @@
                         
                         const handleDrag = (e) => {
                             if (!scrollbarDragState.isDragging) return;
+                            e.preventDefault();
                             const dragPos = getCanvasPositionFromMouse(e, canvas);
                             const deltaX = dragPos.x - scrollbarDragState.dragStartY;
                             if (Math.abs(deltaX) > 2) {
@@ -1869,10 +2058,14 @@
                             scrollbarDragState.dragType = null;
                             window.removeEventListener('mousemove', handleDrag);
                             window.removeEventListener('mouseup', handleDragEnd);
+                            window.removeEventListener('touchmove', handleDrag);
+                            window.removeEventListener('touchend', handleDragEnd);
                         };
                         
                         window.addEventListener('mousemove', handleDrag);
                         window.addEventListener('mouseup', handleDragEnd);
+                        window.addEventListener('touchmove', handleDrag, { passive: false });
+                        window.addEventListener('touchend', handleDragEnd);
                         return;
                     } else if (pos.x >= scrollableAreaX) {
                         const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
@@ -1883,7 +2076,58 @@
                     }
                 }
             }
-        });
+            
+            // Grab and drag panning - check if click is in scrollable content area
+            // Reuse scrollableAreaX, scrollableAreaY, scrollableAreaWidth, and scrollableAreaHeight from above
+            
+            if (pos.x >= scrollableAreaX && pos.x < canvasWidth &&
+                pos.y >= scrollableAreaY && pos.y < canvasHeight - SCROLLBAR_WIDTH) {
+                // Start pan drag
+                let panDragState = {
+                    isDragging: true,
+                    startX: pos.x,
+                    startScrollLeft: scrollLeft
+                };
+                
+                canvas.style.cursor = 'grabbing';
+                e.preventDefault();
+                
+                const handlePanDrag = (e) => {
+                    if (!panDragState.isDragging) return;
+                    e.preventDefault();
+                    const dragPos = getCanvasPositionFromMouse(e, canvas);
+                    const deltaX = panDragState.startX - dragPos.x;
+                    
+                    // Horizontal scrolling
+                    const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
+                    const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
+                    scrollLeft = Math.max(0, Math.min(maxScrollX, panDragState.startScrollLeft + deltaX));
+                    
+                    scheduleRender();
+                };
+                
+                const handlePanDragEnd = () => {
+                    panDragState.isDragging = false;
+                    canvas.style.cursor = 'default';
+                    window.removeEventListener('mousemove', handlePanDrag);
+                    window.removeEventListener('mouseup', handlePanDragEnd);
+                    window.removeEventListener('touchmove', handlePanDrag);
+                    window.removeEventListener('touchend', handlePanDragEnd);
+                };
+                
+                window.addEventListener('mousemove', handlePanDrag);
+                window.addEventListener('mouseup', handlePanDragEnd);
+                window.addEventListener('touchmove', handlePanDrag, { passive: false });
+                window.addEventListener('touchend', handlePanDragEnd);
+                return;
+            }
+        };
+        
+        canvas.addEventListener('mousedown', handlePointerDown);
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent scrolling
+            handlePointerDown(e);
+        }, { passive: false });
         
         
         renderLogoCanvas();
