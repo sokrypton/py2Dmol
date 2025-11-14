@@ -231,20 +231,20 @@
 </head>
 <body>
     <div class="mx-auto" style="width: 948px; position: relative;">
-        <h1>MSA Viewer (Resizable)</h1>
-        <p class="description">Upload A3M files to visualize multiple sequence alignments. Drag the bottom-right corner to resize width and height.</p>
+        <h1><strong>MSA Viewer</strong></h1>
+        <p class="description">Upload A3M, FASTA, or STO file to visualize multiple sequence alignment</p>
         
         <!-- Upload Section -->
         <div class="container-box upload-section" style="width: 948px; margin-bottom: 10px;">
             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
-                Upload A3M File
+                Upload MSA File
             </label>
             <div style="display: flex; gap: 8px; align-items: center;">
                 <button id="upload-button" class="btn btn-primary">
                     <i class="fa-solid fa-file-arrow-up"></i>
-                    <span>Choose A3M File</span>
+                    <span>Choose MSA File</span>
                 </button>
-                <input type="file" id="file-upload" accept=".a3m" class="hidden">
+                <input type="file" id="file-upload" accept=".a3m,.fasta,.fa,.fas,.sto" class="hidden">
                 <span id="file-name" style="color: #6b7280; font-size: 14px;"></span>
             </div>
             <div id="status-message" style="display: none; margin-top: 12px;"></div>
@@ -278,6 +278,9 @@
                             <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
                             <span>Bit-score</span>
                         </label>
+                    </div>
+                    <div id="msaSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="msaSaveFastaButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save Fasta</button>
                     </div>
                     <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
                         <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
@@ -363,11 +366,24 @@
             const msaSortCheckbox = document.getElementById('msaSortCheckbox');
             const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
             const logoBitScoreCheckbox = document.getElementById('logoBitScoreCheckbox');
+            const msaSaveContainer = document.getElementById('msaSaveContainer');
             const logoSaveContainer = document.getElementById('logoSaveContainer');
             const pssmSaveContainer = document.getElementById('pssmSaveContainer');
+            const msaSaveFastaButton = document.getElementById('msaSaveFastaButton');
             const logoSaveSvgButton = document.getElementById('logoSaveSvgButton');
             const pssmSaveSvgButton = document.getElementById('pssmSaveSvgButton');
             const pssmSaveCsvButton = document.getElementById('pssmSaveCsvButton');
+            
+            // Set initial button visibility based on default mode (MSA)
+            if (msaSaveContainer) {
+                msaSaveContainer.style.display = 'flex';
+            }
+            if (logoSaveContainer) {
+                logoSaveContainer.style.display = 'none';
+            }
+            if (pssmSaveContainer) {
+                pssmSaveContainer.style.display = 'none';
+            }
             
             if (msaModeSelect) {
                 msaModeSelect.addEventListener('change', (e) => {
@@ -387,6 +403,9 @@
                     }
                     
                     // Show/hide save buttons based on mode
+                    if (msaSaveContainer) {
+                        msaSaveContainer.style.display = (mode === 'msa') ? 'flex' : 'none';
+                    }
                     if (logoSaveContainer) {
                         logoSaveContainer.style.display = (mode === 'logo') ? 'flex' : 'none';
                     }
@@ -397,6 +416,16 @@
             }
             
             // Wire up save button event listeners
+            if (msaSaveFastaButton && window.MSAViewer) {
+                msaSaveFastaButton.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (window.MSAViewer.saveMSAAsFasta) {
+                        window.MSAViewer.saveMSAAsFasta();
+                    }
+                });
+            }
+            
             if (logoSaveSvgButton && window.MSAViewer) {
                 logoSaveSvgButton.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -518,8 +547,13 @@
             if (!files || files.length === 0) return;
             
             const file = files[0];
-            if (!file.name.toLowerCase().endsWith('.a3m')) {
-                setStatus('Please upload an A3M file (.a3m)', true);
+            const fileName = file.name.toLowerCase();
+            const isA3M = fileName.endsWith('.a3m');
+            const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
+            const isSTO = fileName.endsWith('.sto');
+            
+            if (!isA3M && !isFasta && !isSTO) {
+                setStatus('Please upload an A3M (.a3m), FASTA (.fasta, .fa, .fas), or STO (.sto) file', true);
                 return;
             }
             
@@ -533,25 +567,31 @@
                     // Determine type from filename (unpaired or paired)
                     const type = file.name.toLowerCase().includes('paired') ? 'paired' : 'unpaired';
                     
-                    if (window.MSAViewer && window.MSAViewer.parseA3M) {
-                        const msaData = window.MSAViewer.parseA3M(msaText, type);
-                        if (msaData && msaData.querySequence) {
-                            window.MSAViewer.setMSAData(msaData, null, type);
-                            setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
-                            updateMSASequenceCount();
-                            
-                            // Show MSA viewer container
-                            const msaContainer = document.getElementById('msa-viewer-container');
-                            if (msaContainer) {
-                                msaContainer.style.display = 'block';
-                            }
-                            const msaView = document.getElementById('msaView');
-                            if (msaView) {
-                                msaView.classList.remove('hidden');
-                            }
-                        } else {
-                            setStatus('Failed to parse MSA file', true);
+                    let msaData = null;
+                    if (isA3M && window.MSAViewer && window.MSAViewer.parseA3M) {
+                        msaData = window.MSAViewer.parseA3M(msaText, type);
+                    } else if (isFasta && window.MSAViewer && window.MSAViewer.parseFasta) {
+                        msaData = window.MSAViewer.parseFasta(msaText, type);
+                    } else if (isSTO && window.MSAViewer && window.MSAViewer.parseSTO) {
+                        msaData = window.MSAViewer.parseSTO(msaText, type);
+                    }
+                    
+                    if (msaData && msaData.querySequence) {
+                        window.MSAViewer.setMSAData(msaData, null, type);
+                        setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+                        updateMSASequenceCount();
+                        
+                        // Show MSA viewer container
+                        const msaContainer = document.getElementById('msa-viewer-container');
+                        if (msaContainer) {
+                            msaContainer.style.display = 'block';
                         }
+                        const msaView = document.getElementById('msaView');
+                        if (msaView) {
+                            msaView.classList.remove('hidden');
+                        }
+                    } else {
+                        setStatus('Failed to parse MSA file', true);
                     }
                 } catch (error) {
                     console.error('Error loading MSA:', error);
@@ -635,11 +675,16 @@
                 const files = e.dataTransfer.files;
                 if (files && files.length > 0) {
                     const file = files[0];
-                    if (file.name.toLowerCase().endsWith('.a3m')) {
+                    const fileName = file.name.toLowerCase();
+                    const isA3M = fileName.endsWith('.a3m');
+                    const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
+                    const isSTO = fileName.endsWith('.sto');
+                    
+                    if (isA3M || isFasta || isSTO) {
                         fileUpload.files = files;
                         handleFileUpload({ target: { files: files } });
                     } else {
-                        setStatus('Please drop an A3M file (.a3m)', true);
+                        setStatus('Please drop an A3M (.a3m), FASTA (.fasta, .fa, .fas), or STO (.sto) file', true);
                     }
                 }
             }, false);

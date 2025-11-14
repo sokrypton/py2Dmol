@@ -5,7 +5,7 @@
 
 (function() {
     'use strict';
-    
+
     // ============================================================================
     // SIMPLE CANVAS2SVG FOR MSA VIEWER
     // ============================================================================
@@ -658,7 +658,7 @@
                 if (currentHeader && currentSequence) {
                     const alignedSequence = currentSequence.replace(/[a-z]/g, '').toUpperCase();
                     sequences.push({
-                        header: truncateSequenceName(currentHeader),
+                        header: currentHeader, // Preserve full header
                         sequence: alignedSequence,
                         isPaired: isPaired,
                         similarity: 0,
@@ -676,7 +676,7 @@
         if (currentHeader && currentSequence) {
             const alignedSequence = currentSequence.replace(/[a-z]/g, '').toUpperCase();
             sequences.push({
-                header: truncateSequenceName(currentHeader),
+                header: currentHeader, // Preserve full header
                 sequence: alignedSequence,
                 isPaired: isPaired,
                 similarity: 0,
@@ -696,6 +696,204 @@
         return {
             sequences: sorted,
             sequencesOriginal: sequences, // Store original order
+            querySequence: querySequence,
+            queryLength: queryLength,
+            queryIndex: queryIndex
+        };
+    }
+    
+    function parseFasta(fileContent, type = 'unpaired') {
+        const isPaired = type === 'paired';
+        const lines = fileContent.split('\n');
+        const sequences = [];
+        let currentHeader = null;
+        let currentSequence = '';
+        
+        // Parse FASTA format
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            
+            if (line.startsWith('>')) {
+                if (currentHeader && currentSequence) {
+                    // Preserve gaps, only convert to uppercase
+                    const alignedSequence = currentSequence.toUpperCase();
+                    sequences.push({
+                        header: currentHeader, // Preserve full header
+                        sequence: alignedSequence,
+                        isPaired: isPaired,
+                        similarity: 0,
+                        coverage: 0
+                    });
+                }
+                const fullHeader = line.substring(1);
+                currentHeader = fullHeader.split(/[\s\t]/)[0];
+                currentSequence = '';
+            } else {
+                currentSequence += line;
+            }
+        }
+        
+        // Handle last sequence
+        if (currentHeader && currentSequence) {
+            // Preserve gaps, only convert to uppercase
+            const alignedSequence = currentSequence.toUpperCase();
+            sequences.push({
+                header: currentHeader, // Preserve full header
+                sequence: alignedSequence,
+                isPaired: isPaired,
+                similarity: 0,
+                coverage: 0
+            });
+        }
+        
+        if (sequences.length === 0) return null;
+        
+        // First sequence is the query
+        const queryIndex = 0;
+        const originalQuerySequence = sequences[queryIndex].sequence;
+        
+        // Identify positions in query that are gaps ("-")
+        // Build array of indices to keep (non-gap positions in query)
+        const positionsToKeep = [];
+        for (let i = 0; i < originalQuerySequence.length; i++) {
+            if (originalQuerySequence[i] !== '-') {
+                positionsToKeep.push(i);
+            }
+        }
+        
+        // Remove gap positions from query sequence
+        const querySequence = positionsToKeep.map(i => originalQuerySequence[i]).join('');
+        const queryLength = querySequence.length;
+        
+        // Filter all sequences: remove positions where query has gaps
+        // Also truncate sequences longer than query to query's original length first
+        const originalQueryLength = originalQuerySequence.length;
+        const filteredSequences = sequences.map(seq => {
+            let sequence = seq.sequence;
+            
+            // First, truncate if longer than original query length
+            if (sequence.length > originalQueryLength) {
+                sequence = sequence.substring(0, originalQueryLength);
+            }
+            
+            // Then, remove positions where query has gaps
+            const filteredSequence = positionsToKeep.map(i => {
+                // If sequence is shorter than original query, pad with gaps
+                return (i < sequence.length) ? sequence[i] : '-';
+            }).join('');
+            
+            return {
+                ...seq,
+                sequence: filteredSequence
+            };
+        });
+        
+        const sorted = sortSequencesBySimilarity(filteredSequences, querySequence);
+        
+        return {
+            sequences: sorted,
+            sequencesOriginal: filteredSequences, // Store original order
+            querySequence: querySequence,
+            queryLength: queryLength,
+            queryIndex: queryIndex
+        };
+    }
+    
+    function parseSTO(fileContent, type = 'unpaired') {
+        const isPaired = type === 'paired';
+        const lines = fileContent.split('\n');
+        const sequences = new Map(); // Use Map to handle multi-line sequences
+        let inAlignment = false;
+        
+        // Parse STO format
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            
+            // Skip empty lines and comments/annotations
+            if (!line || line.startsWith('#') || line === '//') {
+                if (line === '//') break; // End of alignment
+                continue;
+            }
+            
+            // Check for STOCKHOLM header (optional, but good to recognize)
+            if (line.startsWith('# STOCKHOLM')) {
+                inAlignment = true;
+                continue;
+            }
+            
+            // Parse sequence line: <name> <sequence>
+            // Name and sequence are separated by whitespace
+            const parts = line.split(/\s+/);
+            if (parts.length < 2) continue;
+            
+            const name = parts[0];
+            const sequencePart = parts.slice(1).join('').toUpperCase(); // Join in case of spaces in sequence
+            
+            if (sequences.has(name)) {
+                // Append to existing sequence (multi-line sequences)
+                sequences.set(name, sequences.get(name) + sequencePart);
+            } else {
+                sequences.set(name, sequencePart);
+            }
+        }
+        
+        if (sequences.size === 0) return null;
+        
+        // Convert Map to array, preserving insertion order
+        const sequencesArray = Array.from(sequences.entries()).map(([header, sequence]) => ({
+            header: header, // Preserve full header
+            sequence: sequence,
+            isPaired: isPaired,
+            similarity: 0,
+            coverage: 0
+        }));
+        
+        // First sequence is the query
+        const queryIndex = 0;
+        const originalQuerySequence = sequencesArray[queryIndex].sequence;
+        
+        // Identify positions in query that are gaps ("-")
+        // Build array of indices to keep (non-gap positions in query)
+        const positionsToKeep = [];
+        for (let i = 0; i < originalQuerySequence.length; i++) {
+            if (originalQuerySequence[i] !== '-') {
+                positionsToKeep.push(i);
+            }
+        }
+        
+        // Remove gap positions from query sequence
+        const querySequence = positionsToKeep.map(i => originalQuerySequence[i]).join('');
+        const queryLength = querySequence.length;
+        
+        // Filter all sequences: remove positions where query has gaps
+        // Also truncate sequences longer than query to query's original length first
+        const originalQueryLength = originalQuerySequence.length;
+        const filteredSequences = sequencesArray.map(seq => {
+            let sequence = seq.sequence;
+            
+            // First, truncate if longer than original query length
+            if (sequence.length > originalQueryLength) {
+                sequence = sequence.substring(0, originalQueryLength);
+            }
+            
+            // Then, remove positions where query has gaps
+            const filteredSequence = positionsToKeep.map(i => {
+                // If sequence is shorter than original query, pad with gaps
+                return (i < sequence.length) ? sequence[i] : '-';
+            }).join('');
+            
+            return {
+                ...seq,
+                sequence: filteredSequence
+            };
+        });
+        
+        const sorted = sortSequencesBySimilarity(filteredSequences, querySequence);
+        
+        return {
+            sequences: sorted,
+            sequencesOriginal: filteredSequences, // Store original order
             querySequence: querySequence,
             queryLength: queryLength,
             queryIndex: queryIndex
@@ -2061,8 +2259,8 @@
             this.scrollbarDragState.dragType = 'vertical';
             this.scrollbarDragState.dragStartY = startY;
             this.scrollbarDragState.dragStartScroll = scrollTop;
-            
-            const handleDrag = (e) => {
+                        
+                        const handleDrag = (e) => {
                 if (!this.scrollbarDragState.isDragging || this.scrollbarDragState.dragType !== 'vertical') return;
                 e.preventDefault();
                 const dragPos = getCanvasPositionFromMouse(e, this.canvas);
@@ -2815,6 +3013,8 @@
         },
         
         parseA3M: parseA3M,
+        parseFasta: parseFasta,
+        parseSTO: parseSTO,
         
         getMSAData: function() {
             return msaData;
@@ -3128,6 +3328,30 @@
             
             // Download CSV
             downloadFile(csv, 'msa_pssm', 'csv', 'text/csv;charset=utf-8');
+        },
+        
+        saveMSAAsFasta: function() {
+            if (!msaData || !msaData.sequences || msaData.sequences.length === 0) {
+                console.error('MSA data not available');
+                return;
+            }
+            
+            // Build FASTA output from currently filtered/visible sequences
+            let fasta = '';
+            
+            for (const seq of msaData.sequences) {
+                // FASTA format: >header\nsequence\n
+                const header = seq.header || 'Unknown';
+                const sequence = seq.sequence || '';
+                
+                // Ensure header starts with '>' if it doesn't already
+                const fastaHeader = header.startsWith('>') ? header : '>' + header;
+                fasta += fastaHeader + '\n';
+                fasta += sequence + '\n';
+            }
+            
+            // Download FASTA
+            downloadFile(fasta, 'msa_sequences', 'fasta', 'text/plain;charset=utf-8');
         },
         
         setMSAMode: function(mode) {
