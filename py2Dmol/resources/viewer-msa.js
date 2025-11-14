@@ -507,6 +507,48 @@
         return { scrollableAreaY, scrollableAreaHeight };
     }
     
+    /**
+     * Calculate scroll limits for a given mode
+     * @param {string} mode - 'msa', 'pssm', or 'logo'
+     * @param {number} charWidth - Character width for the mode
+     * @param {number} canvasWidth - Canvas width
+     * @param {number} canvasHeight - Canvas height
+     * @returns {Object} Object with horizontal and vertical scroll limits
+     */
+    function getScrollLimitsForMode(mode, charWidth, canvasWidth, canvasHeight) {
+        if (!msaData) {
+            return {
+                horizontal: { total: 0, max: 0 },
+                vertical: { total: 0, max: 0 }
+            };
+        }
+        
+        const { scrollableAreaX, scrollableAreaWidth, scrollableAreaHeight } = 
+            getScrollableAreaForMode(mode, canvasWidth, canvasHeight);
+        
+        const totalScrollableWidth = msaData.queryLength * charWidth;
+        const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
+        
+        let totalScrollableHeight = 0;
+        let maxScrollY = 0;
+        
+        if (mode === 'msa') {
+            totalScrollableHeight = (msaData.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
+            maxScrollY = Math.max(0, totalScrollableHeight - scrollableAreaHeight);
+        }
+        
+        return {
+            horizontal: {
+                total: totalScrollableWidth,
+                max: maxScrollX
+            },
+            vertical: {
+                total: totalScrollableHeight,
+                max: maxScrollY
+            }
+        };
+    }
+    
     function clampScrollTop(canvasHeight) {
         if (!msaData) return;
         const { scrollableAreaHeight } = getScrollableAreaDimensions(canvasHeight);
@@ -710,6 +752,20 @@
         // Calculate Y position based on actual sequence index to prevent jumping
         // Sequence 1 starts at scrollableAreaY when scrollTop = 0
         // As we scroll down (scrollTop increases), sequences move up
+        
+        // Pre-calculate constants for performance
+        const minX = scrollableAreaX;
+        const maxX = logicalWidth - SCROLLBAR_WIDTH;
+        const scrollLeftMod = scrollLeft % MSA_CHAR_WIDTH;
+        const halfCharWidth = MSA_CHAR_WIDTH / 2;
+        const halfRowHeight = SEQUENCE_ROW_HEIGHT / 2;
+        
+        // Set text properties once for sequence names
+        ctx.fillStyle = '#333';
+        ctx.font = '12px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        
         for (let i = visibleSequenceStart; i < visibleSequenceEnd && i < msaData.sequences.length; i++) {
             if (i === 0) continue; // Skip query (drawn separately)
             
@@ -721,16 +777,14 @@
             if (y + SEQUENCE_ROW_HEIGHT < scrollableAreaY || y > logicalHeight - SCROLLBAR_WIDTH) continue;
             
             // Draw sequence name
-            ctx.fillStyle = '#333';
-            ctx.font = '12px monospace';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(seq.header, 5, y + SEQUENCE_ROW_HEIGHT / 2);
+            ctx.fillText(seq.header, 5, y + halfRowHeight);
             
             // Draw sequence
-            let xOffset = scrollableAreaX - (scrollLeft % MSA_CHAR_WIDTH);
-            const minX = scrollableAreaX;
-            const maxX = logicalWidth - SCROLLBAR_WIDTH;
+            let xOffset = scrollableAreaX - scrollLeftMod;
+            
+            // Set text properties for amino acids once per sequence
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'center';
             
             for (let pos = visibleStartPos; pos < visibleEndPos && pos < seq.sequence.length; pos++) {
                 if (xOffset + MSA_CHAR_WIDTH < minX) {
@@ -741,7 +795,6 @@
                 
                 const aa = seq.sequence[pos];
                 const color = getDayhoffColor(aa);
-                const r = color.r, g = color.g, b = color.b;
                 
                 // Draw cell with clipping
                 if (xOffset + MSA_CHAR_WIDTH >= minX && xOffset < maxX) {
@@ -750,14 +803,11 @@
                     ctx.rect(minX, scrollableAreaY, maxX - minX, scrollableAreaHeight);
                     ctx.clip();
                     
-                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                    ctx.fillStyle = `rgb(${color.r}, ${color.g}, ${color.b})`;
                     ctx.fillRect(xOffset, y, MSA_CHAR_WIDTH, SEQUENCE_ROW_HEIGHT);
                     
                     ctx.fillStyle = '#000';
-                    ctx.font = '10px monospace';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(aa, xOffset + MSA_CHAR_WIDTH / 2, y + SEQUENCE_ROW_HEIGHT / 2);
+                    ctx.fillText(aa, xOffset + halfCharWidth, y + halfRowHeight);
                     
                     ctx.restore();
                 }
@@ -1407,22 +1457,340 @@
         ctx.stroke();
     }
     
-    function buildMSAView() {
-        const msaViewEl = document.getElementById('msaView');
-        if (!msaViewEl) {
-            console.warn('MSA Viewer: msaView element not found');
-            return;
+    // ============================================================================
+    // SHARED INTERACTION MANAGER
+    // ============================================================================
+    // Consolidates event handling for all three modes to eliminate duplication
+    
+    class ViewInteractionManager {
+        constructor(canvas, mode, config) {
+            this.canvas = canvas;
+            this.mode = mode;
+            this.config = config; // { charWidth, supportsVerticalScroll, getScrollLimits }
+            this.listeners = [];
+            this.scrollbarDragState = {
+                isDragging: false,
+                dragType: null,
+                dragStartY: 0,
+                dragStartScroll: 0
+            };
+            this.panDragState = null;
+            // Cache for canvas dimensions to avoid repeated calculations
+            this._cachedDimensions = null;
+            this._cachedScrollableArea = null;
+            this._cachedScrollLimits = null;
+        }
+        
+        _getCanvasDimensions() {
+            // Cache dimensions (only invalidate on resize, which rebuilds the view)
+            if (!this._cachedDimensions) {
+                this._cachedDimensions = getLogicalCanvasDimensions(this.canvas);
+            }
+            return this._cachedDimensions;
+        }
+        
+        _getScrollableArea() {
+            if (!this._cachedScrollableArea) {
+                const { logicalWidth, logicalHeight } = this._getCanvasDimensions();
+                this._cachedScrollableArea = this.config.getScrollableArea(logicalWidth, logicalHeight);
+            }
+            return this._cachedScrollableArea;
+        }
+        
+        _getScrollLimits() {
+            if (!this._cachedScrollLimits) {
+                const { logicalWidth, logicalHeight } = this._getCanvasDimensions();
+                this._cachedScrollLimits = this.config.getScrollLimits(logicalWidth, logicalHeight);
+            }
+            return this._cachedScrollLimits;
+        }
+        
+        _invalidateCache() {
+            this._cachedDimensions = null;
+            this._cachedScrollableArea = null;
+            this._cachedScrollLimits = null;
+        }
+        
+        setupWheelScrolling() {
+            const handler = (e) => {
+                e.preventDefault();
+                const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = this._getCanvasDimensions();
+                const { scrollableAreaX, scrollableAreaWidth } = this._getScrollableArea();
+                const limits = this._getScrollLimits();
+                
+                const hasHorizontalDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+                const isShiftScroll = e.shiftKey && Math.abs(e.deltaY) > 0;
+                
+                if (hasHorizontalDelta || isShiftScroll) {
+                    const delta = hasHorizontalDelta ? e.deltaX : (isShiftScroll ? e.deltaY : 0);
+                    if (delta !== 0 && limits.horizontal.max > 0) {
+                        scrollLeft = Math.max(0, Math.min(limits.horizontal.max, scrollLeft + delta));
+                        scheduleRender();
+                        return;
+                    }
+                }
+                
+                if (this.config.supportsVerticalScroll && Math.abs(e.deltaY) > 0 && !hasHorizontalDelta && !isShiftScroll) {
+                    scrollTop = Math.max(0, Math.min(limits.vertical.max, scrollTop + e.deltaY));
+                    if (this.config.clampScrollTop) {
+                        this.config.clampScrollTop(canvasHeight);
+                    }
+                    scheduleRender();
+                }
+            };
+            
+            this.canvas.addEventListener('wheel', handler, { passive: false });
+            this.listeners.push({ element: this.canvas, event: 'wheel', handler });
+        }
+        
+        setupPointerInteractions() {
+            const handlePointerDown = (e) => {
+                // For mouse events, only handle left button
+                if (e.button !== undefined && e.button !== 0) return;
+                // For touch events, only handle single touch
+                if (e.touches && e.touches.length !== 1) return;
+                
+                const pos = getCanvasPositionFromMouse(e, this.canvas);
+                const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = this._getCanvasDimensions();
+                const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
+                    this._getScrollableArea();
+                const limits = this._getScrollLimits();
+                
+                // Check scrollbars (vertical for MSA, horizontal for all)
+                if (this.config.supportsVerticalScroll) {
+                    const vScrollbarX = canvasWidth - SCROLLBAR_WIDTH;
+                    const vScrollbarYEnd = canvasHeight - SCROLLBAR_WIDTH;
+                    
+                    if (pos.x >= vScrollbarX && pos.x <= canvasWidth && pos.y >= scrollableAreaY && pos.y < vScrollbarYEnd) {
+                        if (this.config.clampScrollTop) {
+                            this.config.clampScrollTop(canvasHeight);
+                        }
+                        const maxScroll = limits.vertical.max;
+                        const scrollRatio = maxScroll > 0 ? Math.min(1, Math.max(0, scrollTop / maxScroll)) : 0;
+                        const thumbHeight = Math.max(20, (scrollableAreaHeight / limits.vertical.total) * scrollableAreaHeight);
+                        const thumbY = scrollableAreaY + scrollRatio * (scrollableAreaHeight - thumbHeight);
+                        
+                        if (pos.y >= thumbY && pos.y <= thumbY + thumbHeight) {
+                            this.startVerticalScrollbarDrag(pos.y, scrollableAreaHeight, thumbHeight, maxScroll, canvasHeight);
+                            e.preventDefault();
+                            return;
+                        } else if (pos.y >= scrollableAreaY) {
+                            const newScrollRatio = Math.max(0, Math.min(1, (pos.y - scrollableAreaY - thumbHeight / 2) / (scrollableAreaHeight - thumbHeight)));
+                            scrollTop = Math.max(0, Math.min(maxScroll, newScrollRatio * maxScroll));
+                            if (this.config.clampScrollTop) {
+                                this.config.clampScrollTop(canvasHeight);
+                            }
+                            scheduleRender();
+                            e.preventDefault();
+                            return;
+                        }
+                    }
+                }
+                
+                // Check horizontal scrollbar
+                const hScrollbarY = canvasHeight - SCROLLBAR_WIDTH;
+                const hScrollbarXEnd = canvasWidth - (this.config.supportsVerticalScroll ? SCROLLBAR_WIDTH : 0);
+                
+                if (pos.y >= hScrollbarY && pos.y <= canvasHeight && pos.x >= scrollableAreaX && pos.x < hScrollbarXEnd) {
+                    if (limits.horizontal.max > 0) {
+                        const scrollRatioX = scrollLeft / limits.horizontal.max;
+                        const thumbWidth = Math.max(20, (scrollableAreaWidth / limits.horizontal.total) * scrollableAreaWidth);
+                        const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
+                        
+                        if (pos.x >= thumbX && pos.x <= thumbX + thumbWidth) {
+                            this.startHorizontalScrollbarDrag(pos.x, scrollableAreaWidth, thumbWidth, limits.horizontal.max);
+                            e.preventDefault();
+                            return;
+                        } else if (pos.x >= scrollableAreaX) {
+                            const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
+                            scrollLeft = Math.max(0, Math.min(limits.horizontal.max, newScrollRatioX * limits.horizontal.max));
+                            scheduleRender();
+                            e.preventDefault();
+                            return;
+                        }
+                    }
+                }
+                
+                // Grab and drag panning
+                const scrollbarWidth = this.config.supportsVerticalScroll ? SCROLLBAR_WIDTH : 0;
+                if (pos.x >= scrollableAreaX && pos.x < canvasWidth - scrollbarWidth &&
+                    pos.y >= scrollableAreaY && pos.y < canvasHeight - SCROLLBAR_WIDTH) {
+                    this.startPanDrag(pos, scrollableAreaX, scrollableAreaWidth, scrollableAreaY, scrollableAreaHeight, canvasWidth, canvasHeight);
+                    e.preventDefault();
+                    return;
+                }
+            };
+            
+            this.canvas.addEventListener('mousedown', handlePointerDown);
+            this.listeners.push({ element: this.canvas, event: 'mousedown', handler: handlePointerDown });
+            
+            const touchHandler = (e) => {
+                e.preventDefault();
+                handlePointerDown(e);
+            };
+            this.canvas.addEventListener('touchstart', touchHandler, { passive: false });
+            this.listeners.push({ element: this.canvas, event: 'touchstart', handler: touchHandler });
+        }
+        
+        startVerticalScrollbarDrag(startY, scrollableAreaHeight, thumbHeight, maxScroll, canvasHeight) {
+            this.scrollbarDragState.isDragging = true;
+            this.scrollbarDragState.dragType = 'vertical';
+            this.scrollbarDragState.dragStartY = startY;
+            this.scrollbarDragState.dragStartScroll = scrollTop;
+            
+            const handleDrag = (e) => {
+                if (!this.scrollbarDragState.isDragging || this.scrollbarDragState.dragType !== 'vertical') return;
+                e.preventDefault();
+                const dragPos = getCanvasPositionFromMouse(e, this.canvas);
+                const deltaY = dragPos.y - this.scrollbarDragState.dragStartY;
+                if (Math.abs(deltaY) > 2) {
+                    const scrollDelta = (deltaY / (scrollableAreaHeight - thumbHeight)) * maxScroll;
+                    scrollTop = Math.max(0, Math.min(maxScroll, this.scrollbarDragState.dragStartScroll + scrollDelta));
+                    if (this.config.clampScrollTop) {
+                        this.config.clampScrollTop(canvasHeight);
+                    }
+                    scheduleRender();
+                }
+            };
+            
+            const handleDragEnd = () => {
+                this.scrollbarDragState.isDragging = false;
+                this.scrollbarDragState.dragType = null;
+                window.removeEventListener('mousemove', handleDrag);
+                window.removeEventListener('mouseup', handleDragEnd);
+                window.removeEventListener('touchmove', handleDrag);
+                window.removeEventListener('touchend', handleDragEnd);
+            };
+            
+            window.addEventListener('mousemove', handleDrag);
+            window.addEventListener('mouseup', handleDragEnd);
+            window.addEventListener('touchmove', handleDrag, { passive: false });
+            window.addEventListener('touchend', handleDragEnd);
+        }
+        
+        startHorizontalScrollbarDrag(startX, scrollableAreaWidth, thumbWidth, maxScrollX) {
+            this.scrollbarDragState.isDragging = true;
+            this.scrollbarDragState.dragType = 'horizontal';
+            this.scrollbarDragState.dragStartY = startX; // Reusing field name for X coordinate
+            this.scrollbarDragState.dragStartScroll = scrollLeft;
+            
+            const handleDrag = (e) => {
+                if (!this.scrollbarDragState.isDragging || this.scrollbarDragState.dragType !== 'horizontal') return;
+                e.preventDefault();
+                const dragPos = getCanvasPositionFromMouse(e, this.canvas);
+                const deltaX = dragPos.x - this.scrollbarDragState.dragStartY;
+                if (Math.abs(deltaX) > 2) {
+                    const scrollDelta = (deltaX / (scrollableAreaWidth - thumbWidth)) * maxScrollX;
+                    scrollLeft = Math.max(0, Math.min(maxScrollX, this.scrollbarDragState.dragStartScroll + scrollDelta));
+                    scheduleRender();
+                }
+            };
+            
+            const handleDragEnd = () => {
+                this.scrollbarDragState.isDragging = false;
+                this.scrollbarDragState.dragType = null;
+                window.removeEventListener('mousemove', handleDrag);
+                window.removeEventListener('mouseup', handleDragEnd);
+                window.removeEventListener('touchmove', handleDrag);
+                window.removeEventListener('touchend', handleDragEnd);
+            };
+            
+            window.addEventListener('mousemove', handleDrag);
+            window.addEventListener('mouseup', handleDragEnd);
+            window.addEventListener('touchmove', handleDrag, { passive: false });
+            window.addEventListener('touchend', handleDragEnd);
+        }
+        
+        startPanDrag(pos, scrollableAreaX, scrollableAreaWidth, scrollableAreaY, scrollableAreaHeight, canvasWidth, canvasHeight) {
+            this.panDragState = {
+                isDragging: true,
+                startX: pos.x,
+                startY: pos.y,
+                startScrollLeft: scrollLeft,
+                startScrollTop: scrollTop
+            };
+            
+            this.canvas.style.cursor = 'grabbing';
+            
+            const handlePanDrag = (e) => {
+                if (!this.panDragState || !this.panDragState.isDragging) return;
+                e.preventDefault();
+                const dragPos = getCanvasPositionFromMouse(e, this.canvas);
+                const deltaX = this.panDragState.startX - dragPos.x;
+                const deltaY = this.panDragState.startY - dragPos.y;
+                
+                // Horizontal scrolling
+                const limits = this._getScrollLimits();
+                scrollLeft = Math.max(0, Math.min(limits.horizontal.max, this.panDragState.startScrollLeft + deltaX));
+                
+                // Vertical scrolling (MSA only)
+                if (this.config.supportsVerticalScroll) {
+                    scrollTop = Math.max(0, Math.min(limits.vertical.max, this.panDragState.startScrollTop + deltaY));
+                    if (this.config.clampScrollTop) {
+                        this.config.clampScrollTop(canvasHeight);
+                    }
+                }
+                
+                scheduleRender();
+            };
+            
+            const handlePanDragEnd = () => {
+                if (this.panDragState) {
+                    this.panDragState.isDragging = false;
+                }
+                this.canvas.style.cursor = 'default';
+                window.removeEventListener('mousemove', handlePanDrag);
+                window.removeEventListener('mouseup', handlePanDragEnd);
+                window.removeEventListener('touchmove', handlePanDrag);
+                window.removeEventListener('touchend', handlePanDragEnd);
+            };
+            
+            window.addEventListener('mousemove', handlePanDrag);
+            window.addEventListener('mouseup', handlePanDragEnd);
+            window.addEventListener('touchmove', handlePanDrag, { passive: false });
+            window.addEventListener('touchend', handlePanDragEnd);
+        }
+        
+        cleanup() {
+            this.listeners.forEach(({ element, event, handler }) => {
+                element.removeEventListener(event, handler);
+            });
+            this.listeners = [];
+            this.scrollbarDragState.isDragging = false;
+            this.panDragState = null;
+        }
+    }
+    
+    // Track active interaction manager for cleanup
+    let activeInteractionManager = null;
+    
+    // ============================================================================
+    // SHARED CANVAS/CONTAINER CREATION
+    // ============================================================================
+    // Consolidates canvas and container setup to eliminate duplication
+    
+    function createViewCanvas(mode, config) {
+        const { 
+            viewElementId, 
+            calculateDimensions, 
+            additionalCanvasData = {}
+        } = config;
+        
+        const viewEl = document.getElementById(viewElementId);
+        if (!viewEl) {
+            console.warn(`MSA Viewer: ${viewElementId} element not found`);
+            return null;
         }
         
         if (!msaData) {
             console.warn('MSA Viewer: No MSA data available');
-            return;
+            return null;
         }
         
+        viewEl.innerHTML = '';
+        viewEl.classList.remove('hidden');
         
-        msaViewEl.innerHTML = '';
-        msaViewEl.classList.remove('hidden');
-        
+        // Create container
         const container = document.createElement('div');
         container.style.overflow = 'hidden';
         container.style.position = 'relative';
@@ -1430,32 +1798,15 @@
         container.style.margin = '0';
         container.style.padding = '0';
         
-        const MSA_CHAR_WIDTH = getCharWidthForMode('msa');
-        const totalWidth = NAME_COLUMN_WIDTH + (msaData.queryLength * MSA_CHAR_WIDTH);
-        const totalHeight = (msaData.sequences.length + 1) * SEQUENCE_ROW_HEIGHT;
+        // Calculate dimensions (mode-specific)
+        const dimensions = calculateDimensions();
+        const { canvasWidth, canvasHeight, totalWidth, totalHeight } = dimensions;
         
-        const queryRowHeight = SEQUENCE_ROW_HEIGHT;
+        // Set container dimensions
+        container.style.width = '100%';
+        container.style.height = canvasHeight + 'px';
         
-        // Calculate actual available space
-        // Container height - header height
-        const msaHeader = document.getElementById('msaHeader');
-        const headerHeight = msaHeader ? msaHeader.offsetHeight + 8 : 40; // header + margin
-        
-        const containerHeight = currentContainerHeight || 450;
-        const availableHeightForCanvas = containerHeight - headerHeight;
-        
-        // Use ALL available height - don't snap to sequence multiples
-        const viewportHeight = availableHeightForCanvas;
-        
-        container.style.height = viewportHeight + 'px';
-        container.style.width = '100%'; // Fill parent width exactly
-        
-        // Calculate canvas width - must fit exactly in container
-        const containerWidth = getContainerWidth();
-        const viewportWidth = containerWidth;
-        const canvasWidth = viewportWidth;
-        const canvasHeight = viewportHeight;
-        
+        // Create canvas
         const canvas = document.createElement('canvas');
         canvas.width = canvasWidth * DPI_MULTIPLIER;
         canvas.height = canvasHeight * DPI_MULTIPLIER;
@@ -1469,273 +1820,80 @@
         canvas.style.padding = '0';
         
         container.appendChild(canvas);
-        msaViewEl.appendChild(container);
+        viewEl.appendChild(container);
         
-        msaCanvasData = {
+        // Create canvas data object
+        const canvasData = {
             canvas: canvas,
             ctx: canvas.getContext('2d'),
             container: container,
             totalWidth: totalWidth,
-            totalHeight: totalHeight
+            ...(totalHeight !== undefined && { totalHeight: totalHeight }),
+            ...additionalCanvasData
         };
         
-        msaCanvasData.ctx.scale(DPI_MULTIPLIER, DPI_MULTIPLIER);
+        // Scale context for high DPI
+        canvasData.ctx.scale(DPI_MULTIPLIER, DPI_MULTIPLIER);
         
-        clampScrollTop(canvasHeight);
-        clampScrollLeft(canvasWidth, MSA_CHAR_WIDTH);
+        return { canvas, container, canvasData, dimensions };
+    }
+    
+    function buildMSAView() {
+        const MSA_CHAR_WIDTH = getCharWidthForMode('msa');
+        const totalWidth = NAME_COLUMN_WIDTH + (msaData.queryLength * MSA_CHAR_WIDTH);
+        const totalHeight = (msaData.sequences.length + 1) * SEQUENCE_ROW_HEIGHT;
         
-        // Setup wheel scrolling
-        canvas.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
-            const scrollableAreaX = NAME_COLUMN_WIDTH;
-            const scrollableAreaWidth = canvasWidth - scrollableAreaX - SCROLLBAR_WIDTH;
-            const totalScrollableWidth = msaData.queryLength * MSA_CHAR_WIDTH;
-            const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-            
-            const hasHorizontalDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-            const isShiftScroll = e.shiftKey && Math.abs(e.deltaY) > 0;
-            
-            if (hasHorizontalDelta || isShiftScroll) {
-                const delta = hasHorizontalDelta ? e.deltaX : (isShiftScroll ? e.deltaY : 0);
-                if (delta !== 0 && maxScrollX > 0) {
-                    scrollLeft = Math.max(0, Math.min(maxScrollX, scrollLeft + delta));
-                    scheduleRender();
-                    return;
-                }
-            }
-            
-            if (Math.abs(e.deltaY) > 0 && !hasHorizontalDelta && !isShiftScroll) {
-                const { scrollableAreaHeight } = getScrollableAreaDimensions(canvasHeight);
-                const totalScrollableHeight = (msaData.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
-                const maxScroll = Math.max(0, totalScrollableHeight - scrollableAreaHeight);
-                scrollTop = Math.max(0, Math.min(maxScroll, scrollTop + e.deltaY));
-                clampScrollTop(canvasHeight);
-                scheduleRender();
-            }
-        }, { passive: false });
+        // Calculate actual available space
+        const msaHeader = document.getElementById('msaHeader');
+        const headerHeight = msaHeader ? msaHeader.offsetHeight + 8 : 40; // header + margin
+        const containerHeight = currentContainerHeight || 450;
+        const availableHeightForCanvas = containerHeight - headerHeight;
+        const containerWidth = getContainerWidth();
         
-        // Setup scrollbar dragging (must be before selection handlers)
-        let scrollbarDragState = {
-            isDragging: false,
-            dragType: null,
-            dragStartY: 0,
-            dragStartScroll: 0,
-            hasMoved: false
+        const result = createViewCanvas('msa', {
+            viewElementId: 'msaView',
+            calculateDimensions: () => ({
+                canvasWidth: containerWidth,
+                canvasHeight: availableHeightForCanvas,
+                totalWidth: totalWidth,
+                totalHeight: totalHeight
+            })
+        });
+        
+        if (!result) return;
+        
+        const { canvas, canvasData } = result;
+        msaCanvasData = canvasData;
+        
+        clampScrollTop(result.dimensions.canvasHeight);
+        clampScrollLeft(result.dimensions.canvasWidth, MSA_CHAR_WIDTH);
+        
+        // Cleanup previous interaction manager if exists
+        if (activeInteractionManager) {
+            activeInteractionManager.cleanup();
+        }
+        
+        // Setup interaction manager with MSA-specific configuration
+        const interactionConfig = {
+            charWidth: MSA_CHAR_WIDTH,
+            supportsVerticalScroll: true,
+            clampScrollTop: (h) => clampScrollTop(h),
+            getScrollableArea: (w, h) => getScrollableAreaForMode('msa', w, h),
+            getScrollLimits: (w, h) => getScrollLimitsForMode('msa', MSA_CHAR_WIDTH, w, h)
         };
         
-        // Shared handler for mouse and touch events
-        const handlePointerDown = (e) => {
-            // For mouse events, only handle left button
-            if (e.button !== undefined && e.button !== 0) return;
-            // For touch events, only handle single touch
-            if (e.touches && e.touches.length !== 1) return;
-            
-            const pos = getCanvasPositionFromMouse(e, canvas);
-            const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
-            
-            // Check vertical scrollbar
-            const scrollableAreaY = TICK_ROW_HEIGHT + SEQUENCE_ROW_HEIGHT;
-            const scrollableAreaHeight = canvasHeight - scrollableAreaY - SCROLLBAR_WIDTH;
-            const totalScrollableHeight = (msaData.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
-            const vScrollbarX = canvasWidth - SCROLLBAR_WIDTH;
-            const vScrollbarYEnd = canvasHeight - SCROLLBAR_WIDTH;
-            
-            if (pos.x >= vScrollbarX && pos.x <= canvasWidth && pos.y >= scrollableAreaY && pos.y < vScrollbarYEnd) {
-                clampScrollTop(canvasHeight);
-                const maxScroll = Math.max(0, totalScrollableHeight - scrollableAreaHeight);
-                const scrollRatio = maxScroll > 0 ? Math.min(1, Math.max(0, scrollTop / maxScroll)) : 0;
-                const thumbHeight = Math.max(20, (scrollableAreaHeight / totalScrollableHeight) * scrollableAreaHeight);
-                const thumbY = scrollableAreaY + scrollRatio * (scrollableAreaHeight - thumbHeight);
-                
-                if (pos.y >= thumbY && pos.y <= thumbY + thumbHeight) {
-                    scrollbarDragState.isDragging = true;
-                    scrollbarDragState.dragType = 'vertical';
-                    scrollbarDragState.dragStartY = pos.y;
-                    scrollbarDragState.dragStartScroll = scrollTop;
-                    e.preventDefault();
-                    
-                    const handleDrag = (e) => {
-                        if (!scrollbarDragState.isDragging) return;
-                        e.preventDefault();
-                        const dragPos = getCanvasPositionFromMouse(e, canvas);
-                        const deltaY = dragPos.y - scrollbarDragState.dragStartY;
-                        if (Math.abs(deltaY) > 2) {
-                            const scrollDelta = (deltaY / (scrollableAreaHeight - thumbHeight)) * maxScroll;
-                            scrollTop = Math.max(0, Math.min(maxScroll, scrollbarDragState.dragStartScroll + scrollDelta));
-                            clampScrollTop(canvasHeight);
-                            scheduleRender();
-                        }
-                    };
-                    
-                    const handleDragEnd = () => {
-                        scrollbarDragState.isDragging = false;
-                        scrollbarDragState.dragType = null;
-                        window.removeEventListener('mousemove', handleDrag);
-                        window.removeEventListener('mouseup', handleDragEnd);
-                        window.removeEventListener('touchmove', handleDrag);
-                        window.removeEventListener('touchend', handleDragEnd);
-                    };
-                    
-                    window.addEventListener('mousemove', handleDrag);
-                    window.addEventListener('mouseup', handleDragEnd);
-                    window.addEventListener('touchmove', handleDrag, { passive: false });
-                    window.addEventListener('touchend', handleDragEnd);
-                    return;
-                } else if (pos.y >= scrollableAreaY) {
-                    const newScrollRatio = Math.max(0, Math.min(1, (pos.y - scrollableAreaY - thumbHeight / 2) / (scrollableAreaHeight - thumbHeight)));
-                    scrollTop = Math.max(0, Math.min(maxScroll, newScrollRatio * maxScroll));
-                    clampScrollTop(canvasHeight);
-                    scheduleRender();
-                    e.preventDefault();
-                    return;
-                }
-            }
-            
-            // Check horizontal scrollbar
-            const scrollableAreaX = NAME_COLUMN_WIDTH;
-            const scrollableAreaWidth = canvasWidth - scrollableAreaX - SCROLLBAR_WIDTH;
-            const totalScrollableWidth = msaData.queryLength * MSA_CHAR_WIDTH;
-            const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-            const hScrollbarY = canvasHeight - SCROLLBAR_WIDTH;
-            const hScrollbarXEnd = canvasWidth - SCROLLBAR_WIDTH;
-            
-            if (pos.y >= hScrollbarY && pos.y <= canvasHeight && pos.x >= scrollableAreaX && pos.x < hScrollbarXEnd) {
-                if (maxScrollX > 0) {
-                    const scrollRatioX = scrollLeft / maxScrollX;
-                    const thumbWidth = Math.max(20, (scrollableAreaWidth / totalScrollableWidth) * scrollableAreaWidth);
-                    const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
-                    
-                    if (pos.x >= thumbX && pos.x <= thumbX + thumbWidth) {
-                        scrollbarDragState.isDragging = true;
-                        scrollbarDragState.dragType = 'horizontal';
-                        scrollbarDragState.dragStartY = pos.x;
-                        scrollbarDragState.dragStartScroll = scrollLeft;
-                        e.preventDefault();
-                        
-                        const handleDrag = (e) => {
-                            if (!scrollbarDragState.isDragging) return;
-                            e.preventDefault();
-                            const dragPos = getCanvasPositionFromMouse(e, canvas);
-                            const deltaX = dragPos.x - scrollbarDragState.dragStartY;
-                            if (Math.abs(deltaX) > 2) {
-                                const scrollDelta = (deltaX / (scrollableAreaWidth - thumbWidth)) * maxScrollX;
-                                scrollLeft = Math.max(0, Math.min(maxScrollX, scrollbarDragState.dragStartScroll + scrollDelta));
-                                scheduleRender();
-                            }
-                        };
-                        
-                        const handleDragEnd = () => {
-                            scrollbarDragState.isDragging = false;
-                            scrollbarDragState.dragType = null;
-                            window.removeEventListener('mousemove', handleDrag);
-                            window.removeEventListener('mouseup', handleDragEnd);
-                            window.removeEventListener('touchmove', handleDrag);
-                            window.removeEventListener('touchend', handleDragEnd);
-                        };
-                        
-                        window.addEventListener('mousemove', handleDrag);
-                        window.addEventListener('mouseup', handleDragEnd);
-                        window.addEventListener('touchmove', handleDrag, { passive: false });
-                        window.addEventListener('touchend', handleDragEnd);
-                        return;
-                    } else if (pos.x >= scrollableAreaX) {
-                        const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
-                        scrollLeft = Math.max(0, Math.min(maxScrollX, newScrollRatioX * maxScrollX));
-                        scheduleRender();
-                        e.preventDefault();
-                        return;
-                    }
-                }
-            }
-            
-            // Grab and drag panning - check if click is in scrollable content area
-            // Reuse scrollableAreaX, scrollableAreaWidth, scrollableAreaY, and scrollableAreaHeight from above
-            
-            if (pos.x >= scrollableAreaX && pos.x < canvasWidth - SCROLLBAR_WIDTH &&
-                pos.y >= scrollableAreaY && pos.y < canvasHeight - SCROLLBAR_WIDTH) {
-                // Start pan drag
-                let panDragState = {
-                    isDragging: true,
-                    startX: pos.x,
-                    startY: pos.y,
-                    startScrollLeft: scrollLeft,
-                    startScrollTop: scrollTop
-                };
-                
-                canvas.style.cursor = 'grabbing';
-                e.preventDefault();
-                
-                const handlePanDrag = (e) => {
-                    if (!panDragState.isDragging) return;
-                    e.preventDefault();
-                    const dragPos = getCanvasPositionFromMouse(e, canvas);
-                    const deltaX = panDragState.startX - dragPos.x;
-                    const deltaY = panDragState.startY - dragPos.y;
-                    
-                    // Horizontal scrolling
-                    const totalScrollableWidth = msaData.queryLength * MSA_CHAR_WIDTH;
-                    const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-                    scrollLeft = Math.max(0, Math.min(maxScrollX, panDragState.startScrollLeft + deltaX));
-                    
-                    // Vertical scrolling
-                    const totalScrollableHeight = (msaData.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
-                    const maxScroll = Math.max(0, totalScrollableHeight - scrollableAreaHeight);
-                    scrollTop = Math.max(0, Math.min(maxScroll, panDragState.startScrollTop + deltaY));
-                    clampScrollTop(canvasHeight);
-                    
-                    scheduleRender();
-                };
-                
-                const handlePanDragEnd = () => {
-                    panDragState.isDragging = false;
-                    canvas.style.cursor = 'default';
-                    window.removeEventListener('mousemove', handlePanDrag);
-                    window.removeEventListener('mouseup', handlePanDragEnd);
-                    window.removeEventListener('touchmove', handlePanDrag);
-                    window.removeEventListener('touchend', handlePanDragEnd);
-                };
-                
-                window.addEventListener('mousemove', handlePanDrag);
-                window.addEventListener('mouseup', handlePanDragEnd);
-                window.addEventListener('touchmove', handlePanDrag, { passive: false });
-                window.addEventListener('touchend', handlePanDragEnd);
-                return;
-            }
-        };
-        
-        canvas.addEventListener('mousedown', handlePointerDown);
-        canvas.addEventListener('touchstart', (e) => {
-            e.preventDefault(); // Prevent scrolling
-            handlePointerDown(e);
-        }, { passive: false });
-        
+        activeInteractionManager = new ViewInteractionManager(canvas, 'msa', interactionConfig);
+        activeInteractionManager.setupWheelScrolling();
+        activeInteractionManager.setupPointerInteractions();
         
         // Initial render
         renderMSACanvas();
     }
     
     function buildPSSMView() {
-        const msaViewEl = document.getElementById('msaView');
-        if (!msaViewEl || !msaData) return;
-        
-        msaViewEl.innerHTML = '';
-        msaViewEl.classList.remove('hidden');
-        
-        const container = document.createElement('div');
-        container.style.overflow = 'hidden';
-        container.style.position = 'relative';
-        container.style.backgroundColor = '#ffffff';
-        container.style.margin = '0';
-        container.style.padding = '0';
-        
-        const canvas = document.createElement('canvas');
         const LABEL_WIDTH = CHAR_WIDTH;
         const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
-        
-        // Use dynamic container width - canvas must fit exactly
         const containerWidth = getContainerWidth();
-        const canvasWidth = containerWidth;
         
         // FIXED HEIGHT for PSSM mode
         const queryRowHeight = CHAR_WIDTH;
@@ -1743,205 +1901,50 @@
         const heatmapHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
         const canvasHeight = TICK_ROW_HEIGHT + queryRowHeight + heatmapHeight + SCROLLBAR_WIDTH;
         
-        container.style.width = '100%'; // Fill parent exactly
-        container.style.height = canvasHeight + 'px';
+        const result = createViewCanvas('pssm', {
+            viewElementId: 'msaView',
+            calculateDimensions: () => ({
+                canvasWidth: containerWidth,
+                canvasHeight: canvasHeight,
+                totalWidth: totalWidth
+            }),
+            additionalCanvasData: {
+                canvasWidth: containerWidth,
+                totalHeight: canvasHeight
+            }
+        });
         
-        canvas.width = canvasWidth * DPI_MULTIPLIER;
-        canvas.height = canvasHeight * DPI_MULTIPLIER;
-        canvas.style.width = canvasWidth + 'px';
-        canvas.style.height = canvasHeight + 'px';
-        canvas.style.display = 'block';
-        canvas.style.position = 'relative';
-        canvas.style.pointerEvents = 'auto';
-        canvas.style.margin = '0';
-        canvas.style.padding = '0';
+        if (!result) return;
         
-        container.appendChild(canvas);
-        msaViewEl.appendChild(container);
+        const { canvas, canvasData } = result;
+        pssmCanvasData = canvasData;
         
-        pssmCanvasData = {
-            canvas: canvas,
-            ctx: canvas.getContext('2d'),
-            container: container,
-            totalWidth: totalWidth,
-            canvasWidth: canvasWidth,
-            totalHeight: canvasHeight
+        clampScrollLeft(result.dimensions.canvasWidth, CHAR_WIDTH);
+        
+        // Cleanup previous interaction manager if exists
+        if (activeInteractionManager) {
+            activeInteractionManager.cleanup();
+        }
+        
+        // Setup interaction manager with PSSM-specific configuration
+        const interactionConfig = {
+            charWidth: CHAR_WIDTH,
+            supportsVerticalScroll: false,
+            getScrollableArea: (w, h) => getScrollableAreaForMode('pssm', w, h),
+            getScrollLimits: (w, h) => getScrollLimitsForMode('pssm', CHAR_WIDTH, w, h)
         };
         
-        pssmCanvasData.ctx.scale(DPI_MULTIPLIER, DPI_MULTIPLIER);
-        
-        clampScrollLeft(canvasWidth, CHAR_WIDTH);
-        
-        // Setup wheel scrolling
-        canvas.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
-            const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
-                getScrollableAreaForMode('pssm', canvasWidth, canvasHeight);
-            const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
-            const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-            
-            const hasHorizontalDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-            const isShiftScroll = e.shiftKey && Math.abs(e.deltaY) > 0;
-            
-            if (hasHorizontalDelta || isShiftScroll) {
-                const delta = hasHorizontalDelta ? e.deltaX : (isShiftScroll ? e.deltaY : 0);
-                if (delta !== 0 && maxScrollX > 0) {
-                    scrollLeft = Math.max(0, Math.min(maxScrollX, scrollLeft + delta));
-                    scheduleRender();
-                }
-            }
-        }, { passive: false });
-        
-        // Setup scrollbar dragging
-        let scrollbarDragState = {
-            isDragging: false,
-            dragType: null,
-            dragStartY: 0,
-            dragStartScroll: 0
-        };
-        
-        // Shared handler for mouse and touch events
-        const handlePointerDown = (e) => {
-            // For mouse events, only handle left button
-            if (e.button !== undefined && e.button !== 0) return;
-            // For touch events, only handle single touch
-            if (e.touches && e.touches.length !== 1) return;
-            
-            const pos = getCanvasPositionFromMouse(e, canvas);
-            const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
-            const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
-                getScrollableAreaForMode('pssm', canvasWidth, canvasHeight);
-            const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
-            const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-            const hScrollbarY = canvasHeight - SCROLLBAR_WIDTH;
-            
-            // Check horizontal scrollbar
-            if (pos.y >= hScrollbarY && pos.y <= canvasHeight && pos.x >= scrollableAreaX && pos.x < canvasWidth) {
-                if (maxScrollX > 0) {
-                    const scrollRatioX = scrollLeft / maxScrollX;
-                    const thumbWidth = Math.max(20, (scrollableAreaWidth / totalScrollableWidth) * scrollableAreaWidth);
-                    const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
-                    
-                    if (pos.x >= thumbX && pos.x <= thumbX + thumbWidth) {
-                        scrollbarDragState.isDragging = true;
-                        scrollbarDragState.dragType = 'horizontal';
-                        scrollbarDragState.dragStartY = pos.x;
-                        scrollbarDragState.dragStartScroll = scrollLeft;
-                        e.preventDefault();
-                        
-                        const handleDrag = (e) => {
-                            if (!scrollbarDragState.isDragging) return;
-                            e.preventDefault();
-                            const dragPos = getCanvasPositionFromMouse(e, canvas);
-                            const deltaX = dragPos.x - scrollbarDragState.dragStartY;
-                            if (Math.abs(deltaX) > 2) {
-                                const scrollDelta = (deltaX / (scrollableAreaWidth - thumbWidth)) * maxScrollX;
-                                scrollLeft = Math.max(0, Math.min(maxScrollX, scrollbarDragState.dragStartScroll + scrollDelta));
-                                scheduleRender();
-                            }
-                        };
-                        
-                        const handleDragEnd = () => {
-                            scrollbarDragState.isDragging = false;
-                            scrollbarDragState.dragType = null;
-                            window.removeEventListener('mousemove', handleDrag);
-                            window.removeEventListener('mouseup', handleDragEnd);
-                            window.removeEventListener('touchmove', handleDrag);
-                            window.removeEventListener('touchend', handleDragEnd);
-                        };
-                        
-                        window.addEventListener('mousemove', handleDrag);
-                        window.addEventListener('mouseup', handleDragEnd);
-                        window.addEventListener('touchmove', handleDrag, { passive: false });
-                        window.addEventListener('touchend', handleDragEnd);
-                        return;
-                    } else if (pos.x >= scrollableAreaX) {
-                        const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
-                        scrollLeft = Math.max(0, Math.min(maxScrollX, newScrollRatioX * maxScrollX));
-                        scheduleRender();
-                        e.preventDefault();
-                        return;
-                    }
-                }
-            }
-            
-            // Grab and drag panning - check if click is in scrollable content area
-            // Reuse scrollableAreaX, scrollableAreaY, scrollableAreaWidth, and scrollableAreaHeight from above
-            
-            if (pos.x >= scrollableAreaX && pos.x < canvasWidth &&
-                pos.y >= scrollableAreaY && pos.y < canvasHeight - SCROLLBAR_WIDTH) {
-                // Start pan drag
-                let panDragState = {
-                    isDragging: true,
-                    startX: pos.x,
-                    startScrollLeft: scrollLeft
-                };
-                
-                canvas.style.cursor = 'grabbing';
-                e.preventDefault();
-                
-                const handlePanDrag = (e) => {
-                    if (!panDragState.isDragging) return;
-                    e.preventDefault();
-                    const dragPos = getCanvasPositionFromMouse(e, canvas);
-                    const deltaX = panDragState.startX - dragPos.x;
-                    
-                    // Horizontal scrolling
-                    const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
-                    const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-                    scrollLeft = Math.max(0, Math.min(maxScrollX, panDragState.startScrollLeft + deltaX));
-                    
-                    scheduleRender();
-                };
-                
-                const handlePanDragEnd = () => {
-                    panDragState.isDragging = false;
-                    canvas.style.cursor = 'default';
-                    window.removeEventListener('mousemove', handlePanDrag);
-                    window.removeEventListener('mouseup', handlePanDragEnd);
-                    window.removeEventListener('touchmove', handlePanDrag);
-                    window.removeEventListener('touchend', handlePanDragEnd);
-                };
-                
-                window.addEventListener('mousemove', handlePanDrag);
-                window.addEventListener('mouseup', handlePanDragEnd);
-                window.addEventListener('touchmove', handlePanDrag, { passive: false });
-                window.addEventListener('touchend', handlePanDragEnd);
-                return;
-            }
-        };
-        
-        canvas.addEventListener('mousedown', handlePointerDown);
-        canvas.addEventListener('touchstart', (e) => {
-            e.preventDefault(); // Prevent scrolling
-            handlePointerDown(e);
-        }, { passive: false });
+        activeInteractionManager = new ViewInteractionManager(canvas, 'pssm', interactionConfig);
+        activeInteractionManager.setupWheelScrolling();
+        activeInteractionManager.setupPointerInteractions();
         
         renderPSSMCanvas();
     }
     
     function buildLogoView() {
-        const msaViewEl = document.getElementById('msaView');
-        if (!msaViewEl || !msaData) return;
-        
-        msaViewEl.innerHTML = '';
-        msaViewEl.classList.remove('hidden');
-        
-        const container = document.createElement('div');
-        container.style.overflow = 'hidden';
-        container.style.position = 'relative';
-        container.style.backgroundColor = '#ffffff';
-        container.style.margin = '0';
-        container.style.padding = '0';
-        
-        const canvas = document.createElement('canvas');
         const LABEL_WIDTH = Y_AXIS_WIDTH;
         const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
-        
-        // Use dynamic container width - canvas must fit exactly
         const containerWidth = getContainerWidth();
-        const canvasWidth = containerWidth;
         
         // FIXED HEIGHT for Logo mode
         // Layout: Logo at top (extends to query), black bar above query, query sequence below, tick marks below query, scrollbar at bottom
@@ -1954,181 +1957,42 @@
         const tickY = queryY + queryRowHeight;
         const canvasHeight = tickY + TICK_ROW_HEIGHT + SCROLLBAR_WIDTH;
         
-        container.style.width = '100%'; // Fill parent exactly
-        container.style.height = canvasHeight + 'px';
+        const result = createViewCanvas('logo', {
+            viewElementId: 'msaView',
+            calculateDimensions: () => ({
+                canvasWidth: containerWidth,
+                canvasHeight: canvasHeight,
+                totalWidth: totalWidth
+            }),
+            additionalCanvasData: {
+                canvasWidth: containerWidth,
+                totalHeight: canvasHeight
+            }
+        });
         
-        canvas.width = canvasWidth * DPI_MULTIPLIER;
-        canvas.height = canvasHeight * DPI_MULTIPLIER;
-        canvas.style.width = canvasWidth + 'px';
-        canvas.style.height = canvasHeight + 'px';
-        canvas.style.display = 'block';
-        canvas.style.position = 'relative';
-        canvas.style.pointerEvents = 'auto';
-        canvas.style.margin = '0';
-        canvas.style.padding = '0';
+        if (!result) return;
         
-        container.appendChild(canvas);
-        msaViewEl.appendChild(container);
+        const { canvas, canvasData } = result;
+        logoCanvasData = canvasData;
         
-        logoCanvasData = {
-            canvas: canvas,
-            ctx: canvas.getContext('2d'),
-            container: container,
-            totalWidth: totalWidth,
-            canvasWidth: canvasWidth,
-            totalHeight: canvasHeight
+        clampScrollLeft(result.dimensions.canvasWidth, CHAR_WIDTH);
+        
+        // Cleanup previous interaction manager if exists
+        if (activeInteractionManager) {
+            activeInteractionManager.cleanup();
+        }
+        
+        // Setup interaction manager with Logo-specific configuration
+        const interactionConfig = {
+            charWidth: CHAR_WIDTH,
+            supportsVerticalScroll: false,
+            getScrollableArea: (w, h) => getScrollableAreaForMode('logo', w, h),
+            getScrollLimits: (w, h) => getScrollLimitsForMode('logo', CHAR_WIDTH, w, h)
         };
         
-        logoCanvasData.ctx.scale(DPI_MULTIPLIER, DPI_MULTIPLIER);
-        
-        clampScrollLeft(canvasWidth, CHAR_WIDTH);
-        
-        // Setup wheel scrolling
-        canvas.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
-            const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
-                getScrollableAreaForMode('logo', canvasWidth, canvasHeight);
-            const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
-            const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-            
-            const hasHorizontalDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-            const isShiftScroll = e.shiftKey && Math.abs(e.deltaY) > 0;
-            
-            if (hasHorizontalDelta || isShiftScroll) {
-                const delta = hasHorizontalDelta ? e.deltaX : (isShiftScroll ? e.deltaY : 0);
-                if (delta !== 0 && maxScrollX > 0) {
-                    scrollLeft = Math.max(0, Math.min(maxScrollX, scrollLeft + delta));
-                    scheduleRender();
-                }
-            }
-        }, { passive: false });
-        
-        // Setup scrollbar dragging
-        let scrollbarDragState = {
-            isDragging: false,
-            dragType: null,
-            dragStartY: 0,
-            dragStartScroll: 0
-        };
-        
-        // Shared handler for mouse and touch events
-        const handlePointerDown = (e) => {
-            // For mouse events, only handle left button
-            if (e.button !== undefined && e.button !== 0) return;
-            // For touch events, only handle single touch
-            if (e.touches && e.touches.length !== 1) return;
-            
-            const pos = getCanvasPositionFromMouse(e, canvas);
-            const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = getLogicalCanvasDimensions(canvas);
-            const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
-                getScrollableAreaForMode('logo', canvasWidth, canvasHeight);
-            const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
-            const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-            const hScrollbarY = canvasHeight - SCROLLBAR_WIDTH;
-            
-            // Check horizontal scrollbar
-            if (pos.y >= hScrollbarY && pos.y <= canvasHeight && pos.x >= scrollableAreaX && pos.x < canvasWidth) {
-                if (maxScrollX > 0) {
-                    const scrollRatioX = scrollLeft / maxScrollX;
-                    const thumbWidth = Math.max(20, (scrollableAreaWidth / totalScrollableWidth) * scrollableAreaWidth);
-                    const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
-                    
-                    if (pos.x >= thumbX && pos.x <= thumbX + thumbWidth) {
-                        scrollbarDragState.isDragging = true;
-                        scrollbarDragState.dragType = 'horizontal';
-                        scrollbarDragState.dragStartY = pos.x;
-                        scrollbarDragState.dragStartScroll = scrollLeft;
-                        e.preventDefault();
-                        
-                        const handleDrag = (e) => {
-                            if (!scrollbarDragState.isDragging) return;
-                            e.preventDefault();
-                            const dragPos = getCanvasPositionFromMouse(e, canvas);
-                            const deltaX = dragPos.x - scrollbarDragState.dragStartY;
-                            if (Math.abs(deltaX) > 2) {
-                                const scrollDelta = (deltaX / (scrollableAreaWidth - thumbWidth)) * maxScrollX;
-                                scrollLeft = Math.max(0, Math.min(maxScrollX, scrollbarDragState.dragStartScroll + scrollDelta));
-                                scheduleRender();
-                            }
-                        };
-                        
-                        const handleDragEnd = () => {
-                            scrollbarDragState.isDragging = false;
-                            scrollbarDragState.dragType = null;
-                            window.removeEventListener('mousemove', handleDrag);
-                            window.removeEventListener('mouseup', handleDragEnd);
-                            window.removeEventListener('touchmove', handleDrag);
-                            window.removeEventListener('touchend', handleDragEnd);
-                        };
-                        
-                        window.addEventListener('mousemove', handleDrag);
-                        window.addEventListener('mouseup', handleDragEnd);
-                        window.addEventListener('touchmove', handleDrag, { passive: false });
-                        window.addEventListener('touchend', handleDragEnd);
-                        return;
-                    } else if (pos.x >= scrollableAreaX) {
-                        const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
-                        scrollLeft = Math.max(0, Math.min(maxScrollX, newScrollRatioX * maxScrollX));
-                        scheduleRender();
-                        e.preventDefault();
-                        return;
-                    }
-                }
-            }
-            
-            // Grab and drag panning - check if click is in scrollable content area
-            // Reuse scrollableAreaX, scrollableAreaY, scrollableAreaWidth, and scrollableAreaHeight from above
-            
-            if (pos.x >= scrollableAreaX && pos.x < canvasWidth &&
-                pos.y >= scrollableAreaY && pos.y < canvasHeight - SCROLLBAR_WIDTH) {
-                // Start pan drag
-                let panDragState = {
-                    isDragging: true,
-                    startX: pos.x,
-                    startScrollLeft: scrollLeft
-                };
-                
-                canvas.style.cursor = 'grabbing';
-                e.preventDefault();
-                
-                const handlePanDrag = (e) => {
-                    if (!panDragState.isDragging) return;
-                    e.preventDefault();
-                    const dragPos = getCanvasPositionFromMouse(e, canvas);
-                    const deltaX = panDragState.startX - dragPos.x;
-                    
-                    // Horizontal scrolling
-                    const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
-                    const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
-                    scrollLeft = Math.max(0, Math.min(maxScrollX, panDragState.startScrollLeft + deltaX));
-                    
-                    scheduleRender();
-                };
-                
-                const handlePanDragEnd = () => {
-                    panDragState.isDragging = false;
-                    canvas.style.cursor = 'default';
-                    window.removeEventListener('mousemove', handlePanDrag);
-                    window.removeEventListener('mouseup', handlePanDragEnd);
-                    window.removeEventListener('touchmove', handlePanDrag);
-                    window.removeEventListener('touchend', handlePanDragEnd);
-                };
-                
-                window.addEventListener('mousemove', handlePanDrag);
-                window.addEventListener('mouseup', handlePanDragEnd);
-                window.addEventListener('touchmove', handlePanDrag, { passive: false });
-                window.addEventListener('touchend', handlePanDragEnd);
-                return;
-            }
-        };
-        
-        canvas.addEventListener('mousedown', handlePointerDown);
-        canvas.addEventListener('touchstart', (e) => {
-            e.preventDefault(); // Prevent scrolling
-            handlePointerDown(e);
-        }, { passive: false });
-        
+        activeInteractionManager = new ViewInteractionManager(canvas, 'logo', interactionConfig);
+        activeInteractionManager.setupWheelScrolling();
+        activeInteractionManager.setupPointerInteractions();
         
         renderLogoCanvas();
     }
