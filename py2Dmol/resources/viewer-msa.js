@@ -621,6 +621,98 @@
     // ============================================================================
     
     /**
+     * Truncate text if it exceeds max width (no ellipsis)
+     * @param {CanvasRenderingContext2D} ctx - Canvas context
+     * @param {string} text - Text to truncate
+     * @param {number} maxWidth - Maximum width in pixels
+     * @returns {string} Truncated text
+     */
+    function truncateText(ctx, text, maxWidth) {
+        const fullWidth = ctx.measureText(text).width;
+        if (fullWidth <= maxWidth) {
+            return text;
+        }
+        
+        let truncated = text;
+        while (ctx.measureText(truncated).width > maxWidth && truncated.length > 0) {
+            truncated = truncated.slice(0, -1);
+        }
+        return truncated;
+    }
+    
+    /**
+     * Draw a sequence label in the name column
+     * @param {CanvasRenderingContext2D} ctx - Canvas context
+     * @param {string} labelText - Text to display
+     * @param {number} rowY - Top Y coordinate of the row
+     * @param {number} rowHeight - Height of the row
+     * @param {number} nameColumnWidth - Width of name column
+     * @param {Object} options - Rendering options
+     * @returns {Object} Information about the drawn label
+     */
+    function drawSequenceLabel(ctx, labelText, rowY, rowHeight, nameColumnWidth, options = {}) {
+        const {
+            padding = 8,
+            fontSize = 12,
+            fontFamily = 'monospace',
+            textColor = '#333',
+            maxChars = 32 // Maximum characters to display (matches truncateSequenceName)
+        } = options;
+        
+        // Calculate text position
+        // X: padding from left edge
+        const textX = padding;
+        // Y: center of row (textBaseline: 'middle' means Y is the center)
+        const textY = rowY + rowHeight / 2;
+        
+        // Set up text rendering context
+        ctx.save();
+        ctx.fillStyle = textColor;
+        ctx.font = `${fontSize}px ${fontFamily}`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle'; // Y coordinate is the center
+        
+        // Calculate available width: name column width minus left padding
+        // No right padding - text should extend to the edge (but not beyond)
+        // Use Math.floor to ensure we don't exceed the boundary
+        const availableWidth = Math.floor(nameColumnWidth - padding);
+        
+        // Truncate to maxChars (32) characters first
+        let displayText = labelText;
+        if (displayText.length > maxChars) {
+            displayText = displayText.substring(0, maxChars);
+        }
+        
+        // Measure actual text width and ensure it fits within available width
+        // Be conservative: ensure text width is strictly less than available width
+        // to prevent any pixel-level cutoff
+        let textWidth = ctx.measureText(displayText).width;
+        if (textWidth >= availableWidth) {
+            // Text is too wide or exactly at boundary, truncate to be safely within
+            // Use availableWidth - 1 to ensure we're definitely within bounds
+            displayText = truncateText(ctx, displayText, availableWidth - 1);
+            textWidth = ctx.measureText(displayText).width;
+        }
+        
+        // Clip to name column to prevent any overflow
+        ctx.beginPath();
+        ctx.rect(0, rowY, nameColumnWidth, rowHeight);
+        ctx.clip();
+        
+        // Draw text
+        ctx.fillText(displayText, textX, textY);
+        
+        ctx.restore();
+        
+        return { 
+            textX, 
+            textY, 
+            textWidth: ctx.measureText(displayText).width,
+            wasTruncated: displayText !== labelText
+        };
+    }
+    
+    /**
      * Draw query sequence row (used by MSA, PSSM, and Logo modes)
      */
     function drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, labelWidth, totalWidth, drawUnderline = true) {
@@ -668,14 +760,14 @@
         
         // Draw underline (only if requested, for logo mode we draw it above)
         if (drawUnderline) {
-            const underlineY = queryY + queryRowHeight;
-            const underlineWidth = logicalWidth; // Draw line across full canvas width
-            ctx.strokeStyle = '#333';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(0, underlineY);
-            ctx.lineTo(underlineWidth, underlineY);
-            ctx.stroke();
+        const underlineY = queryY + queryRowHeight;
+        const underlineWidth = logicalWidth; // Draw line across full canvas width
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, underlineY);
+        ctx.lineTo(underlineWidth, underlineY);
+        ctx.stroke();
         }
     }
     
@@ -739,7 +831,11 @@
         ctx.fillRect(0, 0, NAME_COLUMN_WIDTH, logicalHeight);
         ctx.strokeStyle = '#ccc';
         ctx.lineWidth = 1;
-        ctx.strokeRect(0, 0, NAME_COLUMN_WIDTH, logicalHeight);
+        // Draw stroke at the right edge of name column, not overlapping text area
+        ctx.beginPath();
+        ctx.moveTo(NAME_COLUMN_WIDTH, 0);
+        ctx.lineTo(NAME_COLUMN_WIDTH, logicalHeight);
+        ctx.stroke();
         
         // Draw tick marks
         drawTickMarks(ctx, logicalWidth, scrollLeft, MSA_CHAR_WIDTH, scrollableAreaX, scrollableAreaX, logicalWidth);
@@ -760,12 +856,15 @@
         const halfCharWidth = MSA_CHAR_WIDTH / 2;
         const halfRowHeight = SEQUENCE_ROW_HEIGHT / 2;
         
-        // Set text properties once for sequence names
-        ctx.fillStyle = '#333';
-        ctx.font = '12px monospace';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
+        // Label rendering options
+        const labelOptions = {
+            padding: 8,
+            fontSize: 12,
+            fontFamily: 'monospace',
+            textColor: '#333'
+        };
         
+        // Draw labels for visible sequences (only below query row)
         for (let i = visibleSequenceStart; i < visibleSequenceEnd && i < msaData.sequences.length; i++) {
             if (i === 0) continue; // Skip query (drawn separately)
             
@@ -774,10 +873,12 @@
             // Sequence i (where i >= 1) should be at: scrollableAreaY + (i-1) * rowHeight - scrollTop
             const y = scrollableAreaY + (i - 1) * SEQUENCE_ROW_HEIGHT - scrollTop;
             
-            if (y + SEQUENCE_ROW_HEIGHT < scrollableAreaY || y > logicalHeight - SCROLLBAR_WIDTH) continue;
-            
-            // Draw sequence name
-            ctx.fillText(seq.header, 5, y + halfRowHeight);
+            // Only draw labels that are below the query row (queryY + queryRowHeight)
+            // and within the visible canvas area
+            const queryBottom = queryY + queryRowHeight;
+            if (y >= queryBottom && y <= logicalHeight) {
+                drawSequenceLabel(ctx, seq.header, y, SEQUENCE_ROW_HEIGHT, NAME_COLUMN_WIDTH, labelOptions);
+            }
             
             // Draw sequence
             let xOffset = scrollableAreaX - scrollLeftMod;
@@ -816,20 +917,16 @@
             }
         }
         
-        // Draw query sequence (on top)
+        // Draw query sequence (on top - must be drawn last to appear above other labels)
         if (msaData.sequences.length > 0) {
             const querySeq = msaData.sequences[0];
             
-            // White background for query row
+            // White background for query row - covers name column too
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, queryY, logicalWidth, queryRowHeight);
             
-            // Draw query name
-            ctx.fillStyle = '#333';
-            ctx.font = '12px monospace';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(querySeq.header, 5, queryY + queryRowHeight / 2);
+            // Draw query label using the same function as other labels (drawn last so it's on top)
+            drawSequenceLabel(ctx, querySeq.header, queryY, queryRowHeight, NAME_COLUMN_WIDTH, labelOptions);
             
             // Draw query sequence
             let xOffset = scrollableAreaX - (scrollLeft % MSA_CHAR_WIDTH);
@@ -1398,13 +1495,13 @@
                         ctx.rect(minX, logoY, scrollableAreaWidth, queryY - logoY);
                         ctx.clip();
                         
-                        // WebLogo-style letter mode: scale glyph bbox to fill full cell
+                            // WebLogo-style letter mode: scale glyph bbox to fill full cell
                         // Extend clip rect to queryY so letters can extend all the way down
-                        const colorStr = `rgb(${r}, ${g}, ${b})`;
+                            const colorStr = `rgb(${r}, ${g}, ${b})`;
                         const clipRect = { x: minX, y: logoY, w: scrollableAreaWidth, h: queryY - logoY };
-                        if (drawHeight > 0) {
-                            drawScaledLetter(ctx, aa, xOffset, yOffset, CHAR_WIDTH, drawHeight, colorStr, clipRect);
-                        }
+                            if (drawHeight > 0) {
+                                drawScaledLetter(ctx, aa, xOffset, yOffset, CHAR_WIDTH, drawHeight, colorStr, clipRect);
+    }
                         
                         ctx.restore(); // Restore from clipping
                     }
@@ -1513,30 +1610,30 @@
         
         setupWheelScrolling() {
             const handler = (e) => {
-                e.preventDefault();
+            e.preventDefault();
                 const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = this._getCanvasDimensions();
                 const { scrollableAreaX, scrollableAreaWidth } = this._getScrollableArea();
                 const limits = this._getScrollLimits();
-                
-                const hasHorizontalDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-                const isShiftScroll = e.shiftKey && Math.abs(e.deltaY) > 0;
-                
-                if (hasHorizontalDelta || isShiftScroll) {
-                    const delta = hasHorizontalDelta ? e.deltaX : (isShiftScroll ? e.deltaY : 0);
+            
+            const hasHorizontalDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+            const isShiftScroll = e.shiftKey && Math.abs(e.deltaY) > 0;
+            
+            if (hasHorizontalDelta || isShiftScroll) {
+                const delta = hasHorizontalDelta ? e.deltaX : (isShiftScroll ? e.deltaY : 0);
                     if (delta !== 0 && limits.horizontal.max > 0) {
                         scrollLeft = Math.max(0, Math.min(limits.horizontal.max, scrollLeft + delta));
-                        scheduleRender();
-                        return;
-                    }
+                    scheduleRender();
+                    return;
                 }
-                
+            }
+            
                 if (this.config.supportsVerticalScroll && Math.abs(e.deltaY) > 0 && !hasHorizontalDelta && !isShiftScroll) {
                     scrollTop = Math.max(0, Math.min(limits.vertical.max, scrollTop + e.deltaY));
                     if (this.config.clampScrollTop) {
                         this.config.clampScrollTop(canvasHeight);
                     }
-                    scheduleRender();
-                }
+                scheduleRender();
+            }
             };
             
             this.canvas.addEventListener('wheel', handler, { passive: false });
@@ -1558,58 +1655,58 @@
                 
                 // Check scrollbars (vertical for MSA, horizontal for all)
                 if (this.config.supportsVerticalScroll) {
-                    const vScrollbarX = canvasWidth - SCROLLBAR_WIDTH;
-                    const vScrollbarYEnd = canvasHeight - SCROLLBAR_WIDTH;
-                    
-                    if (pos.x >= vScrollbarX && pos.x <= canvasWidth && pos.y >= scrollableAreaY && pos.y < vScrollbarYEnd) {
+            const vScrollbarX = canvasWidth - SCROLLBAR_WIDTH;
+            const vScrollbarYEnd = canvasHeight - SCROLLBAR_WIDTH;
+            
+            if (pos.x >= vScrollbarX && pos.x <= canvasWidth && pos.y >= scrollableAreaY && pos.y < vScrollbarYEnd) {
                         if (this.config.clampScrollTop) {
                             this.config.clampScrollTop(canvasHeight);
                         }
                         const maxScroll = limits.vertical.max;
-                        const scrollRatio = maxScroll > 0 ? Math.min(1, Math.max(0, scrollTop / maxScroll)) : 0;
+                const scrollRatio = maxScroll > 0 ? Math.min(1, Math.max(0, scrollTop / maxScroll)) : 0;
                         const thumbHeight = Math.max(20, (scrollableAreaHeight / limits.vertical.total) * scrollableAreaHeight);
-                        const thumbY = scrollableAreaY + scrollRatio * (scrollableAreaHeight - thumbHeight);
-                        
-                        if (pos.y >= thumbY && pos.y <= thumbY + thumbHeight) {
+                const thumbY = scrollableAreaY + scrollRatio * (scrollableAreaHeight - thumbHeight);
+                
+                if (pos.y >= thumbY && pos.y <= thumbY + thumbHeight) {
                             this.startVerticalScrollbarDrag(pos.y, scrollableAreaHeight, thumbHeight, maxScroll, canvasHeight);
-                            e.preventDefault();
-                            return;
-                        } else if (pos.y >= scrollableAreaY) {
-                            const newScrollRatio = Math.max(0, Math.min(1, (pos.y - scrollableAreaY - thumbHeight / 2) / (scrollableAreaHeight - thumbHeight)));
-                            scrollTop = Math.max(0, Math.min(maxScroll, newScrollRatio * maxScroll));
+                    e.preventDefault();
+                    return;
+                } else if (pos.y >= scrollableAreaY) {
+                    const newScrollRatio = Math.max(0, Math.min(1, (pos.y - scrollableAreaY - thumbHeight / 2) / (scrollableAreaHeight - thumbHeight)));
+                    scrollTop = Math.max(0, Math.min(maxScroll, newScrollRatio * maxScroll));
                             if (this.config.clampScrollTop) {
                                 this.config.clampScrollTop(canvasHeight);
                             }
-                            scheduleRender();
-                            e.preventDefault();
-                            return;
+                    scheduleRender();
+                    e.preventDefault();
+                    return;
                         }
-                    }
                 }
-                
-                // Check horizontal scrollbar
-                const hScrollbarY = canvasHeight - SCROLLBAR_WIDTH;
+            }
+            
+            // Check horizontal scrollbar
+            const hScrollbarY = canvasHeight - SCROLLBAR_WIDTH;
                 const hScrollbarXEnd = canvasWidth - (this.config.supportsVerticalScroll ? SCROLLBAR_WIDTH : 0);
-                
-                if (pos.y >= hScrollbarY && pos.y <= canvasHeight && pos.x >= scrollableAreaX && pos.x < hScrollbarXEnd) {
+            
+            if (pos.y >= hScrollbarY && pos.y <= canvasHeight && pos.x >= scrollableAreaX && pos.x < hScrollbarXEnd) {
                     if (limits.horizontal.max > 0) {
                         const scrollRatioX = scrollLeft / limits.horizontal.max;
                         const thumbWidth = Math.max(20, (scrollableAreaWidth / limits.horizontal.total) * scrollableAreaWidth);
-                        const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
-                        
-                        if (pos.x >= thumbX && pos.x <= thumbX + thumbWidth) {
+                    const thumbX = scrollableAreaX + scrollRatioX * (scrollableAreaWidth - thumbWidth);
+                    
+                    if (pos.x >= thumbX && pos.x <= thumbX + thumbWidth) {
                             this.startHorizontalScrollbarDrag(pos.x, scrollableAreaWidth, thumbWidth, limits.horizontal.max);
-                            e.preventDefault();
-                            return;
-                        } else if (pos.x >= scrollableAreaX) {
-                            const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
+                        e.preventDefault();
+                        return;
+                    } else if (pos.x >= scrollableAreaX) {
+                        const newScrollRatioX = Math.max(0, Math.min(1, (pos.x - scrollableAreaX - thumbWidth / 2) / (scrollableAreaWidth - thumbWidth)));
                             scrollLeft = Math.max(0, Math.min(limits.horizontal.max, newScrollRatioX * limits.horizontal.max));
-                            scheduleRender();
-                            e.preventDefault();
-                            return;
-                        }
+                        scheduleRender();
+                        e.preventDefault();
+                        return;
                     }
                 }
+            }
                 
                 // Grab and drag panning
                 const scrollbarWidth = this.config.supportsVerticalScroll ? SCROLLBAR_WIDTH : 0;
@@ -1625,7 +1722,7 @@
             this.listeners.push({ element: this.canvas, event: 'mousedown', handler: handlePointerDown });
             
             const touchHandler = (e) => {
-                e.preventDefault();
+            e.preventDefault();
                 handlePointerDown(e);
             };
             this.canvas.addEventListener('touchstart', touchHandler, { passive: false });
@@ -1673,30 +1770,30 @@
             this.scrollbarDragState.dragType = 'horizontal';
             this.scrollbarDragState.dragStartY = startX; // Reusing field name for X coordinate
             this.scrollbarDragState.dragStartScroll = scrollLeft;
-            
-            const handleDrag = (e) => {
+                        
+                        const handleDrag = (e) => {
                 if (!this.scrollbarDragState.isDragging || this.scrollbarDragState.dragType !== 'horizontal') return;
                 e.preventDefault();
                 const dragPos = getCanvasPositionFromMouse(e, this.canvas);
                 const deltaX = dragPos.x - this.scrollbarDragState.dragStartY;
-                if (Math.abs(deltaX) > 2) {
-                    const scrollDelta = (deltaX / (scrollableAreaWidth - thumbWidth)) * maxScrollX;
+                            if (Math.abs(deltaX) > 2) {
+                                const scrollDelta = (deltaX / (scrollableAreaWidth - thumbWidth)) * maxScrollX;
                     scrollLeft = Math.max(0, Math.min(maxScrollX, this.scrollbarDragState.dragStartScroll + scrollDelta));
-                    scheduleRender();
-                }
-            };
-            
-            const handleDragEnd = () => {
+                                scheduleRender();
+                            }
+                        };
+                        
+                        const handleDragEnd = () => {
                 this.scrollbarDragState.isDragging = false;
                 this.scrollbarDragState.dragType = null;
-                window.removeEventListener('mousemove', handleDrag);
-                window.removeEventListener('mouseup', handleDragEnd);
+                            window.removeEventListener('mousemove', handleDrag);
+                            window.removeEventListener('mouseup', handleDragEnd);
                 window.removeEventListener('touchmove', handleDrag);
                 window.removeEventListener('touchend', handleDragEnd);
-            };
-            
-            window.addEventListener('mousemove', handleDrag);
-            window.addEventListener('mouseup', handleDragEnd);
+                        };
+                        
+                        window.addEventListener('mousemove', handleDrag);
+                        window.addEventListener('mouseup', handleDragEnd);
             window.addEventListener('touchmove', handleDrag, { passive: false });
             window.addEventListener('touchend', handleDragEnd);
         }
@@ -1714,7 +1811,7 @@
             
             const handlePanDrag = (e) => {
                 if (!this.panDragState || !this.panDragState.isDragging) return;
-                e.preventDefault();
+                        e.preventDefault();
                 const dragPos = getCanvasPositionFromMouse(e, this.canvas);
                 const deltaX = this.panDragState.startX - dragPos.x;
                 const deltaY = this.panDragState.startY - dragPos.y;
