@@ -5,6 +5,315 @@
 
 (function() {
     'use strict';
+    
+    // ============================================================================
+    // SIMPLE CANVAS2SVG FOR MSA VIEWER
+    // ============================================================================
+    // Minimal canvas2svg implementation for MSA viewer
+    // Supports: fillRect, strokeRect, fillText, clip, save/restore
+    
+    function SimpleCanvas2SVG(width, height) {
+        this.width = width;
+        this.height = height;
+        this.strokeStyle = '#000000';
+        this.fillStyle = '#000000';
+        this.lineWidth = 1;
+        this.font = '10px monospace';
+        this.textAlign = 'left';
+        this.textBaseline = 'alphabetic';
+        this.operations = [];
+        this.clipStack = [];
+        this.currentClip = null;
+        this.transformStack = [];
+        this.currentTransform = { tx: 0, ty: 0, sx: 1, sy: 1, rotation: 0 };
+    }
+    
+    SimpleCanvas2SVG.prototype.fillRect = function(x, y, w, h) {
+        this.operations.push({
+            type: 'rect',
+            x: x, y: y, width: w, height: h,
+            fillStyle: this.fillStyle,
+            clip: this.currentClip
+        });
+    };
+    
+    SimpleCanvas2SVG.prototype.strokeRect = function(x, y, w, h) {
+        this.operations.push({
+            type: 'strokeRect',
+            x: x, y: y, width: w, height: h,
+            strokeStyle: this.strokeStyle,
+            lineWidth: this.lineWidth,
+            clip: this.currentClip
+        });
+    };
+    
+    SimpleCanvas2SVG.prototype.fillText = function(text, x, y) {
+        // Store transform state at time of fillText call
+        // Note: drawScaledLetter draws at (0,0) after translate/scale, so x,y will be 0,0
+        // The transform contains the actual position (tx, ty) and scale (sx, sy)
+        this.operations.push({
+            type: 'text',
+            text: text,
+            x: x, y: y, // Usually (0,0) for drawScaledLetter
+            fillStyle: this.fillStyle,
+            font: this.font,
+            textAlign: this.textAlign,
+            textBaseline: this.textBaseline,
+            clip: this.currentClip,
+            transform: {
+                tx: this.currentTransform.tx,
+                ty: this.currentTransform.ty,
+                sx: this.currentTransform.sx,
+                sy: this.currentTransform.sy,
+                rotation: this.currentTransform.rotation
+            } // Copy current transform state
+        });
+    };
+    
+    SimpleCanvas2SVG.prototype.beginPath = function() {
+        this.currentPath = [];
+    };
+    
+    SimpleCanvas2SVG.prototype.moveTo = function(x, y) {
+        if (!this.currentPath) this.beginPath();
+        this.currentPath.push({ type: 'M', x: x, y: y });
+    };
+    
+    SimpleCanvas2SVG.prototype.lineTo = function(x, y) {
+        if (!this.currentPath) this.beginPath();
+        this.currentPath.push({ type: 'L', x: x, y: y });
+    };
+    
+    SimpleCanvas2SVG.prototype.stroke = function() {
+        if (!this.currentPath || this.currentPath.length === 0) return;
+        
+        let pathData = '';
+        for (let i = 0; i < this.currentPath.length; i++) {
+            const cmd = this.currentPath[i];
+            if (cmd.type === 'M') pathData += `M ${cmd.x} ${cmd.y} `;
+            else if (cmd.type === 'L') pathData += `L ${cmd.x} ${cmd.y} `;
+        }
+        
+        this.operations.push({
+            type: 'stroke',
+            pathData: pathData.trim(),
+            strokeStyle: this.strokeStyle,
+            lineWidth: this.lineWidth,
+            clip: this.currentClip
+        });
+        this.currentPath = null;
+    };
+    
+    SimpleCanvas2SVG.prototype.rect = function(x, y, w, h) {
+        // Used for clipping
+        this.currentPath = { type: 'rect', x: x, y: y, width: w, height: h };
+    };
+    
+    SimpleCanvas2SVG.prototype.clip = function() {
+        if (this.currentPath && this.currentPath.type === 'rect') {
+            this.currentClip = {
+                type: 'rect',
+                x: this.currentPath.x,
+                y: this.currentPath.y,
+                width: this.currentPath.width,
+                height: this.currentPath.height
+            };
+            this.currentPath = null;
+        }
+    };
+    
+    SimpleCanvas2SVG.prototype.save = function() {
+        this.clipStack.push(this.currentClip);
+        this.transformStack.push({...this.currentTransform});
+    };
+    
+    SimpleCanvas2SVG.prototype.restore = function() {
+        if (this.clipStack.length > 0) {
+            this.currentClip = this.clipStack.pop();
+        } else {
+            this.currentClip = null;
+        }
+        if (this.transformStack.length > 0) {
+            this.currentTransform = this.transformStack.pop();
+        } else {
+            this.currentTransform = { tx: 0, ty: 0, sx: 1, sy: 1, rotation: 0 };
+        }
+    };
+    
+    SimpleCanvas2SVG.prototype.clearRect = function() {
+        // Ignore - we add white background in SVG
+    };
+    
+    // Transform methods - track transforms and apply to operations
+    SimpleCanvas2SVG.prototype.translate = function(tx, ty) {
+        this.currentTransform.tx += tx * this.currentTransform.sx;
+        this.currentTransform.ty += ty * this.currentTransform.sy;
+    };
+    
+    SimpleCanvas2SVG.prototype.scale = function(sx, sy) {
+        this.currentTransform.sx *= sx;
+        this.currentTransform.sy *= (sy !== undefined ? sy : sx);
+    };
+    
+    SimpleCanvas2SVG.prototype.rotate = function(angle) {
+        this.currentTransform.rotation += angle;
+    };
+    
+    SimpleCanvas2SVG.prototype.setTransform = function() {
+        // Reset transform
+        this.currentTransform = { tx: 0, ty: 0, sx: 1, sy: 1, rotation: 0 };
+    };
+    
+    SimpleCanvas2SVG.prototype.fill = function() {};
+    
+    // measureText - needed for getGlyphMetrics
+    // Create a temporary canvas context for text measurement
+    let measureTextCanvas = null;
+    let measureTextCtx = null;
+    SimpleCanvas2SVG.prototype.measureText = function(text) {
+        // Use a temporary canvas context for measurement
+        if (!measureTextCanvas) {
+            measureTextCanvas = document.createElement('canvas');
+            measureTextCtx = measureTextCanvas.getContext('2d');
+        }
+        
+        // Set font to match current font
+        measureTextCtx.font = this.font;
+        measureTextCtx.textAlign = this.textAlign;
+        measureTextCtx.textBaseline = this.textBaseline;
+        
+        // Measure text
+        const metrics = measureTextCtx.measureText(text);
+        
+        // Return metrics object with required properties
+        return {
+            width: metrics.width,
+            actualBoundingBoxLeft: metrics.actualBoundingBoxLeft || 0,
+            actualBoundingBoxRight: metrics.actualBoundingBoxRight || metrics.width,
+            actualBoundingBoxAscent: metrics.actualBoundingBoxAscent || 0,
+            actualBoundingBoxDescent: metrics.actualBoundingBoxDescent || 0
+        };
+    };
+    
+    // Color conversion: rgb(r,g,b) -> #rrggbb
+    function rgbToHex(color) {
+        if (!color || color.startsWith('#')) return color || '#000000';
+        const m = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (m) {
+            const r = parseInt(m[1]).toString(16).padStart(2, '0');
+            const g = parseInt(m[2]).toString(16).padStart(2, '0');
+            const b = parseInt(m[3]).toString(16).padStart(2, '0');
+            return `#${r}${g}${b}`;
+        }
+        return color;
+    }
+    
+    // Generate SVG
+    SimpleCanvas2SVG.prototype.getSerializedSvg = function() {
+        let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}" viewBox="0 0 ${this.width} ${this.height}">\n`;
+        svg += `  <rect width="${this.width}" height="${this.height}" fill="#ffffff"/>\n`;
+        
+        for (let i = 0; i < this.operations.length; i++) {
+            const op = this.operations[i];
+            let element = '';
+            
+            if (op.clip) {
+                element += `  <g clip-path="url(#clip${i})">\n`;
+                svg += `  <defs><clipPath id="clip${i}"><rect x="${op.clip.x}" y="${op.clip.y}" width="${op.clip.width}" height="${op.clip.height}"/></clipPath></defs>\n`;
+            }
+            
+            if (op.type === 'rect') {
+                element += `  <rect x="${op.x}" y="${op.y}" width="${op.width}" height="${op.height}" fill="${rgbToHex(op.fillStyle)}"/>\n`;
+            } else if (op.type === 'strokeRect') {
+                element += `  <rect x="${op.x}" y="${op.y}" width="${op.width}" height="${op.height}" fill="none" stroke="${rgbToHex(op.strokeStyle)}" stroke-width="${op.lineWidth}"/>\n`;
+            } else if (op.type === 'stroke') {
+                const cap = 'butt';
+                element += `  <path d="${op.pathData}" stroke="${rgbToHex(op.strokeStyle)}" stroke-width="${op.lineWidth}" stroke-linecap="${cap}" fill="none"/>\n`;
+            } else if (op.type === 'text') {
+                // Handle two cases:
+                // 1. Regular text (no transform): use x, y directly
+                // 2. Scaled letters (with transform): drawScaledLetter does translate(tx,ty) -> scale(sx,sy) -> fillText(0,0)
+                
+                let textX = op.x;
+                let textY = op.y;
+                
+                // Build transform string for SVG
+                let transformParts = [];
+                let hasTransform = op.transform && (op.transform.tx !== 0 || op.transform.ty !== 0 || 
+                                                     op.transform.sx !== 1 || op.transform.sy !== 1 || 
+                                                     op.transform.rotation !== 0);
+                
+                if (hasTransform) {
+                    // This is from drawScaledLetter: text is drawn at (0,0) after translate/scale
+                    // The translation becomes the text position
+                    const tx = op.transform.tx;
+                    const ty = op.transform.ty;
+                    textX = tx;
+                    textY = ty;
+                    
+                    // Apply scale as SVG transform around the text position
+                    if (op.transform.sx !== 1 || op.transform.sy !== 1) {
+                        transformParts.push(`translate(${tx.toFixed(4)},${ty.toFixed(4)})`);
+                        transformParts.push(`scale(${op.transform.sx.toFixed(6)},${op.transform.sy.toFixed(6)})`);
+                        transformParts.push(`translate(${-tx.toFixed(4)},${-ty.toFixed(4)})`);
+                    }
+                    
+                    // Apply rotation if present
+                    if (op.transform.rotation !== 0) {
+                        transformParts.push(`rotate(${(op.transform.rotation * 180 / Math.PI).toFixed(2)} ${tx.toFixed(4)} ${ty.toFixed(4)})`);
+                    }
+                } else {
+                    // Regular text: adjust for textBaseline
+                    if (op.textBaseline === 'middle') {
+                        const fontSizeMatch = op.font.match(/(\d+)px/);
+                        const fontSize = fontSizeMatch ? parseInt(fontSizeMatch[1]) : 10;
+                        textY += fontSize / 2;
+                    }
+                    // alphabetic baseline needs no adjustment
+                }
+                
+                // Adjust for textAlign
+                let textAnchor = 'start';
+                if (op.textAlign === 'center') {
+                    textAnchor = 'middle';
+                } else if (op.textAlign === 'right' || op.textAlign === 'end') {
+                    textAnchor = 'end';
+                }
+                
+                // Escape XML special characters
+                const escapedText = op.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                
+                // Get font size
+                const baseFontSize = parseInt(op.font.match(/(\d+)px/)?.[1] || 10);
+                
+                // Determine font weight
+                let fontWeight = 'normal';
+                if (op.font.includes('bold')) {
+                    fontWeight = 'bold';
+                }
+                
+                // Build transform attribute
+                let transformAttr = '';
+                if (transformParts.length > 0) {
+                    transformAttr = ` transform="${transformParts.join(' ')}"`;
+                }
+                
+                // Use appropriate dominant-baseline
+                let dominantBaseline = op.textBaseline === 'middle' ? 'middle' : 'alphabetic';
+                
+                element += `  <text x="${textX}" y="${textY}" fill="${rgbToHex(op.fillStyle)}" font-family="monospace" font-size="${baseFontSize}" font-weight="${fontWeight}" text-anchor="${textAnchor}" dominant-baseline="${dominantBaseline}"${transformAttr}>${escapedText}</text>\n`;
+            }
+            
+            if (op.clip) {
+                element += `  </g>\n`;
+            }
+            
+            svg += element;
+        }
+        
+        svg += '</svg>';
+        return svg;
+    };
 
     // === Letter-mode helpers (WebLogo-style glyph scaling) ===
     const LETTER_BASE_FONT = 'bold 100px monospace'; // big base for precise metrics
@@ -1051,6 +1360,24 @@
             ctx.fillStyle = SCROLLBAR_THUMB_COLOR_NO_SCROLL;
             ctx.fillRect(scrollableAreaX, hScrollbarY + SCROLLBAR_PADDING, hScrollbarWidth, SCROLLBAR_WIDTH - SCROLLBAR_PADDING * 2);
         }
+    }
+    
+    function downloadFile(content, baseName, extension, mimeType) {
+        // Create filename with timestamp
+        const now = new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        const filename = `${baseName}_${timestamp}.${extension}`;
+        
+        // Create blob and download
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
     
     function calculateFrequencies() {
@@ -2163,6 +2490,322 @@
     }
     
     // ============================================================================
+    // SVG EXPORT HELPERS
+    // ============================================================================
+    
+    // Render PSSM to any context (canvas or SVG) - full view, no scrolling
+    function renderPSSMToContext(ctx, logicalWidth, logicalHeight, forExport) {
+        if (!msaData) return;
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+        
+        const frequencies = calculateFrequencies();
+        if (!frequencies) return;
+        
+        const queryRowHeight = CHAR_WIDTH;
+        const GAP_HEIGHT = 0;
+        const { scrollableAreaX, scrollableAreaY } = getScrollableAreaForMode('pssm', logicalWidth, logicalHeight);
+        
+        const LABEL_WIDTH = CHAR_WIDTH;
+        const queryY = TICK_ROW_HEIGHT;
+        const heatmapY = scrollableAreaY + GAP_HEIGHT;
+        const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
+        const aaRowHeight = CHAR_WIDTH;
+        const heatmapHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        const heatmapX = LABEL_WIDTH;
+        const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
+        
+        // For export, render all positions; otherwise use visible range
+        const startPos = forExport ? 0 : Math.floor(scrollLeft / CHAR_WIDTH);
+        const endPos = forExport ? frequencies.length : Math.min(frequencies.length, startPos + Math.ceil((logicalWidth - scrollableAreaX) / CHAR_WIDTH) + 1);
+        const xOffsetStart = forExport ? heatmapX : heatmapX - (scrollLeft % CHAR_WIDTH);
+        
+        // Draw tick marks
+        if (forExport) {
+            // For export, draw all tick marks across full width
+            drawTickMarks(ctx, logicalWidth, 0, CHAR_WIDTH, LABEL_WIDTH, LABEL_WIDTH, logicalWidth);
+        } else {
+            drawTickMarks(ctx, logicalWidth, scrollLeft, CHAR_WIDTH, LABEL_WIDTH, LABEL_WIDTH, logicalWidth);
+        }
+        
+        // Draw labels
+        for (let i = 0; i < NUM_AMINO_ACIDS; i++) {
+            const aa = AMINO_ACIDS_ORDERED[i];
+            const y = heatmapY + i * aaRowHeight;
+            const dayhoffColor = getDayhoffColor(aa);
+            
+            ctx.fillStyle = `rgb(${dayhoffColor.r}, ${dayhoffColor.g}, ${dayhoffColor.b})`;
+            ctx.fillRect(0, y, LABEL_WIDTH, aaRowHeight);
+            
+            ctx.fillStyle = '#000';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(aa, LABEL_WIDTH / 2, y + aaRowHeight / 2);
+        }
+        
+        // Draw heatmap
+        let xOffset = xOffsetStart;
+        for (let pos = startPos; pos < endPos && pos < frequencies.length; pos++) {
+            const posData = frequencies[pos];
+            
+            for (let i = 0; i < NUM_AMINO_ACIDS; i++) {
+                const aa = AMINO_ACIDS_ORDERED[i];
+                const probability = posData[aa] || 0;
+                const y = heatmapY + i * aaRowHeight;
+                
+                const white = {r: 255, g: 255, b: 255};
+                const darkBlue = {r: 0, g: 0, b: 139};
+                const finalR = Math.round(white.r + (darkBlue.r - white.r) * probability);
+                const finalG = Math.round(white.g + (darkBlue.g - white.g) * probability);
+                const finalB = Math.round(white.b + (darkBlue.b - white.b) * probability);
+                
+                ctx.fillStyle = `rgb(${finalR}, ${finalG}, ${finalB})`;
+                ctx.fillRect(xOffset, y, CHAR_WIDTH, aaRowHeight);
+            }
+            
+            xOffset += CHAR_WIDTH;
+        }
+        
+        // Draw black boxes around wildtype
+        const querySeqForBoxes = msaData.sequences.length > 0 ? msaData.sequences[0].sequence : '';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+        let boxXOffset = xOffsetStart;
+        for (let pos = startPos; pos < endPos && pos < frequencies.length; pos++) {
+            const wildtypeAA = pos < querySeqForBoxes.length ? querySeqForBoxes[pos].toUpperCase() : null;
+            if (wildtypeAA) {
+                const wildtypeIndex = AMINO_ACIDS_ORDERED.indexOf(wildtypeAA);
+                if (wildtypeIndex >= 0) {
+                    const y = heatmapY + wildtypeIndex * aaRowHeight;
+                    ctx.strokeRect(boxXOffset, y, CHAR_WIDTH, aaRowHeight);
+                }
+            }
+            boxXOffset += CHAR_WIDTH;
+        }
+        
+        // Draw group boundaries
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        for (const boundaryIdx of DAYHOFF_GROUP_BOUNDARIES) {
+            const y = heatmapY + boundaryIdx * aaRowHeight;
+            ctx.beginPath();
+            ctx.moveTo(heatmapX, y);
+            ctx.lineTo(heatmapX + (msaData.queryLength * CHAR_WIDTH), y);
+            ctx.stroke();
+        }
+        
+        // Draw query sequence
+        if (msaData.sequences.length > 0) {
+            const querySeq = msaData.sequences[0];
+            drawQuerySequence(ctx, totalWidth, queryY, queryRowHeight, querySeq, 0, scrollableAreaX, 0, frequencies.length, LABEL_WIDTH, totalWidth, false);
+        }
+    }
+    
+    // Render Logo to any context (canvas or SVG) - full view, no scrolling
+    function renderLogoToContext(ctx, logicalWidth, logicalHeight, forExport) {
+        if (!msaData) return;
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+        
+        const frequencies = calculateFrequencies();
+        if (!frequencies) return;
+        
+        const data = useBitScore 
+            ? (cachedLogOdds || calculateLogOdds(frequencies))
+            : frequencies;
+        if (!data) return;
+        
+        const queryRowHeight = CHAR_WIDTH;
+        const { scrollableAreaX, scrollableAreaY } = getScrollableAreaForMode('logo', logicalWidth, logicalHeight);
+        const LABEL_WIDTH = Y_AXIS_WIDTH;
+        const LOGO_VERTICAL_PADDING = 12;
+        const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
+        const aaRowHeight = CHAR_WIDTH;
+        const originalLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        const logoY = scrollableAreaY + LOGO_VERTICAL_PADDING;
+        const queryY = logoY + originalLogoHeight;
+        const effectiveLogoHeight = queryY - logoY;
+        const tickY = queryY + queryRowHeight;
+        
+        // Calculate logo data (same as renderLogoCanvas)
+        const logoData = [];
+        let maxInfoContent = 0;
+        
+        if (useBitScore) {
+            const positionInfoContents = [];
+            for (let pos = 0; pos < data.length; pos++) {
+                const posFreq = frequencies[pos];
+                let infoContent = 0;
+                const contributions = {};
+                for (const aa in posFreq) {
+                    const freq = posFreq[aa];
+                    if (freq > 0) {
+                        const backgroundFreq = getBackgroundFrequency(aa);
+                        const contribution = freq * Math.log2(freq / backgroundFreq);
+                        if (contribution > 0) {
+                            infoContent += contribution;
+                            contributions[aa] = contribution;
+                        }
+                    }
+                }
+                positionInfoContents.push({ infoContent, contributions });
+                if (infoContent > maxInfoContent) {
+                    maxInfoContent = infoContent;
+                }
+            }
+            for (let pos = 0; pos < positionInfoContents.length; pos++) {
+                const posInfo = positionInfoContents[pos];
+                const infoContent = posInfo.infoContent;
+                const contributions = posInfo.contributions;
+                const totalStackHeight = maxInfoContent > 0 
+                    ? (infoContent / maxInfoContent) * effectiveLogoHeight 
+                    : 0;
+                const letterHeights = {};
+                if (infoContent > 0) {
+                    for (const aa in contributions) {
+                        letterHeights[aa] = (contributions[aa] / infoContent) * totalStackHeight;
+                    }
+                }
+                logoData.push({ infoContent, letterHeights, posData: data[pos] });
+            }
+        } else {
+            for (let pos = 0; pos < frequencies.length; pos++) {
+                const posFreq = frequencies[pos];
+                const letterHeights = {};
+                let freqSum = 0;
+                for (const aa in posFreq) {
+                    freqSum += posFreq[aa];
+                }
+                const normalizationFactor = freqSum > 0 ? 1 / freqSum : 1;
+                for (const aa in posFreq) {
+                    letterHeights[aa] = (posFreq[aa] * normalizationFactor) * effectiveLogoHeight;
+                }
+                logoData.push({ infoContent: 0, letterHeights, posData: data[pos] });
+            }
+        }
+        
+        // Draw Y-axis
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, LABEL_WIDTH, logicalHeight);
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(LABEL_WIDTH, logoY - LOGO_VERTICAL_PADDING);
+        ctx.lineTo(LABEL_WIDTH, queryY);
+        ctx.stroke();
+        
+        // Y-axis labels
+        const axisLabel = useBitScore ? "Bits" : "Probability";
+        const axisLabelY = (logoY - LOGO_VERTICAL_PADDING + queryY) / 2;
+        ctx.save();
+        ctx.translate(LABEL_WIDTH / 2 - 15, axisLabelY);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillStyle = '#333';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(axisLabel, 0, 0);
+        ctx.restore();
+        
+        // Y-axis ticks
+        ctx.fillStyle = '#333';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        const tickValues = [];
+        if (useBitScore) {
+            const maxVal = maxInfoContent > 0 ? maxInfoContent : 1;
+            tickValues.push({ value: 0, label: '0' });
+            if (maxVal > 0) {
+                tickValues.push({ value: maxVal / 2, label: (maxVal / 2).toFixed(1) });
+                tickValues.push({ value: maxVal, label: maxVal.toFixed(1) });
+            }
+        } else {
+            tickValues.push({ value: 0, label: '0.0' });
+            tickValues.push({ value: 0.5, label: '0.5' });
+            tickValues.push({ value: 1.0, label: '1.0' });
+        }
+        
+        const logoBottomY = queryY;
+        const logoTopY = logoY;
+        for (const tick of tickValues) {
+            let yPos;
+            if (useBitScore) {
+                const maxVal = maxInfoContent > 0 ? maxInfoContent : 1;
+                yPos = logoBottomY - (tick.value / maxVal) * effectiveLogoHeight;
+            } else {
+                yPos = logoBottomY - tick.value * effectiveLogoHeight;
+            }
+            ctx.fillText(tick.label, LABEL_WIDTH - 8, yPos);
+            ctx.beginPath();
+            ctx.moveTo(LABEL_WIDTH - 5, yPos);
+            ctx.lineTo(LABEL_WIDTH, yPos);
+            ctx.stroke();
+        }
+        
+        // Draw stacked logo
+        const startPos = forExport ? 0 : Math.floor(scrollLeft / CHAR_WIDTH);
+        const endPos = forExport ? logoData.length : Math.min(logoData.length, startPos + Math.ceil((logicalWidth - scrollableAreaX) / CHAR_WIDTH) + 1);
+        let xOffset = forExport ? scrollableAreaX : scrollableAreaX - (scrollLeft % CHAR_WIDTH);
+        
+        for (let pos = startPos; pos < endPos && pos < logoData.length; pos++) {
+            const logoPos = logoData[pos];
+            const letterHeights = logoPos.letterHeights;
+            const aas = Object.keys(letterHeights).sort((a, b) => letterHeights[a] - letterHeights[b]);
+            
+            let currentY = queryY;
+            for (const aa of aas) {
+                const h = letterHeights[aa];
+                if (h > 0) {
+                    const color = getDayhoffColor(aa);
+                    // drawScaledLetter takes x as left edge of cell (same as renderLogoCanvas)
+                    drawScaledLetter(ctx, aa, xOffset, currentY, CHAR_WIDTH, h, `rgb(${color.r}, ${color.g}, ${color.b})`, null);
+                    currentY -= h;
+                }
+            }
+            
+            xOffset += CHAR_WIDTH;
+        }
+        
+        // Draw black bar above query
+        ctx.fillStyle = '#000';
+        ctx.fillRect(scrollableAreaX, queryY, logicalWidth - scrollableAreaX, 1);
+        
+        // Draw query sequence
+        if (msaData.sequences.length > 0) {
+            const querySeq = msaData.sequences[0];
+            // For export, ensure query sequence aligns with logo by using same xOffset calculation
+            if (forExport) {
+                // Draw query sequence aligned with logo stacks
+                let queryXOffset = scrollableAreaX;
+                for (let pos = 0; pos < querySeq.sequence.length && pos < logoData.length; pos++) {
+                    const aa = querySeq.sequence[pos];
+                    const color = getDayhoffColor(aa);
+                    
+                    ctx.fillStyle = `rgb(${color.r}, ${color.g}, ${color.b})`;
+                    ctx.fillRect(queryXOffset, queryY, CHAR_WIDTH, queryRowHeight);
+                    
+                    ctx.fillStyle = '#000';
+                    ctx.font = '10px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(aa, queryXOffset + CHAR_WIDTH / 2, queryY + queryRowHeight / 2);
+                    
+                    queryXOffset += CHAR_WIDTH;
+                }
+            } else {
+                drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, startPos, endPos, LABEL_WIDTH, logicalWidth, false);
+            }
+        }
+        
+        // Draw tick marks
+        drawTickMarks(ctx, logicalWidth, forExport ? 0 : scrollLeft, CHAR_WIDTH, LABEL_WIDTH, LABEL_WIDTH, logicalWidth, tickY);
+    }
+    
+    // ============================================================================
     // PUBLIC API
     // ============================================================================
     
@@ -2406,6 +3049,85 @@
         
         getMSAMode: function() {
             return msaViewMode;
+        },
+        
+        saveLogoAsSvg: function() {
+            if (!logoCanvasData || !logoCanvasData.canvas || !msaData) {
+                console.error('Logo canvas or MSA data not available');
+                return;
+            }
+            
+            const canvas = logoCanvasData.canvas;
+            const { logicalHeight } = getLogicalCanvasDimensions(canvas);
+            
+            // Calculate full width needed for all positions
+            const LABEL_WIDTH = Y_AXIS_WIDTH;
+            const fullWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
+            
+            // Create SVG context with full width
+            const svgCtx = new SimpleCanvas2SVG(fullWidth, logicalHeight);
+            
+            // Render to SVG context (full view, no scrolling)
+            renderLogoToContext(svgCtx, fullWidth, logicalHeight, true);
+            
+            // Get SVG string and download
+            const svgString = svgCtx.getSerializedSvg();
+            downloadFile(svgString, 'msa_logo', 'svg', 'image/svg+xml;charset=utf-8');
+        },
+        
+        savePSSMAsSvg: function() {
+            if (!pssmCanvasData || !pssmCanvasData.canvas || !msaData) {
+                console.error('PSSM canvas or MSA data not available');
+                return;
+            }
+            
+            const canvas = pssmCanvasData.canvas;
+            const { logicalHeight } = getLogicalCanvasDimensions(canvas);
+            
+            // Calculate full width needed for all positions
+            const LABEL_WIDTH = CHAR_WIDTH;
+            const fullWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
+            
+            // Create SVG context with full width
+            const svgCtx = new SimpleCanvas2SVG(fullWidth, logicalHeight);
+            
+            // Render to SVG context (full view, no scrolling)
+            renderPSSMToContext(svgCtx, fullWidth, logicalHeight, true);
+            
+            // Get SVG string and download
+            const svgString = svgCtx.getSerializedSvg();
+            downloadFile(svgString, 'msa_pssm', 'svg', 'image/svg+xml;charset=utf-8');
+        },
+        
+        savePSSMAsCsv: function() {
+            if (!msaData) {
+                console.error('MSA data not available');
+                return;
+            }
+            
+            const frequencies = calculateFrequencies();
+            if (!frequencies || frequencies.length === 0) {
+                console.error('No frequency data available');
+                return;
+            }
+            
+            // Build CSV output
+            let csv = 'Position,' + AMINO_ACIDS_ORDERED.join(',') + '\n';
+            
+            for (let pos = 0; pos < frequencies.length; pos++) {
+                const posData = frequencies[pos];
+                const line = [pos + 1]; // 1-indexed position
+                
+                for (const aa of AMINO_ACIDS_ORDERED) {
+                    const prob = posData[aa] || 0;
+                    line.push(prob.toFixed(4));
+                }
+                
+                csv += line.join(',') + '\n';
+            }
+            
+            // Download CSV
+            downloadFile(csv, 'msa_pssm', 'csv', 'text/csv;charset=utf-8');
         },
         
         setMSAMode: function(mode) {

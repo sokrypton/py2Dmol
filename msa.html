@@ -279,6 +279,13 @@
                             <span>Bit-score</span>
                         </label>
                     </div>
+                    <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
+                    </div>
+                    <div id="pssmSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="pssmSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
+                        <button id="pssmSaveCsvButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save CSV</button>
+                    </div>
                 </div>
                 
                 <!-- Right: Filters box -->
@@ -356,6 +363,11 @@
             const msaSortCheckbox = document.getElementById('msaSortCheckbox');
             const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
             const logoBitScoreCheckbox = document.getElementById('logoBitScoreCheckbox');
+            const logoSaveContainer = document.getElementById('logoSaveContainer');
+            const pssmSaveContainer = document.getElementById('pssmSaveContainer');
+            const logoSaveSvgButton = document.getElementById('logoSaveSvgButton');
+            const pssmSaveSvgButton = document.getElementById('pssmSaveSvgButton');
+            const pssmSaveCsvButton = document.getElementById('pssmSaveCsvButton');
             
             if (msaModeSelect) {
                 msaModeSelect.addEventListener('change', (e) => {
@@ -372,6 +384,45 @@
                     // Show/hide bit-score checkbox for logo mode
                     if (logoBitScoreContainer) {
                         logoBitScoreContainer.style.display = (mode === 'logo') ? 'flex' : 'none';
+                    }
+                    
+                    // Show/hide save buttons based on mode
+                    if (logoSaveContainer) {
+                        logoSaveContainer.style.display = (mode === 'logo') ? 'flex' : 'none';
+                    }
+                    if (pssmSaveContainer) {
+                        pssmSaveContainer.style.display = (mode === 'pssm') ? 'flex' : 'none';
+                    }
+                });
+            }
+            
+            // Wire up save button event listeners
+            if (logoSaveSvgButton && window.MSAViewer) {
+                logoSaveSvgButton.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (window.MSAViewer.saveLogoAsSvg) {
+                        window.MSAViewer.saveLogoAsSvg();
+                    }
+                });
+            }
+            
+            if (pssmSaveSvgButton && window.MSAViewer) {
+                pssmSaveSvgButton.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (window.MSAViewer.savePSSMAsSvg) {
+                        window.MSAViewer.savePSSMAsSvg();
+                    }
+                });
+            }
+            
+            if (pssmSaveCsvButton && window.MSAViewer) {
+                pssmSaveCsvButton.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (window.MSAViewer.savePSSMAsCsv) {
+                        window.MSAViewer.savePSSMAsCsv();
                     }
                 });
             }
@@ -520,11 +571,19 @@
             // Set initial visibility for checkboxes based on default mode (MSA)
             const msaSortContainer = document.getElementById('msaSortContainer');
             const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
+            const logoSaveContainer = document.getElementById('logoSaveContainer');
+            const pssmSaveContainer = document.getElementById('pssmSaveContainer');
             if (msaSortContainer) {
                 msaSortContainer.style.display = 'flex'; // Show sort checkbox for MSA mode
             }
             if (logoBitScoreContainer) {
                 logoBitScoreContainer.style.display = 'none'; // Hide bit-score checkbox initially
+            }
+            if (logoSaveContainer) {
+                logoSaveContainer.style.display = 'none'; // Hide logo save button initially
+            }
+            if (pssmSaveContainer) {
+                pssmSaveContainer.style.display = 'none'; // Hide PSSM save buttons initially
             }
             
             // File upload button
