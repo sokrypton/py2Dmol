@@ -232,10 +232,18 @@
 <body>
     <div class="mx-auto" style="width: 948px; position: relative;">
         <h1><strong>MSA Viewer</strong></h1>
-        <p class="description">Upload A3M, FASTA, or STO file to visualize multiple sequence alignment</p>
+        <p class="description">Fetch from AlphaFold DB (UniProt ID) or upload A3M, FASTA, or STO file to visualize multiple sequence alignment</p>
         
-        <!-- Upload Section -->
+        <!-- Fetch and Upload Section -->
         <div class="container-box upload-section" style="width: 948px; margin-bottom: 10px;">
+            <!-- Fetch Section -->
+            <label for="fetch-uniprot-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Fetch from AlphaFold DB (UniProt ID)</label>
+            <div id="fetch-input-container" style="margin-bottom: 12px; display: flex; gap: 8px; align-items: center;">
+                <input type="text" id="fetch-uniprot-id" placeholder="e.g., P0A8I3" style="flex: 1; padding: 6px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+                <button id="fetch-btn" class="btn btn-primary">Fetch</button>
+            </div>
+            
+            <!-- Upload Section -->
             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
                 Upload MSA File
             </label>
@@ -541,6 +549,75 @@
             }
         }
         
+        // Fetch MSA from AlphaFold DB
+        async function handleFetchMSA() {
+            const uniprotId = document.getElementById('fetch-uniprot-id').value.trim().toUpperCase();
+            
+            if (!uniprotId) {
+                setStatus('Please enter a UniProt ID', true);
+                return;
+            }
+            
+            // Validate UniProt ID format (typically 6 characters, alphanumeric)
+            if (!/^[A-Z0-9]{6,10}$/.test(uniprotId)) {
+                setStatus('Invalid UniProt ID format. Please enter a valid UniProt ID (e.g., P0A8I3)', true);
+                return;
+            }
+            
+            setStatus(`Fetching MSA for ${uniprotId} from AlphaFold DB...`);
+            
+            const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${uniprotId}-F1-msa_v6.a3m`;
+            
+            try {
+                const response = await fetch(msaUrl);
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        throw new Error(`MSA not found for UniProt ID ${uniprotId}. The structure may not be available in AlphaFold DB.`);
+                    }
+                    throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
+                }
+                
+                const msaText = await response.text();
+                
+                if (!msaText || msaText.trim().length === 0) {
+                    throw new Error('Empty MSA file received');
+                }
+                
+                // Determine type from filename (unpaired or paired)
+                const type = uniprotId.toLowerCase().includes('paired') ? 'paired' : 'unpaired';
+                
+                // Parse and load the MSA
+                if (window.MSAViewer && window.MSAViewer.parseA3M) {
+                    const msaData = window.MSAViewer.parseA3M(msaText, type);
+                    if (msaData && msaData.querySequence) {
+                        window.MSAViewer.setMSAData(msaData, null, type);
+                        setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+                        updateMSASequenceCount();
+                        
+                        // Update file name display
+                        document.getElementById('file-name').textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
+                        
+                        // Show MSA viewer container
+                        const msaContainer = document.getElementById('msa-viewer-container');
+                        if (msaContainer) {
+                            msaContainer.style.display = 'block';
+                        }
+                        const msaView = document.getElementById('msaView');
+                        if (msaView) {
+                            msaView.classList.remove('hidden');
+                        }
+                    } else {
+                        setStatus('Failed to parse MSA file', true);
+                    }
+                } else {
+                    setStatus('MSA Viewer not available', true);
+                }
+            } catch (error) {
+                console.error('Error fetching MSA:', error);
+                setStatus(`Error fetching MSA: ${error.message}`, true);
+            }
+        }
+        
         // File upload handling
         function handleFileUpload(event) {
             const files = event.target.files;
@@ -607,6 +684,25 @@
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
             initializeMSAViewer();
+            
+            // Wire up fetch button
+            const fetchBtn = document.getElementById('fetch-btn');
+            const fetchInput = document.getElementById('fetch-uniprot-id');
+            
+            if (fetchBtn) {
+                fetchBtn.addEventListener('click', () => {
+                    handleFetchMSA();
+                });
+            }
+            
+            // Allow Enter key to trigger fetch
+            if (fetchInput) {
+                fetchInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        handleFetchMSA();
+                    }
+                });
+            }
             
             // Set initial visibility for checkboxes based on default mode (MSA)
             const msaSortContainer = document.getElementById('msaSortContainer');

@@ -1344,7 +1344,7 @@
         ctx.lineTo(NAME_COLUMN_WIDTH, logicalHeight);
         ctx.stroke();
         
-        // Draw tick marks
+        // Draw tick marks (background will be redrawn after labels to cover them)
         drawTickMarks(ctx, logicalWidth, scrollLeft, MSA_CHAR_WIDTH, scrollableAreaX, scrollableAreaX, logicalWidth);
         
         // Calculate visible position range
@@ -1371,7 +1371,7 @@
             textColor: '#333'
         };
         
-        // Draw labels for visible sequences (only below query row)
+        // Draw labels for visible sequences (same visibility as sequences - can go under query and tick bar)
         for (let i = visibleSequenceStart; i < visibleSequenceEnd && i < msaData.sequences.length; i++) {
             if (i === 0) continue; // Skip query (drawn separately)
             
@@ -1380,10 +1380,9 @@
             // Sequence i (where i >= 1) should be at: scrollableAreaY + (i-1) * rowHeight - scrollTop
             const y = scrollableAreaY + (i - 1) * SEQUENCE_ROW_HEIGHT - scrollTop;
             
-            // Only draw labels that are below the query row (queryY + queryRowHeight)
-            // and within the visible canvas area
-            const queryBottom = queryY + queryRowHeight;
-            if (y >= queryBottom && y <= logicalHeight) {
+            // Draw labels that are visible on canvas (same check as sequences)
+            // Labels can go under query and tick bar - they will be covered by white backgrounds
+            if (y + SEQUENCE_ROW_HEIGHT >= 0 && y <= logicalHeight) {
                 drawSequenceLabel(ctx, seq.header, y, SEQUENCE_ROW_HEIGHT, NAME_COLUMN_WIDTH, labelOptions);
             }
             
@@ -1423,6 +1422,13 @@
                 xOffset += MSA_CHAR_WIDTH;
             }
         }
+        
+        // Redraw tick bar background to cover any labels that scrolled up into it
+        // This provides a natural hiding space for labels
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, queryY - TICK_ROW_HEIGHT, logicalWidth, TICK_ROW_HEIGHT);
+        // Redraw tick marks on top
+        drawTickMarks(ctx, logicalWidth, scrollLeft, MSA_CHAR_WIDTH, scrollableAreaX, scrollableAreaX, logicalWidth, queryY - TICK_ROW_HEIGHT);
         
         // Draw query sequence (on top - must be drawn last to appear above other labels)
         if (msaData.sequences.length > 0) {
