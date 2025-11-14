@@ -2013,7 +2013,7 @@
         
         if (!result) return;
         
-        const { canvas, canvasData } = result;
+        const { canvas, container, canvasData } = result;
         pssmCanvasData = canvasData;
         
         clampScrollLeft(result.dimensions.canvasWidth, CHAR_WIDTH);
@@ -2034,6 +2034,74 @@
         activeInteractionManager = new ViewInteractionManager(canvas, 'pssm', interactionConfig);
         activeInteractionManager.setupWheelScrolling();
         activeInteractionManager.setupPointerInteractions();
+        
+        // Create tooltip element for hover information
+        const tooltip = document.createElement('div');
+        tooltip.style.position = 'absolute';
+        tooltip.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
+        tooltip.style.color = '#fff';
+        tooltip.style.padding = '4px 8px';
+        tooltip.style.borderRadius = '4px';
+        tooltip.style.fontSize = '12px';
+        tooltip.style.fontFamily = 'monospace';
+        tooltip.style.pointerEvents = 'none';
+        tooltip.style.zIndex = '1000';
+        tooltip.style.display = 'none';
+        tooltip.style.whiteSpace = 'nowrap';
+        pssmCanvasData.container.appendChild(tooltip);
+        
+        // Add hover tooltip functionality
+        canvas.addEventListener('mousemove', (e) => {
+            const pos = getCanvasPositionFromMouse(e, canvas);
+            const { logicalWidth, logicalHeight } = getLogicalCanvasDimensions(canvas);
+            const { scrollableAreaX, scrollableAreaY } = getScrollableAreaForMode('pssm', logicalWidth, logicalHeight);
+            
+            const LABEL_WIDTH = CHAR_WIDTH;
+            const heatmapY = scrollableAreaY;
+            const heatmapX = LABEL_WIDTH;
+            const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
+            const aaRowHeight = CHAR_WIDTH;
+            
+            // Check if mouse is over heatmap area
+            if (pos.x >= heatmapX && pos.x < logicalWidth && 
+                pos.y >= heatmapY && pos.y < heatmapY + NUM_AMINO_ACIDS * aaRowHeight) {
+                
+                // Calculate position (column)
+                const relativeX = pos.x - heatmapX + scrollLeft;
+                const position = Math.floor(relativeX / CHAR_WIDTH);
+                
+                // Calculate amino acid (row)
+                const relativeY = pos.y - heatmapY;
+                const aaIndex = Math.floor(relativeY / aaRowHeight);
+                
+                if (position >= 0 && position < msaData.queryLength && 
+                    aaIndex >= 0 && aaIndex < NUM_AMINO_ACIDS) {
+                    
+                    const frequencies = calculateFrequencies();
+                    if (frequencies && frequencies[position]) {
+                        const aa = AMINO_ACIDS_ORDERED[aaIndex];
+                        const probability = frequencies[position][aa] || 0;
+                        
+                        // Show tooltip
+                        tooltip.textContent = `${position + 1}${aa} - ${probability.toFixed(2)}`;
+                        tooltip.style.display = 'block';
+                        
+                        // Position tooltip near cursor (relative to container)
+                        const containerRect = pssmCanvasData.container.getBoundingClientRect();
+                        tooltip.style.left = (e.clientX - containerRect.left + 10) + 'px';
+                        tooltip.style.top = (e.clientY - containerRect.top - 25) + 'px';
+                    }
+                } else {
+                    tooltip.style.display = 'none';
+                }
+            } else {
+                tooltip.style.display = 'none';
+            }
+        });
+        
+        canvas.addEventListener('mouseleave', () => {
+            tooltip.style.display = 'none';
+        });
         
         renderPSSMCanvas();
     }
