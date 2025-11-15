@@ -548,85 +548,9 @@ function initializePy2DmolViewer(containerElement) {
             if (patch.selectionMode !== undefined) {
                 this.selectionModel.selectionMode = patch.selectionMode;
             }
-            
-            // Save selection state to current object
-            this._saveSelectionToObject();
-            
             this._composeAndApplyMask(skip3DRender);
         }
 
-        // Save current selection state to the current object (or specified object)
-        _saveSelectionToObject(objectName = null) {
-            const targetObjectName = objectName || this.currentObjectName;
-            if (!targetObjectName || !this.objectsData[targetObjectName]) return;
-            
-            const obj = this.objectsData[targetObjectName];
-            obj.selectionState = {
-                positions: Array.from(this.selectionModel.positions),
-                chains: Array.from(this.selectionModel.chains),
-                paeBoxes: this.selectionModel.paeBoxes.map(b => ({...b})),
-                selectionMode: this.selectionModel.selectionMode
-            };
-            console.log(`[Selection] Saved selection state for object "${targetObjectName}":`, {
-                positions: obj.selectionState.positions.length,
-                chains: obj.selectionState.chains.length,
-                mode: obj.selectionState.selectionMode
-            });
-        }
-        
-        // Restore selection state from the current object (or specified object)
-        _restoreSelectionFromObject(objectName = null) {
-            const targetObjectName = objectName || this.currentObjectName;
-            if (!targetObjectName || !this.objectsData[targetObjectName]) {
-                // No object loaded, use default
-                this.resetSelection();
-                return;
-            }
-            
-            const obj = this.objectsData[targetObjectName];
-            if (obj.selectionState) {
-                console.log(`[Selection] Restoring selection state for object "${targetObjectName}"`);
-                // Get current frame data to validate position indices
-                const frame = obj.frames && obj.frames.length > 0 ? obj.frames[0] : null;
-                const maxPositionIndex = frame && frame.chains ? frame.chains.length - 1 : -1;
-                
-                // Filter out invalid position indices (out of bounds)
-                const savedPositions = obj.selectionState.positions || [];
-                const validPositions = maxPositionIndex >= 0 
-                    ? savedPositions.filter(idx => idx >= 0 && idx <= maxPositionIndex)
-                    : [];
-                
-                // Get valid chains from current frame
-                const savedChains = obj.selectionState.chains || [];
-                const availableChains = frame && frame.chains ? new Set(frame.chains) : new Set();
-                const validChains = savedChains.filter(chain => availableChains.has(chain));
-                
-                console.log(`[Selection] Restored: ${validPositions.length} positions, ${validChains.length} chains, mode: ${obj.selectionState.selectionMode || 'default'}`);
-                
-                // Restore saved selection state (with validated indices)
-                this.selectionModel = {
-                    positions: new Set(validPositions),
-                    chains: new Set(validChains),
-                    paeBoxes: (obj.selectionState.paeBoxes || []).map(b => ({...b})),
-                    selectionMode: obj.selectionState.selectionMode || 'default'
-                };
-                
-                // If no valid positions/chains after filtering, use default
-                if (validPositions.length === 0 && validChains.length === 0 && 
-                    this.selectionModel.selectionMode === 'explicit') {
-                    console.log(`[Selection] No valid positions/chains after filtering, resetting to default`);
-                    this.resetToDefault();
-                } else {
-                    // Apply the restored selection
-                    this._composeAndApplyMask();
-                }
-            } else {
-                // No saved state, use default (show all)
-                console.log(`[Selection] No saved state for object "${targetObjectName}", using default`);
-                this.resetToDefault();
-            }
-        }
-        
         getSelection() {
             const m = this.selectionModel;
             return {
@@ -644,7 +568,6 @@ function initializePy2DmolViewer(containerElement) {
                 paeBoxes: [],
                 selectionMode: 'default'
             };
-            this._saveSelectionToObject();
             this._composeAndApplyMask();
         }
 
@@ -682,7 +605,6 @@ function initializePy2DmolViewer(containerElement) {
                 paeBoxes: [],
                 selectionMode: 'explicit'
             });
-            // setSelection already calls _saveSelectionToObject()
         }
 
         _composeAndApplyMask(skip3DRender = false) {
@@ -1222,15 +1144,13 @@ function initializePy2DmolViewer(containerElement) {
                     if (this.currentObjectName === newObjectName) {
                         return;
                     }
-                    // Save current selection to current object BEFORE switching
-                    if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                        this._saveSelectionToObject(this.currentObjectName);
-                    }
-                    // Track object change for selection restore
+                    // Track object change for selection reset
                     this.previousObjectName = this.currentObjectName;
+                    // Clear selection when switching objects (selection is per-object)
+                    this.clearSelection();
                     this.currentObjectName = newObjectName;
                     this.setFrame(0);
-                    // setFrame will call _restoreSelectionFromObject() after loading new object data
+                    // setFrame will call resetToDefault() after loading new object data
                     
                     // Update PAE container visibility based on current object
                     this.updatePAEContainerVisibility();
@@ -1437,14 +1357,6 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
-            // Save current selection to current object BEFORE switching
-            if (this.currentObjectName && this.currentObjectName !== name && this.objectsData[this.currentObjectName]) {
-                this._saveSelectionToObject(this.currentObjectName);
-            }
-            // Track object change for selection restore
-            if (this.currentObjectName !== name) {
-                this.previousObjectName = this.currentObjectName;
-            }
             this.currentObjectName = name;
             this.currentFrame = -1;
             this.lastRenderedFrame = -1; // Reset frame tracking on object change
@@ -1502,12 +1414,6 @@ function initializePy2DmolViewer(containerElement) {
             // Set view to this object
             if (this.currentObjectName !== targetObjectName) {
                 this.stopAnimation(); // Stop if playing on another obj
-                // Save current selection to current object BEFORE switching
-                if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                    this._saveSelectionToObject(this.currentObjectName);
-                }
-                // Track object change for selection restore
-                this.previousObjectName = this.currentObjectName;
                 this.currentObjectName = targetObjectName;
                 this.lastRenderedFrame = -1; // Reset frame tracking on object change
                 if (this.objectSelect) {
@@ -1821,12 +1727,6 @@ function initializePy2DmolViewer(containerElement) {
             if (this.colorMode === 'entropy') {
                 // Switch to extracted object first (if not already)
                 if (this.currentObjectName !== extractName) {
-                    // Save current selection to current object BEFORE switching
-                    if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                        this._saveSelectionToObject(this.currentObjectName);
-                    }
-                    // Track object change for selection restore
-                    this.previousObjectName = this.currentObjectName;
                     this.currentObjectName = extractName;
                     if (this.objectSelect) {
                         this.objectSelect.value = extractName;
@@ -3347,26 +3247,19 @@ function initializePy2DmolViewer(containerElement) {
                 this.paeRenderer.setData(resolvedPae !== null ? resolvedPae : (data.pae || null));
             }
             
-            // Restore selection state when loading a new object's frame
+            // Reset selection to default (show all) when loading a new object's frame
             // Check if object actually changed (not just frame change within same object)
             const objectChanged = this.previousObjectName !== null && 
                                   this.previousObjectName !== this.currentObjectName;
             
             if (objectChanged) {
-                // Object changed: restore selection state for the new object (or use default if no saved state)
-                // Note: selection was already saved to previous object before currentObjectName was changed
-                this._restoreSelectionFromObject(this.currentObjectName);
-            }
-            // Always update previousObjectName after loading frame data to track object changes
-            this.previousObjectName = this.currentObjectName;
-            
-            // If selection was explicitly cleared (empty positions in explicit mode), reset to default
-            if (this.selectionModel.selectionMode === 'explicit' && 
-                this.selectionModel.positions.size === 0 &&
-                !objectChanged) {
+                // Object changed: reset to default (show all positions of new object)
+                this.resetToDefault();
+                this.previousObjectName = this.currentObjectName; // Update tracking
+            } else if (this.selectionModel.selectionMode === 'explicit' && 
+                       this.selectionModel.positions.size === 0) {
                 // Selection was explicitly cleared, reset to default
                 this.resetToDefault();
-                this._saveSelectionToObject();
             }
             
             // Update UI controls (but don't render yet)

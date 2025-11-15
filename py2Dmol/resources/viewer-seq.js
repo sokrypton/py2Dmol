@@ -1183,8 +1183,8 @@
             
             if (!selectedItem) return;
             
-            // Handle chain items in both sequence mode and chain mode (toggle on click, no drag)
-            if (selectedItem.type === 'chain') {
+            // Handle chain items in sequence mode (toggle on click, no drag)
+            if (selectedItem.type === 'chain' && sequenceViewMode) {
                 const chainId = selectedItem.chainId;
                 const current = renderer?.getSelection();
                 const isSelected = current?.chains?.has(chainId) || 
@@ -1199,19 +1199,23 @@
                 return;
             }
             
-            // For all other items (position, ligand), enable drag
+            // For all other items (chain in chain mode, position, ligand), enable drag
             const current = renderer?.getSelection();
             
             // Determine if item is initially selected
-            // (Chain items are handled above with toggle on click, so this is only for position/ligand)
             let isInitiallySelected = false;
-            // For position/ligand, check if all positions are selected
-            // In default mode with empty positions, all positions are considered selected
-            if (current?.selectionMode === 'default' && (!current?.positions || current.positions.size === 0)) {
-                isInitiallySelected = true;
+            if (selectedItem.type === 'chain') {
+                isInitiallySelected = current?.chains?.has(selectedItem.chainId) || 
+                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
             } else {
-                isInitiallySelected = selectedItem.positionIndices.length > 0 && 
-                    selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
+                // For position/ligand, check if all positions are selected
+                // In default mode with empty positions, all positions are considered selected
+                if (current?.selectionMode === 'default' && (!current?.positions || current.positions.size === 0)) {
+                    isInitiallySelected = true;
+                } else {
+                    isInitiallySelected = selectedItem.positionIndices.length > 0 && 
+                        selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
+                }
             }
             
             dragState.isDragging = true;
@@ -1316,10 +1320,19 @@
             }
             
             // Handle drag selection - use unified handler for position/ligand drags
-            // Chain buttons now toggle on click in both modes, so only handle position/ligand drags
+            // For position/ligand items, use the unified handleDragMove function
             if (positionPos && positionPos.positionData) {
                 // Use unified handler for position/ligand drags
                 handleDragMove(e, newCanvas);
+            } else if (chainLabelPos && !sequenceViewMode) {
+                // In chain mode, handle drag over chain labels using unified system
+                const chainId = chainLabelPos.chainId;
+                const selectedItem = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+                
+                if (selectedItem && selectedItem.type === 'chain' && dragState.dragStartItem) {
+                    // Use unified handler for chain drags
+                    handleDragMove(e, newCanvas);
+                }
             }
         });
         
