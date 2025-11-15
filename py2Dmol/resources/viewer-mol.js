@@ -1968,8 +1968,7 @@ function initializePy2DmolViewer(containerElement) {
                 // But only extract the selected MSA positions (columns)
                 for (const seq of allSequences) {
                     const extractedSeq = {
-                        name: seq.name || seq.header || 'Unknown',
-                        header: seq.header || seq.name || 'Unknown',
+                        name: seq.name || 'Unknown',
                         sequence: ''
                     };
                     
@@ -1996,21 +1995,21 @@ function initializePy2DmolViewer(containerElement) {
                 
                 if (extractedQuerySeqNoGaps.length === 0) continue;
 
-                // Find query sequence in original MSA and extract its header
+                // Find query sequence in original MSA and extract its name
                 // Use sequencesOriginal to find query in all sequences
-                let queryHeader = '>query';
+                let queryName = '>query';
                 const originalQueryIndex = originalMSAData.queryIndex !== undefined ? originalMSAData.queryIndex : 0;
                 if (allSequences && allSequences[originalQueryIndex]) {
-                    queryHeader = allSequences[originalQueryIndex].header || '>query';
+                    queryName = allSequences[originalQueryIndex].name || '>query';
                 }
                 
-                // Ensure query sequence is first and has proper header
+                // Ensure query sequence is first and has proper name
                 const querySeqIndex = extractedSequences.findIndex(s => 
-                    s.header && s.header.toLowerCase().includes('query')
+                    s.name && s.name.toLowerCase().includes('query')
                 );
                 if (querySeqIndex === -1 && extractedSequences.length > 0) {
                     // No query found, make first sequence the query
-                    extractedSequences[0].header = queryHeader;
+                    extractedSequences[0].name = queryName;
                 } else if (querySeqIndex > 0) {
                     // Query found but not first, move it to first position
                     const querySeq = extractedSequences.splice(querySeqIndex, 1)[0];
@@ -2071,7 +2070,6 @@ function initializePy2DmolViewer(containerElement) {
                     if (!extractedObject.msa.msasBySequence[extractedQuerySeqNoGaps]) {
                         extractedObject.msa.msasBySequence[extractedQuerySeqNoGaps] = {
                             msaData: extractedMSAData,
-                            type: msaEntry.type,
                             chains: [chainId]
                         };
                     }

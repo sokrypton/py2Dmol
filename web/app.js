@@ -2056,11 +2056,29 @@ function clearAllObjects() {
     // Hide viewer and top panel
     const viewerContainer = document.getElementById('viewer-container');
     const topPanelContainer = document.getElementById('sequence-viewer-container');
+    const msaContainer = document.getElementById('msa-viewer-container');
+    const msaView = document.getElementById('msaView');
+    
     if (viewerContainer) {
         viewerContainer.style.display = 'none';
     }
     if (topPanelContainer) {
         topPanelContainer.style.display = 'none';
+    }
+    if (msaContainer) {
+        msaContainer.style.display = 'none';
+    }
+    if (msaView) {
+        msaView.classList.add('hidden');
+    }
+    
+    // Clear MSA data
+    if (window.MSAViewer && window.MSAViewer.clear) {
+        try {
+            window.MSAViewer.clear();
+        } catch (e) {
+            console.error("Failed to clear MSA viewer:", e);
+        }
     }
     
     // Use viewer's comprehensive reset method
@@ -3033,8 +3051,8 @@ function initializeMSAViewerIndex() {
         const originalSetMSAData = window.MSAViewer.setMSAData;
         // Only wrap if not already wrapped
         if (!originalSetMSAData._indexHtmlWrapped) {
-            window.MSAViewer.setMSAData = function(data, chainId, type) {
-                originalSetMSAData.call(this, data, chainId, type);
+            window.MSAViewer.setMSAData = function(data, chainId) {
+                originalSetMSAData.call(this, data, chainId);
                 updateMSASequenceCount();
             };
             window.MSAViewer.setMSAData._indexHtmlWrapped = true;
@@ -3302,14 +3320,13 @@ async function handleFetch() {
                                         msaObj.msaToChains = msaToChains;
                                         
                                         // Store unique MSAs and map chains
-                                        for (const [chainId, {msaData, type}] of Object.entries(chainToMSA)) {
+                                        for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
                                             const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
                                             
                                             // Store MSA by sequence (only one per unique sequence)
                                             if (!msaObj.msasBySequence[querySeqNoGaps]) {
                                                 msaObj.msasBySequence[querySeqNoGaps] = { 
                                                     msaData, 
-                                                    type,
                                                     chains: msaToChains[querySeqNoGaps] || []
                                                 };
                                             }
@@ -3474,14 +3491,13 @@ async function handleFetch() {
                                             msaObj.msaToChains = msaToChains;
                                             
                                             // Store unique MSAs and map chains
-                                            for (const [chainId, {msaData, type}] of Object.entries(chainToMSA)) {
+                                            for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
                                                 const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
                                                 
                                                 // Store MSA by sequence (only one per unique sequence)
                                                 if (!msaObj.msasBySequence[querySeqNoGaps]) {
                                                     msaObj.msasBySequence[querySeqNoGaps] = { 
                                                         msaData, 
-                                                        type,
                                                         chains: msaToChains[querySeqNoGaps] || []
                                                     };
                                                 }
@@ -4287,8 +4303,8 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
         } else {
             // If queryIndex is out of bounds, add query sequence at the beginning
             trimmedSequencesFinal.unshift({
-                header: trimmedSequencesFinal[0]?.header?.toLowerCase().includes('query') 
-                    ? trimmedSequencesFinal[0].header 
+                name: trimmedSequencesFinal[0]?.name?.toLowerCase().includes('query') 
+                    ? trimmedSequencesFinal[0].name 
                     : 'query',
                 sequence: trimmedQuerySeqStr,
                 identity: 1.0,
@@ -4298,7 +4314,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
     } else {
         // If no sequences, add the query sequence as the only sequence
         trimmedSequencesFinal.push({
-            header: 'query',
+            name: 'query',
             sequence: trimmedQuerySeqStr,
             identity: 1.0,
             coverage: 1.0
@@ -4308,7 +4324,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
     // Recalculate identity and coverage for all sequences after trimming
     const trimmedQueryLength = trimmedQuerySeqStr.length;
     for (const seq of trimmedSequencesFinal) {
-        if (seq.header.toLowerCase().includes('query')) {
+        if (seq.name.toLowerCase().includes('query')) {
             seq.identity = 1.0;
             seq.coverage = 1.0;
         } else {
@@ -4946,14 +4962,13 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                         msaObj.msaToChains = msaToChains;
                         
                         // Store unique MSAs and map chains
-                        for (const [chainId, {msaData, type}] of Object.entries(chainToMSA)) {
+                        for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
                             const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
                             
                             // Store MSA by sequence (only one per unique sequence)
                             if (!msaObj.msasBySequence[querySeqNoGaps]) {
                                 msaObj.msasBySequence[querySeqNoGaps] = { 
                                     msaData, 
-                                    type,
                                     chains: msaToChains[querySeqNoGaps] || []
                                 };
                             }
@@ -5199,14 +5214,13 @@ async function handleZipUpload(file, loadAsFrames) {
                             msaObj.msaToChains = msaToChains;
                             
                             // Store unique MSAs and map chains
-                            for (const [chainId, {msaData, type}] of Object.entries(chainToMSA)) {
+                            for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
                                 const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
                                 
                                 // Store MSA by sequence (only one per unique sequence)
                                 if (!msaObj.msasBySequence[querySeqNoGaps]) {
                                     msaObj.msasBySequence[querySeqNoGaps] = { 
                                         msaData, 
-                                        type,
                                         chains: msaToChains[querySeqNoGaps] || []
                                     };
                                 }
@@ -5227,7 +5241,7 @@ async function handleZipUpload(file, loadAsFrames) {
                                 // Load default chain's MSA
                                 const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
                                 if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
-                                    const {msaData, type} = msaObj.msasBySequence[defaultChainSeq];
+                                    const {msaData} = msaObj.msasBySequence[defaultChainSeq];
                                     if (window.MSAViewer) {
                                         loadMSADataIntoViewer(msaData, msaObj.defaultChain, objectName);
                                         setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
@@ -5547,11 +5561,19 @@ function saveViewerState() {
             animation_speed: renderer.animationSpeed || 100
         };
         
-        // Save MSA state (current chain and type)
+        // Save MSA state (current chain) - only if MSA data actually exists
         if (window.MSAViewer) {
-            const currentChain = window.MSAViewer.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
-            if (currentChain) {
-                viewerState.msa_chain = currentChain;
+            // Check if there's actual MSA data in the viewer
+            const msaData = window.MSAViewer.getMSAData ? window.MSAViewer.getMSAData() : null;
+            // Also check if any objects have MSA data
+            const hasObjectMSA = Object.values(renderer.objectsData).some(obj => obj.msa != null);
+            
+            // Only save msa_chain if there's actual MSA data
+            if (msaData || hasObjectMSA) {
+                const currentChain = window.MSAViewer.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
+                if (currentChain) {
+                    viewerState.msa_chain = currentChain;
+                }
             }
         }
         

@@ -394,7 +394,6 @@
     let useBitScore = true; // true for bit-score, false for probabilities
     let sortSequences = true; // true for sorted by similarity, false for original order
     let currentChain = null; // Current chain ID
-    let currentMSAType = 'unpaired'; // 'unpaired' or 'paired'
     let renderScheduled = false;
     let coverageCutoff = 0.75;
     let previewCoverageCutoff = 0.75;
@@ -623,7 +622,7 @@
     function filterSequencesByIdentity(sequences, querySequence, minIdentity = 0.15) {
         if (!sequences || sequences.length === 0 || !querySequence) return sequences;
         return sequences.filter(seq => {
-            if (seq.header === '>query' || seq.header.toLowerCase().includes('query')) return true;
+            if (seq.name === '>query' || seq.name.toLowerCase().includes('query')) return true;
             // Use pre-calculated identity if available, otherwise calculate it
             if (seq.identity !== undefined) {
                 return seq.identity >= minIdentity;
@@ -643,8 +642,8 @@
         }));
         
         sequencesWithIdentity.sort((a, b) => {
-            if (a.header === '>query' || a.header.toLowerCase().includes('query')) return -1;
-            if (b.header === '>query' || b.header.toLowerCase().includes('query')) return 1;
+            if (a.name === '>query' || a.name.toLowerCase().includes('query')) return -1;
+            if (b.name === '>query' || b.name.toLowerCase().includes('query')) return 1;
             return b.identity - a.identity;
         });
         
@@ -665,7 +664,7 @@
                 if (currentHeader && currentSequence) {
                     const alignedSequence = currentSequence.replace(/[a-z]/g, '').toUpperCase();
                     sequences.push({
-                        header: currentHeader, // Preserve full header
+                        name: currentHeader, // Preserve full name
                         sequence: alignedSequence
                     });
                 }
@@ -680,14 +679,14 @@
         if (currentHeader && currentSequence) {
             const alignedSequence = currentSequence.replace(/[a-z]/g, '').toUpperCase();
             sequences.push({
-                header: currentHeader, // Preserve full header
+                name: currentHeader, // Preserve full name
                 sequence: alignedSequence
             });
         }
         
         if (sequences.length === 0) return null;
         
-        let queryIndex = sequences.findIndex(s => s.header.toLowerCase().includes('query'));
+        let queryIndex = sequences.findIndex(s => s.name.toLowerCase().includes('query'));
         if (queryIndex === -1) queryIndex = 0;
         
         const querySequence = sequences[queryIndex].sequence;
@@ -719,7 +718,7 @@
                     // Preserve gaps, only convert to uppercase
                     const alignedSequence = currentSequence.toUpperCase();
                     sequences.push({
-                        header: currentHeader, // Preserve full header
+                        name: currentHeader, // Preserve full name
                         sequence: alignedSequence
                     });
                 }
@@ -736,7 +735,7 @@
             // Preserve gaps, only convert to uppercase
             const alignedSequence = currentSequence.toUpperCase();
             sequences.push({
-                header: currentHeader, // Preserve full header
+                name: currentHeader, // Preserve full name
                 sequence: alignedSequence
             });
         }
@@ -834,8 +833,8 @@
         if (sequences.size === 0) return null;
         
         // Convert Map to array, preserving insertion order
-        const sequencesArray = Array.from(sequences.entries()).map(([header, sequence]) => ({
-            header: header, // Preserve full header
+        const sequencesArray = Array.from(sequences.entries()).map(([name, sequence]) => ({
+            name: name, // Preserve full name
             sequence: sequence
         }));
         
@@ -1159,10 +1158,9 @@
     /**
      * Build mapping from MSA positions to structure residue_numbers values
      * @param {string} chainId - Chain ID to map
-     * @param {string} type - MSA type ('unpaired' or 'paired')
      * @returns {Array|null} - Array mapping MSA position (with gaps) to residue_numbers, or null if not available
      */
-    function buildMSAResidueNumbersMapping(chainId, type) {
+    function buildMSAResidueNumbersMapping(chainId) {
         if (!callbacks.getRenderer) return null;
         
         const renderer = callbacks.getRenderer();
@@ -1510,7 +1508,7 @@
             // Draw labels that are visible on canvas (same check as sequences)
             // Labels can go under query and tick bar - they will be covered by white backgrounds
             if (y + SEQUENCE_ROW_HEIGHT >= 0 && y <= logicalHeight) {
-                drawSequenceLabel(ctx, seq.header, y, SEQUENCE_ROW_HEIGHT, NAME_COLUMN_WIDTH, labelOptions);
+                drawSequenceLabel(ctx, seq.name, y, SEQUENCE_ROW_HEIGHT, NAME_COLUMN_WIDTH, labelOptions);
             }
             
             // Draw sequence
@@ -1566,7 +1564,7 @@
             ctx.fillRect(0, queryY, logicalWidth, queryRowHeight);
             
             // Draw query label using the same function as other labels (drawn last so it's on top)
-            drawSequenceLabel(ctx, querySeq.header, queryY, queryRowHeight, NAME_COLUMN_WIDTH, labelOptions);
+            drawSequenceLabel(ctx, querySeq.name, queryY, queryRowHeight, NAME_COLUMN_WIDTH, labelOptions);
             
             // Draw query sequence
             let xOffset = scrollableAreaX - (scrollLeft % MSA_CHAR_WIDTH);
@@ -3380,7 +3378,7 @@
             this.setIdentityCutoff(identityCutoff);
         },
         
-        setMSAData: function(data, chainId = null, type = 'unpaired') {
+        setMSAData: function(data, chainId = null) {
             if (!chainId && callbacks.getRenderer) {
                 const renderer = callbacks.getRenderer();
                 if (renderer && renderer.currentObjectName) {
@@ -3395,7 +3393,6 @@
                 }
             }
             currentChain = chainId;
-            currentMSAType = type;
             originalMSAData = data;
             
             // Use original order sequences for filtering
@@ -3434,7 +3431,7 @@
                 msaData.residueNumbers = msaResidueNumbers;
             } else {
                 // Build residue_numbers mapping from structure if available
-                msaResidueNumbers = buildMSAResidueNumbersMapping(chainId, type);
+                msaResidueNumbers = buildMSAResidueNumbersMapping(chainId);
                 if (msaResidueNumbers) {
                     msaData.residueNumbers = msaResidueNumbers;
                 }
@@ -3490,27 +3487,8 @@
                     if (obj && obj.msa && obj.msa.msasBySequence && obj.msa.chainToSequence) {
                         const querySeq = obj.msa.chainToSequence[chainId];
                         if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                            const {msaData, type} = obj.msa.msasBySequence[querySeq];
-                            this.setMSAData(msaData, chainId, type);
-                        }
-                    }
-                }
-            }
-        },
-        
-        setMSAType: function(type) {
-            currentMSAType = type;
-            if (currentChain && callbacks.getRenderer) {
-                const renderer = callbacks.getRenderer();
-                if (renderer && renderer.currentObjectName) {
-                    const obj = renderer.objectsData[renderer.currentObjectName];
-                    if (obj && obj.msa && obj.msa.msasBySequence && obj.msa.chainToSequence) {
-                        const querySeq = obj.msa.chainToSequence[currentChain];
-                        if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                            const msaEntry = obj.msa.msasBySequence[querySeq];
-                            if (msaEntry.msaData) {
-                                this.setMSAData(msaEntry.msaData, currentChain, type);
-                            }
+                            const {msaData} = obj.msa.msasBySequence[querySeq];
+                            this.setMSAData(msaData, chainId);
                         }
                     }
                 }
@@ -3519,10 +3497,6 @@
         
         getCurrentChain: function() {
             return currentChain;
-        },
-        
-        getCurrentMSAType: function() {
-            return currentMSAType;
         },
         
         getMSAMode: function() {
@@ -3618,13 +3592,13 @@
             let fasta = '';
             
             for (const seq of msaData.sequences) {
-                // FASTA format: >header\nsequence\n
-                const header = seq.header || 'Unknown';
+                // FASTA format: >name\nsequence\n
+                const name = seq.name || 'Unknown';
                 const sequence = seq.sequence || '';
                 
-                // Ensure header starts with '>' if it doesn't already
-                const fastaHeader = header.startsWith('>') ? header : '>' + header;
-                fasta += fastaHeader + '\n';
+                // Ensure name starts with '>' if it doesn't already
+                const fastaName = name.startsWith('>') ? name : '>' + name;
+                fasta += fastaName + '\n';
                 fasta += sequence + '\n';
             }
             
@@ -3744,6 +3718,9 @@
             cachedDataHash = null;
             cachedEntropy = null;
             cachedEntropyHash = null;
+            
+            // Reset state variables to initial values
+            currentChain = null;
             
             // Disconnect resize observer
             if (resizeObserver) {
