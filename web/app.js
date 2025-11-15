@@ -243,6 +243,9 @@ function setupEventListeners() {
         copySelectionButton.addEventListener('click', () => {
             if (viewerApi && viewerApi.renderer && viewerApi.renderer.extractSelection) {
                 viewerApi.renderer.extractSelection();
+                
+                // Also apply selection to MSA viewer
+                applySelectionToMSA();
             } else {
                 console.warn("Copy selection feature not available");
             }
@@ -491,12 +494,7 @@ function setStatus(message, isError = false) {
         statusElement.style.display = 'block';
         statusElement.className = isError ? 'error' : 'info';
         
-        // Auto-hide error messages after 5 seconds (keep success/info visible)
-        if (isError) {
-            setTimeout(() => {
-                statusElement.style.display = 'none';
-            }, 5000);
-        }
+        // Keep messages visible - do not auto-hide
     } else {
         // index.html style (fallback if status-message doesn't exist)
         const statusElementIndex = document.getElementById('status');
@@ -593,6 +591,9 @@ function handleObjectChange() {
         window.updateMSAContainerVisibility();
     }
     
+    // Update entropy option visibility in color menu
+    updateEntropyOptionVisibility(selectedObject);
+    
     // Note: updateColorMode() is a placeholder, removed to avoid confusion
     // Color mode is managed by the renderer and persists across object changes
 }
@@ -611,6 +612,57 @@ function updatePAEContainerVisibilityFallback(objectName) {
         paeCanvas.style.display = hasPAE ? 'block' : 'none';
     }
 }
+
+/**
+ * Update entropy option visibility in color select dropdown based on MSA availability
+ * @param {string} objectName - Name of the object to check for MSA data
+ */
+function updateEntropyOptionVisibility(objectName) {
+    // If no object name provided, use current object
+    if (!objectName && viewerApi?.renderer) {
+        objectName = viewerApi.renderer.currentObjectName;
+    }
+    const colorSelect = document.getElementById('colorSelect');
+    if (!colorSelect) return;
+    
+    // Find entropy option
+    const entropyOption = Array.from(colorSelect.options).find(opt => opt.value === 'entropy');
+    if (!entropyOption) return; // Option doesn't exist (e.g., in viewer.html)
+    
+    // Always show entropy option (user can select it, and it will work if MSA data is available)
+    entropyOption.style.display = '';
+    
+    // If entropy is currently selected but MSA is not available, switch to auto
+    // Check if MSA data is available for this object
+    let hasMSA = false;
+    if (viewerApi?.renderer && objectName) {
+        const obj = viewerApi.renderer.objectsData[objectName];
+        if (obj && obj.msa) {
+            // Check various MSA data formats
+            if (obj.msa.msasBySequence && obj.msa.chainToSequence && obj.msa.availableChains && obj.msa.availableChains.length > 0) {
+                hasMSA = true;
+            } else if (obj.msa.chains && obj.msa.availableChains && obj.msa.availableChains.length > 0) {
+                hasMSA = true;
+            } else if (obj.msa.msaData) {
+                hasMSA = true;
+            } else if (obj.msa.sequences && obj.msa.sequences.length > 0) {
+                hasMSA = true;
+            }
+        }
+    }
+    
+    // If entropy is selected but MSA is not available, switch to auto
+    if (colorSelect.value === 'entropy' && !hasMSA && viewerApi?.renderer) {
+        viewerApi.renderer.colorMode = 'auto';
+        colorSelect.value = 'auto';
+        viewerApi.renderer.colorsNeedUpdate = true;
+        viewerApi.renderer.render();
+        document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+    }
+}
+
+// Expose updateEntropyOptionVisibility globally so it can be called from viewer-mol.js
+window.updateEntropyOptionVisibility = updateEntropyOptionVisibility;
 
 function updateColorMode() {
     // Placeholder for future color mode updates
@@ -1775,6 +1827,9 @@ function updateViewerFromGlobalBatch() {
                 window.updateMSAContainerVisibility();
             }
             
+            // Update entropy option visibility in color menu
+            updateEntropyOptionVisibility(lastObjectName);
+            
             // Skip updateChainSelectionUI during initial load - setSelection is expensive
             // The renderer already defaults to showing all positions, so we don't need to explicitly set it
             // We'll let it default naturally, or set it after the first render
@@ -2494,6 +2549,9 @@ function initializeMSAViewer() {
                         // Update stored MSA data with filtered data and recomputed properties
                         obj.msa.msasBySequence[querySeq].msaData = filteredMSAData;
                     }
+                    
+                    // Update entropy option visibility after MSA is loaded
+                    updateEntropyOptionVisibility(objectName);
                     
                     // Ensure dropdown value is set correctly after setMSAData
                     // (setMSAData wrapper will call updateMSAChainSelector, but we want to ensure value persists)
@@ -3281,12 +3339,18 @@ function initializeMSAViewerIndex() {
                     obj.msa.msaData = filteredMSAData;
                 }
             }
+            
+            // Update entropy option visibility after MSA is loaded
+            updateEntropyOptionVisibility(objectName);
         } else {
             // Hide MSA container if no MSA for this object
             msaContainer.style.display = 'none';
             if (msaView) {
                 msaView.classList.add('hidden');
             }
+            
+            // Update entropy option visibility (hide it when no MSA)
+            updateEntropyOptionVisibility(objectName);
         }
     }
     
@@ -3792,6 +3856,9 @@ function extractChainSequences(frame) {
     return chainSequences;
 }
 
+// Expose function globally for renderer to use
+window.extractChainSequences = extractChainSequences;
+
 /**
  * Compare two sequences, allowing for gaps in MSA query sequence
  * Removes gaps from MSA query sequence and compares with PDB chain sequence
@@ -4247,7 +4314,7 @@ function buildEntropyVectorForColoring(object, frame) {
                 }
                 chainSeqIdx++;
                 msaPos++; // Only increment msaPos when we process a non-gap character
-            } else {
+                        } else {
                 // Mismatch - still increment msaPos to stay in sync
                 msaPos++;
             }
@@ -4259,6 +4326,130 @@ function buildEntropyVectorForColoring(object, frame) {
 
 // Expose function globally for renderer to use
 window.buildEntropyVectorForColoring = buildEntropyVectorForColoring;
+
+/**
+ * Apply current structure selection to MSA viewer
+ * Maps structure positions to MSA positions and highlights them in the MSA viewer
+ */
+function applySelectionToMSA() {
+    if (!viewerApi?.renderer || !window.MSAViewer) return;
+    
+    const renderer = viewerApi.renderer;
+    const objectName = renderer.currentObjectName;
+    if (!objectName) return;
+    
+    const obj = renderer.objectsData[objectName];
+    if (!obj || !obj.frames || obj.frames.length === 0) return;
+    if (!obj.msa || !obj.msa.msasBySequence || !obj.msa.chainToSequence) return;
+    
+    const frame = obj.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
+    if (!frame || !frame.chains) return;
+    
+    // Get selected positions
+    const selection = renderer.getSelection();
+    let selectedPositions = new Set();
+    
+    if (selection && selection.positions && selection.positions.size > 0) {
+        selectedPositions = new Set(selection.positions);
+    } else if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
+        selectedPositions = new Set(renderer.visibilityMask);
+        } else {
+        // No selection - all positions visible (default mode)
+        return; // Don't apply selection if everything is selected
+    }
+    
+    if (selectedPositions.size === 0) return;
+    
+    // Determine allowed chains
+    let allowedChains;
+    if (selection && selection.chains && selection.chains.size > 0) {
+        allowedChains = selection.chains;
+    } else {
+        // All chains allowed
+        allowedChains = new Set(renderer.chains);
+    }
+    
+    // Map structure positions to MSA positions for each chain
+    const msaSelectedPositions = new Map(); // chainId -> Set of MSA position indices
+    
+    for (const [chainId, querySeq] of Object.entries(obj.msa.chainToSequence)) {
+        if (!allowedChains.has(chainId)) continue;
+        
+        const msaEntry = obj.msa.msasBySequence[querySeq];
+        if (!msaEntry || !msaEntry.msaData) continue;
+        
+        const msaData = msaEntry.msaData;
+        const msaQuerySequence = msaData.querySequence; // May contain gaps
+        
+        // Extract chain sequence from structure
+        const chainSequences = extractChainSequences(frame);
+        const chainSequence = chainSequences[chainId];
+        if (!chainSequence) continue;
+        
+        // Find representative positions for this chain (position_types === 'P')
+        const chainPositions = []; // Array of position indices for this chain
+        const positionCount = frame.chains.length;
+        
+        for (let i = 0; i < positionCount; i++) {
+            if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
+                chainPositions.push(i);
+            }
+        }
+        
+        if (chainPositions.length === 0) continue;
+        
+        // Sort positions by position index to match sequence order
+        chainPositions.sort((a, b) => {
+            const indexA = frame.position_index ? frame.position_index[a] : a;
+            const indexB = frame.position_index ? frame.position_index[b] : b;
+            return indexA - indexB;
+        });
+        
+        // Map MSA positions to chain positions (one-to-one mapping)
+        // Walk through MSA query sequence and match to chain sequence
+        let msaPos = 0; // Position in MSA (skipping gaps)
+        let chainSeqIdx = 0; // Position in chain sequence
+        const msaQueryUpper = msaQuerySequence.toUpperCase();
+        const chainSeqUpper = chainSequence.toUpperCase();
+        const chainMSASelectedPositions = new Set();
+        
+        for (let i = 0; i < msaQueryUpper.length && chainSeqIdx < chainPositions.length; i++) {
+            const msaChar = msaQueryUpper[i];
+            
+            if (msaChar === '-') {
+                // Gap in MSA - skip this position (don't increment msaPos)
+                continue;
+            }
+            
+            // Check if this MSA position matches the current chain sequence position
+            if (chainSeqIdx < chainSeqUpper.length && msaChar === chainSeqUpper[chainSeqIdx]) {
+                // Match found - check if this structure position is selected
+                const positionIndex = chainPositions[chainSeqIdx];
+                if (selectedPositions.has(positionIndex)) {
+                    chainMSASelectedPositions.add(msaPos);
+                }
+                chainSeqIdx++;
+                msaPos++; // Only increment msaPos when we process a non-gap character
+            } else {
+                // Mismatch - still increment msaPos to stay in sync
+                msaPos++;
+            }
+        }
+        
+        if (chainMSASelectedPositions.size > 0) {
+            msaSelectedPositions.set(chainId, chainMSASelectedPositions);
+        }
+    }
+    
+    // Store selected MSA positions globally for MSA viewer to use
+    if (msaSelectedPositions.size > 0) {
+        window._msaSelectedPositions = msaSelectedPositions;
+        
+        // Trigger MSA viewer update by calling updateMSAViewSelectionState if it exists
+        // For now, we'll store the selection and the MSA viewer can check it when rendering
+        // This requires modification to the MSA viewer to actually highlight the positions
+    }
+}
 
 async function processFiles(files, loadAsFrames, groupName = null) {
     const tempBatch = [];
@@ -4282,7 +4473,11 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             jsonFiles.push(file);
         } else if (nameLower.match(/\.(cif|pdb|ent)$/)) {
             structureFiles.push(file);
-        } else if (nameLower.endsWith('.a3m')) {
+        } else if (nameLower.endsWith('.a3m') || 
+                   nameLower.endsWith('.fasta') || 
+                   nameLower.endsWith('.fa') || 
+                   nameLower.endsWith('.fas') || 
+                   nameLower.endsWith('.sto')) {
             msaFiles.push(file);
         }
     }
@@ -4337,6 +4532,100 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             setStatus(`Error loading state file: ${e.message}`, true);
             return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
         }
+    }
+
+    // Handle MSA-only input (no structure files)
+    if (structureFiles.length === 0 && msaFilesToProcess.length > 0) {
+        // Load MSA files directly without structure matching
+        const msaDataList = [];
+        
+        for (const msaFile of msaFilesToProcess) {
+            try {
+                const msaText = await msaFile.readAsync("text");
+                const fileName = msaFile.name.toLowerCase();
+                const isA3M = fileName.endsWith('.a3m');
+                const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
+                const isSTO = fileName.endsWith('.sto');
+                
+                if (!isA3M && !isFasta && !isSTO) {
+                    continue; // Skip unsupported MSA formats
+                }
+                
+                const type = detectMSAType(msaFile.name);
+                let msaData = null;
+                
+                if (isA3M && window.MSAViewer && window.MSAViewer.parseA3M) {
+                    msaData = window.MSAViewer.parseA3M(msaText, type);
+                } else if (isFasta && window.MSAViewer && window.MSAViewer.parseFasta) {
+                    msaData = window.MSAViewer.parseFasta(msaText, type);
+                } else if (isSTO && window.MSAViewer && window.MSAViewer.parseSTO) {
+                    msaData = window.MSAViewer.parseSTO(msaText, type);
+                }
+                
+                if (msaData && msaData.querySequence) {
+                    msaDataList.push({ msaData, type, filename: msaFile.name });
+                }
+            } catch (e) {
+                console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
+                setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: ${e.message}`, true);
+            }
+        }
+        
+        if (msaDataList.length > 0) {
+            // Load the first MSA into the viewer
+            const firstMSA = msaDataList[0];
+            if (window.MSAViewer) {
+                window.MSAViewer.setMSAData(firstMSA.msaData, null, firstMSA.type);
+                
+                // Get filtered MSA data and recompute properties
+                const filteredMSAData = window.MSAViewer.getMSAData();
+                if (filteredMSAData) {
+                    // Clear existing properties to force recomputation on filtered data
+                    filteredMSAData.frequencies = null;
+                    filteredMSAData.entropy = null;
+                    filteredMSAData.logOdds = null;
+                    // Compute properties on filtered data
+                    computeMSAProperties(filteredMSAData);
+                }
+                
+                // Show MSA viewer container
+                const msaContainer = document.getElementById('msa-viewer-container');
+                if (msaContainer) {
+                    msaContainer.style.display = 'block';
+                }
+                const msaView = document.getElementById('msaView');
+                if (msaView) {
+                    msaView.classList.remove('hidden');
+                }
+                
+                // Update sequence count
+                const sequenceCountEl = document.getElementById('msaSequenceCount');
+                if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
+                    const counts = window.MSAViewer.getSequenceCounts();
+                    if (counts) {
+                        sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
+                    }
+                }
+                
+                if (msaDataList.length === 1) {
+                    setStatus(`Loaded MSA: ${firstMSA.msaData.sequences.length} sequences, length ${firstMSA.msaData.queryLength}`);
+                } else {
+                    setStatus(`Loaded ${msaDataList.length} MSA files. Displaying first MSA: ${firstMSA.msaData.sequences.length} sequences, length ${firstMSA.msaData.queryLength}`);
+                }
+            } else {
+                setStatus('MSA Viewer not available', true);
+            }
+        } else {
+            setStatus('No valid MSA files found. Supported formats: .a3m, .fasta, .fa, .fas, .sto', true);
+        }
+        
+        return {
+            objectsLoaded: 0,
+            framesAdded: 0,
+            structureCount: 0,
+            paePairedCount: 0,
+            isTrajectory: false
+        };
     }
 
     // Continue with normal file processing if no state files
@@ -4620,7 +4909,14 @@ async function handleZipUpload(file, loadAsFrames) {
         // Collect all MSA files from all directories (for AF3 structure)
         const allMSAFiles = [];
         for (const [dirPath, fileList] of filesByDirectory.entries()) {
-            const msaFilesInDir = fileList.filter(f => f.name.toLowerCase().endsWith('.a3m'));
+            const msaFilesInDir = fileList.filter(f => {
+                const nameLower = f.name.toLowerCase();
+                return nameLower.endsWith('.a3m') || 
+                       nameLower.endsWith('.fasta') || 
+                       nameLower.endsWith('.fa') || 
+                       nameLower.endsWith('.fas') || 
+                       nameLower.endsWith('.sto');
+            });
             allMSAFiles.push(...msaFilesInDir);
         }
         
@@ -4653,7 +4949,14 @@ async function handleZipUpload(file, loadAsFrames) {
             const fileList = filesByDirectory.get(dirPath);
             
             // Filter out MSA files from this directory (we'll process them separately)
-            const structureFileList = fileList.filter(f => !f.name.toLowerCase().endsWith('.a3m'));
+            const structureFileList = fileList.filter(f => {
+                const nameLower = f.name.toLowerCase();
+                return !(nameLower.endsWith('.a3m') || 
+                        nameLower.endsWith('.fasta') || 
+                        nameLower.endsWith('.fa') || 
+                        nameLower.endsWith('.fas') || 
+                        nameLower.endsWith('.sto'));
+            });
             
             // Skip if no structure files in this directory
             if (structureFileList.length === 0) continue;

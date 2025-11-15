@@ -1689,6 +1689,15 @@ function initializePy2DmolViewer(containerElement) {
                 this.addFrame(extractedFrame, extractName);
             }
 
+            // Extract MSA data for selected positions if MSA exists
+            if (object.msa && object.msa.msasBySequence && object.msa.chainToSequence) {
+                const extractedObject = this.objectsData[extractName];
+                if (extractedObject) {
+                    // Extract MSA data for the selected positions
+                    this._extractMSADataForSelection(object, extractedObject, firstFrame, selectedIndices);
+                }
+            }
+
             // Reset selection to show all positions in extracted object
             this.setSelection({
                 positions: new Set(),
@@ -1713,12 +1722,287 @@ function initializePy2DmolViewer(containerElement) {
                 window.SequenceViewer.buildSequenceView();
             }
 
+            // Clear entropy cache since we have a new object with potentially different MSA data
+            this.cachedResolvedEntropy = null;
+            this.cachedEntropyObjectName = null;
+            this.cachedEntropyPositionCount = null;
+
             // Trigger object change event to ensure all UI updates
             if (this.objectSelect) {
                 this.objectSelect.dispatchEvent(new Event('change'));
             }
 
+            // If entropy color mode is active, reload frame data to rebuild entropy vector
+            if (this.colorMode === 'entropy') {
+                // Switch to extracted object first (if not already)
+                if (this.currentObjectName !== extractName) {
+                    this.currentObjectName = extractName;
+                    if (this.objectSelect) {
+                        this.objectSelect.value = extractName;
+                    }
+                }
+                // Reload frame data to rebuild entropy vector for the extracted object
+                const currentFrameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
+                this._loadFrameData(currentFrameIndex, false); // false = render immediately
+            }
+
             console.log(`Extracted ${selectedIndices.length} positions from ${object.frames.length} frame(s) to new object: ${extractName}`);
+        }
+
+        /**
+         * Extract MSA data for selected positions
+         * Maps structure positions to MSA positions and extracts only selected MSA regions
+         * @param {Object} sourceObject - Original object with MSA data
+         * @param {Object} extractedObject - New extracted object
+         * @param {Object} frame - Frame data for mapping
+         * @param {Array} selectedIndices - Array of selected position indices
+         */
+        _extractMSADataForSelection(sourceObject, extractedObject, frame, selectedIndices) {
+            if (!sourceObject.msa || !sourceObject.msa.msasBySequence || !sourceObject.msa.chainToSequence) {
+                return;
+            }
+
+            const selectedPositionsSet = new Set(selectedIndices);
+            const extractedFrame = extractedObject.frames[0];
+            if (!extractedFrame || !extractedFrame.chains) {
+                return;
+            }
+
+            // Initialize MSA structure for extracted object
+            extractedObject.msa = {
+                msasBySequence: {},
+                chainToSequence: {},
+                availableChains: [],
+                defaultChain: null,
+                msaToChains: {}
+            };
+
+            // Check if extractChainSequences is available (from app.js)
+            const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function' 
+                ? window.extractChainSequences 
+                : null;
+            
+            if (!extractChainSequences) {
+                console.warn("extractChainSequences not available, cannot extract MSA data");
+                return;
+            }
+
+            // Extract chain sequences from extracted frame
+            const extractedChainSequences = extractChainSequences(extractedFrame);
+            
+            // For each chain in the original MSA
+            for (const [chainId, querySeq] of Object.entries(sourceObject.msa.chainToSequence)) {
+                const msaEntry = sourceObject.msa.msasBySequence[querySeq];
+                if (!msaEntry || !msaEntry.msaData) continue;
+
+                const originalMSAData = msaEntry.msaData;
+                const originalQuerySequence = originalMSAData.querySequence; // May contain gaps
+                
+                // Extract chain sequence from original frame
+                const originalChainSequences = extractChainSequences(frame);
+                const originalChainSequence = originalChainSequences[chainId];
+                if (!originalChainSequence) continue;
+
+                // Find representative positions for this chain in original frame (position_types === 'P')
+                const chainPositions = [];
+                const positionCount = frame.chains.length;
+                
+                for (let i = 0; i < positionCount; i++) {
+                    if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
+                        chainPositions.push(i);
+                    }
+                }
+                
+                if (chainPositions.length === 0) continue;
+                
+                // Sort positions by position index to match sequence order
+                chainPositions.sort((a, b) => {
+                    const indexA = frame.position_index ? frame.position_index[a] : a;
+                    const indexB = frame.position_index ? frame.position_index[b] : b;
+                    return indexA - indexB;
+                });
+
+                // Map MSA positions to structure positions and find which MSA positions are selected
+                let msaPos = 0; // Position in MSA (skipping gaps)
+                let chainSeqIdx = 0; // Position in chain sequence
+                const msaQueryUpper = originalQuerySequence.toUpperCase();
+                const chainSeqUpper = originalChainSequence.toUpperCase();
+                const selectedMSAPositions = new Set(); // MSA position indices that correspond to selected structure positions
+                
+                for (let i = 0; i < msaQueryUpper.length && chainSeqIdx < chainPositions.length; i++) {
+                    const msaChar = msaQueryUpper[i];
+                    
+                    if (msaChar === '-') {
+                        // Gap in MSA - skip this position (don't increment msaPos)
+                        continue;
+                    }
+                    
+                    // Check if this MSA position matches the current chain sequence position
+                    if (chainSeqIdx < chainSeqUpper.length && msaChar === chainSeqUpper[chainSeqIdx]) {
+                        // Match found - check if this structure position is selected
+                        const positionIndex = chainPositions[chainSeqIdx];
+                        if (selectedPositionsSet.has(positionIndex)) {
+                            selectedMSAPositions.add(i); // Store MSA position index (with gaps)
+                        }
+                        chainSeqIdx++;
+                        msaPos++; // Only increment msaPos when we process a non-gap character
+                    } else {
+                        // Mismatch - still increment msaPos to stay in sync
+                        msaPos++;
+                    }
+                }
+
+                if (selectedMSAPositions.size === 0) continue;
+
+                // Extract selected MSA positions from all sequences
+                // Use sequencesOriginal to include all sequences, even those hidden by filters
+                const allSequences = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+                const extractedSequences = [];
+                const extractedQuerySequence = [];
+                
+                // Extract from query sequence
+                for (let i = 0; i < originalQuerySequence.length; i++) {
+                    if (selectedMSAPositions.has(i)) {
+                        extractedQuerySequence.push(originalQuerySequence[i]);
+                    }
+                }
+                
+                // Extract from all sequences (including those hidden by filters)
+                for (const seq of allSequences) {
+                    const extractedSeq = {
+                        name: seq.name || seq.header || 'Unknown',
+                        header: seq.header || seq.name || 'Unknown',
+                        sequence: ''
+                    };
+                    
+                    // Copy any other properties from the original sequence
+                    if (seq.id !== undefined) extractedSeq.id = seq.id;
+                    if (seq.description !== undefined) extractedSeq.description = seq.description;
+                    
+                    // Handle both string and array sequence formats
+                    const seqStr = Array.isArray(seq.sequence) ? seq.sequence.join('') : seq.sequence;
+                    
+                    for (let i = 0; i < seqStr.length; i++) {
+                        if (selectedMSAPositions.has(i)) {
+                            extractedSeq.sequence += seqStr[i];
+                        }
+                    }
+                    
+                    extractedSequences.push(extractedSeq);
+                }
+
+                // Create new MSA data with extracted sequences
+                const extractedQuerySeq = extractedQuerySequence.join('');
+                const extractedQuerySeqNoGaps = extractedQuerySeq.replace(/-/g, '').toUpperCase();
+                
+                if (extractedQuerySeqNoGaps.length === 0) continue;
+
+                // Find query sequence in original MSA and extract its header
+                // Use sequencesOriginal to find query in all sequences
+                let queryHeader = '>query';
+                const originalQueryIndex = originalMSAData.queryIndex !== undefined ? originalMSAData.queryIndex : 0;
+                if (allSequences && allSequences[originalQueryIndex]) {
+                    queryHeader = allSequences[originalQueryIndex].header || '>query';
+                }
+                
+                // Ensure query sequence is first and has proper header
+                const querySeqIndex = extractedSequences.findIndex(s => 
+                    s.header && s.header.toLowerCase().includes('query')
+                );
+                if (querySeqIndex === -1 && extractedSequences.length > 0) {
+                    // No query found, make first sequence the query
+                    extractedSequences[0].header = queryHeader;
+                } else if (querySeqIndex > 0) {
+                    // Query found but not first, move it to first position
+                    const querySeq = extractedSequences.splice(querySeqIndex, 1)[0];
+                    extractedSequences.unshift(querySeq);
+                }
+                
+                // Build position_index mapping for extracted MSA
+                // Map extracted MSA positions to extracted structure position_index values
+                const extractedPositionIndex = new Array(extractedQuerySeq.length).fill(null);
+                
+                // Get sorted selected indices for THIS CHAIN ONLY to match sequence order
+                const selectedIndicesForChain = chainPositions.filter(posIdx => selectedPositionsSet.has(posIdx));
+                const sortedSelectedIndicesForChain = selectedIndicesForChain.sort((a, b) => {
+                    const indexA = frame.position_index ? frame.position_index[a] : a;
+                    const indexB = frame.position_index ? frame.position_index[b] : b;
+                    return indexA - indexB;
+                });
+                
+                let extractedSeqIdx = 0; // Position in extracted sequence (no gaps, sorted by position_index)
+                
+                // Map extracted MSA positions to extracted structure position indices
+                for (let i = 0; i < extractedQuerySeq.length; i++) {
+                    const msaChar = extractedQuerySeq[i];
+                    if (msaChar === '-') {
+                        // Gap - leave as null
+                        continue;
+                    }
+                    // Find corresponding position in extracted frame (for this chain only)
+                    if (extractedSeqIdx < sortedSelectedIndicesForChain.length) {
+                        const originalPositionIdx = sortedSelectedIndicesForChain[extractedSeqIdx];
+                        // Get position_index from original frame
+                        if (frame.position_index && originalPositionIdx < frame.position_index.length) {
+                            extractedPositionIndex[i] = frame.position_index[originalPositionIdx];
+                        }
+                        extractedSeqIdx++;
+                    }
+                }
+                
+                const extractedMSAData = {
+                    sequences: extractedSequences,
+                    querySequence: extractedQuerySeq,
+                    queryLength: extractedQuerySeqNoGaps.length,
+                    sequencesOriginal: extractedSequences, // For filtering
+                    queryIndex: 0, // Query is always first after extraction
+                    positionIndex: extractedPositionIndex // Map to structure position_index
+                };
+
+                // Compute MSA properties (frequencies, entropy, logOdds) for extracted sequences
+                // This must be done because the extracted sequences are different from the original
+                if (typeof window !== 'undefined' && typeof window.computeMSAProperties === 'function') {
+                    window.computeMSAProperties(extractedMSAData);
+                }
+
+                // Check if extracted chain sequence matches the extracted query sequence (no gaps)
+                const extractedChainSeq = extractedChainSequences[chainId];
+                if (extractedChainSeq && extractedChainSeq.toUpperCase() === extractedQuerySeqNoGaps) {
+                    // Store MSA in extracted object
+                    if (!extractedObject.msa.msasBySequence[extractedQuerySeqNoGaps]) {
+                        extractedObject.msa.msasBySequence[extractedQuerySeqNoGaps] = {
+                            msaData: extractedMSAData,
+                            type: msaEntry.type,
+                            chains: [chainId]
+                        };
+                    }
+                    
+                    extractedObject.msa.chainToSequence[chainId] = extractedQuerySeqNoGaps;
+                    
+                    if (!extractedObject.msa.availableChains.includes(chainId)) {
+                        extractedObject.msa.availableChains.push(chainId);
+                    }
+                    
+                    if (!extractedObject.msa.defaultChain) {
+                        extractedObject.msa.defaultChain = chainId;
+                    }
+                }
+            }
+
+            // Update MSA container visibility and chain selector after extraction
+            if (typeof window !== 'undefined') {
+                // Trigger MSA viewer update if available
+                if (window.updateMSAContainerVisibility) {
+                    setTimeout(() => {
+                        window.updateMSAContainerVisibility();
+                    }, 100);
+                }
+                if (window.updateMSAChainSelectorIndex) {
+                    setTimeout(() => {
+                        window.updateMSAChainSelectorIndex();
+                    }, 100);
+                }
+            }
         }
 
         // Set the current frame and render it

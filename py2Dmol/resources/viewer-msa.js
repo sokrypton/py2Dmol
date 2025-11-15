@@ -384,8 +384,9 @@
     // ============================================================================
     // INTERNAL STATE
     // ============================================================================
-    let msaData = null; // { sequences: [], querySequence: string, queryLength: number }
+    let msaData = null; // { sequences: [], querySequence: string, queryLength: number, positionIndex: [] }
     let originalMSAData = null; // Original unfiltered MSA data
+    let msaPositionIndex = null; // Array mapping MSA positions to structure position_index values
     let msaCanvasData = null; // Canvas-based structure for MSA mode
     let pssmCanvasData = null; // Canvas-based structure for PSSM mode
     let logoCanvasData = null; // Canvas-based structure for Logo mode
@@ -1139,7 +1140,19 @@
         
         let xOffset = scrollableAreaX - (scrollLeft % charWidth);
         for (let pos = visibleStartPos; pos < visibleEndPos && pos < msaData.queryLength; pos++) {
-            if ((pos + 1) === 1 || (pos + 1) % TICK_INTERVAL === 0) {
+            // Use position_index if available, otherwise use 1-based position numbering
+            let tickValue;
+            if (msaPositionIndex && pos < msaPositionIndex.length && msaPositionIndex[pos] !== null) {
+                tickValue = msaPositionIndex[pos];
+            } else {
+                tickValue = pos + 1; // Default: 1-based position numbering
+            }
+            
+            // Show tick at position 1, or every TICK_INTERVAL positions
+            // For position_index, show tick if it's 1 or divisible by TICK_INTERVAL
+            const shouldShowTick = (tickValue === 1 || tickValue % TICK_INTERVAL === 0);
+            
+            if (shouldShowTick) {
                 const tickX = xOffset;
                 if (tickX + charWidth >= minX && tickX < maxX) {
                     const drawX = Math.max(minX, tickX);
@@ -1149,13 +1162,107 @@
                     ctx.font = '10px monospace';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
-                    ctx.fillText((pos + 1).toString(), centerX, tickY + tickRowHeight / 2);
+                    ctx.fillText(tickValue.toString(), centerX, tickY + tickRowHeight / 2);
                 }
             }
             xOffset += charWidth;
         }
     }
     
+    /**
+     * Build mapping from MSA positions to structure position_index values
+     * @param {string} chainId - Chain ID to map
+     * @param {string} type - MSA type ('unpaired' or 'paired')
+     * @returns {Array|null} - Array mapping MSA position (with gaps) to position_index, or null if not available
+     */
+    function buildMSAPositionIndexMapping(chainId, type) {
+        if (!callbacks.getRenderer) return null;
+        
+        const renderer = callbacks.getRenderer();
+        if (!renderer || !renderer.currentObjectName) return null;
+        
+        const obj = renderer.objectsData[renderer.currentObjectName];
+        if (!obj || !obj.frames || obj.frames.length === 0) return null;
+        if (!obj.msa || !obj.msa.msasBySequence || !obj.msa.chainToSequence) return null;
+        
+        const frame = obj.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
+        if (!frame || !frame.chains || !frame.position_index) return null;
+        
+        const querySeq = obj.msa.chainToSequence[chainId];
+        if (!querySeq) return null;
+        
+        const msaEntry = obj.msa.msasBySequence[querySeq];
+        if (!msaEntry || !msaEntry.msaData) return null;
+        
+        const msaData = msaEntry.msaData;
+        const msaQuerySequence = msaData.querySequence; // May contain gaps
+        
+        // Check if extractChainSequences is available (from app.js)
+        const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function' 
+            ? window.extractChainSequences 
+            : null;
+        
+        if (!extractChainSequences) return null;
+        
+        // Extract chain sequence from structure
+        const chainSequences = extractChainSequences(frame);
+        const chainSequence = chainSequences[chainId];
+        if (!chainSequence) return null;
+        
+        // Find representative positions for this chain (position_types === 'P')
+        const chainPositions = []; // Array of position indices for this chain
+        const positionCount = frame.chains.length;
+        
+        for (let i = 0; i < positionCount; i++) {
+            if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
+                chainPositions.push(i);
+            }
+        }
+        
+        if (chainPositions.length === 0) return null;
+        
+        // Sort positions by position index to match sequence order
+        chainPositions.sort((a, b) => {
+            const indexA = frame.position_index ? frame.position_index[a] : a;
+            const indexB = frame.position_index ? frame.position_index[b] : b;
+            return indexA - indexB;
+        });
+        
+        // Map MSA positions to structure position indices
+        // Initialize array with null (for gaps) or position_index values
+        const positionIndexMap = new Array(msaQuerySequence.length).fill(null);
+        
+        let msaPos = 0; // Position in MSA (skipping gaps)
+        let chainSeqIdx = 0; // Position in chain sequence
+        const msaQueryUpper = msaQuerySequence.toUpperCase();
+        const chainSeqUpper = chainSequence.toUpperCase();
+        
+        for (let i = 0; i < msaQueryUpper.length && chainSeqIdx < chainPositions.length; i++) {
+            const msaChar = msaQueryUpper[i];
+            
+            if (msaChar === '-') {
+                // Gap in MSA - leave as null
+                continue;
+            }
+            
+            // Check if this MSA position matches the current chain sequence position
+            if (chainSeqIdx < chainSeqUpper.length && msaChar === chainSeqUpper[chainSeqIdx]) {
+                // Match found - map to structure position_index
+                const positionIndex = chainPositions[chainSeqIdx];
+                if (positionIndex < frame.position_index.length) {
+                    positionIndexMap[i] = frame.position_index[positionIndex];
+                }
+                chainSeqIdx++;
+                msaPos++; // Only increment msaPos when we process a non-gap character
+            } else {
+                // Mismatch - still increment msaPos to stay in sync
+                msaPos++;
+            }
+        }
+        
+        return positionIndexMap;
+    }
+
     // ============================================================================
     // SHARED UTILITIES
     // ============================================================================
@@ -3329,6 +3436,21 @@
             }
             if (originalMSAData.logOdds) {
                 msaData.logOdds = originalMSAData.logOdds;
+            }
+            
+            // Build position_index mapping from structure if available
+            // This maps MSA positions to structure position_index values for display
+            msaPositionIndex = null;
+            if (originalMSAData.positionIndex) {
+                // Use provided positionIndex if available
+                msaPositionIndex = originalMSAData.positionIndex;
+                msaData.positionIndex = msaPositionIndex;
+            } else {
+                // Build position_index mapping from structure if available
+                msaPositionIndex = buildMSAPositionIndexMapping(chainId, type);
+                if (msaPositionIndex) {
+                    msaData.positionIndex = msaPositionIndex;
+                }
             }
             
             // Compute properties if not already present (for filtered data, recompute)
