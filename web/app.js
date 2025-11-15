@@ -542,12 +542,9 @@ function handleObjectChange() {
     const selectedObject = objectSelect.value;
     if (!selectedObject) return;
     
-    // Clear selection when switching objects (selection is per-object)
-    // The renderer's objectSelect change handler already calls resetToDefault(),
-    // but we ensure it here as well for safety
-    if (viewerApi?.renderer && viewerApi.renderer.currentObjectName !== selectedObject) {
-        viewerApi.renderer.resetToDefault();
-    }
+    // Selection is now per-object and managed by the renderer
+    // The renderer's objectSelect change handler already handles saving/restoring selection
+    // Don't reset here as it would overwrite the restored selection
     
     // Sync MSA data from batchedObjects to renderer's objectsData if needed
     // This ensures MSA data is available even if it was added after initial load
@@ -1801,6 +1798,16 @@ function updateViewerFromGlobalBatch() {
         if (lastObjectName) {
             // Set object directly in renderer first
             if (viewerApi && viewerApi.renderer) {
+                // Save current selection to current object BEFORE switching
+                if (viewerApi.renderer.currentObjectName && 
+                    viewerApi.renderer.currentObjectName !== lastObjectName &&
+                    viewerApi.renderer.objectsData[viewerApi.renderer.currentObjectName]) {
+                    viewerApi.renderer._saveSelectionToObject(viewerApi.renderer.currentObjectName);
+                }
+                // Track object change for selection restore
+                if (viewerApi.renderer.currentObjectName !== lastObjectName) {
+                    viewerApi.renderer.previousObjectName = viewerApi.renderer.currentObjectName;
+                }
                 viewerApi.renderer.currentObjectName = lastObjectName;
                 // Set frame data without rendering - just load the data
                 const object = viewerApi.renderer.objectsData[lastObjectName];
@@ -1893,37 +1900,36 @@ function updateChainSelectionUI() {
   const frame0 = obj.frames[0];
   if (!frame0?.position_index || !frame0?.chains) return;
 
-  // Optimize: Use more efficient Set construction
-  // Instead of adding one by one, build chains Set first, then positions
-  const allChains = new Set(frame0.chains);
-  
-  // For positions, if we're selecting all, we can use a more efficient approach
-  // Check if selection is already "all" (default mode with no explicit positions)
-  const currentSelection = viewerApi.renderer.getSelection();
-  const isAlreadyAll = currentSelection.selectionMode === 'default' && 
-                       currentSelection.positions.size === 0 &&
-                       (currentSelection.chains.size === 0 || 
-                        currentSelection.chains.size === allChains.size);
-  
-  if (isAlreadyAll) {
-    // Already in default "all" state, no need to update
+  // Check if object has saved selection state
+  // If it does, don't reset - let the restored selection remain
+  if (obj.selectionState) {
+    // Object has saved state - don't reset, let restored selection remain
+    console.log(`[Selection] updateChainSelectionUI: Object "${objectName}" has saved selection state, skipping reset`);
     return;
   }
+  
+  console.log(`[Selection] updateChainSelectionUI: Object "${objectName}" has no saved state, checking if reset needed`);
 
-  // Select all by default using renderer API (use positions, not residues)
-  // Optimize: Build Set more efficiently
-  const n = frame0.chains.length;
-  const allPositions = new Set();
-  // Pre-allocate Set capacity hint (not standard JS, but helps some engines)
-  for (let i = 0; i < n; i++) {
-    allPositions.add(i); // One position per entry in frame data
+  // No saved state - only reset to "all" if selection is empty/invalid
+  const currentSelection = viewerApi.renderer.getSelection();
+  const allChains = new Set(frame0.chains);
+  
+  // Only reset if selection is truly empty/invalid (explicit mode with no positions/chains)
+  if (currentSelection.positions.size === 0 && 
+      currentSelection.chains.size === 0 &&
+      currentSelection.selectionMode === 'explicit') {
+    // Reset to default "all"
+    const n = frame0.chains.length;
+    const allPositions = new Set();
+    for (let i = 0; i < n; i++) {
+      allPositions.add(i); // One position per entry in frame data
+    }
+    viewerApi.renderer.setSelection({
+      positions: allPositions,
+      chains: allChains,
+      selectionMode: 'default'
+    });
   }
-
-  viewerApi.renderer.setSelection({
-    positions: allPositions,
-    chains: allChains,
-    selectionMode: 'default'
-  });
 }
 
 function setChainPositionsSelected(chain, selected) {
