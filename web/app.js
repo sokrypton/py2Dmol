@@ -19,7 +19,6 @@ function checkObjectHasPAE(objData) {
     if (!objData || !objData.frames || objData.frames.length === 0) return false;
     return objData.frames.some(frame => isValidPAE(frame.pae));
 }
-let previewSelectionSet = null;       // NEW: live drag preview selection (temporary during drag)
 
 
 // Rotation animation state
@@ -73,8 +72,6 @@ function initializeApp() {
             highlightAtoms: highlightPositions,
             clearHighlight: clearHighlight,
             applySelection: applySelection,
-            getPreviewSelectionSet: () => previewSelectionSet,
-            setPreviewSelectionSet: (set) => { previewSelectionSet = set; },
             onMSAFilterChange: (filteredMSAData, chainId) => {
                 // Recompute properties when MSA filters change
                 // The filtered MSA data needs to have frequencies, entropy, and logOdds recomputed
@@ -553,12 +550,9 @@ function handleObjectChange() {
     const selectedObject = objectSelect.value;
     if (!selectedObject) return;
     
-    // Clear selection when switching objects (selection is per-object)
-    // The renderer's objectSelect change handler already calls resetToDefault(),
-    // but we ensure it here as well for safety
-    if (viewerApi?.renderer && viewerApi.renderer.currentObjectName !== selectedObject) {
-        viewerApi.renderer.resetToDefault();
-    }
+    // Selection state is now managed per-object in the renderer's objectSelect change handler
+    // Each object maintains its own selection state that is saved/restored automatically
+    // No need to reset here - the renderer handles it
     
     // Sync MSA data from batchedObjects to renderer's objectsData if needed
     // This ensures MSA data is available even if it was added after initial load
@@ -574,9 +568,12 @@ function handleObjectChange() {
         viewerApi.renderer.updatePAEContainerVisibility();
     }
     
+    // Clear preview selection when switching objects
+    if (window.SequenceViewer?.clearPreview) window.SequenceViewer.clearPreview();
+    
     // Rebuild sequence view for the new object
     buildSequenceView();
-    updateChainSelectionUI();
+    // (no defaulting here — renderer already restored the object's saved selection)
     
     // Update MSA chain selector and container visibility for index.html
     if (window.updateMSAChainSelectorIndex) {
@@ -1309,7 +1306,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         // Convert residueMap to array for connectivity checks
         const allResidues = Array.from(residueMap.values());
         
-        // Sort positions by chain and position_index for proper neighbor checking
+        // Sort positions by chain and residue_numbers for proper neighbor checking
         allResidues.sort((a, b) => {
             if (a.chain !== b.chain) {
                 return a.chain.localeCompare(b.chain);
@@ -1329,14 +1326,9 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             const residue = residueMap.get(resKey);
             if (!residue) return false;
             
-            // Find position index in allResidues array
-            const residueIndex = allResidues.findIndex(r => 
-                r.chain === residue.chain && r.resSeq === residue.resSeq && r.resName === residue.resName
-            );
-            
             // Use the unified classification functions from utils.js with connectivity checks
-            const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, residueIndex);
-            const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, residueIndex);
+            const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues);
+            const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues);
             
             // Keep if it's a real protein or nucleic acid, filter out if it's a ligand
             return is_protein || (nucleicType !== null);
@@ -1400,22 +1392,14 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         // Map each position in originalFrameData to its corresponding position and check if it's a ligand
         const originalIsLigandPosition = [];
         
-        // Build position index map to avoid expensive findIndex calls
-        const residueIndexMap = new Map(); // resKey -> positionIndex
-        for (let i = 0; i < originalAllResidues.length; i++) {
-            const residue = originalAllResidues[i];
-            const resKey = residue.chain + ':' + residue.resSeq + ':' + residue.resName;
-            residueIndexMap.set(resKey, i);
-        }
-        
         // Cache classification results per position to avoid re-classifying the same position
         const residueClassificationCache = new Map(); // resKey -> {is_protein, nucleicType}
         
-        if (originalFrameData.position_types && originalFrameData.position_names && originalFrameData.position_index) {
+        if (originalFrameData.position_types && originalFrameData.position_names && originalFrameData.residue_numbers) {
             for (let idx = 0; idx < originalFrameData.position_types.length; idx++) {
                 const positionType = originalFrameData.position_types[idx];
                 const resName = originalFrameData.position_names[idx];
-                const resSeq = originalFrameData.position_index[idx];
+                const resSeq = originalFrameData.residue_numbers[idx];
                 const chain = originalFrameData.chains ? originalFrameData.chains[idx] : '';
                 
                 // Find the position in the original model
@@ -1426,13 +1410,9 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                     // Check cache first to avoid re-classifying the same position
                     let classification = residueClassificationCache.get(resKey);
                     if (!classification) {
-                        // Get position index from map (much faster than findIndex)
-                        const residueIndex = residueIndexMap.get(resKey);
-                        
                         // Use the same classification logic as maybeFilterLigands (with connectivity checks)
-                        // Note: We pass originalAllResidues and residueIndex for connectivity checks
-                        const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex !== undefined ? residueIndex : -1);
-                        const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex !== undefined ? residueIndex : -1);
+                        const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues);
+                        const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues);
                         
                         // Cache the result
                         classification = { is_protein, nucleicType };
@@ -1524,7 +1504,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             position_types: frameData.position_types ? [...frameData.position_types] : undefined,
             plddts: frameData.plddts ? [...frameData.plddts] : undefined,
             position_names: frameData.position_names ? [...frameData.position_names] : undefined,
-            position_index: frameData.position_index ? [...frameData.position_index] : undefined,
+            residue_numbers: frameData.residue_numbers ? [...frameData.residue_numbers] : undefined,
             pae: frameData.pae
         });
     }
@@ -1703,194 +1683,155 @@ function updateViewerFromGlobalBatch() {
     const viewerContainer = document.getElementById('viewer-container');
     const topPanelContainer = document.getElementById('sequence-viewer-container');
     const objectSelect = document.getElementById('objectSelect');
-    
-    viewerApi.handlePythonClearAll();
-    objectSelect.innerHTML = '';
+    const r = viewerApi?.renderer;
 
     if (!viewerApi || batchedObjects.length === 0) {
-        viewerContainer.style.display = 'none';
+        if (viewerContainer) viewerContainer.style.display = 'none';
         setStatus("Ready. Upload a file or fetch an ID.");
         return;
     }
 
-    let totalFrames = 0;
-    let lastObjectName = null;
+    const snapshot = r ? {
+        object: r.currentObjectName,
+        frame: (typeof r.currentFrame === 'number') ? r.currentFrame : null
+    } : null;
 
-    // Enable batch loading mode to skip renders during addFrame
-    if (viewerApi?.renderer) {
-        viewerApi.renderer._batchLoading = true;
-    }
-    
+    const existing = new Set(Object.keys(r?.objectsData || {}));
+    const newNames = [];
+
+    if (r) r._batchLoading = true;
+
     for (const obj of batchedObjects) {
-        if (obj.frames.length > 0) {
+        if (!obj || !obj.frames || obj.frames.length === 0) continue;
+
+        if (!existing.has(obj.name)) {
+            // New object: create and feed frames
             viewerApi.handlePythonNewObject(obj.name);
-            
-            lastObjectName = obj.name;
-            
-            let jsonStringifyTime = 0;
-            let updateTime = 0;
+            newNames.push(obj.name);
             for (const frame of obj.frames) {
-                const stringifyStart = performance.now();
-                const frameJson = JSON.stringify(frame);
-                const stringifyEnd = performance.now();
-                jsonStringifyTime += (stringifyEnd - stringifyStart);
-                
-                const updateStart = performance.now();
-                viewerApi.handlePythonUpdate(frameJson, obj.name);
-                const updateEnd = performance.now();
-                updateTime += (updateEnd - updateStart);
-                
-                totalFrames++;
+                viewerApi.handlePythonUpdate(JSON.stringify(frame), obj.name);
             }
+        } else {
+            // Existing object: determine if we're replacing or appending
+            const have = r.objectsData[obj.name]?.frames?.length || 0;
+            const want = obj.frames.length;
             
-            
-            // Preserve MSA data from batchedObjects to renderer's objectsData
-            // This ensures MSA data is available when switching between objects
-            if (obj.msa && viewerApi?.renderer && viewerApi.renderer.objectsData[obj.name]) {
-                viewerApi.renderer.objectsData[obj.name].msa = obj.msa;
+            // If we're adding frames beyond what exists, append them
+            // Otherwise, replace the entire object (e.g., when fetching same PDB)
+            if (want > have) {
+                // Appending frames to existing object
+                for (let i = have; i < want; i++) {
+                    viewerApi.handlePythonUpdate(JSON.stringify(obj.frames[i]), obj.name);
+                }
+            } else {
+                // Replacing existing object: clear everything and recreate
+                // This handles the case when fetching a PDB with the same name
+                // Remove from dropdown first
+                if (r.objectSelect) {
+                    const option = r.objectSelect.querySelector(`option[value="${obj.name}"]`);
+                    if (option) option.remove();
+                }
+                if (objectSelect) {
+                    const option = objectSelect.querySelector(`option[value="${obj.name}"]`);
+                    if (option) option.remove();
+                }
+                
+                // Delete the object completely (this clears frames, selection, MSA, sequence, etc.)
+                if (r.objectsData[obj.name]) {
+                    delete r.objectsData[obj.name];
+                }
+                
+                // Remove from existing set so it's treated as new
+                existing.delete(obj.name);
+                
+                // Recreate as new object
+                viewerApi.handlePythonNewObject(obj.name);
+                newNames.push(obj.name);
+                for (const frame of obj.frames) {
+                    viewerApi.handlePythonUpdate(JSON.stringify(frame), obj.name);
+                }
             }
         }
+
+        // Set MSA data (replacing any existing MSA)
+        if (r && obj.msa && r.objectsData[obj.name]) {
+            r.objectsData[obj.name].msa = obj.msa;
+        }
     }
-    
-    // Disable batch loading mode
-    if (viewerApi?.renderer) {
-        viewerApi.renderer._batchLoading = false;
-    }
-    
-    if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
-        viewerApi.renderer.updatePAEContainerVisibility();
-    }
-    
+
+    if (r) r._batchLoading = false;
+
     if (batchedObjects.length > 0) {
-        viewerContainer.style.display = 'flex';
-        topPanelContainer.style.display = 'block';
-        
-        if (lastObjectName) {
-            // Set object directly in renderer first
-            if (viewerApi && viewerApi.renderer) {
-                viewerApi.renderer.currentObjectName = lastObjectName;
-                // Set frame data without rendering - just load the data
-                const object = viewerApi.renderer.objectsData[lastObjectName];
-                if (object && object.frames.length > 0) {
-                    viewerApi.renderer.currentFrame = 0;
-                    viewerApi.renderer._loadFrameData(0, true); // Load without render
-                    viewerApi.renderer.lastRenderedFrame = -1; // Mark as needing render
-                }
-            }
-            
-            // Now set the select value (this will trigger change event, but we've already set everything up)
-            objectSelect.value = lastObjectName;
-            
-            // Skip handleObjectChange during initial load - we'll do the work directly
-            // handleObjectChange() does: resetToDefault(), updatePAEContainerVisibility(), buildSequenceView(), updateChainSelectionUI()
-            // But we've already loaded the frame data, so we can skip resetToDefault and do the rest directly
-            
-            // Only update PAE visibility (resetToDefault is not needed for initial load)
-            if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
-                viewerApi.renderer.updatePAEContainerVisibility();
-            }
-            
-            
-            updateObjectNavigationButtons();
-            
-            buildSequenceView();
-            
-            // Update MSA chain selector and container visibility
-            if (window.updateMSAChainSelectorIndex) {
-                window.updateMSAChainSelectorIndex();
-            }
-            if (window.updateMSAContainerVisibility) {
-                window.updateMSAContainerVisibility();
-            }
-            
-            // Update entropy option visibility in color menu
-            updateEntropyOptionVisibility(lastObjectName);
-            
-            // Skip updateChainSelectionUI during initial load - setSelection is expensive
-            // The renderer already defaults to showing all positions, so we don't need to explicitly set it
-            // We'll let it default naturally, or set it after the first render
-            // Defer updateChainSelectionUI - it's expensive and not needed for initial display
-            // The structure will render with default "all positions visible" state
-            // We can call it later if needed, or skip it entirely since default is "all"
-            // updateChainSelectionUI(); // Skip during initial load for performance
-            
-            
-            // Update UI controls first
-            if (viewerApi && viewerApi.renderer) {
-                viewerApi.renderer.updateUIControls();
-            }
-            
-            // Auto-orient to the newly loaded object (no animation for initial load)
-            // This will render after orient is complete
-            // We do this BEFORE the initial render so the structure appears in the correct orientation
-            if (viewerApi && viewerApi.renderer && viewerApi.renderer.currentObjectName === lastObjectName) {
-                const object = viewerApi.renderer.objectsData[lastObjectName];
-                if (object && object.frames.length > 0) {
-                    applyBestViewRotation(false); // Skip animation for initial orient, renders after
-                }
-            }
-            
-            // Render once at the end (after orientation is complete)
-            // applyBestViewRotation already renders, but we ensure it's rendered here too
-            if (viewerApi && viewerApi.renderer && viewerApi.renderer.currentObjectName === lastObjectName) {
-                const object = viewerApi.renderer.objectsData[lastObjectName];
-                if (object && object.frames.length > 0 && viewerApi.renderer.lastRenderedFrame !== viewerApi.renderer.currentFrame) {
-                    viewerApi.renderer.render();
-                    viewerApi.renderer.lastRenderedFrame = viewerApi.renderer.currentFrame;
-                }
-            }
-        }
+        if (viewerContainer) viewerContainer.style.display = 'flex';
+        if (topPanelContainer) topPanelContainer.style.display = 'block';
+    }
+
+    if (newNames.length > 0) {
+        // Show the last new object
+        const show = newNames[newNames.length - 1];
+        if (r?._switchToObject) r._switchToObject(show);
+        if (r?.setFrame) r.setFrame(0);
+        if (r?.objectSelect) r.objectSelect.value = show;
+        if (objectSelect) objectSelect.value = show;
+        if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
+        if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
+        if (window.SequenceViewer?.clearPreview) window.SequenceViewer.clearPreview();
+        if (typeof buildSequenceView === 'function') buildSequenceView();
+        if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
+        if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
+        if (r?.updateUIControls) r.updateUIControls();
+        if (typeof applyBestViewRotation === 'function') applyBestViewRotation(false);
+    } else if (snapshot?.object && r?.objectsData?.[snapshot.object]) {
+        // No new objects: restore the previous object/frame
+        if (r?._switchToObject) r._switchToObject(snapshot.object);
+        if (typeof snapshot.frame === 'number' && r?.setFrame) r.setFrame(snapshot.frame);
+        if (r?.render) r.render();
+        if (r?.objectSelect) r.objectSelect.value = snapshot.object;
+        if (objectSelect) objectSelect.value = snapshot.object;
+        if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
+        if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
+        if (window.SequenceViewer?.clearPreview) window.SequenceViewer.clearPreview();
+        if (typeof buildSequenceView === 'function') buildSequenceView();
+        if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
+        if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
     } else {
         setStatus("Error: No valid structures were loaded to display.", true);
-        viewerContainer.style.display = 'none';
+        if (viewerContainer) viewerContainer.style.display = 'none';
     }
-    
 }
 
 
 function updateChainSelectionUI() {
   /* [EDIT] This function no longer builds UI (pills). 
-     It just sets the default selected state. */
+     It just sets the default selected state if there is truly no saved selection. */
 
-  const objectName = viewerApi?.renderer?.currentObjectName;
-  if (!objectName || !viewerApi?.renderer) return;
+  const r = viewerApi?.renderer;
+  const name = r?.currentObjectName;
+  if (!r || !name) return;
 
-  const obj = viewerApi.renderer.objectsData[objectName];
+  const obj = r.objectsData?.[name];
   if (!obj?.frames?.length) return;
-  const frame0 = obj.frames[0];
-  if (!frame0?.position_index || !frame0?.chains) return;
 
-  // Optimize: Use more efficient Set construction
-  // Instead of adding one by one, build chains Set first, then positions
-  const allChains = new Set(frame0.chains);
-  
-  // For positions, if we're selecting all, we can use a more efficient approach
-  // Check if selection is already "all" (default mode with no explicit positions)
-  const currentSelection = viewerApi.renderer.getSelection();
-  const isAlreadyAll = currentSelection.selectionMode === 'default' && 
-                       currentSelection.positions.size === 0 &&
-                       (currentSelection.chains.size === 0 || 
-                        currentSelection.chains.size === allChains.size);
-  
-  if (isAlreadyAll) {
-    // Already in default "all" state, no need to update
-    return;
+  const ss = r.objectsData?.[name]?.selectionState;
+  // Only default if there is truly no user selection saved
+  const hasAnySelection =
+    ss &&
+    (
+      ss.selectionMode !== 'default' ||
+      (ss.positions && ss.positions.size > 0) ||
+      (ss.chains && ss.chains.size > 0) ||
+      (ss.paeBoxes && ss.paeBoxes.length > 0)
+    );
+
+  if (hasAnySelection) return;
+
+  // Let the renderer compute the correct "all" internally
+  if (typeof r.resetToDefault === 'function') {
+    r.resetToDefault();
+  } else if (typeof r.setSelection === 'function') {
+    // Fallback: empty/default request which the renderer normalizes to "all"
+    r.setSelection({ selectionMode: 'default', positions: new Set(), chains: new Set() });
   }
-
-  // Select all by default using renderer API (use positions, not residues)
-  // Optimize: Build Set more efficiently
-  const n = frame0.chains.length;
-  const allPositions = new Set();
-  // Pre-allocate Set capacity hint (not standard JS, but helps some engines)
-  for (let i = 0; i < n; i++) {
-    allPositions.add(i); // One position per entry in frame data
-  }
-
-  viewerApi.renderer.setSelection({
-    positions: allPositions,
-    chains: allChains,
-    selectionMode: 'default'
-  });
 }
 
 function setChainResiduesSelected(chain, selected) {
@@ -1902,7 +1843,7 @@ function setChainResiduesSelected(chain, selected) {
   const obj = viewerApi.renderer.objectsData[objectName];
   if (!obj?.frames?.length) return;
   const frame0 = obj.frames[0];
-  if (!frame0?.position_index || !frame0?.chains) return;
+  if (!frame0?.residue_numbers || !frame0?.chains) return;
 
   // Get all available chains
   const allChains = new Set(frame0.chains);
@@ -2159,9 +2100,7 @@ if (window.SequenceViewer) {
         highlightAtom: highlightPosition,
         highlightAtoms: highlightPositions,
         clearHighlight: clearHighlight,
-        applySelection: applySelection,
-        getPreviewSelectionSet: () => previewSelectionSet,
-        setPreviewSelectionSet: (set) => { previewSelectionSet = set; }
+        applySelection: applySelection
     });
     
     // Initialize highlight overlay after viewer is created
@@ -2203,81 +2142,111 @@ function initializeMSAViewerCommon() {
     // Container starts hidden, will be shown when MSA data is loaded
     
     // Initialize coverage slider
-    if (coverageSlider && coverageValue && window.MSAViewer) {
-        // Set initial value (75% = 0.75)
-        const initialCutoff = window.MSAViewer.getCoverageCutoff ? window.MSAViewer.getCoverageCutoff() : 0.75;
-        coverageSlider.value = Math.round(initialCutoff * 100);
-        coverageValue.textContent = Math.round(initialCutoff * 100) + '%';
+    if (coverageSlider && coverageValue) {
+        // Set initial value (75% = 0.75) if MSAViewer is available
+        if (window.MSAViewer && window.MSAViewer.getCoverageCutoff) {
+            const initialCutoff = window.MSAViewer.getCoverageCutoff();
+            coverageSlider.value = Math.round(initialCutoff * 100);
+            coverageValue.textContent = Math.round(initialCutoff * 100) + '%';
+        } else {
+            coverageSlider.value = 75;
+            coverageValue.textContent = '75%';
+        }
         
-        let isDragging = false;
+        // Update value display and apply filter
+        const applyCoverageFilter = () => {
+            const value = parseInt(coverageSlider.value);
+            coverageValue.textContent = value + '%';
+            const cutoff = value / 100;
+            if (window.MSAViewer) {
+                try {
+                    if (window.MSAViewer.setCoverageCutoff) {
+                        window.MSAViewer.setCoverageCutoff(cutoff);
+                    } else if (window.MSAViewer.applyPreviewCoverageCutoff) {
+                        // Fallback to preview/apply pattern
+                        if (window.MSAViewer.setPreviewCoverageCutoff) {
+                            window.MSAViewer.setPreviewCoverageCutoff(cutoff);
+                        }
+                        window.MSAViewer.applyPreviewCoverageCutoff();
+                    }
+                    if (updateMSASequenceCount) {
+                        updateMSASequenceCount();
+                    }
+                } catch (error) {
+                    console.error('Error applying coverage filter:', error);
+                }
+            } else {
+                console.warn('MSAViewer not available');
+            }
+        };
         
-        // Update preview value during drag
+        // Update display during drag
         coverageSlider.addEventListener('input', (e) => {
             const value = parseInt(e.target.value);
             coverageValue.textContent = value + '%';
-            const cutoff = value / 100;
-            if (window.MSAViewer && window.MSAViewer.setPreviewCoverageCutoff) {
-                window.MSAViewer.setPreviewCoverageCutoff(cutoff);
-            }
-            isDragging = true;
+            // Optionally apply filter in real-time during drag
+            // Uncomment the line below if you want real-time filtering
+            // applyCoverageFilter();
         });
         
-        // Apply on mouseup
-        coverageSlider.addEventListener('mouseup', () => {
-            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
-                window.MSAViewer.applyPreviewCoverageCutoff();
-                isDragging = false;
-                updateMSASequenceCount();
-            }
-        });
-        
-        // Also handle touch events for mobile
-        coverageSlider.addEventListener('touchend', () => {
-            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
-                window.MSAViewer.applyPreviewCoverageCutoff();
-                isDragging = false;
-                updateMSASequenceCount();
-            }
-        });
+        // Apply filter when user releases slider
+        coverageSlider.addEventListener('mouseup', applyCoverageFilter);
+        coverageSlider.addEventListener('touchend', applyCoverageFilter);
+        coverageSlider.addEventListener('change', applyCoverageFilter);
     }
     
     // Initialize identity slider
-    if (identitySlider && identityValue && window.MSAViewer) {
-        // Set initial value (15% = 0.15)
-        const initialCutoff = window.MSAViewer.getIdentityCutoff ? window.MSAViewer.getIdentityCutoff() : 0.15;
-        identitySlider.value = Math.round(initialCutoff * 100);
-        identityValue.textContent = Math.round(initialCutoff * 100) + '%';
+    if (identitySlider && identityValue) {
+        // Set initial value (15% = 0.15) if MSAViewer is available
+        if (window.MSAViewer && window.MSAViewer.getIdentityCutoff) {
+            const initialCutoff = window.MSAViewer.getIdentityCutoff();
+            identitySlider.value = Math.round(initialCutoff * 100);
+            identityValue.textContent = Math.round(initialCutoff * 100) + '%';
+        } else {
+            identitySlider.value = 15;
+            identityValue.textContent = '15%';
+        }
         
-        let isDragging = false;
+        // Update value display and apply filter
+        const applyIdentityFilter = () => {
+            const value = parseInt(identitySlider.value);
+            identityValue.textContent = value + '%';
+            const cutoff = value / 100;
+            if (window.MSAViewer) {
+                try {
+                    if (window.MSAViewer.setIdentityCutoff) {
+                        window.MSAViewer.setIdentityCutoff(cutoff);
+                    } else if (window.MSAViewer.applyPreviewIdentityCutoff) {
+                        // Fallback to preview/apply pattern
+                        if (window.MSAViewer.setPreviewIdentityCutoff) {
+                            window.MSAViewer.setPreviewIdentityCutoff(cutoff);
+                        }
+                        window.MSAViewer.applyPreviewIdentityCutoff();
+                    }
+                    if (updateMSASequenceCount) {
+                        updateMSASequenceCount();
+                    }
+                } catch (error) {
+                    console.error('Error applying identity filter:', error);
+                }
+            } else {
+                console.warn('MSAViewer not available');
+            }
+        };
         
-        // Update preview value during drag
+        // Update display during drag
         identitySlider.addEventListener('input', (e) => {
             const value = parseInt(e.target.value);
             identityValue.textContent = value + '%';
-            const cutoff = value / 100;
-            if (window.MSAViewer && window.MSAViewer.setPreviewIdentityCutoff) {
-                window.MSAViewer.setPreviewIdentityCutoff(cutoff);
-            }
-            isDragging = true;
+            // Optionally apply filter in real-time during drag
+            // Uncomment the line below if you want real-time filtering
+            // applyIdentityFilter();
         });
         
-        // Apply on mouseup
-        identitySlider.addEventListener('mouseup', () => {
-            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
-                window.MSAViewer.applyPreviewIdentityCutoff();
-                isDragging = false;
-                updateMSASequenceCount();
-            }
-        });
-        
-        // Also handle touch events for mobile
-        identitySlider.addEventListener('touchend', () => {
-            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
-                window.MSAViewer.applyPreviewIdentityCutoff();
-                isDragging = false;
-                updateMSASequenceCount();
-            }
-        });
+        // Apply filter when user releases slider
+        identitySlider.addEventListener('mouseup', applyIdentityFilter);
+        identitySlider.addEventListener('touchend', applyIdentityFilter);
+        identitySlider.addEventListener('change', applyIdentityFilter);
     }
     
     // Handle MSA mode dropdown selection
@@ -3246,10 +3215,10 @@ async function handleFetch() {
                                     // Keep all polymer residues, even if index is null/missing
                                     if (positionType !== 'P') continue;
                                     
-                                    // Sanitize the index to a number or null
-                                    const rawIndex = firstFrame.position_index ? firstFrame.position_index[i] : null;
+                                    // Sanitize the residue number to a number or null
+                                    const rawIndex = firstFrame.residue_numbers ? firstFrame.residue_numbers[i] : null;
                                     const numericIndex = rawIndex == null ? null : Number(rawIndex);
-                                    const positionIndex = Number.isFinite(numericIndex) ? numericIndex : null;
+                                    const residueNum = Number.isFinite(numericIndex) ? numericIndex : null;
                                     
                                     if (!chainSequencesWithResnums[chainId]) {
                                         chainSequencesWithResnums[chainId] = {
@@ -3261,7 +3230,7 @@ async function handleFetch() {
                                     const positionName = firstFrame.position_names[i];
                                     const aa = RESIDUE_TO_AA[positionName?.toUpperCase()] || 'X';
                                     chainSequencesWithResnums[chainId].sequence += aa;
-                                    chainSequencesWithResnums[chainId].residueNumbers.push(positionIndex);
+                                    chainSequencesWithResnums[chainId].residueNumbers.push(residueNum);
                                 }
                                 
                                 for (const [chainId, siftsMapping] of Object.entries(siftsMappings)) {
@@ -3693,7 +3662,7 @@ const RESIDUE_TO_AA = {
 
 /**
  * Extract chain sequences from frame data
- * @param {Object} frame - Frame data with chains, position_names, position_index
+ * @param {Object} frame - Frame data with chains, position_names, residue_numbers
  * @returns {Object} - Map of chainId -> sequence string
  */
 function extractChainSequences(frame) {
@@ -3702,13 +3671,13 @@ function extractChainSequences(frame) {
     }
     
     const chainSequences = {};
-    const chainPositionData = {}; // chainId -> array of {positionName, positionIndex}
+    const chainPositionData = {}; // chainId -> array of {positionName, residueNum}
     
     // Group positions by chain
     for (let i = 0; i < frame.chains.length; i++) {
         const chainId = frame.chains[i];
         const positionName = frame.position_names[i];
-        const positionIndex = frame.position_index ? frame.position_index[i] : i;
+        const residueNum = frame.residue_numbers ? frame.residue_numbers[i] : i;
         const positionType = frame.position_types ? frame.position_types[i] : 'P';
         
         // Only process protein positions (skip ligands, nucleic acids for now)
@@ -3717,14 +3686,14 @@ function extractChainSequences(frame) {
         if (!chainPositionData[chainId]) {
             chainPositionData[chainId] = [];
         }
-        chainPositionData[chainId].push({ positionName, positionIndex });
+        chainPositionData[chainId].push({ positionName, residueNum });
     }
     
     // Convert position names to single-letter codes for each chain
     for (const chainId of Object.keys(chainPositionData)) {
         const positionData = chainPositionData[chainId];
-        // Sort by position index to maintain order
-        positionData.sort((a, b) => a.positionIndex - b.positionIndex);
+        // Sort by residue number to maintain order
+        positionData.sort((a, b) => a.residueNum - b.residueNum);
         
         // Convert to sequence string
         const sequence = positionData.map(p => {
@@ -4462,7 +4431,7 @@ function ensureEntropyDataAvailable() {
  * Build entropy vector for coloring the entire structure
  * Initializes vector with -1 for all positions, then maps MSA entropy to chain positions
  * @param {Object} object - Object data with frames and MSA
- * @param {Object} frame - Frame data with chains, position_index, position_types
+ * @param {Object} frame - Frame data with chains, residue_numbers, position_types
  * @returns {Array} - Entropy vector (one value per position, -1 for unmapped)
  */
 function buildEntropyVectorForColoring(object, frame) {
@@ -4510,11 +4479,11 @@ function buildEntropyVectorForColoring(object, frame) {
             continue; // No representative positions found
         }
         
-        // Sort positions by position index to match sequence order
+        // Sort positions by residue number to match sequence order
         chainPositions.sort((a, b) => {
-            const indexA = frame.position_index ? frame.position_index[a] : a;
-            const indexB = frame.position_index ? frame.position_index[b] : b;
-            return indexA - indexB;
+            const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+            const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+            return residueNumA - residueNumB;
         });
         
         // Map MSA positions to chain positions (one-to-one mapping)
@@ -4627,11 +4596,11 @@ function applySelectionToMSA() {
         
         if (chainPositions.length === 0) continue;
         
-        // Sort positions by position index to match sequence order
+        // Sort positions by residue number to match sequence order
         chainPositions.sort((a, b) => {
-            const indexA = frame.position_index ? frame.position_index[a] : a;
-            const indexB = frame.position_index ? frame.position_index[b] : b;
-            return indexA - indexB;
+            const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+            const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+            return residueNumA - residueNumB;
         });
         
         // Map MSA positions to chain positions (one-to-one mapping)
@@ -4728,8 +4697,8 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             const jsonText = await jsonFile.readAsync("text");
             const jsonObject = JSON.parse(jsonText);
             
-            // Check if this is a state file
-            if (jsonObject.py2dmol_version) {
+            // Check if this is a state file (has objects array)
+            if (jsonObject.objects && Array.isArray(jsonObject.objects)) {
                 stateFiles.push(jsonFile);
             } else {
                 // Regular PAE JSON file
@@ -4752,7 +4721,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             const jsonText = await stateFile.readAsync("text");
             const stateData = JSON.parse(jsonText);
             
-            if (stateData.py2dmol_version) {
+            if (stateData.objects && Array.isArray(stateData.objects)) {
                 await loadViewerState(stateData);
                 return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
             }
@@ -5171,7 +5140,7 @@ async function handleZipUpload(file, loadAsFrames) {
                     try {
                         const jsonText = await jsonFiles[0].readAsync("text");
                         const stateData = JSON.parse(jsonText);
-                        if (stateData.py2dmol_version) {
+                        if (stateData.objects && Array.isArray(stateData.objects)) {
                             await loadViewerState(stateData);
                             return;
                         }
@@ -5502,7 +5471,7 @@ function saveViewerState() {
                 // Copy other fields as-is (omit null/undefined)
                 if (frame.chains) frameData.chains = frame.chains;
                 if (frame.position_types) frameData.position_types = frame.position_types;
-                if (frame.position_index) frameData.position_index = frame.position_index;
+                if (frame.residue_numbers) frameData.residue_numbers = frame.residue_numbers;
                 
                 // Map modified residues to standard equivalents (e.g., MSE -> MET)
                 if (frame.position_names) {
@@ -5612,21 +5581,24 @@ function saveViewerState() {
             }
         }
         
-        // Get selection state
-        const selection = renderer.getSelection();
-        const selectionState = {
-            positions: Array.from(selection.positions),
-            chains: Array.from(selection.chains),
-            pae_boxes: selection.paeBoxes.map(box => ({...box})),
-            selection_mode: selection.selectionMode
-        };
+        // Get selection state for ALL objects
+        const selectionsByObject = {};
+        for (const [objectName, objectData] of Object.entries(renderer.objectsData)) {
+            if (objectData.selectionState) {
+                selectionsByObject[objectName] = {
+                    positions: Array.from(objectData.selectionState.positions),
+                    chains: Array.from(objectData.selectionState.chains),
+                    pae_boxes: objectData.selectionState.paeBoxes.map(box => ({...box})),
+                    selection_mode: objectData.selectionState.selectionMode
+                };
+            }
+        }
         
         // Create state object
         const stateData = {
-            py2dmol_version: "1.5.0",
             objects: objects,
             viewer_state: viewerState,
-            selection_state: selectionState
+            selections_by_object: selectionsByObject
         };
         
         // Create filename with timestamp
@@ -5708,12 +5680,6 @@ async function loadViewerState(stateData) {
     const renderer = viewerApi.renderer;
     
     try {
-        // Validate version
-        const version = stateData.py2dmol_version || "1.5.0";
-        if (version !== "1.5.0") {
-            console.warn(`State file version ${version} may not be fully compatible. Expected 1.5.0.`);
-        }
-        
         // Clear existing objects
         renderer.clearAllObjects();
         
@@ -5756,7 +5722,7 @@ async function loadViewerState(stateData) {
                         plddts: frameData.plddts,  // undefined if missing (will use inheritance or default)
                         pae: frameData.pae,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
-                        position_index: frameData.position_index  // undefined if missing (will default)
+                        residue_numbers: frameData.residue_numbers  // undefined if missing (will default)
                     };
                     
                     renderer.addFrame(resolvedFrame, objData.name);
@@ -5962,6 +5928,38 @@ async function loadViewerState(stateData) {
             }
         }
         
+        // Restore selection states for ALL objects BEFORE setting frame
+        // This ensures selection states are available when _switchToObject is called
+        if (stateData.selections_by_object) {
+            // New format: restore all objects' selection states
+            for (const [objectName, ss] of Object.entries(stateData.selections_by_object)) {
+                if (renderer.objectsData[objectName]) {
+                    // Ensure object has selectionState initialized
+                    if (!renderer.objectsData[objectName].selectionState) {
+                        renderer.objectsData[objectName].selectionState = {
+                            positions: new Set(),
+                            chains: new Set(),
+                            paeBoxes: [],
+                            selectionMode: 'default'
+                        };
+                    }
+                    
+                    // Restore the saved selection state
+                    let positions = new Set();
+                    if (ss.positions !== undefined && Array.isArray(ss.positions)) {
+                        positions = new Set(ss.positions.filter(a => typeof a === 'number' && a >= 0));
+                    }
+                    
+                    renderer.objectsData[objectName].selectionState = {
+                        positions: positions,
+                        chains: new Set(ss.chains || []),
+                        paeBoxes: ss.pae_boxes || [],
+                        selectionMode: ss.selection_mode || 'default'
+                    };
+                }
+            }
+        }
+        
         // Set frame (this triggers render and PAE update)
         // Use setTimeout to ensure objects are fully loaded and DOM is ready
         setTimeout(() => {
@@ -5973,6 +5971,12 @@ async function loadViewerState(stateData) {
                     if (renderer.objectSelect) {
                         renderer.objectSelect.value = firstObjName;
                     }
+                }
+                
+                // Restore the current object's selection to the selectionModel
+                // This must happen before setFrame so the selection is applied correctly
+                if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]?.selectionState) {
+                    renderer._switchToObject(renderer.currentObjectName); // This will restore the selection
                 }
                 
                 // Verify object exists before setting frame
@@ -6000,9 +6004,8 @@ async function loadViewerState(stateData) {
                         }
                         
                         // Rebuild sequence view and update UI first
-                        // (These may reset selection, so we restore it after)
                         buildSequenceView();
-                        updateChainSelectionUI();
+                        // (no defaulting here — renderer already restored the object's saved selection)
                         updateObjectNavigationButtons();
                         
                         // Restore MSA state and load MSA data into viewer
@@ -6042,28 +6045,6 @@ async function loadViewerState(stateData) {
                             window.updateEntropyOptionVisibility(renderer.currentObjectName);
                         }
                         
-                        // Restore selection state AFTER all UI updates
-                        // (This must be last to avoid being overwritten by updateChainSelectionUI)
-                        if (stateData.selection_state) {
-                            const ss = stateData.selection_state;
-                            
-                            // Only support positions format (no backward compatibility)
-                            // If positions is missing or invalid, default to empty Set (will show nothing)
-                            let positions = new Set();
-                            if (ss.positions !== undefined && Array.isArray(ss.positions)) {
-                                // New format: positions array
-                                positions = new Set(ss.positions.filter(a => typeof a === 'number' && a >= 0));
-                            }
-                            // If positions is missing or invalid, positions remains empty Set
-                            
-                            const selectionPatch = {
-                                positions: positions,
-                                chains: new Set(ss.chains || []),
-                                paeBoxes: ss.pae_boxes || [],
-                                selectionMode: ss.selection_mode || 'default'
-                            };
-                            renderer.setSelection(selectionPatch);
-                        }
                         
                         // Force a render to ensure everything is displayed
                         renderer.render();

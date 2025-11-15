@@ -20,6 +20,9 @@
     let highlightOverlayCtx = null;
     let hoveredResidueInfo = null; // { chain, resName, resSeq } for tooltip display
     
+    // Per-object preview state (single source of truth for preview during drag)
+    const previewByObject = new Map();
+    
     // Callbacks for integration with host application
     let callbacks = {
         getRenderer: null,           // () => renderer instance
@@ -29,14 +32,36 @@
         highlightAtom: null,          // (positionIndex) => void
         highlightAtoms: null,         // (positionIndices) => void
         clearHighlight: null,        // () => void
-        applySelection: null,         // (previewPositions) => void
-        getPreviewSelectionSet: null, // () => Set | null
-        setPreviewSelectionSet: null  // (Set | null) => void
+        applySelection: null          // (previewPositions) => void
     };
 
     // ============================================================================
     // HELPER FUNCTIONS
     // ============================================================================
+    
+    // Get current object name from renderer
+    function getCurrentObjectName() {
+        const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
+        return renderer?.currentObjectName || null;
+    }
+    
+    // Get preview selection for current object
+    function getLocalPreview() {
+        const name = getCurrentObjectName();
+        return name ? (previewByObject.get(name) || null) : null;
+    }
+    
+    // Set preview selection for current object
+    function setLocalPreview(setOrNull) {
+        const name = getCurrentObjectName();
+        if (!name) return;
+        if (setOrNull && setOrNull.size > 0) {
+            // Store a copy to avoid external mutation
+            previewByObject.set(name, new Set(setOrNull));
+        } else {
+            previewByObject.delete(name);
+        }
+    }
     
     // Check if sequence differs between frames
     function sequencesDiffer(frame1, frame2) {
@@ -330,7 +355,7 @@
         
         // Get selection state - use selectionModel directly to avoid expensive getSelection() copy
         const selectionModel = renderer.selectionModel;
-        const previewSelectionSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
+        const previewSelectionSet = getLocalPreview();
         
         // Determine visible positions - avoid unnecessary Set copies
         let visiblePositions;
@@ -545,7 +570,7 @@
         if (n === 0) return;
         
         const positionNames = currentFrame.position_names || [];
-        const positionIndex = currentFrame.position_index || [];
+        const residueNumbers = currentFrame.residue_numbers || [];
         const chains = currentFrame.chains || [];
         const position_types = currentFrame.position_types || [];
         
@@ -559,7 +584,7 @@
             positionEntries.push({
                 chain: (chains && chains.length > i && chains[i]) ? chains[i] : 'A',
                 resName: (positionNames && positionNames.length > i && positionNames[i]) ? positionNames[i] : 'UNK',
-                resSeq: (positionIndex && positionIndex.length > i && positionIndex[i] != null) ? positionIndex[i] : (i + 1),
+                resSeq: (residueNumbers && residueNumbers.length > i && residueNumbers[i] != null) ? residueNumbers[i] : (i + 1),
                 positionIndex: i, // Direct position index
                 positionType: (position_types && position_types.length > i && position_types[i]) ? position_types[i] : 'P' // Default to protein
             });
@@ -840,7 +865,7 @@
                             
                             if (firstPositionInChain) {
                                 // Create ligand token even if position name is missing (use fallback name)
-                                // This ensures ligands are grouped even when position_index/position_name are missing
+                                // This ensures ligands are grouped even when residue_numbers/position_names are missing
                                 const ligandResName = (hasPositionNames && firstPositionInChain.resName && firstPositionInChain.resName !== 'UNK') 
                                     ? firstPositionInChain.resName 
                                     : 'LIG'; // Fallback name for ligands without position names
@@ -1186,15 +1211,13 @@
         // dragUnselectMode: true if we started on a selected item (unselect mode), false if we started on unselected (select mode)
         // dragStartItem: the selectable item where drag started (unified system)
         // dragEndItemIndex: the index of the selectable item where drag currently ends
+        // Simple drag state
         const dragState = { 
-            isDragging: false, 
-            dragStart: null, // Legacy - keep for compatibility during transition
-            dragEnd: null, // Legacy - keep for compatibility during transition
-            dragStartItem: null, // Unified: selectable item where drag started
-            dragEndItemIndex: -1, // Unified: index of current end item
-            hasMoved: false, 
-            dragUnselectMode: false, 
-            initialSelectionState: new Set()
+            active: false,           // Is a drag operation active?
+            startItem: null,         // Item where drag started
+            endItemIndex: -1,        // Current end item index
+            initialPositions: null,  // Selection state before drag started
+            unselectMode: false      // true = unselecting, false = selecting
         };
         
         const { canvas, allResidueData, chainBoundaries, sortedPositionEntries, layout } = sequenceCanvasData;
@@ -1210,69 +1233,61 @@
         const dpiMultiplier = targetDPI / standardDPI;
         sequenceCanvasData.ctx.scale(dpiMultiplier, dpiMultiplier);
         
-        // Mouse down handler - using unified selectable items
-        newCanvas.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return; // Only left click
+        // Helper: Apply selection to renderer
+        const applySelection = (positions) => {
+            const objectName = renderer.currentObjectName;
+            const obj = renderer.objectsData[objectName];
+            const frame = obj?.frames?.[0];
+            if (!frame) return;
             
-            const pos = getCanvasPositionFromMouse(e, newCanvas);
-            const selectedItem = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
-            
-            if (!selectedItem) return;
-            
-            // Handle chain items in both modes (toggle on click, no drag)
-            if (selectedItem.type === 'chain') {
-                const chainId = selectedItem.chainId;
-                const current = renderer?.getSelection();
-                const isSelected = current?.chains?.has(chainId) || 
-                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                if (e.altKey && callbacks.toggleChainResidues) {
-                    callbacks.toggleChainResidues(chainId);
-                } else if (callbacks.setChainResiduesSelected) {
-                    callbacks.setChainResiduesSelected(chainId, !isSelected);
+            const newChains = new Set();
+            if (frame.chains) {
+                for (const positionIndex of positions) {
+                    const positionChain = frame.chains[positionIndex];
+                    if (positionChain) {
+                        newChains.add(positionChain);
+                    }
                 }
-                lastSequenceUpdateHash = null;
-                scheduleRender();
-                return;
             }
             
-            // For all other items (position, ligand), enable drag
-            const current = renderer?.getSelection();
+            const totalPositions = frame.chains?.length || 0;
+            const hasPartialSelections = positions.size > 0 && positions.size < totalPositions;
+            const allChains = new Set(frame.chains);
+            const allChainsSelected = newChains.size === allChains.size && 
+                                    Array.from(newChains).every(c => allChains.has(c));
+            const selectionMode = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? 'default' : 'explicit';
+            const chainsToSet = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? new Set() : newChains;
             
-            // Determine if item is initially selected (for position/ligand items)
-            const isInitiallySelected = selectedItem.positionIndices.length > 0 && 
-                selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
-            
-            dragState.isDragging = true;
-            dragState.hasMoved = false;
-            dragState.dragStartItem = selectedItem;
-            dragState.dragEndItemIndex = selectedItem.index;
-            dragState.dragUnselectMode = isInitiallySelected;
-            dragState.initialSelectionState = new Set(current?.positions || []);
-            
-            // Legacy fields for compatibility
-            if (selectedItem.residueData) {
-                dragState.dragStart = selectedItem.residueData;
-                dragState.dragEnd = selectedItem.residueData;
-            }
-            
-            // Add temporary window listeners for drag outside canvas
-            const handleMove = (e) => handleDragMove(e, newCanvas);
-            const handleUp = () => {
-                handleMouseUp();
-                window.removeEventListener('mousemove', handleMove);
-                window.removeEventListener('mouseup', handleUp);
-            };
-            window.addEventListener('mousemove', handleMove);
-            window.addEventListener('mouseup', handleUp);
-        });
+            renderer.setSelection({ 
+                positions: positions,
+                chains: chainsToSet,
+                selectionMode: selectionMode,
+                paeBoxes: [] 
+            });
+        };
         
-        // Unified selection computation from item range
-        const computeSelectionFromItemRange = (startItemIndex, endItemIndex, selectableItems, initialSelection, unselectMode) => {
-            const [min, max] = [Math.min(startItemIndex, endItemIndex), Math.max(startItemIndex, endItemIndex)];
-            const newPositions = new Set(initialSelection);
+        // Helper: Toggle positions in an item
+        const toggleItemPositions = (item, currentPositions) => {
+            const newPositions = new Set(currentPositions);
+            if (item.positionIndices && item.positionIndices.length > 0) {
+                item.positionIndices.forEach(positionIndex => {
+                    if (newPositions.has(positionIndex)) {
+                        newPositions.delete(positionIndex);
+                    } else {
+                        newPositions.add(positionIndex);
+                    }
+                });
+            }
+            return newPositions;
+        };
+        
+        // Helper: Compute selection from item range
+        const computeSelectionFromRange = (startIndex, endIndex, basePositions, unselectMode) => {
+            const [min, max] = [Math.min(startIndex, endIndex), Math.max(startIndex, endIndex)];
+            const newPositions = new Set(basePositions);
             
             for (let i = min; i <= max; i++) {
-                const item = selectableItems[i];
+                const item = layout.selectableItems[i];
                 if (item && item.positionIndices) {
                     item.positionIndices.forEach(positionIndex => {
                         if (unselectMode) {
@@ -1287,367 +1302,190 @@
             return newPositions;
         };
         
-        // Helper function to handle drag logic (can be called from canvas or window listeners)
-        const handleDragMove = (e, canvas) => {
-            if (!dragState.isDragging) return;
-            if (!sequenceCanvasData || sequenceCanvasData.canvas !== canvas) return;
+        // Mouse down handler
+        newCanvas.addEventListener('mousedown__DISABLED', (e) => {
+            if (e.button !== 0) return;
             
-            const pos = getCanvasPositionFromMouse(e, canvas);
-            const selectedItem = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+            const pos = getCanvasPositionFromMouse(e, newCanvas);
+            const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+            if (!item) return;
             
-            // Handle drag selection using unified items
-            if (selectedItem && dragState.dragStartItem) {
-                const startItem = dragState.dragStartItem;
-                const endItem = selectedItem;
-                
-                // Only update if we moved to a different item
-                if (endItem.index !== dragState.dragEndItemIndex) {
-                    dragState.dragEndItemIndex = endItem.index;
-                    dragState.hasMoved = true;
-                    
-                    // Compute selection from item range
-                    const newPositions = computeSelectionFromItemRange(
-                        startItem.index,
-                        endItem.index,
-                        layout.selectableItems,
-                        dragState.initialSelectionState,
-                        dragState.dragUnselectMode
-                    );
-                    
-                    if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
-                    lastSequenceUpdateHash = null;
-                    scheduleRender();
-                    // Don't apply selection during drag - wait until mouseup to reduce lag
+            // Chain buttons: toggle immediately, no drag
+            if (item.type === 'chain') {
+                const chainId = item.chainId;
+                const current = renderer?.getSelection();
+                const isSelected = current?.chains?.has(chainId) || 
+                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+                if (e.altKey && callbacks.toggleChainResidues) {
+                    callbacks.toggleChainResidues(chainId);
+                } else if (callbacks.setChainResiduesSelected) {
+                    callbacks.setChainResiduesSelected(chainId, !isSelected);
                 }
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+                return;
             }
-        };
+            
+            // Position/ligand: toggle immediately, then set up for potential drag
+            const current = renderer?.getSelection();
+            const currentPositions = current?.positions || new Set();
+            
+            // Toggle immediately
+            const toggledPositions = toggleItemPositions(item, currentPositions);
+            applySelection(toggledPositions);
+            lastSequenceUpdateHash = null;
+            scheduleRender();
+            
+            // Set up drag state (using toggled state as baseline)
+            const wasSelected = item.positionIndices.length > 0 && 
+                item.positionIndices.every(pi => currentPositions.has(pi));
+            dragState.active = false;
+            dragState.startItem = item;
+            dragState.endItemIndex = item.index;
+            dragState.initialPositions = new Set(toggledPositions);
+            dragState.unselectMode = !wasSelected; // After toggle, mode is flipped
+            
+            // Set up window listeners for drag
+            const handleMove = (e) => {
+                if (!dragState.startItem) return;
+                
+                // Check if button still pressed
+                const buttons = e.buttons !== undefined ? e.buttons : (e.which || 0);
+                if (!(buttons & 1)) return;
+                
+                const dragPos = getCanvasPositionFromMouse(e, newCanvas);
+                const endItem = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
+                
+                if (endItem && endItem.index !== dragState.startItem.index) {
+                    // Moved to different item - start/continue drag
+                    dragState.active = true;
+                    
+                    if (endItem.index !== dragState.endItemIndex) {
+                        dragState.endItemIndex = endItem.index;
+                        
+                        // Compute preview selection
+                        const previewPositions = computeSelectionFromRange(
+                            dragState.startItem.index,
+                            endItem.index,
+                            dragState.initialPositions,
+                            dragState.unselectMode
+                        );
+                        
+                        if (callbacks.setPreviewSelectionSet) {
+                            callbacks.setPreviewSelectionSet(previewPositions);
+                        }
+                        lastSequenceUpdateHash = null;
+                        scheduleRender();
+                    }
+                }
+            };
+            
+            const handleUp = () => {
+                const previewSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
+                
+                // If drag happened, apply the drag selection
+                if (dragState.active && previewSet) {
+                    applySelection(previewSet);
+                }
+                // Otherwise, toggle was already applied on mousedown
+                
+                // Cleanup
+                if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
+                dragState.active = false;
+                dragState.startItem = null;
+                dragState.endItemIndex = -1;
+                dragState.initialPositions = null;
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+                
+                window.removeEventListener('mousemove', handleMove);
+                window.removeEventListener('mouseup', handleUp);
+            };
+            
+            window.addEventListener('mousemove', handleMove);
+            window.addEventListener('mouseup', handleUp);
+        });
         
-        // Mouse move handler - attach to canvas, not window, to avoid firing when mouse moves over mol viewer
+        // Mouse move handler - only handle hover
         newCanvas.addEventListener('mousemove', (e) => {
             if (!sequenceCanvasData || sequenceCanvasData.canvas !== newCanvas) return;
+            
+            // Don't handle hover during drag
+            if (dragState.active) return;
             
             const pos = getCanvasPositionFromMouse(e, newCanvas);
             const chainLabelPos = getChainLabelAtCanvasPosition(pos.x, pos.y, layout);
             const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
             
-            if (!dragState.isDragging) {
-                if (residuePos && residuePos.residueData) {
-                    const residueData = residuePos.residueData;
-                    if (residueData.isLigandToken && residueData.positionIndices && callbacks.highlightAtoms) {
-                        // Highlight all positions in ligand
-                        callbacks.highlightAtoms(new Set(residueData.positionIndices));
-                        hoveredResidueInfo = {
-                            chain: residueData.chain,
-                            resName: residueData.ligandName || residueData.resName,
-                            resSeq: residueData.resSeq
-                        };
-                    } else if (residueData.positionIndex >= 0 && callbacks.highlightAtom) {
-                        callbacks.highlightAtom(residueData.positionIndex);
-                        // Store hovered position info for tooltip
-                        hoveredResidueInfo = {
-                            chain: residueData.chain,
-                            resName: residueData.resName,
-                            resSeq: residueData.resSeq
-                        };
-                    } else {
-                        hoveredResidueInfo = null;
-                    }
-                } else if (chainLabelPos && callbacks.highlightAtoms) {
-                    // In both sequence mode and chain mode, highlight entire chain on hover over chain button
-                    const chainId = chainLabelPos.chainId;
-                    const boundary = chainBoundaries.find(b => b.chain === chainId);
-                    if (boundary) {
-                        const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                        if (chainPositions.length > 0) {
-                            const positionIndices = new Set(chainPositions.map(a => a.positionIndex));
-                            callbacks.highlightAtoms(positionIndices);
-                        }
-                    }
-                    // Clear tooltip when hovering over chain button (in both modes)
-                    hoveredResidueInfo = null;
-                } else {
-                    if (callbacks.clearHighlight) callbacks.clearHighlight();
-                    hoveredResidueInfo = null; // Clear tooltip when not hovering over position
-                }
-                // Trigger highlight redraw to show tooltip
-                if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-                    window.SequenceViewer.drawHighlights();
-                }
-                return;
-            }
-            
-            // Handle drag selection
             if (residuePos && residuePos.residueData) {
                 const residueData = residuePos.residueData;
-                const startResidueData = dragState.dragStart;
-                
-                // Handle ligand tokens in drag
-                if (residueData.isLigandToken && residueData.positionIndices) {
-                    if (residueData !== dragState.dragEnd) {
-                        dragState.dragEnd = residueData;
-                        dragState.hasMoved = true;
-                        
-                        // Find indices in allResidueData
-                        const startIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === startResidueData.positionIndices?.[0]) ||
-                            (r.positionIndex === startResidueData.positionIndex && !r.isLigandToken)
-                        );
-                        const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === residueData.positionIndices[0]) ||
-                            (r.positionIndex === residueData.positionIndices?.[0] || r.isLigandToken)
-                        );
-                        
-                        if (startIdx !== -1 && endIdx !== -1) {
-                            const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                            const newPositions = new Set(dragState.initialSelectionState);
-                            
-                            for (let i = min; i <= max; i++) {
-                                const res = allResidueData[i];
-                                if (res.isLigandToken && res.positionIndices) {
-                                    // Handle ligand token - toggle all positions in ligand
-                                    if (dragState.dragUnselectMode) {
-                                        res.positionIndices.forEach(positionIndex => newPositions.delete(positionIndex));
-                                    } else {
-                                        res.positionIndices.forEach(positionIndex => newPositions.add(positionIndex));
-                                    }
-                                } else if (res.positionIndex >= 0) {
-                                    // Handle regular position
-                                    if (dragState.dragUnselectMode) {
-                                        newPositions.delete(res.positionIndex);
-                                    } else {
-                                        newPositions.add(res.positionIndex);
-                                    }
-                                }
-                            }
-                            
-                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
-                            lastSequenceUpdateHash = null;
-                            scheduleRender();
-                            // Don't apply selection during drag - wait until mouseup to reduce lag
-                        }
-                    }
-                } else if (residueData.positionIndex >= 0) {
-                    // Regular position drag
-                    if (residueData !== dragState.dragEnd) {
-                        dragState.dragEnd = residueData;
-                        const startIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === startResidueData.positionIndices?.[0]) ||
-                            (r.positionIndex === startResidueData.positionIndex && !r.isLigandToken)
-                        );
-                        const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.positionIndices && r.positionIndices.includes(residueData.positionIndex)) ||
-                            (r.positionIndex === residueData.positionIndex && !r.isLigandToken)
-                        );
-                        if (startIdx !== -1 && endIdx !== -1) {
-                            dragState.hasMoved = true;
-                            const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                            const newPositions = new Set(dragState.initialSelectionState);
-                            
-                            for (let i = min; i <= max; i++) {
-                                const res = allResidueData[i];
-                                if (res.isLigandToken && res.positionIndices) {
-                                    // Handle ligand token
-                                    if (dragState.dragUnselectMode) {
-                                        res.positionIndices.forEach(positionIndex => newPositions.delete(positionIndex));
-                                    } else {
-                                        res.positionIndices.forEach(positionIndex => newPositions.add(positionIndex));
-                                    }
-                                } else if (res.positionIndex >= 0) {
-                                    // Handle regular position
-                                    if (dragState.dragUnselectMode) {
-                                        newPositions.delete(res.positionIndex);
-                                    } else {
-                                        newPositions.add(res.positionIndex);
-                                    }
-                                }
-                            }
-                            
-                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
-                            lastSequenceUpdateHash = null;
-                            scheduleRender();
-                            // Don't apply selection during drag - wait until mouseup to reduce lag
-                        }
-                    }
+                if (residueData.isLigandToken && residueData.positionIndices && callbacks.highlightAtoms) {
+                    // Highlight all positions in ligand
+                    callbacks.highlightAtoms(new Set(residueData.positionIndices));
+                    hoveredResidueInfo = {
+                        chain: residueData.chain,
+                        resName: residueData.ligandName || residueData.resName,
+                        resSeq: residueData.resSeq
+                    };
+                } else if (residueData.positionIndex >= 0 && callbacks.highlightAtom) {
+                    callbacks.highlightAtom(residueData.positionIndex);
+                    // Store hovered position info for tooltip
+                    hoveredResidueInfo = {
+                        chain: residueData.chain,
+                        resName: residueData.resName,
+                        resSeq: residueData.resSeq
+                    };
+                } else {
+                    hoveredResidueInfo = null;
                 }
-            } else if (chainLabelPos && !sequenceViewMode) {
-                // In chain mode, handle drag over chain labels
+            } else if (chainLabelPos && callbacks.highlightAtoms) {
+                // In both sequence mode and chain mode, highlight entire chain on hover over chain button
                 const chainId = chainLabelPos.chainId;
                 const boundary = chainBoundaries.find(b => b.chain === chainId);
-                if (!boundary) return;
-                
-                const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                if (chainPositions.length === 0) return;
-                
-                // Find the end chain position
-                const endPosition = chainPositions[chainPositions.length - 1];
-                if (endPosition && endPosition !== dragState.dragEnd) {
-                    dragState.dragEnd = endPosition;
-                    dragState.hasMoved = true;
-                    
-                    // Get all positions from start to end (including all chains in between)
-                    const startChainId = dragState.dragStart.chain;
-                    const startBoundary = chainBoundaries.find(b => b.chain === startChainId);
-                    const endBoundary = boundary;
-                    
-                    if (startBoundary && endBoundary) {
-                        const startBoundaryIdx = chainBoundaries.findIndex(b => b.chain === startChainId);
-                        const endBoundaryIdx = chainBoundaries.findIndex(b => b.chain === chainId);
-                        const [minBoundary, maxBoundary] = [Math.min(startBoundaryIdx, endBoundaryIdx), Math.max(startBoundaryIdx, endBoundaryIdx)];
-                        
-                        // Start from initial selection state, not current selection
-                        const newPositions = new Set(dragState.initialSelectionState);
-                        
-                        // Add all positions from all chains in the drag range
-                        for (let bIdx = minBoundary; bIdx <= maxBoundary; bIdx++) {
-                            const b = chainBoundaries[bIdx];
-                            const positionsInChain = sortedPositionEntries.slice(b.startIndex, b.endIndex + 1);
-                            for (const position of positionsInChain) {
-                                // Toggle items in the drag range to match the initial drag mode
-                                if (dragState.dragUnselectMode) {
-                                    newPositions.delete(position.positionIndex);
-                                    } else {
-                                    newPositions.add(position.positionIndex);
-                                }
-                            }
-                        }
-                        
-                        if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
-                        lastSequenceUpdateHash = null;
-                        scheduleRender();
-                        // Don't apply selection during drag - wait until mouseup to reduce lag
-                        // This prevents PAE and molecular viewers from updating continuously during drag
+                if (boundary) {
+                    const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                    if (chainPositions.length > 0) {
+                        const positionIndices = new Set(chainPositions.map(a => a.positionIndex));
+                        callbacks.highlightAtoms(positionIndices);
                     }
                 }
+                // Clear tooltip when hovering over chain button (in both modes)
+                hoveredResidueInfo = null;
+            } else {
+                if (callbacks.clearHighlight) callbacks.clearHighlight();
+                hoveredResidueInfo = null; // Clear tooltip when not hovering over position
             }
-        });
-        
-        const handleMouseUp = () => {
-            const previewSelectionSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
-            
-            if (dragState.hasMoved && previewSelectionSet) {
-                // User dragged - apply the drag selection
-                const objectName = renderer.currentObjectName;
-                const obj = renderer.objectsData[objectName];
-                const frame = obj?.frames?.[0];
-                const newChains = new Set();
-                if (frame?.chains) {
-                    for (const positionIndex of previewSelectionSet) {
-                        const positionChain = frame.chains[positionIndex];
-                        if (positionChain) {
-                            newChains.add(positionChain);
-                        }
-                    }
-                }
-                
-                // Determine if we have partial selections
-                const totalPositions = frame?.chains?.length || 0;
-                const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalPositions;
-                // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
-                const allChains = new Set(frame.chains);
-                const allChainsSelected = newChains.size === allChains.size && 
-                                        Array.from(newChains).every(c => allChains.has(c));
-                // Use explicit mode if we have partial selections, or if not all chains are selected, or if no positions are selected
-                const selectionMode = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? 'default' : 'explicit';
-                // If all chains are selected AND no partial selections AND we have positions, use empty chains set with default mode
-                // Otherwise, keep explicit chain selection (allows empty chains)
-                const chainsToSet = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? new Set() : newChains;
-                
-                // Clear PAE boxes when finishing drag selection
-                renderer.setSelection({ 
-                    positions: previewSelectionSet,
-                    chains: chainsToSet,
-                    selectionMode: selectionMode,
-                    paeBoxes: [] 
-                });
-            } else if (dragState.isDragging && !dragState.hasMoved && dragState.dragStartItem) {
-                // User clicked (no drag) - toggle the item
-                const item = dragState.dragStartItem;
-                const current = renderer?.getSelection();
-                
-                // Only handle if item has positionIndices (ligand or residue)
-                if (!item.positionIndices || item.positionIndices.length === 0) {
-                    dragState.isDragging = false;
-                    return;
-                }
-                
-                // getSelection() now normalizes default mode to have all positions, so we can use it directly
-                const newPositions = new Set(current?.positions || []);
-                
-                // Toggle all positions in the item
-                item.positionIndices.forEach(positionIndex => {
-                    if (newPositions.has(positionIndex)) {
-                        newPositions.delete(positionIndex);
-                    } else {
-                        newPositions.add(positionIndex);
-                    }
-                });
-                
-                // Update chains to include all chains that have selected positions
-                const newChains = new Set();
-                if (frame?.chains) {
-                    for (const positionIndex of newPositions) {
-                        const positionChain = frame.chains[positionIndex];
-                        if (positionChain) {
-                            newChains.add(positionChain);
-                        }
-                    }
-                }
-                
-                // Determine if we have partial selections
-                const totalPositions = frame?.chains?.length || 0;
-                const hasPartialSelections = newPositions.size > 0 && newPositions.size < totalPositions;
-                const allChains = new Set(frame.chains);
-                const allChainsSelected = newChains.size === allChains.size && 
-                                        Array.from(newChains).every(c => allChains.has(c));
-                const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
-                const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
-                
-                renderer.setSelection({ 
-                    positions: newPositions,
-                    chains: chainsToSet,
-                    selectionMode: selectionMode,
-                    paeBoxes: [] 
-                });
-            }
-            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
-            dragState.isDragging = false;
-            dragState.dragStart = null;
-            dragState.dragEnd = null;
-            dragState.dragStartItem = null;
-            dragState.dragEndItemIndex = -1;
-            dragState.hasMoved = false;
-            dragState.dragUnselectMode = false;
-            dragState.initialSelectionState = new Set();
-            // Force update to reflect changes
-            lastSequenceUpdateHash = null;
-            scheduleRender();
-        };
-
-        newCanvas.addEventListener('mouseup', handleMouseUp);
-        newCanvas.addEventListener('mouseleave', () => {
-            handleMouseUp();
-            if (callbacks.clearHighlight) callbacks.clearHighlight();
-            hoveredResidueInfo = null; // Clear tooltip when mouse leaves sequence canvas
-            // Trigger highlight redraw to clear tooltip
+            // Trigger highlight redraw to show tooltip
             if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
                 window.SequenceViewer.drawHighlights();
             }
         });
         
-        // Touch event handlers for mobile devices - using unified selectable items
-        newCanvas.addEventListener('touchstart', (e) => {
-            if (e.touches.length !== 1) return; // Only single touch
-            e.preventDefault(); // Prevent scrolling
+        newCanvas.addEventListener('mouseup', () => {
+            // Cleanup handled by window listener
+        });
+        newCanvas.addEventListener('mouseleave', () => {
+            // Clear hover state when mouse leaves
+            if (callbacks.clearHighlight) callbacks.clearHighlight();
+            hoveredResidueInfo = null;
+            if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+                window.SequenceViewer.drawHighlights();
+            }
+        });
+        
+        // Touch event handlers - same logic as mouse handlers
+        newCanvas.addEventListener('touchstart__DISABLED', (e) => {
+            if (e.touches.length !== 1) return;
+            e.preventDefault();
             
             const touch = e.touches[0];
             const pos = getCanvasPositionFromMouse(touch, newCanvas);
-            const selectedItem = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+            const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+            if (!item) return;
             
-            if (!selectedItem) return;
-            
-            // Handle chain items in both modes (toggle on tap, no drag)
-            if (selectedItem.type === 'chain') {
-                const chainId = selectedItem.chainId;
+            // Chain buttons: toggle immediately, no drag
+            if (item.type === 'chain') {
+                const chainId = item.chainId;
                 const current = renderer?.getSelection();
                 const isSelected = current?.chains?.has(chainId) || 
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
@@ -1659,108 +1497,283 @@
                 return;
             }
             
-            // For all other items (position, ligand), enable drag
+            // Position/ligand: toggle immediately, then set up for potential drag
             const current = renderer?.getSelection();
+            const currentPositions = current?.positions || new Set();
             
-            // Determine if item is initially selected (for position/ligand items)
-            const isInitiallySelected = selectedItem.positionIndices.length > 0 && 
-                selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
+            // Toggle immediately
+            const toggledPositions = toggleItemPositions(item, currentPositions);
+            applySelection(toggledPositions);
+            lastSequenceUpdateHash = null;
+            scheduleRender();
             
-            dragState.isDragging = true;
-            dragState.hasMoved = false;
-            dragState.dragStartItem = selectedItem;
-            dragState.dragEndItemIndex = selectedItem.index;
-            dragState.dragUnselectMode = isInitiallySelected;
-            dragState.initialSelectionState = new Set(current?.positions || []);
+            // Set up drag state (using toggled state as baseline)
+            const wasSelected = item.positionIndices.length > 0 && 
+                item.positionIndices.every(pi => currentPositions.has(pi));
+            dragState.active = false;
+            dragState.startItem = item;
+            dragState.endItemIndex = item.index;
+            dragState.initialPositions = new Set(toggledPositions);
+            dragState.unselectMode = !wasSelected; // After toggle, mode is flipped
             
-            // Legacy fields for compatibility
-            if (selectedItem.residueData) {
-                dragState.dragStart = selectedItem.residueData;
-                dragState.dragEnd = selectedItem.residueData;
-            }
-            
-            // Add temporary window listeners for touch drag outside canvas
-            const handleTouchMove = (e) => {
+            // Set up window listeners for drag
+            const handleMove = (e) => {
                 if (e.touches.length !== 1) return;
                 e.preventDefault();
-                const touch = e.touches[0];
-                handleDragMove(touch, newCanvas);
-            };
-            const handleTouchEnd = (e) => {
-                e.preventDefault();
-                handleMouseUp();
-                window.removeEventListener('touchmove', handleTouchMove);
-                window.removeEventListener('touchend', handleTouchEnd);
-                window.removeEventListener('touchcancel', handleTouchCancel);
-            };
-            const handleTouchCancel = (e) => {
-                e.preventDefault();
-                handleMouseUp();
-                window.removeEventListener('touchmove', handleTouchMove);
-                window.removeEventListener('touchend', handleTouchEnd);
-                window.removeEventListener('touchcancel', handleTouchCancel);
-            };
-            window.addEventListener('touchmove', handleTouchMove, { passive: false });
-            window.addEventListener('touchend', handleTouchEnd, { passive: false });
-            window.addEventListener('touchcancel', handleTouchCancel, { passive: false });
-            
-            // Handle tap (no drag) - toggle selection immediately
-            if (selectedItem.type === 'ligand' || (selectedItem.type === 'residue' && selectedItem.positionIndices.length === 1)) {
-                // getSelection() now normalizes default mode to have all positions, so we can use it directly
-                const newPositions = new Set(current?.positions || []);
+                if (!dragState.startItem) return;
                 
-                selectedItem.positionIndices.forEach(positionIndex => {
-                    if (newPositions.has(positionIndex)) {
-                        newPositions.delete(positionIndex);
-                    } else {
-                        newPositions.add(positionIndex);
-                    }
-                });
+                const dragTouch = e.touches[0];
+                const dragPos = getCanvasPositionFromMouse(dragTouch, newCanvas);
+                const endItem = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
                 
-                // Update chains to include all chains that have selected positions
-                const newChains = new Set();
-                if (frame?.chains) {
-                    for (const positionIndex of newPositions) {
-                        const positionChain = frame.chains[positionIndex];
-                        if (positionChain) {
-                            newChains.add(positionChain);
+                if (endItem && endItem.index !== dragState.startItem.index) {
+                    // Moved to different item - start/continue drag
+                    dragState.active = true;
+                    
+                    if (endItem.index !== dragState.endItemIndex) {
+                        dragState.endItemIndex = endItem.index;
+                        
+                        // Compute preview selection
+                        const previewPositions = computeSelectionFromRange(
+                            dragState.startItem.index,
+                            endItem.index,
+                            dragState.initialPositions,
+                            dragState.unselectMode
+                        );
+                        
+                        if (callbacks.setPreviewSelectionSet) {
+                            callbacks.setPreviewSelectionSet(previewPositions);
                         }
+                        lastSequenceUpdateHash = null;
+                        scheduleRender();
                     }
                 }
+            };
+            
+            const handleEnd = (e) => {
+                e.preventDefault();
+                const previewSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
                 
-                // Determine if we have partial selections
-                const totalPositions = frame?.chains?.length || 0;
-                const hasPartialSelections = newPositions.size > 0 && newPositions.size < totalPositions;
-                const allChains = new Set(frame.chains);
-                const allChainsSelected = newChains.size === allChains.size && 
-                                        Array.from(newChains).every(c => allChains.has(c));
-                const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
-                const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
+                // If drag happened, apply the drag selection
+                if (dragState.active && previewSet) {
+                    applySelection(previewSet);
+                }
+                // Otherwise, toggle was already applied on touchstart
                 
-                renderer.setSelection({ 
-                    positions: newPositions,
-                    chains: chainsToSet,
-                    selectionMode: selectionMode,
-                    paeBoxes: [] 
-                });
+                // Cleanup
+                if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
+                dragState.active = false;
+                dragState.startItem = null;
+                dragState.endItemIndex = -1;
+                dragState.initialPositions = null;
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+                
+                window.removeEventListener('touchmove', handleMove);
+                window.removeEventListener('touchend', handleEnd);
+                window.removeEventListener('touchcancel', handleEnd);
+            };
+            
+            window.addEventListener('touchmove', handleMove, { passive: false });
+            window.addEventListener('touchend', handleEnd, { passive: false });
+            window.addEventListener('touchcancel', handleEnd, { passive: false });
+        });
+        
+        // === Unified selection handlers (press → optional drag → release) ===
+        // Applies to chain, sequence, and ligand. Chain toggles on release (no drag),
+        // sequence/ligand preview during drag; commit on release.
+        newCanvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+
+            const pos = getCanvasPositionFromMouse(e, newCanvas);
+            const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+            if (!item) return;
+
+            const current = renderer?.getSelection();
+            const currentPositions = current?.positions || new Set();
+
+            dragState.active = false;
+            dragState.startItem = item;
+            dragState.endItemIndex = item.index;
+            dragState.initialPositions = new Set(currentPositions);
+            dragState.unselectMode = !!(item.positionIndices && item.positionIndices.length > 0 &&
+                item.positionIndices.every(pi => currentPositions.has(pi)));
+
+            if (item.type !== 'chain') {
+                const preview = computeSelectionFromRange(
+                    item.index, item.index, dragState.initialPositions, dragState.unselectMode
+                );
+                setLocalPreview(preview);
                 lastSequenceUpdateHash = null;
                 scheduleRender();
             }
+
+            const handleMove = (ev) => {
+                const buttons = ev.buttons !== undefined ? ev.buttons : (ev.which || 0);
+                if (!(buttons & 1)) return;
+
+                const dragPos = getCanvasPositionFromMouse(ev, newCanvas);
+                const over = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
+                if (!over) return;
+
+                if (item.type === 'chain') return; // chains don't support drag range; toggle on release only
+
+                dragState.active = true;
+                if (over.index !== dragState.endItemIndex) {
+                    dragState.endItemIndex = over.index;
+
+                    const preview = computeSelectionFromRange(
+                        dragState.startItem.index,
+                        over.index,
+                        dragState.initialPositions,
+                        dragState.unselectMode
+                    );
+                    setLocalPreview(preview);
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
+                }
+            };
+
+            const handleUp = (ev) => {
+                window.removeEventListener('mousemove', handleMove);
+                window.removeEventListener('mouseup', handleUp);
+
+                if (dragState.startItem?.type === 'chain') {
+                    const upPos = getCanvasPositionFromMouse(ev, newCanvas);
+                    const over = getSelectableItemAtPosition(upPos.x, upPos.y, layout, sequenceViewMode);
+                    if (over && over.type === 'chain' && over.chainId === dragState.startItem.chainId) {
+                        const chainId = over.chainId;
+                        const sel = renderer?.getSelection();
+                        const isSelected = sel?.chains?.has(chainId) ||
+                            (sel?.selectionMode === 'default' && (!sel?.chains || sel.chains.size === 0));
+                        if (ev.altKey && callbacks.toggleChainResidues) {
+                            callbacks.toggleChainResidues(chainId);
+                        } else if (callbacks.setChainResiduesSelected) {
+                            callbacks.setChainResiduesSelected(chainId, !isSelected);
+                        }
+                    }
+                } else {
+                    const previewSet = getLocalPreview();
+                    if (dragState.active && previewSet) {
+                        applySelection(previewSet);
+                    } else {
+                        const toggled = toggleItemPositions(dragState.startItem, dragState.initialPositions);
+                        applySelection(toggled);
+                    }
+                }
+
+                setLocalPreview(null);
+                dragState.active = false;
+                dragState.startItem = null;
+                dragState.endItemIndex = -1;
+                dragState.initialPositions = null;
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+            };
+
+            window.addEventListener('mousemove', handleMove);
+            window.addEventListener('mouseup', handleUp);
         });
-        
-        // Touch move handler removed - using window listeners for drag instead
-        // Old handler code removed - unified system handles drag via window listeners
-        
-        // Touch end/cancel handlers - window listeners handle cleanup, but keep these as fallback
-        newCanvas.addEventListener('touchend', (e) => {
+
+        newCanvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
             e.preventDefault();
-            handleMouseUp();
+
+            const touch = e.touches[0];
+            const pos = getCanvasPositionFromMouse(touch, newCanvas);
+            const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+            if (!item) return;
+
+            const current = renderer?.getSelection();
+            const currentPositions = current?.positions || new Set();
+
+            dragState.active = false;
+            dragState.startItem = item;
+            dragState.endItemIndex = item.index;
+            dragState.initialPositions = new Set(currentPositions);
+            dragState.unselectMode = !!(item.positionIndices && item.positionIndices.length > 0 &&
+                item.positionIndices.every(pi => currentPositions.has(pi)));
+
+            if (item.type !== 'chain') {
+                const preview = computeSelectionFromRange(
+                    item.index, item.index, dragState.initialPositions, dragState.unselectMode
+                );
+                setLocalPreview(preview);
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+            }
+
+            const handleMove = (ev) => {
+                if (ev.touches.length !== 1) return;
+                ev.preventDefault();
+                const t = ev.touches[0];
+
+                const dragPos = getCanvasPositionFromMouse(t, newCanvas);
+                const over = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
+                if (!over) return;
+                if (item.type === 'chain') return; // no drag for chains
+
+                dragState.active = true;
+                if (over.index !== dragState.endItemIndex) {
+                    dragState.endItemIndex = over.index;
+                    const preview = computeSelectionFromRange(
+                        dragState.startItem.index,
+                        over.index,
+                        dragState.initialPositions,
+                        dragState.unselectMode
+                    );
+                    setLocalPreview(preview);
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
+                }
+            };
+
+            const handleEnd = (ev) => {
+                ev.preventDefault();
+
+                if (dragState.startItem?.type === 'chain') {
+                    const changedTouch = (ev.changedTouches && ev.changedTouches[0]) || null;
+                    if (changedTouch) {
+                        const upPos = getCanvasPositionFromMouse(changedTouch, newCanvas);
+                        const over = getSelectableItemAtPosition(upPos.x, upPos.y, layout, sequenceViewMode);
+                        if (over && over.type === 'chain' && over.chainId === dragState.startItem.chainId) {
+                            const chainId = over.chainId;
+                            const sel = renderer?.getSelection();
+                            const isSelected = sel?.chains?.has(chainId) ||
+                                (sel?.selectionMode === 'default' && (!sel?.chains || sel.chains.size === 0));
+                            if (callbacks.setChainResiduesSelected) {
+                                callbacks.setChainResiduesSelected(chainId, !isSelected);
+                            }
+                        }
+                    }
+                } else {
+                    const previewSet = getLocalPreview();
+                    if (dragState.active && previewSet) {
+                        applySelection(previewSet);
+                    } else {
+                        const toggled = toggleItemPositions(dragState.startItem, dragState.initialPositions);
+                        applySelection(toggled);
+                    }
+                }
+
+                setLocalPreview(null);
+                dragState.active = false;
+                dragState.startItem = null;
+                dragState.endItemIndex = -1;
+                dragState.initialPositions = null;
+                lastSequenceUpdateHash = null;
+                scheduleRender();
+
+                window.removeEventListener('touchmove', handleMove);
+                window.removeEventListener('touchend', handleEnd);
+                window.removeEventListener('touchcancel', handleEnd);
+            };
+
+            window.addEventListener('touchmove', handleMove, { passive: false });
+            window.addEventListener('touchend', handleEnd, { passive: false });
+            window.addEventListener('touchcancel', handleEnd, { passive: false });
         });
-        
-        newCanvas.addEventListener('touchcancel', (e) => {
-            e.preventDefault();
-            handleMouseUp();
-        });
+        // === End unified selection handlers ===
     }
 
     // Update colors in sequence view when color mode changes
@@ -1783,7 +1796,7 @@
         // Use previewSelectionSet during drag for live feedback
         let visiblePositions = new Set();
         
-        const previewSelectionSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
+        const previewSelectionSet = getLocalPreview();
         
         if (previewSelectionSet && previewSelectionSet.size > 0) {
             // During drag, use preview selection for live feedback (already position indices)
@@ -2047,6 +2060,13 @@
             sequenceCanvasData = null;
             lastSequenceFrameIndex = -1;
             lastSequenceUpdateHash = null;
+        },
+        
+        // Clear preview for current object
+        clearPreview: function() {
+            setLocalPreview(null);
+            lastSequenceUpdateHash = null;
+            scheduleRender();
         }
     };
 

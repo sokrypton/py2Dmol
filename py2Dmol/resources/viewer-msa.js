@@ -384,9 +384,9 @@
     // ============================================================================
     // INTERNAL STATE
     // ============================================================================
-    let msaData = null; // { sequences: [], querySequence: string, queryLength: number, positionIndex: [] }
+    let msaData = null; // { sequences: [], querySequence: string, queryLength: number, residueNumbers: [] }
     let originalMSAData = null; // Original unfiltered MSA data
-    let msaPositionIndex = null; // Array mapping MSA positions to structure position_index values
+    let msaResidueNumbers = null; // Array mapping MSA positions to structure residue_numbers values
     let msaCanvasData = null; // Canvas-based structure for MSA mode
     let pssmCanvasData = null; // Canvas-based structure for PSSM mode
     let logoCanvasData = null; // Canvas-based structure for Logo mode
@@ -1127,16 +1127,16 @@
         
         let xOffset = scrollableAreaX - (scrollLeft % charWidth);
         for (let pos = visibleStartPos; pos < visibleEndPos && pos < msaData.queryLength; pos++) {
-            // Use position_index if available, otherwise use 1-based position numbering
+            // Use residue_numbers if available, otherwise use 1-based position numbering
             let tickValue;
-            if (msaPositionIndex && pos < msaPositionIndex.length && msaPositionIndex[pos] !== null) {
-                tickValue = msaPositionIndex[pos];
+            if (msaResidueNumbers && pos < msaResidueNumbers.length && msaResidueNumbers[pos] !== null) {
+                tickValue = msaResidueNumbers[pos];
             } else {
                 tickValue = pos + 1; // Default: 1-based position numbering
             }
             
             // Show tick at position 1, or every TICK_INTERVAL positions
-            // For position_index, show tick if it's 1 or divisible by TICK_INTERVAL
+            // For residue_numbers, show tick if it's 1 or divisible by TICK_INTERVAL
             const shouldShowTick = (tickValue === 1 || tickValue % TICK_INTERVAL === 0);
             
             if (shouldShowTick) {
@@ -1157,12 +1157,12 @@
     }
     
     /**
-     * Build mapping from MSA positions to structure position_index values
+     * Build mapping from MSA positions to structure residue_numbers values
      * @param {string} chainId - Chain ID to map
      * @param {string} type - MSA type ('unpaired' or 'paired')
-     * @returns {Array|null} - Array mapping MSA position (with gaps) to position_index, or null if not available
+     * @returns {Array|null} - Array mapping MSA position (with gaps) to residue_numbers, or null if not available
      */
-    function buildMSAPositionIndexMapping(chainId, type) {
+    function buildMSAResidueNumbersMapping(chainId, type) {
         if (!callbacks.getRenderer) return null;
         
         const renderer = callbacks.getRenderer();
@@ -1173,7 +1173,7 @@
         if (!obj.msa || !obj.msa.msasBySequence || !obj.msa.chainToSequence) return null;
         
         const frame = obj.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
-        if (!frame || !frame.chains || !frame.position_index) return null;
+        if (!frame || !frame.chains || !frame.residue_numbers) return null;
         
         const querySeq = obj.msa.chainToSequence[chainId];
         if (!querySeq) return null;
@@ -1208,16 +1208,16 @@
         
         if (chainPositions.length === 0) return null;
         
-        // Sort positions by position index to match sequence order
+        // Sort positions by residue number to match sequence order
         chainPositions.sort((a, b) => {
-            const indexA = frame.position_index ? frame.position_index[a] : a;
-            const indexB = frame.position_index ? frame.position_index[b] : b;
-            return indexA - indexB;
+            const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+            const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+            return residueNumA - residueNumB;
         });
         
-        // Map MSA positions to structure position indices
-        // Initialize array with null (for gaps) or position_index values
-        const positionIndexMap = new Array(msaQuerySequence.length).fill(null);
+        // Map MSA positions to structure residue numbers
+        // Initialize array with null (for gaps) or residue_numbers values
+        const residueNumbersMap = new Array(msaQuerySequence.length).fill(null);
         
         let msaPos = 0; // Position in MSA (skipping gaps)
         let chainSeqIdx = 0; // Position in chain sequence
@@ -1234,10 +1234,10 @@
             
             // Check if this MSA position matches the current chain sequence position
             if (chainSeqIdx < chainSeqUpper.length && msaChar === chainSeqUpper[chainSeqIdx]) {
-                // Match found - map to structure position_index
-                const positionIndex = chainPositions[chainSeqIdx];
-                if (positionIndex < frame.position_index.length) {
-                    positionIndexMap[i] = frame.position_index[positionIndex];
+                // Match found - map to structure residue_numbers
+                const positionIdx = chainPositions[chainSeqIdx];
+                if (positionIdx < frame.residue_numbers.length) {
+                    residueNumbersMap[i] = frame.residue_numbers[positionIdx];
                 }
                 chainSeqIdx++;
                 msaPos++; // Only increment msaPos when we process a non-gap character
@@ -1247,7 +1247,7 @@
             }
         }
         
-        return positionIndexMap;
+        return residueNumbersMap;
     }
 
     // ============================================================================
@@ -3256,7 +3256,7 @@
                 
                 // Apply sorting if enabled
                 const finalSequences = sortSequences 
-                    ? sortSequencesBySimilarity(filtered, originalMSAData.querySequence)
+                    ? sortSequencesByIdentity(filtered, originalMSAData.querySequence, originalMSAData.queryLength)
                     : filtered;
                 
                 msaData = {
@@ -3324,7 +3324,7 @@
                 
                 // Apply sorting if enabled
                 const finalSequences = sortSequences 
-                    ? sortSequencesBySimilarity(filtered, originalMSAData.querySequence)
+                    ? sortSequencesByIdentity(filtered, originalMSAData.querySequence, originalMSAData.queryLength)
                     : filtered;
                 
                 msaData = {
@@ -3425,18 +3425,18 @@
                 msaData.logOdds = originalMSAData.logOdds;
             }
             
-            // Build position_index mapping from structure if available
-            // This maps MSA positions to structure position_index values for display
-            msaPositionIndex = null;
-            if (originalMSAData.positionIndex) {
-                // Use provided positionIndex if available
-                msaPositionIndex = originalMSAData.positionIndex;
-                msaData.positionIndex = msaPositionIndex;
+            // Build residue_numbers mapping from structure if available
+            // This maps MSA positions to structure residue_numbers values for display
+            msaResidueNumbers = null;
+            if (originalMSAData.residueNumbers) {
+                // Use provided residueNumbers if available
+                msaResidueNumbers = originalMSAData.residueNumbers;
+                msaData.residueNumbers = msaResidueNumbers;
             } else {
-                // Build position_index mapping from structure if available
-                msaPositionIndex = buildMSAPositionIndexMapping(chainId, type);
-                if (msaPositionIndex) {
-                    msaData.positionIndex = msaPositionIndex;
+                // Build residue_numbers mapping from structure if available
+                msaResidueNumbers = buildMSAResidueNumbersMapping(chainId, type);
+                if (msaResidueNumbers) {
+                    msaData.residueNumbers = msaResidueNumbers;
                 }
             }
             
@@ -3712,7 +3712,7 @@
                 
                 // Apply sorting if enabled
                 const finalSequences = sortSequences 
-                    ? sortSequencesBySimilarity(filtered, originalMSAData.querySequence)
+                    ? sortSequencesByIdentity(filtered, originalMSAData.querySequence, originalMSAData.queryLength)
                     : filtered;
                 
                 msaData = {

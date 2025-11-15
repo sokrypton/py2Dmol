@@ -567,6 +567,16 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
+            // Save selection state to current object whenever it changes
+            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
+                this.objectsData[this.currentObjectName].selectionState = {
+                    positions: new Set(this.selectionModel.positions),
+                    chains: new Set(this.selectionModel.chains),
+                    paeBoxes: this.selectionModel.paeBoxes.map(box => ({...box})),
+                    selectionMode: this.selectionModel.selectionMode
+                };
+            }
+            
             this._composeAndApplyMask(skip3DRender);
         }
 
@@ -1173,19 +1183,12 @@ function initializePy2DmolViewer(containerElement) {
                 this.objectSelect.addEventListener('change', () => {
                     this.stopAnimation();
                     const newObjectName = this.objectSelect.value;
-                    // Skip if already on this object (e.g., during initial load)
                     if (this.currentObjectName === newObjectName) {
                         return;
                     }
-                    // Track object change for selection reset
-                    this.previousObjectName = this.currentObjectName;
-                    // Clear selection when switching objects (selection is per-object)
-                    this.clearSelection();
-                    this.currentObjectName = newObjectName;
-                    this.setFrame(0);
-                    // setFrame will call resetToDefault() after loading new object data
                     
-                    // Update PAE container visibility based on current object
+                    this._switchToObject(newObjectName);
+                    this.setFrame(0);
                     this.updatePAEContainerVisibility();
                 });
             }
@@ -1350,6 +1353,71 @@ function initializePy2DmolViewer(containerElement) {
             });
         }
 
+        // Switch to a different object (handles save/restore of selection state)
+        _switchToObject(newObjectName) {
+            // Save current object's selection state
+            if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
+                this.objectsData[this.currentObjectName].selectionState = {
+                    positions: new Set(this.selectionModel.positions),
+                    chains: new Set(this.selectionModel.chains),
+                    paeBoxes: this.selectionModel.paeBoxes.map(box => ({...box})),
+                    selectionMode: this.selectionModel.selectionMode
+                };
+            }
+            
+            // Switch to new object
+            this.currentObjectName = newObjectName;
+            
+            // Ensure object has selectionState initialized
+            if (!this.objectsData[newObjectName]) {
+                this.objectsData[newObjectName] = {};
+            }
+            if (!this.objectsData[newObjectName].selectionState) {
+                this.objectsData[newObjectName].selectionState = {
+                    positions: new Set(),
+                    chains: new Set(),
+                    paeBoxes: [],
+                    selectionMode: 'default'
+                };
+            }
+            
+            // Get the correct coords length from the new object's first frame for normalization
+            // This ensures normalization uses the correct size, not the previous object's coords
+            const newObject = this.objectsData[newObjectName];
+            const firstFrame = newObject?.frames?.[0];
+            const correctCoordsLength = firstFrame?.coords?.length || 0;
+            
+            // Restore selection state
+            const savedState = this.objectsData[newObjectName].selectionState;
+            
+            // Apply the saved selection directly to selectionModel (bypassing setSelection's normalization)
+            this.selectionModel.positions = new Set(savedState.positions);
+            this.selectionModel.chains = new Set(savedState.chains);
+            this.selectionModel.paeBoxes = savedState.paeBoxes.map(box => ({...box}));
+            this.selectionModel.selectionMode = savedState.selectionMode;
+            
+            // Only normalize if in default mode with empty positions, using correct coords length
+            if (this.selectionModel.selectionMode === 'default' && 
+                (!this.selectionModel.positions || this.selectionModel.positions.size === 0)) {
+                this.selectionModel.positions = new Set();
+                for (let i = 0; i < correctCoordsLength; i++) {
+                    this.selectionModel.positions.add(i);
+                }
+            }
+            
+            // Save the restored selection state (setSelection would do this, but we're bypassing it)
+            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
+                this.objectsData[this.currentObjectName].selectionState = {
+                    positions: new Set(this.selectionModel.positions),
+                    chains: new Set(this.selectionModel.chains),
+                    paeBoxes: this.selectionModel.paeBoxes.map(box => ({...box})),
+                    selectionMode: this.selectionModel.selectionMode
+                };
+            }
+            
+            // Note: _composeAndApplyMask will be called by setFrame after the frame data is loaded
+        }
+
         // Add a new object
         addObject(name) {
             this.stopAnimation();
@@ -1357,17 +1425,16 @@ function initializePy2DmolViewer(containerElement) {
             // If object with same name already exists, clear it instead of creating duplicate
             const objectExists = this.objectsData[name] !== undefined;
             if (objectExists) {
-                // Clear existing object data
                 this.objectsData[name].frames = [];
                 this.objectsData[name].maxExtent = 0;
                 this.objectsData[name].stdDev = 0;
                 this.objectsData[name].globalCenterSum = new Vec3(0,0,0);
                 this.objectsData[name].totalPositions = 0;
-                // Reset inheritance tracking
                 this.objectsData[name]._lastPlddtFrame = -1;
                 this.objectsData[name]._lastPaeFrame = -1;
+                // Don't clear selectionState - preserve it
             } else {
-                // Create new object with inheritance tracking initialized
+                // Create new object
                 this.objectsData[name] = { 
                     maxExtent: 0, 
                     stdDev: 0, 
@@ -1375,10 +1442,16 @@ function initializePy2DmolViewer(containerElement) {
                     globalCenterSum: new Vec3(0,0,0), 
                     totalPositions: 0,
                     _lastPlddtFrame: -1,
-                    _lastPaeFrame: -1
+                    _lastPaeFrame: -1,
+                    selectionState: {
+                        positions: new Set(),
+                        chains: new Set(),
+                        paeBoxes: [],
+                        selectionMode: 'default'
+                    }
                 };
                 
-                // Add to dropdown only if option doesn't already exist
+                // Add to dropdown
                 if (this.objectSelect) {
                     const existingOption = Array.from(this.objectSelect.options).find(opt => opt.value === name);
                     if (!existingOption) {
@@ -1390,11 +1463,11 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
-            this.currentObjectName = name;
-            this.currentFrame = -1;
-            this.lastRenderedFrame = -1; // Reset frame tracking on object change
+            // Switch to object (handles save/restore)
+            this._switchToObject(name);
             
-            // Clear segment indices cache when object changes
+            this.currentFrame = -1;
+            this.lastRenderedFrame = -1;
             this.cachedSegmentIndices = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
@@ -1585,11 +1658,11 @@ function initializePy2DmolViewer(containerElement) {
             
             // Then, count selected positions per chain and find ranges
             const chainSelectedCounts = new Map(); // chain -> selected position count
-            if (firstFrame.chains && firstFrame.position_index) {
+            if (firstFrame.chains && firstFrame.residue_numbers) {
                 for (const idx of selectedIndices) {
-                    if (idx < firstFrame.chains.length && idx < firstFrame.position_index.length) {
+                    if (idx < firstFrame.chains.length && idx < firstFrame.residue_numbers.length) {
                         const chain = firstFrame.chains[idx];
-                        const resIdx = firstFrame.position_index[idx];
+                        const resIdx = firstFrame.residue_numbers[idx];
                         
                         chainSelectedCounts.set(chain, (chainSelectedCounts.get(chain) || 0) + 1);
                         
@@ -1662,7 +1735,7 @@ function initializePy2DmolViewer(containerElement) {
                     plddts: sourcePlddt ? [] : undefined,
                     position_types: frame.position_types ? [] : undefined,
                     position_names: frame.position_names ? [] : undefined,
-                    position_index: frame.position_index ? [] : undefined,
+                    residue_numbers: frame.residue_numbers ? [] : undefined,
                     pae: undefined // Will be handled separately
                 };
 
@@ -1683,8 +1756,8 @@ function initializePy2DmolViewer(containerElement) {
                         if (frame.position_names && idx < frame.position_names.length) {
                             extractedFrame.position_names.push(frame.position_names[idx]);
                         }
-                        if (frame.position_index && idx < frame.position_index.length) {
-                            extractedFrame.position_index.push(frame.position_index[idx]);
+                        if (frame.residue_numbers && idx < frame.residue_numbers.length) {
+                            extractedFrame.residue_numbers.push(frame.residue_numbers[idx]);
                         }
                     }
                 }
@@ -1839,11 +1912,11 @@ function initializePy2DmolViewer(containerElement) {
                 
                 if (chainPositions.length === 0) continue;
                 
-                // Sort positions by position index to match sequence order
+                // Sort positions by residue number to match sequence order
                 chainPositions.sort((a, b) => {
-                    const indexA = frame.position_index ? frame.position_index[a] : a;
-                    const indexB = frame.position_index ? frame.position_index[b] : b;
-                    return indexA - indexB;
+                    const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                    const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                    return residueNumA - residueNumB;
                 });
 
                 // Map MSA positions to structure positions and find which MSA positions are selected
@@ -1878,20 +1951,21 @@ function initializePy2DmolViewer(containerElement) {
 
                 if (selectedMSAPositions.size === 0) continue;
 
-                // Extract selected MSA positions from all sequences
-                // Use sequencesOriginal to include all sequences, even those hidden by filters
+                // Extract selected MSA positions from ALL sequences (not filtered by coverage/identity)
+                // Use sequencesOriginal to include all sequences, even those hidden by coverage/identity filters
                 const allSequences = originalMSAData.sequencesOriginal || originalMSAData.sequences;
                 const extractedSequences = [];
                 const extractedQuerySequence = [];
                 
-                // Extract from query sequence
+                // Extract from query sequence (only selected positions/columns)
                 for (let i = 0; i < originalQuerySequence.length; i++) {
                     if (selectedMSAPositions.has(i)) {
                         extractedQuerySequence.push(originalQuerySequence[i]);
                     }
                 }
                 
-                // Extract from all sequences (including those hidden by filters)
+                // Extract from ALL sequences (including those hidden by coverage/identity filters)
+                // But only extract the selected MSA positions (columns)
                 for (const seq of allSequences) {
                     const extractedSeq = {
                         name: seq.name || seq.header || 'Unknown',
@@ -1906,6 +1980,7 @@ function initializePy2DmolViewer(containerElement) {
                     // Handle both string and array sequence formats
                     const seqStr = Array.isArray(seq.sequence) ? seq.sequence.join('') : seq.sequence;
                     
+                    // Extract only the selected MSA positions (columns) from this sequence
                     for (let i = 0; i < seqStr.length; i++) {
                         if (selectedMSAPositions.has(i)) {
                             extractedSeq.sequence += seqStr[i];
@@ -1915,7 +1990,7 @@ function initializePy2DmolViewer(containerElement) {
                     extractedSequences.push(extractedSeq);
                 }
 
-                // Create new MSA data with extracted sequences
+                // Create new MSA data with extracted sequences (selected positions only, but all sequences)
                 const extractedQuerySeq = extractedQuerySequence.join('');
                 const extractedQuerySeqNoGaps = extractedQuerySeq.replace(/-/g, '').toUpperCase();
                 
@@ -1942,21 +2017,21 @@ function initializePy2DmolViewer(containerElement) {
                     extractedSequences.unshift(querySeq);
                 }
                 
-                // Build position_index mapping for extracted MSA
-                // Map extracted MSA positions to extracted structure position_index values
-                const extractedPositionIndex = new Array(extractedQuerySeq.length).fill(null);
+                // Build residue_numbers mapping for extracted MSA
+                // Map extracted MSA positions to extracted structure residue_numbers values
+                const extractedResidueNumbers = new Array(extractedQuerySeq.length).fill(null);
                 
                 // Get sorted selected indices for THIS CHAIN ONLY to match sequence order
                 const selectedIndicesForChain = chainPositions.filter(posIdx => selectedPositionsSet.has(posIdx));
                 const sortedSelectedIndicesForChain = selectedIndicesForChain.sort((a, b) => {
-                    const indexA = frame.position_index ? frame.position_index[a] : a;
-                    const indexB = frame.position_index ? frame.position_index[b] : b;
-                    return indexA - indexB;
+                    const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                    const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                    return residueNumA - residueNumB;
                 });
                 
-                let extractedSeqIdx = 0; // Position in extracted sequence (no gaps, sorted by position_index)
+                let extractedSeqIdx = 0; // Position in extracted sequence (no gaps, sorted by residue_numbers)
                 
-                // Map extracted MSA positions to extracted structure position indices
+                // Map extracted MSA positions to extracted structure residue numbers
                 for (let i = 0; i < extractedQuerySeq.length; i++) {
                     const msaChar = extractedQuerySeq[i];
                     if (msaChar === '-') {
@@ -1966,9 +2041,9 @@ function initializePy2DmolViewer(containerElement) {
                     // Find corresponding position in extracted frame (for this chain only)
                     if (extractedSeqIdx < sortedSelectedIndicesForChain.length) {
                         const originalPositionIdx = sortedSelectedIndicesForChain[extractedSeqIdx];
-                        // Get position_index from original frame
-                        if (frame.position_index && originalPositionIdx < frame.position_index.length) {
-                            extractedPositionIndex[i] = frame.position_index[originalPositionIdx];
+                        // Get residue_numbers from original frame
+                        if (frame.residue_numbers && originalPositionIdx < frame.residue_numbers.length) {
+                            extractedResidueNumbers[i] = frame.residue_numbers[originalPositionIdx];
                         }
                         extractedSeqIdx++;
                     }
@@ -1978,9 +2053,9 @@ function initializePy2DmolViewer(containerElement) {
                     sequences: extractedSequences,
                     querySequence: extractedQuerySeq,
                     queryLength: extractedQuerySeqNoGaps.length,
-                    sequencesOriginal: extractedSequences, // For filtering
+                    sequencesOriginal: extractedSequences, // All sequences included (not filtered by cov/qid)
                     queryIndex: 0, // Query is always first after extraction
-                    positionIndex: extractedPositionIndex // Map to structure position_index
+                    residueNumbers: extractedResidueNumbers // Map to structure residue_numbers
                 };
 
                 // Compute MSA properties (frequencies, entropy, logOdds) for extracted sequences
@@ -2073,6 +2148,10 @@ function initializePy2DmolViewer(containerElement) {
             
             // Load frame data and render immediately for manual frame changes (e.g., slider)
             this._loadFrameData(frameIndex, true); // Load without render
+            
+            // Apply selection mask after frame data is loaded (in case selection was restored during object switch)
+            this._composeAndApplyMask(true); // skip3DRender, will render below
+            
             this.render(); // Render once
             this.lastRenderedFrame = frameIndex;
             
@@ -2814,7 +2893,7 @@ function initializePy2DmolViewer(containerElement) {
                         data.position_types,
                         (data.pae && data.pae.length > 0),
                         data.position_names,
-                        data.position_index,
+                        data.residue_numbers,
                         data.entropy,
                         skipRender
                     );
@@ -2824,7 +2903,7 @@ function initializePy2DmolViewer(containerElement) {
             }
         }
 
-        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, positionIndex, entropy, skipRender = false) {
+        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, entropy, skipRender = false) {
             this.coords = coords;
             const n = this.coords.length;
             
@@ -2843,7 +2922,7 @@ function initializePy2DmolViewer(containerElement) {
             this.chains = (chains && chains.length === n) ? chains : Array(n).fill('A');
             this.positionTypes = (positionTypes && positionTypes.length === n) ? positionTypes : Array(n).fill('P');
             this.positionNames = (positionNames && positionNames.length === n) ? positionNames : Array(n).fill('UNK');
-            this.positionIndex = (positionIndex && positionIndex.length === n) ? positionIndex : Array.from({length: n}, (_, i) => i + 1);
+            this.residueNumbers = (residueNumbers && residueNumbers.length === n) ? residueNumbers : Array.from({length: n}, (_, i) => i + 1);
             // Entropy: store as array indexed by position index (undefined for positions without entropy data)
             this.entropy = (entropy && entropy.length === n) ? entropy : undefined;
 
@@ -2940,12 +3019,12 @@ function initializePy2DmolViewer(containerElement) {
             }
 
             // Compute ligand groups using shared utility function
-            // This groups ligands by chain, position_index, and position_name (if available)
+            // This groups ligands by chain, residue_numbers, and position_names (if available)
             if (typeof groupLigandAtoms === 'function') {
                 this.ligandGroups = groupLigandAtoms(
                     this.chains,
                     this.positionTypes,
-                    this.positionIndex,
+                    this.residueNumbers,
                     this.positionNames
                 );
             } else {
@@ -3313,8 +3392,15 @@ function initializePy2DmolViewer(containerElement) {
             return this.colorMode;
         }
 
+        /**
+         * Get the color for a position based on current color mode
+         * @param {number} atomIndex - Position index (0-based array index into coords/positionTypes arrays).
+         *                             Note: Parameter name kept as 'atomIndex' for API compatibility, but represents a position index.
+         *                             For proteins/DNA/RNA, one position = one residue (represented by CA/C4').
+         *                             For ligands, one position = one heavy atom.
+         * @returns {{r: number, g: number, b: number}} RGB color object
+         */
         getAtomColor(atomIndex) {
-            // Note: parameter name kept as atomIndex for API compatibility, but represents a position index
             if (atomIndex < 0 || atomIndex >= this.coords.length) {
                 return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
             }
@@ -5028,7 +5114,7 @@ function initializePy2DmolViewer(containerElement) {
                             plddts: lightFrame.plddts || undefined,  // Will use inheritance or default in setCoords
                             pae: lightFrame.pae || undefined,  // Will use inheritance or default
                             position_names: lightFrame.position_names || undefined,  // Will default in setCoords
-                            position_index: lightFrame.position_index || undefined  // Will default in setCoords
+                            residue_numbers: lightFrame.residue_numbers || undefined  // Will default in setCoords
                         };
                         
                         renderer.addFrame(fullFrameData, obj.name);
