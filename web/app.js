@@ -6199,10 +6199,26 @@ async function loadViewerState(stateData) {
                         // Restore MSA data for each unique sequence
                         for (const [querySeq, msaEntry] of Object.entries(objData.msa.msasBySequence)) {
                             if (msaEntry && msaEntry.msaData) {
+                                // Create fresh MSA data object
+                                const restoredMSAData = {
+                                    sequences: msaEntry.msaData.sequences,
+                                    querySequence: msaEntry.msaData.querySequence,
+                                    queryLength: msaEntry.msaData.queryLength,
+                                    queryIndex: msaEntry.msaData.queryIndex !== undefined ? msaEntry.msaData.queryIndex : 0
+                                };
+                                
+                                // Set sequencesOriginal for filtering (use sequences if not saved)
+                                restoredMSAData.sequencesOriginal = msaEntry.msaData.sequencesOriginal || msaEntry.msaData.sequences;
+                                
                                 renderer.objectsData[objData.name].msa.msasBySequence[querySeq] = {
-                                    msaData: msaEntry.msaData,
+                                    msaData: restoredMSAData,
                                     chains: msaEntry.chains || []
                                 };
+                                
+                                // Recompute properties (frequencies, entropy, logOdds, positionIndex)
+                                if (typeof computeMSAProperties === 'function') {
+                                    computeMSAProperties(restoredMSAData);
+                                }
                             }
                         }
                     }
@@ -6404,11 +6420,45 @@ async function loadViewerState(stateData) {
                         updateChainSelectionUI();
                         updateObjectNavigationButtons();
                         
-                        // Restore MSA state (chain) if available
-                        if (stateData.viewer_state) {
-                            const vs = stateData.viewer_state;
-                            if (vs.msa_chain && window.MSAViewer && window.MSAViewer.setChain) {
-                                window.MSAViewer.setChain(vs.msa_chain);
+                        // Restore MSA state and load MSA data into viewer
+                        const currentObj = renderer.objectsData[renderer.currentObjectName];
+                        if (currentObj && currentObj.msa && currentObj.msa.msasBySequence && currentObj.msa.chainToSequence) {
+                            // Get the chain to load (from saved state or default)
+                            let chainToLoad = null;
+                            if (stateData.viewer_state && stateData.viewer_state.msa_chain) {
+                                chainToLoad = stateData.viewer_state.msa_chain;
+                            } else {
+                                chainToLoad = currentObj.msa.defaultChain || currentObj.msa.availableChains[0];
+                            }
+                            
+                            if (chainToLoad && currentObj.msa.chainToSequence[chainToLoad]) {
+                                const querySeq = currentObj.msa.chainToSequence[chainToLoad];
+                                const msaEntry = currentObj.msa.msasBySequence[querySeq];
+                                
+                                if (msaEntry && msaEntry.msaData && window.MSAViewer) {
+                                    // Load MSA data into viewer
+                                    window.MSAViewer.setMSAData(msaEntry.msaData, chainToLoad);
+                                    
+                                    // Get filtered MSA data and recompute properties based on current filtering
+                                    const filteredMSAData = window.MSAViewer.getMSAData();
+                                    if (filteredMSAData) {
+                                        // Clear existing properties to force recomputation on filtered data
+                                        filteredMSAData.frequencies = null;
+                                        filteredMSAData.entropy = null;
+                                        filteredMSAData.logOdds = null;
+                                        // Compute properties on filtered data
+                                        if (typeof computeMSAProperties === 'function') {
+                                            computeMSAProperties(filteredMSAData);
+                                        }
+                                        // Update stored MSA data with filtered data and recomputed properties
+                                        msaEntry.msaData = filteredMSAData;
+                                    }
+                                    
+                                    // Update chain selector
+                                    if (window.updateMSAChainSelectorIndex) {
+                                        window.updateMSAChainSelectorIndex();
+                                    }
+                                }
                             }
                         }
                         
@@ -6420,6 +6470,11 @@ async function loadViewerState(stateData) {
                         // Ensure MSA container visibility is updated after loading state
                         if (window.updateMSAContainerVisibility) {
                             window.updateMSAContainerVisibility();
+                        }
+                        
+                        // Update entropy option visibility
+                        if (window.updateEntropyOptionVisibility) {
+                            window.updateEntropyOptionVisibility(renderer.currentObjectName);
                         }
                         
                         // Restore selection state AFTER all UI updates
