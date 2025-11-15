@@ -2158,35 +2158,22 @@ function initializeMSAViewerCommon() {
             const value = parseInt(coverageSlider.value);
             coverageValue.textContent = value + '%';
             const cutoff = value / 100;
-            if (window.MSAViewer) {
+            if (window.MSAViewer?.setCoverageCutoff) {
                 try {
-                    if (window.MSAViewer.setCoverageCutoff) {
-                        window.MSAViewer.setCoverageCutoff(cutoff);
-                    } else if (window.MSAViewer.applyPreviewCoverageCutoff) {
-                        // Fallback to preview/apply pattern
-                        if (window.MSAViewer.setPreviewCoverageCutoff) {
-                            window.MSAViewer.setPreviewCoverageCutoff(cutoff);
-                        }
-                        window.MSAViewer.applyPreviewCoverageCutoff();
-                    }
+                    window.MSAViewer.setCoverageCutoff(cutoff);
                     if (updateMSASequenceCount) {
                         updateMSASequenceCount();
                     }
                 } catch (error) {
                     console.error('Error applying coverage filter:', error);
                 }
-            } else {
-                console.warn('MSAViewer not available');
             }
         };
         
         // Update display during drag
-        coverageSlider.addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
+        coverageSlider.addEventListener('input', () => {
+            const value = parseInt(coverageSlider.value);
             coverageValue.textContent = value + '%';
-            // Optionally apply filter in real-time during drag
-            // Uncomment the line below if you want real-time filtering
-            // applyCoverageFilter();
         });
         
         // Apply filter when user releases slider
@@ -2212,35 +2199,22 @@ function initializeMSAViewerCommon() {
             const value = parseInt(identitySlider.value);
             identityValue.textContent = value + '%';
             const cutoff = value / 100;
-            if (window.MSAViewer) {
+            if (window.MSAViewer?.setIdentityCutoff) {
                 try {
-                    if (window.MSAViewer.setIdentityCutoff) {
-                        window.MSAViewer.setIdentityCutoff(cutoff);
-                    } else if (window.MSAViewer.applyPreviewIdentityCutoff) {
-                        // Fallback to preview/apply pattern
-                        if (window.MSAViewer.setPreviewIdentityCutoff) {
-                            window.MSAViewer.setPreviewIdentityCutoff(cutoff);
-                        }
-                        window.MSAViewer.applyPreviewIdentityCutoff();
-                    }
+                    window.MSAViewer.setIdentityCutoff(cutoff);
                     if (updateMSASequenceCount) {
                         updateMSASequenceCount();
                     }
                 } catch (error) {
                     console.error('Error applying identity filter:', error);
                 }
-            } else {
-                console.warn('MSAViewer not available');
             }
         };
         
         // Update display during drag
-        identitySlider.addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
+        identitySlider.addEventListener('input', () => {
+            const value = parseInt(identitySlider.value);
             identityValue.textContent = value + '%';
-            // Optionally apply filter in real-time during drag
-            // Uncomment the line below if you want real-time filtering
-            // applyIdentityFilter();
         });
         
         // Apply filter when user releases slider
