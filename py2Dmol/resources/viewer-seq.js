@@ -67,9 +67,21 @@
     function sequencesDiffer(frame1, frame2) {
         if (!frame1 || !frame2) return true;
         
-        // Check coords length first (base requirement)
-        const n1 = frame1.coords ? frame1.coords.length : 0;
-        const n2 = frame2.coords ? frame2.coords.length : 0;
+        // Check number of positions: prefer position_names or chains length, fallback to coords.length / 3
+        function getPositionCount(frame) {
+            if (frame.position_names && frame.position_names.length > 0) {
+                return frame.position_names.length;
+            } else if (frame.chains && frame.chains.length > 0) {
+                return frame.chains.length;
+            } else if (frame.coords) {
+                // coords is flat array [x, y, z, ...], so divide by 3
+                return Math.floor(frame.coords.length / 3);
+            }
+            return 0;
+        }
+        
+        const n1 = getPositionCount(frame1);
+        const n2 = getPositionCount(frame2);
         if (n1 !== n2) return true;
         if (n1 === 0) return false; // Both empty, consider same
         
@@ -566,13 +578,26 @@
         lastSequenceFrameIndex = currentFrameIndex;
 
         // Get data with fallbacks for missing information
-        const n = currentFrame.coords ? currentFrame.coords.length : 0;
-        if (n === 0) return;
-        
+        // coords is a flat array [x, y, z, x, y, z, ...], so we need to divide by 3
+        // Or better yet, use the length of position_names or chains if available
         const positionNames = currentFrame.position_names || [];
         const residueNumbers = currentFrame.residue_numbers || [];
         const chains = currentFrame.chains || [];
         const position_types = currentFrame.position_types || [];
+        
+        // Determine number of positions: prefer position_names or chains length, fallback to coords.length / 3
+        let n = 0;
+        if (positionNames.length > 0) {
+            n = positionNames.length;
+        } else if (chains.length > 0) {
+            n = chains.length;
+        } else if (currentFrame.coords) {
+            // coords is flat array [x, y, z, ...], so divide by 3
+            n = Math.floor(currentFrame.coords.length / 3);
+        }
+        
+        if (n === 0) return;
+        
         
         // Check if position names are available - if not, we can't group ligands with names
         const hasPositionNames = positionNames && positionNames.length === n;

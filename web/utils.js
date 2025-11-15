@@ -1469,8 +1469,31 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     if (position_types.length > 0) {
         result.position_types = position_types;
     }
+    // Include plddts if at least one value is not NaN
+    // Note: 0 is a valid pLDDT value, so we only exclude if all are NaN
     if (plddts.some(p => !isNaN(p))) {
-        result.plddts = plddts;
+        // Check if pLDDT values are in 0-1 range (ESMFold format) and need scaling to 0-100
+        const validPlddts = plddts.filter(p => !isNaN(p) && p !== null && p !== undefined);
+        if (validPlddts.length > 0) {
+            const maxPlddt = Math.max(...validPlddts);
+            const minPlddt = Math.min(...validPlddts);
+            // If all values are between 0 and 1 (with some tolerance), scale by 100
+            // This handles ESMFold which returns pLDDT in 0-1 range
+            if (maxPlddt <= 1.1 && minPlddt >= -0.1) {
+                // Scale from 0-1 to 0-100
+                result.plddts = plddts.map(p => isNaN(p) ? p : p * 100);
+                console.log(`Scaled pLDDT values from 0-1 range to 0-100 range (ESMFold format detected)`);
+            } else {
+                result.plddts = plddts;
+            }
+        } else {
+            result.plddts = plddts;
+        }
+    } else if (plddts.length > 0) {
+        // If we have plddts array but all are NaN, still include it
+        // (might be useful for debugging or default values)
+        // But only if we actually tried to extract plddts (array is not empty)
+        console.warn('All pLDDT values are NaN - B-factor column may be empty in PDB file');
     }
     if (position_chains.some(c => c && c.trim())) {
         result.chains = position_chains;

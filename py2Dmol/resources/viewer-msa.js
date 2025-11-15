@@ -690,6 +690,10 @@
         if (queryIndex === -1) queryIndex = 0;
         
         const querySequence = sequences[queryIndex].sequence;
+        if (!querySequence || querySequence.length === 0) {
+            return null; // Invalid: query sequence is empty
+        }
+        
         const queryLength = querySequence.length;
         const sorted = sortSequencesByIdentity(sequences, querySequence, queryLength);
         

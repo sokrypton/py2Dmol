@@ -3647,6 +3647,9 @@ const RESIDUE_TO_AA = {
 };
 
 // ============================================================================
+// ESMFold API support has been moved to app-esmfold.js for future use
+
+// ============================================================================
 // MSA UTILITY FUNCTIONS
 // ============================================================================
 
@@ -4678,7 +4681,9 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false; // Default to disabled
     
     // Store MSA files for processing after structures are loaded
-    const msaFilesToProcess = msaFiles.length > 0 && loadMSA ? msaFiles : [];
+    // If there are no structure files, always process MSA files (MSA-only mode)
+    // Otherwise, only process MSA files if the checkbox is checked
+    const msaFilesToProcess = msaFiles.length > 0 && (structureFiles.length === 0 || loadMSA) ? msaFiles : [];
 
     // Load JSON files and check for state file signature
     const jsonContentsMap = new Map();
@@ -4749,8 +4754,18 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                     msaData = window.MSAViewer.parseSTO(msaText);
                 }
                 
-                if (msaData && msaData.querySequence) {
+                if (!msaData) {
+                    console.error(`Failed to parse MSA file ${msaFile.name}: parser returned null`);
+                    setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: No sequences found`, true);
+                } else if (!msaData.querySequence) {
+                    console.error(`Failed to parse MSA file ${msaFile.name}: No query sequence found`, msaData);
+                    setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: No query sequence found`, true);
+                } else if (msaData.querySequence.length === 0) {
+                    console.error(`Failed to parse MSA file ${msaFile.name}: Query sequence is empty`, msaData);
+                    setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: Query sequence is empty`, true);
+                } else {
                     msaDataList.push({ msaData, filename: msaFile.name });
+                    console.log(`Successfully parsed MSA file ${msaFile.name}: ${msaData.sequences.length} sequences, query length ${msaData.queryLength}`);
                 }
             } catch (e) {
                 console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
@@ -4762,7 +4777,156 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             // Load the first MSA into the viewer
             const firstMSA = msaDataList[0];
             if (window.MSAViewer) {
-                loadMSADataIntoViewer(firstMSA.msaData, null, null, { updateChainSelector: false });
+                // Get the first sequence from MSA (removing gaps)
+                // Use sequencesOriginal if available (preserves original order), otherwise use sequences
+                // sequences array might be sorted, so sequences[0] might not be the actual first sequence
+                let firstSequence = '';
+                const sequencesArray = firstMSA.msaData.sequencesOriginal || firstMSA.msaData.sequences;
+                
+                if (sequencesArray && sequencesArray.length > 0) {
+                    // Get the first sequence in original order and remove gaps
+                    // This is the actual first sequence in the MSA file
+                    const firstSeqWithGaps = sequencesArray[0].sequence;
+                    if (firstSeqWithGaps) {
+                        firstSequence = firstSeqWithGaps.replace(/-/g, '').toUpperCase();
+                    }
+                }
+                
+                // Fallback to querySequence if sequences array is empty or firstSequence is still empty
+                if (!firstSequence || firstSequence.length === 0) {
+                    if (firstMSA.msaData.querySequence) {
+                        // Remove gaps from querySequence (it might contain gaps in aligned format)
+                        firstSequence = firstMSA.msaData.querySequence.replace(/-/g, '').toUpperCase();
+                    }
+                }
+                
+                // Ensure we have a valid sequence
+                if (!firstSequence || firstSequence.length === 0) {
+                    setStatus('Error: Could not extract sequence from MSA', true);
+                    return {
+                        objectsLoaded: 0,
+                        framesAdded: 0,
+                        structureCount: 0,
+                        paePairedCount: 0,
+                        isTrajectory: false
+                    };
+                }
+                
+                // Create object name from MSA filename
+                const objectName = cleanObjectName(firstMSA.filename.replace(/\.(a3m|fasta|fa|fas|sto)$/i, ''));
+                
+                // Create helix structure for MSA-only uploads
+                // ESMFold API support is available in app-esmfold.js (currently disabled)
+                if (viewerApi && viewerApi.renderer && firstSequence.length > 0) {
+                    // Map 1-letter codes to 3-letter codes
+                    const oneToThree = {
+                        'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS', 'E': 'GLU', 'Q': 'GLN', 'G': 'GLY',
+                        'H': 'HIS', 'I': 'ILE', 'L': 'LEU', 'K': 'LYS', 'M': 'MET', 'F': 'PHE', 'P': 'PRO', 'S': 'SER',
+                        'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL', 'U': 'SEC', 'O': 'PYL', 'X': 'UNK'
+                    };
+                    
+                    // Convert sequence to position data
+                    const n = firstSequence.length;
+                    const coords = [];
+                    const plddts = [];
+                    const positionNames = [];
+                    const chains = [];
+                    const residueNumbers = [];
+                    const positionTypes = [];
+                    
+                    // Create dummy coordinates in 3D space (helix structure)
+                    // Using the helix function from README: radius=2.3, rise=1.5, rotation=100
+                    // This ensures rainbow coloring and other 3D-dependent features work correctly
+                    const radius = 2.3; // Helix radius (from README)
+                    const rise = 1.5; // Rise per residue along helix axis (from README)
+                    const rotation = 100; // Degrees per residue (from README)
+                    const rotationRad = rotation * (Math.PI / 180); // Convert to radians
+                    
+                    for (let i = 0; i < n; i++) {
+                        const aa = firstSequence[i];
+                        const threeLetter = oneToThree[aa] || 'UNK';
+                        
+                        // Create helix coordinates following README formula
+                        // angles = rotation * (π/180) * i
+                        const angle = rotationRad * i;
+                        const x = radius * Math.cos(angle);
+                        const y = radius * Math.sin(angle);
+                        const z = rise * i;
+                        
+                        // Use nested array format [[x, y, z], [x, y, z], ...] to match convertParsedToFrameData
+                        coords.push([x, y, z]);
+                        plddts.push(80.0); // Default pLDDT value
+                        positionNames.push(threeLetter);
+                        chains.push('A');
+                        residueNumbers.push(i + 1);
+                        positionTypes.push('P'); // Protein
+                    }
+                    
+                    // Create frame data matching convertParsedToFrameData structure
+                    const frameData = {
+                        coords: coords, // Nested arrays [[x, y, z], ...]
+                        plddts: plddts, // Array of pLDDT values
+                        position_names: positionNames,
+                        chains: chains,
+                        residue_numbers: residueNumbers,
+                        position_types: positionTypes
+                    };
+                    
+                    // Add frame to renderer
+                    viewerApi.renderer.addFrame(frameData, objectName);
+                    
+                    // Set as current object
+                    viewerApi.renderer.currentObjectName = objectName;
+                    
+                    // Update object selector if it exists
+                    if (viewerApi.renderer.objectSelect) {
+                        let optionExists = false;
+                        for (let i = 0; i < viewerApi.renderer.objectSelect.options.length; i++) {
+                            if (viewerApi.renderer.objectSelect.options[i].value === objectName) {
+                                optionExists = true;
+                                break;
+                            }
+                        }
+                        if (!optionExists) {
+                            const option = document.createElement('option');
+                            option.value = objectName;
+                            option.textContent = objectName;
+                            viewerApi.renderer.objectSelect.appendChild(option);
+                        }
+                        viewerApi.renderer.objectSelect.value = objectName;
+                    }
+                }
+                
+                // Hide viewer-container for MSA-only uploads
+                const viewerContainer = document.getElementById('viewer-container');
+                if (viewerContainer) {
+                    viewerContainer.style.display = 'none';
+                }
+                
+                // Hide PAE container (no PAE data for MSA-only)
+                const paeContainer = document.getElementById('paeContainer');
+                if (paeContainer) {
+                    paeContainer.style.display = 'none';
+                }
+                
+                // Show sequence viewer container
+                const sequenceContainer = document.getElementById('sequence-viewer-container');
+                if (sequenceContainer) {
+                    sequenceContainer.style.display = 'block';
+                }
+                
+                // Build sequence view
+                if (typeof buildSequenceView === 'function') {
+                    buildSequenceView();
+                }
+                
+                // Trigger a render to show the helix
+                if (viewerApi.renderer && viewerApi.renderer.render) {
+                    viewerApi.renderer.render();
+                }
+                
+                // Load MSA data into MSA viewer
+                loadMSADataIntoViewer(firstMSA.msaData, 'A', objectName, { updateChainSelector: false });
                 
                 // Show MSA viewer container
                 const msaContainer = document.getElementById('msa-viewer-container');
@@ -4796,8 +4960,8 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         }
         
         return {
-            objectsLoaded: 0,
-            framesAdded: 0,
+            objectsLoaded: msaDataList.length > 0 ? 1 : 0,
+            framesAdded: msaDataList.length > 0 ? 1 : 0,
             structureCount: 0,
             paePairedCount: 0,
             isTrajectory: false
