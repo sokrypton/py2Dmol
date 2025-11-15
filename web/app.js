@@ -3598,6 +3598,284 @@ async function handleFetch() {
         batchedObjects.push(...tempBatch);
         updateViewerFromGlobalBatch();
         
+        // Auto-download MSA for PDB structures (only if Load MSA is enabled)
+        if (isPDB && window.MSAViewer && loadMSA) {
+            try {
+                setStatus(`Fetching UniProt mappings for ${fetchId}...`);
+                
+                // Fetch UniProt to PDB mappings from PDBe API
+                const siftsMappings = await fetchPDBeMappings(fetchId);
+                
+                if (Object.keys(siftsMappings).length === 0) {
+                    setStatus(
+                        `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
+                        `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
+                        `Note: No UniProt mappings found for this PDB structure.`
+                    );
+                } else {
+                    // Get the object that was just loaded
+                    const objectName = cleanObjectName(name);
+                    const renderer = viewerApi?.renderer;
+                    
+                    if (renderer && renderer.objectsData && renderer.objectsData[objectName]) {
+                        const object = renderer.objectsData[objectName];
+                        
+                        if (object && object.frames && object.frames.length > 0) {
+                            // Extract chain sequences from first frame
+                            const firstFrame = object.frames[0];
+                            const chainSequences = extractChainSequences(firstFrame);
+                            
+                            if (Object.keys(chainSequences).length > 0) {
+                                // Download MSAs for each chain with UniProt mapping
+                                const msaDataList = [];
+                                const msaPromises = [];
+                                
+                                // Extract chain sequences with residue number mappings
+                                const chainSequencesWithResnums = {};
+                                for (let i = 0; i < firstFrame.chains.length; i++) {
+                                    const chainId = firstFrame.chains[i];
+                                    const positionType = firstFrame.position_types ? firstFrame.position_types[i] : 'P';
+                                    
+                                    // Keep all polymer residues, even if index is null/missing
+                                    if (positionType !== 'P') continue;
+                                    
+                                    // Sanitize the index to a number or null
+                                    const rawIndex = firstFrame.position_index ? firstFrame.position_index[i] : null;
+                                    const numericIndex = rawIndex == null ? null : Number(rawIndex);
+                                    const positionIndex = Number.isFinite(numericIndex) ? numericIndex : null;
+                                    
+                                    if (!chainSequencesWithResnums[chainId]) {
+                                        chainSequencesWithResnums[chainId] = {
+                                            sequence: '',
+                                            residueNumbers: [] // Maps sequence position -> PDB residue number (can be null)
+                                        };
+                                    }
+                                    
+                                    const positionName = firstFrame.position_names[i];
+                                    const aa = RESIDUE_TO_AA[positionName?.toUpperCase()] || 'X';
+                                    chainSequencesWithResnums[chainId].sequence += aa;
+                                    chainSequencesWithResnums[chainId].residueNumbers.push(positionIndex);
+                                }
+                                
+                                for (const [chainId, siftsMapping] of Object.entries(siftsMappings)) {
+                                    if (!siftsMapping.uniprot_id) continue;
+                                    
+                                    const uniprotId = siftsMapping.uniprot_id;
+                                    const chainData = chainSequencesWithResnums[chainId];
+                                    
+                                    if (!chainData || !chainData.sequence) {
+                                        console.warn(`No PDB sequence found for chain ${chainId}`);
+                                        continue;
+                                    }
+                                    
+                                    const pdbSequence = chainData.sequence;
+                                    const pdbResidueNumbers = chainData.residueNumbers;
+                                    
+                                    // Download MSA from AlphaFold DB
+                                    const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${uniprotId}-F1-msa_v6.a3m`;
+                                    
+                                    msaPromises.push(
+                                        fetch(msaUrl)
+                                            .then(async (msaResponse) => {
+                                                if (!msaResponse.ok) {
+                                                    if (msaResponse.status === 404) {
+                                                        console.warn(`MSA not found for UniProt ID ${uniprotId} (chain ${chainId})`);
+                                                        return null;
+                                                    }
+                                                    throw new Error(`Failed to fetch MSA (HTTP ${msaResponse.status})`);
+                                                }
+                                                
+                                                const msaText = await msaResponse.text();
+                                                if (!msaText || msaText.trim().length === 0) {
+                                                    console.warn(`Empty MSA file for UniProt ID ${uniprotId} (chain ${chainId})`);
+                                                    return null;
+                                                }
+                                                
+                                                // Parse MSA
+                                                const msaData = window.MSAViewer.parseA3M(msaText, 'unpaired');
+                                                
+                                                if (!msaData || !msaData.querySequence) {
+                                                    console.warn(`Failed to parse MSA for UniProt ID ${uniprotId} (chain ${chainId})`);
+                                                    return null;
+                                                }
+                                                
+                                                // Trim/align MSA to match PDB sequence
+                                                // Pass residue numbers so we can map correctly
+                                                const trimmedMSA = trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers);
+                                                
+                                                return {
+                                                    chainId,
+                                                    msaData: trimmedMSA,
+                                                    type: 'unpaired',
+                                                    filename: `AF-${uniprotId}-F1-msa_v6.a3m`
+                                                };
+                                            })
+                                            .catch((e) => {
+                                                console.warn(`Error fetching MSA for chain ${chainId} (UniProt ${uniprotId}):`, e);
+                                                return null;
+                                            })
+                                    );
+                                }
+                                
+                                // Wait for all MSA downloads to complete
+                                const msaResults = await Promise.all(msaPromises);
+                                
+                                // Filter out null results and build msaDataList
+                                for (const result of msaResults) {
+                                    if (result) {
+                                        msaDataList.push({
+                                            msaData: result.msaData,
+                                            type: result.type,
+                                            filename: result.filename
+                                        });
+                                    }
+                                }
+                                
+                                if (msaDataList.length > 0) {
+                                    // Match MSAs to chains by sequence
+                                    const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
+                                    
+                                    // Initialize MSA structure for object (sequence-based, supports homo-oligomers)
+                                    if (Object.keys(chainToMSA).length > 0) {
+                                        // Initialize MSA structure
+                                        if (!object.msa) {
+                                            object.msa = {
+                                                msasBySequence: {},
+                                                chainToSequence: {},
+                                                availableChains: [],
+                                                defaultChain: null,
+                                                msaToChains: {}
+                                            };
+                                        }
+                                        
+                                        const msaObj = object.msa;
+                                        
+                                        // Store msaToChains mapping
+                                        msaObj.msaToChains = msaToChains;
+                                        
+                                        // Store unique MSAs and map chains
+                                        for (const [chainId, {msaData, type}] of Object.entries(chainToMSA)) {
+                                            const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
+                                            
+                                            // Store MSA by sequence (only one per unique sequence)
+                                            if (!msaObj.msasBySequence[querySeqNoGaps]) {
+                                                msaObj.msasBySequence[querySeqNoGaps] = { 
+                                                    msaData, 
+                                                    type,
+                                                    chains: msaToChains[querySeqNoGaps] || []
+                                                };
+                                            }
+                                            
+                                            // Map chain to sequence
+                                            msaObj.chainToSequence[chainId] = querySeqNoGaps;
+                                            
+                                            // Add to available chains
+                                            if (!msaObj.availableChains.includes(chainId)) {
+                                                msaObj.availableChains.push(chainId);
+                                            }
+                                        }
+                                        
+                                        // Set default chain (first available)
+                                        if (msaObj.availableChains.length > 0) {
+                                            msaObj.defaultChain = msaObj.availableChains[0];
+                                            
+                                            // Get MSA for default chain
+                                            const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
+                                            const {msaData: matchedMSA, type} = msaObj.msasBySequence[defaultChainSeq];
+                                            const firstMatchedChain = msaObj.defaultChain;
+                                            
+                                            // Also add MSA to batchedObjects for consistency and persistence
+                                            const batchedObj = batchedObjects.find(obj => obj.name === objectName);
+                                            if (batchedObj) {
+                                                batchedObj.msa = {
+                                                    msasBySequence: msaObj.msasBySequence,
+                                                    chainToSequence: msaObj.chainToSequence,
+                                                    availableChains: msaObj.availableChains,
+                                                    defaultChain: msaObj.defaultChain,
+                                                    msaToChains: msaObj.msaToChains
+                                                };
+                                            }
+                                            
+                                            // Show MSA container and view BEFORE loading data (so resize observer gets correct dimensions)
+                                            const msaContainer = document.getElementById('msa-viewer-container');
+                                            const msaView = document.getElementById('msaView');
+                                            if (msaContainer) {
+                                                msaContainer.style.display = 'block';
+                                            }
+                                            if (msaView) {
+                                                msaView.classList.remove('hidden');
+                                            }
+                                            
+                                            // Force a layout recalculation to ensure container dimensions are available
+                                            if (msaContainer) {
+                                                void msaContainer.offsetWidth; // Force reflow
+                                            }
+                                            
+                                            // Load MSA into viewer (this will initialize resize observer with correct dimensions)
+                                            window.MSAViewer.setMSAData(matchedMSA, firstMatchedChain, type);
+                                            
+                                            // Ensure view is visible after data is set
+                                            if (msaView) {
+                                                msaView.classList.remove('hidden');
+                                            }
+                                            
+                                            // Update MSA container visibility to ensure it's shown for current object
+                                            if (window.updateMSAContainerVisibility) {
+                                                window.updateMSAContainerVisibility();
+                                            }
+                                            
+                                            // Update chain selector to show available chains
+                                            if (window.updateMSAChainSelectorIndex) {
+                                                window.updateMSAChainSelectorIndex();
+                                            }
+                                            
+                                            setStatus(
+                                                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
+                                                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
+                                                `MSA loaded for ${msaObj.availableChains.length} chain(s).`
+                                            );
+                                        } else {
+                                            setStatus(
+                                                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
+                                                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
+                                                `Warning: MSA sequences did not match any chains.`
+                                            );
+                                        }
+                                    } else {
+                                        setStatus(
+                                            `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
+                                            `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
+                                            `Warning: Could not match MSAs to chains.`
+                                        );
+                                    }
+                                } else {
+                                    setStatus(
+                                        `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
+                                        `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
+                                        `Note: No MSAs available for mapped UniProt IDs.`
+                                    );
+                                }
+                            } else {
+                                setStatus(
+                                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
+                                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
+                                    `Warning: Could not extract chain sequences for MSA matching.`
+                                );
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                // PDBe mappings or MSA download failed, but structure loaded successfully
+                console.warn("PDBe mappings/MSA download failed:", e);
+                setStatus(
+                    `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
+                    `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
+                    `Note: Could not load MSAs (${e.message}).`
+                );
+            }
+        }
+        
         // Auto-download MSA for AFDB structures (only if Load MSA is enabled)
         if (isAFDB && window.MSAViewer && loadMSA) {
             try {
@@ -3797,9 +4075,11 @@ async function handleFetch() {
 
 // Residue name to single-letter amino acid code mapping
 const RESIDUE_TO_AA = {
-    'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 
-    'HIS':'H', 'ILE':'I', 'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 
-    'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V', 'SEC':'U', 'PYL':'O'
+    ALA:'A', ARG:'R', ASN:'N', ASP:'D', CYS:'C', GLU:'E', GLN:'Q', GLY:'G',
+    HIS:'H', ILE:'I', LEU:'L', LYS:'K', MET:'M', PHE:'F', PRO:'P', SER:'S',
+    THR:'T', TRP:'W', TYR:'Y', VAL:'V', SEC:'U', PYL:'O',
+    // common modified residues → canonical letters
+    MSE:'M', HSD:'H', HSE:'H', HID:'H', HIE:'H', HIP:'H'
 };
 
 /**
@@ -4100,6 +4380,346 @@ function detectMSAType(filename) {
         return 'unpaired';
     }
     return 'unpaired'; // Default
+}
+
+// ============================================================================
+// PDBe API MAPPINGS (UniProt to PDB)
+// ============================================================================
+
+/**
+ * Fetch UniProt to PDB mappings from PDBe API
+ * @param {string} pdbId - 4-character PDB ID
+ * @returns {Promise<Object>} - Mapping structure: {chain_id: {uniprot_id: str, pdb_to_uniprot: {pdb_resnum: uniprot_resnum}, uniprot_to_pdb: {uniprot_resnum: pdb_resnum}}}
+ */
+async function fetchPDBeMappings(pdbId) {
+    const pdbCode = pdbId.toLowerCase();
+    const apiUrl = `https://www.ebi.ac.uk/pdbe/api/mappings/uniprot/${pdbCode}/`;
+    
+    try {
+        const response = await fetch(apiUrl);
+        if (!response.ok) {
+            if (response.status === 404) {
+                throw new Error(`PDBe mappings not found for PDB ID ${pdbCode.toUpperCase()}`);
+            }
+            throw new Error(`Failed to fetch PDBe mappings (HTTP ${response.status})`);
+        }
+        
+        const data = await response.json();
+        
+        // Parse the response structure
+        // Format: {"1ubq": {"UniProt": {"P0CG48": {"mappings": [...]}}}}
+        const pdbEntry = data[pdbCode];
+        if (!pdbEntry || !pdbEntry.UniProt) {
+            return {};
+        }
+        
+        // Check if UniProt object is empty (no mappings available)
+        const uniprotEntries = Object.entries(pdbEntry.UniProt);
+        if (uniprotEntries.length === 0) {
+            return {}; // Empty UniProt object, return empty mappings
+        }
+        
+        const mappings = {};
+        
+        // Iterate over each UniProt entry
+        for (const [uniprotId, uniprotData] of uniprotEntries) {
+            if (!uniprotData.mappings || !Array.isArray(uniprotData.mappings)) {
+                continue;
+            }
+            
+            // Process each mapping range
+            for (const mapping of uniprotData.mappings) {
+                const chainId = mapping.chain_id;
+                if (!chainId) continue;
+                
+                // Initialize mapping for this chain if not exists
+                // If chain already exists from a different UniProt ID, skip (use first one)
+                if (!mappings[chainId]) {
+                    mappings[chainId] = {
+                        uniprot_id: uniprotId,
+                        pdb_to_uniprot: {},
+                        uniprot_to_pdb: {}
+                    };
+                } else if (mappings[chainId].uniprot_id !== uniprotId) {
+                    // Chain already mapped to a different UniProt ID, skip this mapping
+                    console.warn(`Chain ${chainId} already mapped to ${mappings[chainId].uniprot_id}, skipping ${uniprotId}`);
+                    continue;
+                }
+                
+                // Build residue-to-residue mappings from the range
+                // Use residue_number (internal PDB numbering) for mapping
+                const pdbStart = mapping.start.residue_number;
+                const pdbEnd = mapping.end.residue_number;
+                const unpStart = mapping.unp_start;
+                const unpEnd = mapping.unp_end;
+                
+                // Validate the range (check for null/undefined, not truthiness, to handle negative numbers)
+                if (pdbStart == null || pdbEnd == null || unpStart == null || unpEnd == null) {
+                    console.warn(`Invalid mapping range for chain ${chainId}:`, mapping);
+                    continue;
+                }
+                
+                // Calculate the length of the mapped region
+                const pdbRangeLength = pdbEnd - pdbStart + 1;
+                const unpRangeLength = unpEnd - unpStart + 1;
+                
+                // The ranges should have the same length (1-to-1 mapping)
+                // But handle cases where they might differ slightly
+                const rangeLength = Math.min(pdbRangeLength, unpRangeLength);
+                
+                // Create mappings for each residue in the range
+                for (let i = 0; i < rangeLength; i++) {
+                    const pdbResnum = pdbStart + i;
+                    const unpResnum = unpStart + i;
+                    
+                    // Only add if not already mapped (in case of overlapping ranges)
+                    // Prefer earlier mappings if there are conflicts
+                    // Use String() to ensure consistent key type (handles negative numbers correctly)
+                    const pdbKey = String(pdbResnum);
+                    if (!mappings[chainId].pdb_to_uniprot[pdbKey]) {
+                        mappings[chainId].pdb_to_uniprot[pdbKey] = unpResnum;
+                    }
+                    if (!mappings[chainId].uniprot_to_pdb[unpResnum]) {
+                        mappings[chainId].uniprot_to_pdb[unpResnum] = pdbResnum;
+                    }
+                }
+            }
+        }
+        
+        return mappings;
+    } catch (e) {
+        console.error(`Error fetching PDBe mappings for ${pdbCode.toUpperCase()}:`, e);
+        throw e;
+    }
+}
+
+// ============================================================================
+// MSA TRIMMING AND ALIGNMENT
+// ============================================================================
+
+/**
+ * Trim and align MSA to match PDB sequence using SIFTS mappings
+ * Handles PDB insertions (positions not in UniProt) by adding gap columns
+ * Mutates the first sequence to exactly match the PDB sequence
+ * @param {Object} msaData - MSA data object from parseA3M()
+ * @param {string} pdbSequence - PDB chain sequence (no gaps)
+ * @param {Object} siftsMapping - SIFTS mapping for this chain: {uniprot_id, pdb_to_uniprot, uniprot_to_pdb}
+ * @param {Array<number>} pdbResidueNumbers - Array of PDB residue numbers corresponding to each position in pdbSequence
+ * @returns {Object} - Trimmed MSA data compatible with parseA3M format
+ */
+function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = null) {
+    if (!msaData || !msaData.querySequence || !pdbSequence) {
+        return msaData; // Return original if invalid input
+    }
+    
+    // Get UniProt sequence from MSA (query sequence, remove gaps)
+    const uniprotSequence = msaData.querySequence.replace(/-/g, '').toUpperCase();
+    const pdbSeqUpper = pdbSequence.toUpperCase();
+    
+    // If sequences already match (after removing gaps), no trimming needed
+    if (uniprotSequence === pdbSeqUpper) {
+        return msaData;
+    }
+    
+    // Build mapping: PDB sequence position (0-indexed) -> MSA column index
+    const pdbToMsaCol = {};
+    
+    // If we have SIFTS residue mappings, use them for precise alignment
+    if (siftsMapping && siftsMapping.pdb_to_uniprot && Object.keys(siftsMapping.pdb_to_uniprot).length > 0) {
+        // Map PDB sequence positions to UniProt positions, then to MSA columns
+        // First, build UniProt position -> MSA column mapping
+        const uniprotToMsaCol = {};
+        let msaPos = 0; // Position in UniProt sequence (without gaps)
+        
+        for (let msaCol = 0; msaCol < msaData.querySequence.length; msaCol++) {
+            if (msaData.querySequence[msaCol] !== '-') {
+                const uniprotPos = msaPos + 1; // 1-indexed UniProt position
+                uniprotToMsaCol[uniprotPos] = msaCol;
+                msaPos++;
+            }
+        }
+        
+        // Now map PDB sequence positions to MSA columns via UniProt
+        // Use pdbResidueNumbers if available, otherwise assume sequential numbering starting from 1
+        if (pdbResidueNumbers && pdbResidueNumbers.length === pdbSequence.length) {
+            // We have actual PDB residue numbers for each sequence position
+            for (let seqIdx = 0; seqIdx < pdbSequence.length; seqIdx++) {
+                const pdbResnum = pdbResidueNumbers[seqIdx];
+                // Treat missing/non-numeric PDB numbers as "no mapping" (PDB insertion)
+                if (pdbResnum == null || (typeof pdbResnum === 'number' && !Number.isFinite(pdbResnum))) {
+                    continue; // Will be treated as insertion (gap column)
+                }
+                // Convert to string for lookup (handles negative numbers correctly)
+                const pdbKey = String(pdbResnum);
+                const uniprotResnum = siftsMapping.pdb_to_uniprot[pdbKey];
+                if (uniprotResnum !== undefined) {
+                    const msaCol = uniprotToMsaCol[uniprotResnum];
+                    if (msaCol !== undefined) {
+                        pdbToMsaCol[seqIdx] = msaCol;
+                    }
+                }
+                // If pdbResnum is not in mapping, it will be treated as an insertion (gap column)
+            }
+        } else {
+            // Fallback: assume PDB residue numbers are sequential starting from 1
+            for (const [pdbResnumStr, uniprotResnum] of Object.entries(siftsMapping.pdb_to_uniprot)) {
+                const pdbResnum = parseInt(pdbResnumStr);
+                if (!isNaN(pdbResnum)) {
+                    const pdbIdx = pdbResnum - 1; // Convert to 0-indexed
+                    if (pdbIdx >= 0 && pdbIdx < pdbSequence.length) {
+                        const msaCol = uniprotToMsaCol[uniprotResnum];
+                        if (msaCol !== undefined) {
+                            pdbToMsaCol[pdbIdx] = msaCol;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Fallback: simple alignment by matching sequences
+        // Try to find where PDB sequence aligns with UniProt sequence
+        const pdbInUniprot = uniprotSequence.indexOf(pdbSeqUpper);
+        const uniprotInPdb = pdbSeqUpper.indexOf(uniprotSequence);
+        
+        let msaStartOffset = 0;
+        let pdbStartOffset = 0;
+        
+        if (pdbInUniprot >= 0) {
+            // PDB sequence is contained in UniProt sequence
+            msaStartOffset = pdbInUniprot;
+            pdbStartOffset = 0;
+        } else if (uniprotInPdb >= 0) {
+            // UniProt sequence is contained in PDB sequence
+            msaStartOffset = 0;
+            pdbStartOffset = uniprotInPdb;
+        } else {
+            // Try to align from the start, allowing for small mismatches
+            msaStartOffset = 0;
+            pdbStartOffset = 0;
+        }
+        
+        // Build mapping for positions that exist in both
+        let msaPos = msaStartOffset;
+        let pdbPos = pdbStartOffset;
+        
+        for (let msaCol = 0; msaCol < msaData.querySequence.length && pdbPos < pdbSequence.length; msaCol++) {
+            if (msaData.querySequence[msaCol] !== '-') {
+                if (msaPos < uniprotSequence.length && pdbPos < pdbSeqUpper.length) {
+                    // Match if characters are the same
+                    if (uniprotSequence[msaPos] === pdbSeqUpper[pdbPos]) {
+                        pdbToMsaCol[pdbPos] = msaCol;
+                        pdbPos++;
+                    } else if (Math.abs(msaPos - msaStartOffset - (pdbPos - pdbStartOffset)) < 5) {
+                        // Allow small offset differences (up to 5 positions)
+                        pdbToMsaCol[pdbPos] = msaCol;
+                        pdbPos++;
+                    }
+                }
+                msaPos++;
+            }
+        }
+    }
+    
+    // Build trimmed MSA: iterate through PDB positions in order
+    // For each PDB position:
+    //   - If mapped to MSA: use that MSA column
+    //   - If not mapped (PDB insertion): add gap column
+    const trimmedSequences = [];
+    const trimmedQuerySequence = [];
+    
+    // Build trimmed sequences column by column, matching PDB sequence exactly
+    for (let pdbIdx = 0; pdbIdx < pdbSequence.length; pdbIdx++) {
+        const msaCol = pdbToMsaCol[pdbIdx];
+        
+        if (msaCol !== undefined && msaCol < msaData.querySequence.length) {
+            // This PDB position maps to an MSA column
+            // Use the MSA character, but mutate query sequence to match PDB if different
+            const msaChar = msaData.querySequence[msaCol];
+            // For query sequence, always use PDB character to ensure exact match
+            trimmedQuerySequence.push(pdbSequence[pdbIdx]);
+            
+            // For other sequences, use MSA character (or gap if it's a gap in MSA)
+            for (let seqIdx = 0; seqIdx < msaData.sequences.length; seqIdx++) {
+                if (!trimmedSequences[seqIdx]) {
+                    trimmedSequences[seqIdx] = {
+                        ...msaData.sequences[seqIdx],
+                        sequence: []
+                    };
+                }
+                const seqChar = (msaCol < msaData.sequences[seqIdx].sequence.length) 
+                    ? msaData.sequences[seqIdx].sequence[msaCol] 
+                    : '-';
+                trimmedSequences[seqIdx].sequence.push(seqChar);
+            }
+        } else {
+            // This PDB position is an insertion (not in UniProt/MSA)
+            // Add gap column for all MSA sequences, but use PDB character for query sequence
+            trimmedQuerySequence.push(pdbSequence[pdbIdx]);
+            
+            // Add gaps for all other sequences
+            for (let seqIdx = 0; seqIdx < msaData.sequences.length; seqIdx++) {
+                if (!trimmedSequences[seqIdx]) {
+                    trimmedSequences[seqIdx] = {
+                        ...msaData.sequences[seqIdx],
+                        sequence: []
+                    };
+                }
+                trimmedSequences[seqIdx].sequence.push('-');
+            }
+        }
+    }
+    
+    // Convert sequence arrays to strings
+    const trimmedSequencesFinal = trimmedSequences.map(seq => ({
+        ...seq,
+        sequence: seq.sequence.join('')
+    }));
+    
+    // Ensure the query sequence is included in the sequences array
+    // The query sequence should match the trimmed query sequence exactly
+    const trimmedQuerySeqStr = trimmedQuerySequence.join('');
+    const queryIndex = msaData.queryIndex !== undefined ? msaData.queryIndex : 0;
+    
+    // Update the query sequence in the sequences array to match the trimmed version
+    // The query sequence entry should be updated to use the trimmed query sequence
+    if (trimmedSequencesFinal.length > 0) {
+        if (queryIndex >= 0 && queryIndex < trimmedSequencesFinal.length) {
+            // Update the existing query sequence entry at its original index
+            trimmedSequencesFinal[queryIndex].sequence = trimmedQuerySeqStr;
+        } else {
+            // If queryIndex is out of bounds, add query sequence at the beginning
+            trimmedSequencesFinal.unshift({
+                header: trimmedSequencesFinal[0]?.header?.toLowerCase().includes('query') 
+                    ? trimmedSequencesFinal[0].header 
+                    : 'query',
+                sequence: trimmedQuerySeqStr,
+                isPaired: false,
+                similarity: 100,
+                coverage: 100
+            });
+        }
+    } else {
+        // If no sequences, add the query sequence as the only sequence
+        trimmedSequencesFinal.push({
+            header: 'query',
+            sequence: trimmedQuerySeqStr,
+            isPaired: false,
+            similarity: 100,
+            coverage: 100
+        });
+    }
+    
+    // Create trimmed MSA data object
+    // Query sequence now exactly matches PDB sequence
+    const trimmedMSA = {
+        querySequence: trimmedQuerySeqStr,
+        queryLength: trimmedQuerySeqStr.length,
+        sequences: trimmedSequencesFinal,
+        queryIndex: queryIndex >= 0 && queryIndex < trimmedSequencesFinal.length ? queryIndex : 0,
+        type: msaData.type || 'unpaired'
+    };
+    
+    return trimmedMSA;
 }
 
 /**

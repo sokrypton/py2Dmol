@@ -740,11 +740,15 @@ function parseCIF(text) {
     }
 
     // Pre-compute header indices once to avoid repeated map lookups
+    // Use label_seq_id (PDB numbering) instead of auth_seq_id (author numbering) for SIFTS mapping compatibility
     const idxRecord = headerMap['_atom_site.group_PDB'];
     const idxAtomName = headerMap['_atom_site.label_atom_id'];
     const idxResName = headerMap['_atom_site.label_comp_id'];
     const idxChain = headerMap['_atom_site.auth_asym_id'];
-    const idxResSeq = headerMap['_atom_site.auth_seq_id'];
+    // Prefer label_seq_id (PDB numbering) over auth_seq_id (author numbering) for SIFTS mapping
+    const idxResSeq = (headerMap['_atom_site.label_seq_id'] >= 0) 
+        ? headerMap['_atom_site.label_seq_id'] 
+        : headerMap['_atom_site.auth_seq_id'];
     const idxX = headerMap['_atom_site.Cartn_x'];
     const idxY = headerMap['_atom_site.Cartn_y'];
     const idxZ = headerMap['_atom_site.Cartn_z'];
@@ -807,7 +811,23 @@ function parseCIF(text) {
         // Create atom object with direct array access and optimized number parsing
         // Use unary + operator for numbers (faster than parseFloat/parseInt)
         const resNameVal = idxResName >= 0 ? values[idxResName] : '';
-        const resSeqVal = idxResSeq >= 0 ? (+values[idxResSeq] || 0) : 0;
+        // Parse residue sequence number, handling missing values ("?") by falling back to auth_seq_id
+        // Use label_seq_id (PDB numbering) for SIFTS mapping compatibility
+        let resSeqVal = 0;
+        if (idxResSeq >= 0) {
+            const labelSeqStr = values[idxResSeq];
+            // Check if label_seq_id is missing ("?" or empty), fall back to auth_seq_id
+            if (labelSeqStr === '?' || labelSeqStr === '' || labelSeqStr === null || labelSeqStr === undefined) {
+                const idxAuthSeq = headerMap['_atom_site.auth_seq_id'];
+                if (idxAuthSeq >= 0 && idxAuthSeq < values.length) {
+                    const authSeqStr = values[idxAuthSeq];
+                    resSeqVal = (authSeqStr === '?' || authSeqStr === '' || authSeqStr === null) ? 0 : (+authSeqStr || 0);
+                }
+            } else {
+                // Parse label_seq_id (can be a number string or "?")
+                resSeqVal = (+labelSeqStr || 0);
+            }
+        }
         
         const atom = {
             record: idxRecord >= 0 ? values[idxRecord] : 'ATOM',
