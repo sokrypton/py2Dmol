@@ -623,31 +623,35 @@
     function filterSequencesByIdentity(sequences, querySequence, minIdentity = 0.15) {
         if (!sequences || sequences.length === 0 || !querySequence) return sequences;
         return sequences.filter(seq => {
-            if (seq.header === '>query') return true;
+            if (seq.header === '>query' || seq.header.toLowerCase().includes('query')) return true;
+            // Use pre-calculated identity if available, otherwise calculate it
+            if (seq.identity !== undefined) {
+                return seq.identity >= minIdentity;
+            }
             const identity = calculateSequenceSimilarity(seq.sequence, querySequence);
             return identity >= minIdentity;
         });
     }
     
-    function sortSequencesBySimilarity(sequences, querySequence) {
+    function sortSequencesByIdentity(sequences, querySequence, queryLength) {
         if (!sequences || sequences.length === 0 || !querySequence) return sequences;
         
-        const sequencesWithSimilarity = sequences.map(seq => ({
+        const sequencesWithIdentity = sequences.map(seq => ({
             ...seq,
-            similarity: calculateSequenceSimilarity(seq.sequence, querySequence)
+            identity: calculateSequenceSimilarity(seq.sequence, querySequence),
+            coverage: calculateSequenceCoverage(seq.sequence, queryLength)
         }));
         
-        sequencesWithSimilarity.sort((a, b) => {
-            if (a.header === '>query') return -1;
-            if (b.header === '>query') return 1;
-            return b.similarity - a.similarity;
+        sequencesWithIdentity.sort((a, b) => {
+            if (a.header === '>query' || a.header.toLowerCase().includes('query')) return -1;
+            if (b.header === '>query' || b.header.toLowerCase().includes('query')) return 1;
+            return b.identity - a.identity;
         });
         
-        return sequencesWithSimilarity;
+        return sequencesWithIdentity;
     }
     
-    function parseA3M(fileContent, type = 'unpaired') {
-        const isPaired = type === 'paired';
+    function parseA3M(fileContent) {
         const lines = fileContent.split('\n');
         const sequences = [];
         let currentHeader = null;
@@ -662,10 +666,7 @@
                     const alignedSequence = currentSequence.replace(/[a-z]/g, '').toUpperCase();
                     sequences.push({
                         header: currentHeader, // Preserve full header
-                        sequence: alignedSequence,
-                        isPaired: isPaired,
-                        similarity: 0,
-                        coverage: 0
+                        sequence: alignedSequence
                     });
                 }
                 const fullHeader = line.substring(1);
@@ -680,10 +681,7 @@
             const alignedSequence = currentSequence.replace(/[a-z]/g, '').toUpperCase();
             sequences.push({
                 header: currentHeader, // Preserve full header
-                sequence: alignedSequence,
-                isPaired: isPaired,
-                similarity: 0,
-                coverage: 0
+                sequence: alignedSequence
             });
         }
         
@@ -694,7 +692,7 @@
         
         const querySequence = sequences[queryIndex].sequence;
         const queryLength = querySequence.length;
-        const sorted = sortSequencesBySimilarity(sequences, querySequence);
+        const sorted = sortSequencesByIdentity(sequences, querySequence, queryLength);
         
         return {
             sequences: sorted,
@@ -705,8 +703,7 @@
         };
     }
     
-    function parseFasta(fileContent, type = 'unpaired') {
-        const isPaired = type === 'paired';
+    function parseFasta(fileContent) {
         const lines = fileContent.split('\n');
         const sequences = [];
         let currentHeader = null;
@@ -723,10 +720,7 @@
                     const alignedSequence = currentSequence.toUpperCase();
                     sequences.push({
                         header: currentHeader, // Preserve full header
-                        sequence: alignedSequence,
-                        isPaired: isPaired,
-                        similarity: 0,
-                        coverage: 0
+                        sequence: alignedSequence
                     });
                 }
                 const fullHeader = line.substring(1);
@@ -743,10 +737,7 @@
             const alignedSequence = currentSequence.toUpperCase();
             sequences.push({
                 header: currentHeader, // Preserve full header
-                sequence: alignedSequence,
-                isPaired: isPaired,
-                similarity: 0,
-                coverage: 0
+                sequence: alignedSequence
             });
         }
         
@@ -792,7 +783,7 @@
             };
         });
         
-        const sorted = sortSequencesBySimilarity(filteredSequences, querySequence);
+        const sorted = sortSequencesByIdentity(filteredSequences, querySequence, queryLength);
         
         return {
             sequences: sorted,
@@ -803,8 +794,7 @@
         };
     }
     
-    function parseSTO(fileContent, type = 'unpaired') {
-        const isPaired = type === 'paired';
+    function parseSTO(fileContent) {
         const lines = fileContent.split('\n');
         const sequences = new Map(); // Use Map to handle multi-line sequences
         let inAlignment = false;
@@ -846,10 +836,7 @@
         // Convert Map to array, preserving insertion order
         const sequencesArray = Array.from(sequences.entries()).map(([header, sequence]) => ({
             header: header, // Preserve full header
-            sequence: sequence,
-            isPaired: isPaired,
-            similarity: 0,
-            coverage: 0
+            sequence: sequence
         }));
         
         // First sequence is the query
@@ -892,7 +879,7 @@
             };
         });
         
-        const sorted = sortSequencesBySimilarity(filteredSequences, querySequence);
+        const sorted = sortSequencesByIdentity(filteredSequences, querySequence, queryLength);
         
         return {
             sequences: sorted,
@@ -3418,7 +3405,7 @@
             
             // Apply sorting if enabled
             const finalSequences = sortSequences 
-                ? sortSequencesBySimilarity(filtered, originalMSAData.querySequence)
+                ? sortSequencesByIdentity(filtered, originalMSAData.querySequence, originalMSAData.queryLength)
                 : filtered;
             
             msaData = {
