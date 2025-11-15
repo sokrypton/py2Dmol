@@ -17,7 +17,7 @@
     
     <!-- Global Drop Overlay Element -->
     <div id="global-drop-overlay">
-        <p><i class="fa-solid fa-cloud-arrow-up mr-3"></i> Drop File Anywhere to Upload</p>
+        <p><i class="fa-solid fa-cloud-arrow-up mr-3"></i> Drop File Anywhere to Load</p>
     </div>
     <!-- End Global Drop Overlay -->
 
@@ -34,14 +34,14 @@
             </button>
         </div>
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">2Dmol</h1>
-        <p class="text-gray-500 mb-4">Upload a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
+        <p class="text-gray-500 mb-4">Load a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
 
         <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
             
             <!-- Use table for reliable layout -->
             <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 0;">
                 <tr>
-                    <!-- Left Column: Fetch + Upload -->
+                    <!-- Left Column: Fetch + Load -->
                     <td style="width: 50%; padding-right: 12px; vertical-align: top;">
                         
                         <!-- Fetch Section -->
@@ -51,12 +51,12 @@
                             <button id="fetch-btn" class="btn btn-primary">Fetch</button>
                         </div>
 
-                        <!-- Upload Section -->
+                        <!-- Load Section -->
                         <div style="display: flex; gap: 8px; align-items: flex-start;">
                             <div style="flex: 1;">
-                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Upload PDB / CIF / ZIP</label>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Load PDB / CIF / ZIP</label>
                                 <div id="uploadControlsContainer" style="display: flex; gap: 8px;">
-                                     <!-- Upload Button (Triggers hidden input) -->
+                                     <!-- Load Button (Triggers hidden input) -->
                                      <button id="upload-button" class="btn btn-secondary">
                                          <i class="fa-solid fa-file-arrow-up"></i>
                                          <span>Choose Files</span>
@@ -360,6 +360,21 @@
 
 
     </div>
+    
+    <!-- Footer -->
+    <footer style="margin-top: 40px; padding: 0; color: #6b7280; font-size: 13px;">
+        <div style="width: 948px; margin: 0 auto; padding: 20px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
+            <div style="flex: 0 0 auto;">
+                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: none;">
+                    <i class="fab fa-github" style="margin-right: 6px;"></i>View on GitHub
+                </a>
+            </div>
+            <div style="flex: 0 0 auto; font-size: 12px;">
+                <i class="fa-solid fa-shield-halved" style="margin-right: 6px; color: #10b981;"></i>
+                <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a server.
+            </div>
+        </div>
+    </footer>
     
     <!-- Load scripts in order -->
     <script src="web/utils.js"></script>
