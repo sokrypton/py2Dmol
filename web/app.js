@@ -7,7 +7,6 @@
 // ============================================================================
 
 let viewerApi = null;
-let objectsWithPAE = new Set(); // Fallback for backward compatibility
 let batchedObjects = [];
 
 // Helper function to check if PAE data is valid
@@ -20,7 +19,6 @@ function checkObjectHasPAE(objData) {
     if (!objData || !objData.frames || objData.frames.length === 0) return false;
     return objData.frames.some(frame => isValidPAE(frame.pae));
 }
-// Removed selectedResiduesSet - now using renderer.selectionModel as single source of truth
 let previewSelectionSet = null;       // NEW: live drag preview selection (temporary during drag)
 
 
@@ -574,9 +572,6 @@ function handleObjectChange() {
     
     if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
         viewerApi.renderer.updatePAEContainerVisibility();
-    } else {
-        // Fallback: use objectsWithPAE Set (for backward compatibility)
-        updatePAEContainerVisibilityFallback(selectedObject);
     }
     
     // Rebuild sequence view for the new object
@@ -599,19 +594,6 @@ function handleObjectChange() {
 }
 
 
-// Fallback PAE container visibility update (for backward compatibility)
-function updatePAEContainerVisibilityFallback(objectName) {
-    const paeCanvas = document.getElementById('paeCanvas');
-    const paeContainer = document.getElementById('paeContainer');
-    const hasPAE = objectsWithPAE.has(objectName);
-    
-    if (paeContainer) {
-        paeContainer.style.display = hasPAE ? 'flex' : 'none';
-    }
-    if (paeCanvas) {
-        paeCanvas.style.display = hasPAE ? 'block' : 'none';
-    }
-}
 
 /**
  * Update entropy option visibility in color select dropdown based on MSA availability
@@ -1211,7 +1193,6 @@ function animateRotation() {
 // Biounit extraction and application functions are now in utils.js
 // Using unified functions: extractBiounitOperations, applyBiounitOperationsToAtoms
 
-// Legacy function stubs removed - use utils.js functions directly
 
 function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
     let models;
@@ -1724,7 +1705,6 @@ function updateViewerFromGlobalBatch() {
     const objectSelect = document.getElementById('objectSelect');
     
     viewerApi.handlePythonClearAll();
-    objectsWithPAE = new Set();
     objectSelect.innerHTML = '';
 
     if (!viewerApi || batchedObjects.length === 0) {
@@ -1763,10 +1743,6 @@ function updateViewerFromGlobalBatch() {
                 totalFrames++;
             }
             
-            // Update objectsWithPAE Set (fallback for backward compatibility)
-            if (checkObjectHasPAE(obj)) {
-                objectsWithPAE.add(obj.name);
-            }
             
             // Preserve MSA data from batchedObjects to renderer's objectsData
             // This ensures MSA data is available when switching between objects
@@ -2083,20 +2059,10 @@ function applySelection(previewPositions = null) {
 }
 
 
-function highlightResidue(chain, residueIndex) {
-    // Legacy function - use highlightAtom instead
-    if (viewerApi && viewerApi.renderer) {
-        viewerApi.renderer.highlightedResidue = { chain, residueIndex };
-        viewerApi.renderer.highlightedAtom = null; // Clear position highlight when using legacy
-        viewerApi.renderer.render();
-    }
-}
-
 function highlightPosition(positionIndex) {
     if (viewerApi && viewerApi.renderer) {
         viewerApi.renderer.highlightedAtom = positionIndex;
         viewerApi.renderer.highlightedAtoms = null; // Clear multi-position highlight
-        viewerApi.renderer.highlightedResidue = null; // Clear legacy highlight
         // Draw highlights on overlay canvas without re-rendering main scene
         if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
             window.SequenceViewer.drawHighlights();
@@ -2108,7 +2074,6 @@ function highlightPositions(positionIndices) {
     if (viewerApi && viewerApi.renderer) {
         viewerApi.renderer.highlightedAtoms = positionIndices instanceof Set ? positionIndices : new Set(positionIndices);
         viewerApi.renderer.highlightedAtom = null; // Clear single position highlight
-        viewerApi.renderer.highlightedResidue = null; // Clear legacy highlight
         // Draw highlights on overlay canvas without re-rendering main scene
         if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
             window.SequenceViewer.drawHighlights();
@@ -2118,7 +2083,6 @@ function highlightPositions(positionIndices) {
 
 function clearHighlight() {
     if (viewerApi && viewerApi.renderer) {
-        viewerApi.renderer.highlightedResidue = null;
         viewerApi.renderer.highlightedAtom = null;
         viewerApi.renderer.highlightedAtoms = null;
         // Clear highlights on overlay canvas without re-rendering main scene
@@ -2147,7 +2111,6 @@ function clearAllObjects() {
     batchedObjects = [];
     
     // Clear PAE tracking
-    objectsWithPAE = new Set();
     
     // Hide viewer and top panel
     const viewerContainer = document.getElementById('viewer-container');
@@ -2224,7 +2187,11 @@ if (window.SequenceViewer) {
 
 // MSA viewer callbacks are now set up in initializeApp() after viewerApi is initialized
 
-function initializeMSAViewer() {
+/**
+ * Initialize common MSA viewer UI components (sliders, buttons, checkboxes)
+ * Shared between msa.html and index.html
+ */
+function initializeMSAViewerCommon() {
     const msaContainer = document.getElementById('msa-viewer-container');
     const msaModeSelect = document.getElementById('msaModeSelect');
     const coverageSlider = document.getElementById('coverageSlider');
@@ -2311,94 +2278,6 @@ function initializeMSAViewer() {
                 updateMSASequenceCount();
             }
         });
-    }
-    
-    // Function to update chain selector UI
-    // Shows all chains from structure (like viewer-seq), highlights chains with MSAs
-    function updateMSAChainSelector() {
-        const chainSelectContainer = document.getElementById('msaChainSelectContainer');
-        const chainSelect = document.getElementById('msaChainSelect');
-        if (!chainSelect || !chainSelectContainer || !viewerApi?.renderer) return;
-        
-        const objectName = viewerApi.renderer.currentObjectName;
-        if (!objectName) {
-            chainSelectContainer.style.display = 'none';
-            return;
-        }
-        
-        const obj = viewerApi.renderer.objectsData[objectName];
-        if (!obj || !obj.frames || obj.frames.length === 0) {
-            chainSelectContainer.style.display = 'none';
-            return;
-        }
-        
-        // Get all chains from structure (from first frame, like viewer-seq does)
-        const firstFrame = obj.frames[0];
-        const allChains = new Set();
-        if (firstFrame.chains) {
-            firstFrame.chains.forEach(chain => {
-                if (chain) allChains.add(chain);
-            });
-        }
-        
-        if (allChains.size === 0) {
-            chainSelectContainer.style.display = 'none';
-            return;
-        }
-        
-        // Get chains with MSAs (for highlighting/validation)
-        const chainsWithMSA = new Set();
-        if (obj.msa) {
-            // New sequence-based structure
-            if (obj.msa.availableChains) {
-                obj.msa.availableChains.forEach(chain => chainsWithMSA.add(chain));
-            }
-            // Legacy structure
-            else if (obj.msa.chains) {
-                Object.keys(obj.msa.chains).forEach(chain => chainsWithMSA.add(chain));
-            }
-        }
-        
-        // Rebuild options if needed (sorted alphabetically, show all chains)
-        const currentOptions = Array.from(chainSelect.options).map(opt => opt.value);
-        const sortedAllChains = Array.from(allChains).sort();
-        const chainsChanged = currentOptions.length !== sortedAllChains.length ||
-                             !sortedAllChains.every(chain => currentOptions.includes(chain));
-        
-        // Preserve current selection before rebuilding
-        const preservedValue = chainSelect.value;
-        
-        if (chainsChanged) {
-            chainSelect.innerHTML = '';
-            sortedAllChains.forEach(chainId => {
-                const option = document.createElement('option');
-                option.value = chainId;
-                // Add indicator for chains with MSAs
-                const hasMSA = chainsWithMSA.has(chainId);
-                option.textContent = hasMSA ? `${chainId} ✓` : chainId;
-                option.disabled = !hasMSA; // Disable chains without MSAs
-                chainSelect.appendChild(option);
-            });
-        }
-        
-        // Get current chain from MSA viewer (source of truth)
-        const currentChain = window.MSAViewer?.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
-        
-        // Update dropdown to match current chain
-        // Priority: 1) currentChain from MSA viewer, 2) preserved value (if valid), 3) fallback
-        if (currentChain && allChains.has(currentChain) && chainsWithMSA.has(currentChain)) {
-            chainSelect.value = currentChain;
-        } else if (preservedValue && allChains.has(preservedValue) && chainsWithMSA.has(preservedValue)) {
-            // Preserve the value if it's still valid (user just selected it)
-            chainSelect.value = preservedValue;
-        } else if (!chainSelect.value || !allChains.has(chainSelect.value) || !chainsWithMSA.has(chainSelect.value)) {
-            // Fallback: use first chain with MSA, or first chain if none have MSA
-            const firstChainWithMSA = sortedAllChains.find(c => chainsWithMSA.has(c));
-            chainSelect.value = firstChainWithMSA || sortedAllChains[0];
-        }
-        
-        // Show selector if we have chains (even if only one, for consistency with viewer-seq)
-        chainSelectContainer.style.display = allChains.size > 0 ? 'flex' : 'none';
     }
     
     // Handle MSA mode dropdown selection
@@ -2517,55 +2396,7 @@ function initializeMSAViewer() {
         });
     }
     
-    // Handle MSA chain selector
-    const msaChainSelect = document.getElementById('msaChainSelect');
-    if (msaChainSelect && window.MSAViewer && viewerApi?.renderer) {
-        msaChainSelect.addEventListener('change', (e) => {
-            const chainId = e.target.value;
-            if (!chainId) return;
-            
-            const objectName = viewerApi.renderer.currentObjectName;
-            if (!objectName) return;
-            
-            const obj = viewerApi.renderer.objectsData[objectName];
-            if (!obj || !obj.msa) return;
-            
-            // New sequence-based structure
-            if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
-                const querySeq = obj.msa.chainToSequence[chainId];
-                if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                    const {msaData} = obj.msa.msasBySequence[querySeq];
-                    window.MSAViewer.setMSAData(msaData, chainId);
-                    
-                    // Get filtered MSA data and recompute properties based on current filtering
-                    const filteredMSAData = window.MSAViewer.getMSAData();
-                    if (filteredMSAData) {
-                        // Clear existing properties to force recomputation on filtered data
-                        filteredMSAData.frequencies = null;
-                        filteredMSAData.entropy = null;
-                        filteredMSAData.logOdds = null;
-                        // Compute properties on filtered data
-                        computeMSAProperties(filteredMSAData);
-                        // Update stored MSA data with filtered data and recomputed properties
-                        obj.msa.msasBySequence[querySeq].msaData = filteredMSAData;
-                    }
-                    
-                    // Update entropy option visibility after MSA is loaded
-                    updateEntropyOptionVisibility(objectName);
-                    
-                    // Ensure dropdown value is set correctly after setMSAData
-                    // (setMSAData wrapper will call updateMSAChainSelector, but we want to ensure value persists)
-                    setTimeout(() => {
-                        if (msaChainSelect.value !== chainId) {
-                            msaChainSelect.value = chainId;
-                        }
-                    }, 0);
-                }
-            }
-        });
-    }
-    
-    // Handle bit-score checkbox (already declared above, just add event listener)
+    // Handle bit-score checkbox
     if (logoBitScoreCheckbox && window.MSAViewer) {
         // Set initial value (checked = true = bit-score mode)
         logoBitScoreCheckbox.checked = window.MSAViewer.getUseBitScore ? window.MSAViewer.getUseBitScore() : true;
@@ -2590,6 +2421,123 @@ function initializeMSAViewer() {
                 sequenceCountEl.textContent = '-';
             }
         }
+    }
+    
+    return { updateMSASequenceCount };
+}
+
+/**
+ * Initialize MSA viewer for msa.html (standalone MSA viewer)
+ */
+function initializeMSAViewer() {
+    const common = initializeMSAViewerCommon();
+    const { updateMSASequenceCount } = common;
+    
+    // Function to update chain selector UI
+    // Shows all chains from structure (like viewer-seq), highlights chains with MSAs
+    function updateMSAChainSelector() {
+        const chainSelectContainer = document.getElementById('msaChainSelectContainer');
+        const chainSelect = document.getElementById('msaChainSelect');
+        if (!chainSelect || !chainSelectContainer || !viewerApi?.renderer) return;
+        
+        const objectName = viewerApi.renderer.currentObjectName;
+        if (!objectName) {
+            chainSelectContainer.style.display = 'none';
+            return;
+        }
+        
+        const obj = viewerApi.renderer.objectsData[objectName];
+        if (!obj || !obj.frames || obj.frames.length === 0) {
+            chainSelectContainer.style.display = 'none';
+            return;
+        }
+        
+        // Get all chains from structure (from first frame, like viewer-seq does)
+        const firstFrame = obj.frames[0];
+        const allChains = new Set();
+        if (firstFrame.chains) {
+            firstFrame.chains.forEach(chain => {
+                if (chain) allChains.add(chain);
+            });
+        }
+        
+        if (allChains.size === 0) {
+            chainSelectContainer.style.display = 'none';
+            return;
+        }
+        
+        // Get chains with MSAs (for highlighting/validation)
+        const chainsWithMSA = new Set();
+        if (obj.msa) {
+            if (obj.msa.availableChains) {
+                obj.msa.availableChains.forEach(chain => chainsWithMSA.add(chain));
+            }
+        }
+        
+        // Rebuild options if needed (sorted alphabetically, show all chains)
+        const currentOptions = Array.from(chainSelect.options).map(opt => opt.value);
+        const sortedAllChains = Array.from(allChains).sort();
+        const chainsChanged = currentOptions.length !== sortedAllChains.length ||
+                             !sortedAllChains.every(chain => currentOptions.includes(chain));
+        
+        // Preserve current selection before rebuilding
+        const preservedValue = chainSelect.value;
+        
+        if (chainsChanged) {
+            chainSelect.innerHTML = '';
+            sortedAllChains.forEach(chainId => {
+                const option = document.createElement('option');
+                option.value = chainId;
+                const hasMSA = chainsWithMSA.has(chainId);
+                option.textContent = hasMSA ? `${chainId} ✓` : chainId;
+                option.disabled = !hasMSA;
+                chainSelect.appendChild(option);
+            });
+        }
+        
+        // Get current chain from MSA viewer (source of truth)
+        const currentChain = window.MSAViewer?.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
+        
+        // Update dropdown to match current chain
+        if (currentChain && allChains.has(currentChain) && chainsWithMSA.has(currentChain)) {
+            chainSelect.value = currentChain;
+        } else if (preservedValue && allChains.has(preservedValue) && chainsWithMSA.has(preservedValue)) {
+            chainSelect.value = preservedValue;
+        } else if (!chainSelect.value || !allChains.has(chainSelect.value) || !chainsWithMSA.has(chainSelect.value)) {
+            const firstChainWithMSA = sortedAllChains.find(c => chainsWithMSA.has(c));
+            chainSelect.value = firstChainWithMSA || sortedAllChains[0];
+        }
+        
+        chainSelectContainer.style.display = allChains.size > 0 ? 'flex' : 'none';
+    }
+    
+    // Handle MSA chain selector
+    const msaChainSelect = document.getElementById('msaChainSelect');
+    if (msaChainSelect && window.MSAViewer && viewerApi?.renderer) {
+        msaChainSelect.addEventListener('change', (e) => {
+            const chainId = e.target.value;
+            if (!chainId) return;
+            
+            const objectName = viewerApi.renderer.currentObjectName;
+            if (!objectName) return;
+            
+            const obj = viewerApi.renderer.objectsData[objectName];
+            if (!obj || !obj.msa) return;
+            
+            if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
+                const querySeq = obj.msa.chainToSequence[chainId];
+                if (querySeq && obj.msa.msasBySequence[querySeq]) {
+                    const {msaData} = obj.msa.msasBySequence[querySeq];
+                    loadMSADataIntoViewer(msaData, chainId, objectName);
+                    
+                    setTimeout(() => {
+                        if (msaChainSelect.value !== chainId) {
+                            msaChainSelect.value = chainId;
+                        }
+                    }, 0);
+                }
+            }
+        });
     }
     
     // Set empty callbacks for msa.html (MSA viewer is read-only, doesn't need renderer)
@@ -2907,124 +2855,16 @@ if (isMSAHTML) {
     }
 }
 
-// Simplified MSA initialization for index.html
+/**
+ * Initialize MSA viewer for index.html (integrated with structure viewer)
+ */
 function initializeMSAViewerIndex() {
+    const common = initializeMSAViewerCommon();
+    const { updateMSASequenceCount } = common;
+    
     const msaChainSelect = document.getElementById('msaChainSelect');
     const msaView = document.getElementById('msaView');
     const msaContainer = document.getElementById('msa-viewer-container');
-    const msaModeSelect = document.getElementById('msaModeSelect');
-    const msaSortContainer = document.getElementById('msaSortContainer');
-    const msaSortCheckbox = document.getElementById('msaSortCheckbox');
-    const logoBitScoreContainer = document.getElementById('logoBitScoreContainer');
-    const logoBitScoreCheckbox = document.getElementById('logoBitScoreCheckbox');
-    const msaSaveContainer = document.getElementById('msaSaveContainer');
-    const logoSaveContainer = document.getElementById('logoSaveContainer');
-    const pssmSaveContainer = document.getElementById('pssmSaveContainer');
-    const msaSaveFastaButton = document.getElementById('msaSaveFastaButton');
-    const logoSaveSvgButton = document.getElementById('logoSaveSvgButton');
-    const pssmSaveSvgButton = document.getElementById('pssmSaveSvgButton');
-    const pssmSaveCsvButton = document.getElementById('pssmSaveCsvButton');
-    
-    // Set initial button visibility based on default mode (MSA)
-    if (msaSaveContainer) {
-        msaSaveContainer.style.display = 'flex';
-    }
-    if (logoSaveContainer) {
-        logoSaveContainer.style.display = 'none';
-    }
-    if (pssmSaveContainer) {
-        pssmSaveContainer.style.display = 'none';
-    }
-    
-    // Mode selector
-    if (msaModeSelect && window.MSAViewer) {
-        msaModeSelect.addEventListener('change', (e) => {
-            const mode = e.target.value;
-            if (window.MSAViewer) {
-                window.MSAViewer.setMSAMode(mode);
-            }
-            
-            // Show/hide sort checkbox for MSA mode
-            if (msaSortContainer) {
-                msaSortContainer.style.display = (mode === 'msa') ? 'flex' : 'none';
-            }
-            
-            // Show/hide bit-score checkbox for logo mode
-            if (logoBitScoreContainer) {
-                logoBitScoreContainer.style.display = (mode === 'logo') ? 'flex' : 'none';
-            }
-            
-            // Show/hide save buttons based on mode
-            if (msaSaveContainer) {
-                msaSaveContainer.style.display = (mode === 'msa') ? 'flex' : 'none';
-            }
-            if (logoSaveContainer) {
-                logoSaveContainer.style.display = (mode === 'logo') ? 'flex' : 'none';
-            }
-            if (pssmSaveContainer) {
-                pssmSaveContainer.style.display = (mode === 'pssm') ? 'flex' : 'none';
-            }
-        });
-    }
-    
-    // Sort checkbox
-    if (msaSortCheckbox && window.MSAViewer) {
-        msaSortCheckbox.addEventListener('change', (e) => {
-            if (window.MSAViewer) {
-                window.MSAViewer.setSortSequences(e.target.checked);
-            }
-        });
-    }
-    
-    // Bit-score checkbox
-    if (logoBitScoreCheckbox && window.MSAViewer) {
-        logoBitScoreCheckbox.addEventListener('change', (e) => {
-            if (window.MSAViewer) {
-                window.MSAViewer.setUseBitScore(e.target.checked);
-            }
-        });
-    }
-    
-    // Save button handlers
-    if (msaSaveFastaButton && window.MSAViewer) {
-        msaSaveFastaButton.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (window.MSAViewer.saveMSAAsFasta) {
-                window.MSAViewer.saveMSAAsFasta();
-            }
-        });
-    }
-    
-    if (logoSaveSvgButton && window.MSAViewer) {
-        logoSaveSvgButton.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (window.MSAViewer.saveLogoAsSvg) {
-                window.MSAViewer.saveLogoAsSvg();
-            }
-        });
-    }
-    
-    if (pssmSaveSvgButton && window.MSAViewer) {
-        pssmSaveSvgButton.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (window.MSAViewer.savePSSMAsSvg) {
-                window.MSAViewer.savePSSMAsSvg();
-            }
-        });
-    }
-    
-    if (pssmSaveCsvButton && window.MSAViewer) {
-        pssmSaveCsvButton.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (window.MSAViewer.savePSSMAsCsv) {
-                window.MSAViewer.savePSSMAsCsv();
-            }
-        });
-    }
     
     // Chain selector for single chain support (first pass)
     if (msaChainSelect && window.MSAViewer && viewerApi?.renderer) {
@@ -3112,34 +2952,6 @@ function initializeMSAViewerIndex() {
                     // Single chain group with single chain - hide selector
                     msaChainSelect.style.display = 'none';
                 }
-            }
-            // Legacy format: single chain support
-            else if (obj.msa && obj.msa.chainId) {
-                const firstFrame = obj.frames[0];
-                const allChains = new Set();
-                if (firstFrame.chains) {
-                    firstFrame.chains.forEach(chain => {
-                        if (chain) allChains.add(chain);
-                    });
-                }
-                
-                if (allChains.size > 1) {
-                    // Multiple chains - show selector but only allow selecting the chain with MSA
-                    msaChainSelect.innerHTML = '';
-                    const sortedChains = Array.from(allChains).sort();
-                    sortedChains.forEach(chainId => {
-                        const option = document.createElement('option');
-                        option.value = chainId;
-                        option.textContent = chainId === obj.msa.chainId ? `${chainId} ✓` : chainId;
-                        option.disabled = chainId !== obj.msa.chainId; // Only allow selecting chain with MSA
-                        msaChainSelect.appendChild(option);
-                    });
-                    msaChainSelect.value = obj.msa.chainId;
-                    msaChainSelect.style.display = 'block';
-                } else {
-                    // Single chain - hide selector
-                    msaChainSelect.style.display = 'none';
-                }
             } else {
                 msaChainSelect.style.display = 'none';
             }
@@ -3176,25 +2988,6 @@ function initializeMSAViewerIndex() {
                         viewerApi.renderer._loadFrameData(currentFrameIndex, false);
                     }
                 }
-            }
-            // Legacy format: single chain
-            else if (obj.msa.chainId === chainKey && obj.msa.msaData) {
-                // Reload MSA for this chain
-                window.MSAViewer.setMSAData(obj.msa.msaData, chainKey);
-                
-                // Ensure properties are computed for this MSA
-                computeMSAProperties(obj.msa.msaData);
-                
-                // Invalidate entropy cache and reload frame data
-                if (viewerApi.renderer) {
-                    viewerApi.renderer.cachedResolvedEntropy = null;
-                    viewerApi.renderer.cachedEntropyObjectName = null;
-                    viewerApi.renderer.cachedEntropyPositionCount = null;
-                }
-                
-                // Update renderer
-                const currentFrameIndex = viewerApi.renderer.currentFrame || 0;
-                viewerApi.renderer._loadFrameData(currentFrameIndex, false);
             }
         });
         
@@ -3270,32 +3063,7 @@ function initializeMSAViewerIndex() {
             void msaContainer.offsetWidth; // Force reflow
             
             // Load MSA data into viewer (this will update the display)
-            window.MSAViewer.setMSAData(msaToLoad, chainId);
-            
-            // Get filtered MSA data and recompute properties based on current filtering
-            const filteredMSAData = window.MSAViewer.getMSAData();
-            if (filteredMSAData && obj && obj.msa) {
-                // Clear existing properties to force recomputation on filtered data
-                filteredMSAData.frequencies = null;
-                filteredMSAData.entropy = null;
-                filteredMSAData.logOdds = null;
-                // Compute properties on filtered data
-                computeMSAProperties(filteredMSAData);
-                
-                // Update stored MSA data with filtered data and recomputed properties
-                if (obj.msa.msasBySequence && obj.msa.chainToSequence && chainId) {
-                    const querySeq = obj.msa.chainToSequence[chainId];
-                    if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                        obj.msa.msasBySequence[querySeq].msaData = filteredMSAData;
-                    }
-                } else if (obj.msa.msaData) {
-                    // Legacy format
-                    obj.msa.msaData = filteredMSAData;
-                }
-            }
-            
-            // Update entropy option visibility after MSA is loaded
-            updateEntropyOptionVisibility(objectName);
+            loadMSADataIntoViewer(msaToLoad, chainId, objectName);
         } else {
             // Hide MSA container if no MSA for this object
             msaContainer.style.display = 'none';
@@ -3315,95 +3083,6 @@ function initializeMSAViewerIndex() {
         
         // Initial update
         updateMSAContainerVisibility();
-    }
-    
-    // Function to update MSA sequence count display
-    function updateMSASequenceCount() {
-        const sequenceCountEl = document.getElementById('msaSequenceCount');
-        if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
-            const counts = window.MSAViewer.getSequenceCounts();
-            if (counts && counts.total > 0) {
-                sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
-            } else {
-                sequenceCountEl.textContent = '-';
-            }
-        }
-    }
-    
-    // Coverage slider
-    const coverageSlider = document.getElementById('coverageSlider');
-    const coverageValue = document.getElementById('coverageValue');
-    
-    if (coverageSlider && coverageValue && window.MSAViewer) {
-        const initialCutoff = window.MSAViewer.getCoverageCutoff ? window.MSAViewer.getCoverageCutoff() : 0.75;
-        coverageSlider.value = Math.round(initialCutoff * 100);
-        coverageValue.textContent = Math.round(initialCutoff * 100) + '%';
-        
-        let isDragging = false;
-        
-        coverageSlider.addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
-            coverageValue.textContent = value + '%';
-            const cutoff = value / 100;
-            if (window.MSAViewer && window.MSAViewer.setPreviewCoverageCutoff) {
-                window.MSAViewer.setPreviewCoverageCutoff(cutoff);
-            }
-            isDragging = true;
-        });
-        
-        coverageSlider.addEventListener('mouseup', () => {
-            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
-                window.MSAViewer.applyPreviewCoverageCutoff();
-                isDragging = false;
-        updateMSASequenceCount();
-    }
-        });
-        
-        coverageSlider.addEventListener('touchend', () => {
-            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewCoverageCutoff) {
-                window.MSAViewer.applyPreviewCoverageCutoff();
-                isDragging = false;
-                updateMSASequenceCount();
-            }
-        });
-    }
-    
-    // Identity slider
-    const identitySlider = document.getElementById('identitySlider');
-    const identityValue = document.getElementById('identityValue');
-    
-    if (identitySlider && identityValue && window.MSAViewer) {
-        const initialCutoff = window.MSAViewer.getIdentityCutoff ? window.MSAViewer.getIdentityCutoff() : 0.15;
-        identitySlider.value = Math.round(initialCutoff * 100);
-        identityValue.textContent = Math.round(initialCutoff * 100) + '%';
-        
-        let isDragging = false;
-        
-        identitySlider.addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
-            identityValue.textContent = value + '%';
-            const cutoff = value / 100;
-            if (window.MSAViewer && window.MSAViewer.setPreviewIdentityCutoff) {
-                window.MSAViewer.setPreviewIdentityCutoff(cutoff);
-            }
-            isDragging = true;
-        });
-        
-        identitySlider.addEventListener('mouseup', () => {
-            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
-                window.MSAViewer.applyPreviewIdentityCutoff();
-                isDragging = false;
-                updateMSASequenceCount();
-            }
-        });
-        
-        identitySlider.addEventListener('touchend', () => {
-            if (isDragging && window.MSAViewer && window.MSAViewer.applyPreviewIdentityCutoff) {
-                window.MSAViewer.applyPreviewIdentityCutoff();
-                isDragging = false;
-                updateMSASequenceCount();
-            }
-        });
     }
     
     // Update sequence count when MSA data is set
@@ -3434,24 +3113,7 @@ if (document.readyState === 'loading') {
     }
 }
 
-// Set up MSA viewer callbacks after viewer is initialized
-function setupMSAViewerCallbacks() {
-    if (window.MSAViewer && viewerApi?.renderer) {
-        window.MSAViewer.setCallbacks({
-            getRenderer: () => viewerApi.renderer
-        });
-    }
-}
-
-// Set up callbacks when viewer is ready
-if (viewerApi && viewerApi.renderer) {
-    setupMSAViewerCallbacks();
-} else {
-    // Wait for viewer to be initialized
-    setTimeout(() => {
-        setupMSAViewerCallbacks();
-    }, 500);
-}
+// MSA viewer callbacks are set up in initializeApp() after viewerApi is initialized
 
 // Wrapper functions that delegate to SequenceViewer module
 function buildSequenceView() {
@@ -3460,13 +3122,6 @@ function buildSequenceView() {
     }
 }
 
-// Old sequence viewer code removed - now in viewer-seq.js module
-
-// HTML-based sequence event handlers using event delegation
-// Now handled by viewer-seq.js module
-
-// Sequence viewer functions now in viewer-seq.js module
-// Wrapper functions for backward compatibility
 function updateSequenceViewColors() {
     if (window.SequenceViewer) {
         window.SequenceViewer.updateSequenceViewColors();
@@ -3478,8 +3133,6 @@ function updateSequenceViewSelectionState() {
         window.SequenceViewer.updateSequenceViewSelectionState();
     }
 }
-
-// Removed setupDragToSelect - replaced by canvas-based sequence rendering (setupCanvasSequenceEvents)
 
 // ============================================================================
 // FETCH LOGIC
@@ -4034,9 +3687,13 @@ const RESIDUE_TO_AA = {
     MSE:'M', HSD:'H', HSE:'H', HID:'H', HIE:'H', HIP:'H'
 };
 
+// ============================================================================
+// MSA UTILITY FUNCTIONS
+// ============================================================================
+
 /**
- * Extract sequence for each chain from frame data
- * @param {Object} frame - Frame data with position_names, chains, position_index, position_types
+ * Extract chain sequences from frame data
+ * @param {Object} frame - Frame data with chains, position_names, position_index
  * @returns {Object} - Map of chainId -> sequence string
  */
 function extractChainSequences(frame) {
@@ -4123,6 +3780,63 @@ function sequencesMatch(msaQuerySequence, pdbChainSequence) {
         return pdbSequence.includes(msaSequenceNoGaps);
     } else {
         return msaSequenceNoGaps.includes(pdbSequence);
+    }
+}
+
+/**
+ * Load MSA data into the MSA viewer and recompute properties
+ * This unified function handles the common pattern of loading MSA data,
+ * getting filtered data, recomputing properties, and updating stored data
+ * @param {Object} msaData - MSA data object to load
+ * @param {string} chainId - Chain ID to associate with this MSA
+ * @param {string} objectName - Name of the object containing this MSA
+ * @param {Object} options - Optional configuration
+ * @param {boolean} options.updateChainSelector - Whether to update chain selector (default: true)
+ * @param {boolean} options.updateEntropyOption - Whether to update entropy option visibility (default: true)
+ */
+function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
+    if (!window.MSAViewer || !msaData) return;
+    
+    const {
+        updateChainSelector = true,
+        updateEntropyOption = true
+    } = options;
+    
+    // Load MSA data into viewer
+    window.MSAViewer.setMSAData(msaData, chainId);
+    
+    // Get filtered MSA data and recompute properties based on current filtering
+    const filteredMSAData = window.MSAViewer.getMSAData();
+    if (filteredMSAData) {
+        // Clear existing properties to force recomputation on filtered data
+        filteredMSAData.frequencies = null;
+        filteredMSAData.entropy = null;
+        filteredMSAData.logOdds = null;
+        // Compute properties on filtered data
+        computeMSAProperties(filteredMSAData);
+        
+        // Update stored MSA data with filtered data and recomputed properties
+        if (objectName && viewerApi?.renderer) {
+            const obj = viewerApi.renderer.objectsData[objectName];
+            if (obj && obj.msa) {
+                if (obj.msa.msasBySequence && obj.msa.chainToSequence && chainId) {
+                    const querySeq = obj.msa.chainToSequence[chainId];
+                    if (querySeq && obj.msa.msasBySequence[querySeq]) {
+                        obj.msa.msasBySequence[querySeq].msaData = filteredMSAData;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Update chain selector
+    if (updateChainSelector && window.updateMSAChainSelectorIndex) {
+        window.updateMSAChainSelectorIndex();
+    }
+    
+    // Update entropy option visibility
+    if (updateEntropyOption && window.updateEntropyOptionVisibility && objectName) {
+        window.updateEntropyOptionVisibility(objectName);
     }
 }
 
@@ -4691,82 +4405,8 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
     return trimmedMSA;
 }
 
-/**
- * Calculate Shannon entropy for each position in MSA
- * Now uses the unified calculation from MSAViewer (same as logo/PSSM) when available
- * @param {Object} msaData - MSA data object from parseA3M()
- * @returns {Array} - Array of entropy values (one per MSA position)
- */
-function calculateMSAEntropy(msaData) {
-    if (!msaData || !msaData.sequences || msaData.sequences.length === 0) {
-        return [];
-    }
-    
-    // Try to use unified entropy calculation from MSAViewer if available
-    // This ensures consistency with logo/PSSM calculations (uses same frequency calculation)
-    if (window.MSAViewer && window.MSAViewer.calculateEntropy) {
-        // Check if MSAViewer has the same data loaded
-        const viewerMSA = window.MSAViewer.getMSAData();
-        if (viewerMSA && viewerMSA.querySequence === msaData.querySequence && 
-            viewerMSA.sequences.length === msaData.sequences.length) {
-            try {
-                return window.MSAViewer.calculateEntropy();
-            } catch (e) {
-                console.warn('Failed to use MSAViewer entropy calculation, falling back to direct method:', e);
-            }
-        }
-    }
-    
-    // Fallback: direct calculation (for initial load before MSAViewer is set up, or if data doesn't match)
-    // This uses the same formula but calculates frequencies directly
-    const queryLength = msaData.queryLength;
-    const entropyValues = [];
-    
-    // Standard 20 amino acids
-    const aminoAcids = 'ACDEFGHIKLMNPQRSTVWY';
-    const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
-    
-    // Calculate entropy for each position
-    for (let pos = 0; pos < queryLength; pos++) {
-        // Count amino acid frequencies at this position (ignore gaps and lowercase)
-        const counts = {};
-        let totalCount = 0;
-        
-        for (const seq of msaData.sequences) {
-            if (seq.sequence && pos < seq.sequence.length) {
-                const aa = seq.sequence[pos].toUpperCase();
-                // Only count standard amino acids (ignore gaps '-', lowercase insertions, and non-standard)
-                if (aminoAcids.includes(aa)) {
-                    counts[aa] = (counts[aa] || 0) + 1;
-                    totalCount++;
-                }
-            }
-        }
-        
-        // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
-        let entropy = 0;
-        if (totalCount > 0) {
-            for (const aa of Object.keys(counts)) {
-                const p = counts[aa] / totalCount;
-                if (p > 0) {
-                    entropy -= p * Math.log2(p);
-                }
-            }
-        }
-        
-        // Normalize by max entropy (0 to 1 scale)
-        const normalizedEntropy = totalCount > 0 ? entropy / maxEntropy : 0;
-        entropyValues.push(normalizedEntropy);
-    }
-    
-    return entropyValues;
-}
-
-// mapEntropyToResidues removed - use buildEntropyVectorForColoring() instead
-// Entropy is now pre-computed and stored in msaData.entropy
-
-// precalculateEntropyForObject removed - entropy is now computed once when MSA is loaded
-// and stored in msaData.entropy. Use buildEntropyVectorForColoring() to build the vector for coloring.
+// Entropy calculation is handled by computeMSAProperties() and viewer-msa.js's calculateEntropy()
+// No need for separate calculateMSAEntropy() function
 
 // Flag to prevent infinite recursion when loading entropy data
 let isLoadingEntropyData = false;
@@ -5163,18 +4803,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             // Load the first MSA into the viewer
             const firstMSA = msaDataList[0];
             if (window.MSAViewer) {
-                window.MSAViewer.setMSAData(firstMSA.msaData, null);
-                
-                // Get filtered MSA data and recompute properties
-                const filteredMSAData = window.MSAViewer.getMSAData();
-                if (filteredMSAData) {
-                    // Clear existing properties to force recomputation on filtered data
-                    filteredMSAData.frequencies = null;
-                    filteredMSAData.entropy = null;
-                    filteredMSAData.logOdds = null;
-                    // Compute properties on filtered data
-                    computeMSAProperties(filteredMSAData);
-                }
+                loadMSADataIntoViewer(firstMSA.msaData, null, null, { updateChainSelector: false });
                 
                 // Show MSA viewer container
                 const msaContainer = document.getElementById('msa-viewer-container');
@@ -5404,26 +5033,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                             if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
                                 const {msaData} = msaObj.msasBySequence[defaultChainSeq];
                                 if (window.MSAViewer) {
-                                    window.MSAViewer.setMSAData(msaData, msaObj.defaultChain);
-                                    
-                                    // Get filtered MSA data and recompute properties based on current filtering
-                                    const filteredMSAData = window.MSAViewer.getMSAData();
-                                    if (filteredMSAData) {
-                                        // Clear existing properties to force recomputation on filtered data
-                                        filteredMSAData.frequencies = null;
-                                        filteredMSAData.entropy = null;
-                                        filteredMSAData.logOdds = null;
-                                        // Compute properties on filtered data
-                                        computeMSAProperties(filteredMSAData);
-                                        // Update stored MSA data with filtered data and recomputed properties
-                                        msaObj.msasBySequence[defaultChainSeq].msaData = filteredMSAData;
-                                    }
-                                    
-                                    // Update chain selector to show available chains
-                                    if (window.updateMSAChainSelectorIndex) {
-                                        window.updateMSAChainSelectorIndex();
-                                    }
-                                    
+                                    loadMSADataIntoViewer(msaData, msaObj.defaultChain, objectName);
                                     setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
                                 }
                             }
@@ -5676,26 +5286,7 @@ async function handleZipUpload(file, loadAsFrames) {
                                 if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
                                     const {msaData, type} = msaObj.msasBySequence[defaultChainSeq];
                                     if (window.MSAViewer) {
-                                        window.MSAViewer.setMSAData(msaData, msaObj.defaultChain, type);
-                                        
-                                        // Get filtered MSA data and recompute properties based on current filtering
-                                        const filteredMSAData = window.MSAViewer.getMSAData();
-                                        if (filteredMSAData) {
-                                            // Clear existing properties to force recomputation on filtered data
-                                            filteredMSAData.frequencies = null;
-                                            filteredMSAData.entropy = null;
-                                            filteredMSAData.logOdds = null;
-                                            // Compute properties on filtered data
-                                            computeMSAProperties(filteredMSAData);
-                                            // Update stored MSA data with filtered data and recomputed properties
-                                            msaObj.msasBySequence[defaultChainSeq].msaData = filteredMSAData;
-                                        }
-                                        
-                                        // Update chain selector to show available chains
-                                        if (window.updateMSAChainSelectorIndex) {
-                                            window.updateMSAChainSelectorIndex();
-                                        }
-                                        
+                                        loadMSADataIntoViewer(msaData, msaObj.defaultChain, objectName);
                                         setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
                                     }
                                 }
@@ -6125,7 +5716,6 @@ async function loadViewerState(stateData) {
         
         // Clear existing objects
         renderer.clearAllObjects();
-        objectsWithPAE.clear();
         
         // Ensure viewer container is visible
         const viewerContainer = document.getElementById('viewer-container');
@@ -6175,10 +5765,6 @@ async function loadViewerState(stateData) {
                 // Restore playing state
                 renderer.isPlaying = wasPlaying;
                 
-                // Check if object has PAE data (checks frames directly)
-                if (checkObjectHasPAE(objData)) {
-                    objectsWithPAE.add(objData.name);
-                }
                 
                 // Store MSA data if present
                 if (objData.msa) {
@@ -6336,7 +5922,6 @@ async function loadViewerState(stateData) {
                     
                     // Handle old state files that saved 50-200 range
                     if (normalizedValue > 1.0) {
-                        // Old format: convert 50-200 to 0-1
                         normalizedValue = (normalizedValue - 50) / 150;
                     }
                     
@@ -6435,30 +6020,10 @@ async function loadViewerState(stateData) {
                                 const querySeq = currentObj.msa.chainToSequence[chainToLoad];
                                 const msaEntry = currentObj.msa.msasBySequence[querySeq];
                                 
-                                if (msaEntry && msaEntry.msaData && window.MSAViewer) {
-                                    // Load MSA data into viewer
-                                    window.MSAViewer.setMSAData(msaEntry.msaData, chainToLoad);
-                                    
-                                    // Get filtered MSA data and recompute properties based on current filtering
-                                    const filteredMSAData = window.MSAViewer.getMSAData();
-                                    if (filteredMSAData) {
-                                        // Clear existing properties to force recomputation on filtered data
-                                        filteredMSAData.frequencies = null;
-                                        filteredMSAData.entropy = null;
-                                        filteredMSAData.logOdds = null;
-                                        // Compute properties on filtered data
-                                        if (typeof computeMSAProperties === 'function') {
-                                            computeMSAProperties(filteredMSAData);
-                                        }
-                                        // Update stored MSA data with filtered data and recomputed properties
-                                        msaEntry.msaData = filteredMSAData;
+                                    if (msaEntry && msaEntry.msaData && window.MSAViewer) {
+                                        // Load MSA data into viewer
+                                        loadMSADataIntoViewer(msaEntry.msaData, chainToLoad, renderer.currentObjectName);
                                     }
-                                    
-                                    // Update chain selector
-                                    if (window.updateMSAChainSelectorIndex) {
-                                        window.updateMSAChainSelectorIndex();
-                                    }
-                                }
                             }
                         }
                         
@@ -6488,9 +6053,6 @@ async function loadViewerState(stateData) {
                             if (ss.positions !== undefined && Array.isArray(ss.positions)) {
                                 // New format: positions array
                                 positions = new Set(ss.positions.filter(a => typeof a === 'number' && a >= 0));
-                            } else if (ss.atoms !== undefined && Array.isArray(ss.atoms)) {
-                                // Legacy format: atoms array (for backward compatibility during transition)
-                                positions = new Set(ss.atoms.filter(a => typeof a === 'number' && a >= 0));
                             }
                             // If positions is missing or invalid, positions remains empty Set
                             
