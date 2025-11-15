@@ -71,7 +71,7 @@ if (!window.py2dmol_viewers) {
     SimpleCanvas2SVG.prototype.fill = function() {
         if (!this.currentPath || this.currentPath.length === 0) return;
         
-        // Check if single full circle (atoms)
+        // Check if single full circle (positions)
         if (this.currentPath.length === 1 && this.currentPath[0].type === 'CIRCLE') {
             const c = this.currentPath[0];
             this.operations.push({
@@ -258,6 +258,25 @@ function initializePy2DmolViewer(containerElement) {
     
     function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
     function getPlddtColor_Colorblind(plddt) { return getPlddtRainbowColor_Colorblind(plddt, 50, 90); }
+    
+    // Entropy color: low entropy (conserved, blue) to high entropy (variable, red)
+    // Entropy values are normalized 0-1, where 0 = conserved, 1 = variable
+    function getEntropyColor(entropy) {
+        // Clamp entropy to 0-1 range
+        const normalized = Math.max(0, Math.min(1, entropy || 0));
+        // Low entropy (conserved) -> blue (240), high entropy (variable) -> red (0)
+        const hue = 240 * (1 - normalized); // 0 -> 240 (blue), 1 -> 0 (red)
+        return hsvToRgb(hue, 1.0, 1.0);
+    }
+    
+    // Entropy colorblind: low entropy (conserved, blue) to high entropy (yellow)
+    function getEntropyColor_Colorblind(entropy) {
+        // Clamp entropy to 0-1 range
+        const normalized = Math.max(0, Math.min(1, entropy || 0));
+        // Low entropy (conserved) -> blue (240), high entropy (variable) -> yellow (60)
+        const hue = 240 - normalized * 180; // 240 -> 60 (blue to yellow)
+        return hsvToRgb(hue, 1.0, 1.0);
+    }
 
     function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
     
@@ -285,7 +304,7 @@ function initializePy2DmolViewer(containerElement) {
     };
     
     // Width calculation parameters
-    const ATOM_WIDTH_MULTIPLIER = 0.5;      // Fixed width for atoms (zero-length segments)
+    const ATOM_WIDTH_MULTIPLIER = 0.5;      // Fixed width for positions (zero-length segments)
     
     // Shadow/tint parameters
     const SHADOW_CUTOFF_MULTIPLIER = 2.0;   // shadow_cutoff = avgLen * 2.0
@@ -304,10 +323,10 @@ function initializePy2DmolViewer(containerElement) {
             this.canvas = canvas;
             this.ctx = canvas.getContext('2d');
             
-            // Store screen positions of atoms for fast highlight drawing
-            // Array of {x, y, radius} for each atom index, updated during render()
+            // Store screen positions of positions for fast highlight drawing
+            // Array of {x, y, radius} for each position index, updated during render()
             // Used by sequence viewer to draw highlights on overlay canvas
-            this.atomScreenPositions = null;
+            this.positionScreenPositions = null;
             
             // Unified cutoff for performance optimizations (inertia, caching, grid-based shadows)
             this.LARGE_MOLECULE_CUTOFF = 1000;
@@ -340,10 +359,16 @@ function initializePy2DmolViewer(containerElement) {
             this.coords = []; // This is now an array of Vec3 objects
             this.plddts = [];
             this.chains = [];
-            this.atomTypes = [];
+            this.positionTypes = [];
+            this.entropy = undefined;
             
-            // Viewer state - Color mode: auto, chain, rainbow, or plddt
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            // Cache for resolved entropy array (same for all frames, so cache it)
+            this.cachedResolvedEntropy = null;
+            this.cachedEntropyObjectName = null;
+            this.cachedEntropyPositionCount = null;
+            
+            // Viewer state - Color mode: auto, chain, rainbow, plddt, or entropy
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             this.colorMode = (config.color && validModes.includes(config.color)) ? config.color : 'auto';
             // Ensure it's always valid
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
@@ -360,7 +385,7 @@ function initializePy2DmolViewer(containerElement) {
             this.perspectiveEnabled = false; // false = orthographic, true = perspective
             this.focalLength = 200.0; // Will be set by ortho slider based on object size
             
-            // Temporary center and extent for orienting to visible atoms
+            // Temporary center and extent for orienting to visible positions
             this.temporaryCenter = null;
             this.temporaryExtent = null;
             
@@ -436,24 +461,24 @@ function initializePy2DmolViewer(containerElement) {
             
             // PAE and Visibility
             this.paeRenderer = null;
-            this.visibilityMask = null; // Set of atom indices to *show*
-            this.highlightedAtom = null; // To store atom index for highlighting
-            this.highlightedAtoms = null; // To store Set of atom indices for highlighting multiple atoms
+            this.visibilityMask = null; // Set of position indices to *show*
+            this.highlightedAtom = null; // To store position index for highlighting (property name kept for API compatibility)
+            this.highlightedAtoms = null; // To store Set of position indices for highlighting multiple positions (property name kept for API compatibility)
 
             // [PATCH] Unified selection model (sequence/chain + PAE)
-            // atoms: Set of atom indices (0, 1, 2, ...) - one atom = one position
+            // positions: Set of position indices (0, 1, 2, ...) - one position per entry in frame data
             // chains: Set of chain IDs (empty => all chains)
             // paeBoxes: Array of selection rectangles in PAE position space {i_start,i_end,j_start,j_end}
             // selectionMode: 'default' = empty selection means "show all" (initial state)
             //                'explicit' = empty selection means "show nothing" (user cleared)
             this.selectionModel = {
-                atoms: new Set(), // Atom indices: 0, 1, 2, ... (one atom = one position)
+                positions: new Set(), // Position indices: 0, 1, 2, ... (one position per entry in frame data)
                 chains: new Set(),
                 paeBoxes: [],
                 selectionMode: 'default' // Start in default mode (show all)
             };
 
-            // Ligand groups: Map of ligand group keys to arrays of atom indices
+            // Ligand groups: Map of ligand group keys to arrays of position indices
             // Computed when frame data is loaded, used by sequence and PAE viewers
             this.ligandGroups = new Map();
 
@@ -507,9 +532,9 @@ function initializePy2DmolViewer(containerElement) {
         // [PATCH] --- Unified Selection API ---
         setSelection(patch, skip3DRender = false) {
             if (!patch) return;
-            if (patch.atoms !== undefined) {
-                const a = patch.atoms;
-                this.selectionModel.atoms = (a instanceof Set) ? new Set(a) : new Set(Array.from(a || []));
+            if (patch.positions !== undefined) {
+                const a = patch.positions;
+                this.selectionModel.positions = (a instanceof Set) ? new Set(a) : new Set(Array.from(a || []));
             }
             if (patch.chains !== undefined) {
                 const c = patch.chains;
@@ -536,7 +561,7 @@ function initializePy2DmolViewer(containerElement) {
         getSelection() {
             const m = this.selectionModel;
             return {
-                atoms: new Set(m.atoms),
+                positions: new Set(m.positions),
                 chains: new Set(m.chains),
                 paeBoxes: m.paeBoxes.map(b => ({...b})),
                 selectionMode: m.selectionMode
@@ -545,7 +570,7 @@ function initializePy2DmolViewer(containerElement) {
 
         resetSelection() {
             this.selectionModel = { 
-                atoms: new Set(), 
+                positions: new Set(), 
                 chains: new Set(), 
                 paeBoxes: [],
                 selectionMode: 'default'
@@ -553,7 +578,7 @@ function initializePy2DmolViewer(containerElement) {
             this._composeAndApplyMask();
         }
 
-        // Reset to default state: show all atoms
+        // Reset to default state: show all positions
         resetToDefault() {
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
@@ -561,10 +586,10 @@ function initializePy2DmolViewer(containerElement) {
                 return;
             }
             
-            // Select all atoms (one atom = one position)
-            const allAtoms = new Set();
+            // Select all positions (one position per entry in frame data)
+            const allPositions = new Set();
             for (let i = 0; i < n; i++) {
-                allAtoms.add(i);
+                allPositions.add(i);
             }
             
             // Select all chains
@@ -572,7 +597,7 @@ function initializePy2DmolViewer(containerElement) {
             
             // Clear PAE boxes when resetting to default (select all)
             this.setSelection({
-                atoms: allAtoms,
+                positions: allPositions,
                 chains: allChains,
                 paeBoxes: [],
                 selectionMode: 'default'
@@ -582,7 +607,7 @@ function initializePy2DmolViewer(containerElement) {
         // Clear all selections: show nothing (explicit mode)
         clearSelection() {
             this.setSelection({
-                atoms: new Set(),
+                positions: new Set(),
                 chains: new Set(),
                 paeBoxes: [],
                 selectionMode: 'explicit'
@@ -599,8 +624,8 @@ function initializePy2DmolViewer(containerElement) {
                 return;
             }
 
-            // (1) Atom/Chain contribution
-            // Always compute atom selection - it works together with PAE via UNION
+            // (1) Position/Chain contribution
+            // Always compute position selection - it works together with PAE via UNION
             let allowedChains;
             if (this.selectionModel.chains && this.selectionModel.chains.size > 0) {
                 allowedChains = this.selectionModel.chains;
@@ -609,52 +634,52 @@ function initializePy2DmolViewer(containerElement) {
                 allowedChains = new Set(this.chains);
             }
 
-            let seqAtoms = null;
-            if ((this.selectionModel.atoms && this.selectionModel.atoms.size > 0) ||
+            let seqPositions = null;
+            if ((this.selectionModel.positions && this.selectionModel.positions.size > 0) ||
                 (this.selectionModel.chains && this.selectionModel.chains.size > 0)) {
-                seqAtoms = new Set();
+                seqPositions = new Set();
                 for (let i = 0; i < n; i++) {
                     const ch = this.chains[i];
                     if (!allowedChains.has(ch)) continue;
-                    // If atoms are explicitly selected, check if this atom is in the set
-                    // If no atoms selected but chains are, include all atoms in allowed chains
-                    if (this.selectionModel.atoms.size === 0 || this.selectionModel.atoms.has(i)) {
-                        seqAtoms.add(i);
+                    // If positions are explicitly selected, check if this position is in the set
+                    // If no positions selected but chains are, include all positions in allowed chains
+                    if (this.selectionModel.positions.size === 0 || this.selectionModel.positions.has(i)) {
+                        seqPositions.add(i);
                     }
                 }
             }
 
-            // (2) PAE contribution: expand i/j ranges into atom indices
+            // (2) PAE contribution: expand i/j ranges into position indices
             // PAE boxes are in PAE position space (0, 1, 2, ... for PAE matrix)
-            // If PAE data exists, it maps PAE positions to atom indices
-            // For now, assume PAE positions directly map to atom indices (0, 1, 2, ...)
-            // PAE may only cover subset of atoms (e.g., only polymer)
-            // Handled by mapping PAE positions directly to atom indices
-            let paeAtoms = null;
+            // If PAE data exists, it maps PAE positions to position indices
+            // For now, assume PAE positions directly map to position indices (0, 1, 2, ...)
+            // PAE may only cover subset of positions (e.g., only polymer)
+            // Handled by mapping PAE positions directly to position indices
+            let paePositions = null;
             if (this.selectionModel.paeBoxes && this.selectionModel.paeBoxes.length > 0) {
-                paeAtoms = new Set();
+                paePositions = new Set();
                 for (const box of this.selectionModel.paeBoxes) {
                     const i0 = Math.max(0, Math.min(n - 1, Math.min(box.i_start, box.i_end)));
                     const i1 = Math.max(0, Math.min(n - 1, Math.max(box.i_start, box.i_end)));
                     const j0 = Math.max(0, Math.min(n - 1, Math.min(box.j_start, box.j_end)));
                     const j1 = Math.max(0, Math.min(n - 1, Math.max(box.j_start, box.j_end)));
-                    // PAE positions map directly to atom indices (one atom = one position)
+                    // PAE positions map directly to position indices (one position per entry in frame data)
                     for (let r = i0; r <= i1; r++) { 
-                        if (r < n) paeAtoms.add(r); 
+                        if (r < n) paePositions.add(r); 
                     }
                     for (let r = j0; r <= j1; r++) { 
-                        if (r < n) paeAtoms.add(r); 
+                        if (r < n) paePositions.add(r); 
                     }
                 }
             }
 
             // (3) Combine via UNION
             let combined = null;
-            if (seqAtoms && paeAtoms) {
-                combined = new Set(seqAtoms);
-                for (const a of paeAtoms) combined.add(a);
+            if (seqPositions && paePositions) {
+                combined = new Set(seqPositions);
+                for (const a of paePositions) combined.add(a);
             } else {
-                combined = seqAtoms || paeAtoms;
+                combined = seqPositions || paePositions;
             }
 
             // (4) Apply based on selection mode
@@ -700,7 +725,7 @@ function initializePy2DmolViewer(containerElement) {
                         detail: { 
                             hasSelection: this.visibilityMask !== null && this.visibilityMask.size > 0,
                             selectionModel: {
-                                atoms: Array.from(this.selectionModel.atoms),
+                                positions: Array.from(this.selectionModel.positions),
                                 chains: Array.from(this.selectionModel.chains),
                                 paeBoxes: this.selectionModel.paeBoxes.map(b => ({...b})),
                                 selectionMode: this.selectionModel.selectionMode
@@ -1313,7 +1338,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.objectsData[name].maxExtent = 0;
                 this.objectsData[name].stdDev = 0;
                 this.objectsData[name].globalCenterSum = new Vec3(0,0,0);
-                this.objectsData[name].totalAtoms = 0;
+                this.objectsData[name].totalPositions = 0;
                 // Reset inheritance tracking
                 this.objectsData[name]._lastPlddtFrame = -1;
                 this.objectsData[name]._lastPaeFrame = -1;
@@ -1324,7 +1349,7 @@ function initializePy2DmolViewer(containerElement) {
                     stdDev: 0, 
                     frames: [], 
                     globalCenterSum: new Vec3(0,0,0), 
-                    totalAtoms: 0,
+                    totalPositions: 0,
                     _lastPlddtFrame: -1,
                     _lastPaeFrame: -1
                 };
@@ -1405,7 +1430,7 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
 
-            // Update global center sum and count (from all atoms for viewing)
+            // Update global center sum and count (from all positions for viewing)
             let frameSum = new Vec3(0,0,0);
             let frameAtoms = 0;
             if (data && data.coords) {
@@ -1415,15 +1440,15 @@ function initializePy2DmolViewer(containerElement) {
                     frameSum = frameSum.add(new Vec3(c[0], c[1], c[2]));
                 }
                 object.globalCenterSum = object.globalCenterSum.add(frameSum);
-                object.totalAtoms += frameAtoms;
+                object.totalPositions += frameAtoms;
             }
             
-            const globalCenter = (object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0);
+            const globalCenter = (object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0,0,0);
 
             // Recalculate maxExtent and standard deviation for all frames using the new global center
             let maxDistSq = 0;
             let sumDistSq = 0;
-            let atomCount = 0;
+            let positionCount = 0;
             for (const frame of object.frames) {
                 if (frame && frame.coords) {
                     for (let i = 0; i < frame.coords.length; i++) {
@@ -1433,13 +1458,13 @@ function initializePy2DmolViewer(containerElement) {
                         const distSq = centeredCoord.dot(centeredCoord);
                         if (distSq > maxDistSq) maxDistSq = distSq;
                         sumDistSq += distSq;
-                        atomCount++;
+                        positionCount++;
                     }
                 }
             }
             object.maxExtent = Math.sqrt(maxDistSq);
             // Calculate standard deviation: sqrt(mean of squared distances)
-            object.stdDev = atomCount > 0 ? Math.sqrt(sumDistSq / atomCount) : 0;
+            object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
 
             // Skip setFrame during batch loading to avoid expensive renders
             // We'll render once at the end in updateViewerFromGlobalBatch
@@ -1493,40 +1518,40 @@ function initializePy2DmolViewer(containerElement) {
                 return;
             }
 
-            // Get selected atoms (selection is frame-independent, so use first frame to determine indices)
-            let selectedAtoms = new Set();
+            // Get selected positions (selection is frame-independent, so use first frame to determine indices)
+            let selectedPositions = new Set();
             
             // Check selectionModel first (explicit selection)
-            if (this.selectionModel && this.selectionModel.atoms && this.selectionModel.atoms.size > 0) {
-                selectedAtoms = new Set(this.selectionModel.atoms);
+            if (this.selectionModel && this.selectionModel.positions && this.selectionModel.positions.size > 0) {
+                selectedPositions = new Set(this.selectionModel.positions);
             } else if (this.visibilityMask !== null && this.visibilityMask.size > 0) {
                 // Use visibilityMask if available
-                selectedAtoms = new Set(this.visibilityMask);
+                selectedPositions = new Set(this.visibilityMask);
             } else {
-                // No selection - all atoms visible (could extract all, but warn user)
-                console.warn("No selection found. All atoms are visible. Extracting all atoms.");
-                // Extract all atoms
+                // No selection - all positions visible (could extract all, but warn user)
+                console.warn("No selection found. All positions are visible. Extracting all positions.");
+                // Extract all positions
                 for (let i = 0; i < firstFrame.coords.length; i++) {
-                    selectedAtoms.add(i);
+                    selectedPositions.add(i);
                 }
             }
 
-            if (selectedAtoms.size === 0) {
+            if (selectedPositions.size === 0) {
                 console.warn("Selection is empty. Cannot extract.");
                 return;
             }
 
             // Convert to sorted array for consistent ordering
-            const selectedIndices = Array.from(selectedAtoms).sort((a, b) => a - b);
+            const selectedIndices = Array.from(selectedPositions).sort((a, b) => a - b);
 
             // Generate object name with chain ranges: name_A1-100_B10-20 or name_A_B (if entire chains)
             const baseName = this.currentObjectName;
             
-            // Group selected atoms by chain and find residue ranges (use first frame for naming)
+            // Group selected positions by chain and find position index ranges (use first frame for naming)
             const chainRanges = new Map(); // chain -> {min, max, selectedCount, totalCount}
             
-            // First, count total atoms per chain in original frame
-            const chainTotalCounts = new Map(); // chain -> total atom count
+            // First, count total positions per chain in original frame
+            const chainTotalCounts = new Map(); // chain -> total position count
             if (firstFrame.chains) {
                 for (let i = 0; i < firstFrame.chains.length; i++) {
                     const chain = firstFrame.chains[i];
@@ -1534,13 +1559,13 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
-            // Then, count selected atoms per chain and find ranges
-            const chainSelectedCounts = new Map(); // chain -> selected atom count
-            if (firstFrame.chains && firstFrame.residue_index) {
+            // Then, count selected positions per chain and find ranges
+            const chainSelectedCounts = new Map(); // chain -> selected position count
+            if (firstFrame.chains && firstFrame.position_index) {
                 for (const idx of selectedIndices) {
-                    if (idx < firstFrame.chains.length && idx < firstFrame.residue_index.length) {
+                    if (idx < firstFrame.chains.length && idx < firstFrame.position_index.length) {
                         const chain = firstFrame.chains[idx];
-                        const resIdx = firstFrame.residue_index[idx];
+                        const resIdx = firstFrame.position_index[idx];
                         
                         chainSelectedCounts.set(chain, (chainSelectedCounts.get(chain) || 0) + 1);
                         
@@ -1576,7 +1601,7 @@ function initializePy2DmolViewer(containerElement) {
                 }
                 extractName = `${baseName}_${chainParts.join('_')}`;
             } else {
-                // Fallback if no chain/residue info
+                // Fallback if no chain/position info
                 extractName = `${baseName}_extracted`;
             }
             
@@ -1606,18 +1631,18 @@ function initializePy2DmolViewer(containerElement) {
                 const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
                 const sourcePae = resolvedPae !== null ? resolvedPae : frame.pae;
 
-                // Extract frame data for selected atoms
+                // Extract frame data for selected positions
                 const extractedFrame = {
                     coords: [],
                     chains: frame.chains ? [] : undefined,
                     plddts: sourcePlddt ? [] : undefined,
-                    atom_types: frame.atom_types ? [] : undefined,
-                    residues: frame.residues ? [] : undefined,
-                    residue_index: frame.residue_index ? [] : undefined,
+                    position_types: frame.position_types ? [] : undefined,
+                    position_names: frame.position_names ? [] : undefined,
+                    position_index: frame.position_index ? [] : undefined,
                     pae: undefined // Will be handled separately
                 };
 
-                // Extract data for each selected atom
+                // Extract data for each selected position
                 for (const idx of selectedIndices) {
                     if (idx >= 0 && idx < frame.coords.length) {
                         extractedFrame.coords.push(frame.coords[idx]);
@@ -1628,14 +1653,14 @@ function initializePy2DmolViewer(containerElement) {
                         if (sourcePlddt && idx < sourcePlddt.length) {
                             extractedFrame.plddts.push(sourcePlddt[idx]);
                         }
-                        if (frame.atom_types && idx < frame.atom_types.length) {
-                            extractedFrame.atom_types.push(frame.atom_types[idx]);
+                        if (frame.position_types && idx < frame.position_types.length) {
+                            extractedFrame.position_types.push(frame.position_types[idx]);
                         }
-                        if (frame.residues && idx < frame.residues.length) {
-                            extractedFrame.residues.push(frame.residues[idx]);
+                        if (frame.position_names && idx < frame.position_names.length) {
+                            extractedFrame.position_names.push(frame.position_names[idx]);
                         }
-                        if (frame.residue_index && idx < frame.residue_index.length) {
-                            extractedFrame.residue_index.push(frame.residue_index[idx]);
+                        if (frame.position_index && idx < frame.position_index.length) {
+                            extractedFrame.position_index.push(frame.position_index[idx]);
                         }
                     }
                 }
@@ -1664,9 +1689,9 @@ function initializePy2DmolViewer(containerElement) {
                 this.addFrame(extractedFrame, extractName);
             }
 
-            // Reset selection to show all atoms in extracted object
+            // Reset selection to show all positions in extracted object
             this.setSelection({
-                atoms: new Set(),
+                positions: new Set(),
                 chains: new Set(),
                 paeBoxes: [],
                 selectionMode: 'default'
@@ -1693,7 +1718,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.objectSelect.dispatchEvent(new Event('change'));
             }
 
-            console.log(`Extracted ${selectedIndices.length} atoms from ${object.frames.length} frame(s) to new object: ${extractName}`);
+            console.log(`Extracted ${selectedIndices.length} positions from ${object.frames.length} frame(s) to new object: ${extractName}`);
         }
 
         // Set the current frame and render it
@@ -2478,10 +2503,11 @@ function initializePy2DmolViewer(containerElement) {
                         coords,
                         data.plddts,
                         data.chains,
-                        data.atom_types,
+                        data.position_types,
                         (data.pae && data.pae.length > 0),
-                        data.residues,
-                        data.residue_index,
+                        data.position_names,
+                        data.position_index,
+                        data.entropy,
                         skipRender
                     );
                 }
@@ -2490,12 +2516,12 @@ function initializePy2DmolViewer(containerElement) {
             }
         }
 
-        setCoords(coords, plddts, chains, atomTypes, hasPAE = false, residues, residue_index, skipRender = false) {
+        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, positionIndex, entropy, skipRender = false) {
             this.coords = coords;
             const n = this.coords.length;
             
             // Ensure colorMode is valid
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
             }
@@ -2507,9 +2533,11 @@ function initializePy2DmolViewer(containerElement) {
             // --- Handle Defaults for Missing Data ---
             this.plddts = (plddts && plddts.length === n) ? plddts : Array(n).fill(50.0);
             this.chains = (chains && chains.length === n) ? chains : Array(n).fill('A');
-            this.atomTypes = (atomTypes && atomTypes.length === n) ? atomTypes : Array(n).fill('P');
-            this.residues = (residues && residues.length === n) ? residues : Array(n).fill('UNK');
-            this.residue_index = (residue_index && residue_index.length === n) ? residue_index : Array.from({length: n}, (_, i) => i + 1);
+            this.positionTypes = (positionTypes && positionTypes.length === n) ? positionTypes : Array(n).fill('P');
+            this.positionNames = (positionNames && positionNames.length === n) ? positionNames : Array(n).fill('UNK');
+            this.positionIndex = (positionIndex && positionIndex.length === n) ? positionIndex : Array.from({length: n}, (_, i) => i + 1);
+            // Entropy: store as array indexed by position index (undefined for positions without entropy data)
+            this.entropy = (entropy && entropy.length === n) ? entropy : undefined;
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
@@ -2547,7 +2575,7 @@ function initializePy2DmolViewer(containerElement) {
                     let hasNonLigand = false;
                     for (let i = 0; i < n; i++) {
                         if (this.chains[i] === chainId) {
-                            const type = this.atomTypes[i];
+                            const type = this.positionTypes[i];
                             if (type === 'P' || type === 'D' || type === 'R') {
                                 hasNonLigand = true;
                                 break;
@@ -2561,15 +2589,15 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
 
-            // No longer need polymerAtomIndices - all atoms are treated the same
-            // (One atom = one position, no distinction between polymer/ligand)
+            // No longer need polymerPositionIndices - all positions are treated the same
+            // (One position = one position, no distinction between polymer/ligand)
 
             // Pre-calculate per-chain indices for rainbow coloring (N-to-C)
             // Include ligands in ligand-only chains for rainbow coloring
             this.perChainIndices = new Array(n);
             const chainIndices = {}; // Temporary tracker
             for (let i = 0; i < n; i++) {
-                const type = this.atomTypes[i];
+                const type = this.positionTypes[i];
                 const chainId = this.chains[i] || 'A';
                 const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
                 
@@ -2587,8 +2615,8 @@ function initializePy2DmolViewer(containerElement) {
             // Pre-calculate rainbow scales
             // Include ligands in ligand-only chains for rainbow coloring
             this.chainRainbowScales = {};
-            for (let i = 0; i < this.atomTypes.length; i++) {
-                const type = this.atomTypes[i];
+            for (let i = 0; i < this.positionTypes.length; i++) {
+                const type = this.positionTypes[i];
                 const chainId = this.chains[i] || 'A';
                 const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
                 
@@ -2604,13 +2632,13 @@ function initializePy2DmolViewer(containerElement) {
             }
 
             // Compute ligand groups using shared utility function
-            // This groups ligands by chain, residue_index, and residue_name (if available)
+            // This groups ligands by chain, position_index, and position_name (if available)
             if (typeof groupLigandAtoms === 'function') {
                 this.ligandGroups = groupLigandAtoms(
                     this.chains,
-                    this.atomTypes,
-                    this.residue_index,
-                    this.residues
+                    this.positionTypes,
+                    this.positionIndex,
+                    this.positionNames
                 );
             } else {
                 // Fallback: empty map if utility function not available
@@ -2645,9 +2673,9 @@ function initializePy2DmolViewer(containerElement) {
             let lastPolymerIndex = -1;
             const ligandIndicesByChain = new Map(); // Group ligands by chain
             
-            // Helper function to check if atom type is polymer (for rendering only)
+            // Helper function to check if position type is polymer (for rendering only)
             const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
-            const isPolymerArr = this.atomTypes.map(isPolymer);
+            const isPolymerArr = this.positionTypes.map(isPolymer);
             
             const getChainbreakDistSq = (type1, type2) => {
                 if ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R')) {
@@ -2658,14 +2686,14 @@ function initializePy2DmolViewer(containerElement) {
             
             for (let i = 0; i < n; i++) {
                 if (isPolymerArr[i]) {
-                    const type = this.atomTypes[i];
+                    const type = this.positionTypes[i];
                     if (firstPolymerIndex === -1) { firstPolymerIndex = i; }
                     lastPolymerIndex = i;
                     
                     if (i < n - 1) {
                         if (isPolymerArr[i+1]) {
                             const type1 = type;
-                            const type2 = this.atomTypes[i+1];
+                            const type2 = this.positionTypes[i+1];
                             const samePolymerType = (type1 === type2) || 
                                 ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
                             
@@ -2689,7 +2717,7 @@ function initializePy2DmolViewer(containerElement) {
                             }
                         }
                     }
-                } else if (this.atomTypes[i] === 'L') {
+                } else if (this.positionTypes[i] === 'L') {
                     // Group ligand indices by chain
                     const chainId = this.chains[i] || 'A';
                     if (!ligandIndicesByChain.has(chainId)) {
@@ -2704,8 +2732,8 @@ function initializePy2DmolViewer(containerElement) {
                 const lastChainId = this.chains[lastPolymerIndex] || 'A';
                 
                 if (firstChainId === lastChainId && isPolymerArr[firstPolymerIndex] && isPolymerArr[lastPolymerIndex]) {
-                    const type1 = this.atomTypes[firstPolymerIndex];
-                    const type2 = this.atomTypes[lastPolymerIndex];
+                    const type1 = this.positionTypes[firstPolymerIndex];
+                    const type2 = this.positionTypes[lastPolymerIndex];
                     const samePolymerType = (type1 === type2) || 
                         ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
                     
@@ -2735,12 +2763,12 @@ function initializePy2DmolViewer(containerElement) {
             // Otherwise, fall back to computing distances within each chain
             if (this.ligandGroups && this.ligandGroups.size > 0) {
                 // Use ligand groups: only compute distances within each group
-                for (const [groupKey, ligandAtomIndices] of this.ligandGroups.entries()) {
+                for (const [groupKey, ligandPositionIndices] of this.ligandGroups.entries()) {
                     // Compute pairwise distances only within this ligand group
-                    for (let i = 0; i < ligandAtomIndices.length; i++) {
-                        for (let j = i + 1; j < ligandAtomIndices.length; j++) {
-                            const idx1 = ligandAtomIndices[i];
-                            const idx2 = ligandAtomIndices[j];
+                    for (let i = 0; i < ligandPositionIndices.length; i++) {
+                        for (let j = i + 1; j < ligandPositionIndices.length; j++) {
+                            const idx1 = ligandPositionIndices[i];
+                            const idx2 = ligandPositionIndices[j];
                             
                             // Skip if indices are out of bounds
                             if (idx1 < 0 || idx1 >= this.coords.length || 
@@ -2774,7 +2802,7 @@ function initializePy2DmolViewer(containerElement) {
                             const idx1 = ligandIndices[i];
                             const idx2 = ligandIndices[j];
                             
-                            // All atoms here are guaranteed to be in the same chain (chainId)
+                            // All positions here are guaranteed to be in the same chain (chainId)
                             
                             const start = this.coords[idx1];
                             const end = this.coords[idx2];
@@ -2795,19 +2823,19 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
-            // Find all disconnected atoms (any type) that don't appear in any segment
+            // Find all disconnected positions (any type) that don't appear in any segment
             // and add them as zero-length segments (will render as circles)
-            const atomsInSegments = new Set();
+            const positionsInSegments = new Set();
             for (const segInfo of this.segmentIndices) {
-                atomsInSegments.add(segInfo.idx1);
-                atomsInSegments.add(segInfo.idx2);
+                positionsInSegments.add(segInfo.idx1);
+                positionsInSegments.add(segInfo.idx2);
             }
             
-            // Add all disconnected atoms as zero-length segments
+            // Add all disconnected positions as zero-length segments
             for (let i = 0; i < this.coords.length; i++) {
-                if (!atomsInSegments.has(i)) {
-                    // This atom is disconnected - add as zero-length segment
-                    const atomType = this.atomTypes[i] || 'P';
+                if (!positionsInSegments.has(i)) {
+                    // This position is disconnected - add as zero-length segment
+                    const positionType = this.positionTypes[i] || 'P';
                     const chainId = this.chains[i] || 'A';
                     const colorIndex = this.perChainIndices[i] || 0;
                     
@@ -2817,8 +2845,8 @@ function initializePy2DmolViewer(containerElement) {
                         colorIndex: colorIndex,
                         origIndex: i,
                         chainId: chainId,
-                        type: atomType,
-                        len: 0 // Zero length indicates disconnected atom
+                        type: positionType,
+                        len: 0 // Zero length indicates disconnected position
                     });
                 }
             }
@@ -2888,11 +2916,52 @@ function initializePy2DmolViewer(containerElement) {
             const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
             const resolvedPae = this._resolvePaeData(object, frameIndex);
             
+            // Resolve entropy: Use new buildEntropyVectorForColoring function
+            // This builds entropy vector from pre-computed MSA entropy (stored in msaData.entropy)
+            let resolvedEntropy = null;
+            
+            // Check if we can use cached entropy (only if cache is valid and matches current object/position count)
+            const chains = data.chains || [];
+            const positionCount = chains.length;
+            const canUseCache = this.cachedResolvedEntropy !== null &&
+                               this.cachedEntropyObjectName === this.currentObjectName &&
+                               this.cachedEntropyPositionCount === positionCount;
+            
+            if (canUseCache) {
+                // Use cached entropy (fast path - no recalculation needed)
+                resolvedEntropy = this.cachedResolvedEntropy;
+            } else {
+                // Build entropy vector from MSA data
+                // Check if buildEntropyVectorForColoring function is available (from app.js)
+                if (typeof window.buildEntropyVectorForColoring === 'function') {
+                    resolvedEntropy = window.buildEntropyVectorForColoring(object, data);
+                } else if (object.msa && object.msa.entropy) {
+                    // Legacy format: single entropy array (fallback)
+                    resolvedEntropy = object.msa.entropy;
+                } else {
+                    // Fall back to frame data (for backward compatibility)
+                    resolvedEntropy = data.entropy;
+                }
+                
+                // Cache the resolved entropy if it's valid
+                if (resolvedEntropy !== null && resolvedEntropy !== undefined && Array.isArray(resolvedEntropy)) {
+                    this.cachedResolvedEntropy = resolvedEntropy;
+                    this.cachedEntropyObjectName = this.currentObjectName;
+                    this.cachedEntropyPositionCount = positionCount;
+                } else {
+                    // Clear cache if no entropy data
+                    this.cachedResolvedEntropy = null;
+                    this.cachedEntropyObjectName = null;
+                    this.cachedEntropyPositionCount = null;
+                }
+            }
+            
             // Create resolved data object (use resolved values if frame doesn't have its own)
             const resolvedData = {
                 ...data,
                 plddts: resolvedPlddt !== null ? resolvedPlddt : data.plddts,
-                pae: resolvedPae !== null ? resolvedPae : data.pae
+                pae: resolvedPae !== null ? resolvedPae : data.pae,
+                entropy: resolvedEntropy // Use object-level entropy (same for all frames)
             };
             
             // Load 3D data (with skipRender option)
@@ -2909,11 +2978,11 @@ function initializePy2DmolViewer(containerElement) {
                                   this.previousObjectName !== this.currentObjectName;
             
             if (objectChanged) {
-                // Object changed: reset to default (show all atoms of new object)
+                // Object changed: reset to default (show all positions of new object)
                 this.resetToDefault();
                 this.previousObjectName = this.currentObjectName; // Update tracking
             } else if (this.selectionModel.selectionMode === 'explicit' && 
-                       this.selectionModel.atoms.size === 0) {
+                       this.selectionModel.positions.size === 0) {
                 // Selection was explicitly cleared, reset to default
                 this.resetToDefault();
             }
@@ -2923,7 +2992,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         _getEffectiveColorMode() {
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
             }
@@ -2937,12 +3006,13 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         getAtomColor(atomIndex) {
+            // Note: parameter name kept as atomIndex for API compatibility, but represents a position index
             if (atomIndex < 0 || atomIndex >= this.coords.length) {
                 return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
             }
 
             const effectiveColorMode = this._getEffectiveColorMode();
-            const type = (this.atomTypes && atomIndex < this.atomTypes.length) ? this.atomTypes[atomIndex] : undefined;
+            const type = (this.positionTypes && atomIndex < this.positionTypes.length) ? this.positionTypes[atomIndex] : undefined;
             let color;
 
             // Ligands should always be grey in chain and rainbow modes (not plddt)
@@ -2952,13 +3022,25 @@ function initializePy2DmolViewer(containerElement) {
                 const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtFunc(plddt);
+            } else if (effectiveColorMode === 'entropy') {
+                const entropyFunc = this.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
+                // Get entropy value from frame data (entropy array indexed by position index)
+                const entropy = (this.entropy && atomIndex < this.entropy.length && this.entropy[atomIndex] !== undefined) 
+                    ? this.entropy[atomIndex] 
+                    : undefined;
+                if (entropy !== undefined) {
+                    color = entropyFunc(entropy);
+                } else {
+                    // No entropy data for this position (ligand, RNA/DNA, or missing data) - use default grey
+                    color = { r: 128, g: 128, b: 128 };
+                }
             } else if (effectiveColorMode === 'chain') {
                 const chainId = this.chains[atomIndex] || 'A';
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
-                    // Ligands in chains with P/D/R atoms are grey
+                    // Ligands in chains with P/D/R positions are grey
                     color = { r: 128, g: 128, b: 128 };
                 } else {
-                    // Regular atoms, or ligands in ligand-only chains, get chain color
+                    // Regular positions, or ligands in ligand-only chains, get chain color
                     if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
                         const chainIndex = this.chainIndexMap.get(chainId);
                         const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
@@ -2976,7 +3058,7 @@ function initializePy2DmolViewer(containerElement) {
                     // All ligands are grey in rainbow mode
                     color = { r: 128, g: 128, b: 128 };
                 } else {
-                    // Regular atoms get rainbow color
+                    // Regular positions get rainbow color
                     const chainId = this.chains[atomIndex] || 'A';
                     const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
                     const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
@@ -3013,9 +3095,9 @@ function initializePy2DmolViewer(containerElement) {
 
             // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
             return this.segmentIndices.map(segInfo => {
-                const atomIndex = segInfo.origIndex;
+                const positionIndex = segInfo.origIndex;
                 // getAtomColor() already handles all color modes, ligands, ligand-only chains, pastel, etc.
-                return this.getAtomColor(atomIndex);
+                return this.getAtomColor(positionIndex);
             });
         }
 
@@ -3030,15 +3112,15 @@ function initializePy2DmolViewer(containerElement) {
             
             for (let i = 0; i < m; i++) {
                 const segInfo = this.segmentIndices[i];
-                const atomIdx = segInfo.origIndex;
+                const positionIndex = segInfo.origIndex;
                 const type = segInfo.type;
                 let color;
                 
                 if (type === 'L') {
-                    const plddt1 = (this.plddts[atomIdx] !== null && this.plddts[atomIdx] !== undefined) ? this.plddts[atomIdx] : 50;
+                    const plddt1 = (this.plddts[positionIndex] !== null && this.plddts[positionIndex] !== undefined) ? this.plddts[positionIndex] : 50;
                     color = plddtFunc(plddt1); // Use selected plddt function
                 } else {
-                    const plddt1 = (this.plddts[atomIdx] !== null && this.plddts[atomIdx] !== undefined) ? this.plddts[atomIdx] : 50;
+                    const plddt1 = (this.plddts[positionIndex] !== null && this.plddts[positionIndex] !== undefined) ? this.plddts[positionIndex] : 50;
                     const plddt2_idx = (segInfo.idx2 < this.coords.length) ? segInfo.idx2 : segInfo.idx1;
                     const plddt2 = (this.plddts[plddt2_idx] !== null && this.plddts[plddt2_idx] !== undefined) ? this.plddts[plddt2_idx] : 50;
                     color = plddtFunc((plddt1 + plddt2) / 2); // Use selected plddt function
@@ -3100,7 +3182,7 @@ function initializePy2DmolViewer(containerElement) {
          * @returns {number} Width multiplier
          */
         _calculateSegmentWidthMultiplier(segData, segInfo) {
-            // Handle zero-length segments (atoms)
+            // Handle zero-length segments (positions)
             if (segInfo.idx1 === segInfo.idx2) {
                 return this.typeWidthMultipliers?.atom ?? ATOM_WIDTH_MULTIPLIER;
             }
@@ -3128,20 +3210,20 @@ function initializePy2DmolViewer(containerElement) {
             const len1 = s1.len;
             const len2 = s2.len;
             
-            // Handle zero-length segments (atoms)
-            // Use type-based reference length for atoms to ensure proper shadow/tint calculation
-            const isAtom1 = segInfo1.idx1 === segInfo1.idx2;
-            const isAtom2 = segInfo2.idx1 === segInfo2.idx2;
+            // Handle zero-length segments (positions)
+            // Use type-based reference length for positions to ensure proper shadow/tint calculation
+            const isPosition1 = segInfo1.idx1 === segInfo1.idx2;
+            const isPosition2 = segInfo2.idx1 === segInfo2.idx2;
             
             // Calculate effective lengths for cutoff calculation
             let effectiveLen1 = len1;
             let effectiveLen2 = len2;
             
-            if (isAtom1) {
-                // For atoms, use type-based reference length
+            if (isPosition1) {
+                // For positions, use type-based reference length
                 effectiveLen1 = REF_LENGTHS[segInfo1.type] ?? REF_LENGTHS['P'];
             }
-            if (isAtom2) {
+            if (isPosition2) {
                 effectiveLen2 = REF_LENGTHS[segInfo2.type] ?? REF_LENGTHS['P'];
             }
             
@@ -3243,8 +3325,8 @@ function initializePy2DmolViewer(containerElement) {
                 return;
             }
 
-            // Use temporary center if set (for orienting to visible atoms), otherwise use global center
-            const globalCenter = (object && object.totalAtoms > 0) ? object.globalCenterSum.mul(1 / object.totalAtoms) : new Vec3(0,0,0);
+            // Use temporary center if set (for orienting to visible positions), otherwise use global center
+            const globalCenter = (object && object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0,0,0);
             const c = this.temporaryCenter || globalCenter;
             
             // Update pre-allocated rotatedCoords
@@ -3299,7 +3381,7 @@ function initializePy2DmolViewer(containerElement) {
             const visibilityMask = this.visibilityMask;
             
             // Build list of visible segment indices early - this is the key optimization
-            // A segment is visible if both atoms are visible (or no mask = all visible)
+            // A segment is visible if both positions are visible (or no mask = all visible)
             const visibleSegmentIndices = [];
             for (let i = 0; i < n; i++) {
                 const segInfo = segments[i];
@@ -3314,7 +3396,7 @@ function initializePy2DmolViewer(containerElement) {
             const zValues = new Float32Array(n);
             let zMin = Infinity;
             let zMax = -Infinity;
-            // Also track min/max from actual atom positions (for outline width calculation)
+            // Also track min/max from actual position coordinates (for outline width calculation)
             let zMinAtoms = Infinity;
             let zMaxAtoms = -Infinity;
             const segData = this.segData; // Use pre-allocated array
@@ -3336,7 +3418,7 @@ function initializePy2DmolViewer(containerElement) {
                 if (z < zMin) zMin = z;
                 if (z > zMax) zMax = z;
                 
-                // Track atom z-coordinates for outline calculation
+                // Track position z-coordinates for outline calculation
                 if (start.z < zMinAtoms) zMinAtoms = start.z;
                 if (start.z > zMaxAtoms) zMaxAtoms = start.z;
                 if (end.z < zMinAtoms) zMinAtoms = end.z;
@@ -3354,14 +3436,14 @@ function initializePy2DmolViewer(containerElement) {
             
             const zNorm = new Float32Array(n);
             
-            // Count visible atoms for performance mode determination
-            let numVisibleAtoms;
+            // Count visible positions for performance mode determination
+            let numVisiblePositions;
             if (!visibilityMask) {
-                // All atoms are visible
-                numVisibleAtoms = this.coords.length;
+                // All positions are visible
+                numVisiblePositions = this.coords.length;
             } else {
-                // Count atoms in visibility mask
-                numVisibleAtoms = visibilityMask.size;
+                // Count positions in visibility mask
+                numVisiblePositions = visibilityMask.size;
             }
             
             // Collect z-values from visible segments only (for depth calculation)
@@ -3470,17 +3552,17 @@ function initializePy2DmolViewer(containerElement) {
             
             // visibilityMask already declared above for depth calculation
             
-            // Determine fast/slow mode based on visible atoms (not total segments)
-            // Fast mode: skip expensive operations when many visible atoms
-            // Slow mode: full quality rendering when few visible atoms
-            const isFastMode = numVisibleAtoms > this.LARGE_MOLECULE_CUTOFF;
+            // Determine fast/slow mode based on visible positions (not total segments)
+            // Fast mode: skip expensive operations when many visible positions
+            // Slow mode: full quality rendering when few visible positions
+            const isFastMode = numVisiblePositions > this.LARGE_MOLECULE_CUTOFF;
             const isLargeMolecule = n > this.LARGE_MOLECULE_CUTOFF;
             
             // Check if rotation changed (shadows depend on 3D positions, not width/ortho)
             // Shadows only need recalculation when rotation changes, not when width/ortho changes
             const rotationChanged = !this._rotationMatricesEqual(this.rotationMatrix, this.lastShadowRotationMatrix);
             
-            // For fast mode (many visible atoms), skip expensive shadow calculations during dragging, zooming, or orient animation - use cached
+            // For fast mode (many visible positions), skip expensive shadow calculations during dragging, zooming, or orient animation - use cached
             // During zoom, shadows don't change, so reuse cached values
             // During drag, use cached for performance, but recalculate after drag stops
             // During orient animation, use cached for performance, but recalculate after animation completes
@@ -3491,7 +3573,7 @@ function initializePy2DmolViewer(containerElement) {
             );
             
             if (renderShadows && !skipShadowCalc) {
-                // Use fast mode threshold based on visible atoms, not total segments
+                // Use fast mode threshold based on visible positions, not total segments
                 if (!isFastMode) {
                     // Only process visible segments in outer loop
                     for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
@@ -3522,7 +3604,7 @@ function initializePy2DmolViewer(containerElement) {
                         shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
                         tints[i] = 1 - maxTint;
                     }
-                } else { // Fast mode: many visible atoms, use grid-based optimization
+                } else { // Fast mode: many visible positions, use grid-based optimization
                     // Increase grid resolution for large structures to reduce segments per cell
                     // Target: ~5-10 segments per cell for better performance
                     let GRID_DIM = Math.ceil(Math.sqrt(numVisibleSegments / 5)); 
@@ -3706,7 +3788,7 @@ function initializePy2DmolViewer(containerElement) {
             // This should not happen, but if it does, they'll be filled with defaults elsewhere
             
             // dataRange is just the molecule's extent in Angstroms
-            // Use temporary extent if set (for orienting to visible atoms), otherwise use object's maxExtent
+            // Use temporary extent if set (for orienting to visible positions), otherwise use object's maxExtent
             const effectiveExtent = this.temporaryExtent || maxExtent;
             const dataRange = (effectiveExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
             
@@ -3773,49 +3855,49 @@ function initializePy2DmolViewer(containerElement) {
             // ====================================================================
             // DETECT OUTER ENDPOINTS - For rounded edges on outer segments
             // ====================================================================
-            // Build a map of atom connections to identify outer endpoints
+            // Build a map of position connections to identify outer endpoints
             // Only count connections for visible segments
-            const atomConnections = new Map();
+            const positionConnections = new Map();
             for (let i = 0; i < numVisibleSegments; i++) {
                 const segIdx = visibleSegmentIndices[i];
                 const segInfo = segments[segIdx];
-                // Count how many times each atom appears as an endpoint
-                atomConnections.set(segInfo.idx1, (atomConnections.get(segInfo.idx1) || 0) + 1);
-                atomConnections.set(segInfo.idx2, (atomConnections.get(segInfo.idx2) || 0) + 1);
+                // Count how many times each position appears as an endpoint
+                positionConnections.set(segInfo.idx1, (positionConnections.get(segInfo.idx1) || 0) + 1);
+                positionConnections.set(segInfo.idx2, (positionConnections.get(segInfo.idx2) || 0) + 1);
             }
             
-            // Identify outer endpoints (atoms that appear only once - terminal atoms)
+            // Identify outer endpoints (positions that appear only once - terminal positions)
             const outerEndpoints = new Set();
-            for (const [atomIdx, count] of atomConnections.entries()) {
+            for (const [positionIndex, count] of positionConnections.entries()) {
                 if (count === 1) {
-                    outerEndpoints.add(atomIdx);
+                    outerEndpoints.add(positionIndex);
                 }
             }
             
-            // Build a map of atom index -> list of segment indices that use that atom as an endpoint
+            // Build a map of position index -> list of segment indices that use that position as an endpoint
             // This helps us detect if an endpoint is covered by another segment
             // Only add visible segments to the map
-            const atomToSegments = new Map();
+            const positionToSegments = new Map();
             for (let i = 0; i < numVisibleSegments; i++) {
                 const segIdx = visibleSegmentIndices[i];
                 const segInfo = segments[segIdx];
-                if (!atomToSegments.has(segInfo.idx1)) {
-                    atomToSegments.set(segInfo.idx1, []);
+                if (!positionToSegments.has(segInfo.idx1)) {
+                    positionToSegments.set(segInfo.idx1, []);
                 }
-                atomToSegments.get(segInfo.idx1).push(segIdx);
+                positionToSegments.get(segInfo.idx1).push(segIdx);
                 
                 if (segInfo.idx1 !== segInfo.idx2) {
                     // Only add idx2 if it's different from idx1 (not zero-sized)
-                    if (!atomToSegments.has(segInfo.idx2)) {
-                        atomToSegments.set(segInfo.idx2, []);
+                    if (!positionToSegments.has(segInfo.idx2)) {
+                        positionToSegments.set(segInfo.idx2, []);
                     }
-                    atomToSegments.get(segInfo.idx2).push(segIdx);
+                    positionToSegments.get(segInfo.idx2).push(segIdx);
                 }
             }
             
             // Build a map from segment index to its position in the render order
             // Segments later in order are closer to camera (rendered on top)
-            // Only map visible segments since we only draw visible ones and atomToSegments only contains visible segments
+            // Only map visible segments since we only draw visible ones and positionToSegments only contains visible segments
             const segmentOrderMap = new Map();
             for (let orderIdx = 0; orderIdx < visibleOrder.length; orderIdx++) {
                 segmentOrderMap.set(visibleOrder[orderIdx], orderIdx);
@@ -3924,7 +4006,7 @@ function initializePy2DmolViewer(containerElement) {
                 const b_int = b * 255 | 0;
                 const color = `rgb(${r_int},${g_int},${b_int})`;
                 
-                // Determine if this segment has outer endpoints (not touching other atoms at start/end)
+                // Determine if this segment has outer endpoints (not touching other positions at start/end)
                 // For zero-sized segments, mark both sides as outer endpoints
                 // For multi-way junctions: only the segment rendered first (furthest back) should have rounded caps
                 const isZeroSized = segInfo.idx1 === segInfo.idx2;
@@ -3932,23 +4014,23 @@ function initializePy2DmolViewer(containerElement) {
                 
                 // Helper function to check if this segment should have rounded caps at a junction
                 // Returns true if: outer endpoint OR this is the first segment (furthest back) at a multi-way junction
-                const shouldRoundEndpoint = (atomIdx) => {
+                const shouldRoundEndpoint = (positionIndex) => {
                     // Zero-sized segments always round
                     if (isZeroSized) return true;
                     
-                    // Outer endpoints (terminal atoms) always round
-                    if (outerEndpoints.has(atomIdx)) return true;
+                    // Outer endpoints (terminal positions) always round
+                    if (outerEndpoints.has(positionIndex)) return true;
                     
                     // Check if this is a multi-way junction (3+ segments meet here)
-                    const segmentsUsingAtom = atomToSegments.get(atomIdx) || [];
-                    if (segmentsUsingAtom.length <= 1) {
-                        // Only this segment uses this atom, so it's outer
+                    const segmentsUsingPosition = positionToSegments.get(positionIndex) || [];
+                    if (segmentsUsingPosition.length <= 1) {
+                        // Only this segment uses this position, so it's outer
                         return true;
                     }
                     
                     // Multi-way junction: find the segment with the lowest order index (rendered first, furthest back)
                     let lowestOrderIdx = currentOrderIdx;
-                    for (const otherSegIdx of segmentsUsingAtom) {
+                    for (const otherSegIdx of segmentsUsingPosition) {
                         const otherOrderIdx = segmentOrderMap.get(otherSegIdx);
                         if (otherOrderIdx !== undefined && otherOrderIdx < lowestOrderIdx) {
                             lowestOrderIdx = otherOrderIdx;
@@ -4033,28 +4115,28 @@ function initializePy2DmolViewer(containerElement) {
             // ====================================================================
 
             // ====================================================================
-            // STORE ATOM SCREEN POSITIONS for fast highlight drawing
+            // STORE POSITION SCREEN POSITIONS for fast highlight drawing
             // ====================================================================
-            // Store screen positions of all atoms for overlay highlight drawing
+            // Store screen positions of all positions for overlay highlight drawing
             // This allows us to draw highlights without re-rendering the entire scene
-            const numAtoms = rotated.length;
-            this.atomScreenPositions = new Array(numAtoms);
+            const numPositions = rotated.length;
+            this.positionScreenPositions = new Array(numPositions);
             
-            for (let atomIdx = 0; atomIdx < numAtoms; atomIdx++) {
-                if (atomIdx < rotated.length && rotated[atomIdx]) {
-                    const atom = rotated[atomIdx];
+            for (let positionIndex = 0; positionIndex < numPositions; positionIndex++) {
+                if (positionIndex < rotated.length && rotated[positionIndex]) {
+                    const atom = rotated[positionIndex];
                     let x, y, radius;
                     
-                    // Get atom type to determine appropriate line width multiplier
-                    // Atoms are zero-length segments, so use unified helper
-                    let widthMultiplier = 0.5; // Default for atoms
-                    if (this.atomTypes && atomIdx < this.atomTypes.length) {
-                        const type = this.atomTypes[atomIdx];
-                        // Create dummy segInfo for atom (zero-length segment)
+                    // Get position type to determine appropriate line width multiplier
+                    // Positions are zero-length segments, so use unified helper
+                    let widthMultiplier = 0.5; // Default for positions
+                    if (this.positionTypes && positionIndex < this.positionTypes.length) {
+                        const type = this.positionTypes[positionIndex];
+                        // Create dummy segInfo for position (zero-length segment)
                         const dummySegInfo = {
                             type: type,
-                            idx1: atomIdx,
-                            idx2: atomIdx, // Same index = zero-length
+                            idx1: positionIndex,
+                            idx2: positionIndex, // Same index = zero-length
                             len: 0
                         };
                         const dummySegData = { len: 0, x: atom.x, y: atom.y, z: atom.z };
@@ -4066,7 +4148,7 @@ function initializePy2DmolViewer(containerElement) {
                         const z = this.focalLength - atom.z;
                         if (z < 0.01) {
                             // Behind camera, mark as invalid
-                            this.atomScreenPositions[atomIdx] = null;
+                            this.positionScreenPositions[positionIndex] = null;
                             continue;
                         } else {
                             const perspectiveScale = this.focalLength / z;
@@ -4082,9 +4164,9 @@ function initializePy2DmolViewer(containerElement) {
                         radius = Math.max(2, atomLineWidth * 0.5);
                     }
                     
-                    this.atomScreenPositions[atomIdx] = { x, y, radius };
+                    this.positionScreenPositions[positionIndex] = { x, y, radius };
                 } else {
-                    this.atomScreenPositions[atomIdx] = null;
+                    this.positionScreenPositions[positionIndex] = null;
                 }
             }
             
@@ -4444,7 +4526,7 @@ function initializePy2DmolViewer(containerElement) {
     const colorSelect = containerElement.querySelector('#colorSelect');
     
     // Initialize color mode
-    const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+    const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
     if (!renderer.colorMode || !validModes.includes(renderer.colorMode)) {
         renderer.colorMode = (config.color && validModes.includes(config.color)) ? config.color : 'auto';
     }
@@ -4455,7 +4537,7 @@ function initializePy2DmolViewer(containerElement) {
     
     colorSelect.addEventListener('change', (e) => {
         const selectedMode = e.target.value;
-        const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+        const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
         
         if (validModes.includes(selectedMode)) {
             renderer.colorMode = selectedMode;
@@ -4621,7 +4703,7 @@ function initializePy2DmolViewer(containerElement) {
                 if (obj.name && obj.frames && obj.frames.length > 0) {
                     
                     const staticChains = obj.chains; // Might be undefined
-                    const staticAtomTypes = obj.atom_types; // Might be undefined
+                    const staticPositionTypes = obj.position_types; // Might be undefined
                     
                     for (let i = 0; i < obj.frames.length; i++) {
                         const lightFrame = obj.frames[i];
@@ -4634,11 +4716,11 @@ function initializePy2DmolViewer(containerElement) {
                             coords: lightFrame.coords,  // Required
                             // Resolve with fallbacks: frame-level > object-level > undefined
                             chains: lightFrame.chains || staticChains || undefined,
-                            atom_types: lightFrame.atom_types || staticAtomTypes || undefined,
+                            position_types: lightFrame.position_types || staticPositionTypes || undefined,
                             plddts: lightFrame.plddts || undefined,  // Will use inheritance or default in setCoords
                             pae: lightFrame.pae || undefined,  // Will use inheritance or default
-                            residues: lightFrame.residues || undefined,  // Will default in setCoords
-                            residue_index: lightFrame.residue_index || undefined  // Will default in setCoords
+                            position_names: lightFrame.position_names || undefined,  // Will default in setCoords
+                            position_index: lightFrame.position_index || undefined  // Will default in setCoords
                         };
                         
                         renderer.addFrame(fullFrameData, obj.name);

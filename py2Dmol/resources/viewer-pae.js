@@ -129,16 +129,16 @@
             });
         }
 
-        // Expand ligand atoms: if any ligand atom is selected, select all atoms in that ligand
+        // Expand ligand positions: if any ligand position is selected, select all positions in that ligand
         // Uses shared utility function for consistent grouping with sequence viewer
-        expandLigandAtoms(atomIndices) {
+        expandLigandPositions(positionIndices) {
             // Use shared utility function if available, otherwise return original selection
             if (typeof expandLigandSelection === 'function' && this.mainRenderer.ligandGroups) {
-                return expandLigandSelection(atomIndices, this.mainRenderer.ligandGroups);
+                return expandLigandSelection(positionIndices, this.mainRenderer.ligandGroups);
             }
             
             // Fallback: return original selection if utility function not available
-            return new Set(atomIndices);
+            return new Set(positionIndices);
         }
 
         getMousePos(e) {
@@ -191,7 +191,7 @@
                     // Skip 3D render during drag - only update sequence/PAE viewers
                     this.mainRenderer.setSelection({ 
                         paeBoxes: [],
-                        atoms: new Set(),
+                        positions: new Set(),
                         chains: new Set(),
                         selectionMode: 'explicit'
                     }, true); // skip3DRender = true
@@ -272,7 +272,7 @@
                     // Render 3D viewer now that drag is complete
                     this.mainRenderer.setSelection({ 
                         paeBoxes: [],
-                        atoms: new Set(),
+                        positions: new Set(),
                         chains: new Set(),
                         selectionMode: 'default'
                     }, false); // skip3DRender = false - update 3D viewer
@@ -291,39 +291,39 @@
                     // Get current selection state
                     const currentSelection = this.mainRenderer.getSelection();
                     const existingBoxes = currentSelection.paeBoxes || [];
-                    const existingAtoms = currentSelection.atoms || new Set();
+                    const existingPositions = currentSelection.positions || new Set();
                     
-                    // Convert PAE box to atom indices
-                    // PAE positions map directly to atom indices (one atom = one position)
-                    const newAtoms = new Set();
+                    // Convert PAE box to position indices
+                    // PAE positions map directly to position indices (one position = one entry in frame data)
+                    const newPositions = new Set();
                     
-                    // Get atom indices from PAE box (i and j ranges)
+                    // Get position indices from PAE box (i and j ranges)
                     for (let r = i_start; r <= i_end; r++) {
                         if (r >= 0 && r < this.mainRenderer.chains.length) {
-                            newAtoms.add(r);
+                            newPositions.add(r);
                         }
                     }
                     for (let r = j_start; r <= j_end; r++) {
                         if (r >= 0 && r < this.mainRenderer.chains.length) {
-                            newAtoms.add(r);
+                            newPositions.add(r);
                         }
                     }
                     
-                    // Expand ligand atoms: if any ligand atom is selected, select all atoms in that ligand
-                    const expandedNewAtoms = this.expandLigandAtoms(newAtoms);
+                    // Expand ligand positions: if any ligand position is selected, select all positions in that ligand
+                    const expandedNewPositions = this.expandLigandPositions(newPositions);
                     
                     // If Shift is held, add to existing selection; otherwise replace
                     if (this.isAdding) {
-                        // Additive: combine with existing boxes and atoms
-                        // Also expand any ligand atoms in existing selection
-                        const expandedExistingAtoms = this.expandLigandAtoms(existingAtoms);
+                        // Additive: combine with existing boxes and positions
+                        // Also expand any ligand positions in existing selection
+                        const expandedExistingPositions = this.expandLigandPositions(existingPositions);
                         const combinedBoxes = [...existingBoxes, newBox];
-                        const combinedAtoms = new Set([...expandedExistingAtoms, ...expandedNewAtoms]);
+                        const combinedPositions = new Set([...expandedExistingPositions, ...expandedNewPositions]);
                         
-                        // Update chains to include all chains that have selected atoms
+                        // Update chains to include all chains that have selected positions
                         const newChains = new Set();
                         if (this.mainRenderer.chains && this.mainRenderer.chains.length > 0) {
-                            for (const atomIdx of combinedAtoms) {
+                            for (const atomIdx of combinedPositions) {
                                 if (atomIdx >= 0 && atomIdx < this.mainRenderer.chains.length) {
                                     const atomChain = this.mainRenderer.chains[atomIdx];
                                     if (atomChain) {
@@ -334,23 +334,23 @@
                         }
                         
                         // Determine if we have partial selections
-                        const totalAtoms = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
-                        const hasPartialSelections = combinedAtoms.size > 0 && combinedAtoms.size < totalAtoms;
+                        const totalPositions = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
+                        const hasPartialSelections = combinedPositions.size > 0 && combinedPositions.size < totalPositions;
                         
                         // Render 3D viewer now that drag is complete
                         this.mainRenderer.setSelection({
                             paeBoxes: combinedBoxes,
-                            atoms: combinedAtoms,
-                            chains: newChains, // Include all chains with selected atoms
+                            positions: combinedPositions,
+                            chains: newChains, // Include all chains with selected positions
                             selectionMode: hasPartialSelections ? 'explicit' : 'default'
                         }, false); // skip3DRender = false - update 3D viewer
                     } else {
-                        // Replace: use only the new box and atoms (with ligand expansion)
+                        // Replace: use only the new box and positions (with ligand expansion)
                         
-                        // Update chains to include all chains that have selected atoms
+                        // Update chains to include all chains that have selected positions
                         const newChains = new Set();
                         if (this.mainRenderer.chains && this.mainRenderer.chains.length > 0) {
-                            for (const atomIdx of expandedNewAtoms) {
+                            for (const atomIdx of expandedNewPositions) {
                                 if (atomIdx >= 0 && atomIdx < this.mainRenderer.chains.length) {
                                     const atomChain = this.mainRenderer.chains[atomIdx];
                                     if (atomChain) {
@@ -361,14 +361,14 @@
                         }
                         
                         // Determine if we have partial selections
-                        const totalAtoms = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
-                        const hasPartialSelections = expandedNewAtoms.size > 0 && expandedNewAtoms.size < totalAtoms;
+                        const totalPositions = this.mainRenderer.chains ? this.mainRenderer.chains.length : 0;
+                        const hasPartialSelections = expandedNewPositions.size > 0 && expandedNewPositions.size < totalPositions;
                         
                         // Render 3D viewer now that drag is complete
                         this.mainRenderer.setSelection({
                             paeBoxes: [newBox],
-                            atoms: expandedNewAtoms,
-                            chains: newChains, // Include all chains with selected atoms
+                            positions: expandedNewPositions,
+                            chains: newChains, // Include all chains with selected positions
                             selectionMode: hasPartialSelections ? 'explicit' : 'default'
                         }, false); // skip3DRender = false - update 3D viewer
                     }
@@ -400,7 +400,7 @@
                 // Skip 3D render during drag - only update sequence/PAE viewers
                 this.mainRenderer.setSelection({ 
                     paeBoxes: [],
-                    atoms: new Set(),
+                    positions: new Set(),
                     chains: new Set(),
                     selectionMode: 'explicit'
                 }, true); // skip3DRender = true
@@ -496,7 +496,7 @@
         }
 
         // Helper function to compute which PAE positions are selected from sequence space
-        // Returns a Set of PAE matrix indices (0-based) that correspond to selected atoms/chains
+        // Returns a Set of PAE matrix indices (0-based) that correspond to selected positions/chains
         // Only returns positions for explicit selections (not default "all" state)
         getSequenceSelectedPAEPositions() {
             const selectedPositions = new Set();
@@ -507,22 +507,22 @@
             }
             
             const selectionModel = renderer.selectionModel;
-            const hasAtomSelection = selectionModel.atoms && selectionModel.atoms.size > 0;
+            const hasPositionSelection = selectionModel.positions && selectionModel.positions.size > 0;
             const hasChainSelection = selectionModel.chains && selectionModel.chains.size > 0;
             const mode = selectionModel.selectionMode || 'default';
             
             // Only return positions for explicit selections
             // In default mode with no explicit selection, return empty (show all at full brightness)
             if (mode === 'default') {
-                // In default mode, only highlight if there's an explicit atom selection
+                // In default mode, only highlight if there's an explicit position selection
                 // (not just "all chains" which is the default)
-                if (!hasAtomSelection) {
+                if (!hasPositionSelection) {
                     return selectedPositions; // No explicit selection = show all
                 }
             }
             
             // If no sequence selection, return empty set
-            if (!hasAtomSelection && !hasChainSelection) {
+            if (!hasPositionSelection && !hasChainSelection) {
                 return selectedPositions;
             }
             
@@ -536,19 +536,19 @@
             }
             
             // Map sequence selections to PAE positions
-            // PAE positions map directly to atom indices (one atom = one position)
+            // PAE positions map directly to position indices (one position = one entry in frame data)
             const n = this.paeData.length;
             for (let r = 0; r < n; r++) {
-                // PAE position r corresponds to atom index r
+                // PAE position r corresponds to position index r
                 if (r >= renderer.chains.length) continue;
                 
                 const chain = renderer.chains[r];
                 
                 // Check if this PAE position is selected
                 const chainMatches = allowedChains.has(chain);
-                const atomMatches = !hasAtomSelection || selectionModel.atoms.has(r);
+                const positionMatches = !hasPositionSelection || selectionModel.positions.has(r);
                 
-                if (chainMatches && atomMatches) {
+                if (chainMatches && positionMatches) {
                     selectedPositions.add(r);
                 }
             }
@@ -590,7 +590,7 @@
             
             // Check if cell is in a sequence-selected region
             // Only highlight cells where BOTH i AND j are in selected positions
-            // This shows only the specific interactions between selected residues
+            // This shows only the specific interactions between selected positions
             if (sequenceSelectedPositions && sequenceSelectedPositions.size > 0) {
                 // Both row i and column j must be selected
                 if (sequenceSelectedPositions.has(i) && sequenceSelectedPositions.has(j)) {
@@ -739,7 +739,7 @@
             const boundaries = new Set(); // Set of PAE positions where chain changes
             
             // Find chain boundaries
-            // PAE positions map directly to atom indices (one atom = one position)
+            // PAE positions map directly to position indices (one position = one entry in frame data)
             for (let r = 0; r < n - 1 && r < renderer.chains.length - 1; r++) {
                 const chain1 = renderer.chains[r];
                 const chain2 = renderer.chains[r + 1];

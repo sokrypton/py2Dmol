@@ -404,6 +404,8 @@
     let cachedFrequencies = null;
     let cachedLogOdds = null;
     let cachedDataHash = null;
+    let cachedEntropy = null;
+    let cachedEntropyHash = null;
     
     // Virtual scrolling state
     let visibleSequenceStart = 0;
@@ -939,16 +941,47 @@
         resizeObserver.observe(container);
         
         // Get initial content dimensions (contentRect gives us content box, not border box)
-        const rect = container.getBoundingClientRect();
-        const computedStyle = window.getComputedStyle(container);
-        const paddingLeft = parseFloat(computedStyle.paddingLeft);
-        const paddingRight = parseFloat(computedStyle.paddingRight);
-        const paddingTop = parseFloat(computedStyle.paddingTop);
-        const paddingBottom = parseFloat(computedStyle.paddingBottom);
-        
-        // Content box dimensions
-        currentContainerWidth = Math.floor(rect.width - paddingLeft - paddingRight);
-        currentContainerHeight = Math.floor(rect.height - paddingTop - paddingBottom);
+        // Use requestAnimationFrame to ensure container is laid out
+        requestAnimationFrame(() => {
+            const rect = container.getBoundingClientRect();
+            const computedStyle = window.getComputedStyle(container);
+            const paddingLeft = parseFloat(computedStyle.paddingLeft);
+            const paddingRight = parseFloat(computedStyle.paddingRight);
+            const paddingTop = parseFloat(computedStyle.paddingTop);
+            const paddingBottom = parseFloat(computedStyle.paddingBottom);
+            
+            // Content box dimensions
+            const newWidth = Math.floor(rect.width - paddingLeft - paddingRight);
+            const newHeight = Math.floor(rect.height - paddingTop - paddingBottom);
+            
+            // Only update if we got valid dimensions (container is visible)
+            if (newWidth > 0 && newHeight > 0) {
+                currentContainerWidth = newWidth;
+                currentContainerHeight = newHeight;
+                
+                // If MSA data exists, rebuild the view with correct dimensions
+                if (msaData) {
+                    buildViewForMode(msaViewMode);
+                }
+            } else {
+                // Container not visible yet, try again after a short delay
+                setTimeout(() => {
+                    const rect2 = container.getBoundingClientRect();
+                    if (rect2.width > 0 && rect2.height > 0) {
+                        const computedStyle2 = window.getComputedStyle(container);
+                        const paddingLeft2 = parseFloat(computedStyle2.paddingLeft);
+                        const paddingRight2 = parseFloat(computedStyle2.paddingRight);
+                        const paddingTop2 = parseFloat(computedStyle2.paddingTop);
+                        const paddingBottom2 = parseFloat(computedStyle2.paddingBottom);
+                        currentContainerWidth = Math.floor(rect2.width - paddingLeft2 - paddingRight2);
+                        currentContainerHeight = Math.floor(rect2.height - paddingTop2 - paddingBottom2);
+                        if (msaData) {
+                            buildViewForMode(msaViewMode);
+                        }
+                    }
+                }, 100);
+            }
+        });
     }
     
     function handleContainerResize(rect) {
@@ -1587,8 +1620,15 @@
     function calculateFrequencies() {
         if (!msaData) return null;
         
+        // Check if already computed and stored in msaData
+        if (msaData.frequencies) {
+            return msaData.frequencies;
+        }
+        
         const dataHash = msaData.sequences.length + '_' + msaData.queryLength;
         if (cachedFrequencies && cachedDataHash === dataHash) {
+            // Store in msaData for persistence
+            msaData.frequencies = cachedFrequencies;
             return cachedFrequencies;
         }
         
@@ -1616,16 +1656,32 @@
             frequencies.push(freq);
         }
         
+        // Store in msaData for persistence
+        msaData.frequencies = frequencies;
         cachedFrequencies = frequencies;
         cachedDataHash = dataHash;
         cachedLogOdds = null;
+        cachedEntropy = null;
+        cachedEntropyHash = null;
         
         return frequencies;
     }
     
     function calculateLogOdds(frequencies) {
         if (!frequencies) return null;
-        if (cachedLogOdds) return cachedLogOdds;
+        
+        // Check if already computed and stored in msaData
+        if (msaData && msaData.logOdds) {
+            return msaData.logOdds;
+        }
+        
+        if (cachedLogOdds) {
+            // Store in msaData for persistence
+            if (msaData) {
+                msaData.logOdds = cachedLogOdds;
+            }
+            return cachedLogOdds;
+        }
         
         const logOdds = [];
         for (const freq of frequencies) {
@@ -1637,8 +1693,67 @@
             logOdds.push(logOddsPos);
         }
         
+        // Store in msaData for persistence
+        if (msaData) {
+            msaData.logOdds = logOdds;
+        }
         cachedLogOdds = logOdds;
         return logOdds;
+    }
+    
+    /**
+     * Calculate Shannon entropy for each position in the MSA
+     * Uses the same frequency calculation as logo/PSSM views
+     * Formula: H = -Σ(p_i * log2(p_i)) / log2(20)
+     * Returns normalized entropy values (0 to 1 scale)
+     * Cached for performance
+     * @returns {Array} - Array of entropy values (one per MSA position)
+     */
+    function calculateEntropy() {
+        if (!msaData) return [];
+        
+        // Check if already computed and stored in msaData
+        if (msaData.entropy) {
+            return msaData.entropy;
+        }
+        
+        // Check cache first
+        const dataHash = msaData.sequences.length + '_' + msaData.queryLength;
+        if (cachedEntropy && cachedEntropyHash === dataHash) {
+            // Store in msaData for persistence
+            msaData.entropy = cachedEntropy;
+            return cachedEntropy;
+        }
+        
+        const frequencies = calculateFrequencies();
+        if (!frequencies || frequencies.length === 0) return [];
+        
+        const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
+        const entropyValues = [];
+        
+        for (let pos = 0; pos < frequencies.length; pos++) {
+            const posFreq = frequencies[pos];
+            
+            // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
+            let entropy = 0;
+            for (const aa in posFreq) {
+                const p = posFreq[aa];
+                if (p > 0) {
+                    entropy -= p * Math.log2(p);
+                }
+            }
+            
+            // Normalize by max entropy (0 to 1 scale)
+            const normalizedEntropy = entropy / maxEntropy;
+            entropyValues.push(normalizedEntropy);
+        }
+        
+        // Store in msaData for persistence
+        msaData.entropy = entropyValues;
+        cachedEntropy = entropyValues;
+        cachedEntropyHash = dataHash;
+        
+        return entropyValues;
     }
     
     function renderPSSMCanvas() {
@@ -3026,6 +3141,15 @@
             return msaData;
         },
         
+        /**
+         * Calculate Shannon entropy for each position in the current filtered MSA
+         * Uses the same frequency calculation as logo/PSSM views
+         * @returns {Array} - Array of normalized entropy values (0 to 1 scale, one per MSA position)
+         */
+        calculateEntropy: function() {
+            return calculateEntropy();
+        },
+        
         setCoverageCutoff: function(cutoff) {
             coverageCutoff = Math.max(0, Math.min(1, cutoff));
             if (originalMSAData) {
@@ -3058,7 +3182,16 @@
                 
                 cachedFrequencies = null;
                 cachedLogOdds = null;
+                cachedEntropy = null;
+                cachedEntropyHash = null;
                 cachedDataHash = null;
+                cachedEntropy = null;
+                cachedEntropyHash = null;
+                
+                // Notify callback that filtered MSA has changed (for entropy recalculation)
+                if (callbacks.onMSAFilterChange) {
+                    callbacks.onMSAFilterChange(msaData, currentChain);
+                }
                 
                 if (msaCanvasData && msaCanvasData.canvas && msaViewMode === 'msa') {
                     scheduleRender();
@@ -3117,7 +3250,16 @@
                 
                 cachedFrequencies = null;
                 cachedLogOdds = null;
+                cachedEntropy = null;
+                cachedEntropyHash = null;
                 cachedDataHash = null;
+                cachedEntropy = null;
+                cachedEntropyHash = null;
+                
+                // Notify callback that filtered MSA has changed (for entropy recalculation)
+                if (callbacks.onMSAFilterChange) {
+                    callbacks.onMSAFilterChange(msaData, currentChain);
+                }
                 
                 if (msaCanvasData && msaCanvasData.canvas && msaViewMode === 'msa') {
                     scheduleRender();
@@ -3178,9 +3320,30 @@
                 queryLength: originalMSAData.queryLength
             };
             
+            // Copy computed properties from original data if they exist
+            if (originalMSAData.frequencies) {
+                msaData.frequencies = originalMSAData.frequencies;
+            }
+            if (originalMSAData.entropy) {
+                msaData.entropy = originalMSAData.entropy;
+            }
+            if (originalMSAData.logOdds) {
+                msaData.logOdds = originalMSAData.logOdds;
+            }
+            
+            // Compute properties if not already present (for filtered data, recompute)
+            // Note: If filters changed, we need to recompute, so clear cached values
             cachedFrequencies = null;
             cachedLogOdds = null;
             cachedDataHash = null;
+            cachedEntropy = null;
+            cachedEntropyHash = null;
+            
+            // Compute and store frequencies, entropy, and logOdds once when MSA is set
+            // This ensures they're available for entropy coloring without recalculation
+            calculateFrequencies(); // This will compute and store in msaData.frequencies
+            calculateEntropy(); // This will compute and store in msaData.entropy
+            // logOdds will be computed on-demand when needed for logo view
             
             let canvasWidth = 916;
             let charWidth = getCharWidthForMode(msaViewMode);
@@ -3371,6 +3534,8 @@
             msaViewMode = mode;
             if (mode === 'logo') {
                 cachedLogOdds = null;
+                cachedEntropy = null;
+                cachedEntropyHash = null;
             }
             
             buildViewForMode(mode);
@@ -3416,6 +3581,8 @@
             useBitScore = value;
             if (!useBitScore) {
                 cachedLogOdds = null;
+                cachedEntropy = null;
+                cachedEntropyHash = null;
             }
             if (msaViewMode === 'logo') {
                 scheduleRender();
@@ -3466,6 +3633,8 @@
             cachedFrequencies = null;
             cachedLogOdds = null;
             cachedDataHash = null;
+            cachedEntropy = null;
+            cachedEntropyHash = null;
             
             // Disconnect resize observer
             if (resizeObserver) {

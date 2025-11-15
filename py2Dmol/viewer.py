@@ -82,10 +82,10 @@ class view:
         self._coords = None
         self._plddts = None
         self._chains = None
-        self._atom_types = None
+        self._position_types = None
         self._pae = None
-        self._residues = None
-        self._residue_index = None
+        self._position_names = None
+        self._position_index = None
 
     def _get_data_dict(self):
         """
@@ -108,25 +108,32 @@ class view:
         if self._chains is not None:
             payload["chains"] = list(self._chains)
 
-        if self._atom_types is not None:
-            payload["atom_types"] = list(self._atom_types)
+        if self._position_types is not None:
+            payload["position_types"] = list(self._position_types)
 
         if self._pae is not None:
             payload["pae"] = np.round(self._pae, 0).astype(int).tolist()
 
-        if self._residues is not None:
-            payload["residues"] = list(self._residues)
+        if self._position_names is not None:
+            payload["position_names"] = list(self._position_names)
 
-        if self._residue_index is not None:
-            payload["residue_index"] = list(self._residue_index)
+        if self._position_index is not None:
+            payload["position_index"] = list(self._position_index)
 
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, atom_types=None, pae=None, align=True, residues=None, residue_index=None):
+    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, align=True, position_names=None, position_index=None, atom_types=None):
       """
       Updates the internal state with new data. It no longer creates
       default values, simply storing what is provided.
+      
+      Args:
+          atom_types: Backward compatibility alias for position_types (deprecated).
       """
+      # Backward compatibility: support atom_types as alias for position_types
+      if atom_types is not None and position_types is None:
+          position_types = atom_types
+      
       # --- Coordinate Alignment ---
       if self._coords is None:
           # First frame of an object, align to best view
@@ -141,29 +148,29 @@ class view:
       # --- Store Provided Data (or None) ---
       self._plddts = plddts
       self._chains = chains
-      self._atom_types = atom_types
+      self._position_types = position_types
       self._pae = pae
-      self._residues = residues
-      self._residue_index = residue_index
+      self._position_names = position_names
+      self._position_index = position_index
 
       # --- Final Safety Check (ensure arrays match coord length if provided) ---
-      n_atoms = self._coords.shape[0]
+      n_positions = self._coords.shape[0]
       
-      if self._plddts is not None and len(self._plddts) != n_atoms:
+      if self._plddts is not None and len(self._plddts) != n_positions:
           print(f"Warning: pLDDT length mismatch. Ignoring pLDDTs for this frame.")
           self._plddts = None
-      if self._chains is not None and len(self._chains) != n_atoms:
+      if self._chains is not None and len(self._chains) != n_positions:
           print(f"Warning: Chains length mismatch. Ignoring chains for this frame.")
           self._chains = None
-      if self._atom_types is not None and len(self._atom_types) != n_atoms:
-          print(f"Warning: Atom types length mismatch. Ignoring atom types for this frame.")
-          self._atom_types = None
-      if self._residues is not None and len(self._residues) != n_atoms:
-          print(f"Warning: Residues length mismatch. Ignoring residues for this frame.")
-          self._residues = None
-      if self._residue_index is not None and len(self._residue_index) != n_atoms:
-          print(f"Warning: Residue index length mismatch. Ignoring residue indices for this frame.")
-          self._residue_index = None
+      if self._position_types is not None and len(self._position_types) != n_positions:
+          print(f"Warning: Position types length mismatch. Ignoring position types for this frame.")
+          self._position_types = None
+      if self._position_names is not None and len(self._position_names) != n_positions:
+          print(f"Warning: Position names length mismatch. Ignoring position names for this frame.")
+          self._position_names = None
+      if self._position_index is not None and len(self._position_index) != n_positions:
+          print(f"Warning: Position index length mismatch. Ignoring position indices for this frame.")
+          self._position_index = None
 
     def _send_message(self, message_dict):
         """Generates JS to directly call the viewer's API."""
@@ -245,25 +252,25 @@ class view:
                         light_frame["plddts"] = frame["plddts"]
                     if "pae" in frame and frame["pae"] is not None:
                         light_frame["pae"] = frame["pae"]
-                    if "residues" in frame and frame["residues"] is not None:
-                        light_frame["residues"] = frame["residues"]
-                    if "residue_index" in frame and frame["residue_index"] is not None:
-                        light_frame["residue_index"] = frame["residue_index"]
-                    # Include atom_types and chains at frame level for proper inheritance
-                    if "atom_types" in frame and frame["atom_types"] is not None:
-                        light_frame["atom_types"] = frame["atom_types"]
+                    if "position_names" in frame and frame["position_names"] is not None:
+                        light_frame["position_names"] = frame["position_names"]
+                    if "position_index" in frame and frame["position_index"] is not None:
+                        light_frame["position_index"] = frame["position_index"]
+                    # Include position_types and chains at frame level for proper inheritance
+                    if "position_types" in frame and frame["position_types"] is not None:
+                        light_frame["position_types"] = frame["position_types"]
                     if "chains" in frame and frame["chains"] is not None:
                         light_frame["chains"] = frame["chains"]
                     light_frames.append(light_frame)
 
-                # For static data, we still need to provide chains and atom_types
+                # For static data, we still need to provide chains and position_types
                 # for the whole object, but only if they exist in the first frame.
                 first_frame = py_obj["frames"][0]
                 obj_to_serialize = {"name": py_obj.get("name"), "frames": light_frames}
                 if "chains" in first_frame and first_frame["chains"] is not None:
                     obj_to_serialize["chains"] = first_frame["chains"]
-                if "atom_types" in first_frame and first_frame["atom_types"] is not None:
-                    obj_to_serialize["atom_types"] = first_frame["atom_types"]
+                if "position_types" in first_frame and first_frame["position_types"] is not None:
+                    obj_to_serialize["position_types"] = first_frame["position_types"]
                 
                 serialized_objects.append(obj_to_serialize)
 
@@ -272,7 +279,7 @@ class view:
             data_script = f'<script id="static-data">window.staticObjectData = {data_json};</script>'
         else:
             # Pure Dynamic mode: inject empty data, will be populated by messages
-            data_script = '<script id="protein-data">window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "atom_types": [], "pae": null }};</script>'
+            data_script = '<script id="protein-data">window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "position_types": [], "pae": null }};</script>'
         
         injection_scripts = config_script + "\n" + data_script
         
@@ -373,8 +380,8 @@ class view:
                 "name": name
             })
     
-    def add(self, coords, plddts=None, chains=None, atom_types=None, pae=None,
-            new_obj=False, name=None, align=True, residues=None, residue_index=None):
+    def add(self, coords, plddts=None, chains=None, position_types=None, pae=None,
+            new_obj=False, name=None, align=True, position_names=None, position_index=None, atom_types=None):
         """
         Adds a new *frame* of data to the viewer.
         
@@ -384,16 +391,17 @@ class view:
             coords (np.array): Nx3 array of coordinates.
             plddts (np.array, optional): N-length array of pLDDT scores.
             chains (list, optional): N-length list of chain identifiers.
-            atom_types (list, optional): N-length list of atom types ('P', 'D', 'R', 'L').
+            position_types (list, optional): N-length list of position types ('P', 'D', 'R', 'L').
             pae (np.array, optional): LxL PAE matrix.
             new_obj (bool, optional): If True, starts a new object. Defaults to False.
             name (str, optional): Name for the new object or frame.
-            residues (list, optional): N-length list of residue names.
-            residue_index (list, optional): N-length list of residue indices.
+            position_names (list, optional): N-length list of position names.
+            position_index (list, optional): N-length list of position indices.
+            atom_types (list, optional): Backward compatibility alias for position_types (deprecated).
         """
         
         # --- Step 1: Update Python-side alignment state ---
-        self._update(coords, plddts, chains, atom_types, pae, align=align, residues=residues, residue_index=residue_index) # This handles defaults
+        self._update(coords, plddts, chains, position_types, pae, align=align, position_names=position_names, position_index=position_index, atom_types=atom_types) # This handles defaults
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         # --- Step 2: Handle object creation ---
@@ -492,7 +500,7 @@ class view:
              # This can happen if biounit fails but structure had no models
              
         for i, model in enumerate(models_to_process):
-            coords, plddts, atom_chains, atom_types, residues, residue_index = self._parse_model(model, chains, ignore_ligands=ignore_ligands)
+            coords, plddts, position_chains, position_types, position_names, position_index = self._parse_model(model, chains, ignore_ligands=ignore_ligands)
 
             if coords:
                 coords_np = np.array(coords)
@@ -506,22 +514,22 @@ class view:
                 pae_to_add = paes[i] if paes and i < len(paes) else None
 
                 # Call add() - this will handle batch vs. live
-                self.add(coords_np, plddts_np, atom_chains, atom_types,
+                self.add(coords_np, plddts_np, position_chains, position_types,
                     pae=pae_to_add,
                     new_obj=False, # We already handled new_obj
                     name=f"model_{i+1}", # Add to the same object
                     align=align,
-                    residues=residues,
-                    residue_index=residue_index)
+                    position_names=position_names,
+                    position_index=position_index)
 
     def _parse_model(self, model, chains_filter, ignore_ligands=False):
         """Helper function to parse a gemmi.Model object."""
         coords = []
         plddts = []
-        atom_chains = []
-        atom_types = []
-        residues = []
-        residue_index = []
+        position_chains = []
+        position_types = []
+        position_names = []
+        position_index = []
 
         for chain in model:
             if chains_filter is None or chain.name in chains_filter:
@@ -538,10 +546,10 @@ class view:
                             atom = residue['CA'][0]
                             coords.append(atom.pos.tolist())
                             plddts.append(atom.b_iso)
-                            atom_chains.append(chain.name)
-                            atom_types.append('P')
-                            residues.append(residue.name)
-                            residue_index.append(residue.seqid.num)
+                            position_chains.append(chain.name)
+                            position_types.append('P')
+                            position_names.append(residue.name)
+                            position_index.append(residue.seqid.num)
                             
                     elif is_nucleic:
                         c4_atom = None
@@ -553,17 +561,17 @@ class view:
                         if c4_atom:
                             coords.append(c4_atom.pos.tolist())
                             plddts.append(c4_atom.b_iso)
-                            atom_chains.append(chain.name)
+                            position_chains.append(chain.name)
                             rna_bases = ['A', 'C','G', 'U', 'RA', 'RC', 'RG', 'RU']
                             dna_bases = ['DA', 'DC', 'DG', 'DT', 'T']
                             if residue.name in rna_bases or residue.name.startswith('R'):
-                                atom_types.append('R')
+                                position_types.append('R')
                             elif residue.name in dna_bases or residue.name.startswith('D'):
-                                atom_types.append('D')
+                                position_types.append('D')
                             else:
-                                atom_types.append('R') # Default to RNA
-                            residues.append(residue.name)
-                            residue_index.append(residue.seqid.num)
+                                position_types.append('R') # Default to RNA
+                            position_names.append(residue.name)
+                            position_index.append(residue.seqid.num)
                                 
                     else:
                         # Ligand: use all heavy atoms
@@ -572,11 +580,11 @@ class view:
                                 if atom.element.name != 'H':
                                     coords.append(atom.pos.tolist())
                                     plddts.append(atom.b_iso)
-                                    atom_chains.append(chain.name)
-                                    atom_types.append('L')
-                                    residues.append(residue.name)
-                                    residue_index.append(residue.seqid.num)
-        return coords, plddts, atom_chains, atom_types, residues, residue_index
+                                    position_chains.append(chain.name)
+                                    position_types.append('L')
+                                    position_names.append(residue.name)
+                                    position_index.append(residue.seqid.num)
+        return coords, plddts, position_chains, position_types, position_names, position_index
 
     def _get_filepath_from_pdb_id(self, pdb_id):
         """
@@ -803,7 +811,7 @@ class view:
             return {}
         
         redundant = {}
-        for field in ['chains', 'atom_types']:
+        for field in ['chains', 'position_types']:
             # Skip if not present in any frame
             if not any(field in frame and frame[field] is not None for frame in frames):
                 continue
@@ -856,7 +864,7 @@ class view:
                     frame_data["plddts"] = [round(p) for p in frame["plddts"]]
                 
                 # Copy other fields
-                for key in ["chains", "atom_types", "residues", "residue_index"]:
+                for key in ["chains", "position_types", "position_names", "position_index"]:
                     if key in frame:
                         frame_data[key] = frame[key]
                 
@@ -954,7 +962,8 @@ class view:
                 
                 # Get object-level defaults (may be None)
                 obj_chains = obj_data.get("chains")
-                obj_atom_types = obj_data.get("atom_types")
+                # Backward compatibility: support atom_types as alias for position_types
+                obj_position_types = obj_data.get("position_types") or obj_data.get("atom_types")
                 
                 self.new_obj(obj_data["name"])
                 
@@ -968,10 +977,11 @@ class view:
                     
                     # Robust resolution: frame-level > object-level > None (will use defaults in add())
                     chains = frame_data.get("chains") or obj_chains
-                    atom_types = frame_data.get("atom_types") or obj_atom_types
+                    # Backward compatibility: support atom_types as alias for position_types
+                    position_types = frame_data.get("position_types") or frame_data.get("atom_types") or obj_position_types
                     plddts = np.array(frame_data.get("plddts", [])) if frame_data.get("plddts") else None
-                    residues = frame_data.get("residues")
-                    residue_index = frame_data.get("residue_index")
+                    position_names = frame_data.get("position_names")
+                    position_index = frame_data.get("position_index")
                     pae = np.array(frame_data.get("pae")) if frame_data.get("pae") else None
                     
                     # add() will apply defaults for None values
@@ -979,13 +989,13 @@ class view:
                         coords,
                         plddts if plddts is not None and len(plddts) > 0 else None,
                         chains,
-                        atom_types,
+                        position_types,
                         pae=pae,
                         new_obj=False,
                         name=None,
                         align=False,  # Don't re-align loaded data
-                        residues=residues,
-                        residue_index=residue_index
+                        position_names=position_names,
+                        position_index=position_index
                     )
         
         # Restore viewer config from state (if available)

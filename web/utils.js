@@ -1168,9 +1168,9 @@ function getStandardResidueName(resName) {
 /**
  * Create a unique key for a ligand group
  * @param {string} chain - Chain ID
- * @param {number} resSeq - Residue sequence number
- * @param {string} resName - Residue name (optional)
- * @param {number} atomIndex - Atom index (fallback)
+ * @param {number} resSeq - Position index (residue sequence number)
+ * @param {string} resName - Position name (residue name, optional)
+ * @param {number} atomIndex - Position index (fallback)
  * @returns {string} - Ligand group key
  */
 function createLigandGroupKey(chain, resSeq, resName, atomIndex) {
@@ -1188,11 +1188,11 @@ function createLigandGroupKey(chain, resSeq, resName, atomIndex) {
 
 /**
  * Group ligand atoms into ligand groups based on chain, residue_index, and residue_name
- * @param {Array<string>} chains - Array of chain IDs for each atom
- * @param {Array<string>} atomTypes - Array of atom types ('P', 'D', 'R', 'L')
- * @param {Array<number>} residueIndex - Array of residue indices (optional)
- * @param {Array<string>} residues - Array of residue names (optional)
- * @returns {Map<string, Array<number>>} - Map of ligand group keys to arrays of atom indices
+ * @param {Array<string>} chains - Array of chain IDs for each position
+ * @param {Array<string>} atomTypes - Array of position types ('P', 'D', 'R', 'L')
+ * @param {Array<number>} residueIndex - Array of position indices (optional)
+ * @param {Array<string>} residues - Array of position names (optional)
+ * @returns {Map<string, Array<number>>} - Map of ligand group keys to arrays of position indices
  * 
  * Grouping priority:
  * 1. If residue_name available: "chain:resSeq:resName"
@@ -1279,45 +1279,45 @@ function groupLigandAtoms(chains, atomTypes, residueIndex, residues) {
 }
 
 /**
- * Expand atom selection to include all atoms in any ligand groups that contain selected atoms
- * @param {Set<number>|Array<number>} atomIndices - Selected atom indices
+ * Expand position selection to include all positions in any ligand groups that contain selected positions
+ * @param {Set<number>|Array<number>} positionIndices - Selected position indices
  * @param {Map<string, Array<number>>} ligandGroups - Ligand groups from groupLigandAtoms()
- * @returns {Set<number>} - Expanded set of atom indices
+ * @returns {Set<number>} - Expanded set of position indices
  */
-function expandLigandSelection(atomIndices, ligandGroups) {
-    const expandedAtoms = new Set(atomIndices);
+function expandLigandSelection(positionIndices, ligandGroups) {
+    const expandedPositions = new Set(positionIndices);
     
     if (!ligandGroups || ligandGroups.size === 0) {
-        return expandedAtoms; // No ligand groups, return original selection
+        return expandedPositions; // No ligand groups, return original selection
     }
     
-    // Create reverse map: atom index -> ligand group key
-    const atomToGroup = new Map();
-    for (const [groupKey, atomIndicesInGroup] of ligandGroups) {
-        for (const atomIdx of atomIndicesInGroup) {
-            atomToGroup.set(atomIdx, groupKey);
+    // Create reverse map: position index -> ligand group key
+    const positionToGroup = new Map();
+    for (const [groupKey, positionIndicesInGroup] of ligandGroups) {
+        for (const positionIdx of positionIndicesInGroup) {
+            positionToGroup.set(positionIdx, groupKey);
         }
     }
     
-    // Find all ligand groups that contain selected atoms
+    // Find all ligand groups that contain selected positions
     const selectedGroups = new Set();
-    for (const atomIdx of atomIndices) {
-        if (atomToGroup.has(atomIdx)) {
-            selectedGroups.add(atomToGroup.get(atomIdx));
+    for (const positionIdx of positionIndices) {
+        if (positionToGroup.has(positionIdx)) {
+            selectedGroups.add(positionToGroup.get(positionIdx));
         }
     }
     
-    // Add all atoms from selected ligand groups
+    // Add all positions from selected ligand groups
     for (const groupKey of selectedGroups) {
-        const atomsInGroup = ligandGroups.get(groupKey);
-        if (atomsInGroup) {
-            for (const atomIdx of atomsInGroup) {
-                expandedAtoms.add(atomIdx);
+        const positionsInGroup = ligandGroups.get(groupKey);
+        if (positionsInGroup) {
+            for (const positionIdx of positionsInGroup) {
+                expandedPositions.add(positionIdx);
             }
         }
     }
     
-    return expandedAtoms;
+    return expandedPositions;
 }
 
 /**
@@ -1326,13 +1326,13 @@ function expandLigandSelection(atomIndices, ligandGroups) {
  * @param {Map} modresMap - Optional MODRES mapping from PDB (resName -> stdResName)
  * @param {Map} chemCompMap - Optional chemical component map from CIF
  * @param {boolean} includeAllResidues - If true, include all residues (even unconnected) for PAE mapping. If false, filter based on connectivity.
- * @returns {object} - Frame data with coords, and optional plddts, chains, atom_types
+ * @returns {object} - Frame data with coords, and optional plddts, chains, position_types
  */
 function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, includeAllResidues = false) {
     const coords = [];
     const plddts = [];
-    const atom_chains = [];
-    const atom_types = [];
+    const position_chains = [];
+    const position_types = [];
     const residues = [];
     const residue_index = [];
     
@@ -1409,8 +1409,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
             if (ca) {
                 coords.push([ca.x, ca.y, ca.z]);
                 plddts.push(ca.b);
-                atom_chains.push(ca.chain);
-                atom_types.push('P');
+                position_chains.push(ca.chain);
+                position_types.push('P');
                 residues.push(ca.res_name || ca.resName || residue.resName);
                 residue_index.push(ca.res_seq || ca.resSeq || residue.resSeq);
             }
@@ -1420,8 +1420,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
             if (c4_atom) {
                 coords.push([c4_atom.x, c4_atom.y, c4_atom.z]);
                 plddts.push(c4_atom.b);
-                atom_chains.push(c4_atom.chain);
-                atom_types.push(nucleicType);
+                position_chains.push(c4_atom.chain);
+                position_types.push(nucleicType);
                 residues.push(c4_atom.res_name || c4_atom.resName || residue.resName);
                 residue_index.push(c4_atom.res_seq || c4_atom.resSeq || residue.resSeq);
             }
@@ -1433,8 +1433,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                 if (atom.element !== 'H' && atom.element !== 'D') {
                     coords.push([atom.x, atom.y, atom.z]);
                     plddts.push(atom.b);
-                    atom_chains.push(atom.chain);
-                    atom_types.push('L');
+                    position_chains.push(atom.chain);
+                    position_types.push('L');
                     residues.push(atom.res_name || atom.resName || residue.resName);
                     residue_index.push(atom.res_seq || atom.resSeq || residue.resSeq);
                 }
@@ -1444,20 +1444,20 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
 
     const result = { coords };
 
-    if (atom_types.length > 0) {
-        result.atom_types = atom_types;
+    if (position_types.length > 0) {
+        result.position_types = position_types;
     }
     if (plddts.some(p => !isNaN(p))) {
         result.plddts = plddts;
     }
-    if (atom_chains.some(c => c && c.trim())) {
-        result.chains = atom_chains;
+    if (position_chains.some(c => c && c.trim())) {
+        result.chains = position_chains;
     }
     if (residues.some(r => r && r.trim())) {
-        result.residues = residues;
+        result.position_names = residues;
     }
     if (residue_index.some(i => !isNaN(i))) {
-        result.residue_index = residue_index;
+        result.position_index = residue_index;
     }
     
     return result;

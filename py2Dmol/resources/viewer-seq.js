@@ -26,10 +26,10 @@
         getObjectSelect: null,        // () => objectSelect element
         toggleChainResidues: null,    // (chain) => void
         setChainResiduesSelected: null, // (chain, selected) => void
-        highlightAtom: null,          // (atomIndex) => void
-        highlightAtoms: null,         // (atomIndices) => void
+        highlightAtom: null,          // (positionIndex) => void
+        highlightAtoms: null,         // (positionIndices) => void
         clearHighlight: null,        // () => void
-        applySelection: null,         // (previewAtoms) => void
+        applySelection: null,         // (previewPositions) => void
         getPreviewSelectionSet: null, // () => Set | null
         setPreviewSelectionSet: null  // (Set | null) => void
     };
@@ -48,12 +48,12 @@
         if (n1 !== n2) return true;
         if (n1 === 0) return false; // Both empty, consider same
         
-        // Check if residues differ (if available)
-        const residues1 = frame1.residues || [];
-        const residues2 = frame2.residues || [];
-        if (residues1.length > 0 && residues2.length > 0) {
-            for (let i = 0; i < Math.min(residues1.length, residues2.length, n1); i++) {
-                if (residues1[i] !== residues2[i]) return true;
+        // Check if position_names differ (if available)
+        const positionNames1 = frame1.position_names || [];
+        const positionNames2 = frame2.position_names || [];
+        if (positionNames1.length > 0 && positionNames2.length > 0) {
+            for (let i = 0; i < Math.min(positionNames1.length, positionNames2.length, n1); i++) {
+                if (positionNames1[i] !== positionNames2[i]) return true;
             }
         }
         
@@ -66,12 +66,12 @@
             }
         }
         
-        // Check if atom_types differ (if available)
-        const atom_types1 = frame1.atom_types || [];
-        const atom_types2 = frame2.atom_types || [];
-        if (atom_types1.length > 0 && atom_types2.length > 0) {
-            for (let i = 0; i < Math.min(atom_types1.length, atom_types2.length, n1); i++) {
-                if (atom_types1[i] !== atom_types2[i]) return true;
+        // Check if position_types differ (if available)
+        const position_types1 = frame1.position_types || [];
+        const position_types2 = frame2.position_types || [];
+        if (position_types1.length > 0 && position_types2.length > 0) {
+            for (let i = 0; i < Math.min(position_types1.length, position_types2.length, n1); i++) {
+                if (position_types1[i] !== position_types2[i]) return true;
             }
         }
         
@@ -114,7 +114,7 @@
         };
     }
 
-    // Find residue at canvas position
+    // Find position at canvas position
     function getResidueAtCanvasPosition(x, y, layout) {
         if (!layout || !layout.residuePositions) return null;
         
@@ -153,7 +153,7 @@
         const residueLigandItems = items.filter(item => item.type === 'residue' || item.type === 'ligand');
         const chainItems = items.filter(item => item.type === 'chain');
         
-        // Priority 1: Check residue/ligand items first (exact bounds)
+        // Priority 1: Check position/ligand items first (exact bounds)
         // These should take precedence over chain items in sequence mode
         for (const item of residueLigandItems) {
             const bounds = item.bounds;
@@ -243,7 +243,7 @@
         }
     }
 
-    // Draw residue character on canvas
+    // Draw position character on canvas
     function drawResidueCharOnCanvas(ctx, letter, x, y, width, height, color, isSelected, dimFactor) {
         // Apply dimming if not selected
         let r = color.r;
@@ -321,7 +321,7 @@
     function renderSequenceCanvas() {
         if (!sequenceCanvasData) return;
         
-        const { canvas, ctx, allResidueData, chainBoundaries, layout, sortedAtomEntries } = sequenceCanvasData;
+        const { canvas, ctx, allResidueData, chainBoundaries, layout, sortedPositionEntries } = sequenceCanvasData;
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer) return;
         
@@ -332,27 +332,27 @@
         const selectionModel = renderer.selectionModel;
         const previewSelectionSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
         
-        // Determine visible atoms - avoid unnecessary Set copies
-        let visibleAtoms;
+        // Determine visible positions - avoid unnecessary Set copies
+        let visiblePositions;
         if (previewSelectionSet && previewSelectionSet.size > 0) {
             // Use preview selection directly (already a Set, no need to copy)
-            visibleAtoms = previewSelectionSet;
+            visiblePositions = previewSelectionSet;
         } else {
-            if (selectionModel && selectionModel.atoms && selectionModel.atoms.size > 0) {
+            if (selectionModel && selectionModel.positions && selectionModel.positions.size > 0) {
                 // Use selectionModel directly (no copy needed for read-only access)
-                visibleAtoms = selectionModel.atoms;
+                visiblePositions = selectionModel.positions;
             } else if (renderer.visibilityMask === null) {
-                // All atoms visible - create Set only if needed (lazy)
+                // All positions visible - create Set only if needed (lazy)
                 const n = renderer.coords ? renderer.coords.length : 0;
-                visibleAtoms = new Set();
+                visiblePositions = new Set();
                 for (let i = 0; i < n; i++) {
-                    visibleAtoms.add(i);
+                    visiblePositions.add(i);
                 }
             } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
                 // Use visibilityMask directly (no copy needed for read-only access)
-                visibleAtoms = renderer.visibilityMask;
+                visiblePositions = renderer.visibilityMask;
             } else {
-                visibleAtoms = new Set();
+                visiblePositions = new Set();
             }
         }
         
@@ -360,7 +360,7 @@
         
         // Draw chain labels
         if (layout.chainLabelPositions) {
-            // During drag, compute chain selection from preview atoms
+            // During drag, compute chain selection from preview positions
             let chainSelection = selectionModel?.chains;
             let selectionMode = selectionModel?.selectionMode;
             
@@ -368,17 +368,17 @@
             const isDragging = previewSelectionSet !== null;
             
             if (isDragging) {
-                // Compute chains from preview atoms during drag (even if previewSelectionSet is empty)
+                // Compute chains from preview positions during drag (even if previewSelectionSet is empty)
                 const objectName = renderer.currentObjectName;
                 const obj = renderer.objectsData[objectName];
                 const frame = obj?.frames?.[0];
                 const previewChains = new Set();
                 if (frame?.chains && previewSelectionSet) {
-                    // previewSelectionSet can be empty Set (unselect case) or have atoms (select case)
-                    for (const atomIdx of previewSelectionSet) {
-                        const atomChain = frame.chains[atomIdx];
-                        if (atomChain) {
-                            previewChains.add(atomChain);
+                    // previewSelectionSet can be empty Set (unselect case) or have positions (select case)
+                    for (const positionIndex of previewSelectionSet) {
+                        const positionChain = frame.chains[positionIndex];
+                        if (positionChain) {
+                            previewChains.add(positionChain);
                         }
                     }
                 }
@@ -386,8 +386,8 @@
                 // If previewSelectionSet is empty, previewChains will be empty (all chains unselected)
                 chainSelection = previewChains;
                 // Determine selection mode based on preview
-                const totalAtoms = frame?.chains?.length || 0;
-                const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalAtoms;
+                const totalPositions = frame?.chains?.length || 0;
+                const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalPositions;
                 const allChains = new Set(frame?.chains || []);
                 const allChainsSelected = previewChains.size === allChains.size && 
                                         Array.from(previewChains).every(c => allChains.has(c));
@@ -414,7 +414,7 @@
             }
         }
         
-        // Draw residue characters and ligand tokens
+        // Draw position characters and ligand tokens
         if (layout.residuePositions && allResidueData) {
             // Get renderer's getAtomColor function for dynamic color computation
             const hasGetAtomColor = renderer?.getAtomColor;
@@ -426,26 +426,26 @@
                 // Compute color dynamically based on current renderer state
                 let color = {r: 128, g: 128, b: 128}; // Default fallback grey
                 
-                if (residueData.atomIndex === -1) {
-                    // Gap markers (missing residues) use stored light grey color
+                if (residueData.positionIndex === -1) {
+                    // Gap markers (missing positions) use stored light grey color
                     color = residueData.color || {r: 240, g: 240, b: 240};
-                } else if (residueData.isLigandToken && residueData.atomIndices && residueData.atomIndices.length > 0) {
-                    // For ligand tokens, use first atom's color
-                    const firstAtomIndex = residueData.atomIndices[0];
-                    if (hasGetAtomColor && !Number.isNaN(firstAtomIndex) && firstAtomIndex >= 0) {
-                        color = renderer.getAtomColor(firstAtomIndex);
+                } else if (residueData.isLigandToken && residueData.positionIndices && residueData.positionIndices.length > 0) {
+                    // For ligand tokens, use first position's color
+                    const firstPositionIndex = residueData.positionIndices[0];
+                    if (hasGetAtomColor && !Number.isNaN(firstPositionIndex) && firstPositionIndex >= 0) {
+                        color = renderer.getAtomColor(firstPositionIndex);
                     }
-                } else if (residueData.atomIndex >= 0) {
-                    // For regular residues, use atom's color
-                    if (hasGetAtomColor && !Number.isNaN(residueData.atomIndex)) {
-                        color = renderer.getAtomColor(residueData.atomIndex);
+                } else if (residueData.positionIndex >= 0) {
+                    // For regular positions, use position's color
+                    if (hasGetAtomColor && !Number.isNaN(residueData.positionIndex)) {
+                        color = renderer.getAtomColor(residueData.positionIndex);
                     }
                 }
                 
-                // Check if this is a ligand token (has atomIndices array)
-                if (residueData.isLigandToken && residueData.atomIndices) {
-                    // For ligand tokens, check if any atom in the ligand is selected
-                    const isSelected = residueData.atomIndices.some(atomIdx => visibleAtoms.has(atomIdx));
+                // Check if this is a ligand token (has positionIndices array)
+                if (residueData.isLigandToken && residueData.positionIndices) {
+                    // For ligand tokens, check if any position in the ligand is selected
+                    const isSelected = residueData.positionIndices.some(positionIndex => visiblePositions.has(positionIndex));
                     
                     drawLigandTokenOnCanvas(
                         ctx,
@@ -458,8 +458,8 @@
                         isSelected,
                         dimFactor
                     );
-                } else if (residueData.atomIndex === -1) {
-                    // Gap marker (missing residues) - always draw as "-"
+                } else if (residueData.positionIndex === -1) {
+                    // Gap marker (missing positions) - always draw as "-"
                     drawResidueCharOnCanvas(
                         ctx,
                         '-', // Always use "-" for gaps
@@ -471,9 +471,9 @@
                         false, // Gaps are never selected
                         dimFactor
                     );
-                } else if (residueData.atomIndex >= 0) {
-                    // Regular residue character
-                    const isSelected = visibleAtoms.has(residueData.atomIndex);
+                } else if (residueData.positionIndex >= 0) {
+                    // Regular position character
+                    const isSelected = visiblePositions.has(residueData.positionIndex);
                     
                     drawResidueCharOnCanvas(
                         ctx,
@@ -544,40 +544,40 @@
         const n = currentFrame.coords ? currentFrame.coords.length : 0;
         if (n === 0) return;
         
-        const residues = currentFrame.residues || [];
-        const residue_index = currentFrame.residue_index || [];
+        const positionNames = currentFrame.position_names || [];
+        const positionIndex = currentFrame.position_index || [];
         const chains = currentFrame.chains || [];
-        const atom_types = currentFrame.atom_types || [];
+        const position_types = currentFrame.position_types || [];
         
-        // Check if residue names are available - if not, we can't group ligands with names
-        const hasResidueNames = residues && residues.length === n;
+        // Check if position names are available - if not, we can't group ligands with names
+        const hasPositionNames = positionNames && positionNames.length === n;
         
-        // Create one entry per atom (one atom = one position, no collapsing)
-        // Default to chain 'A', residue name 'UNK', sequential residue index, and type 'P' (protein)
-        const atomEntries = [];
+        // Create one entry per position (one position = one position, no collapsing)
+        // Default to chain 'A', position name 'UNK', sequential position index, and type 'P' (protein)
+        const positionEntries = [];
         for (let i = 0; i < n; i++) {
-            atomEntries.push({
+            positionEntries.push({
                 chain: (chains && chains.length > i && chains[i]) ? chains[i] : 'A',
-                resName: (residues && residues.length > i && residues[i]) ? residues[i] : 'UNK',
-                resSeq: (residue_index && residue_index.length > i && residue_index[i] != null) ? residue_index[i] : (i + 1),
-                atomIndex: i, // Direct atom index
-                atomType: (atom_types && atom_types.length > i && atom_types[i]) ? atom_types[i] : 'P' // Default to protein
+                resName: (positionNames && positionNames.length > i && positionNames[i]) ? positionNames[i] : 'UNK',
+                resSeq: (positionIndex && positionIndex.length > i && positionIndex[i] != null) ? positionIndex[i] : (i + 1),
+                positionIndex: i, // Direct position index
+                positionType: (position_types && position_types.length > i && position_types[i]) ? position_types[i] : 'P' // Default to protein
             });
         }
 
-        // Sort by chain, then by atom index (maintains order within chain) - UNIFIED ORDER
-        const sortedAtomEntries = atomEntries.sort((a, b) => {
+        // Sort by chain, then by position index (maintains order within chain) - UNIFIED ORDER
+        const sortedPositionEntries = positionEntries.sort((a, b) => {
             if (a.chain < b.chain) return -1;
             if (a.chain > b.chain) return 1;
-            return a.atomIndex - b.atomIndex;
+            return a.positionIndex - b.positionIndex;
         });
         
         // Track chain boundaries for unified sequence
         const chainBoundaries = [];
         let currentChain = null;
         let chainStart = 0;
-        for (let i = 0; i < sortedAtomEntries.length; i++) {
-            if (sortedAtomEntries[i].chain !== currentChain) {
+        for (let i = 0; i < sortedPositionEntries.length; i++) {
+            if (sortedPositionEntries[i].chain !== currentChain) {
                 if (currentChain !== null) {
                     chainBoundaries.push({
                         chain: currentChain,
@@ -585,7 +585,7 @@
                         endIndex: i - 1
                     });
                 }
-                currentChain = sortedAtomEntries[i].chain;
+                currentChain = sortedPositionEntries[i].chain;
                 chainStart = i;
             }
         }
@@ -594,7 +594,7 @@
             chainBoundaries.push({
                 chain: currentChain,
                 startIndex: chainStart,
-                endIndex: sortedAtomEntries.length - 1
+                endIndex: sortedPositionEntries.length - 1
             });
         }
 
@@ -621,9 +621,9 @@
             'RURA':'U', 'RURI':'U'  // More RNA uracil variations
         };
         
-        // Detect sequence type based on residue names
-        const detectSequenceType = (residues) => {
-            if (residues.length === 0) return 'protein';
+        // Detect sequence type based on position names
+        const detectSequenceType = (positionNames) => {
+            if (positionNames.length === 0) return 'protein';
             
             let dnaCount = 0;
             let rnaCount = 0;
@@ -633,7 +633,7 @@
             let hasU = false;
             let hasT = false;
             
-            for (const resName of residues) {
+            for (const resName of positionNames) {
                 const upperResName = (resName || '').toString().trim().toUpperCase();
                 
                 // RNA-specific: U is RNA-only
@@ -681,15 +681,15 @@
         // Build chain-to-sequence-type mapping for unified sequence
         const chainSequenceTypes = {};
         for (const boundary of chainBoundaries) {
-            const chainResidues = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+            const chainResidues = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
             const chainResidueNames = chainResidues.map(r => r.resName);
             chainSequenceTypes[boundary.chain] = detectSequenceType(chainResidueNames);
         }
         
-        // Helper function to get residue letter based on chain's sequence type
-        const getResidueLetter = (atom) => {
-            const chainType = chainSequenceTypes[atom.chain] || 'protein';
-            let upper = (atom.resName || '').toString().trim().toUpperCase();
+        // Helper function to get position letter based on chain's sequence type
+        const getPositionLetter = (position) => {
+            const chainType = chainSequenceTypes[position.chain] || 'protein';
+            let upper = (position.resName || '').toString().trim().toUpperCase();
             
             // Map modified residues to standard equivalents (e.g., MSE -> MET)
             // Use getStandardResidueName if available (from utils.js), otherwise use local mapping
@@ -731,7 +731,7 @@
         // Chain button uses same dimensions as sequence characters
         // Find the maximum chain ID length to make all buttons the same size
         const maxChainIdLength = Math.max(...chainBoundaries.map(b => b.chain.length), 3);
-        const chainButtonWidth = (charWidth * maxChainIdLength + 20) * 2 / 3; // Fixed width for all buttons (2/3 of original size)
+        const chainButtonWidth = (charWidth * maxChainIdLength + 20) / 3; // Fixed width for all buttons (1/2 of previous 2/3 size)
         
         // Calculate dynamic line breaks based on container width
         // Get actual container width to fill it completely
@@ -751,7 +751,7 @@
         canvas.style.display = 'block';
         canvas.style.width = '100%';
         
-        // Store all residue data (not elements)
+        // Store all position data (not elements)
         const allResidueData = [];
         
         // Calculate layout positions
@@ -773,17 +773,17 @@
             // SEQUENCE MODE: One row per chain
             for (const boundary of chainBoundaries) {
                 const chainId = boundary.chain;
-                const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
                 
                 // Chain label position
                 const chainLabelX = spacing;
                 const chainLabelY = currentY;
-                const actualButtonWidth = chainButtonWidth + Math.round(4 * 2 / 3);
+                const actualButtonWidth = chainButtonWidth + Math.round(4 / 3);
                 const chainLabelHeight = charHeight;
                 
                 layout.chainLabelPositions.push({
                     chainId,
-                    atomIndex: chainAtoms[0].atomIndex,
+                    positionIndex: chainPositions[0].positionIndex,
                     x: chainLabelX,
                     y: chainLabelY,
                     width: actualButtonWidth,
@@ -797,68 +797,68 @@
                 let maxLineY = lineY; // Track maximum Y for this chain
                 
                 let lastResSeq = null;
-                let lastAtomType = null;
+                let lastPositionType = null;
                 const ligandTokenWidth = charWidth * 2; // Ligand tokens take 2 character widths
                 
                 // Get ligand groups from renderer (computed using shared utility)
                 const ligandGroups = renderer?.ligandGroups || new Map();
                 
-                // Create reverse map: atom index -> ligand group key (for quick lookup)
-                const atomToLigandGroup = new Map();
-                for (const [groupKey, atomIndicesInGroup] of ligandGroups) {
-                    for (const atomIdx of atomIndicesInGroup) {
-                        atomToLigandGroup.set(atomIdx, groupKey);
+                // Create reverse map: position index -> ligand group key (for quick lookup)
+                const positionToLigandGroup = new Map();
+                for (const [groupKey, positionIndicesInGroup] of ligandGroups) {
+                    for (const positionIndex of positionIndicesInGroup) {
+                        positionToLigandGroup.set(positionIndex, groupKey);
                     }
                 }
                 
                 // Track which ligand groups we've already processed
                 const processedLigandGroups = new Set();
                 
-                // Group atoms into display items (regular atoms or ligand tokens)
+                // Group positions into display items (regular positions or ligand tokens)
                 const displayItems = [];
                 let i = 0;
-                while (i < chainAtoms.length) {
-                    const atom = chainAtoms[i];
+                while (i < chainPositions.length) {
+                    const position = chainPositions[i];
                     
-                    // Check if this atom belongs to a ligand group
-                    const ligandGroupKey = atomToLigandGroup.get(atom.atomIndex);
+                    // Check if this position belongs to a ligand group
+                    const ligandGroupKey = positionToLigandGroup.get(position.positionIndex);
                     
                     if (ligandGroupKey && !processedLigandGroups.has(ligandGroupKey)) {
-                        // This atom is part of a ligand group - create ligand token
-                        const ligandAtomIndices = ligandGroups.get(ligandGroupKey);
-                        if (ligandAtomIndices && ligandAtomIndices.length > 0) {
-                            // Find the first atom of this ligand group in chainAtoms (for ordering)
-                            let firstAtomInChain = null;
-                            let firstAtomIdxInChain = -1;
-                            for (let j = 0; j < chainAtoms.length; j++) {
-                                if (ligandAtomIndices.includes(chainAtoms[j].atomIndex)) {
-                                    firstAtomInChain = chainAtoms[j];
-                                    firstAtomIdxInChain = chainAtoms[j].atomIndex;
+                        // This position is part of a ligand group - create ligand token
+                        const ligandPositionIndices = ligandGroups.get(ligandGroupKey);
+                        if (ligandPositionIndices && ligandPositionIndices.length > 0) {
+                            // Find the first position of this ligand group in chainPositions (for ordering)
+                            let firstPositionInChain = null;
+                            let firstPositionIdxInChain = -1;
+                            for (let j = 0; j < chainPositions.length; j++) {
+                                if (ligandPositionIndices.includes(chainPositions[j].positionIndex)) {
+                                    firstPositionInChain = chainPositions[j];
+                                    firstPositionIdxInChain = chainPositions[j].positionIndex;
                                     break;
                                 }
                             }
                             
-                            if (firstAtomInChain) {
-                                // Create ligand token even if residue name is missing (use fallback name)
-                                // This ensures ligands are grouped even when residue_index/residue are missing
-                                const ligandResName = (hasResidueNames && firstAtomInChain.resName && firstAtomInChain.resName !== 'UNK') 
-                                    ? firstAtomInChain.resName 
-                                    : 'LIG'; // Fallback name for ligands without residue names
+                            if (firstPositionInChain) {
+                                // Create ligand token even if position name is missing (use fallback name)
+                                // This ensures ligands are grouped even when position_index/position_name are missing
+                                const ligandResName = (hasPositionNames && firstPositionInChain.resName && firstPositionInChain.resName !== 'UNK') 
+                                    ? firstPositionInChain.resName 
+                                    : 'LIG'; // Fallback name for ligands without position names
                                 
                                 // Create ligand token (color will be computed dynamically at render time)
                                 displayItems.push({
                                     type: 'ligand',
-                                    resSeq: firstAtomInChain.resSeq,
+                                    resSeq: firstPositionInChain.resSeq,
                                     resName: ligandResName,
-                                    atomIndices: ligandAtomIndices,
-                                    chain: firstAtomInChain.chain
+                                    positionIndices: ligandPositionIndices,
+                                    chain: firstPositionInChain.chain
                                 });
                                 
                                 // Mark this ligand group as processed
                                 processedLigandGroups.add(ligandGroupKey);
                                 
-                                // Skip all atoms in this ligand group
-                                while (i < chainAtoms.length && ligandAtomIndices.includes(chainAtoms[i].atomIndex)) {
+                                // Skip all positions in this ligand group
+                                while (i < chainPositions.length && ligandPositionIndices.includes(chainPositions[i].positionIndex)) {
                                     i++;
                                 }
                                 continue;
@@ -866,10 +866,10 @@
                         }
                     }
                     
-                    // Regular atom (ligands with grouping are handled above)
+                    // Regular position (ligands with grouping are handled above)
                     displayItems.push({
                         type: 'atom',
-                        atom: atom
+                        atom: position
                     });
                     i++;
                 }
@@ -892,21 +892,21 @@
                     // Add spacing/gaps between items
                     if (prevItem) {
                         const prevResSeq = prevItem.type === 'ligand' ? prevItem.resSeq : prevItem.atom.resSeq;
-                        const prevAtomType = prevItem.type === 'ligand' ? 'L' : prevItem.atom.atomType;
+                        const prevPositionType = prevItem.type === 'ligand' ? 'L' : prevItem.atom.positionType;
                         const currResSeq = item.type === 'ligand' ? item.resSeq : item.atom.resSeq;
-                        const currAtomType = item.type === 'ligand' ? 'L' : item.atom.atomType;
+                        const currPositionType = item.type === 'ligand' ? 'L' : item.atom.positionType;
                         
-                        const atomTypeChanged = prevAtomType !== currAtomType;
-                        const ligandResSeqChanged = currAtomType === 'L' && prevAtomType === 'L' && prevResSeq !== currResSeq;
-                        const sameAtomType = prevAtomType === currAtomType;
+                        const positionTypeChanged = prevPositionType !== currPositionType;
+                        const ligandResSeqChanged = currPositionType === 'L' && prevPositionType === 'L' && prevResSeq !== currResSeq;
+                        const samePositionType = prevPositionType === currPositionType;
                         const resSeqDiff = currResSeq - prevResSeq;
                         const resSeqChanged = prevResSeq !== currResSeq;
-                        const isChainBreak = sameAtomType && 
+                        const isChainBreak = samePositionType && 
                                              resSeqChanged &&
-                                             (prevAtomType === 'P' || prevAtomType === 'D' || prevAtomType === 'R') &&
+                                             (prevPositionType === 'P' || prevPositionType === 'D' || prevPositionType === 'R') &&
                                              resSeqDiff > 1;
                         
-                        if (atomTypeChanged || ligandResSeqChanged) {
+                        if (positionTypeChanged || ligandResSeqChanged) {
                             // Add spacer
                             currentX += charWidth;
                         } else if (isChainBreak) {
@@ -922,7 +922,7 @@
                                 
                                 layout.residuePositions.push({
                                     residueData: {
-                                        atomIndex: -1, // Gap marker
+                                        positionIndex: -1, // Gap marker
                                         letter: '-',
                                         color: {r: 240, g: 240, b: 240},
                                         resSeq: prevResSeq + g + 1,
@@ -949,7 +949,7 @@
                         // Create ligand token data (color will be computed dynamically at render time)
                         const ligandTokenData = {
                             isLigandToken: true,
-                            atomIndices: item.atomIndices,
+                            positionIndices: item.positionIndices,
                             ligandName: item.resName,
                             resSeq: item.resSeq,
                             chain: item.chain,
@@ -966,17 +966,17 @@
                             height: charHeight
                         });
                     } else {
-                        // Regular atom
+                        // Regular position
                         const atom = item.atom;
-                        const letter = getResidueLetter(atom);
+                        const letter = getPositionLetter(atom);
                         
-                        // Store residue data (color will be computed dynamically at render time)
+                        // Store position data (color will be computed dynamically at render time)
                         const residueData = {
-                            atomIndex: atom.atomIndex,
+                            positionIndex: atom.positionIndex,
                             letter,
                             resSeq: atom.resSeq,
                             chain: atom.chain,
-                            resName: atom.resName // Store residue name for tooltip
+                            resName: atom.resName // Store position name for tooltip
                         };
                         allResidueData.push(residueData);
                         
@@ -993,10 +993,10 @@
                     currentX += itemWidth;
                     if (item.type === 'ligand') {
                         lastResSeq = item.resSeq;
-                        lastAtomType = 'L';
+                        lastPositionType = 'L';
                     } else {
                         lastResSeq = item.atom.resSeq;
-                        lastAtomType = item.atom.atomType;
+                        lastPositionType = item.atom.positionType;
                     }
                 }
                 
@@ -1012,7 +1012,7 @@
             
             for (const boundary of chainBoundaries) {
                 const chainId = boundary.chain;
-                const actualButtonWidth = chainButtonWidth + Math.round(4 * 2 / 3);
+                const actualButtonWidth = chainButtonWidth + Math.round(4 / 3);
                 
                 // Check if we need to wrap
                 if (currentX + actualButtonWidth > containerWidth - spacing) {
@@ -1022,7 +1022,7 @@
                 
                 layout.chainLabelPositions.push({
                     chainId,
-                    atomIndex: sortedAtomEntries[boundary.startIndex].atomIndex,
+                    positionIndex: sortedPositionEntries[boundary.startIndex].positionIndex,
                     x: currentX,
                     y: lineY,
                     width: actualButtonWidth,
@@ -1044,8 +1044,8 @@
             const chainId = chainPos.chainId;
             const boundary = chainBoundaries.find(b => b.chain === chainId);
             if (boundary) {
-                const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                const atomIndices = chainAtoms.map(a => a.atomIndex);
+                const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                const positionIndices = chainPositions.map(a => a.positionIndex);
                 
                 // For chain items, expand hit box to full row height to eliminate gaps
                 // Find the row height (next chain's Y - this chain's Y, or end of canvas)
@@ -1071,7 +1071,7 @@
                     type: 'chain',
                     id: `chain-${chainId}`,
                     chainId: chainId,
-                    atomIndices: atomIndices,
+                    positionIndices: positionIndices,
                     bounds: {
                         x: chainPos.x,
                         y: chainPos.y,
@@ -1083,19 +1083,19 @@
             }
         }
         
-        // Add residue and ligand items (only in sequence mode, or if we want them in chain mode too)
+        // Add position and ligand items (only in sequence mode, or if we want them in chain mode too)
         if (sequenceViewMode) {
             for (const residuePos of layout.residuePositions) {
                 const residueData = residuePos.residueData;
-                let atomIndices;
+                let positionIndices;
                 let type;
                 
-                if (residueData.isLigandToken && residueData.atomIndices) {
+                if (residueData.isLigandToken && residueData.positionIndices) {
                     type = 'ligand';
-                    atomIndices = residueData.atomIndices;
-                } else if (residueData.atomIndex >= 0) {
+                    positionIndices = residueData.positionIndices;
+                } else if (residueData.positionIndex >= 0) {
                     type = 'residue';
-                    atomIndices = [residueData.atomIndex];
+                    positionIndices = [residueData.positionIndex];
                 } else {
                     continue; // Skip invalid items
                 }
@@ -1103,9 +1103,9 @@
                 layout.selectableItems.push({
                     type: type,
                     id: type === 'ligand' 
-                        ? `ligand-${residueData.atomIndices[0]}` 
-                        : `residue-${residueData.atomIndex}`,
-                    atomIndices: atomIndices,
+                        ? `ligand-${residueData.positionIndices[0]}` 
+                        : `residue-${residueData.positionIndex}`,
+                    positionIndices: positionIndices,
                     residueData: residueData,
                     bounds: {
                         x: residuePos.x,
@@ -1121,7 +1121,10 @@
         // Get actual container width to fill it completely
         const actualContainerRect = sequenceViewEl ? sequenceViewEl.getBoundingClientRect() : null;
         const displayWidth = actualContainerRect && actualContainerRect.width > 0 ? actualContainerRect.width : containerWidth;
-        const displayHeight = currentY;
+        
+        // Restrict visible height to 32 lines of characters
+        const maxVisibleHeight = 32 * charHeight + spacing; // 32 lines + spacing
+        const fullHeight = currentY; // Full content height
         
         // Set canvas internal dimensions to achieve 200 DPI (pixels per inch)
         // Standard web DPI is 96, so 200 DPI = 200/96 ≈ 2.083x multiplier
@@ -1129,12 +1132,22 @@
         const standardDPI = 96;
         const dpiMultiplier = targetDPI / standardDPI;
         
+        // Canvas should be full height to render all content
         canvas.width = displayWidth * dpiMultiplier;
-        canvas.height = displayHeight * dpiMultiplier;
+        canvas.height = fullHeight * dpiMultiplier;
         
-        // Set display size (CSS pixels)
+        // Set display size (CSS pixels) - canvas is full height
         canvas.style.width = '100%';
-        canvas.style.height = displayHeight + 'px';
+        canvas.style.height = fullHeight + 'px';
+        
+        // Restrict container height to 32 lines and enable scrolling if needed
+        if (fullHeight > maxVisibleHeight) {
+            sequenceViewEl.style.overflowY = 'auto';
+            sequenceViewEl.style.maxHeight = maxVisibleHeight + 'px';
+        } else {
+            sequenceViewEl.style.overflowY = 'visible';
+            sequenceViewEl.style.maxHeight = 'none';
+        }
         
         const ctx = canvas.getContext('2d');
         
@@ -1149,7 +1162,7 @@
             ctx,
             allResidueData,
             chainBoundaries,
-            sortedAtomEntries,
+            sortedPositionEntries,
             layout,
             mode: sequenceViewMode
         };
@@ -1184,7 +1197,7 @@
             initialSelectionState: new Set()
         };
         
-        const { canvas, allResidueData, chainBoundaries, sortedAtomEntries, layout } = sequenceCanvasData;
+        const { canvas, allResidueData, chainBoundaries, sortedPositionEntries, layout } = sequenceCanvasData;
         
         // Remove old event listeners by cloning the canvas
         const newCanvas = canvas.cloneNode(false);
@@ -1222,7 +1235,7 @@
                 return;
             }
             
-            // For all other items (chain in chain mode, residue, ligand), enable drag
+            // For all other items (chain in chain mode, position, ligand), enable drag
             const current = renderer?.getSelection();
             
             // Determine if item is initially selected
@@ -1231,9 +1244,9 @@
                 isInitiallySelected = current?.chains?.has(selectedItem.chainId) || 
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
             } else {
-                // For residue/ligand, check if all atoms are selected
-                isInitiallySelected = selectedItem.atomIndices.length > 0 && 
-                    selectedItem.atomIndices.every(atomIdx => current?.atoms?.has(atomIdx));
+                // For position/ligand, check if all positions are selected
+                isInitiallySelected = selectedItem.positionIndices.length > 0 && 
+                    selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
             }
             
             dragState.isDragging = true;
@@ -1241,15 +1254,15 @@
             dragState.dragStartItem = selectedItem;
             dragState.dragEndItemIndex = selectedItem.index;
             dragState.dragUnselectMode = isInitiallySelected;
-            dragState.initialSelectionState = new Set(current?.atoms || []);
+            dragState.initialSelectionState = new Set(current?.positions || []);
             
             // Legacy fields for compatibility
             if (selectedItem.type === 'chain') {
                 const boundary = chainBoundaries.find(b => b.chain === selectedItem.chainId);
                 if (boundary) {
-                    const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    dragState.dragStart = chainAtoms[0];
-                    dragState.dragEnd = chainAtoms[chainAtoms.length - 1];
+                    const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                    dragState.dragStart = chainPositions[0];
+                    dragState.dragEnd = chainPositions[chainPositions.length - 1];
                 }
             } else if (selectedItem.residueData) {
                 dragState.dragStart = selectedItem.residueData;
@@ -1267,70 +1280,77 @@
             window.addEventListener('mouseup', handleUp);
             
             // Handle click (no drag) - toggle selection immediately
-            if (selectedItem.type === 'ligand' || (selectedItem.type === 'residue' && selectedItem.atomIndices.length === 1)) {
-                const newAtoms = new Set(current?.atoms || []);
-                selectedItem.atomIndices.forEach(atomIdx => {
-                    if (newAtoms.has(atomIdx)) {
-                        newAtoms.delete(atomIdx);
+            if ((selectedItem.type === 'ligand' && selectedItem.positionIndices && selectedItem.positionIndices.length > 0) || 
+                (selectedItem.type === 'residue' && selectedItem.positionIndices && selectedItem.positionIndices.length === 1)) {
+                const newPositions = new Set(current?.positions || []);
+                selectedItem.positionIndices.forEach(positionIndex => {
+                    if (newPositions.has(positionIndex)) {
+                        newPositions.delete(positionIndex);
                     } else {
-                        newAtoms.add(atomIdx);
+                        newPositions.add(positionIndex);
                     }
                 });
                 
-                // Update chains to include all chains that have selected atoms
+                // Update chains to include all chains that have selected positions
                 const objectName = renderer.currentObjectName;
                 const obj = renderer.objectsData[objectName];
                 const frame = obj?.frames?.[0];
                 const newChains = new Set();
                 if (frame?.chains) {
-                    for (const atomIdx of newAtoms) {
-                        const atomChain = frame.chains[atomIdx];
-                        if (atomChain) {
-                            newChains.add(atomChain);
+                    for (const positionIndex of newPositions) {
+                        const positionChain = frame.chains[positionIndex];
+                        if (positionChain) {
+                            newChains.add(positionChain);
                         }
                     }
                 }
                 
                 // Determine if we have partial selections
-                const totalAtoms = frame?.chains?.length || 0;
-                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                const totalPositions = frame?.chains?.length || 0;
+                const hasPartialSelections = newPositions.size > 0 && newPositions.size < totalPositions;
                 const allChains = new Set(frame.chains);
                 const allChainsSelected = newChains.size === allChains.size && 
                                         Array.from(newChains).every(c => allChains.has(c));
-                const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
+                const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
                 
                 // Clear PAE boxes when editing sequence selection
                 renderer.setSelection({ 
-                    atoms: newAtoms,
+                    positions: newPositions,
                     chains: chainsToSet,
                     selectionMode: selectionMode,
                     paeBoxes: [] 
                 });
                 lastSequenceUpdateHash = null;
                 scheduleRender();
+                
+                // Prevent drag handlers from interfering with click
+                dragState.isDragging = false;
+                window.removeEventListener('mousemove', handleMove);
+                window.removeEventListener('mouseup', handleUp);
+                return;
             }
         });
         
         // Unified selection computation from item range
         const computeSelectionFromItemRange = (startItemIndex, endItemIndex, selectableItems, initialSelection, unselectMode) => {
             const [min, max] = [Math.min(startItemIndex, endItemIndex), Math.max(startItemIndex, endItemIndex)];
-            const newAtoms = new Set(initialSelection);
+            const newPositions = new Set(initialSelection);
             
             for (let i = min; i <= max; i++) {
                 const item = selectableItems[i];
-                if (item && item.atomIndices) {
-                    item.atomIndices.forEach(atomIdx => {
+                if (item && item.positionIndices) {
+                    item.positionIndices.forEach(positionIndex => {
                         if (unselectMode) {
-                            newAtoms.delete(atomIdx);
+                            newPositions.delete(positionIndex);
                         } else {
-                            newAtoms.add(atomIdx);
+                            newPositions.add(positionIndex);
                         }
                     });
                 }
             }
             
-            return newAtoms;
+            return newPositions;
         };
         
         // Helper function to handle drag logic (can be called from canvas or window listeners)
@@ -1352,7 +1372,7 @@
                     dragState.hasMoved = true;
                     
                     // Compute selection from item range
-                    const newAtoms = computeSelectionFromItemRange(
+                    const newPositions = computeSelectionFromItemRange(
                         startItem.index,
                         endItem.index,
                         layout.selectableItems,
@@ -1360,7 +1380,7 @@
                         dragState.dragUnselectMode
                     );
                     
-                    if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
+                    if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
                     lastSequenceUpdateHash = null;
                     scheduleRender();
                     // Don't apply selection during drag - wait until mouseup to reduce lag
@@ -1379,17 +1399,17 @@
             if (!dragState.isDragging) {
                 if (residuePos && residuePos.residueData) {
                     const residueData = residuePos.residueData;
-                    if (residueData.isLigandToken && residueData.atomIndices && callbacks.highlightAtoms) {
-                        // Highlight all atoms in ligand
-                        callbacks.highlightAtoms(new Set(residueData.atomIndices));
+                    if (residueData.isLigandToken && residueData.positionIndices && callbacks.highlightAtoms) {
+                        // Highlight all positions in ligand
+                        callbacks.highlightAtoms(new Set(residueData.positionIndices));
                         hoveredResidueInfo = {
                             chain: residueData.chain,
                             resName: residueData.ligandName || residueData.resName,
                             resSeq: residueData.resSeq
                         };
-                    } else if (residueData.atomIndex >= 0 && callbacks.highlightAtom) {
-                        callbacks.highlightAtom(residueData.atomIndex);
-                        // Store hovered residue info for tooltip
+                    } else if (residueData.positionIndex >= 0 && callbacks.highlightAtom) {
+                        callbacks.highlightAtom(residueData.positionIndex);
+                        // Store hovered position info for tooltip
                         hoveredResidueInfo = {
                             chain: residueData.chain,
                             resName: residueData.resName,
@@ -1403,16 +1423,16 @@
                     const chainId = chainLabelPos.chainId;
                     const boundary = chainBoundaries.find(b => b.chain === chainId);
                     if (boundary) {
-                        const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                        if (chainAtoms.length > 0) {
-                            const atomIndices = new Set(chainAtoms.map(a => a.atomIndex));
-                            callbacks.highlightAtoms(atomIndices);
+                        const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                        if (chainPositions.length > 0) {
+                            const positionIndices = new Set(chainPositions.map(a => a.positionIndex));
+                            callbacks.highlightAtoms(positionIndices);
                         }
                     }
                     hoveredResidueInfo = null; // Clear tooltip in chain mode
                 } else {
                     if (callbacks.clearHighlight) callbacks.clearHighlight();
-                    hoveredResidueInfo = null; // Clear tooltip when not hovering over residue
+                    hoveredResidueInfo = null; // Clear tooltip when not hovering over position
                 }
                 // Trigger highlight redraw to show tooltip
                 if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
@@ -1427,87 +1447,87 @@
                 const startResidueData = dragState.dragStart;
                 
                 // Handle ligand tokens in drag
-                if (residueData.isLigandToken && residueData.atomIndices) {
+                if (residueData.isLigandToken && residueData.positionIndices) {
                     if (residueData !== dragState.dragEnd) {
                         dragState.dragEnd = residueData;
                         dragState.hasMoved = true;
                         
                         // Find indices in allResidueData
                         const startIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.atomIndices && r.atomIndices[0] === startResidueData.atomIndices?.[0]) ||
-                            (r.atomIndex === startResidueData.atomIndex && !r.isLigandToken)
+                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === startResidueData.positionIndices?.[0]) ||
+                            (r.positionIndex === startResidueData.positionIndex && !r.isLigandToken)
                         );
                         const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.atomIndices && r.atomIndices[0] === residueData.atomIndices[0]) ||
-                            (r.atomIndex === residueData.atomIndices?.[0] || r.isLigandToken)
+                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === residueData.positionIndices[0]) ||
+                            (r.positionIndex === residueData.positionIndices?.[0] || r.isLigandToken)
                         );
                         
                         if (startIdx !== -1 && endIdx !== -1) {
                             const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                            const newAtoms = new Set(dragState.initialSelectionState);
+                            const newPositions = new Set(dragState.initialSelectionState);
                             
                             for (let i = min; i <= max; i++) {
                                 const res = allResidueData[i];
-                                if (res.isLigandToken && res.atomIndices) {
-                                    // Handle ligand token - toggle all atoms in ligand
+                                if (res.isLigandToken && res.positionIndices) {
+                                    // Handle ligand token - toggle all positions in ligand
                                     if (dragState.dragUnselectMode) {
-                                        res.atomIndices.forEach(atomIdx => newAtoms.delete(atomIdx));
+                                        res.positionIndices.forEach(positionIndex => newPositions.delete(positionIndex));
                                     } else {
-                                        res.atomIndices.forEach(atomIdx => newAtoms.add(atomIdx));
+                                        res.positionIndices.forEach(positionIndex => newPositions.add(positionIndex));
                                     }
-                                } else if (res.atomIndex >= 0) {
-                                    // Handle regular atom
+                                } else if (res.positionIndex >= 0) {
+                                    // Handle regular position
                                     if (dragState.dragUnselectMode) {
-                                        newAtoms.delete(res.atomIndex);
+                                        newPositions.delete(res.positionIndex);
                                     } else {
-                                        newAtoms.add(res.atomIndex);
+                                        newPositions.add(res.positionIndex);
                                     }
                                 }
                             }
                             
-                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
+                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
                             lastSequenceUpdateHash = null;
                             scheduleRender();
                             // Don't apply selection during drag - wait until mouseup to reduce lag
                         }
                     }
-                } else if (residueData.atomIndex >= 0) {
-                    // Regular atom drag
+                } else if (residueData.positionIndex >= 0) {
+                    // Regular position drag
                     if (residueData !== dragState.dragEnd) {
                         dragState.dragEnd = residueData;
                         const startIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.atomIndices && r.atomIndices[0] === startResidueData.atomIndices?.[0]) ||
-                            (r.atomIndex === startResidueData.atomIndex && !r.isLigandToken)
+                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === startResidueData.positionIndices?.[0]) ||
+                            (r.positionIndex === startResidueData.positionIndex && !r.isLigandToken)
                         );
                         const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.atomIndices && r.atomIndices.includes(residueData.atomIndex)) ||
-                            (r.atomIndex === residueData.atomIndex && !r.isLigandToken)
+                            (r.isLigandToken && r.positionIndices && r.positionIndices.includes(residueData.positionIndex)) ||
+                            (r.positionIndex === residueData.positionIndex && !r.isLigandToken)
                         );
                         if (startIdx !== -1 && endIdx !== -1) {
                             dragState.hasMoved = true;
                             const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                            const newAtoms = new Set(dragState.initialSelectionState);
+                            const newPositions = new Set(dragState.initialSelectionState);
                             
                             for (let i = min; i <= max; i++) {
                                 const res = allResidueData[i];
-                                if (res.isLigandToken && res.atomIndices) {
+                                if (res.isLigandToken && res.positionIndices) {
                                     // Handle ligand token
                                     if (dragState.dragUnselectMode) {
-                                        res.atomIndices.forEach(atomIdx => newAtoms.delete(atomIdx));
+                                        res.positionIndices.forEach(positionIndex => newPositions.delete(positionIndex));
                                     } else {
-                                        res.atomIndices.forEach(atomIdx => newAtoms.add(atomIdx));
+                                        res.positionIndices.forEach(positionIndex => newPositions.add(positionIndex));
                                     }
-                                } else if (res.atomIndex >= 0) {
-                                    // Handle regular atom
+                                } else if (res.positionIndex >= 0) {
+                                    // Handle regular position
                                     if (dragState.dragUnselectMode) {
-                                        newAtoms.delete(res.atomIndex);
+                                        newPositions.delete(res.positionIndex);
                                     } else {
-                                        newAtoms.add(res.atomIndex);
+                                        newPositions.add(res.positionIndex);
                                     }
                                 }
                             }
                             
-                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
+                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
                             lastSequenceUpdateHash = null;
                             scheduleRender();
                             // Don't apply selection during drag - wait until mouseup to reduce lag
@@ -1520,16 +1540,16 @@
                 const boundary = chainBoundaries.find(b => b.chain === chainId);
                 if (!boundary) return;
                 
-                const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                if (chainAtoms.length === 0) return;
+                const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                if (chainPositions.length === 0) return;
                 
-                // Find the end chain atom
-                const endAtom = chainAtoms[chainAtoms.length - 1];
-                if (endAtom && endAtom !== dragState.dragEnd) {
-                    dragState.dragEnd = endAtom;
+                // Find the end chain position
+                const endPosition = chainPositions[chainPositions.length - 1];
+                if (endPosition && endPosition !== dragState.dragEnd) {
+                    dragState.dragEnd = endPosition;
                     dragState.hasMoved = true;
                     
-                    // Get all atoms from start to end (including all chains in between)
+                    // Get all positions from start to end (including all chains in between)
                     const startChainId = dragState.dragStart.chain;
                     const startBoundary = chainBoundaries.find(b => b.chain === startChainId);
                     const endBoundary = boundary;
@@ -1540,23 +1560,23 @@
                         const [minBoundary, maxBoundary] = [Math.min(startBoundaryIdx, endBoundaryIdx), Math.max(startBoundaryIdx, endBoundaryIdx)];
                         
                         // Start from initial selection state, not current selection
-                        const newAtoms = new Set(dragState.initialSelectionState);
+                        const newPositions = new Set(dragState.initialSelectionState);
                         
-                        // Add all atoms from all chains in the drag range
+                        // Add all positions from all chains in the drag range
                         for (let bIdx = minBoundary; bIdx <= maxBoundary; bIdx++) {
                             const b = chainBoundaries[bIdx];
-                            const atomsInChain = sortedAtomEntries.slice(b.startIndex, b.endIndex + 1);
-                            for (const atom of atomsInChain) {
+                            const positionsInChain = sortedPositionEntries.slice(b.startIndex, b.endIndex + 1);
+                            for (const position of positionsInChain) {
                                 // Toggle items in the drag range to match the initial drag mode
                                 if (dragState.dragUnselectMode) {
-                                    newAtoms.delete(atom.atomIndex);
-                                } else {
-                                    newAtoms.add(atom.atomIndex);
+                                    newPositions.delete(position.positionIndex);
+                                    } else {
+                                    newPositions.add(position.positionIndex);
                                 }
                             }
                         }
                         
-                        if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newAtoms);
+                        if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
                         lastSequenceUpdateHash = null;
                         scheduleRender();
                         // Don't apply selection during drag - wait until mouseup to reduce lag
@@ -1576,30 +1596,30 @@
                 const frame = obj?.frames?.[0];
                 const newChains = new Set();
                 if (frame?.chains) {
-                    for (const atomIdx of previewSelectionSet) {
-                        const atomChain = frame.chains[atomIdx];
-                        if (atomChain) {
-                            newChains.add(atomChain);
+                    for (const positionIndex of previewSelectionSet) {
+                        const positionChain = frame.chains[positionIndex];
+                        if (positionChain) {
+                            newChains.add(positionChain);
                         }
                     }
                 }
                 
                 // Determine if we have partial selections
-                const totalAtoms = frame?.chains?.length || 0;
-                const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalAtoms;
+                const totalPositions = frame?.chains?.length || 0;
+                const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalPositions;
                 // Allow all chains to be deselected - use explicit mode when chains are empty or when we have partial selections
                 const allChains = new Set(frame.chains);
                 const allChainsSelected = newChains.size === allChains.size && 
                                         Array.from(newChains).every(c => allChains.has(c));
-                // Use explicit mode if we have partial selections, or if not all chains are selected, or if no atoms are selected
+                // Use explicit mode if we have partial selections, or if not all chains are selected, or if no positions are selected
                 const selectionMode = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? 'default' : 'explicit';
-                // If all chains are selected AND no partial selections AND we have atoms, use empty chains set with default mode
+                // If all chains are selected AND no partial selections AND we have positions, use empty chains set with default mode
                 // Otherwise, keep explicit chain selection (allows empty chains)
                 const chainsToSet = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? new Set() : newChains;
                 
                 // Clear PAE boxes when finishing drag selection
                 renderer.setSelection({ 
-                    atoms: previewSelectionSet,
+                    positions: previewSelectionSet,
                     chains: chainsToSet,
                     selectionMode: selectionMode,
                     paeBoxes: [] 
@@ -1608,42 +1628,48 @@
                 // User clicked (no drag) - toggle the item
                 const item = dragState.dragStartItem;
                 const current = renderer?.getSelection();
-                const newAtoms = new Set(current?.atoms || []);
+                const newPositions = new Set(current?.positions || []);
                 
-                // Toggle all atoms in the item
-                item.atomIndices.forEach(atomIdx => {
-                    if (newAtoms.has(atomIdx)) {
-                        newAtoms.delete(atomIdx);
+                // Only handle if item has positionIndices (ligand or residue)
+                if (!item.positionIndices || item.positionIndices.length === 0) {
+                    dragState.isDragging = false;
+                    return;
+                }
+                
+                // Toggle all positions in the item
+                item.positionIndices.forEach(positionIndex => {
+                    if (newPositions.has(positionIndex)) {
+                        newPositions.delete(positionIndex);
                     } else {
-                        newAtoms.add(atomIdx);
+                        newPositions.add(positionIndex);
                     }
                 });
                 
-                // Update chains to include all chains that have selected atoms
+                // Update chains to include all chains that have selected positions
                 const objectName = renderer.currentObjectName;
                 const obj = renderer.objectsData[objectName];
                 const frame = obj?.frames?.[0];
                 const newChains = new Set();
                 if (frame?.chains) {
-                    for (const atomIdx of newAtoms) {
-                        const atomChain = frame.chains[atomIdx];
-                        if (atomChain) {
-                            newChains.add(atomChain);
+                    for (const positionIndex of newPositions) {
+                        const positionChain = frame.chains[positionIndex];
+                        if (positionChain) {
+                            newChains.add(positionChain);
                         }
                     }
                 }
                 
                 // Determine if we have partial selections
-                const totalAtoms = frame?.chains?.length || 0;
-                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                const totalPositions = frame?.chains?.length || 0;
+                const hasPartialSelections = newPositions.size > 0 && newPositions.size < totalPositions;
                 const allChains = new Set(frame.chains);
                 const allChainsSelected = newChains.size === allChains.size && 
                                         Array.from(newChains).every(c => allChains.has(c));
-                const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
+                const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
                 
                 renderer.setSelection({ 
-                    atoms: newAtoms,
+                    positions: newPositions,
                     chains: chainsToSet,
                     selectionMode: selectionMode,
                     paeBoxes: [] 
@@ -1699,7 +1725,7 @@
                 return;
             }
             
-            // For all other items (chain in chain mode, residue, ligand), enable drag
+            // For all other items (chain in chain mode, position, ligand), enable drag
             const current = renderer?.getSelection();
             
             // Determine if item is initially selected
@@ -1708,9 +1734,9 @@
                 isInitiallySelected = current?.chains?.has(selectedItem.chainId) || 
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
             } else {
-                // For residue/ligand, check if all atoms are selected
-                isInitiallySelected = selectedItem.atomIndices.length > 0 && 
-                    selectedItem.atomIndices.every(atomIdx => current?.atoms?.has(atomIdx));
+                // For position/ligand, check if all positions are selected
+                isInitiallySelected = selectedItem.positionIndices.length > 0 && 
+                    selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
             }
             
             dragState.isDragging = true;
@@ -1718,15 +1744,15 @@
             dragState.dragStartItem = selectedItem;
             dragState.dragEndItemIndex = selectedItem.index;
             dragState.dragUnselectMode = isInitiallySelected;
-            dragState.initialSelectionState = new Set(current?.atoms || []);
+            dragState.initialSelectionState = new Set(current?.positions || []);
             
             // Legacy fields for compatibility
             if (selectedItem.type === 'chain') {
                 const boundary = chainBoundaries.find(b => b.chain === selectedItem.chainId);
                 if (boundary) {
-                    const chainAtoms = sortedAtomEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    dragState.dragStart = chainAtoms[0];
-                    dragState.dragEnd = chainAtoms[chainAtoms.length - 1];
+                    const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                    dragState.dragStart = chainPositions[0];
+                    dragState.dragEnd = chainPositions[chainPositions.length - 1];
                 }
             } else if (selectedItem.residueData) {
                 dragState.dragStart = selectedItem.residueData;
@@ -1759,41 +1785,41 @@
             window.addEventListener('touchcancel', handleTouchCancel, { passive: false });
             
             // Handle tap (no drag) - toggle selection immediately
-            if (selectedItem.type === 'ligand' || (selectedItem.type === 'residue' && selectedItem.atomIndices.length === 1)) {
-                const newAtoms = new Set(current?.atoms || []);
-                selectedItem.atomIndices.forEach(atomIdx => {
-                    if (newAtoms.has(atomIdx)) {
-                        newAtoms.delete(atomIdx);
+            if (selectedItem.type === 'ligand' || (selectedItem.type === 'residue' && selectedItem.positionIndices.length === 1)) {
+                const newPositions = new Set(current?.positions || []);
+                selectedItem.positionIndices.forEach(positionIndex => {
+                    if (newPositions.has(positionIndex)) {
+                        newPositions.delete(positionIndex);
                     } else {
-                        newAtoms.add(atomIdx);
+                        newPositions.add(positionIndex);
                     }
                 });
                 
-                // Update chains to include all chains that have selected atoms
+                // Update chains to include all chains that have selected positions
                 const objectName = renderer.currentObjectName;
                 const obj = renderer.objectsData[objectName];
                 const frame = obj?.frames?.[0];
                 const newChains = new Set();
                 if (frame?.chains) {
-                    for (const atomIdx of newAtoms) {
-                        const atomChain = frame.chains[atomIdx];
-                        if (atomChain) {
-                            newChains.add(atomChain);
+                    for (const positionIndex of newPositions) {
+                        const positionChain = frame.chains[positionIndex];
+                        if (positionChain) {
+                            newChains.add(positionChain);
                         }
                     }
                 }
                 
                 // Determine if we have partial selections
-                const totalAtoms = frame?.chains?.length || 0;
-                const hasPartialSelections = newAtoms.size > 0 && newAtoms.size < totalAtoms;
+                const totalPositions = frame?.chains?.length || 0;
+                const hasPartialSelections = newPositions.size > 0 && newPositions.size < totalPositions;
                 const allChains = new Set(frame.chains);
                 const allChainsSelected = newChains.size === allChains.size && 
                                         Array.from(newChains).every(c => allChains.has(c));
-                const selectionMode = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? 'default' : 'explicit';
-                const chainsToSet = (allChainsSelected && !hasPartialSelections && newAtoms.size > 0) ? new Set() : newChains;
+                const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
+                const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
                 
                 renderer.setSelection({ 
-                    atoms: newAtoms,
+                    positions: newPositions,
                     chains: chainsToSet,
                     selectionMode: selectionMode,
                     paeBoxes: [] 
@@ -1836,33 +1862,33 @@
 
         // Determine what's actually visible from the unified model or visibilityMask
         // Use previewSelectionSet during drag for live feedback
-        let visibleAtoms = new Set();
+        let visiblePositions = new Set();
         
         const previewSelectionSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
         
         if (previewSelectionSet && previewSelectionSet.size > 0) {
-            // During drag, use preview selection for live feedback (already atom indices)
-            visibleAtoms = new Set(previewSelectionSet);
+            // During drag, use preview selection for live feedback (already position indices)
+            visiblePositions = new Set(previewSelectionSet);
         } else {
-            // Use atoms directly from selection model
-            if (renderer.selectionModel && renderer.selectionModel.atoms && renderer.selectionModel.atoms.size > 0) {
-                visibleAtoms = new Set(renderer.selectionModel.atoms);
+            // Use positions directly from selection model
+            if (renderer.selectionModel && renderer.selectionModel.positions && renderer.selectionModel.positions.size > 0) {
+                visiblePositions = new Set(renderer.selectionModel.positions);
             } else if (renderer.visibilityMask === null) {
-                // null mask means all atoms are visible (default mode)
+                // null mask means all positions are visible (default mode)
                 const n = renderer.coords ? renderer.coords.length : 0;
                 for (let i = 0; i < n; i++) {
-                    visibleAtoms.add(i);
+                    visiblePositions.add(i);
                 }
             } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
-                // Non-empty Set means some atoms are visible
-                visibleAtoms = new Set(renderer.visibilityMask);
+                // Non-empty Set means some positions are visible
+                visiblePositions = new Set(renderer.visibilityMask);
             }
         }
 
         // Create hash to detect if selection actually changed
         // Include previewSelectionSet in hash to ensure live feedback during drag
         const previewHash = previewSelectionSet ? previewSelectionSet.size : 0;
-        const currentHash = visibleAtoms.size + previewHash + (renderer?.visibilityMask === null ? 'all' : 'some');
+        const currentHash = visiblePositions.size + previewHash + (renderer?.visibilityMask === null ? 'all' : 'some');
         if (currentHash === lastSequenceUpdateHash && !previewSelectionSet) {
             return; // No change, skip update (unless we have preview selection for live feedback)
         }
@@ -1960,7 +1986,7 @@
             }
         }
         
-        if (!renderer.atomScreenPositions) {
+        if (!renderer.positionScreenPositions) {
             return;
         }
         
@@ -1981,11 +2007,11 @@
         highlightOverlayCtx.strokeStyle = highlightStrokeStyle;
         highlightOverlayCtx.lineWidth = highlightLineWidth;
         
-        // Highlight multiple atoms if specified (preferred method)
+        // Highlight multiple positions if specified (preferred method)
         if (renderer.highlightedAtoms !== null && renderer.highlightedAtoms instanceof Set && renderer.highlightedAtoms.size > 0) {
-            for (const atomIdx of renderer.highlightedAtoms) {
-                if (atomIdx >= 0 && atomIdx < renderer.atomScreenPositions.length) {
-                    const pos = renderer.atomScreenPositions[atomIdx];
+            for (const positionIndex of renderer.highlightedAtoms) {
+                if (positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
+                    const pos = renderer.positionScreenPositions[positionIndex];
                     if (pos) {
                         highlightOverlayCtx.beginPath();
                         highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
@@ -1995,9 +2021,9 @@
                 }
             }
         } else if (renderer.highlightedAtom !== null && renderer.highlightedAtom !== undefined && typeof renderer.highlightedAtom === 'number') {
-            const atomIdx = renderer.highlightedAtom;
-            if (atomIdx >= 0 && atomIdx < renderer.atomScreenPositions.length) {
-                const pos = renderer.atomScreenPositions[atomIdx];
+            const positionIndex = renderer.highlightedAtom;
+            if (positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
+                const pos = renderer.positionScreenPositions[positionIndex];
                 if (pos) {
                     highlightOverlayCtx.beginPath();
                     highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
