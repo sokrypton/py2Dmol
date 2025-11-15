@@ -3158,7 +3158,7 @@ async function handleFetch() {
     const loadPAECheckbox = document.getElementById('loadPAECheckbox');
     const loadMSACheckbox = document.getElementById('loadMSACheckbox');
     const loadPAE = loadPAECheckbox ? loadPAECheckbox.checked : true; // Default to enabled
-    const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : true; // Default to enabled
+    const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false; // Default to disabled
 
     if (isAFDB) {
         name = `${fetchId}.cif`;
@@ -4716,7 +4716,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     const loadPAECheckbox = document.getElementById('loadPAECheckbox');
     const loadMSACheckbox = document.getElementById('loadMSACheckbox');
     const loadPAE = loadPAECheckbox ? loadPAECheckbox.checked : true; // Default to enabled
-    const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : true; // Default to enabled
+    const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false; // Default to disabled
     
     // Store MSA files for processing after structures are loaded
     const msaFilesToProcess = msaFiles.length > 0 && loadMSA ? msaFiles : [];
@@ -5203,7 +5203,7 @@ async function handleZipUpload(file, loadAsFrames) {
             if (targetObjectName) {
                 // Check if MSA loading is enabled
                 const loadMSACheckbox = document.getElementById('loadMSACheckbox');
-                const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : true; // Default to enabled
+                const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false; // Default to disabled
                 
                 // Process MSA files using the same logic as in processFiles (only if Load MSA is enabled)
                 if (!loadMSA) {

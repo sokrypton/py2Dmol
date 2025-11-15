@@ -740,11 +740,13 @@ function parseCIF(text) {
     }
 
     // Pre-compute header indices once to avoid repeated map lookups
-    // Use label_seq_id (PDB numbering) instead of auth_seq_id (author numbering) for SIFTS mapping compatibility
+    // Use label_asym_id consistently (required for biounit operations per mmCIF spec)
     const idxRecord = headerMap['_atom_site.group_PDB'];
     const idxAtomName = headerMap['_atom_site.label_atom_id'];
     const idxResName = headerMap['_atom_site.label_comp_id'];
-    const idxChain = headerMap['_atom_site.auth_asym_id'];
+    const idxChain = headerMap['_atom_site.label_asym_id'] >= 0 
+        ? headerMap['_atom_site.label_asym_id'] 
+        : headerMap['_atom_site.auth_asym_id']; // Fallback only if label_asym_id not present
     // Prefer label_seq_id (PDB numbering) over auth_seq_id (author numbering) for SIFTS mapping
     const idxResSeq = (headerMap['_atom_site.label_seq_id'] >= 0) 
         ? headerMap['_atom_site.label_seq_id'] 
@@ -1915,7 +1917,8 @@ function extractCIFBiounitOperations(text, cachedLoops = null) {
     for (const r of candidates) {
         const asymList = (r[a('_pdbx_struct_assembly_gen.asym_id_list')] ||
             r[a('_pdbx_struct_assembly_gen.oper_asym_id_list')] || '').toString();
-        const asymIds = asymList.split(',').map(s => s.trim()).filter(Boolean);
+        // Normalize chain IDs: trim whitespace and convert to string
+        const asymIds = asymList.split(',').map(s => String(s).trim()).filter(Boolean);
         asymIds.forEach(c => chainSet.add(c));
 
         const operExpr = (r[a('_pdbx_struct_assembly_gen.oper_expression')] || '').toString();
@@ -2096,7 +2099,6 @@ function buildBioFromCIF(text) {
     const ixZ = acol('_atom_site.Cartn_z');
     const ixEl = acol('_atom_site.type_symbol');
     const ixLA = acol('_atom_site.label_asym_id');
-    const ixAA = acol('_atom_site.auth_asym_id');
     const ixRes = (acol('_atom_site.label_comp_id') >= 0 ?
         acol('_atom_site.label_comp_id') : acol('_atom_site.auth_comp_id'));
     const ixSeq = (acol('_atom_site.label_seq_id') >= 0 ?
@@ -2105,20 +2107,24 @@ function buildBioFromCIF(text) {
     const ixGrp = acol('_atom_site.group_PDB');
     const ixB = acol('_atom_site.B_iso_or_equiv');
 
-    const baseAtoms = atomRows.map(r => ({
-        record: r[ixGrp] || 'ATOM',
-        atomName: r[ixNm] || '',
-        resName: r[ixRes] || '',
-        lchain: (ixLA >= 0 ? r[ixLA] : (ixAA >= 0 ? r[ixAA] : '')) || '',
-        chain: (ixLA >= 0 ? r[ixLA] : (ixAA >= 0 ? r[ixAA] : '')) || '',
-        authChain: (ixAA >= 0 ? r[ixAA] : ''),
-        resSeq: r[ixSeq] ? parseInt(r[ixSeq], 10) : 0,
-        x: parseFloat(r[ixX]),
-        y: parseFloat(r[ixY]),
-        z: parseFloat(r[ixZ]),
-        b: ixB >= 0 ? (parseFloat(r[ixB]) || 0.0) : 0.0,
-        element: (r[ixEl] || '').toUpperCase()
-    }));
+    const baseAtoms = atomRows.map(r => {
+        // Always use label_asym_id (required by mmCIF spec for biounit operations)
+        // Normalize: convert to string and trim whitespace
+        const labelChain = (ixLA >= 0 ? String(r[ixLA] || '').trim() : '');
+        return {
+            record: r[ixGrp] || 'ATOM',
+            atomName: r[ixNm] || '',
+            resName: r[ixRes] || '',
+            lchain: labelChain,
+            chain: labelChain,
+            resSeq: r[ixSeq] ? parseInt(r[ixSeq], 10) : 0,
+            x: parseFloat(r[ixX]),
+            y: parseFloat(r[ixY]),
+            z: parseFloat(r[ixZ]),
+            b: ixB >= 0 ? (parseFloat(r[ixB]) || 0.0) : 0.0,
+            element: (r[ixEl] || '').toUpperCase()
+        };
+    });
 
     // Extract biounit operations using unified function
     const operations = extractCIFBiounitOperations(text);
@@ -2198,7 +2204,8 @@ function buildBioFromCIF(text) {
     for (const r of candidates) {
         const asymList = (r[a('_pdbx_struct_assembly_gen.asym_id_list')] ||
             r[a('_pdbx_struct_assembly_gen.oper_asym_id_list')] || '').toString();
-        const asymIds = asymList.split(',').map(s => s.trim()).filter(Boolean);
+        // Normalize chain IDs: trim whitespace and convert to string
+        const asymIds = asymList.split(',').map(s => String(s).trim()).filter(Boolean);
         asymIds.forEach(c => seen.add(c));
 
         const expr = (r[a('_pdbx_struct_assembly_gen.oper_expression')] || '1').toString();
@@ -2210,6 +2217,7 @@ function buildBioFromCIF(text) {
             const { R, t } = composeBiounitOperations(seq, opMap);
             
             for (const aAtom of baseAtoms) {
+                // Match by label_asym_id (lchain) - asym_id_list contains label_asym_id values per mmCIF spec
                 if (!asymIds.includes(aAtom.lchain)) continue;
                 const ax = applyOp_light(aAtom, R, t);
                 ax.chain = (seqLabel === '1') ?
