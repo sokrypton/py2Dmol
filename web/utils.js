@@ -894,12 +894,12 @@ const STANDARD_NUCLEIC_ACIDS = new Set([
  * Uses the same distance cutoffs as viewer-mol.js for consistency
  * @param {object} residue - Residue object with resName, record, atoms, chain, resSeq
  * @param {Array} allResidues - Array of all residue objects (for finding neighbors)
- * @param {number} positionIndex - Index of current position in allResidues array
+ * @param {number} residueIndex - Index of current residue in allResidues array
  * @param {string} type - 'P' for protein, 'D' for DNA, 'R' for RNA
  * @returns {boolean} - True if residue is connected to at least one neighbor
  */
-function isResidueConnected(residue, allResidues, positionIndex, type) {
-    if (!residue || !residue.atoms || !allResidues || positionIndex < 0 || positionIndex >= allResidues.length) {
+function isResidueConnected(residue, allResidues, residueIndex, type) {
+    if (!residue || !residue.atoms || !allResidues || residueIndex < 0 || residueIndex >= allResidues.length) {
         return false;
     }
     
@@ -925,8 +925,8 @@ function isResidueConnected(residue, allResidues, positionIndex, type) {
     
     // Check neighbors in the same chain
     // Look at previous and next residues in the same chain
-    for (let i = Math.max(0, positionIndex - 2); i < Math.min(allResidues.length, positionIndex + 3); i++) {
-        if (i === positionIndex) continue;
+    for (let i = Math.max(0, residueIndex - 2); i < Math.min(allResidues.length, residueIndex + 3); i++) {
+        if (i === residueIndex) continue;
         
         const neighbor = allResidues[i];
         if (!neighbor || neighbor.chain !== residue.chain) continue;
@@ -962,10 +962,10 @@ function isResidueConnected(residue, allResidues, positionIndex, type) {
  * @param {Map} modresMap - MODRES mapping (from PDB)
  * @param {Map} chemCompMap - Chemical component map (from CIF)
  * @param {Array} allResidues - Array of all residue objects (for connectivity check)
- * @param {number} positionIndex - Index of current position in allResidues array
+ * @param {number} residueIndex - Index of current residue in allResidues array
  * @returns {boolean} - True if residue is a real amino acid
  */
-function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResidues = null, positionIndex = -1) {
+function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResidues = null, residueIndex = -1) {
     const resName = residue.resName;
     
     // 1. Check if it's a standard amino acid (always allowed, no connectivity check needed)
@@ -977,8 +977,8 @@ function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResid
     const modifiedType = getModifiedResidueType(resName);
     if (modifiedType && modifiedType.type === 'P') {
         // Common modifications require connectivity check
-        if (allResidues && positionIndex >= 0) {
-            return isResidueConnected(residue, allResidues, positionIndex, 'P');
+        if (allResidues && residueIndex >= 0) {
+            return isResidueConnected(residue, allResidues, residueIndex, 'P');
         }
         // If no allResidues provided, allow it (backward compatibility, but less strict)
         return true;
@@ -989,8 +989,8 @@ function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResid
         const stdResName = modresMap.get(resName);
         if (STANDARD_AMINO_ACIDS.has(stdResName)) {
             // MODRES-defined modifications require connectivity check
-            if (allResidues && positionIndex >= 0) {
-                return isResidueConnected(residue, allResidues, positionIndex, 'P');
+            if (allResidues && residueIndex >= 0) {
+                return isResidueConnected(residue, allResidues, residueIndex, 'P');
             }
             // If no allResidues provided, allow it (backward compatibility)
             return true;
@@ -1005,8 +1005,8 @@ function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResid
             const stdResName = compInfo.stdResName || compInfo.parent;
             if (stdResName && STANDARD_AMINO_ACIDS.has(stdResName)) {
                 // CIF-defined modifications require connectivity check
-                if (allResidues && positionIndex >= 0) {
-                    return isResidueConnected(residue, allResidues, positionIndex, 'P');
+                if (allResidues && residueIndex >= 0) {
+                    return isResidueConnected(residue, allResidues, residueIndex, 'P');
                 }
                 // If no allResidues provided, allow it (backward compatibility)
                 return true;
@@ -1025,10 +1025,10 @@ function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResid
  * @param {Map} modresMap - MODRES mapping (from PDB)
  * @param {Map} chemCompMap - Chemical component map (from CIF)
  * @param {Array} allResidues - Array of all residue objects (for connectivity check)
- * @param {number} positionIndex - Index of current position in allResidues array
+ * @param {number} residueIndex - Index of current residue in allResidues array
  * @returns {string|null} - 'D' for DNA, 'R' for RNA, or null if not a real nucleic acid
  */
-function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allResidues = null, positionIndex = -1) {
+function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allResidues = null, residueIndex = -1) {
     const resName = residue.resName;
     
     // 1. Check if it's a standard nucleic acid (always allowed, no connectivity check needed)
@@ -1047,8 +1047,8 @@ function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allRes
     const modifiedType = getModifiedResidueType(resName);
     if (modifiedType && (modifiedType.type === 'D' || modifiedType.type === 'R')) {
         // Common modifications require connectivity check
-        if (allResidues && positionIndex >= 0) {
-            if (isResidueConnected(residue, allResidues, positionIndex, modifiedType.type)) {
+        if (allResidues && residueIndex >= 0) {
+            if (isResidueConnected(residue, allResidues, residueIndex, modifiedType.type)) {
                 return modifiedType.type;
             }
             return null;  // Not connected
@@ -1069,8 +1069,8 @@ function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allRes
                 nucleicType = 'R';
             }
             // MODRES-defined modifications require connectivity check
-            if (allResidues && positionIndex >= 0) {
-                if (isResidueConnected(residue, allResidues, positionIndex, nucleicType)) {
+            if (allResidues && residueIndex >= 0) {
+                if (isResidueConnected(residue, allResidues, residueIndex, nucleicType)) {
                     return nucleicType;
                 }
                 return null;  // Not connected
@@ -1088,8 +1088,8 @@ function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allRes
             const stdResName = compInfo.stdResName || compInfo.parent;
             if (stdResName && STANDARD_NUCLEIC_ACIDS.has(stdResName)) {
                 // CIF-defined modifications require connectivity check
-                if (allResidues && positionIndex >= 0) {
-                    if (isResidueConnected(residue, allResidues, positionIndex, compInfo.type)) {
+                if (allResidues && residueIndex >= 0) {
+                    if (isResidueConnected(residue, allResidues, residueIndex, compInfo.type)) {
                         return compInfo.type;
                     }
                     return null;  // Not connected
@@ -1184,181 +1184,6 @@ function getStandardResidueName(resName) {
 }
 
 // ============================================================================
-// POSITION TO LETTER CONVERSION UTILITIES
-// ============================================================================
-
-/**
- * Position name to single-letter code mappings
- */
-const POSITION_TO_LETTER = {
-    // Protein (amino acids)
-    'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 
-    'HIS':'H', 'ILE':'I', 'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 
-    'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V', 'SEC':'U', 'PYL':'O',
-    // DNA nucleotides
-    'DA':'A', 'DT':'T', 'DC':'C', 'DG':'G',
-    'A':'A', 'T':'T', 'C':'C', 'G':'G',  // Alternative naming
-    'ADE':'A', 'THY':'T', 'CYT':'C', 'GUA':'G',  // Alternative naming
-    // RNA nucleotides
-    'U':'U', 'RA':'A', 'RU':'U', 'RC':'C', 'RG':'G',  // Alternative naming
-    'URA':'U', 'URI':'U', 'UMP':'U', 'URD':'U',  // Uridine variations
-    'RURA':'U', 'RURI':'U'  // More RNA uracil variations
-};
-
-/**
- * Convert a position name to a single-letter code based on sequence type
- * @param {string} positionName - Position name (e.g., 'MET', 'DA', 'A')
- * @param {string} sequenceType - 'protein', 'dna', 'rna', or 'auto' (default: 'auto')
- * @returns {string} - Single-letter code, or 'X'/'N' for unknown
- */
-function positionToLetter(positionName, sequenceType = 'auto') {
-    if (!positionName) return 'X';
-    
-    let upper = positionName.toString().trim().toUpperCase();
-    
-    // First, try to get standard name (handles modifications like MSE -> MET)
-    if (typeof getStandardResidueName === 'function') {
-        upper = getStandardResidueName(upper).toUpperCase();
-    }
-    
-    // Direct lookup in mapping
-    if (POSITION_TO_LETTER[upper]) {
-        return POSITION_TO_LETTER[upper];
-    }
-    
-    // Type-specific handling
-    if (sequenceType === 'dna') {
-        // DNA-specific: T/DT is DNA-only
-        if (upper === 'T' || upper === 'DT' || upper.startsWith('DT')) {
-            return 'T';
-        }
-        // Check for A, C, G (common to both DNA and RNA)
-        if (upper === 'A' || upper === 'DA' || upper.includes('ADE')) return 'A';
-        if (upper === 'C' || upper === 'DC' || upper.includes('CYT')) return 'C';
-        if (upper === 'G' || upper === 'DG' || upper.includes('GUA')) return 'G';
-        return 'N';
-    } else if (sequenceType === 'rna') {
-        // RNA-specific: U is RNA-only
-        if (upper === 'U' || upper.includes('U') || upper.includes('URI') || upper.includes('URA')) {
-            return 'U';
-        }
-        // Check for A, C, G (common to both DNA and RNA)
-        if (upper === 'A' || (upper.includes('A') && !upper.includes('D'))) return 'A';
-        if (upper === 'C' || (upper.includes('C') && !upper.includes('D'))) return 'C';
-        if (upper === 'G' || (upper.includes('G') && !upper.includes('D'))) return 'G';
-        return 'N';
-    } else if (sequenceType === 'protein') {
-        // Protein: use three-letter to one-letter mapping
-        return POSITION_TO_LETTER[upper] || 'X';
-    } else {
-        // Auto-detect: try protein first, then DNA/RNA
-        if (POSITION_TO_LETTER[upper]) {
-            return POSITION_TO_LETTER[upper];
-        }
-        // Try DNA/RNA patterns
-        if (upper === 'U' || upper.includes('URI') || upper.includes('URA')) return 'U';
-        if (upper === 'T' || upper === 'DT' || upper.startsWith('DT')) return 'T';
-        if (upper === 'A' || upper === 'DA' || upper.includes('ADE')) return 'A';
-        if (upper === 'C' || upper === 'DC' || upper.includes('CYT')) return 'C';
-        if (upper === 'G' || upper === 'DG' || upper.includes('GUA')) return 'G';
-        return 'X';
-    }
-}
-
-// Expose positionToLetter globally for use in viewers
-if (typeof window !== 'undefined') {
-    window.positionToLetter = positionToLetter;
-}
-
-/**
- * Setup canvas with high-DPI scaling (200 DPI)
- * This is a common pattern used across viewers for consistent rendering
- * @param {HTMLCanvasElement} canvas - Canvas element to setup
- * @param {number|string} displayWidth - Display width in CSS pixels, or '100%' for full width
- * @param {number} displayHeight - Display height in CSS pixels
- * @param {number} dpiMultiplier - DPI multiplier (default: 200/96 ≈ 2.083)
- * @param {Object} options - Optional settings: { preserveWidthStyle: boolean, preserveHeightStyle: boolean }
- * @returns {CanvasRenderingContext2D} - Scaled 2D context
- */
-function setupHighDPICanvas(canvas, displayWidth, displayHeight, dpiMultiplier = 200/96, options = {}) {
-    // Calculate actual display width for internal dimensions
-    let actualDisplayWidth = displayWidth;
-    if (typeof displayWidth === 'string' && displayWidth === '100%') {
-        // For 100% width, use the container's width
-        const container = canvas.parentElement;
-        actualDisplayWidth = container ? container.clientWidth : 0;
-    }
-    
-    // Set internal canvas dimensions (high resolution)
-    canvas.width = actualDisplayWidth * dpiMultiplier;
-    canvas.height = displayHeight * dpiMultiplier;
-    
-    // Set display size (CSS pixels) unless preserveWidthStyle/preserveHeightStyle is true
-    if (!options.preserveWidthStyle) {
-        canvas.style.width = typeof displayWidth === 'string' ? displayWidth : (displayWidth + 'px');
-    }
-    if (!options.preserveHeightStyle) {
-        canvas.style.height = displayHeight + 'px';
-    }
-    
-    // Get context and scale it
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpiMultiplier, dpiMultiplier);
-    
-    return ctx;
-}
-
-// Expose setupHighDPICanvas globally for use in viewers
-if (typeof window !== 'undefined') {
-    window.setupHighDPICanvas = setupHighDPICanvas;
-}
-
-/**
- * Get visible positions from renderer selection model
- * This is a common pattern used across viewers to determine which positions are visible
- * @param {Object} renderer - Renderer instance with selectionModel, visibilityMask, and coords
- * @param {Set|null} previewSelectionSet - Optional preview selection set (for drag operations)
- * @returns {Set<number>} - Set of visible position indices
- */
-function getVisiblePositions(renderer, previewSelectionSet = null) {
-    if (!renderer) return new Set();
-    
-    // During drag, use preview selection for live feedback
-    if (previewSelectionSet && previewSelectionSet.size > 0) {
-        return previewSelectionSet;
-    }
-    
-    // Use selectionModel directly (more efficient than getSelection())
-    const selectionModel = renderer.selectionModel;
-    if (selectionModel && selectionModel.positions && selectionModel.positions.size > 0) {
-        // Use selectionModel directly (no copy needed for read-only access)
-        return selectionModel.positions;
-    }
-    
-    // Check visibilityMask
-    if (renderer.visibilityMask === null) {
-        // null mask means all positions are visible (default mode)
-        const n = renderer.coords ? renderer.coords.length : 0;
-        const allPositions = new Set();
-        for (let i = 0; i < n; i++) {
-            allPositions.add(i);
-        }
-        return allPositions;
-    } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
-        // Non-empty Set means some positions are visible
-        return renderer.visibilityMask;
-    }
-    
-    // No positions visible
-    return new Set();
-}
-
-// Expose getVisiblePositions globally for use in viewers
-if (typeof window !== 'undefined') {
-    window.getVisiblePositions = getVisiblePositions;
-}
-
-// ============================================================================
 // LIGAND GROUPING UTILITIES
 // ============================================================================
 
@@ -1367,10 +1192,10 @@ if (typeof window !== 'undefined') {
  * @param {string} chain - Chain ID
  * @param {number} resSeq - Position index (residue sequence number)
  * @param {string} resName - Position name (residue name, optional)
- * @param {number} positionIndex - Position index (fallback)
+ * @param {number} atomIndex - Position index (fallback)
  * @returns {string} - Ligand group key
  */
-function createLigandGroupKey(chain, resSeq, resName, positionIndex) {
+function createLigandGroupKey(chain, resSeq, resName, atomIndex) {
     if (resName) {
         // Primary: chain + resSeq + resName (most specific)
         return `${chain}:${resSeq}:${resName}`;
@@ -1378,54 +1203,54 @@ function createLigandGroupKey(chain, resSeq, resName, positionIndex) {
         // Secondary: chain + resSeq
         return `${chain}:${resSeq}`;
     } else {
-        // Fallback: chain + positionIndex (for consecutive positions)
-        return `${chain}:${positionIndex}`;
+        // Fallback: chain + atomIndex (for consecutive atoms)
+        return `${chain}:${atomIndex}`;
     }
 }
 
 /**
- * Group ligand positions into ligand groups based on chain, residue_index, and residue_name
+ * Group ligand atoms into ligand groups based on chain, residue_index, and residue_name
  * @param {Array<string>} chains - Array of chain IDs for each position
- * @param {Array<string>} positionTypes - Array of position types ('P', 'D', 'R', 'L')
- * @param {Array<number>} positionIndex - Array of position indices (optional)
- * @param {Array<string>} positionNames - Array of position names (optional)
+ * @param {Array<string>} atomTypes - Array of position types ('P', 'D', 'R', 'L')
+ * @param {Array<number>} residueIndex - Array of position indices (optional)
+ * @param {Array<string>} residues - Array of position names (optional)
  * @returns {Map<string, Array<number>>} - Map of ligand group keys to arrays of position indices
  * 
  * Grouping priority:
- * 1. If position name available: "chain:resSeq:resName"
- * 2. If only position index available: "chain:resSeq"
- * 3. If neither available: "chain:firstPositionIndex" (groups consecutive positions)
+ * 1. If residue_name available: "chain:resSeq:resName"
+ * 2. If only residue_index available: "chain:resSeq"
+ * 3. If neither available: "chain:firstAtomIndex" (groups consecutive atoms)
  */
-function groupLigandAtoms(chains, positionTypes, positionIndex, positionNames) {
+function groupLigandAtoms(chains, atomTypes, residueIndex, residues) {
     const ligandGroups = new Map();
     
-    if (!chains || !positionTypes || chains.length !== positionTypes.length) {
+    if (!chains || !atomTypes || chains.length !== atomTypes.length) {
         return ligandGroups; // Return empty map if invalid data
     }
     
-    const hasPositionIndex = positionIndex && positionIndex.length === chains.length;
-    const hasPositionNames = positionNames && positionNames.length === chains.length;
+    const hasResidueIndex = residueIndex && residueIndex.length === chains.length;
+    const hasResidues = residues && residues.length === chains.length;
     
-    // Detect if position index appears to be default sequential values (1, 2, 3, ...)
-    // This happens when position index was missing and defaults were created
+    // Detect if residue_index appears to be default sequential values (1, 2, 3, ...)
+    // This happens when residue_index was missing and defaults were created
     let isDefaultSequential = false;
-    if (hasPositionIndex) {
+    if (hasResidueIndex) {
         // Check if all values are strictly sequential starting from 1
-        isDefaultSequential = positionIndex.every((val, idx) => val === idx + 1);
+        isDefaultSequential = residueIndex.every((val, idx) => val === idx + 1);
     }
     
-    // For ligands, if position index is default sequential AND position names are missing or all 'UNK',
-    // treat it as if position index is missing (use fallback grouping)
-    const useFallbackGrouping = !hasPositionIndex || 
-        (isDefaultSequential && (!hasPositionNames || positionNames.every(r => !r || r === 'UNK')));
+    // For ligands, if residue_index is default sequential AND residues are missing or all 'UNK',
+    // treat it as if residue_index is missing (use fallback grouping)
+    const useFallbackGrouping = !hasResidueIndex || 
+        (isDefaultSequential && (!hasResidues || residues.every(r => !r || r === 'UNK')));
     
-    // If using fallback grouping, group ALL ligand positions in each chain as one ligand
+    // If using fallback grouping, group ALL ligand atoms in each chain as one ligand
     if (useFallbackGrouping) {
-        // Group by chain: all ligand positions in same chain = one ligand group
-        const chainLigandGroups = new Map(); // chain -> array of position indices
+        // Group by chain: all ligand atoms in same chain = one ligand group
+        const chainLigandGroups = new Map(); // chain -> array of atom indices
         
-        for (let i = 0; i < positionTypes.length; i++) {
-            if (positionTypes[i] === 'L') {
+        for (let i = 0; i < atomTypes.length; i++) {
+            if (atomTypes[i] === 'L') {
                 const chain = chains[i];
                 if (!chainLigandGroups.has(chain)) {
                     chainLigandGroups.set(chain, []);
@@ -1434,21 +1259,21 @@ function groupLigandAtoms(chains, positionTypes, positionIndex, positionNames) {
             }
         }
         
-        // Create group keys for each chain's ligand positions
-        for (const [chain, positionIndices] of chainLigandGroups) {
-            if (positionIndices.length > 0) {
-                // Use first position index as the group key identifier
-                const groupKey = createLigandGroupKey(chain, null, null, positionIndices[0]);
-                ligandGroups.set(groupKey, positionIndices);
+        // Create group keys for each chain's ligand atoms
+        for (const [chain, atomIndices] of chainLigandGroups) {
+            if (atomIndices.length > 0) {
+                // Use first atom index as the group key identifier
+                const groupKey = createLigandGroupKey(chain, null, null, atomIndices[0]);
+                ligandGroups.set(groupKey, atomIndices);
             }
         }
     } else {
-        // Normal grouping: use position index and position names when available
-        for (let i = 0; i < positionTypes.length; i++) {
-            if (positionTypes[i] === 'L') {
+        // Normal grouping: use residue_index and residue names when available
+        for (let i = 0; i < atomTypes.length; i++) {
+            if (atomTypes[i] === 'L') {
                 const chain = chains[i];
-                const resSeq = hasPositionIndex ? positionIndex[i] : null;
-                const resName = hasPositionNames ? positionNames[i] : null;
+                const resSeq = hasResidueIndex ? residueIndex[i] : null;
+                const resName = hasResidues ? residues[i] : null;
                 
                 // Create group key based on available data
                 let groupKey;
@@ -1463,7 +1288,7 @@ function groupLigandAtoms(chains, positionTypes, positionIndex, positionNames) {
                     groupKey = createLigandGroupKey(chain, null, null, i);
                 }
                 
-                // Add position to ligand group
+                // Add atom to ligand group
                 if (!ligandGroups.has(groupKey)) {
                     ligandGroups.set(groupKey, []);
                 }
@@ -1530,8 +1355,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     const plddts = [];
     const position_chains = [];
     const position_types = [];
-    const positionNames = [];
-    const positionIndex = [];
+    const residues = [];
+    const residue_index = [];
     
     // Use global MODRES map if not provided (for backward compatibility)
     if (!modresMap && typeof window !== 'undefined' && window._lastModresMap) {
@@ -1608,8 +1433,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                 plddts.push(ca.b);
                 position_chains.push(ca.chain);
                 position_types.push('P');
-                positionNames.push(ca.res_name || ca.resName || residue.resName);
-                positionIndex.push(ca.res_seq || ca.resSeq || residue.resSeq);
+                residues.push(ca.res_name || ca.resName || residue.resName);
+                residue_index.push(ca.res_seq || ca.resSeq || residue.resSeq);
             }
         } else if (nucleicType) {
             // Use cached C4' atom instead of .find()
@@ -1619,8 +1444,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                 plddts.push(c4_atom.b);
                 position_chains.push(c4_atom.chain);
                 position_types.push(nucleicType);
-                positionNames.push(c4_atom.res_name || c4_atom.resName || residue.resName);
-                positionIndex.push(c4_atom.res_seq || c4_atom.resSeq || residue.resSeq);
+                residues.push(c4_atom.res_name || c4_atom.resName || residue.resName);
+                residue_index.push(c4_atom.res_seq || c4_atom.resSeq || residue.resSeq);
             }
         } else if (includeAllResidues || residue.record === 'HETATM') {
             // If includeAllResidues is true, include everything (even unclassified residues)
@@ -1632,8 +1457,8 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                     plddts.push(atom.b);
                     position_chains.push(atom.chain);
                     position_types.push('L');
-                    positionNames.push(atom.res_name || atom.resName || residue.resName);
-                    positionIndex.push(atom.res_seq || atom.resSeq || residue.resSeq);
+                    residues.push(atom.res_name || atom.resName || residue.resName);
+                    residue_index.push(atom.res_seq || atom.resSeq || residue.resSeq);
                 }
             }
         }
@@ -1650,11 +1475,11 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     if (position_chains.some(c => c && c.trim())) {
         result.chains = position_chains;
     }
-    if (positionNames.some(r => r && r.trim())) {
-        result.position_names = positionNames;
+    if (residues.some(r => r && r.trim())) {
+        result.position_names = residues;
     }
-    if (positionIndex.some(i => !isNaN(i))) {
-        result.position_index = positionIndex;
+    if (residue_index.some(i => !isNaN(i))) {
+        result.position_index = residue_index;
     }
     
     return result;

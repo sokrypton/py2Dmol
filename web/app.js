@@ -69,6 +69,9 @@ function initializeApp() {
         window.MSAViewer.setCallbacks({
             getRenderer: () => viewerApi?.renderer || null,
             getObjectSelect: () => document.getElementById('objectSelect'),
+            highlightAtom: highlightPosition,
+            highlightAtoms: highlightPositions,
+            clearHighlight: clearHighlight,
             applySelection: applySelection,
             getPreviewSelectionSet: () => previewSelectionSet,
             setPreviewSelectionSet: (set) => { previewSelectionSet = set; },
@@ -114,6 +117,14 @@ function initializeApp() {
         });
     }
     
+    // Initialize highlight overlay after viewer is created
+    if (viewerApi?.renderer && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+        // Trigger initialization by calling drawHighlights (which will initialize if needed)
+        const renderer = viewerApi.renderer;
+        if (renderer.canvas) {
+            window.SequenceViewer.drawHighlights();
+        }
+    }
     
     // Setup all event listeners
     setupEventListeners();
@@ -266,8 +277,8 @@ function setupEventListeners() {
 
     // Attach sequence controls
     const sequenceView = document.getElementById('sequenceView');
-    const selectAllBtn = document.getElementById('selectAllPositions'); // Button ID kept for compatibility, but shows "Show all"
-    const clearAllBtn  = document.getElementById('clearAllPositions'); // Button ID kept for compatibility, but shows "Hide all"
+    const selectAllBtn = document.getElementById('selectAllResidues'); // Button ID kept for compatibility, but shows "Show all"
+    const clearAllBtn  = document.getElementById('clearAllResidues'); // Button ID kept for compatibility, but shows "Hide all"
     const sequenceActions = document.querySelector('.sequence-actions');
     
     // Sequence panel is always visible now
@@ -344,8 +355,8 @@ function setupEventListeners() {
     // Start monitoring frame changes
     requestAnimationFrame(checkFrameChange);
     
-    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); showAllPositions(); });
-    if (clearAllBtn)  clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); hideAllPositions(); });
+    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); showAllResidues(); });
+    if (clearAllBtn)  clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); hideAllResidues(); });
     
     // Update copy selection button state when selection changes
     function updateCopySelectionButtonState() {
@@ -1269,53 +1280,9 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         targetObject.frames.length > 0 ||
         models.length > 1);
 
-    // Helper function to check if a residue is a crystallization additive
-    function isCrystallizationAdditive(resName) {
-        if (!resName) return false;
-        const resNameUpper = resName.toUpperCase().trim();
-        
-        // Common crystallization additives
-        // Salts and ions
-        const salts = ['SO4', 'PO4', 'CL', 'NA', 'K', 'MG', 'CA', 'ZN', 'FE', 'MN', 'CU', 'NI', 'CO', 
-                       'NH4', 'NO3', 'CO3', 'HCO3', 'AC', 'F', 'BR', 'I', 'LI', 'RB', 'CS'];
-        
-        // Buffers
-        const buffers = ['HEPES', 'TRIS', 'MES', 'MOPS', 'PIPES', 'BIS-TRIS', 'BIS-TRIS-PROPANE',
-                         'ACES', 'ADA', 'BES', 'BICINE', 'CAPS', 'CHES', 'EPPS', 'GOOD', 'TAPS', 'TES'];
-        
-        // Cryoprotectants and solvents
-        const cryoprotectants = ['GOL', 'GLY', 'EDO', 'PEG', 'MPD', 'DMS', 'DMSO', 'ETH', 'ACT', 'ACN'];
-        
-        // Detergents
-        const detergents = ['DDM', 'LDAO', 'OG', 'C8E4', 'C12E8', 'TRITON', 'SDS'];
-        
-        // Other common additives
-        const others = ['BME', 'TCEP', 'DTT', 'BOG', 'LMT', 'OCT', 'LDA', 'SPM', 'SPD', 'PUT'];
-        
-        // PEG variants (common pattern)
-        if (resNameUpper.startsWith('PEG') || resNameUpper.includes('PEG')) {
-            return true;
-        }
-        
-        // Check exact matches
-        const allAdditives = [...salts, ...buffers, ...cryoprotectants, ...detergents, ...others];
-        return allAdditives.includes(resNameUpper);
-    }
-    
     function maybeFilterLigands(atoms) {
         const ignore = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
-        
-        // If ignore_ligands is False, still filter out crystallization additives
-        if (!ignore) {
-            return atoms.filter(a => {
-                if (!a) return false;
-                // Filter out crystallization additives for HETATM records
-                if (a.record === 'HETATM' && isCrystallizationAdditive(a.resName)) {
-                    return false;
-                }
-                return true;
-            });
-        }
+        if (!ignore) return atoms;
         
         
         // Get MODRES and chemCompMap from global storage (set by parsePDB/parseCIF)
@@ -1363,13 +1330,13 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             if (!residue) return false;
             
             // Find position index in allResidues array
-            const positionIndex = allResidues.findIndex(r => 
+            const residueIndex = allResidues.findIndex(r => 
                 r.chain === residue.chain && r.resSeq === residue.resSeq && r.resName === residue.resName
             );
             
             // Use the unified classification functions from utils.js with connectivity checks
-            const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, positionIndex);
-            const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, positionIndex);
+            const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, residueIndex);
+            const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, residueIndex);
             
             // Keep if it's a real protein or nucleic acid, filter out if it's a ligand
             return is_protein || (nucleicType !== null);
@@ -1434,11 +1401,11 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         const originalIsLigandPosition = [];
         
         // Build position index map to avoid expensive findIndex calls
-        const positionIndexMap = new Map(); // resKey -> positionIndex
+        const residueIndexMap = new Map(); // resKey -> positionIndex
         for (let i = 0; i < originalAllResidues.length; i++) {
             const residue = originalAllResidues[i];
             const resKey = residue.chain + ':' + residue.resSeq + ':' + residue.resName;
-            positionIndexMap.set(resKey, i);
+            residueIndexMap.set(resKey, i);
         }
         
         // Cache classification results per position to avoid re-classifying the same position
@@ -1460,12 +1427,12 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                     let classification = residueClassificationCache.get(resKey);
                     if (!classification) {
                         // Get position index from map (much faster than findIndex)
-                        const positionIndex = positionIndexMap.get(resKey);
+                        const residueIndex = residueIndexMap.get(resKey);
                         
                         // Use the same classification logic as maybeFilterLigands (with connectivity checks)
-                        // Note: We pass originalAllResidues and positionIndex for connectivity checks
-                        const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues, positionIndex !== undefined ? positionIndex : -1);
-                        const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues, positionIndex !== undefined ? positionIndex : -1);
+                        // Note: We pass originalAllResidues and residueIndex for connectivity checks
+                        const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex !== undefined ? residueIndex : -1);
+                        const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues, residueIndex !== undefined ? residueIndex : -1);
                         
                         // Cache the result
                         classification = { is_protein, nucleicType };
@@ -1926,7 +1893,7 @@ function updateChainSelectionUI() {
   });
 }
 
-function setChainPositionsSelected(chain, selected) {
+function setChainResiduesSelected(chain, selected) {
   if (!viewerApi?.renderer) return;
   const current = viewerApi.renderer.getSelection();
   const objectName = viewerApi.renderer.currentObjectName;
@@ -1950,16 +1917,7 @@ function setChainPositionsSelected(chain, selected) {
   const newChains = new Set(currentChains);
   
   // Preserve existing position selections, but add/remove positions when toggling chains
-  // If we're in default mode with empty positions, we need to populate positions from all currently selected chains
-  let newPositions = new Set(current.positions);
-  if (current.selectionMode === 'default' && current.positions.size === 0 && currentChains.size > 0) {
-    // Populate positions from all currently selected chains
-    for (let i = 0; i < frame0.chains.length; i++) {
-      if (currentChains.has(frame0.chains[i])) {
-        newPositions.add(i);
-      }
-    }
-  }
+  const newPositions = new Set(current.positions);
   
   if (selected) {
     newChains.add(chain);
@@ -1998,13 +1956,9 @@ function setChainPositionsSelected(chain, selected) {
   // Otherwise, keep explicit chain selection (allows empty chains)
   const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
   
-  // When switching to default mode, clear positions set to indicate "all positions selected"
-  // This ensures the renderer shows all chains correctly
-  const positionsToSet = (selectionMode === 'default' && chainsToSet.size === 0) ? new Set() : newPositions;
-  
   viewerApi.renderer.setSelection({ 
     chains: chainsToSet,
-    positions: positionsToSet,
+    positions: newPositions,
     selectionMode: selectionMode,
     paeBoxes: []  // Clear PAE boxes when editing chain selection
   });
@@ -2012,7 +1966,7 @@ function setChainPositionsSelected(chain, selected) {
 }
 
 /** Alt-click a chain label to toggle selection of all positions in that chain */
-function toggleChainPositions(chain) {
+function toggleChainResidues(chain) {
     if (!viewerApi?.renderer) return;
     const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) return;
@@ -2105,14 +2059,47 @@ function applySelection(previewPositions = null) {
 }
 
 
-function showAllPositions() {
+function highlightPosition(positionIndex) {
+    if (viewerApi && viewerApi.renderer) {
+        viewerApi.renderer.highlightedAtom = positionIndex;
+        viewerApi.renderer.highlightedAtoms = null; // Clear multi-position highlight
+        // Draw highlights on overlay canvas without re-rendering main scene
+        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            window.SequenceViewer.drawHighlights();
+        }
+    }
+}
+
+function highlightPositions(positionIndices) {
+    if (viewerApi && viewerApi.renderer) {
+        viewerApi.renderer.highlightedAtoms = positionIndices instanceof Set ? positionIndices : new Set(positionIndices);
+        viewerApi.renderer.highlightedAtom = null; // Clear single position highlight
+        // Draw highlights on overlay canvas without re-rendering main scene
+        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            window.SequenceViewer.drawHighlights();
+        }
+    }
+}
+
+function clearHighlight() {
+    if (viewerApi && viewerApi.renderer) {
+        viewerApi.renderer.highlightedAtom = null;
+        viewerApi.renderer.highlightedAtoms = null;
+        // Clear highlights on overlay canvas without re-rendering main scene
+        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            window.SequenceViewer.drawHighlights();
+        }
+    }
+}
+
+function showAllResidues() {
   if (!viewerApi?.renderer) return;
   // Reset to default (show all positions/chains) - this also clears PAE boxes
   viewerApi.renderer.resetToDefault();
   // UI will update via event listener
 }
 
-function hideAllPositions() {
+function hideAllResidues() {
   if (!viewerApi?.renderer) return;
   // Use renderer's clearSelection method to hide all
   viewerApi.renderer.clearSelection();
@@ -2167,13 +2154,35 @@ if (window.SequenceViewer) {
     window.SequenceViewer.setCallbacks({
         getRenderer: () => viewerApi?.renderer || null,
         getObjectSelect: () => document.getElementById('objectSelect'),
-        toggleChainPositions: toggleChainPositions,
-        setChainPositionsSelected: setChainPositionsSelected,
+        toggleChainResidues: toggleChainResidues,
+        setChainResiduesSelected: setChainResiduesSelected,
+        highlightAtom: highlightPosition,
+        highlightAtoms: highlightPositions,
+        clearHighlight: clearHighlight,
         applySelection: applySelection,
         getPreviewSelectionSet: () => previewSelectionSet,
         setPreviewSelectionSet: (set) => { previewSelectionSet = set; }
     });
     
+    // Initialize highlight overlay after viewer is created
+    // This will be called after initializePy2DmolViewer completes
+    function initializeHighlightOverlayIfNeeded() {
+        if (viewerApi?.renderer && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+            // Trigger initialization by calling drawHighlights (which will initialize if needed)
+            // But first make sure we have a renderer with canvas
+            const renderer = viewerApi.renderer;
+            if (renderer.canvas) {
+                // Force initialization by calling the internal function
+                // We'll do this by calling drawHighlights which will lazy-init
+                window.SequenceViewer.drawHighlights();
+            }
+        }
+    }
+    
+    // Initialize overlay when viewer is ready
+    if (viewerApi?.renderer) {
+        initializeHighlightOverlayIfNeeded();
+    }
 }
 
 // MSA viewer callbacks are now set up in initializeApp() after viewerApi is initialized
@@ -3250,7 +3259,7 @@ async function handleFetch() {
                                     }
                                     
                                     const positionName = firstFrame.position_names[i];
-                                    const aa = window.positionToLetter(positionName || '', 'protein');
+                                    const aa = RESIDUE_TO_AA[positionName?.toUpperCase()] || 'X';
                                     chainSequencesWithResnums[chainId].sequence += aa;
                                     chainSequencesWithResnums[chainId].residueNumbers.push(positionIndex);
                                 }
@@ -3669,6 +3678,15 @@ async function handleFetch() {
 // MSA SEQUENCE-BASED MATCHING HELPERS (Global scope for reuse)
 // ============================================================================
 
+// Residue name to single-letter amino acid code mapping
+const RESIDUE_TO_AA = {
+    ALA:'A', ARG:'R', ASN:'N', ASP:'D', CYS:'C', GLU:'E', GLN:'Q', GLY:'G',
+    HIS:'H', ILE:'I', LEU:'L', LYS:'K', MET:'M', PHE:'F', PRO:'P', SER:'S',
+    THR:'T', TRP:'W', TYR:'Y', VAL:'V', SEC:'U', PYL:'O',
+    // common modified residues → canonical letters
+    MSE:'M', HSD:'H', HSE:'H', HID:'H', HIE:'H', HIP:'H'
+};
+
 // ============================================================================
 // MSA UTILITY FUNCTIONS
 // ============================================================================
@@ -3708,10 +3726,15 @@ function extractChainSequences(frame) {
         // Sort by position index to maintain order
         positionData.sort((a, b) => a.positionIndex - b.positionIndex);
         
-        // Convert to sequence string using unified positionToLetter function
+        // Convert to sequence string
         const sequence = positionData.map(p => {
-            const positionName = p.positionName || '';
-            return window.positionToLetter(positionName, 'protein');
+            const positionName = (p.positionName || '').toString().trim().toUpperCase();
+            // Handle modified positions - try to get standard name
+            let standardPositionName = positionName;
+            if (typeof getStandardResidueName === 'function') {
+                standardPositionName = getStandardResidueName(positionName).toUpperCase();
+            }
+            return RESIDUE_TO_AA[standardPositionName] || 'X'; // X for unknown
         }).join('');
         
         if (sequence.length > 0) {
@@ -4061,22 +4084,20 @@ async function fetchPDBeMappings(pdbId) {
             
             // Process each mapping range
             for (const mapping of uniprotData.mappings) {
-                // Use struct_asym_id (label_asym_id) as the key, since that's what we use in the structure
-                const structAsymId = mapping.struct_asym_id;
-                if (!structAsymId) continue;
+                const chainId = mapping.chain_id;
+                if (!chainId) continue;
                 
                 // Initialize mapping for this chain if not exists
                 // If chain already exists from a different UniProt ID, skip (use first one)
-                if (!mappings[structAsymId]) {
-                    mappings[structAsymId] = {
+                if (!mappings[chainId]) {
+                    mappings[chainId] = {
                         uniprot_id: uniprotId,
                         pdb_to_uniprot: {},
-                        uniprot_to_pdb: {},
-                        auth_chain_id: mapping.chain_id // Store auth chain ID for reference
+                        uniprot_to_pdb: {}
                     };
-                } else if (mappings[structAsymId].uniprot_id !== uniprotId) {
+                } else if (mappings[chainId].uniprot_id !== uniprotId) {
                     // Chain already mapped to a different UniProt ID, skip this mapping
-                    console.warn(`Chain ${structAsymId} already mapped to ${mappings[structAsymId].uniprot_id}, skipping ${uniprotId}`);
+                    console.warn(`Chain ${chainId} already mapped to ${mappings[chainId].uniprot_id}, skipping ${uniprotId}`);
                     continue;
                 }
                 
@@ -4089,7 +4110,7 @@ async function fetchPDBeMappings(pdbId) {
                 
                 // Validate the range (check for null/undefined, not truthiness, to handle negative numbers)
                 if (pdbStart == null || pdbEnd == null || unpStart == null || unpEnd == null) {
-                    console.warn(`Invalid mapping range for chain ${structAsymId}:`, mapping);
+                    console.warn(`Invalid mapping range for chain ${chainId}:`, mapping);
                     continue;
                 }
                 
@@ -4110,11 +4131,11 @@ async function fetchPDBeMappings(pdbId) {
                     // Prefer earlier mappings if there are conflicts
                     // Use String() to ensure consistent key type (handles negative numbers correctly)
                     const pdbKey = String(pdbResnum);
-                    if (!mappings[structAsymId].pdb_to_uniprot[pdbKey]) {
-                        mappings[structAsymId].pdb_to_uniprot[pdbKey] = unpResnum;
+                    if (!mappings[chainId].pdb_to_uniprot[pdbKey]) {
+                        mappings[chainId].pdb_to_uniprot[pdbKey] = unpResnum;
                     }
-                    if (!mappings[structAsymId].uniprot_to_pdb[unpResnum]) {
-                        mappings[structAsymId].uniprot_to_pdb[unpResnum] = pdbResnum;
+                    if (!mappings[chainId].uniprot_to_pdb[unpResnum]) {
+                        mappings[chainId].uniprot_to_pdb[unpResnum] = pdbResnum;
                     }
                 }
             }
