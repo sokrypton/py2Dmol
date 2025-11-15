@@ -731,7 +731,7 @@
         // Chain button uses same dimensions as sequence characters
         // Find the maximum chain ID length to make all buttons the same size
         const maxChainIdLength = Math.max(...chainBoundaries.map(b => b.chain.length), 3);
-        const chainButtonWidth = (charWidth * maxChainIdLength + 20) / 3; // Fixed width for all buttons (1/2 of previous 2/3 size)
+        const chainButtonWidth = (charWidth * maxChainIdLength + 20) * 2 / 3; // Fixed width for all buttons (2/3 of original size)
         
         // Calculate dynamic line breaks based on container width
         // Get actual container width to fill it completely
@@ -778,7 +778,7 @@
                 // Chain label position
                 const chainLabelX = spacing;
                 const chainLabelY = currentY;
-                const actualButtonWidth = chainButtonWidth + Math.round(4 / 3);
+                const actualButtonWidth = chainButtonWidth + Math.round(4 * 2 / 3);
                 const chainLabelHeight = charHeight;
                 
                 layout.chainLabelPositions.push({
@@ -1012,7 +1012,7 @@
             
             for (const boundary of chainBoundaries) {
                 const chainId = boundary.chain;
-                const actualButtonWidth = chainButtonWidth + Math.round(4 / 3);
+                const actualButtonWidth = chainButtonWidth + Math.round(4 * 2 / 3);
                 
                 // Check if we need to wrap
                 if (currentX + actualButtonWidth > containerWidth - spacing) {
@@ -1278,58 +1278,6 @@
             };
             window.addEventListener('mousemove', handleMove);
             window.addEventListener('mouseup', handleUp);
-            
-            // Handle click (no drag) - toggle selection immediately
-            if ((selectedItem.type === 'ligand' && selectedItem.positionIndices && selectedItem.positionIndices.length > 0) || 
-                (selectedItem.type === 'residue' && selectedItem.positionIndices && selectedItem.positionIndices.length === 1)) {
-                const newPositions = new Set(current?.positions || []);
-                selectedItem.positionIndices.forEach(positionIndex => {
-                    if (newPositions.has(positionIndex)) {
-                        newPositions.delete(positionIndex);
-                    } else {
-                        newPositions.add(positionIndex);
-                    }
-                });
-                
-                // Update chains to include all chains that have selected positions
-                const objectName = renderer.currentObjectName;
-                const obj = renderer.objectsData[objectName];
-                const frame = obj?.frames?.[0];
-                const newChains = new Set();
-                if (frame?.chains) {
-                    for (const positionIndex of newPositions) {
-                        const positionChain = frame.chains[positionIndex];
-                        if (positionChain) {
-                            newChains.add(positionChain);
-                        }
-                    }
-                }
-                
-                // Determine if we have partial selections
-                const totalPositions = frame?.chains?.length || 0;
-                const hasPartialSelections = newPositions.size > 0 && newPositions.size < totalPositions;
-                const allChains = new Set(frame.chains);
-                const allChainsSelected = newChains.size === allChains.size && 
-                                        Array.from(newChains).every(c => allChains.has(c));
-                const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
-                const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
-                
-                // Clear PAE boxes when editing sequence selection
-                renderer.setSelection({ 
-                    positions: newPositions,
-                    chains: chainsToSet,
-                    selectionMode: selectionMode,
-                    paeBoxes: [] 
-                });
-                lastSequenceUpdateHash = null;
-                scheduleRender();
-                
-                // Prevent drag handlers from interfering with click
-                dragState.isDragging = false;
-                window.removeEventListener('mousemove', handleMove);
-                window.removeEventListener('mouseup', handleUp);
-                return;
-            }
         });
         
         // Unified selection computation from item range
