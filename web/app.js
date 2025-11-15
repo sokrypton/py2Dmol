@@ -1916,7 +1916,7 @@ function setChainResiduesSelected(chain, selected) {
   
   const newChains = new Set(currentChains);
   
-  // Preserve existing position selections, but add/remove positions when toggling chains
+  // getSelection() now normalizes default mode to have all positions, so we can use it directly
   const newPositions = new Set(current.positions);
   
   if (selected) {

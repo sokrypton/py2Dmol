@@ -555,13 +555,37 @@ function initializePy2DmolViewer(containerElement) {
             if (patch.selectionMode !== undefined) {
                 this.selectionModel.selectionMode = patch.selectionMode;
             }
+            
+            // Normalize default mode: if in default mode with empty positions, populate with all positions
+            // This ensures default mode always has positions filled, simplifying all selection logic
+            if (this.selectionModel.selectionMode === 'default' && 
+                (!this.selectionModel.positions || this.selectionModel.positions.size === 0)) {
+                const n = this.coords ? this.coords.length : 0;
+                this.selectionModel.positions = new Set();
+                for (let i = 0; i < n; i++) {
+                    this.selectionModel.positions.add(i);
+                }
+            }
+            
             this._composeAndApplyMask(skip3DRender);
         }
 
         getSelection() {
             const m = this.selectionModel;
+            
+            // Normalize default mode: if in default mode with empty positions, populate with all positions
+            // This ensures getSelection() always returns positions populated for default mode
+            let positions = new Set(m.positions);
+            if (m.selectionMode === 'default' && positions.size === 0) {
+                const n = this.coords ? this.coords.length : 0;
+                positions = new Set();
+                for (let i = 0; i < n; i++) {
+                    positions.add(i);
+                }
+            }
+            
             return {
-                positions: new Set(m.positions),
+                positions: positions,
                 chains: new Set(m.chains),
                 paeBoxes: m.paeBoxes.map(b => ({...b})),
                 selectionMode: m.selectionMode

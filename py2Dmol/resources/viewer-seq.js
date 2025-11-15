@@ -1219,8 +1219,8 @@
             
             if (!selectedItem) return;
             
-            // Handle chain items in sequence mode (toggle on click, no drag)
-            if (selectedItem.type === 'chain' && sequenceViewMode) {
+            // Handle chain items in both modes (toggle on click, no drag)
+            if (selectedItem.type === 'chain') {
                 const chainId = selectedItem.chainId;
                 const current = renderer?.getSelection();
                 const isSelected = current?.chains?.has(chainId) || 
@@ -1235,19 +1235,12 @@
                 return;
             }
             
-            // For all other items (chain in chain mode, position, ligand), enable drag
+            // For all other items (position, ligand), enable drag
             const current = renderer?.getSelection();
             
-            // Determine if item is initially selected
-            let isInitiallySelected = false;
-            if (selectedItem.type === 'chain') {
-                isInitiallySelected = current?.chains?.has(selectedItem.chainId) || 
-                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-            } else {
-                // For position/ligand, check if all positions are selected
-                isInitiallySelected = selectedItem.positionIndices.length > 0 && 
-                    selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
-            }
+            // Determine if item is initially selected (for position/ligand items)
+            const isInitiallySelected = selectedItem.positionIndices.length > 0 && 
+                selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
             
             dragState.isDragging = true;
             dragState.hasMoved = false;
@@ -1257,14 +1250,7 @@
             dragState.initialSelectionState = new Set(current?.positions || []);
             
             // Legacy fields for compatibility
-            if (selectedItem.type === 'chain') {
-                const boundary = chainBoundaries.find(b => b.chain === selectedItem.chainId);
-                if (boundary) {
-                    const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    dragState.dragStart = chainPositions[0];
-                    dragState.dragEnd = chainPositions[chainPositions.length - 1];
-                }
-            } else if (selectedItem.residueData) {
+            if (selectedItem.residueData) {
                 dragState.dragStart = selectedItem.residueData;
                 dragState.dragEnd = selectedItem.residueData;
             }
@@ -1366,8 +1352,8 @@
                     } else {
                         hoveredResidueInfo = null;
                     }
-                } else if (chainLabelPos && !sequenceViewMode && callbacks.highlightAtoms) {
-                    // In chain mode, highlight entire chain on hover
+                } else if (chainLabelPos && callbacks.highlightAtoms) {
+                    // In both sequence mode and chain mode, highlight entire chain on hover over chain button
                     const chainId = chainLabelPos.chainId;
                     const boundary = chainBoundaries.find(b => b.chain === chainId);
                     if (boundary) {
@@ -1377,7 +1363,8 @@
                             callbacks.highlightAtoms(positionIndices);
                         }
                     }
-                    hoveredResidueInfo = null; // Clear tooltip in chain mode
+                    // Clear tooltip when hovering over chain button (in both modes)
+                    hoveredResidueInfo = null;
                 } else {
                     if (callbacks.clearHighlight) callbacks.clearHighlight();
                     hoveredResidueInfo = null; // Clear tooltip when not hovering over position
@@ -1576,13 +1563,15 @@
                 // User clicked (no drag) - toggle the item
                 const item = dragState.dragStartItem;
                 const current = renderer?.getSelection();
-                const newPositions = new Set(current?.positions || []);
                 
                 // Only handle if item has positionIndices (ligand or residue)
                 if (!item.positionIndices || item.positionIndices.length === 0) {
                     dragState.isDragging = false;
                     return;
                 }
+                
+                // getSelection() now normalizes default mode to have all positions, so we can use it directly
+                const newPositions = new Set(current?.positions || []);
                 
                 // Toggle all positions in the item
                 item.positionIndices.forEach(positionIndex => {
@@ -1594,9 +1583,6 @@
                 });
                 
                 // Update chains to include all chains that have selected positions
-                const objectName = renderer.currentObjectName;
-                const obj = renderer.objectsData[objectName];
-                const frame = obj?.frames?.[0];
                 const newChains = new Set();
                 if (frame?.chains) {
                     for (const positionIndex of newPositions) {
@@ -1659,8 +1645,8 @@
             
             if (!selectedItem) return;
             
-            // Handle chain items in sequence mode (toggle on tap, no drag)
-            if (selectedItem.type === 'chain' && sequenceViewMode) {
+            // Handle chain items in both modes (toggle on tap, no drag)
+            if (selectedItem.type === 'chain') {
                 const chainId = selectedItem.chainId;
                 const current = renderer?.getSelection();
                 const isSelected = current?.chains?.has(chainId) || 
@@ -1673,19 +1659,12 @@
                 return;
             }
             
-            // For all other items (chain in chain mode, position, ligand), enable drag
+            // For all other items (position, ligand), enable drag
             const current = renderer?.getSelection();
             
-            // Determine if item is initially selected
-            let isInitiallySelected = false;
-            if (selectedItem.type === 'chain') {
-                isInitiallySelected = current?.chains?.has(selectedItem.chainId) || 
-                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-            } else {
-                // For position/ligand, check if all positions are selected
-                isInitiallySelected = selectedItem.positionIndices.length > 0 && 
-                    selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
-            }
+            // Determine if item is initially selected (for position/ligand items)
+            const isInitiallySelected = selectedItem.positionIndices.length > 0 && 
+                selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
             
             dragState.isDragging = true;
             dragState.hasMoved = false;
@@ -1695,14 +1674,7 @@
             dragState.initialSelectionState = new Set(current?.positions || []);
             
             // Legacy fields for compatibility
-            if (selectedItem.type === 'chain') {
-                const boundary = chainBoundaries.find(b => b.chain === selectedItem.chainId);
-                if (boundary) {
-                    const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    dragState.dragStart = chainPositions[0];
-                    dragState.dragEnd = chainPositions[chainPositions.length - 1];
-                }
-            } else if (selectedItem.residueData) {
+            if (selectedItem.residueData) {
                 dragState.dragStart = selectedItem.residueData;
                 dragState.dragEnd = selectedItem.residueData;
             }
@@ -1734,7 +1706,9 @@
             
             // Handle tap (no drag) - toggle selection immediately
             if (selectedItem.type === 'ligand' || (selectedItem.type === 'residue' && selectedItem.positionIndices.length === 1)) {
+                // getSelection() now normalizes default mode to have all positions, so we can use it directly
                 const newPositions = new Set(current?.positions || []);
+                
                 selectedItem.positionIndices.forEach(positionIndex => {
                     if (newPositions.has(positionIndex)) {
                         newPositions.delete(positionIndex);
@@ -1744,9 +1718,6 @@
                 });
                 
                 // Update chains to include all chains that have selected positions
-                const objectName = renderer.currentObjectName;
-                const obj = renderer.objectsData[objectName];
-                const frame = obj?.frames?.[0];
                 const newChains = new Set();
                 if (frame?.chains) {
                     for (const positionIndex of newPositions) {
