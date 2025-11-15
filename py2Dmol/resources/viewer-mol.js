@@ -304,7 +304,7 @@ function initializePy2DmolViewer(containerElement) {
     };
     
     // Width calculation parameters
-    const ATOM_WIDTH_MULTIPLIER = 0.5;      // Fixed width for positions (zero-length segments)
+    const POSITION_WIDTH_MULTIPLIER = 0.5;      // Fixed width for positions (zero-length segments)
     
     // Shadow/tint parameters
     const SHADOW_CUTOFF_MULTIPLIER = 2.0;   // shadow_cutoff = avgLen * 2.0
@@ -322,11 +322,6 @@ function initializePy2DmolViewer(containerElement) {
         constructor(canvas) {
             this.canvas = canvas;
             this.ctx = canvas.getContext('2d');
-            
-            // Store screen positions of positions for fast highlight drawing
-            // Array of {x, y, radius} for each position index, updated during render()
-            // Used by sequence viewer to draw highlights on overlay canvas
-            this.positionScreenPositions = null;
             
             // Unified cutoff for performance optimizations (inertia, caching, grid-based shadows)
             this.LARGE_MOLECULE_CUTOFF = 1000;
@@ -412,7 +407,7 @@ function initializePy2DmolViewer(containerElement) {
             this.chainRainbowScales = {};
             this.perChainIndices = [];
             this.chainIndexMap = new Map(); // Initialize chain index map
-            this.ligandOnlyChains = new Set(); // Chains that contain only ligands (no P/D/R atoms)
+            this.ligandOnlyChains = new Set(); // Chains that contain only ligands (no P/D/R positions)
             this.rotatedCoords = []; 
             this.segmentIndices = []; 
             this.segData = []; 
@@ -462,8 +457,6 @@ function initializePy2DmolViewer(containerElement) {
             // PAE and Visibility
             this.paeRenderer = null;
             this.visibilityMask = null; // Set of position indices to *show*
-            this.highlightedAtom = null; // To store position index for highlighting (property name kept for API compatibility)
-            this.highlightedAtoms = null; // To store Set of position indices for highlighting multiple positions (property name kept for API compatibility)
 
             // [PATCH] Unified selection model (sequence/chain + PAE)
             // positions: Set of position indices (0, 1, 2, ...) - one position per entry in frame data
@@ -518,7 +511,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // Cached width multipliers per type (calculated once per molecule load)
             this.typeWidthMultipliers = {
-                'atom': ATOM_WIDTH_MULTIPLIER
+                'position': POSITION_WIDTH_MULTIPLIER
             };
 
             this.setupInteraction();
@@ -744,8 +737,8 @@ function initializePy2DmolViewer(containerElement) {
             this.paeRenderer = paeRenderer;
         }
         
-        // [PATCH] Re-routed setResidueVisibility to use the new unified selection model
-        setResidueVisibility(selection) {
+        // [PATCH] Re-routed setPositionVisibility to use the new unified selection model
+        setPositionVisibility(selection) {
             if (selection === null) {
                 // Clear only PAE contribution; leave sequence/chain selections intact
                 this.setSelection({ paeBoxes: 'clear' });
@@ -772,10 +765,8 @@ function initializePy2DmolViewer(containerElement) {
         setupInteraction() {
             // Add inertia logic
             this.canvas.addEventListener('mousedown', (e) => {
-                // Only start dragging if we clicked directly on the canvas or the highlight overlay
-                // (the overlay has pointer-events: none, but we check for it just in case)
-                const isHighlightOverlay = e.target.id === 'highlightOverlay';
-                if (e.target !== this.canvas && !isHighlightOverlay) return;
+                // Only start dragging if we clicked directly on the canvas
+                if (e.target !== this.canvas) return;
                 
                 this.isDragging = true;
                 this.spinVelocityX = 0;
@@ -1432,15 +1423,15 @@ function initializePy2DmolViewer(containerElement) {
 
             // Update global center sum and count (from all positions for viewing)
             let frameSum = new Vec3(0,0,0);
-            let frameAtoms = 0;
+            let framePositions = 0;
             if (data && data.coords) {
-                frameAtoms = data.coords.length;
+                framePositions = data.coords.length;
                 for (let i = 0; i < data.coords.length; i++) {
                     const c = data.coords[i];
                     frameSum = frameSum.add(new Vec3(c[0], c[1], c[2]));
                 }
                 object.globalCenterSum = object.globalCenterSum.add(frameSum);
-                object.totalPositions += frameAtoms;
+                object.totalPositions += framePositions;
             }
             
             const globalCenter = (object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0,0,0);
@@ -2843,7 +2834,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // Create the definitive chain index map for this dataset.
             this.chainIndexMap = new Map();
-            // Track which chains contain only ligands (no P/D/R atoms)
+            // Track which chains contain only ligands (no P/D/R positions)
             this.ligandOnlyChains = new Set();
             if (this.chains.length > 0) {
                 // Use a sorted list of unique chain IDs to ensure a consistent order
@@ -2866,7 +2857,7 @@ function initializePy2DmolViewer(containerElement) {
                             }
                         }
                     }
-                    // If chain has no P/D/R atoms, it's ligand-only
+                    // If chain has no P/D/R positions, it's ligand-only
                     if (!hasNonLigand) {
                         this.ligandOnlyChains.add(chainId);
                     }
@@ -3145,7 +3136,7 @@ function initializePy2DmolViewer(containerElement) {
             // Calculate and cache width multipliers per type (O(4) instead of O(N))
             // This avoids recalculating width for each segment during rendering and shadow/tint
             this.typeWidthMultipliers = {
-                'atom': ATOM_WIDTH_MULTIPLIER
+                'position': POSITION_WIDTH_MULTIPLIER
             };
             for (const type of ['L', 'P', 'D', 'R']) {
                 this.typeWidthMultipliers[type] = this._calculateTypeWidthMultiplier(type);
@@ -3289,14 +3280,13 @@ function initializePy2DmolViewer(containerElement) {
             return this.colorMode;
         }
 
-        getAtomColor(atomIndex) {
-            // Note: parameter name kept as atomIndex for API compatibility, but represents a position index
-            if (atomIndex < 0 || atomIndex >= this.coords.length) {
+        getPositionColor(positionIndex) {
+            if (positionIndex < 0 || positionIndex >= this.coords.length) {
                 return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
             }
 
             const effectiveColorMode = this._getEffectiveColorMode();
-            const type = (this.positionTypes && atomIndex < this.positionTypes.length) ? this.positionTypes[atomIndex] : undefined;
+            const type = (this.positionTypes && positionIndex < this.positionTypes.length) ? this.positionTypes[positionIndex] : undefined;
             let color;
 
             // Ligands should always be grey in chain and rainbow modes (not plddt)
@@ -3304,13 +3294,13 @@ function initializePy2DmolViewer(containerElement) {
 
             if (effectiveColorMode === 'plddt') {
                 const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
-                const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
+                const plddt = (this.plddts[positionIndex] !== null && this.plddts[positionIndex] !== undefined) ? this.plddts[positionIndex] : 50;
                 color = plddtFunc(plddt);
             } else if (effectiveColorMode === 'entropy') {
                 const entropyFunc = this.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
                 // Get entropy value from frame data (entropy array indexed by position index)
-                const entropy = (this.entropy && atomIndex < this.entropy.length && this.entropy[atomIndex] !== undefined) 
-                    ? this.entropy[atomIndex] 
+                const entropy = (this.entropy && positionIndex < this.entropy.length && this.entropy[positionIndex] !== undefined) 
+                    ? this.entropy[positionIndex] 
                     : undefined;
                 if (entropy !== undefined) {
                     color = entropyFunc(entropy);
@@ -3319,7 +3309,7 @@ function initializePy2DmolViewer(containerElement) {
                     color = { r: 128, g: 128, b: 128 };
                 }
             } else if (effectiveColorMode === 'chain') {
-                const chainId = this.chains[atomIndex] || 'A';
+                const chainId = this.chains[positionIndex] || 'A';
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
                     // Ligands in chains with P/D/R positions are grey
                     color = { r: 128, g: 128, b: 128 };
@@ -3343,15 +3333,15 @@ function initializePy2DmolViewer(containerElement) {
                     color = { r: 128, g: 128, b: 128 };
                 } else {
                     // Regular positions get rainbow color
-                    const chainId = this.chains[atomIndex] || 'A';
+                    const chainId = this.chains[positionIndex] || 'A';
                     const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
                     const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
                     if (scale && scale.min !== Infinity && scale.max !== -Infinity) {
-                        const colorIndex = this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0;
+                        const colorIndex = this.perChainIndices && positionIndex < this.perChainIndices.length ? this.perChainIndices[positionIndex] : 0;
                         color = rainbowFunc(colorIndex, scale.min, scale.max);
                     } else {
                         // Fallback: if scale not found, use a default rainbow based on colorIndex
-                        const colorIndex = (this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0) || 0;
+                        const colorIndex = (this.perChainIndices && positionIndex < this.perChainIndices.length ? this.perChainIndices[positionIndex] : 0) || 0;
                         color = rainbowFunc(colorIndex, 0, Math.max(1, colorIndex));
                     }
                 }
@@ -3372,16 +3362,16 @@ function initializePy2DmolViewer(containerElement) {
         }
         
         // Calculate segment colors (chain or rainbow)
-        // Uses getAtomColor() as single source of truth for all color logic
+        // Uses getPositionColor() as single source of truth for all color logic
         _calculateSegmentColors() {
             const m = this.segmentIndices.length;
             if (m === 0) return [];
 
-            // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
+            // Use getPositionColor() for each segment - ensures consistency and eliminates duplicate logic
             return this.segmentIndices.map(segInfo => {
                 const positionIndex = segInfo.origIndex;
-                // getAtomColor() already handles all color modes, ligands, ligand-only chains, pastel, etc.
-                return this.getAtomColor(positionIndex);
+                // getPositionColor() already handles all color modes, ligands, ligand-only chains, pastel, etc.
+                return this.getPositionColor(positionIndex);
             });
         }
 
@@ -3468,7 +3458,7 @@ function initializePy2DmolViewer(containerElement) {
         _calculateSegmentWidthMultiplier(segData, segInfo) {
             // Handle zero-length segments (positions)
             if (segInfo.idx1 === segInfo.idx2) {
-                return this.typeWidthMultipliers?.atom ?? ATOM_WIDTH_MULTIPLIER;
+                return this.typeWidthMultipliers?.position ?? POSITION_WIDTH_MULTIPLIER;
             }
             
             // Use cached width multiplier for this type (O(1) lookup)
@@ -3578,11 +3568,6 @@ function initializePy2DmolViewer(containerElement) {
         _updateCanvasDimensions() {
             this.displayWidth = parseInt(this.canvas.style.width) || this.canvas.width;
             this.displayHeight = parseInt(this.canvas.style.height) || this.canvas.height;
-            
-            // Update highlight overlay canvas size to match (managed by sequence viewer)
-            if (window.SequenceViewer && window.SequenceViewer.updateHighlightOverlaySize) {
-                window.SequenceViewer.updateHighlightOverlaySize();
-            }
         }
         
         // RENDER (Core drawing logic)
@@ -3681,8 +3666,8 @@ function initializePy2DmolViewer(containerElement) {
             let zMin = Infinity;
             let zMax = -Infinity;
             // Also track min/max from actual position coordinates (for outline width calculation)
-            let zMinAtoms = Infinity;
-            let zMaxAtoms = -Infinity;
+            let zMinPositions = Infinity;
+            let zMaxPositions = -Infinity;
             const segData = this.segData; // Use pre-allocated array
 
             // Calculate z-values without clamping (preserve actual range)
@@ -3703,10 +3688,10 @@ function initializePy2DmolViewer(containerElement) {
                 if (z > zMax) zMax = z;
                 
                 // Track position z-coordinates for outline calculation
-                if (start.z < zMinAtoms) zMinAtoms = start.z;
-                if (start.z > zMaxAtoms) zMaxAtoms = start.z;
-                if (end.z < zMinAtoms) zMinAtoms = end.z;
-                if (end.z > zMaxAtoms) zMaxAtoms = end.z;
+                if (start.z < zMinPositions) zMinPositions = start.z;
+                if (start.z > zMaxPositions) zMaxPositions = start.z;
+                if (end.z < zMinPositions) zMinPositions = end.z;
+                if (end.z > zMaxPositions) zMaxPositions = end.z;
                 
                 // Update pre-allocated segData object
                 const s = segData[segIdx];
@@ -4398,68 +4383,6 @@ function initializePy2DmolViewer(containerElement) {
             // END OF REFACTORED LOOP
             // ====================================================================
 
-            // ====================================================================
-            // STORE POSITION SCREEN POSITIONS for fast highlight drawing
-            // ====================================================================
-            // Store screen positions of all positions for overlay highlight drawing
-            // This allows us to draw highlights without re-rendering the entire scene
-            const numPositions = rotated.length;
-            this.positionScreenPositions = new Array(numPositions);
-            
-            for (let positionIndex = 0; positionIndex < numPositions; positionIndex++) {
-                if (positionIndex < rotated.length && rotated[positionIndex]) {
-                    const atom = rotated[positionIndex];
-                    let x, y, radius;
-                    
-                    // Get position type to determine appropriate line width multiplier
-                    // Positions are zero-length segments, so use unified helper
-                    let widthMultiplier = 0.5; // Default for positions
-                    if (this.positionTypes && positionIndex < this.positionTypes.length) {
-                        const type = this.positionTypes[positionIndex];
-                        // Create dummy segInfo for position (zero-length segment)
-                        const dummySegInfo = {
-                            type: type,
-                            idx1: positionIndex,
-                            idx2: positionIndex, // Same index = zero-length
-                            len: 0
-                        };
-                        const dummySegData = { len: 0, x: atom.x, y: atom.y, z: atom.z };
-                        widthMultiplier = this._calculateSegmentWidthMultiplier(dummySegData, dummySegInfo);
-                    }
-                    let atomLineWidth = baseLineWidthPixels * widthMultiplier;
-                    
-                    if (this.perspectiveEnabled) {
-                        const z = this.focalLength - atom.z;
-                        if (z < 0.01) {
-                            // Behind camera, mark as invalid
-                            this.positionScreenPositions[positionIndex] = null;
-                            continue;
-                        } else {
-                            const perspectiveScale = this.focalLength / z;
-                            x = centerX + (atom.x * scale * perspectiveScale);
-                            y = centerY - (atom.y * scale * perspectiveScale);
-                            atomLineWidth *= perspectiveScale;
-                            radius = Math.max(2, atomLineWidth * 0.5);
-                        }
-                    } else {
-                        // Orthographic projection
-                        x = centerX + atom.x * scale;
-                        y = centerY - atom.y * scale;
-                        radius = Math.max(2, atomLineWidth * 0.5);
-                    }
-                    
-                    this.positionScreenPositions[positionIndex] = { x, y, radius };
-                } else {
-                    this.positionScreenPositions[positionIndex] = null;
-                }
-            }
-            
-            // Draw highlights on overlay canvas (doesn't require full render)
-            // Highlight overlay is now managed by sequence viewer
-            // Skip drawing highlights during dragging to prevent interference
-            if (!this.isDragging && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-                window.SequenceViewer.drawHighlights();
-            }
         }
 
         // Main animation loop

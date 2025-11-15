@@ -323,11 +323,11 @@
                         // Update chains to include all chains that have selected positions
                         const newChains = new Set();
                         if (this.mainRenderer.chains && this.mainRenderer.chains.length > 0) {
-                            for (const atomIdx of combinedPositions) {
-                                if (atomIdx >= 0 && atomIdx < this.mainRenderer.chains.length) {
-                                    const atomChain = this.mainRenderer.chains[atomIdx];
-                                    if (atomChain) {
-                                        newChains.add(atomChain);
+                            for (const positionIdx of combinedPositions) {
+                                if (positionIdx >= 0 && positionIdx < this.mainRenderer.chains.length) {
+                                    const positionChain = this.mainRenderer.chains[positionIdx];
+                                    if (positionChain) {
+                                        newChains.add(positionChain);
                                     }
                                 }
                             }
@@ -350,11 +350,11 @@
                         // Update chains to include all chains that have selected positions
                         const newChains = new Set();
                         if (this.mainRenderer.chains && this.mainRenderer.chains.length > 0) {
-                            for (const atomIdx of expandedNewPositions) {
-                                if (atomIdx >= 0 && atomIdx < this.mainRenderer.chains.length) {
-                                    const atomChain = this.mainRenderer.chains[atomIdx];
-                                    if (atomChain) {
-                                        newChains.add(atomChain);
+                            for (const positionIdx of expandedNewPositions) {
+                                if (positionIdx >= 0 && positionIdx < this.mainRenderer.chains.length) {
+                                    const positionChain = this.mainRenderer.chains[positionIdx];
+                                    if (positionChain) {
+                                        newChains.add(positionChain);
                                     }
                                 }
                             }
@@ -482,7 +482,7 @@
                 this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
                 // [PATCH] Check unified model
                 if (this.mainRenderer.selectionModel.paeBoxes.length > 0) {
-                     this.mainRenderer.setResidueVisibility(null);
+                     this.mainRenderer.setPositionVisibility(null);
                 }
             }
             

@@ -9,26 +9,37 @@
     'use strict';
 
     // ============================================================================
+    // CONSTANTS
+    // ============================================================================
+    const CHAR_WIDTH = 10; // Monospace character width (matches MSA mode)
+    
+    // Helper to get DPI multiplier - use unified utility from utils.js
+    function getDPIMultiplier() {
+        if (typeof window !== 'undefined' && typeof window.getDPIMultiplier === 'function') {
+            return window.getDPIMultiplier();
+        }
+        // Fallback if utils.js not loaded
+        if (typeof window !== 'undefined' && window.canvasDPR !== undefined) {
+            return window.canvasDPR;
+        }
+        return Math.min(typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1, 1.5);
+    }
+
+    // ============================================================================
     // INTERNAL STATE
     // ============================================================================
-    let sequenceCanvasData = null; // Canvas-based structure: { canvas, ctx, allResidueData, chainBoundaries, layout, mode }
+    let sequenceCanvasData = null; // Canvas-based structure: { canvas, ctx, allPositionData, chainBoundaries, layout, mode }
     let lastSequenceFrameIndex = -1; // Track which frame the sequence view is showing
     let sequenceViewMode = true;  // Default: show sequence (enabled by default)
     let lastSequenceUpdateHash = null;
     let renderScheduled = false; // Flag to prevent multiple queued renders
-    let highlightOverlayCanvas = null; // Overlay canvas for drawing highlights on main viewer
-    let highlightOverlayCtx = null;
-    let hoveredResidueInfo = null; // { chain, resName, resSeq } for tooltip display
     
     // Callbacks for integration with host application
     let callbacks = {
         getRenderer: null,           // () => renderer instance
         getObjectSelect: null,        // () => objectSelect element
-        toggleChainResidues: null,    // (chain) => void
-        setChainResiduesSelected: null, // (chain, selected) => void
-        highlightAtom: null,          // (positionIndex) => void
-        highlightAtoms: null,         // (positionIndices) => void
-        clearHighlight: null,        // () => void
+        toggleChainPositions: null,    // (chain) => void
+        setChainPositionsSelected: null, // (chain, selected) => void
         applySelection: null,         // (previewPositions) => void
         getPreviewSelectionSet: null, // () => Set | null
         setPreviewSelectionSet: null  // (Set | null) => void
@@ -100,10 +111,8 @@
         const displayY = clientY - rect.top;
         
         // Scale to canvas logical coordinates (accounting for DPI multiplier)
-        // Calculate DPI multiplier (200 DPI / 96 DPI standard)
-        const targetDPI = 200;
-        const standardDPI = 96;
-        const dpiMultiplier = targetDPI / standardDPI;
+        // Get DPI multiplier - should match what was used to set up the canvas
+        const dpiMultiplier = getDPIMultiplier();
         // Canvas internal size is dpiMultiplier * display size, but context is scaled, so we want display pixels
         const scaleX = (canvas.width / dpiMultiplier) / rect.width;
         const scaleY = (canvas.height / dpiMultiplier) / rect.height;
@@ -115,12 +124,12 @@
     }
 
     // Find position at canvas position
-    function getResidueAtCanvasPosition(x, y, layout) {
-        if (!layout || !layout.residuePositions) return null;
+    function getPositionAtCanvasPosition(x, y, layout) {
+        if (!layout || !layout.positions) return null;
         
-        for (const pos of layout.residuePositions) {
+        for (const pos of layout.positions) {
             if (x >= pos.x && x < pos.x + pos.width && y >= pos.y && y < pos.y + pos.height) {
-                return pos; // Return position object with residueData
+                return pos; // Return position object with positionData
             }
         }
         return null;
@@ -150,12 +159,12 @@
         }
         
         // Separate items by type for priority checking
-        const residueLigandItems = items.filter(item => item.type === 'residue' || item.type === 'ligand');
+        const positionLigandItems = items.filter(item => item.type === 'position' || item.type === 'ligand');
         const chainItems = items.filter(item => item.type === 'chain');
         
         // Priority 1: Check position/ligand items first (exact bounds)
         // These should take precedence over chain items in sequence mode
-        for (const item of residueLigandItems) {
+        for (const item of positionLigandItems) {
             const bounds = item.bounds;
             if (x >= bounds.x && x < bounds.x + bounds.width &&
                 y >= bounds.y && y < bounds.y + bounds.height) {
@@ -244,7 +253,7 @@
     }
 
     // Draw position character on canvas
-    function drawResidueCharOnCanvas(ctx, letter, x, y, width, height, color, isSelected, dimFactor) {
+    function drawPositionCharOnCanvas(ctx, letter, x, y, width, height, color, isSelected, dimFactor) {
         // Apply dimming if not selected
         let r = color.r;
         let g = color.g;
@@ -262,7 +271,7 @@
         
         // Draw text
         ctx.fillStyle = '#000000';
-        ctx.font = '12px monospace';
+        ctx.font = '10px monospace'; // Matches MSA mode font size
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(letter, x + width / 2, y + height / 2);
@@ -321,7 +330,7 @@
     function renderSequenceCanvas() {
         if (!sequenceCanvasData) return;
         
-        const { canvas, ctx, allResidueData, chainBoundaries, layout, sortedPositionEntries } = sequenceCanvasData;
+        const { canvas, ctx, allPositionData, chainBoundaries, layout, sortedPositionEntries } = sequenceCanvasData;
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer) return;
         
@@ -332,29 +341,8 @@
         const selectionModel = renderer.selectionModel;
         const previewSelectionSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
         
-        // Determine visible positions - avoid unnecessary Set copies
-        let visiblePositions;
-        if (previewSelectionSet && previewSelectionSet.size > 0) {
-            // Use preview selection directly (already a Set, no need to copy)
-            visiblePositions = previewSelectionSet;
-        } else {
-            if (selectionModel && selectionModel.positions && selectionModel.positions.size > 0) {
-                // Use selectionModel directly (no copy needed for read-only access)
-                visiblePositions = selectionModel.positions;
-            } else if (renderer.visibilityMask === null) {
-                // All positions visible - create Set only if needed (lazy)
-                const n = renderer.coords ? renderer.coords.length : 0;
-                visiblePositions = new Set();
-                for (let i = 0; i < n; i++) {
-                    visiblePositions.add(i);
-                }
-            } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
-                // Use visibilityMask directly (no copy needed for read-only access)
-                visiblePositions = renderer.visibilityMask;
-            } else {
-                visiblePositions = new Set();
-            }
-        }
+        // Determine visible positions using unified helper
+        const visiblePositions = window.getVisiblePositions(renderer, previewSelectionSet);
         
         const dimFactor = 0.3; // Same as PAE plot
         
@@ -415,41 +403,41 @@
         }
         
         // Draw position characters and ligand tokens
-        if (layout.residuePositions && allResidueData) {
-            // Get renderer's getAtomColor function for dynamic color computation
-            const hasGetAtomColor = renderer?.getAtomColor;
+        if (layout.positions && allPositionData) {
+            // Get renderer's getPositionColor function for dynamic color computation
+            const hasGetPositionColor = renderer?.getPositionColor;
             
-            for (const pos of layout.residuePositions) {
-                const residueData = pos.residueData;
-                if (!residueData) continue;
+            for (const pos of layout.positions) {
+                const positionData = pos.positionData;
+                if (!positionData) continue;
                 
                 // Compute color dynamically based on current renderer state
                 let color = {r: 128, g: 128, b: 128}; // Default fallback grey
                 
-                if (residueData.positionIndex === -1) {
+                if (positionData.positionIndex === -1) {
                     // Gap markers (missing positions) use stored light grey color
-                    color = residueData.color || {r: 240, g: 240, b: 240};
-                } else if (residueData.isLigandToken && residueData.positionIndices && residueData.positionIndices.length > 0) {
+                    color = positionData.color || {r: 240, g: 240, b: 240};
+                } else if (positionData.isLigandToken && positionData.positionIndices && positionData.positionIndices.length > 0) {
                     // For ligand tokens, use first position's color
-                    const firstPositionIndex = residueData.positionIndices[0];
-                    if (hasGetAtomColor && !Number.isNaN(firstPositionIndex) && firstPositionIndex >= 0) {
-                        color = renderer.getAtomColor(firstPositionIndex);
+                    const firstPositionIndex = positionData.positionIndices[0];
+                    if (hasGetPositionColor && !Number.isNaN(firstPositionIndex) && firstPositionIndex >= 0) {
+                        color = renderer.getPositionColor(firstPositionIndex);
                     }
-                } else if (residueData.positionIndex >= 0) {
+                } else if (positionData.positionIndex >= 0) {
                     // For regular positions, use position's color
-                    if (hasGetAtomColor && !Number.isNaN(residueData.positionIndex)) {
-                        color = renderer.getAtomColor(residueData.positionIndex);
+                    if (hasGetPositionColor && !Number.isNaN(positionData.positionIndex)) {
+                        color = renderer.getPositionColor(positionData.positionIndex);
                     }
                 }
                 
                 // Check if this is a ligand token (has positionIndices array)
-                if (residueData.isLigandToken && residueData.positionIndices) {
+                if (positionData.isLigandToken && positionData.positionIndices) {
                     // For ligand tokens, check if any position in the ligand is selected
-                    const isSelected = residueData.positionIndices.some(positionIndex => visiblePositions.has(positionIndex));
+                    const isSelected = positionData.positionIndices.some(positionIndex => visiblePositions.has(positionIndex));
                     
                     drawLigandTokenOnCanvas(
                         ctx,
-                        residueData.ligandName || 'LIG',
+                        positionData.ligandName || 'LIG',
                         pos.x,
                         pos.y,
                         pos.width,
@@ -458,9 +446,9 @@
                         isSelected,
                         dimFactor
                     );
-                } else if (residueData.positionIndex === -1) {
+                } else if (positionData.positionIndex === -1) {
                     // Gap marker (missing positions) - always draw as "-"
-                    drawResidueCharOnCanvas(
+                    drawPositionCharOnCanvas(
                         ctx,
                         '-', // Always use "-" for gaps
                         pos.x,
@@ -471,13 +459,13 @@
                         false, // Gaps are never selected
                         dimFactor
                     );
-                } else if (residueData.positionIndex >= 0) {
+                } else if (positionData.positionIndex >= 0) {
                     // Regular position character
-                    const isSelected = visiblePositions.has(residueData.positionIndex);
+                    const isSelected = visiblePositions.has(positionData.positionIndex);
                     
-                    drawResidueCharOnCanvas(
+                    drawPositionCharOnCanvas(
                         ctx,
-                        residueData.letter,
+                        positionData.letter,
                         pos.x,
                         pos.y,
                         pos.width,
@@ -490,7 +478,6 @@
             }
         }
         
-        // Draw hover highlight if needed (will be handled in event handlers)
     }
 
     // ============================================================================
@@ -681,51 +668,22 @@
         // Build chain-to-sequence-type mapping for unified sequence
         const chainSequenceTypes = {};
         for (const boundary of chainBoundaries) {
-            const chainResidues = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-            const chainResidueNames = chainResidues.map(r => r.resName);
-            chainSequenceTypes[boundary.chain] = detectSequenceType(chainResidueNames);
+            const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+            const chainPositionNames = chainPositions.map(p => p.resName);
+            chainSequenceTypes[boundary.chain] = detectSequenceType(chainPositionNames);
         }
         
         // Helper function to get position letter based on chain's sequence type
+        // Use unified positionToLetter function from utils.js
         const getPositionLetter = (position) => {
             const chainType = chainSequenceTypes[position.chain] || 'protein';
-            let upper = (position.resName || '').toString().trim().toUpperCase();
-            
-            // Map modified residues to standard equivalents (e.g., MSE -> MET)
-            // Use getStandardResidueName if available (from utils.js), otherwise use local mapping
-            if (typeof getStandardResidueName === 'function') {
-                upper = getStandardResidueName(upper).toUpperCase();
-            } else {
-                // Fallback: local mapping for common modifications
-                const modifiedToStandard = {
-                    'MSE': 'MET', 'PTR': 'TYR', 'SEP': 'SER', 'TPO': 'THR',
-                    'FME': 'MET', 'HYP': 'PRO', 'PCA': 'GLU', 'ALY': 'LYS',
-                    '5MDA': 'DA', '5MDC': 'DC', '5MDG': 'DG',
-                    'M6A': 'A', 'M5C': 'C', 'M7G': 'G', 'PSU': 'U'
-                };
-                if (modifiedToStandard[upper]) {
-                    upper = modifiedToStandard[upper];
-                }
-            }
-            
-            if (chainType === 'dna') {
-                return dnaMapping[upper] || 'N';
-            } else if (chainType === 'rna') {
-                if (rnaMapping[upper]) return rnaMapping[upper];
-                if (upper === 'U') return 'U';
-                if (upper.includes('U') || upper.includes('URI') || upper.includes('URA')) return 'U';
-                if (upper.includes('A') && !upper.includes('D')) return 'A';
-                if (upper.includes('C') && !upper.includes('D')) return 'C';
-                if (upper.includes('G') && !upper.includes('D')) return 'G';
-                return 'N';
-            } else {
-                return threeToOne[upper] || 'X';
-            }
+            const positionName = position.resName || '';
+            return window.positionToLetter(positionName, chainType);
         };
 
         // Canvas rendering settings
-        const charWidth = 10; // Monospace character width
-        const charHeight = 14; // Line height
+        const charWidth = CHAR_WIDTH; // Use constant for consistency with MSA viewer
+        const charHeight = 20; // Line height (matches MSA SEQUENCE_ROW_HEIGHT)
         const spacing = 4; // Spacing between elements
         
         // Chain button uses same dimensions as sequence characters
@@ -752,7 +710,7 @@
         canvas.style.width = '100%';
         
         // Store all position data (not elements)
-        const allResidueData = [];
+        const allPositionData = [];
         
         // Calculate layout positions
         const layout = {
@@ -762,7 +720,7 @@
             chainButtonWidth,
             charsPerLine,
             chainLabelPositions: [],
-            residuePositions: [],
+            positions: [],
             selectableItems: [] // Unified selectable items array
         };
         
@@ -868,8 +826,8 @@
                     
                     // Regular position (ligands with grouping are handled above)
                     displayItems.push({
-                        type: 'atom',
-                        atom: position
+                        type: 'position',
+                        position: position
                     });
                     i++;
                 }
@@ -891,10 +849,10 @@
                     
                     // Add spacing/gaps between items
                     if (prevItem) {
-                        const prevResSeq = prevItem.type === 'ligand' ? prevItem.resSeq : prevItem.atom.resSeq;
-                        const prevPositionType = prevItem.type === 'ligand' ? 'L' : prevItem.atom.positionType;
-                        const currResSeq = item.type === 'ligand' ? item.resSeq : item.atom.resSeq;
-                        const currPositionType = item.type === 'ligand' ? 'L' : item.atom.positionType;
+                        const prevResSeq = prevItem.type === 'ligand' ? prevItem.resSeq : prevItem.position.resSeq;
+                        const prevPositionType = prevItem.type === 'ligand' ? 'L' : prevItem.position.positionType;
+                        const currResSeq = item.type === 'ligand' ? item.resSeq : item.position.resSeq;
+                        const currPositionType = item.type === 'ligand' ? 'L' : item.position.positionType;
                         
                         const positionTypeChanged = prevPositionType !== currPositionType;
                         const ligandResSeqChanged = currPositionType === 'L' && prevPositionType === 'L' && prevResSeq !== currResSeq;
@@ -910,9 +868,9 @@
                             // Add spacer
                             currentX += charWidth;
                         } else if (isChainBreak) {
-                            // Add gap characters
-                            const numMissingResidues = resSeqDiff - 1;
-                            for (let g = 0; g < numMissingResidues; g++) {
+                            // Add gap characters for missing positions
+                            const numMissingPositions = resSeqDiff - 1;
+                            for (let g = 0; g < numMissingPositions; g++) {
                                 // Check wrap
                                 if (currentX + charWidth > containerWidth - spacing) {
                                     currentX = lineStartX;
@@ -920,8 +878,8 @@
                                     maxLineY = Math.max(maxLineY, lineY);
                                 }
                                 
-                                layout.residuePositions.push({
-                                    residueData: {
+                                layout.positions.push({
+                                    positionData: {
                                         positionIndex: -1, // Gap marker
                                         letter: '-',
                                         color: {r: 240, g: 240, b: 240},
@@ -955,11 +913,11 @@
                             chain: item.chain,
                             resName: item.resName
                         };
-                        allResidueData.push(ligandTokenData);
+                        allPositionData.push(ligandTokenData);
                         
                         // Store position
-                        layout.residuePositions.push({
-                            residueData: ligandTokenData,
+                        layout.positions.push({
+                            positionData: ligandTokenData,
                             x: currentX,
                             y: lineY,
                             width: itemWidth,
@@ -967,22 +925,22 @@
                         });
                     } else {
                         // Regular position
-                        const atom = item.atom;
-                        const letter = getPositionLetter(atom);
+                        const position = item.position;
+                        const letter = getPositionLetter(position);
                         
                         // Store position data (color will be computed dynamically at render time)
-                        const residueData = {
-                            positionIndex: atom.positionIndex,
+                        const positionData = {
+                            positionIndex: position.positionIndex,
                             letter,
-                            resSeq: atom.resSeq,
-                            chain: atom.chain,
-                            resName: atom.resName // Store position name for tooltip
+                            resSeq: position.resSeq,
+                            chain: position.chain,
+                            resName: position.resName
                         };
-                        allResidueData.push(residueData);
+                        allPositionData.push(positionData);
                         
                         // Store position
-                        layout.residuePositions.push({
-                            residueData,
+                        layout.positions.push({
+                            positionData,
                             x: currentX,
                             y: lineY,
                             width: itemWidth,
@@ -995,8 +953,8 @@
                         lastResSeq = item.resSeq;
                         lastPositionType = 'L';
                     } else {
-                        lastResSeq = item.atom.resSeq;
-                        lastPositionType = item.atom.positionType;
+                        lastResSeq = item.position.resSeq;
+                        lastPositionType = item.position.positionType;
                     }
                 }
                 
@@ -1085,17 +1043,17 @@
         
         // Add position and ligand items (only in sequence mode, or if we want them in chain mode too)
         if (sequenceViewMode) {
-            for (const residuePos of layout.residuePositions) {
-                const residueData = residuePos.residueData;
+            for (const positionPos of layout.positions) {
+                const positionData = positionPos.positionData;
                 let positionIndices;
                 let type;
                 
-                if (residueData.isLigandToken && residueData.positionIndices) {
+                if (positionData.isLigandToken && positionData.positionIndices) {
                     type = 'ligand';
-                    positionIndices = residueData.positionIndices;
-                } else if (residueData.positionIndex >= 0) {
-                    type = 'residue';
-                    positionIndices = [residueData.positionIndex];
+                    positionIndices = positionData.positionIndices;
+                } else if (positionData.positionIndex >= 0) {
+                    type = 'position';
+                    positionIndices = [positionData.positionIndex];
                 } else {
                     continue; // Skip invalid items
                 }
@@ -1103,15 +1061,15 @@
                 layout.selectableItems.push({
                     type: type,
                     id: type === 'ligand' 
-                        ? `ligand-${residueData.positionIndices[0]}` 
-                        : `residue-${residueData.positionIndex}`,
+                        ? `ligand-${positionData.positionIndices[0]}` 
+                        : `position-${positionData.positionIndex}`,
                     positionIndices: positionIndices,
-                    residueData: residueData,
+                    positionData: positionData,
                     bounds: {
-                        x: residuePos.x,
-                        y: residuePos.y,
-                        width: residuePos.width,
-                        height: residuePos.height
+                        x: positionPos.x,
+                        y: positionPos.y,
+                        width: positionPos.width,
+                        height: positionPos.height
                     },
                     index: itemIndex++
                 });
@@ -1126,19 +1084,26 @@
         const maxVisibleHeight = 32 * charHeight + spacing; // 32 lines + spacing
         const fullHeight = currentY; // Full content height
         
-        // Set canvas internal dimensions to achieve 200 DPI (pixels per inch)
-        // Standard web DPI is 96, so 200 DPI = 200/96 ≈ 2.083x multiplier
-        const targetDPI = 200;
-        const standardDPI = 96;
-        const dpiMultiplier = targetDPI / standardDPI;
-        
-        // Canvas should be full height to render all content
-        canvas.width = displayWidth * dpiMultiplier;
-        canvas.height = fullHeight * dpiMultiplier;
+        // Append canvas first so container width is available
+        sequenceViewEl.appendChild(canvas);
         
         // Set display size (CSS pixels) - canvas is full height
+        // Set width to 100% first so we can get the actual rendered width
         canvas.style.width = '100%';
         canvas.style.height = fullHeight + 'px';
+        
+        // Get actual rendered width after setting style to 100%
+        const actualRenderedWidth = canvas.getBoundingClientRect().width || displayWidth;
+        
+        // Get DPI multiplier - use same as main renderer for consistency
+        const dpiMultiplier = getDPIMultiplier();
+        
+        // Set canvas internal dimensions using same DPI multiplier as main renderer
+        // Use unified helper function with preserveWidthStyle and preserveHeightStyle to keep the styles we just set
+        const ctx = window.setupHighDPICanvas(canvas, actualRenderedWidth, fullHeight, dpiMultiplier, { 
+            preserveWidthStyle: true,
+            preserveHeightStyle: true 
+        });
         
         // Restrict container height to 32 lines and enable scrolling if needed
         if (fullHeight > maxVisibleHeight) {
@@ -1149,18 +1114,11 @@
             sequenceViewEl.style.maxHeight = 'none';
         }
         
-        const ctx = canvas.getContext('2d');
-        
-        // Scale context by DPI multiplier to account for high-resolution canvas
-        ctx.scale(dpiMultiplier, dpiMultiplier);
-        
-        sequenceViewEl.appendChild(canvas);
-        
         // Store structure
         sequenceCanvasData = {
             canvas,
             ctx,
-            allResidueData,
+            allPositionData,
             chainBoundaries,
             sortedPositionEntries,
             layout,
@@ -1188,27 +1146,33 @@
         // dragEndItemIndex: the index of the selectable item where drag currently ends
         const dragState = { 
             isDragging: false, 
-            dragStart: null, // Legacy - keep for compatibility during transition
-            dragEnd: null, // Legacy - keep for compatibility during transition
-            dragStartItem: null, // Unified: selectable item where drag started
-            dragEndItemIndex: -1, // Unified: index of current end item
+            dragStartItem: null, // Selectable item where drag started
+            dragEndItemIndex: -1, // Index of current end item
             hasMoved: false, 
             dragUnselectMode: false, 
             initialSelectionState: new Set()
         };
         
-        const { canvas, allResidueData, chainBoundaries, sortedPositionEntries, layout } = sequenceCanvasData;
+        const { canvas, allPositionData, chainBoundaries, sortedPositionEntries, layout } = sequenceCanvasData;
         
         // Remove old event listeners by cloning the canvas
         const newCanvas = canvas.cloneNode(false);
+        // Preserve canvas dimensions and styles before replacing
+        const dpiMultiplier = getDPIMultiplier();
+        const displayWidth = canvas.width / dpiMultiplier;
+        const displayHeight = canvas.height / dpiMultiplier;
+        const canvasStyleWidth = canvas.style.width;
+        const canvasStyleHeight = canvas.style.height;
         canvas.parentNode.replaceChild(newCanvas, canvas);
         sequenceCanvasData.canvas = newCanvas;
-        sequenceCanvasData.ctx = newCanvas.getContext('2d');
-        // Apply DPI multiplier scaling to match the canvas resolution (200 DPI)
-        const targetDPI = 200;
-        const standardDPI = 96;
-        const dpiMultiplier = targetDPI / standardDPI;
-        sequenceCanvasData.ctx.scale(dpiMultiplier, dpiMultiplier);
+        // Apply DPI multiplier scaling using unified helper, preserving original styles
+        sequenceCanvasData.ctx = window.setupHighDPICanvas(newCanvas, displayWidth, displayHeight, dpiMultiplier, {
+            preserveWidthStyle: true,
+            preserveHeightStyle: true
+        });
+        // Restore original styles
+        newCanvas.style.width = canvasStyleWidth;
+        newCanvas.style.height = canvasStyleHeight;
         
         // Mouse down handler - using unified selectable items
         newCanvas.addEventListener('mousedown', (e) => {
@@ -1225,10 +1189,10 @@
                 const current = renderer?.getSelection();
                 const isSelected = current?.chains?.has(chainId) || 
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                if (e.altKey && callbacks.toggleChainResidues) {
-                    callbacks.toggleChainResidues(chainId);
-                } else if (callbacks.setChainResiduesSelected) {
-                    callbacks.setChainResiduesSelected(chainId, !isSelected);
+                if (e.altKey && callbacks.toggleChainPositions) {
+                    callbacks.toggleChainPositions(chainId);
+                } else if (callbacks.setChainPositionsSelected) {
+                    callbacks.setChainPositionsSelected(chainId, !isSelected);
                 }
                 lastSequenceUpdateHash = null;
                 scheduleRender();
@@ -1245,8 +1209,13 @@
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
             } else {
                 // For position/ligand, check if all positions are selected
-                isInitiallySelected = selectedItem.positionIndices.length > 0 && 
-                    selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
+                // In default mode with empty positions, all positions are considered selected
+                if (current?.selectionMode === 'default' && (!current?.positions || current.positions.size === 0)) {
+                    isInitiallySelected = true;
+                } else {
+                    isInitiallySelected = selectedItem.positionIndices.length > 0 && 
+                        selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
+                }
             }
             
             dragState.isDragging = true;
@@ -1254,20 +1223,22 @@
             dragState.dragStartItem = selectedItem;
             dragState.dragEndItemIndex = selectedItem.index;
             dragState.dragUnselectMode = isInitiallySelected;
-            dragState.initialSelectionState = new Set(current?.positions || []);
-            
-            // Legacy fields for compatibility
-            if (selectedItem.type === 'chain') {
-                const boundary = chainBoundaries.find(b => b.chain === selectedItem.chainId);
-                if (boundary) {
-                    const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    dragState.dragStart = chainPositions[0];
-                    dragState.dragEnd = chainPositions[chainPositions.length - 1];
+            // Capture initial selection state
+            // If in default mode with empty positions, all positions are selected
+            let initialPositions = new Set(current?.positions || []);
+            if (current?.selectionMode === 'default' && initialPositions.size === 0) {
+                // In default mode with empty positions, all positions are selected
+                // Populate with all positions from the frame
+                const objectName = renderer?.currentObjectName;
+                const obj = renderer?.objectsData?.[objectName];
+                const frame = obj?.frames?.[0];
+                if (frame?.chains) {
+                    for (let i = 0; i < frame.chains.length; i++) {
+                        initialPositions.add(i);
+                    }
                 }
-            } else if (selectedItem.residueData) {
-                dragState.dragStart = selectedItem.residueData;
-                dragState.dragEnd = selectedItem.residueData;
             }
+            dragState.initialSelectionState = initialPositions;
             
             // Add temporary window listeners for drag outside canvas
             const handleMove = (e) => handleDragMove(e, newCanvas);
@@ -1342,194 +1313,25 @@
             
             const pos = getCanvasPositionFromMouse(e, newCanvas);
             const chainLabelPos = getChainLabelAtCanvasPosition(pos.x, pos.y, layout);
-            const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
+            const positionPos = getPositionAtCanvasPosition(pos.x, pos.y, layout);
             
             if (!dragState.isDragging) {
-                if (residuePos && residuePos.residueData) {
-                    const residueData = residuePos.residueData;
-                    if (residueData.isLigandToken && residueData.positionIndices && callbacks.highlightAtoms) {
-                        // Highlight all positions in ligand
-                        callbacks.highlightAtoms(new Set(residueData.positionIndices));
-                        hoveredResidueInfo = {
-                            chain: residueData.chain,
-                            resName: residueData.ligandName || residueData.resName,
-                            resSeq: residueData.resSeq
-                        };
-                    } else if (residueData.positionIndex >= 0 && callbacks.highlightAtom) {
-                        callbacks.highlightAtom(residueData.positionIndex);
-                        // Store hovered position info for tooltip
-                        hoveredResidueInfo = {
-                            chain: residueData.chain,
-                            resName: residueData.resName,
-                            resSeq: residueData.resSeq
-                        };
-                    } else {
-                        hoveredResidueInfo = null;
-                    }
-                } else if (chainLabelPos && !sequenceViewMode && callbacks.highlightAtoms) {
-                    // In chain mode, highlight entire chain on hover
-                    const chainId = chainLabelPos.chainId;
-                    const boundary = chainBoundaries.find(b => b.chain === chainId);
-                    if (boundary) {
-                        const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                        if (chainPositions.length > 0) {
-                            const positionIndices = new Set(chainPositions.map(a => a.positionIndex));
-                            callbacks.highlightAtoms(positionIndices);
-                        }
-                    }
-                    hoveredResidueInfo = null; // Clear tooltip in chain mode
-                } else {
-                    if (callbacks.clearHighlight) callbacks.clearHighlight();
-                    hoveredResidueInfo = null; // Clear tooltip when not hovering over position
-                }
-                // Trigger highlight redraw to show tooltip
-                if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-                    window.SequenceViewer.drawHighlights();
-                }
                 return;
             }
             
-            // Handle drag selection
-            if (residuePos && residuePos.residueData) {
-                const residueData = residuePos.residueData;
-                const startResidueData = dragState.dragStart;
-                
-                // Handle ligand tokens in drag
-                if (residueData.isLigandToken && residueData.positionIndices) {
-                    if (residueData !== dragState.dragEnd) {
-                        dragState.dragEnd = residueData;
-                        dragState.hasMoved = true;
-                        
-                        // Find indices in allResidueData
-                        const startIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === startResidueData.positionIndices?.[0]) ||
-                            (r.positionIndex === startResidueData.positionIndex && !r.isLigandToken)
-                        );
-                        const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === residueData.positionIndices[0]) ||
-                            (r.positionIndex === residueData.positionIndices?.[0] || r.isLigandToken)
-                        );
-                        
-                        if (startIdx !== -1 && endIdx !== -1) {
-                            const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                            const newPositions = new Set(dragState.initialSelectionState);
-                            
-                            for (let i = min; i <= max; i++) {
-                                const res = allResidueData[i];
-                                if (res.isLigandToken && res.positionIndices) {
-                                    // Handle ligand token - toggle all positions in ligand
-                                    if (dragState.dragUnselectMode) {
-                                        res.positionIndices.forEach(positionIndex => newPositions.delete(positionIndex));
-                                    } else {
-                                        res.positionIndices.forEach(positionIndex => newPositions.add(positionIndex));
-                                    }
-                                } else if (res.positionIndex >= 0) {
-                                    // Handle regular position
-                                    if (dragState.dragUnselectMode) {
-                                        newPositions.delete(res.positionIndex);
-                                    } else {
-                                        newPositions.add(res.positionIndex);
-                                    }
-                                }
-                            }
-                            
-                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
-                            lastSequenceUpdateHash = null;
-                            scheduleRender();
-                            // Don't apply selection during drag - wait until mouseup to reduce lag
-                        }
-                    }
-                } else if (residueData.positionIndex >= 0) {
-                    // Regular position drag
-                    if (residueData !== dragState.dragEnd) {
-                        dragState.dragEnd = residueData;
-                        const startIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.positionIndices && r.positionIndices[0] === startResidueData.positionIndices?.[0]) ||
-                            (r.positionIndex === startResidueData.positionIndex && !r.isLigandToken)
-                        );
-                        const endIdx = sequenceCanvasData.allResidueData.findIndex(r => 
-                            (r.isLigandToken && r.positionIndices && r.positionIndices.includes(residueData.positionIndex)) ||
-                            (r.positionIndex === residueData.positionIndex && !r.isLigandToken)
-                        );
-                        if (startIdx !== -1 && endIdx !== -1) {
-                            dragState.hasMoved = true;
-                            const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
-                            const newPositions = new Set(dragState.initialSelectionState);
-                            
-                            for (let i = min; i <= max; i++) {
-                                const res = allResidueData[i];
-                                if (res.isLigandToken && res.positionIndices) {
-                                    // Handle ligand token
-                                    if (dragState.dragUnselectMode) {
-                                        res.positionIndices.forEach(positionIndex => newPositions.delete(positionIndex));
-                                    } else {
-                                        res.positionIndices.forEach(positionIndex => newPositions.add(positionIndex));
-                                    }
-                                } else if (res.positionIndex >= 0) {
-                                    // Handle regular position
-                                    if (dragState.dragUnselectMode) {
-                                        newPositions.delete(res.positionIndex);
-                                    } else {
-                                        newPositions.add(res.positionIndex);
-                                    }
-                                }
-                            }
-                            
-                            if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
-                            lastSequenceUpdateHash = null;
-                            scheduleRender();
-                            // Don't apply selection during drag - wait until mouseup to reduce lag
-                        }
-                    }
-                }
+            // Handle drag selection - use unified handler for position/ligand drags
+            // For position/ligand items, use the unified handleDragMove function
+            if (positionPos && positionPos.positionData) {
+                // Use unified handler for position/ligand drags
+                handleDragMove(e, newCanvas);
             } else if (chainLabelPos && !sequenceViewMode) {
-                // In chain mode, handle drag over chain labels
+                // In chain mode, handle drag over chain labels using unified system
                 const chainId = chainLabelPos.chainId;
-                const boundary = chainBoundaries.find(b => b.chain === chainId);
-                if (!boundary) return;
+                const selectedItem = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
                 
-                const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                if (chainPositions.length === 0) return;
-                
-                // Find the end chain position
-                const endPosition = chainPositions[chainPositions.length - 1];
-                if (endPosition && endPosition !== dragState.dragEnd) {
-                    dragState.dragEnd = endPosition;
-                    dragState.hasMoved = true;
-                    
-                    // Get all positions from start to end (including all chains in between)
-                    const startChainId = dragState.dragStart.chain;
-                    const startBoundary = chainBoundaries.find(b => b.chain === startChainId);
-                    const endBoundary = boundary;
-                    
-                    if (startBoundary && endBoundary) {
-                        const startBoundaryIdx = chainBoundaries.findIndex(b => b.chain === startChainId);
-                        const endBoundaryIdx = chainBoundaries.findIndex(b => b.chain === chainId);
-                        const [minBoundary, maxBoundary] = [Math.min(startBoundaryIdx, endBoundaryIdx), Math.max(startBoundaryIdx, endBoundaryIdx)];
-                        
-                        // Start from initial selection state, not current selection
-                        const newPositions = new Set(dragState.initialSelectionState);
-                        
-                        // Add all positions from all chains in the drag range
-                        for (let bIdx = minBoundary; bIdx <= maxBoundary; bIdx++) {
-                            const b = chainBoundaries[bIdx];
-                            const positionsInChain = sortedPositionEntries.slice(b.startIndex, b.endIndex + 1);
-                            for (const position of positionsInChain) {
-                                // Toggle items in the drag range to match the initial drag mode
-                                if (dragState.dragUnselectMode) {
-                                    newPositions.delete(position.positionIndex);
-                                    } else {
-                                    newPositions.add(position.positionIndex);
-                                }
-                            }
-                        }
-                        
-                        if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(newPositions);
-                        lastSequenceUpdateHash = null;
-                        scheduleRender();
-                        // Don't apply selection during drag - wait until mouseup to reduce lag
-                        // This prevents PAE and molecular viewers from updating continuously during drag
-                    }
+                if (selectedItem && selectedItem.type === 'chain' && dragState.dragStartItem) {
+                    // Use unified handler for chain drags
+                    handleDragMove(e, newCanvas);
                 }
             }
         });
@@ -1578,7 +1380,7 @@
                 const current = renderer?.getSelection();
                 const newPositions = new Set(current?.positions || []);
                 
-                // Only handle if item has positionIndices (ligand or residue)
+                // Only handle if item has positionIndices (ligand or position)
                 if (!item.positionIndices || item.positionIndices.length === 0) {
                     dragState.isDragging = false;
                     return;
@@ -1625,8 +1427,6 @@
             }
             if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
             dragState.isDragging = false;
-            dragState.dragStart = null;
-            dragState.dragEnd = null;
             dragState.dragStartItem = null;
             dragState.dragEndItemIndex = -1;
             dragState.hasMoved = false;
@@ -1640,12 +1440,6 @@
         newCanvas.addEventListener('mouseup', handleMouseUp);
         newCanvas.addEventListener('mouseleave', () => {
             handleMouseUp();
-            if (callbacks.clearHighlight) callbacks.clearHighlight();
-            hoveredResidueInfo = null; // Clear tooltip when mouse leaves sequence canvas
-            // Trigger highlight redraw to clear tooltip
-            if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-                window.SequenceViewer.drawHighlights();
-            }
         });
         
         // Touch event handlers for mobile devices - using unified selectable items
@@ -1665,8 +1459,8 @@
                 const current = renderer?.getSelection();
                 const isSelected = current?.chains?.has(chainId) || 
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
-                if (callbacks.setChainResiduesSelected) {
-                    callbacks.setChainResiduesSelected(chainId, !isSelected);
+                if (callbacks.setChainPositionsSelected) {
+                    callbacks.setChainPositionsSelected(chainId, !isSelected);
                 }
                 lastSequenceUpdateHash = null;
                 scheduleRender();
@@ -1683,8 +1477,13 @@
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
             } else {
                 // For position/ligand, check if all positions are selected
-                isInitiallySelected = selectedItem.positionIndices.length > 0 && 
-                    selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
+                // In default mode with empty positions, all positions are considered selected
+                if (current?.selectionMode === 'default' && (!current?.positions || current.positions.size === 0)) {
+                    isInitiallySelected = true;
+                } else {
+                    isInitiallySelected = selectedItem.positionIndices.length > 0 && 
+                        selectedItem.positionIndices.every(positionIndex => current?.positions?.has(positionIndex));
+                }
             }
             
             dragState.isDragging = true;
@@ -1692,20 +1491,22 @@
             dragState.dragStartItem = selectedItem;
             dragState.dragEndItemIndex = selectedItem.index;
             dragState.dragUnselectMode = isInitiallySelected;
-            dragState.initialSelectionState = new Set(current?.positions || []);
-            
-            // Legacy fields for compatibility
-            if (selectedItem.type === 'chain') {
-                const boundary = chainBoundaries.find(b => b.chain === selectedItem.chainId);
-                if (boundary) {
-                    const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                    dragState.dragStart = chainPositions[0];
-                    dragState.dragEnd = chainPositions[chainPositions.length - 1];
+            // Capture initial selection state
+            // If in default mode with empty positions, all positions are selected
+            let initialPositions = new Set(current?.positions || []);
+            if (current?.selectionMode === 'default' && initialPositions.size === 0) {
+                // In default mode with empty positions, all positions are selected
+                // Populate with all positions from the frame
+                const objectName = renderer?.currentObjectName;
+                const obj = renderer?.objectsData?.[objectName];
+                const frame = obj?.frames?.[0];
+                if (frame?.chains) {
+                    for (let i = 0; i < frame.chains.length; i++) {
+                        initialPositions.add(i);
+                    }
                 }
-            } else if (selectedItem.residueData) {
-                dragState.dragStart = selectedItem.residueData;
-                dragState.dragEnd = selectedItem.residueData;
             }
+            dragState.initialSelectionState = initialPositions;
             
             // Add temporary window listeners for touch drag outside canvas
             const handleTouchMove = (e) => {
@@ -1733,7 +1534,7 @@
             window.addEventListener('touchcancel', handleTouchCancel, { passive: false });
             
             // Handle tap (no drag) - toggle selection immediately
-            if (selectedItem.type === 'ligand' || (selectedItem.type === 'residue' && selectedItem.positionIndices.length === 1)) {
+            if (selectedItem.type === 'ligand' || (selectedItem.type === 'position' && selectedItem.positionIndices.length === 1)) {
                 const newPositions = new Set(current?.positions || []);
                 selectedItem.positionIndices.forEach(positionIndex => {
                     if (newPositions.has(positionIndex)) {
@@ -1810,28 +1611,10 @@
 
         // Determine what's actually visible from the unified model or visibilityMask
         // Use previewSelectionSet during drag for live feedback
-        let visiblePositions = new Set();
-        
         const previewSelectionSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
         
-        if (previewSelectionSet && previewSelectionSet.size > 0) {
-            // During drag, use preview selection for live feedback (already position indices)
-            visiblePositions = new Set(previewSelectionSet);
-        } else {
-            // Use positions directly from selection model
-            if (renderer.selectionModel && renderer.selectionModel.positions && renderer.selectionModel.positions.size > 0) {
-                visiblePositions = new Set(renderer.selectionModel.positions);
-            } else if (renderer.visibilityMask === null) {
-                // null mask means all positions are visible (default mode)
-                const n = renderer.coords ? renderer.coords.length : 0;
-                for (let i = 0; i < n; i++) {
-                    visiblePositions.add(i);
-                }
-            } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
-                // Non-empty Set means some positions are visible
-                visiblePositions = new Set(renderer.visibilityMask);
-            }
-        }
+        // Use unified helper
+        const visiblePositions = window.getVisiblePositions(renderer, previewSelectionSet);
 
         // Create hash to detect if selection actually changed
         // Include previewSelectionSet in hash to ensure live feedback during drag
@@ -1846,194 +1629,6 @@
         scheduleRender();
     }
 
-    // ============================================================================
-    // HIGHLIGHT OVERLAY MANAGEMENT
-    // ============================================================================
-    
-    // Initialize highlight overlay canvas (positioned over main molecule viewer)
-    function initializeHighlightOverlay() {
-        const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-        if (!renderer || !renderer.canvas) return;
-        
-        // Remove existing overlay if it exists
-        if (highlightOverlayCanvas && highlightOverlayCanvas.parentElement) {
-            highlightOverlayCanvas.parentElement.removeChild(highlightOverlayCanvas);
-        }
-        
-        // Create highlight overlay canvas that sits on top of main canvas
-        highlightOverlayCanvas = document.createElement('canvas');
-        highlightOverlayCanvas.id = 'highlightOverlay';
-        highlightOverlayCanvas.style.position = 'absolute';
-        highlightOverlayCanvas.style.pointerEvents = 'none'; // Allow mouse events to pass through
-        highlightOverlayCanvas.style.zIndex = '10';
-        highlightOverlayCanvas.style.left = '0';
-        highlightOverlayCanvas.style.top = '0';
-        
-        // Position it relative to the canvas container
-        const container = renderer.canvas.parentElement;
-        if (container) {
-            container.style.position = 'relative';
-            container.appendChild(highlightOverlayCanvas);
-        }
-        
-        highlightOverlayCtx = highlightOverlayCanvas.getContext('2d');
-        
-        // Update overlay canvas size to match main canvas
-        updateHighlightOverlaySize();
-    }
-    
-    // Update highlight overlay canvas size and position to match main canvas
-    function updateHighlightOverlaySize() {
-        const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-        if (!renderer || !highlightOverlayCanvas || !highlightOverlayCtx || !renderer.canvas) return;
-        
-        const displayWidth = renderer.displayWidth || renderer.canvas.width;
-        const displayHeight = renderer.displayHeight || renderer.canvas.height;
-        
-        // Set canvas size
-        highlightOverlayCanvas.width = displayWidth;
-        highlightOverlayCanvas.height = displayHeight;
-        highlightOverlayCanvas.style.width = displayWidth + 'px';
-        highlightOverlayCanvas.style.height = displayHeight + 'px';
-        
-        // Position overlay to match main canvas position within container
-        // Get the main canvas position relative to its container
-        const mainCanvas = renderer.canvas;
-        const container = mainCanvas.parentElement;
-        if (container) {
-            const containerRect = container.getBoundingClientRect();
-            const canvasRect = mainCanvas.getBoundingClientRect();
-            
-            // Calculate offset of canvas within container
-            const offsetLeft = canvasRect.left - containerRect.left;
-            const offsetTop = canvasRect.top - containerRect.top;
-            
-            highlightOverlayCanvas.style.left = offsetLeft + 'px';
-            highlightOverlayCanvas.style.top = offsetTop + 'px';
-        }
-    }
-    
-    // Draw highlights on overlay canvas without re-rendering main scene
-    function drawHighlights() {
-        const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-        if (!renderer || !renderer.canvas) {
-            return;
-        }
-        
-        // Skip drawing highlights during dragging to prevent interference with drag operations
-        if (renderer.isDragging) {
-            return;
-        }
-        
-        // Initialize overlay if it doesn't exist yet
-        if (!highlightOverlayCanvas || !highlightOverlayCtx) {
-            initializeHighlightOverlay();
-            // If still not created, return early
-            if (!highlightOverlayCanvas || !highlightOverlayCtx) {
-                return;
-            }
-        }
-        
-        if (!renderer.positionScreenPositions) {
-            return;
-        }
-        
-        // Update overlay canvas size to match main canvas
-        updateHighlightOverlaySize();
-        
-        // Clear overlay canvas
-        const displayWidth = renderer.displayWidth || renderer.canvas.width;
-        const displayHeight = renderer.displayHeight || renderer.canvas.height;
-        highlightOverlayCtx.clearRect(0, 0, displayWidth, displayHeight);
-        
-        // Draw highlights if any
-        const highlightFillStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
-        const highlightStrokeStyle = 'rgba(255, 255, 0, 1.0)'; // Yellow border
-        const highlightLineWidth = 1;
-        
-        highlightOverlayCtx.fillStyle = highlightFillStyle;
-        highlightOverlayCtx.strokeStyle = highlightStrokeStyle;
-        highlightOverlayCtx.lineWidth = highlightLineWidth;
-        
-        // Highlight multiple positions if specified (preferred method)
-        if (renderer.highlightedAtoms !== null && renderer.highlightedAtoms instanceof Set && renderer.highlightedAtoms.size > 0) {
-            for (const positionIndex of renderer.highlightedAtoms) {
-                if (positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
-                    const pos = renderer.positionScreenPositions[positionIndex];
-                    if (pos) {
-                        highlightOverlayCtx.beginPath();
-                        highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
-                        highlightOverlayCtx.fill();
-                        highlightOverlayCtx.stroke();
-                    }
-                }
-            }
-        } else if (renderer.highlightedAtom !== null && renderer.highlightedAtom !== undefined && typeof renderer.highlightedAtom === 'number') {
-            const positionIndex = renderer.highlightedAtom;
-            if (positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
-                const pos = renderer.positionScreenPositions[positionIndex];
-                if (pos) {
-                    highlightOverlayCtx.beginPath();
-                    highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
-                    highlightOverlayCtx.fill();
-                    highlightOverlayCtx.stroke();
-                }
-            }
-        }
-        
-        // Draw tooltip in bottom right corner if hovering over sequence
-        if (hoveredResidueInfo) {
-            const padding = 10;
-            const fontSize = 14;
-            const lineHeight = 18;
-            const textColor = 'rgba(255, 255, 255, 0.95)';
-            const bgColor = 'rgba(0, 0, 0, 0.75)';
-            const cornerRadius = 4;
-            
-            highlightOverlayCtx.font = `${fontSize}px monospace`;
-            highlightOverlayCtx.textAlign = 'right';
-            highlightOverlayCtx.textBaseline = 'bottom';
-            
-            // Build tooltip text
-            const lines = [
-                `Chain: ${hoveredResidueInfo.chain}`,
-                `Residue: ${hoveredResidueInfo.resName}`,
-                `Index: ${hoveredResidueInfo.resSeq}`
-            ];
-            
-            // Measure text to size background
-            const textMetrics = lines.map(line => highlightOverlayCtx.measureText(line));
-            const maxWidth = Math.max(...textMetrics.map(m => m.width));
-            const totalHeight = lines.length * lineHeight;
-            const bgPadding = 8;
-            const bgWidth = maxWidth + bgPadding * 2;
-            const bgHeight = totalHeight + bgPadding * 2;
-            
-            // Position in bottom right corner
-            const x = displayWidth - padding;
-            const y = displayHeight - padding;
-            
-            // Draw background with rounded corners
-            highlightOverlayCtx.fillStyle = bgColor;
-            highlightOverlayCtx.beginPath();
-            highlightOverlayCtx.moveTo(x - bgWidth + cornerRadius, y - bgHeight);
-            highlightOverlayCtx.arcTo(x - bgWidth, y - bgHeight, x - bgWidth, y - bgHeight + cornerRadius, cornerRadius);
-            highlightOverlayCtx.lineTo(x - bgWidth, y - cornerRadius);
-            highlightOverlayCtx.arcTo(x - bgWidth, y, x - bgWidth + cornerRadius, y, cornerRadius);
-            highlightOverlayCtx.lineTo(x - cornerRadius, y);
-            highlightOverlayCtx.arcTo(x, y, x, y - cornerRadius, cornerRadius);
-            highlightOverlayCtx.lineTo(x, y - bgHeight + cornerRadius);
-            highlightOverlayCtx.arcTo(x, y - bgHeight, x - cornerRadius, y - bgHeight, cornerRadius);
-            highlightOverlayCtx.closePath();
-            highlightOverlayCtx.fill();
-            
-            // Draw text
-            highlightOverlayCtx.fillStyle = textColor;
-            lines.forEach((line, i) => {
-                highlightOverlayCtx.fillText(line, x - bgPadding, y - bgPadding - (lines.length - 1 - i) * lineHeight);
-            });
-        }
-    }
 
     // ============================================================================
     // PUBLIC API
@@ -2043,24 +1638,12 @@
         // Initialize callbacks
         setCallbacks: function(cb) {
             callbacks = Object.assign({}, callbacks, cb);
-            // Try to initialize highlight overlay when callbacks are set
-            // (will be re-initialized when renderer becomes available if not ready yet)
-            if (cb.getRenderer) {
-                const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-                if (renderer && renderer.canvas) {
-                    initializeHighlightOverlay();
-                }
-            }
         },
         
         // Main functions
         buildSequenceView: buildSequenceView,
         updateSequenceViewColors: updateSequenceViewColors,
         updateSequenceViewSelectionState: updateSequenceViewSelectionState,
-        
-        // Highlight overlay functions
-        drawHighlights: drawHighlights,
-        updateHighlightOverlaySize: updateHighlightOverlaySize,
         
         // State management
         setSequenceViewMode: function(mode) {

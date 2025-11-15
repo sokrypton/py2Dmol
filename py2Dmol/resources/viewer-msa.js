@@ -1,7 +1,7 @@
 // ============================================================================
 // MSA VIEWER MODULE (Rewritten from scratch)
 // ============================================================================
-// Simple, clean implementation with direct MSA position → atom index mapping
+// Simple, clean implementation with direct MSA position → position index mapping
 
 (function() {
     'use strict';
@@ -2645,10 +2645,6 @@
         
         // Create canvas
         const canvas = document.createElement('canvas');
-        canvas.width = canvasWidth * DPI_MULTIPLIER;
-        canvas.height = canvasHeight * DPI_MULTIPLIER;
-        canvas.style.width = canvasWidth + 'px';
-        canvas.style.height = canvasHeight + 'px';
         canvas.style.display = 'block';
         canvas.style.position = 'relative';
         canvas.style.pointerEvents = 'auto';
@@ -2656,21 +2652,21 @@
         canvas.style.margin = '0';
         canvas.style.padding = '0';
         
+        // Setup high-DPI canvas using unified helper
+        const ctx = window.setupHighDPICanvas(canvas, canvasWidth, canvasHeight, DPI_MULTIPLIER);
+        
         container.appendChild(canvas);
         viewEl.appendChild(container);
         
         // Create canvas data object
         const canvasData = {
             canvas: canvas,
-            ctx: canvas.getContext('2d'),
+            ctx: ctx,
             container: container,
             totalWidth: totalWidth,
             ...(totalHeight !== undefined && { totalHeight: totalHeight }),
             ...additionalCanvasData
         };
-        
-        // Scale context for high DPI
-        canvasData.ctx.scale(DPI_MULTIPLIER, DPI_MULTIPLIER);
         
         return { canvas, container, canvasData, dimensions };
     }

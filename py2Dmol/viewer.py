@@ -39,6 +39,42 @@ def align_a_to_b(a, b):
   a_aligned = (a_cent @ R) + b_mean
   return a_aligned
 
+def _is_crystallization_additive(residue_name):
+    """
+    Check if a residue name is a common crystallization additive.
+    Returns True if it should be filtered out.
+    """
+    if not residue_name:
+        return False
+    
+    residue_name_upper = residue_name.upper().strip()
+    
+    # Common crystallization additives
+    # Salts and ions
+    salts = ['SO4', 'PO4', 'CL', 'NA', 'K', 'MG', 'CA', 'ZN', 'FE', 'MN', 'CU', 'NI', 'CO', 
+             'NH4', 'NO3', 'CO3', 'HCO3', 'AC', 'F', 'BR', 'I', 'LI', 'RB', 'CS']
+    
+    # Buffers
+    buffers = ['HEPES', 'TRIS', 'MES', 'MOPS', 'PIPES', 'BIS-TRIS', 'BIS-TRIS-PROPANE',
+               'ACES', 'ADA', 'BES', 'BICINE', 'CAPS', 'CHES', 'EPPS', 'GOOD', 'TAPS', 'TES']
+    
+    # Cryoprotectants and solvents
+    cryoprotectants = ['GOL', 'GLY', 'EDO', 'PEG', 'MPD', 'DMS', 'DMSO', 'ETH', 'ACT', 'ACN']
+    
+    # Detergents
+    detergents = ['DDM', 'LDAO', 'OG', 'C8E4', 'C12E8', 'TRITON', 'SDS']
+    
+    # Other common additives
+    others = ['BME', 'TCEP', 'DTT', 'BOG', 'LMT', 'OCT', 'LDA', 'SPM', 'SPD', 'PUT']
+    
+    # PEG variants (common pattern)
+    if residue_name_upper.startswith('PEG') or 'PEG' in residue_name_upper:
+        return True
+    
+    # Check exact matches
+    all_additives = salts + buffers + cryoprotectants + detergents + others
+    return residue_name_upper in all_additives
+
 # --- view Class ---
 
 class view:
@@ -576,14 +612,16 @@ class view:
                     else:
                         # Ligand: use all heavy atoms
                         if not ignore_ligands:
-                            for atom in residue:
-                                if atom.element.name != 'H':
-                                    coords.append(atom.pos.tolist())
-                                    plddts.append(atom.b_iso)
-                                    position_chains.append(chain.name)
-                                    position_types.append('L')
-                                    position_names.append(residue.name)
-                                    position_index.append(residue.seqid.num)
+                            # Filter out common crystallization additives
+                            if not _is_crystallization_additive(residue.name):
+                                for atom in residue:
+                                    if atom.element.name != 'H':
+                                        coords.append(atom.pos.tolist())
+                                        plddts.append(atom.b_iso)
+                                        position_chains.append(chain.name)
+                                        position_types.append('L')
+                                        position_names.append(residue.name)
+                                        position_index.append(residue.seqid.num)
         return coords, plddts, position_chains, position_types, position_names, position_index
 
     def _get_filepath_from_pdb_id(self, pdb_id):
