@@ -1897,7 +1897,7 @@ function initializePy2DmolViewer(containerElement) {
                 const originalMSAData = msaEntry.msaData;
                 if (!originalMSAData) continue;
                 
-                const originalQuerySequence = originalMSAData.querySequence; // May contain gaps
+                const originalQuerySequence = originalMSAData.querySequence; // Query sequence has no gaps (removed during parsing)
                 
                 // Extract chain sequence from original frame
                 const originalChainSequences = extractChainSequences(frame);
@@ -1924,32 +1924,20 @@ function initializePy2DmolViewer(containerElement) {
                 });
 
                 // Map MSA positions to structure positions and find which MSA positions are selected
-                let msaPos = 0; // Position in MSA (skipping gaps)
-                let chainSeqIdx = 0; // Position in chain sequence
+                // Query sequence has no gaps, so mapping is straightforward
                 const msaQueryUpper = originalQuerySequence.toUpperCase();
                 const chainSeqUpper = originalChainSequence.toUpperCase();
+                const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length);
                 const selectedMSAPositions = new Set(); // MSA position indices that correspond to selected structure positions
                 
-                for (let i = 0; i < msaQueryUpper.length && chainSeqIdx < chainPositions.length; i++) {
-                    const msaChar = msaQueryUpper[i];
-                    
-                    if (msaChar === '-') {
-                        // Gap in MSA - skip this position (don't increment msaPos)
-                        continue;
-                    }
-                    
-                    // Check if this MSA position matches the current chain sequence position
-                    if (chainSeqIdx < chainSeqUpper.length && msaChar === chainSeqUpper[chainSeqIdx]) {
+                for (let i = 0; i < minLength; i++) {
+                    // Check if this MSA position matches the chain sequence position
+                    if (msaQueryUpper[i] === chainSeqUpper[i]) {
                         // Match found - check if this structure position is selected
-                        const positionIndex = chainPositions[chainSeqIdx];
+                        const positionIndex = chainPositions[i];
                         if (selectedPositionsSet.has(positionIndex)) {
-                            selectedMSAPositions.add(i); // Store MSA position index (with gaps)
+                            selectedMSAPositions.add(i); // Store MSA position index
                         }
-                        chainSeqIdx++;
-                        msaPos++; // Only increment msaPos when we process a non-gap character
-                    } else {
-                        // Mismatch - still increment msaPos to stay in sync
-                        msaPos++;
                     }
                 }
 

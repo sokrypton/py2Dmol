@@ -3627,26 +3627,26 @@ function extractChainSequences(frame) {
 window.extractChainSequences = extractChainSequences;
 
 /**
- * Compare two sequences, allowing for gaps in MSA query sequence
- * Removes gaps from MSA query sequence and compares with PDB chain sequence
- * @param {string} msaQuerySequence - Query sequence from MSA (may contain gaps '-')
+ * Compare two sequences
+ * Query sequence has no gaps (removed during MSA parsing)
+ * @param {string} msaQuerySequence - Query sequence from MSA (no gaps)
  * @param {string} pdbChainSequence - Sequence from PDB chain (no gaps)
- * @returns {boolean} - True if sequences match (after removing gaps from MSA)
+ * @returns {boolean} - True if sequences match
  */
 function sequencesMatch(msaQuerySequence, pdbChainSequence) {
     if (!msaQuerySequence || !pdbChainSequence) return false;
     
-    // Remove gaps from MSA query sequence
-    const msaSequenceNoGaps = msaQuerySequence.replace(/-/g, '').toUpperCase();
+    // Query sequence has no gaps, so direct comparison
+    const msaSequence = msaQuerySequence.toUpperCase();
     const pdbSequence = pdbChainSequence.toUpperCase();
     
     // Exact match
-    if (msaSequenceNoGaps === pdbSequence) return true;
+    if (msaSequence === pdbSequence) return true;
     
     // Allow for small differences (e.g., missing terminal residues)
     // Check if one sequence is contained in the other (with some tolerance)
-    const minLen = Math.min(msaSequenceNoGaps.length, pdbSequence.length);
-    const maxLen = Math.max(msaQuerySequence.length, pdbChainSequence.length);
+    const minLen = Math.min(msaSequence.length, pdbSequence.length);
+    const maxLen = Math.max(msaSequence.length, pdbSequence.length);
     
     // If lengths are very different (>10%), don't match
     if (maxLen > 0 && (maxLen - minLen) / maxLen > 0.1) {
@@ -3677,11 +3677,11 @@ function storeMSADataInObject(object, chainToMSA, msaToChains) {
         // Initialize MSA structure if it doesn't exist
         if (!object.msa) {
             object.msa = {
-                msasBySequence: {}, // querySequence (no gaps) -> {msaData, chains}
-                chainToSequence: {}, // chainId -> querySequence (no gaps)
+                msasBySequence: {}, // querySequence -> {msaData, chains}
+                chainToSequence: {}, // chainId -> querySequence
                 availableChains: [],
                 defaultChain: null,
-                msaToChains: {} // querySequence (no gaps) -> [chainId, ...]
+                msaToChains: {} // querySequence -> [chainId, ...]
             };
         }
         
@@ -3692,20 +3692,20 @@ function storeMSADataInObject(object, chainToMSA, msaToChains) {
         
         // Store unique MSAs and map chains
         for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
-            const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
+            const querySeq = msaData.querySequence.toUpperCase();
             
             // Store MSA by sequence (only one per unique sequence)
             // msaData is stored directly - it remains the canonical unfiltered source
             // (We no longer mutate it, so no deep copy needed)
-            if (!msaObj.msasBySequence[querySeqNoGaps]) {
-                msaObj.msasBySequence[querySeqNoGaps] = { 
+            if (!msaObj.msasBySequence[querySeq]) {
+                msaObj.msasBySequence[querySeq] = { 
                     msaData, 
-                    chains: msaToChains[querySeqNoGaps] || []
+                    chains: msaToChains[querySeq] || []
                 };
             }
         
         // Map chain to sequence
-        msaObj.chainToSequence[chainId] = querySeqNoGaps;
+        msaObj.chainToSequence[chainId] = querySeq;
         
         // Add to available chains
         if (!msaObj.availableChains.includes(chainId)) {
@@ -3909,12 +3909,12 @@ function mergeMSAs(msaDataList) {
 function matchMSAsToChains(msaDataList, chainSequences) {
     // First, collect all MSAs per chain (before merging)
     const chainToMSAList = {}; // chainId -> [{msaData, filename}, ...]
-    const msaToChains = {}; // querySequence (no gaps) -> [chainId, ...]
+    const msaToChains = {}; // querySequence -> [chainId, ...]
     
     for (const {msaData, filename} of msaDataList) {
         if (!msaData || !msaData.querySequence) continue;
         
-        const msaQuerySequence = msaData.querySequence.replace(/-/g, '').toUpperCase();
+        const msaQuerySequence = msaData.querySequence.toUpperCase();
         
         // Find all chains that match this MSA's query sequence
         const matchedChains = [];
@@ -3963,7 +3963,7 @@ function matchMSAsToChains(msaDataList, chainSequences) {
     // Group chains by their merged MSA query sequence
     const mergedMsaToChains = {};
     for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
-        const querySeq = msaData.querySequence.replace(/-/g, '').toUpperCase();
+        const querySeq = msaData.querySequence.toUpperCase(); // Query sequence has no gaps
         if (!mergedMsaToChains[querySeq]) {
             mergedMsaToChains[querySeq] = [];
         }
@@ -4106,8 +4106,8 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
         return msaData; // Return original if invalid input
     }
     
-    // Get UniProt sequence from MSA (query sequence, remove gaps)
-    const uniprotSequence = msaData.querySequence.replace(/-/g, '').toUpperCase();
+    // Get UniProt sequence from MSA (query sequence has no gaps)
+    const uniprotSequence = msaData.querySequence.toUpperCase();
     const pdbSeqUpper = pdbSequence.toUpperCase();
     
     // If sequences already match (after removing gaps), no trimming needed
@@ -4122,15 +4122,12 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
     if (siftsMapping && siftsMapping.pdb_to_uniprot && Object.keys(siftsMapping.pdb_to_uniprot).length > 0) {
         // Map PDB sequence positions to UniProt positions, then to MSA columns
         // First, build UniProt position -> MSA column mapping
+        // Query sequence has no gaps, so mapping is one-to-one
         const uniprotToMsaCol = {};
-        let msaPos = 0; // Position in UniProt sequence (without gaps)
         
         for (let msaCol = 0; msaCol < msaData.querySequence.length; msaCol++) {
-            if (msaData.querySequence[msaCol] !== '-') {
-                const uniprotPos = msaPos + 1; // 1-indexed UniProt position
-                uniprotToMsaCol[uniprotPos] = msaCol;
-                msaPos++;
-            }
+            const uniprotPos = msaCol + 1; // 1-indexed UniProt position
+            uniprotToMsaCol[uniprotPos] = msaCol;
         }
         
         // Now map PDB sequence positions to MSA columns via UniProt
@@ -4427,7 +4424,7 @@ function buildEntropyVectorForColoring(object, frame) {
         
         const msaData = msaEntry.msaData;
         const msaEntropy = msaData.entropy; // Pre-computed entropy array (one per MSA position)
-        const msaQuerySequence = msaData.querySequence; // May contain gaps
+        const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps (removed during parsing)
         
         // Extract chain sequence from structure
         const chainSequences = extractChainSequences(frame);
@@ -4457,34 +4454,19 @@ function buildEntropyVectorForColoring(object, frame) {
         });
         
         // Map MSA positions to chain positions (one-to-one mapping)
-        // Walk through MSA query sequence and match to chain sequence
-        let msaPos = 0; // Position in MSA entropy array (skipping gaps)
-        let chainSeqIdx = 0; // Position in chain sequence
+        // Query sequence has no gaps, so mapping is straightforward
         const msaQueryUpper = msaQuerySequence.toUpperCase();
         const chainSeqUpper = chainSequence.toUpperCase();
+        const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length, msaEntropy.length);
         
-        for (let i = 0; i < msaQueryUpper.length && chainSeqIdx < chainPositions.length; i++) {
-            const msaChar = msaQueryUpper[i];
-            
-            if (msaChar === '-') {
-                // Gap in MSA - skip this position (don't increment msaPos)
-                continue;
-            }
-            
-            // Check if this MSA position matches the current chain sequence position
-            if (chainSeqIdx < chainSeqUpper.length && msaChar === chainSeqUpper[chainSeqIdx]) {
+        for (let i = 0; i < minLength; i++) {
+            // Check if this MSA position matches the chain sequence position
+            if (msaQueryUpper[i] === chainSeqUpper[i]) {
                 // Match found - copy entropy value to corresponding position
-                if (msaPos < msaEntropy.length) {
-                    const positionIndex = chainPositions[chainSeqIdx];
-                    if (positionIndex < entropyVector.length) {
-                        entropyVector[positionIndex] = msaEntropy[msaPos];
-                    }
+                const positionIndex = chainPositions[i];
+                if (positionIndex < entropyVector.length) {
+                    entropyVector[positionIndex] = msaEntropy[i];
                 }
-                chainSeqIdx++;
-                msaPos++; // Only increment msaPos when we process a non-gap character
-                        } else {
-                // Mismatch - still increment msaPos to stay in sync
-                msaPos++;
             }
         }
     }
@@ -4572,7 +4554,7 @@ function applySelectionToMSA() {
         if (!msaEntry || !msaEntry.msaData) continue;
         
         const msaData = msaEntry.msaData;
-        const msaQuerySequence = msaData.querySequence; // May contain gaps
+        const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps (removed during parsing)
         
         // Extract chain sequence from structure
         const chainSequences = extractChainSequences(frame);
@@ -4599,33 +4581,20 @@ function applySelectionToMSA() {
         });
         
         // Map MSA positions to chain positions (one-to-one mapping)
-        // Walk through MSA query sequence and match to chain sequence
-        let msaPos = 0; // Position in MSA (skipping gaps)
-        let chainSeqIdx = 0; // Position in chain sequence
+        // Query sequence has no gaps, so mapping is straightforward
         const msaQueryUpper = msaQuerySequence.toUpperCase();
         const chainSeqUpper = chainSequence.toUpperCase();
+        const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length);
         const chainMSASelectedPositions = new Set();
         
-        for (let i = 0; i < msaQueryUpper.length && chainSeqIdx < chainPositions.length; i++) {
-            const msaChar = msaQueryUpper[i];
-            
-            if (msaChar === '-') {
-                // Gap in MSA - skip this position (don't increment msaPos)
-                continue;
-            }
-            
-            // Check if this MSA position matches the current chain sequence position
-            if (chainSeqIdx < chainSeqUpper.length && msaChar === chainSeqUpper[chainSeqIdx]) {
+        for (let i = 0; i < minLength; i++) {
+            // Check if this MSA position matches the chain sequence position
+            if (msaQueryUpper[i] === chainSeqUpper[i]) {
                 // Match found - check if this structure position is selected
-                const positionIndex = chainPositions[chainSeqIdx];
+                const positionIndex = chainPositions[i];
                 if (selectedPositions.has(positionIndex)) {
-                    chainMSASelectedPositions.add(msaPos);
+                    chainMSASelectedPositions.add(i); // i is the MSA position index
                 }
-                chainSeqIdx++;
-                msaPos++; // Only increment msaPos when we process a non-gap character
-            } else {
-                // Mismatch - still increment msaPos to stay in sync
-                msaPos++;
             }
         }
         
@@ -4801,8 +4770,8 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 // Fallback to querySequence if sequences array is empty or firstSequence is still empty
                 if (!firstSequence || firstSequence.length === 0) {
                     if (firstMSA.msaData.querySequence) {
-                        // Remove gaps from querySequence (it might contain gaps in aligned format)
-                        firstSequence = firstMSA.msaData.querySequence.replace(/-/g, '').toUpperCase();
+                        // Query sequence has no gaps (removed during parsing)
+                        firstSequence = firstMSA.msaData.querySequence.toUpperCase();
                     }
                 }
                 

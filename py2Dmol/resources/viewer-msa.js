@@ -1165,7 +1165,7 @@
     /**
      * Build mapping from MSA positions to structure residue_numbers values
      * @param {string} chainId - Chain ID to map
-     * @returns {Array|null} - Array mapping MSA position (with gaps) to residue_numbers, or null if not available
+     * @returns {Array|null} - Array mapping MSA position to residue_numbers, or null if not available
      */
     function buildMSAResidueNumbersMapping(chainId) {
         if (!callbacks.getRenderer) return null;
@@ -1187,7 +1187,7 @@
         if (!msaEntry || !msaEntry.msaData) return null;
         
         const msaData = msaEntry.msaData;
-        const msaQuerySequence = msaData.querySequence; // May contain gaps
+        const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps (removed during parsing)
         
         // Check if extractChainSequences is available (from app.js)
         const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function' 
@@ -1221,34 +1221,21 @@
         });
         
         // Map MSA positions to structure residue numbers
-        // Initialize array with null (for gaps) or residue_numbers values
+        // Query sequence has no gaps, so mapping is straightforward
         const residueNumbersMap = new Array(msaQuerySequence.length).fill(null);
         
-        let msaPos = 0; // Position in MSA (skipping gaps)
-        let chainSeqIdx = 0; // Position in chain sequence
         const msaQueryUpper = msaQuerySequence.toUpperCase();
         const chainSeqUpper = chainSequence.toUpperCase();
+        const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length);
         
-        for (let i = 0; i < msaQueryUpper.length && chainSeqIdx < chainPositions.length; i++) {
-            const msaChar = msaQueryUpper[i];
-            
-            if (msaChar === '-') {
-                // Gap in MSA - leave as null
-                continue;
-            }
-            
-            // Check if this MSA position matches the current chain sequence position
-            if (chainSeqIdx < chainSeqUpper.length && msaChar === chainSeqUpper[chainSeqIdx]) {
+        for (let i = 0; i < minLength; i++) {
+            // Check if this MSA position matches the chain sequence position
+            if (msaQueryUpper[i] === chainSeqUpper[i]) {
                 // Match found - map to structure residue_numbers
-                const positionIdx = chainPositions[chainSeqIdx];
+                const positionIdx = chainPositions[i];
                 if (positionIdx < frame.residue_numbers.length) {
                     residueNumbersMap[i] = frame.residue_numbers[positionIdx];
                 }
-                chainSeqIdx++;
-                msaPos++; // Only increment msaPos when we process a non-gap character
-            } else {
-                // Mismatch - still increment msaPos to stay in sync
-                msaPos++;
             }
         }
         
@@ -1444,7 +1431,7 @@
     
     /**
      * Check if an MSA position should be visible (selected)
-     * @param {number} msaPos - MSA position index (0-based, skipping gaps)
+     * @param {number} msaPos - MSA position index (0-based)
      * @param {Array<string>} chains - Array of chain IDs that map to this MSA
      * @param {Map<string, Set<number>>} msaSelectedPositions - Map of chainId -> Set of selected MSA positions
      * @returns {boolean} - True if position should be visible
@@ -1526,7 +1513,7 @@
         }
         
         // Filter sequences: remove positions that are not visible
-        // MSA positions are 0-based and skip gaps, so we need to map through the query sequence
+        // Query sequence has no gaps, so mapping is straightforward
         const querySequence = sourceMSAData.querySequence || '';
         
         // Initialize filtered sequences
@@ -1541,60 +1528,30 @@
         const filteredQuerySequence = [];
         const filteredResidueNumbers = [];
         
-        // Walk through query sequence and map MSA positions
-        let msaPos = 0; // Position in MSA (skipping gaps)
+        // Walk through query sequence (no gaps) and filter based on visibility
         for (let i = 0; i < querySequence.length; i++) {
-            const char = querySequence[i];
-            if (char === '-') {
-                // Gap - check if the next non-gap position is visible
-                // If the next visible position exists, include this gap to maintain alignment
-                // Otherwise, skip it
-                let nextVisiblePos = -1;
-                let tempMsaPos = msaPos;
-                for (let j = i + 1; j < querySequence.length; j++) {
-                    if (querySequence[j] !== '-') {
-                        if (visiblePositions.has(tempMsaPos)) {
-                            nextVisiblePos = tempMsaPos;
-                            break;
-                        }
-                        tempMsaPos++;
-                    }
+            // Check if this MSA position is visible
+            if (visiblePositions.has(i)) {
+                // Include this position (entire column)
+                for (let seqIdx = 0; seqIdx < sourceMSAData.sequences.length; seqIdx++) {
+                    filteredSequences[seqIdx].sequence += (sourceMSAData.sequences[seqIdx].sequence[i] || '-');
                 }
+                filteredQuerySequence.push(querySequence[i]);
                 
-                // Include gap if there's a visible position after it, or if the previous position was visible
-                const prevVisible = msaPos > 0 ? visiblePositions.has(msaPos - 1) : false;
-                if (nextVisiblePos >= 0 || prevVisible) {
-                    // Include this gap column
-                    for (let seqIdx = 0; seqIdx < sourceMSAData.sequences.length; seqIdx++) {
-                        filteredSequences[seqIdx].sequence += (sourceMSAData.sequences[seqIdx].sequence[i] || '-');
-                    }
-                    filteredQuerySequence.push(char);
-                }
-            } else {
-                // Non-gap character - check if this MSA position is visible
-                if (visiblePositions.has(msaPos)) {
-                    // Include this position (entire column)
-                    for (let seqIdx = 0; seqIdx < sourceMSAData.sequences.length; seqIdx++) {
-                        filteredSequences[seqIdx].sequence += (sourceMSAData.sequences[seqIdx].sequence[i] || '-');
-                    }
-                    filteredQuerySequence.push(char);
-                    
-                    // Preserve residueNumbers if available
-                    // residueNumbers is indexed by query sequence position i (with gaps), not msaPos
-                    if (sourceMSAData.residueNumbers && i < sourceMSAData.residueNumbers.length) {
-                        const residueNum = sourceMSAData.residueNumbers[i];
-                        if (residueNum !== null && residueNum !== undefined) {
-                            filteredResidueNumbers.push(residueNum);
-                        }
+                // Preserve residueNumbers if available
+                // residueNumbers is indexed by query sequence position i
+                if (sourceMSAData.residueNumbers && i < sourceMSAData.residueNumbers.length) {
+                    const residueNum = sourceMSAData.residueNumbers[i];
+                    if (residueNum !== null && residueNum !== undefined) {
+                        filteredResidueNumbers.push(residueNum);
                     }
                 }
-                msaPos++;
             }
         }
         
-        // Calculate new queryLength (non-gap characters in filtered query sequence)
+        // Calculate new queryLength (query sequence has no gaps)
+        const newQueryLength = filteredQuerySequence.length;
         const filteredQuerySeqStr = filteredQuerySequence.join('');
-        const newQueryLength = filteredQuerySeqStr.replace(/-/g, '').length;
         
         // Build filtered MSA data
         const filteredMSA = {
@@ -2598,6 +2555,7 @@
                 const { logicalWidth: canvasWidth, logicalHeight: canvasHeight } = this._getCanvasDimensions();
                 const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
                     this._getScrollableArea();
+                // Always get fresh scroll limits (cache is invalidated when filters change)
                 const limits = this._getScrollLimits();
                 
                 // Check scrollbars (vertical for MSA, horizontal for all)
@@ -2681,17 +2639,27 @@
             this.scrollbarDragState.dragType = 'vertical';
             this.scrollbarDragState.dragStartY = startY;
             this.scrollbarDragState.dragStartScroll = scrollTop;
+            this.scrollbarDragState.scrollableAreaHeight = scrollableAreaHeight;
+            this.scrollbarDragState.canvasHeight = canvasHeight;
                         
                         const handleDrag = (e) => {
                 if (!this.scrollbarDragState.isDragging || this.scrollbarDragState.dragType !== 'vertical') return;
                 e.preventDefault();
+                // Recalculate scroll limits dynamically (in case msaData.sequences.length changed during filtering)
+                this._invalidateCache();
+                const limits = this._getScrollLimits();
+                const currentMaxScroll = limits.vertical.max;
+                const currentScrollableAreaHeight = this.scrollbarDragState.scrollableAreaHeight;
+                // Recalculate thumbHeight based on current sequence count (it depends on totalScrollableHeight)
+                const currentThumbHeight = Math.max(20, (currentScrollableAreaHeight / limits.vertical.total) * currentScrollableAreaHeight);
+                
                 const dragPos = getCanvasPositionFromMouse(e, this.canvas);
                 const deltaY = dragPos.y - this.scrollbarDragState.dragStartY;
                 if (Math.abs(deltaY) > 2) {
-                    const scrollDelta = (deltaY / (scrollableAreaHeight - thumbHeight)) * maxScroll;
-                    scrollTop = Math.max(0, Math.min(maxScroll, this.scrollbarDragState.dragStartScroll + scrollDelta));
+                    const scrollDelta = (deltaY / (currentScrollableAreaHeight - currentThumbHeight)) * currentMaxScroll;
+                    scrollTop = Math.max(0, Math.min(currentMaxScroll, this.scrollbarDragState.dragStartScroll + scrollDelta));
                     if (this.config.clampScrollTop) {
-                        this.config.clampScrollTop(canvasHeight);
+                        this.config.clampScrollTop(this.scrollbarDragState.canvasHeight);
                     }
                     scheduleRender();
                 }
@@ -2717,15 +2685,25 @@
             this.scrollbarDragState.dragType = 'horizontal';
             this.scrollbarDragState.dragStartY = startX; // Reusing field name for X coordinate
             this.scrollbarDragState.dragStartScroll = scrollLeft;
+            this.scrollbarDragState.scrollableAreaWidth = scrollableAreaWidth;
+            this.scrollbarDragState.thumbWidth = thumbWidth;
                         
                         const handleDrag = (e) => {
                 if (!this.scrollbarDragState.isDragging || this.scrollbarDragState.dragType !== 'horizontal') return;
                 e.preventDefault();
+                // Recalculate scroll limits dynamically (in case msaData.queryLength changed during filtering)
+                this._invalidateCache();
+                const limits = this._getScrollLimits();
+                const currentMaxScrollX = limits.horizontal.max;
+                const currentScrollableAreaWidth = this.scrollbarDragState.scrollableAreaWidth;
+                // Recalculate thumbWidth based on current queryLength (it depends on totalScrollableWidth)
+                const currentThumbWidth = Math.max(20, (currentScrollableAreaWidth / limits.horizontal.total) * currentScrollableAreaWidth);
+                
                 const dragPos = getCanvasPositionFromMouse(e, this.canvas);
                 const deltaX = dragPos.x - this.scrollbarDragState.dragStartY;
                             if (Math.abs(deltaX) > 2) {
-                                const scrollDelta = (deltaX / (scrollableAreaWidth - thumbWidth)) * maxScrollX;
-                    scrollLeft = Math.max(0, Math.min(maxScrollX, this.scrollbarDragState.dragStartScroll + scrollDelta));
+                                const scrollDelta = (deltaX / (currentScrollableAreaWidth - currentThumbWidth)) * currentMaxScrollX;
+                    scrollLeft = Math.max(0, Math.min(currentMaxScrollX, this.scrollbarDragState.dragStartScroll + scrollDelta));
                                 scheduleRender();
                             }
                         };
@@ -3489,6 +3467,11 @@
                 cachedEntropy = null;
                 cachedEntropyHash = null;
                 
+                // Invalidate interaction manager cache (scroll limits depend on sequences.length)
+                if (activeInteractionManager) {
+                    activeInteractionManager._invalidateCache();
+                }
+                
                 // Notify callback that filtered MSA has changed (for entropy recalculation)
                 if (callbacks.onMSAFilterChange) {
                     callbacks.onMSAFilterChange(msaData, currentChain);
@@ -3556,6 +3539,11 @@
                 cachedDataHash = null;
                 cachedEntropy = null;
                 cachedEntropyHash = null;
+                
+                // Invalidate interaction manager cache (scroll limits depend on sequences.length)
+                if (activeInteractionManager) {
+                    activeInteractionManager._invalidateCache();
+                }
                 
                 // Notify callback that filtered MSA has changed (for entropy recalculation)
                 if (callbacks.onMSAFilterChange) {
@@ -3804,6 +3792,11 @@
             cachedEntropy = null;
             cachedEntropyHash = null;
             
+            // Invalidate interaction manager cache (scroll limits depend on queryLength)
+            if (activeInteractionManager) {
+                activeInteractionManager._invalidateCache();
+            }
+            
             // Rebuild view for current mode
             buildViewForMode(msaViewMode);
         },
@@ -4003,6 +3996,11 @@
                     querySequence: originalMSAData.querySequence,
                     queryLength: originalMSAData.queryLength
                 };
+                
+                // Invalidate interaction manager cache (scroll limits depend on sequences.length)
+                if (activeInteractionManager) {
+                    activeInteractionManager._invalidateCache();
+                }
                 
                 if (msaCanvasData && msaCanvasData.canvas) {
                     scheduleRender();
