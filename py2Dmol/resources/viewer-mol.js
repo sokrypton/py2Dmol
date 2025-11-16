@@ -1890,9 +1890,13 @@ function initializePy2DmolViewer(containerElement) {
             // For each chain in the original MSA
             for (const [chainId, querySeq] of Object.entries(sourceObject.msa.chainToSequence)) {
                 const msaEntry = sourceObject.msa.msasBySequence[querySeq];
-                if (!msaEntry || !msaEntry.msaData) continue;
-
+                if (!msaEntry) continue;
+                
+                // Use msaData directly - it is now always the canonical unfiltered source
+                // (We no longer mutate msaEntry.msaData with filtered data)
                 const originalMSAData = msaEntry.msaData;
+                if (!originalMSAData) continue;
+                
                 const originalQuerySequence = originalMSAData.querySequence; // May contain gaps
                 
                 // Extract chain sequence from original frame

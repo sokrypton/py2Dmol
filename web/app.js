@@ -87,15 +87,9 @@ function initializeApp() {
                 // This updates msaData.frequencies, msaData.entropy, msaData.logOdds
                 computeMSAProperties(filteredMSAData);
                 
-                // Update the stored MSA data with recomputed properties
-                // Find the MSA entry for this chain and update it
-                if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
-                    const querySeq = obj.msa.chainToSequence[chainId];
-                    if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                        // Update the stored MSA data with filtered data (which now has recomputed properties)
-                        obj.msa.msasBySequence[querySeq].msaData = filteredMSAData;
-                    }
-                }
+                // NOTE: We do NOT overwrite stored msaEntry.msaData with filtered data
+                // The stored msaEntry.msaData remains the canonical unfiltered source
+                // The viewer maintains its own filtered copy internally
                 
                 // Invalidate entropy cache since entropy was recalculated
                 if (viewerApi.renderer) {
@@ -455,10 +449,8 @@ function setupEventListeners() {
         syncChainPillsToSelection();
         // Update sequence view
         updateSequenceViewSelectionState();
-        // Update MSA view
-        if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
-            window.MSAViewer.updateMSAViewSelectionState();
-        }
+        // Update MSA selection mapping and view
+        applySelectionToMSA();
     });
     
     // Update navigation button states
@@ -625,9 +617,9 @@ function updateEntropyOptionVisibility(objectName) {
             } else if (obj.msa.msaData) {
                 hasMSA = true;
             } else if (obj.msa.sequences && obj.msa.sequences.length > 0) {
-                hasMSA = true;
-            }
+            hasMSA = true;
         }
+    }
     }
     
     // If entropy is selected but MSA is not available, switch to auto
@@ -1700,7 +1692,7 @@ function updateViewerFromGlobalBatch() {
     const newNames = [];
 
     if (r) r._batchLoading = true;
-
+    
     for (const obj of batchedObjects) {
         if (!obj || !obj.frames || obj.frames.length === 0) continue;
 
@@ -2384,6 +2376,9 @@ function initializeMSAViewerCommon() {
         }
     }
     
+    // Store globally so it can be called from applySelectionToMSA
+    window.updateMSASequenceCount = updateMSASequenceCount;
+    
     return { updateMSASequenceCount };
 }
 
@@ -2491,6 +2486,9 @@ function initializeMSAViewer() {
                     const {msaData} = obj.msa.msasBySequence[querySeq];
                     loadMSADataIntoViewer(msaData, chainId, objectName);
                     
+                    // Apply current object's selection to MSA (refilter based on selection state)
+                    applySelectionToMSA();
+                    
                     setTimeout(() => {
                         if (msaChainSelect.value !== chainId) {
                             msaChainSelect.value = chainId;
@@ -2556,9 +2554,9 @@ async function handleMSAFetch(uniprotId) {
                 setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
                 
                 // Update sequence count
-                const sequenceCountEl = document.getElementById('msaSequenceCount');
-                if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
-                    const counts = window.MSAViewer.getSequenceCounts();
+        const sequenceCountEl = document.getElementById('msaSequenceCount');
+        if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
+            const counts = window.MSAViewer.getSequenceCounts();
                     if (counts) {
                         sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
                     }
@@ -2739,7 +2737,7 @@ function initMSADragAndDrop() {
 // Check if we're on msa.html by looking for msa.html-specific elements
 const isMSAHTML = document.getElementById('fetch-uniprot-id') !== null;
 if (isMSAHTML) {
-    if (document.readyState === 'loading') {
+if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
             initializeMSAViewer();
             
@@ -2777,8 +2775,8 @@ if (isMSAHTML) {
             // Initialize drag and drop
             initMSADragAndDrop();
         });
-    } else {
-        initializeMSAViewer();
+} else {
+    initializeMSAViewer();
         
         // Wire up fetch button
         const fetchBtn = document.getElementById('fetch-btn');
@@ -3025,6 +3023,11 @@ function initializeMSAViewerIndex() {
             
             // Load MSA data into viewer (this will update the display)
             loadMSADataIntoViewer(msaToLoad, chainId, objectName);
+            
+            // Apply current object's selection to MSA (refilter based on selection state)
+            // This ensures the MSA is filtered correctly when switching objects
+            // Selection state is already restored by _switchToObject() before this is called
+            applySelectionToMSA();
         } else {
             // Hide MSA container if no MSA for this object
             msaContainer.style.display = 'none';
@@ -3038,7 +3041,7 @@ function initializeMSAViewerIndex() {
     }
     
     // Update container visibility when object changes
-    if (viewerApi && viewerApi.renderer) {
+if (viewerApi && viewerApi.renderer) {
         // Store update function globally
         window.updateMSAContainerVisibility = updateMSAContainerVisibility;
         
@@ -3303,46 +3306,10 @@ async function handleFetch() {
                                     
                                     // Initialize MSA structure for object (sequence-based, supports homo-oligomers)
                                     if (Object.keys(chainToMSA).length > 0) {
-                                        // Initialize MSA structure
-                                        if (!object.msa) {
-                                            object.msa = {
-                                                msasBySequence: {},
-                                                chainToSequence: {},
-                                                availableChains: [],
-                                                defaultChain: null,
-                                                msaToChains: {}
-                                            };
-                                        }
+                                        // Store MSA data in object (consolidated function)
+                                        const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
                                         
-                                        const msaObj = object.msa;
-                                        
-                                        // Store msaToChains mapping
-                                        msaObj.msaToChains = msaToChains;
-                                        
-                                        // Store unique MSAs and map chains
-                                        for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
-                                            const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
-                                            
-                                            // Store MSA by sequence (only one per unique sequence)
-                                            if (!msaObj.msasBySequence[querySeqNoGaps]) {
-                                                msaObj.msasBySequence[querySeqNoGaps] = { 
-                                                    msaData, 
-                                                    chains: msaToChains[querySeqNoGaps] || []
-                                                };
-                                            }
-                                            
-                                            // Map chain to sequence
-                                            msaObj.chainToSequence[chainId] = querySeqNoGaps;
-                                            
-                                            // Add to available chains
-                                            if (!msaObj.availableChains.includes(chainId)) {
-                                                msaObj.availableChains.push(chainId);
-                                            }
-                                        }
-                                        
-                                        // Set default chain (first available)
-                                        if (msaObj.availableChains.length > 0) {
-                                            msaObj.defaultChain = msaObj.availableChains[0];
+                                        if (msaObj && msaObj.availableChains.length > 0) {
                                             
                                             // Get MSA for default chain
                                             const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
@@ -3376,23 +3343,8 @@ async function handleFetch() {
                                                 void msaContainer.offsetWidth; // Force reflow
                                             }
                                             
-                                            // Load MSA into viewer (this will initialize resize observer with correct dimensions)
-                                            window.MSAViewer.setMSAData(matchedMSA, firstMatchedChain);
-                                            
-                                            // Ensure view is visible after data is set
-                                            if (msaView) {
-                                                msaView.classList.remove('hidden');
-                                            }
-                                            
-                                            // Update MSA container visibility to ensure it's shown for current object
-                                            if (window.updateMSAContainerVisibility) {
-                                                window.updateMSAContainerVisibility();
-                                            }
-                                            
-                                            // Update chain selector to show available chains
-                                            if (window.updateMSAChainSelectorIndex) {
-                                                window.updateMSAChainSelectorIndex();
-                                            }
+                                            // Load MSA into viewer (consolidated function handles all setup)
+                                            loadMSADataIntoViewer(matchedMSA, firstMatchedChain, objectName);
                                             
                                             setStatus(
                                                 `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
@@ -3474,46 +3426,10 @@ async function handleFetch() {
                                         
                                         // Initialize MSA structure for object (sequence-based, supports homo-oligomers)
                                         if (Object.keys(chainToMSA).length > 0) {
-                                            // Initialize MSA structure
-                                            if (!object.msa) {
-                                                object.msa = {
-                                                    msasBySequence: {},
-                                                    chainToSequence: {},
-                                                    availableChains: [],
-                                                    defaultChain: null,
-                                                    msaToChains: {}
-                                                };
-                                            }
+                                            // Store MSA data in object (consolidated function)
+                                            const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
                                             
-                                            const msaObj = object.msa;
-                                            
-                                            // Store msaToChains mapping
-                                            msaObj.msaToChains = msaToChains;
-                                            
-                                            // Store unique MSAs and map chains
-                                            for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
-                                                const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
-                                                
-                                                // Store MSA by sequence (only one per unique sequence)
-                                                if (!msaObj.msasBySequence[querySeqNoGaps]) {
-                                                    msaObj.msasBySequence[querySeqNoGaps] = { 
-                                                        msaData, 
-                                                        chains: msaToChains[querySeqNoGaps] || []
-                                                    };
-                                                }
-                                                
-                                                // Map chain to sequence
-                                                msaObj.chainToSequence[chainId] = querySeqNoGaps;
-                                                
-                                                // Add to available chains
-                                                if (!msaObj.availableChains.includes(chainId)) {
-                                                    msaObj.availableChains.push(chainId);
-                                                }
-                                            }
-                                            
-                                            // Set default chain (first available)
-                                            if (msaObj.availableChains.length > 0) {
-                                                msaObj.defaultChain = msaObj.availableChains[0];
+                                            if (msaObj && msaObj.availableChains.length > 0) {
                                                 
                                                 // Get MSA for default chain
                                                 const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
@@ -3746,10 +3662,72 @@ function sequencesMatch(msaQuerySequence, pdbChainSequence) {
 }
 
 /**
+ * Store MSA data in object structure
+ * Consolidates all MSA storage logic into a single function
+ * @param {Object} object - Object to store MSA data in
+ * @param {Object} chainToMSA - Map of chainId -> {msaData}
+ * @param {Object} msaToChains - Map of querySequence -> [chainId, ...]
+ * @returns {Object} - The msaObj structure that was created/updated
+ */
+function storeMSADataInObject(object, chainToMSA, msaToChains) {
+    if (!object || !chainToMSA || Object.keys(chainToMSA).length === 0) {
+        return null;
+    }
+    
+        // Initialize MSA structure if it doesn't exist
+        if (!object.msa) {
+            object.msa = {
+                msasBySequence: {}, // querySequence (no gaps) -> {msaData, chains}
+                chainToSequence: {}, // chainId -> querySequence (no gaps)
+                availableChains: [],
+                defaultChain: null,
+                msaToChains: {} // querySequence (no gaps) -> [chainId, ...]
+            };
+        }
+        
+        const msaObj = object.msa;
+        
+        // Store msaToChains mapping
+        msaObj.msaToChains = msaToChains;
+        
+        // Store unique MSAs and map chains
+        for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
+            const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
+            
+            // Store MSA by sequence (only one per unique sequence)
+            // msaData is stored directly - it remains the canonical unfiltered source
+            // (We no longer mutate it, so no deep copy needed)
+            if (!msaObj.msasBySequence[querySeqNoGaps]) {
+                msaObj.msasBySequence[querySeqNoGaps] = { 
+                    msaData, 
+                    chains: msaToChains[querySeqNoGaps] || []
+                };
+            }
+        
+        // Map chain to sequence
+        msaObj.chainToSequence[chainId] = querySeqNoGaps;
+        
+        // Add to available chains
+        if (!msaObj.availableChains.includes(chainId)) {
+            msaObj.availableChains.push(chainId);
+        }
+    }
+    
+    // Set default chain (first available)
+    if (msaObj.availableChains.length > 0 && !msaObj.defaultChain) {
+        msaObj.defaultChain = msaObj.availableChains[0];
+    }
+    
+    return msaObj;
+}
+
+/**
  * Load MSA data into the MSA viewer and recompute properties
- * This unified function handles the common pattern of loading MSA data,
- * getting filtered data, recomputing properties, and updating stored data
- * @param {Object} msaData - MSA data object to load
+ * This is a pure function that does NOT mutate stored MSA data.
+ * The stored msaEntry.msaData remains the canonical unfiltered source.
+ * The viewer maintains its own filtered copy internally.
+ * 
+ * @param {Object} msaData - MSA data object to load (unfiltered source data)
  * @param {string} chainId - Chain ID to associate with this MSA
  * @param {string} objectName - Name of the object containing this MSA
  * @param {Object} options - Optional configuration
@@ -3765,6 +3743,8 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
     } = options;
     
     // Load MSA data into viewer
+    // NOTE: We do NOT mutate stored msaEntry.msaData - it remains the canonical unfiltered source
+    // The viewer maintains its own filtered copy internally
     window.MSAViewer.setMSAData(msaData, chainId);
     
     // Get filtered MSA data and recompute properties based on current filtering
@@ -3777,18 +3757,10 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
         // Compute properties on filtered data
         computeMSAProperties(filteredMSAData);
         
-        // Update stored MSA data with filtered data and recomputed properties
-        if (objectName && viewerApi?.renderer) {
-            const obj = viewerApi.renderer.objectsData[objectName];
-            if (obj && obj.msa) {
-                if (obj.msa.msasBySequence && obj.msa.chainToSequence && chainId) {
-                    const querySeq = obj.msa.chainToSequence[chainId];
-                    if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                        obj.msa.msasBySequence[querySeq].msaData = filteredMSAData;
-                    }
-                }
-            }
-        }
+        // NOTE: We do NOT overwrite stored msaEntry.msaData with filtered data
+        // The stored msaEntry.msaData remains the canonical unfiltered source
+        // The viewer maintains its own filtered copy internally via setMSAData()
+        // This ensures the original unfiltered MSA data is always available for copying
     }
     
     // Update chain selector
@@ -3799,6 +3771,11 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
     // Update entropy option visibility
     if (updateEntropyOption && window.updateEntropyOptionVisibility && objectName) {
         window.updateEntropyOptionVisibility(objectName);
+    }
+    
+    // Update sequence count to reflect the loaded MSA
+    if (window.updateMSASequenceCount) {
+        window.updateMSASequenceCount();
     }
 }
 
@@ -4177,7 +4154,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
                 }
                 // If pdbResnum is not in mapping, it will be treated as an insertion (gap column)
             }
-        } else {
+            } else {
             // Fallback: assume PDB residue numbers are sequential starting from 1
             for (const [pdbResnumStr, uniprotResnum] of Object.entries(siftsMapping.pdb_to_uniprot)) {
                 const pdbResnum = parseInt(pdbResnumStr);
@@ -4209,7 +4186,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
             // UniProt sequence is contained in PDB sequence
             msaStartOffset = 0;
             pdbStartOffset = uniprotInPdb;
-        } else {
+                } else {
             // Try to align from the start, allowing for small mismatches
             msaStartOffset = 0;
             pdbStartOffset = 0;
@@ -4539,17 +4516,42 @@ function applySelectionToMSA() {
     // Get selected positions
     const selection = renderer.getSelection();
     let selectedPositions = new Set();
+    let allSelected = false;
     
     if (selection && selection.positions && selection.positions.size > 0) {
         selectedPositions = new Set(selection.positions);
     } else if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
         selectedPositions = new Set(renderer.visibilityMask);
         } else {
-        // No selection - all positions visible (default mode)
-        return; // Don't apply selection if everything is selected
+        // No explicit selection - all positions visible (default mode)
+        allSelected = true;
     }
     
-    if (selectedPositions.size === 0) return;
+    // If all positions are selected, set a flag to indicate no dimming needed
+    if (allSelected) {
+        window._msaSelectedPositions = null; // null means all selected (no dimming)
+        if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
+            window.MSAViewer.updateMSAViewSelectionState();
+            // Update sequence count after filtering
+            if (window.updateMSASequenceCount) {
+                window.updateMSASequenceCount();
+            }
+        }
+        return;
+    }
+    
+    if (selectedPositions.size === 0) {
+        // Empty selection - dim everything
+        window._msaSelectedPositions = new Map();
+        if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
+            window.MSAViewer.updateMSAViewSelectionState();
+            // Update sequence count after filtering
+            if (window.updateMSASequenceCount) {
+                window.updateMSASequenceCount();
+            }
+        }
+        return;
+    }
     
     // Determine allowed chains
     let allowedChains;
@@ -4633,12 +4635,16 @@ function applySelectionToMSA() {
     }
     
     // Store selected MSA positions globally for MSA viewer to use
-    if (msaSelectedPositions.size > 0) {
-        window._msaSelectedPositions = msaSelectedPositions;
-        
-        // Trigger MSA viewer update by calling updateMSAViewSelectionState if it exists
-        // For now, we'll store the selection and the MSA viewer can check it when rendering
-        // This requires modification to the MSA viewer to actually highlight the positions
+    // Store even if empty to indicate no selection (for dimming all positions)
+    window._msaSelectedPositions = msaSelectedPositions;
+    
+    // Trigger MSA viewer update
+    if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
+        window.MSAViewer.updateMSAViewSelectionState();
+        // Update sequence count after filtering
+        if (window.updateMSASequenceCount) {
+            window.updateMSASequenceCount();
+        }
     }
 }
 
@@ -5105,51 +5111,10 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                         // Match MSAs to chains by sequence
                         const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
                         
-                        // Initialize MSA structure for object
-                        if (!object.msa) {
-                            object.msa = {
-                                // Store one MSA per unique query sequence
-                                msasBySequence: {}, // querySequence (no gaps) -> {msaData, chains}
-                                // Map chains to query sequences
-                                chainToSequence: {}, // chainId -> querySequence (no gaps)
-                                // All chains that have MSAs
-                                availableChains: [],
-                                defaultChain: null,
-                                // Map MSA query sequences to chains (for homo-oligomer grouping)
-                                msaToChains: {} // querySequence (no gaps) -> [chainId, ...]
-                            };
-                        }
+                        // Store MSA data in object (consolidated function)
+                        const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
                         
-                        const msaObj = object.msa;
-                        
-                        // Store msaToChains mapping
-                        msaObj.msaToChains = msaToChains;
-                        
-                        // Store unique MSAs and map chains
-                        for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
-                            const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
-                            
-                            // Store MSA by sequence (only one per unique sequence)
-                            if (!msaObj.msasBySequence[querySeqNoGaps]) {
-                                msaObj.msasBySequence[querySeqNoGaps] = { 
-                                    msaData, 
-                                    chains: msaToChains[querySeqNoGaps] || []
-                                };
-                            }
-                            
-                            // Map chain to sequence
-                            msaObj.chainToSequence[chainId] = querySeqNoGaps;
-                            
-                            // Add to available chains
-                            if (!msaObj.availableChains.includes(chainId)) {
-                                msaObj.availableChains.push(chainId);
-                            }
-                        }
-                        
-                        // Set default chain (first available, or first chain with MSA)
-                        if (msaObj.availableChains.length > 0) {
-                            msaObj.defaultChain = msaObj.availableChains[0];
-                            
+                        if (msaObj && msaObj.availableChains.length > 0) {
                             // Load default chain's MSA
                             const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
                             if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
@@ -5361,47 +5326,10 @@ async function handleZipUpload(file, loadAsFrames) {
                             // Match MSAs to chains by sequence
                             const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
                             
-                            // Initialize MSA structure for object
-                            if (!object.msa) {
-                                object.msa = {
-                                    msasBySequence: {},
-                                    chainToSequence: {},
-                                    availableChains: [],
-                                    defaultChain: null,
-                                    msaToChains: {}
-                                };
-                            }
+                            // Store MSA data in object (consolidated function)
+                            const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
                             
-                            const msaObj = object.msa;
-                            
-                            // Store msaToChains mapping
-                            msaObj.msaToChains = msaToChains;
-                            
-                            // Store unique MSAs and map chains
-                            for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
-                                const querySeqNoGaps = msaData.querySequence.replace(/-/g, '').toUpperCase();
-                                
-                                // Store MSA by sequence (only one per unique sequence)
-                                if (!msaObj.msasBySequence[querySeqNoGaps]) {
-                                    msaObj.msasBySequence[querySeqNoGaps] = { 
-                                        msaData, 
-                                        chains: msaToChains[querySeqNoGaps] || []
-                                    };
-                                }
-                                
-                                // Map chain to sequence
-                                msaObj.chainToSequence[chainId] = querySeqNoGaps;
-                                
-                                // Add to available chains
-                                if (!msaObj.availableChains.includes(chainId)) {
-                                    msaObj.availableChains.push(chainId);
-                                }
-                            }
-                            
-                            // Set default chain (first available)
-                            if (msaObj.availableChains.length > 0) {
-                                msaObj.defaultChain = msaObj.availableChains[0];
-                                
+                            if (msaObj && msaObj.availableChains.length > 0) {
                                 // Load default chain's MSA
                                 const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
                                 if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
@@ -5734,9 +5662,9 @@ function saveViewerState() {
             
             // Only save msa_chain if there's actual MSA data
             if (msaData || hasObjectMSA) {
-                const currentChain = window.MSAViewer.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
-                if (currentChain) {
-                    viewerState.msa_chain = currentChain;
+            const currentChain = window.MSAViewer.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
+            if (currentChain) {
+                viewerState.msa_chain = currentChain;
                 }
             }
         }
@@ -6186,7 +6114,7 @@ async function loadViewerState(stateData) {
                                     if (msaEntry && msaEntry.msaData && window.MSAViewer) {
                                         // Load MSA data into viewer
                                         loadMSADataIntoViewer(msaEntry.msaData, chainToLoad, renderer.currentObjectName);
-                                    }
+                                }
                             }
                         }
                         

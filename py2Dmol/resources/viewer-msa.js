@@ -1128,14 +1128,17 @@
         const visibleStartPos = Math.floor(scrollLeft / charWidth);
         const visibleEndPos = Math.min(msaData.queryLength, visibleStartPos + Math.ceil((maxX - minX) / charWidth) + 1);
         
+        // Use filtered residueNumbers from msaData if available, otherwise fall back to global msaResidueNumbers
+        const residueNumbers = msaData.residueNumbers || msaResidueNumbers;
+        
         let xOffset = scrollableAreaX - (scrollLeft % charWidth);
         for (let pos = visibleStartPos; pos < visibleEndPos && pos < msaData.queryLength; pos++) {
             // Use residue_numbers if available, otherwise use 1-based position numbering
             let tickValue;
-            if (msaResidueNumbers && pos < msaResidueNumbers.length && msaResidueNumbers[pos] !== null) {
-                tickValue = msaResidueNumbers[pos];
+            if (residueNumbers && pos < residueNumbers.length && residueNumbers[pos] !== null) {
+                tickValue = residueNumbers[pos];
             } else {
-                tickValue = pos + 1; // Default: 1-based position numbering
+                tickValue = pos + 1; // Default: 1-based position numbering (for filtered positions)
             }
             
             // Show tick at position 1, or every TICK_INTERVAL positions
@@ -1439,6 +1442,180 @@
     // RENDERING (Simplified - using new mapping)
     // ============================================================================
     
+    /**
+     * Check if an MSA position should be visible (selected)
+     * @param {number} msaPos - MSA position index (0-based, skipping gaps)
+     * @param {Array<string>} chains - Array of chain IDs that map to this MSA
+     * @param {Map<string, Set<number>>} msaSelectedPositions - Map of chainId -> Set of selected MSA positions
+     * @returns {boolean} - True if position should be visible
+     */
+    function isPositionVisible(msaPos, chains, msaSelectedPositions) {
+        if (!chains || chains.length === 0) return true;
+        
+        // null means all positions are selected (default mode)
+        if (msaSelectedPositions === null) return true;
+        
+        // Empty Map means no positions selected - hide everything
+        if (!msaSelectedPositions || msaSelectedPositions.size === 0) return false;
+        
+        const totalChains = chains.length;
+        let selectedCount = 0;
+        
+        for (const chainId of chains) {
+            const chainSelected = msaSelectedPositions.get(chainId);
+            if (chainSelected && chainSelected.has(msaPos)) {
+                selectedCount++;
+            }
+        }
+        
+        // Show if at least one chain has it selected
+        return selectedCount > 0;
+    }
+    
+    /**
+     * Filter MSA data to remove unselected positions
+     * @param {Object} sourceMSAData - Original MSA data to filter
+     * @param {Array<string>} chains - Array of chain IDs that map to this MSA
+     * @param {Map<string, Set<number>>} msaSelectedPositions - Map of chainId -> Set of selected MSA positions
+     * @returns {Object} - Filtered MSA data with only selected positions
+     */
+    function filterMSADataBySelection(sourceMSAData, chains, msaSelectedPositions) {
+        if (!sourceMSAData || !sourceMSAData.sequences || sourceMSAData.sequences.length === 0) {
+            return sourceMSAData;
+        }
+        
+        // If all positions are selected (null) or no selection data, return original
+        if (msaSelectedPositions === null) {
+            return sourceMSAData;
+        }
+        if (!msaSelectedPositions || msaSelectedPositions.size === 0) {
+            // No selection - return empty MSA
+            return {
+                sequences: sourceMSAData.sequences.map(seq => ({ name: seq.name, sequence: '' })),
+                querySequence: '',
+                queryLength: 0,
+                queryIndex: sourceMSAData.queryIndex || 0,
+                residueNumbers: []
+            };
+        }
+        
+        // Build set of visible positions (positions that are selected in at least one chain)
+        const visiblePositions = new Set();
+        if (chains && chains.length > 0) {
+            for (let pos = 0; pos < sourceMSAData.queryLength; pos++) {
+                if (isPositionVisible(pos, chains, msaSelectedPositions)) {
+                    visiblePositions.add(pos);
+                }
+            }
+        } else {
+            // No chain info - show all positions
+            for (let pos = 0; pos < sourceMSAData.queryLength; pos++) {
+                visiblePositions.add(pos);
+            }
+        }
+        
+        if (visiblePositions.size === 0) {
+            // No visible positions - return empty MSA
+            return {
+                sequences: sourceMSAData.sequences.map(seq => ({ name: seq.name, sequence: '' })),
+                querySequence: '',
+                queryLength: 0,
+                queryIndex: sourceMSAData.queryIndex || 0,
+                residueNumbers: []
+            };
+        }
+        
+        // Filter sequences: remove positions that are not visible
+        // MSA positions are 0-based and skip gaps, so we need to map through the query sequence
+        const querySequence = sourceMSAData.querySequence || '';
+        
+        // Initialize filtered sequences
+        const filteredSequences = [];
+        for (let j = 0; j < sourceMSAData.sequences.length; j++) {
+            filteredSequences.push({ 
+                name: sourceMSAData.sequences[j].name, 
+                sequence: '' 
+            });
+        }
+        
+        const filteredQuerySequence = [];
+        const filteredResidueNumbers = [];
+        
+        // Walk through query sequence and map MSA positions
+        let msaPos = 0; // Position in MSA (skipping gaps)
+        for (let i = 0; i < querySequence.length; i++) {
+            const char = querySequence[i];
+            if (char === '-') {
+                // Gap - check if the next non-gap position is visible
+                // If the next visible position exists, include this gap to maintain alignment
+                // Otherwise, skip it
+                let nextVisiblePos = -1;
+                let tempMsaPos = msaPos;
+                for (let j = i + 1; j < querySequence.length; j++) {
+                    if (querySequence[j] !== '-') {
+                        if (visiblePositions.has(tempMsaPos)) {
+                            nextVisiblePos = tempMsaPos;
+                            break;
+                        }
+                        tempMsaPos++;
+                    }
+                }
+                
+                // Include gap if there's a visible position after it, or if the previous position was visible
+                const prevVisible = msaPos > 0 ? visiblePositions.has(msaPos - 1) : false;
+                if (nextVisiblePos >= 0 || prevVisible) {
+                    // Include this gap column
+                    for (let seqIdx = 0; seqIdx < sourceMSAData.sequences.length; seqIdx++) {
+                        filteredSequences[seqIdx].sequence += (sourceMSAData.sequences[seqIdx].sequence[i] || '-');
+                    }
+                    filteredQuerySequence.push(char);
+                }
+            } else {
+                // Non-gap character - check if this MSA position is visible
+                if (visiblePositions.has(msaPos)) {
+                    // Include this position (entire column)
+                    for (let seqIdx = 0; seqIdx < sourceMSAData.sequences.length; seqIdx++) {
+                        filteredSequences[seqIdx].sequence += (sourceMSAData.sequences[seqIdx].sequence[i] || '-');
+                    }
+                    filteredQuerySequence.push(char);
+                    
+                    // Preserve residueNumbers if available
+                    // residueNumbers is indexed by query sequence position i (with gaps), not msaPos
+                    if (sourceMSAData.residueNumbers && i < sourceMSAData.residueNumbers.length) {
+                        const residueNum = sourceMSAData.residueNumbers[i];
+                        if (residueNum !== null && residueNum !== undefined) {
+                            filteredResidueNumbers.push(residueNum);
+                        }
+                    }
+                }
+                msaPos++;
+            }
+        }
+        
+        // Calculate new queryLength (non-gap characters in filtered query sequence)
+        const filteredQuerySeqStr = filteredQuerySequence.join('');
+        const newQueryLength = filteredQuerySeqStr.replace(/-/g, '').length;
+        
+        // Build filtered MSA data
+        const filteredMSA = {
+            sequences: filteredSequences.length > 0 ? filteredSequences : sourceMSAData.sequences.map(seq => ({ name: seq.name, sequence: '' })),
+            querySequence: filteredQuerySeqStr,
+            queryLength: newQueryLength,
+            queryIndex: sourceMSAData.queryIndex || 0
+        };
+        
+        // Preserve residueNumbers if available - always set it so we know it's filtered
+        // Even if empty, set it so drawTickMarks knows to use filtered data
+        filteredMSA.residueNumbers = filteredResidueNumbers.length > 0 ? filteredResidueNumbers : undefined;
+        
+        // Preserve other properties
+        if (sourceMSAData.sequencesOriginal) {
+            filteredMSA.sequencesOriginal = sourceMSAData.sequencesOriginal;
+        }
+        
+        return filteredMSA;
+    }
+    
     function renderMSACanvas() {
         if (!msaCanvasData || !msaData) return;
         
@@ -1492,6 +1669,33 @@
         const halfCharWidth = MSA_CHAR_WIDTH / 2;
         const halfRowHeight = SEQUENCE_ROW_HEIGHT / 2;
         
+        // Get selection data and chain mappings for dimming
+        let msaSelectedPositions = null;
+        let chainsForMSA = null;
+        if (callbacks.getRenderer) {
+            const renderer = callbacks.getRenderer();
+            if (renderer && renderer.currentObjectName) {
+                const obj = renderer.objectsData[renderer.currentObjectName];
+                if (obj && obj.msa && currentChain) {
+                    // Get chains that map to this MSA
+                    const querySeq = obj.msa.chainToSequence[currentChain];
+                    if (querySeq && obj.msa.msasBySequence[querySeq]) {
+                        const msaEntry = obj.msa.msasBySequence[querySeq];
+                        chainsForMSA = msaEntry.chains || [currentChain];
+                    } else {
+                        chainsForMSA = [currentChain];
+                    }
+                    
+                    // Get selection data
+                    // Check for selection data (can be null, Map, or undefined)
+                    // null = all selected (no dimming), Map = selection data, undefined = not initialized
+                    if (typeof window !== 'undefined' && window._msaSelectedPositions !== undefined) {
+                        msaSelectedPositions = window._msaSelectedPositions;
+                    }
+                }
+            }
+        }
+        
         // Label rendering options
         const labelOptions = {
             padding: 8,
@@ -1531,6 +1735,7 @@
                 
                 const aa = seq.sequence[pos];
                 const color = getDayhoffColor(aa);
+                const r = color.r, g = color.g, b = color.b;
                 
                 // Draw cell with clipping
                 if (xOffset + MSA_CHAR_WIDTH >= minX && xOffset < maxX) {
@@ -1539,7 +1744,7 @@
                     ctx.rect(minX, scrollableAreaY, maxX - minX, scrollableAreaHeight);
                     ctx.clip();
                     
-                    ctx.fillStyle = `rgb(${color.r}, ${color.g}, ${color.b})`;
+                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
                     ctx.fillRect(xOffset, y, MSA_CHAR_WIDTH, SEQUENCE_ROW_HEIGHT);
                     
                     ctx.fillStyle = '#000';
@@ -3438,6 +3643,8 @@
                 msaResidueNumbers = buildMSAResidueNumbersMapping(chainId);
                 if (msaResidueNumbers) {
                     msaData.residueNumbers = msaResidueNumbers;
+                    // CRITICAL: Also update originalMSAData so it's available for filtering
+                    originalMSAData.residueNumbers = msaResidueNumbers;
                 }
             }
             
@@ -3501,6 +3708,104 @@
         
         getCurrentChain: function() {
             return currentChain;
+        },
+        
+        updateMSAViewSelectionState: function() {
+            // Filter MSA data based on selection and rebuild view
+            if (!originalMSAData) {
+                // No MSA data - just trigger re-render
+                if (msaViewMode === 'msa' && msaCanvasData) {
+                    scheduleRender();
+                } else if (msaViewMode === 'pssm' && pssmCanvasData) {
+                    scheduleRender();
+                } else if (msaViewMode === 'logo' && logoCanvasData) {
+                    scheduleRender();
+                }
+                return;
+            }
+            
+            // Get selection data and chain mappings
+            let msaSelectedPositions = null;
+            let chainsForMSA = null;
+            if (callbacks.getRenderer) {
+                const renderer = callbacks.getRenderer();
+                if (renderer && renderer.currentObjectName) {
+                    const obj = renderer.objectsData[renderer.currentObjectName];
+                    if (obj && obj.msa && currentChain) {
+                        // Get chains that map to this MSA
+                        const querySeq = obj.msa.chainToSequence[currentChain];
+                        if (querySeq && obj.msa.msasBySequence[querySeq]) {
+                            const msaEntry = obj.msa.msasBySequence[querySeq];
+                            chainsForMSA = msaEntry.chains || [currentChain];
+                        } else {
+                            chainsForMSA = [currentChain];
+                        }
+                        
+                        // Get selection data
+                        if (typeof window !== 'undefined' && window._msaSelectedPositions !== undefined) {
+                            msaSelectedPositions = window._msaSelectedPositions;
+                        }
+                    }
+                }
+            }
+            
+            // First filter by selection to remove unselected positions
+            // This ensures coverage/identity filters are calculated on the selected regions only
+            const baseMSAData = {
+                sequences: originalMSAData.sequencesOriginal || originalMSAData.sequences,
+                querySequence: originalMSAData.querySequence,
+                queryLength: originalMSAData.queryLength,
+                queryIndex: originalMSAData.queryIndex || 0
+            };
+            
+            // Preserve residueNumbers if available - need to copy the array
+            if (originalMSAData.residueNumbers) {
+                baseMSAData.residueNumbers = [...originalMSAData.residueNumbers];
+            }
+            if (originalMSAData.sequencesOriginal) {
+                baseMSAData.sequencesOriginal = originalMSAData.sequencesOriginal;
+            }
+            
+            // Filter by selection first (removes unselected positions)
+            const selectionFilteredMSA = filterMSADataBySelection(baseMSAData, chainsForMSA, msaSelectedPositions);
+            
+            // Now apply coverage/identity filters to the selection-filtered MSA
+            // This calculates coverage/identity based on the selected regions only
+            const sequencesToFilter = selectionFilteredMSA.sequences;
+            let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
+            filtered = filterSequencesByIdentity(filtered, selectionFilteredMSA.querySequence, identityCutoff);
+            
+            // Apply sorting if enabled
+            const finalSequences = sortSequences 
+                ? sortSequencesByIdentity(filtered, selectionFilteredMSA.querySequence, selectionFilteredMSA.queryLength)
+                : filtered;
+            
+            // Create final MSA data with both selection and coverage/identity filtering applied
+            const filteredMSA = {
+                sequences: finalSequences,
+                querySequence: selectionFilteredMSA.querySequence,
+                queryLength: selectionFilteredMSA.queryLength,
+                queryIndex: selectionFilteredMSA.queryIndex || 0,
+                residueNumbers: selectionFilteredMSA.residueNumbers
+            };
+            
+            // Update msaData with filtered version
+            msaData = filteredMSA;
+            
+            // CRITICAL: Update msaResidueNumbers to the filtered array
+            // drawTickMarks uses msaData.residueNumbers || msaResidueNumbers
+            // So we need to ensure msaResidueNumbers is set to the filtered version
+            msaResidueNumbers = filteredMSA.residueNumbers || null;
+            
+            // Clear cached properties since data changed
+            cachedFrequencies = null;
+            cachedLogOdds = null;
+            cachedDataHash = null;
+            cachedEntropy = null;
+            cachedEntropyHash = null;
+            
+            // Rebuild view for current mode
+            buildViewForMode(msaViewMode);
         },
         
         getMSAMode: function() {
@@ -3707,7 +4012,11 @@
         
         getSequenceCounts: function() {
             const filtered = msaData ? msaData.sequences.length : 0;
-            const total = originalMSAData ? originalMSAData.sequences.length : 0;
+            // Use sequencesOriginal for total count (all sequences before any filtering)
+            // If sequencesOriginal doesn't exist, fall back to sequences
+            const total = originalMSAData 
+                ? (originalMSAData.sequencesOriginal ? originalMSAData.sequencesOriginal.length : originalMSAData.sequences.length)
+                : 0;
             return { filtered, total };
         },
         
