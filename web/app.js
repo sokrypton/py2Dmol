@@ -74,7 +74,7 @@ function initializeApp() {
             applySelection: applySelection,
             onMSAFilterChange: (filteredMSAData, chainId) => {
                 // Recompute properties when MSA filters change
-                // The filtered MSA data needs to have frequencies, entropy, and logOdds recomputed
+                // The filtered MSA data needs to have frequencies and logOdds recomputed
                 if (!viewerApi?.renderer || !chainId || !filteredMSAData) return;
                 
                 const objectName = viewerApi.renderer.currentObjectName;
@@ -83,27 +83,12 @@ function initializeApp() {
                 const obj = viewerApi.renderer.objectsData[objectName];
                 if (!obj || !obj.msa) return;
                 
-                // Recompute properties for filtered MSA data
-                // This updates msaData.frequencies, msaData.entropy, msaData.logOdds
+                // Recompute properties
                 computeMSAProperties(filteredMSAData);
                 
                 // NOTE: We do NOT overwrite stored msaEntry.msaData with filtered data
                 // The stored msaEntry.msaData remains the canonical unfiltered source
                 // The viewer maintains its own filtered copy internally
-                
-                // Invalidate entropy cache since entropy was recalculated
-                if (viewerApi.renderer) {
-                    viewerApi.renderer.cachedResolvedEntropy = null;
-                    viewerApi.renderer.cachedEntropyObjectName = null;
-                    viewerApi.renderer.cachedEntropyPositionCount = null;
-                }
-                
-                // If entropy color mode is active, update the renderer and re-render
-                if (viewerApi.renderer.colorMode === 'entropy') {
-                    // Reload current frame data to update entropy
-                    const currentFrameIndex = viewerApi.renderer.currentFrame || 0;
-                    viewerApi.renderer._loadFrameData(currentFrameIndex, false); // false = render immediately
-                }
             }
         });
     }
@@ -436,11 +421,6 @@ function setupEventListeners() {
         // Update colors in sequence view when color mode changes
         updateSequenceViewColors();
         updateSequenceViewSelectionState();
-        
-        // If entropy mode is selected, ensure entropy data is calculated and available
-        if (viewerApi?.renderer && viewerApi.renderer.colorMode === 'entropy') {
-            ensureEntropyDataAvailable();
-        }
     });
     
     // Listen for selection changes (including PAE selections)
@@ -574,71 +554,10 @@ function handleObjectChange() {
     if (window.updateMSAContainerVisibility) {
         window.updateMSAContainerVisibility();
     }
-    
-    // Update entropy option visibility in color menu
-    updateEntropyOptionVisibility(selectedObject);
-    
-    // Note: updateColorMode() is a placeholder, removed to avoid confusion
-    // Color mode is managed by the renderer and persists across object changes
 }
 
 
 
-/**
- * Update entropy option visibility in color select dropdown based on MSA availability
- * @param {string} objectName - Name of the object to check for MSA data
- */
-function updateEntropyOptionVisibility(objectName) {
-    // If no object name provided, use current object
-    if (!objectName && viewerApi?.renderer) {
-        objectName = viewerApi.renderer.currentObjectName;
-    }
-    const colorSelect = document.getElementById('colorSelect');
-    if (!colorSelect) return;
-    
-    // Find entropy option
-    const entropyOption = Array.from(colorSelect.options).find(opt => opt.value === 'entropy');
-    if (!entropyOption) return; // Option doesn't exist (e.g., in viewer.html)
-    
-    // Always show entropy option (user can select it, and it will work if MSA data is available)
-    entropyOption.style.display = '';
-    
-    // If entropy is currently selected but MSA is not available, switch to auto
-    // Check if MSA data is available for this object
-    let hasMSA = false;
-    if (viewerApi?.renderer && objectName) {
-        const obj = viewerApi.renderer.objectsData[objectName];
-        if (obj && obj.msa) {
-            // Check various MSA data formats
-            if (obj.msa.msasBySequence && obj.msa.chainToSequence && obj.msa.availableChains && obj.msa.availableChains.length > 0) {
-                hasMSA = true;
-            } else if (obj.msa.chains && obj.msa.availableChains && obj.msa.availableChains.length > 0) {
-                hasMSA = true;
-            } else if (obj.msa.msaData) {
-                hasMSA = true;
-            } else if (obj.msa.sequences && obj.msa.sequences.length > 0) {
-            hasMSA = true;
-        }
-    }
-    }
-    
-    // If entropy is selected but MSA is not available, switch to auto
-    if (colorSelect.value === 'entropy' && !hasMSA && viewerApi?.renderer) {
-        viewerApi.renderer.colorMode = 'auto';
-        colorSelect.value = 'auto';
-        viewerApi.renderer.colorsNeedUpdate = true;
-        viewerApi.renderer.render();
-        document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
-    }
-}
-
-// Expose updateEntropyOptionVisibility globally so it can be called from viewer-mol.js
-window.updateEntropyOptionVisibility = updateEntropyOptionVisibility;
-
-function updateColorMode() {
-    // Placeholder for future color mode updates
-    // Can be extended to sync with viewer color settings
-}
 
 // ============================================================================
 // BEST VIEW ROTATION ANIMATION
@@ -1448,9 +1367,6 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                 if (paeData.length === originalIsLigandPosition.length) {
                     // Sizes match - PAE includes all positions, filter out ligands
                     frameData.pae = filterPAEForLigands(paeData, originalIsLigandPosition);
-                    if (totalLigands > 0) {
-                        console.log(`Filtered ${totalLigands} ligand positions from PAE matrix (size ${paeData.length} -> ${frameData.pae.length})`);
-                    }
                 } else if (paeData.length < originalIsLigandPosition.length) {
                     // PAE is smaller - it might already exclude ligands, but we need to verify
                     // Count how many ligands are in the first paeData.length positions
@@ -1466,13 +1382,9 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                         // Create a truncated ligand position array for the PAE range
                         const truncatedLigandPositions = originalIsLigandPosition.slice(0, paeData.length);
                         frameData.pae = filterPAEForLigands(paeData, truncatedLigandPositions);
-                        console.log(`Filtered ${ligandCountInPAERange} ligand positions from PAE matrix (size ${paeData.length} -> ${frameData.pae.length})`);
                     } else {
                         // No ligands in PAE range - PAE already excludes ligands, use as-is
                         frameData.pae = paeData.map(row => [...row]);
-                        if (totalLigands > 0) {
-                            console.log(`PAE matrix (size ${paeData.length}) already excludes ${totalLigands} ligands found in structure`);
-                        }
                     }
                 } else {
                     // PAE is larger - truncate to match originalFrameData size, then filter
@@ -2942,7 +2854,7 @@ function initializeMSAViewerIndex() {
                         // Update default chain to first chain in the key
                         obj.msa.defaultChain = firstChain;
                         
-                        // Update renderer to show entropy for selected chain key
+                        // Update renderer for selected chain key
                         const currentFrameIndex = viewerApi.renderer.currentFrame || 0;
                         viewerApi.renderer._loadFrameData(currentFrameIndex, false);
                     }
@@ -3035,8 +2947,6 @@ function initializeMSAViewerIndex() {
                 msaView.classList.add('hidden');
             }
             
-            // Update entropy option visibility (hide it when no MSA)
-            updateEntropyOptionVisibility(objectName);
         }
     }
     
@@ -3436,8 +3346,7 @@ async function handleFetch() {
                                                 const {msaData: matchedMSA} = msaObj.msasBySequence[defaultChainSeq];
                                                 const firstMatchedChain = msaObj.defaultChain;
                                                 
-                                                // MSA properties (frequencies, entropy, logOdds) are computed when MSA is loaded
-                                                // No need to pre-calculate entropy separately
+                                                // MSA properties (frequencies, logOdds) are computed when MSA is loaded
                                                 
                                                 // Also add MSA to batchedObjects for consistency and persistence
                                                 const batchedObj = batchedObjects.find(obj => obj.name === objectName);
@@ -3448,7 +3357,6 @@ async function handleFetch() {
                                                         availableChains: msaObj.availableChains,
                                                         defaultChain: msaObj.defaultChain,
                                                         msaToChains: msaObj.msaToChains,
-                                                        // Entropy is now stored in msaData.entropy, no need for separate entropyByChain
                                                     };
                                                 }
                                                 
@@ -3732,14 +3640,12 @@ function storeMSADataInObject(object, chainToMSA, msaToChains) {
  * @param {string} objectName - Name of the object containing this MSA
  * @param {Object} options - Optional configuration
  * @param {boolean} options.updateChainSelector - Whether to update chain selector (default: true)
- * @param {boolean} options.updateEntropyOption - Whether to update entropy option visibility (default: true)
  */
 function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
     if (!window.MSAViewer || !msaData) return;
     
     const {
-        updateChainSelector = true,
-        updateEntropyOption = true
+        updateChainSelector = true
     } = options;
     
     // Load MSA data into viewer
@@ -3752,9 +3658,8 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
     if (filteredMSAData) {
         // Clear existing properties to force recomputation on filtered data
         filteredMSAData.frequencies = null;
-        filteredMSAData.entropy = null;
         filteredMSAData.logOdds = null;
-        // Compute properties on filtered data
+        // Compute properties
         computeMSAProperties(filteredMSAData);
         
         // NOTE: We do NOT overwrite stored msaEntry.msaData with filtered data
@@ -3768,10 +3673,6 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
         window.updateMSAChainSelectorIndex();
     }
     
-    // Update entropy option visibility
-    if (updateEntropyOption && window.updateEntropyOptionVisibility && objectName) {
-        window.updateEntropyOptionVisibility(objectName);
-    }
     
     // Update sequence count to reflect the loaded MSA
     if (window.updateMSASequenceCount) {
@@ -3780,68 +3681,125 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
 }
 
 /**
- * Compute and store frequencies, entropy, and logOdds in MSA data
+ * Compute and store frequencies and logOdds in MSA data
  * These properties are computed once and stored with the MSA for performance
  * @param {Object} msaData - MSA data object
  */
 function computeMSAProperties(msaData) {
     if (!msaData || !msaData.sequences || msaData.sequences.length === 0) return;
     
-    // Compute frequencies if not already present
+    const queryLength = msaData.queryLength;
+    const numSequences = msaData.sequences.length;
+    const frequencies = msaData.frequencies || [];
+    
+    // Amino acid code mapping to array index (A=0, R=1, N=2, D=3, C=4, Q=5, E=6, G=7, H=8, I=9, L=10, K=11, M=12, F=13, P=14, S=15, T=16, W=17, Y=18, V=19)
+    const aaCodeMap = {
+        'A': 0, 'R': 1, 'N': 2, 'D': 3, 'C': 4, 'Q': 5, 'E': 6, 'G': 7, 'H': 8,
+        'I': 9, 'L': 10, 'K': 11, 'M': 12, 'F': 13, 'P': 14, 'S': 15, 'T': 16,
+        'W': 17, 'Y': 18, 'V': 19
+    };
+    // Reverse mapping: array index to amino acid code
+    const aaCodes = ['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P', 'S', 'T', 'W', 'Y', 'V'];
+    
+    // Compute frequencies
     if (!msaData.frequencies) {
-        const frequencies = [];
-        const queryLength = msaData.queryLength;
+        // Pre-extract all sequence strings to avoid repeated property access
+        const sequenceStrings = new Array(numSequences);
+        const sequenceLengths = new Uint16Array(numSequences);
+        for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
+            const seqStr = msaData.sequences[seqIdx].sequence;
+            sequenceStrings[seqIdx] = seqStr;
+            sequenceLengths[seqIdx] = seqStr.length;
+        }
         
+        // Pre-allocate arrays
+        if (!msaData.frequencies) {
+            for (let pos = 0; pos < queryLength; pos++) {
+                frequencies.push({});
+            }
+        }
+        
+        // Character code lookup table for fast AA code mapping (ASCII: A=65, Z=90, a=97, z=122)
+        // Maps char codes directly to array indices, -1 for invalid
+        const charCodeToAACode = new Int8Array(128);
+        charCodeToAACode.fill(-1);
+        charCodeToAACode[65] = 0;  // A
+        charCodeToAACode[97] = 0;  // a
+        charCodeToAACode[82] = 1;  // R
+        charCodeToAACode[114] = 1; // r
+        charCodeToAACode[78] = 2;  // N
+        charCodeToAACode[110] = 2; // n
+        charCodeToAACode[68] = 3;  // D
+        charCodeToAACode[100] = 3; // d
+        charCodeToAACode[67] = 4;  // C
+        charCodeToAACode[99] = 4;  // c
+        charCodeToAACode[81] = 5;  // Q
+        charCodeToAACode[113] = 5; // q
+        charCodeToAACode[69] = 6;  // E
+        charCodeToAACode[101] = 6; // e
+        charCodeToAACode[71] = 7;  // G
+        charCodeToAACode[103] = 7; // g
+        charCodeToAACode[72] = 8;  // H
+        charCodeToAACode[104] = 8; // h
+        charCodeToAACode[73] = 9;  // I
+        charCodeToAACode[105] = 9; // i
+        charCodeToAACode[76] = 10; // L
+        charCodeToAACode[108] = 10; // l
+        charCodeToAACode[75] = 11; // K
+        charCodeToAACode[107] = 11; // k
+        charCodeToAACode[77] = 12; // M
+        charCodeToAACode[109] = 12; // m
+        charCodeToAACode[70] = 13; // F
+        charCodeToAACode[102] = 13; // f
+        charCodeToAACode[80] = 14; // P
+        charCodeToAACode[112] = 14; // p
+        charCodeToAACode[83] = 15; // S
+        charCodeToAACode[115] = 15; // s
+        charCodeToAACode[84] = 16; // T
+        charCodeToAACode[116] = 16; // t
+        charCodeToAACode[87] = 17; // W
+        charCodeToAACode[119] = 17; // w
+        charCodeToAACode[89] = 18; // Y
+        charCodeToAACode[121] = 18; // y
+        charCodeToAACode[86] = 19; // V
+        charCodeToAACode[118] = 19; // v
+        
+        // Compute frequencies
         for (let pos = 0; pos < queryLength; pos++) {
-            const counts = {};
+            // Use typed array for counts (faster than object)
+            const counts = new Uint32Array(20);
             let total = 0;
             
-            for (const seq of msaData.sequences) {
-                if (pos < seq.sequence.length) {
-                    const aa = seq.sequence[pos].toUpperCase();
-                    if (aa !== '-' && aa !== 'X') {
-                        counts[aa] = (counts[aa] || 0) + 1;
-                        total++;
+            // Count amino acids at this position - optimized inner loop
+            for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
+                if (pos < sequenceLengths[seqIdx]) {
+                    const charCode = sequenceStrings[seqIdx].charCodeAt(pos);
+                    // Fast lookup: skip gaps (45='-') and X (88='X', 120='x')
+                    if (charCode !== 45 && charCode !== 88 && charCode !== 120) {
+                        const code = charCodeToAACode[charCode];
+                        if (code >= 0) {
+                            counts[code]++;
+                            total++;
+                        }
                     }
                 }
             }
             
+            // Build frequency object
             const freq = {};
-            for (const aa in counts) {
-                freq[aa] = counts[aa] / total;
-            }
-            frequencies.push(freq);
-        }
-        
-        msaData.frequencies = frequencies;
-    }
-    
-    // Compute entropy if not already present
-    if (!msaData.entropy) {
-        const frequencies = msaData.frequencies;
-        if (!frequencies || frequencies.length === 0) return;
-        
-        const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
-        const entropyValues = [];
-        
-        for (let pos = 0; pos < frequencies.length; pos++) {
-            const posFreq = frequencies[pos];
+            const invTotal = total > 0 ? 1 / total : 0;
             
-            // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
-            let entropy = 0;
-            for (const aa in posFreq) {
-                const p = posFreq[aa];
-                if (p > 0) {
-                    entropy -= p * Math.log2(p);
+            for (let i = 0; i < 20; i++) {
+                if (counts[i] > 0) {
+                    const p = counts[i] * invTotal;
+                    freq[aaCodes[i]] = p;
                 }
             }
             
-            // Normalize by max entropy (0 to 1 scale)
-            const normalizedEntropy = entropy / maxEntropy;
-            entropyValues.push(normalizedEntropy);
+            frequencies[pos] = freq;
         }
         
-        msaData.entropy = entropyValues;
+        msaData.frequencies = frequencies;
     }
     
     // logOdds will be computed on-demand when needed for logo view
@@ -4341,141 +4299,6 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
     return trimmedMSA;
 }
 
-// Entropy calculation is handled by computeMSAProperties() and viewer-msa.js's calculateEntropy()
-// No need for separate calculateMSAEntropy() function
-
-// Flag to prevent infinite recursion when loading entropy data
-let isLoadingEntropyData = false;
-
-/**
- * Ensure entropy data is available for the current object/frame
- * Called when user selects entropy color mode
- * Entropy is now pre-computed and stored in msaData.entropy, so we just need to rebuild the vector
- */
-function ensureEntropyDataAvailable() {
-    if (!viewerApi?.renderer) return;
-    
-    // Prevent infinite recursion - if we're already loading entropy data, don't do it again
-    if (isLoadingEntropyData) return;
-    
-    const objectName = viewerApi.renderer.currentObjectName;
-    if (!objectName) return;
-    
-    const obj = viewerApi.renderer.objectsData[objectName];
-    if (!obj || !obj.frames || obj.frames.length === 0) return;
-    
-    const currentFrameIndex = viewerApi.renderer.currentFrame || 0;
-    const currentFrame = obj.frames[currentFrameIndex];
-    if (!currentFrame) return;
-    
-    // Check if MSA data exists
-    if (!obj.msa || !obj.msa.msasBySequence) {
-        // No MSA data available - can't show entropy
-        return;
-    }
-    
-    // Set flag to prevent recursion
-    isLoadingEntropyData = true;
-    
-    try {
-        // Entropy is pre-computed in msaData.entropy
-        // Just reload frame data to rebuild entropy vector using buildEntropyVectorForColoring
-        const renderer = viewerApi.renderer;
-        renderer._loadFrameData(currentFrameIndex, false); // false = render immediately
-    } finally {
-        // Reset flag after a short delay to allow the frame data to load
-        setTimeout(() => {
-            isLoadingEntropyData = false;
-        }, 100);
-    }
-}
-
-// mapEntropyToResiduesFromArray removed - use buildEntropyVectorForColoring() instead
-// Entropy is now pre-computed and stored in msaData.entropy, and buildEntropyVectorForColoring
-// handles the mapping for all chains at once
-
-/**
- * Build entropy vector for coloring the entire structure
- * Initializes vector with -1 for all positions, then maps MSA entropy to chain positions
- * @param {Object} object - Object data with frames and MSA
- * @param {Object} frame - Frame data with chains, residue_numbers, position_types
- * @returns {Array} - Entropy vector (one value per position, -1 for unmapped)
- */
-function buildEntropyVectorForColoring(object, frame) {
-    if (!object || !object.msa || !frame || !frame.chains) {
-        return null;
-    }
-    
-    // Initialize vector with -1 for all positions (full molecule length)
-    const positionCount = frame.chains.length;
-    const entropyVector = new Array(positionCount).fill(-1);
-    
-    // Check if MSA data exists
-    if (!object.msa.msasBySequence || !object.msa.chainToSequence) {
-        return entropyVector;
-    }
-    
-    // For each chain, get its MSA and map entropy values
-    for (const [chainId, querySeq] of Object.entries(object.msa.chainToSequence)) {
-        const msaEntry = object.msa.msasBySequence[querySeq];
-        if (!msaEntry || !msaEntry.msaData || !msaEntry.msaData.entropy) {
-            continue; // No entropy data for this chain's MSA
-        }
-        
-        const msaData = msaEntry.msaData;
-        const msaEntropy = msaData.entropy; // Pre-computed entropy array (one per MSA position)
-        const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps (removed during parsing)
-        
-        // Extract chain sequence from structure
-        const chainSequences = extractChainSequences(frame);
-        const chainSequence = chainSequences[chainId];
-        if (!chainSequence) {
-            continue; // Chain not found in frame
-        }
-        
-        // Find representative positions for this chain (position_types === 'P')
-        const chainPositions = []; // Array of position indices for this chain
-        
-        for (let i = 0; i < positionCount; i++) {
-            if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
-                chainPositions.push(i);
-            }
-        }
-        
-        if (chainPositions.length === 0) {
-            continue; // No representative positions found
-        }
-        
-        // Sort positions by residue number to match sequence order
-        chainPositions.sort((a, b) => {
-            const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
-            const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
-            return residueNumA - residueNumB;
-        });
-        
-        // Map MSA positions to chain positions (one-to-one mapping)
-        // Query sequence has no gaps, so mapping is straightforward
-        const msaQueryUpper = msaQuerySequence.toUpperCase();
-        const chainSeqUpper = chainSequence.toUpperCase();
-        const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length, msaEntropy.length);
-        
-        for (let i = 0; i < minLength; i++) {
-            // Check if this MSA position matches the chain sequence position
-            if (msaQueryUpper[i] === chainSeqUpper[i]) {
-                // Match found - copy entropy value to corresponding position
-                const positionIndex = chainPositions[i];
-                if (positionIndex < entropyVector.length) {
-                    entropyVector[positionIndex] = msaEntropy[i];
-                }
-            }
-        }
-    }
-    
-    return entropyVector;
-}
-
-// Expose function globally for renderer to use
-window.buildEntropyVectorForColoring = buildEntropyVectorForColoring;
 
 /**
  * Apply current structure selection to MSA viewer
@@ -4740,7 +4563,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                     setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: Query sequence is empty`, true);
                 } else {
                     msaDataList.push({ msaData, filename: msaFile.name });
-                    console.log(`Successfully parsed MSA file ${msaFile.name}: ${msaData.sequences.length} sequences, query length ${msaData.queryLength}`);
                 }
             } catch (e) {
                 console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
@@ -5824,7 +5646,7 @@ async function loadViewerState(stateData) {
                                     chains: msaEntry.chains || []
                                 };
                                 
-                                // Recompute properties (frequencies, entropy, logOdds, positionIndex)
+                                // Recompute properties (frequencies, logOdds, positionIndex)
                                 if (typeof computeMSAProperties === 'function') {
                                     computeMSAProperties(restoredMSAData);
                                 }
@@ -5869,7 +5691,7 @@ async function loadViewerState(stateData) {
             
             // Restore color mode
             if (vs.color_mode) {
-                const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+                const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
                 if (validModes.includes(vs.color_mode)) {
                     renderer.colorMode = vs.color_mode;
                     const colorSelect = document.getElementById('colorSelect');
@@ -6097,10 +5919,6 @@ async function loadViewerState(stateData) {
                             window.updateMSAContainerVisibility();
                         }
                         
-                        // Update entropy option visibility
-                        if (window.updateEntropyOptionVisibility) {
-                            window.updateEntropyOptionVisibility(renderer.currentObjectName);
-                        }
                         
                         
                         // Force a render to ensure everything is displayed

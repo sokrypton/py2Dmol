@@ -259,24 +259,6 @@ function initializePy2DmolViewer(containerElement) {
     function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
     function getPlddtColor_Colorblind(plddt) { return getPlddtRainbowColor_Colorblind(plddt, 50, 90); }
     
-    // Entropy color: low entropy (conserved, blue) to high entropy (variable, red)
-    // Entropy values are normalized 0-1, where 0 = conserved, 1 = variable
-    function getEntropyColor(entropy) {
-        // Clamp entropy to 0-1 range
-        const normalized = Math.max(0, Math.min(1, entropy || 0));
-        // Low entropy (conserved) -> blue (240), high entropy (variable) -> red (0)
-        const hue = 240 * (1 - normalized); // 0 -> 240 (blue), 1 -> 0 (red)
-        return hsvToRgb(hue, 1.0, 1.0);
-    }
-    
-    // Entropy colorblind: low entropy (conserved, blue) to high entropy (yellow)
-    function getEntropyColor_Colorblind(entropy) {
-        // Clamp entropy to 0-1 range
-        const normalized = Math.max(0, Math.min(1, entropy || 0));
-        // Low entropy (conserved) -> blue (240), high entropy (variable) -> yellow (60)
-        const hue = 240 - normalized * 180; // 240 -> 60 (blue to yellow)
-        return hsvToRgb(hue, 1.0, 1.0);
-    }
 
     function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
     
@@ -360,15 +342,9 @@ function initializePy2DmolViewer(containerElement) {
             this.plddts = [];
             this.chains = [];
             this.positionTypes = [];
-            this.entropy = undefined;
             
-            // Cache for resolved entropy array (same for all frames, so cache it)
-            this.cachedResolvedEntropy = null;
-            this.cachedEntropyObjectName = null;
-            this.cachedEntropyPositionCount = null;
-            
-            // Viewer state - Color mode: auto, chain, rainbow, plddt, or entropy
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+            // Viewer state - Color mode: auto, chain, rainbow, or plddt
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
             this.colorMode = (config.color && validModes.includes(config.color)) ? config.color : 'auto';
             // Ensure it's always valid
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
@@ -1819,31 +1795,12 @@ function initializePy2DmolViewer(containerElement) {
                 window.SequenceViewer.buildSequenceView();
             }
 
-            // Clear entropy cache since we have a new object with potentially different MSA data
-            this.cachedResolvedEntropy = null;
-            this.cachedEntropyObjectName = null;
-            this.cachedEntropyPositionCount = null;
-
             // Trigger object change event to ensure all UI updates
             if (this.objectSelect) {
                 this.objectSelect.dispatchEvent(new Event('change'));
             }
 
-            // If entropy color mode is active, reload frame data to rebuild entropy vector
-            if (this.colorMode === 'entropy') {
-                // Switch to extracted object first (if not already)
-                if (this.currentObjectName !== extractName) {
-                    this.currentObjectName = extractName;
-                    if (this.objectSelect) {
-                        this.objectSelect.value = extractName;
-                    }
-                }
-                // Reload frame data to rebuild entropy vector for the extracted object
-                const currentFrameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
-                this._loadFrameData(currentFrameIndex, false); // false = render immediately
-            }
 
-            console.log(`Extracted ${selectedIndices.length} positions from ${object.frames.length} frame(s) to new object: ${extractName}`);
         }
 
         /**
@@ -2049,7 +2006,7 @@ function initializePy2DmolViewer(containerElement) {
                     residueNumbers: extractedResidueNumbers // Map to structure residue_numbers
                 };
 
-                // Compute MSA properties (frequencies, entropy, logOdds) for extracted sequences
+                // Compute MSA properties (frequencies, logOdds) for extracted sequences
                 // This must be done because the extracted sequences are different from the original
                 if (typeof window !== 'undefined' && typeof window.computeMSAProperties === 'function') {
                     window.computeMSAProperties(extractedMSAData);
@@ -2884,7 +2841,6 @@ function initializePy2DmolViewer(containerElement) {
                         (data.pae && data.pae.length > 0),
                         data.position_names,
                         data.residue_numbers,
-                        data.entropy,
                         skipRender
                     );
                 }
@@ -2893,12 +2849,12 @@ function initializePy2DmolViewer(containerElement) {
             }
         }
 
-        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, entropy, skipRender = false) {
+        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false) {
             this.coords = coords;
             const n = this.coords.length;
             
             // Ensure colorMode is valid
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
             }
@@ -2913,8 +2869,6 @@ function initializePy2DmolViewer(containerElement) {
             this.positionTypes = (positionTypes && positionTypes.length === n) ? positionTypes : Array(n).fill('P');
             this.positionNames = (positionNames && positionNames.length === n) ? positionNames : Array(n).fill('UNK');
             this.residueNumbers = (residueNumbers && residueNumbers.length === n) ? residueNumbers : Array.from({length: n}, (_, i) => i + 1);
-            // Entropy: store as array indexed by position index (undefined for positions without entropy data)
-            this.entropy = (entropy && entropy.length === n) ? entropy : undefined;
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
@@ -3293,52 +3247,11 @@ function initializePy2DmolViewer(containerElement) {
             const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
             const resolvedPae = this._resolvePaeData(object, frameIndex);
             
-            // Resolve entropy: Use new buildEntropyVectorForColoring function
-            // This builds entropy vector from pre-computed MSA entropy (stored in msaData.entropy)
-            let resolvedEntropy = null;
-            
-            // Check if we can use cached entropy (only if cache is valid and matches current object/position count)
-            const chains = data.chains || [];
-            const positionCount = chains.length;
-            const canUseCache = this.cachedResolvedEntropy !== null &&
-                               this.cachedEntropyObjectName === this.currentObjectName &&
-                               this.cachedEntropyPositionCount === positionCount;
-            
-            if (canUseCache) {
-                // Use cached entropy (fast path - no recalculation needed)
-                resolvedEntropy = this.cachedResolvedEntropy;
-            } else {
-                // Build entropy vector from MSA data
-                // Check if buildEntropyVectorForColoring function is available (from app.js)
-                if (typeof window.buildEntropyVectorForColoring === 'function') {
-                    resolvedEntropy = window.buildEntropyVectorForColoring(object, data);
-                } else if (object.msa && object.msa.entropy) {
-                    // Legacy format: single entropy array (fallback)
-                    resolvedEntropy = object.msa.entropy;
-                } else {
-                    // Fall back to frame data (for backward compatibility)
-                    resolvedEntropy = data.entropy;
-                }
-                
-                // Cache the resolved entropy if it's valid
-                if (resolvedEntropy !== null && resolvedEntropy !== undefined && Array.isArray(resolvedEntropy)) {
-                    this.cachedResolvedEntropy = resolvedEntropy;
-                    this.cachedEntropyObjectName = this.currentObjectName;
-                    this.cachedEntropyPositionCount = positionCount;
-                } else {
-                    // Clear cache if no entropy data
-                    this.cachedResolvedEntropy = null;
-                    this.cachedEntropyObjectName = null;
-                    this.cachedEntropyPositionCount = null;
-                }
-            }
-            
             // Create resolved data object (use resolved values if frame doesn't have its own)
             const resolvedData = {
                 ...data,
                 plddts: resolvedPlddt !== null ? resolvedPlddt : data.plddts,
-                pae: resolvedPae !== null ? resolvedPae : data.pae,
-                entropy: resolvedEntropy // Use object-level entropy (same for all frames)
+                pae: resolvedPae !== null ? resolvedPae : data.pae
             };
             
             // Load 3D data (with skipRender option)
@@ -3369,7 +3282,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         _getEffectiveColorMode() {
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
             }
@@ -3406,18 +3319,6 @@ function initializePy2DmolViewer(containerElement) {
                 const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtFunc(plddt);
-            } else if (effectiveColorMode === 'entropy') {
-                const entropyFunc = this.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
-                // Get entropy value from frame data (entropy array indexed by position index)
-                const entropy = (this.entropy && atomIndex < this.entropy.length && this.entropy[atomIndex] !== undefined) 
-                    ? this.entropy[atomIndex] 
-                    : undefined;
-                if (entropy !== undefined) {
-                    color = entropyFunc(entropy);
-                } else {
-                    // No entropy data for this position (ligand, RNA/DNA, or missing data) - use default grey
-                    color = { r: 128, g: 128, b: 128 };
-                }
             } else if (effectiveColorMode === 'chain') {
                 const chainId = this.chains[atomIndex] || 'A';
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
@@ -4910,7 +4811,7 @@ function initializePy2DmolViewer(containerElement) {
     const colorSelect = containerElement.querySelector('#colorSelect');
     
     // Initialize color mode
-    const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+    const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
     if (!renderer.colorMode || !validModes.includes(renderer.colorMode)) {
         renderer.colorMode = (config.color && validModes.includes(config.color)) ? config.color : 'auto';
     }
@@ -4921,7 +4822,7 @@ function initializePy2DmolViewer(containerElement) {
     
     colorSelect.addEventListener('change', (e) => {
         const selectedMode = e.target.value;
-        const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+        const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
         
         if (validModes.includes(selectedMode)) {
             renderer.colorMode = selectedMode;

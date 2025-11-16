@@ -400,12 +400,6 @@
     let identityCutoff = 0.15;
     let previewIdentityCutoff = 0.15;
     
-    // Cached logo data
-    let cachedFrequencies = null;
-    let cachedLogOdds = null;
-    let cachedDataHash = null;
-    let cachedEntropy = null;
-    let cachedEntropyHash = null;
     
     // Virtual scrolling state
     let visibleSequenceStart = 0;
@@ -1883,44 +1877,84 @@
             return msaData.frequencies;
         }
         
-        const dataHash = msaData.sequences.length + '_' + msaData.queryLength;
-        if (cachedFrequencies && cachedDataHash === dataHash) {
-            // Store in msaData for persistence
-            msaData.frequencies = cachedFrequencies;
-            return cachedFrequencies;
-        }
-        
         const frequencies = [];
         const queryLength = msaData.queryLength;
+        const numSequences = msaData.sequences.length;
+        
+        // Amino acid code mapping to array index
+        const aaCodeMap = {
+            'A': 0, 'R': 1, 'N': 2, 'D': 3, 'C': 4, 'Q': 5, 'E': 6, 'G': 7, 'H': 8,
+            'I': 9, 'L': 10, 'K': 11, 'M': 12, 'F': 13, 'P': 14, 'S': 15, 'T': 16,
+            'W': 17, 'Y': 18, 'V': 19
+        };
+        const aaCodes = ['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P', 'S', 'T', 'W', 'Y', 'V'];
+        
+        // Pre-extract all sequence strings to avoid repeated property access
+        const sequenceStrings = new Array(numSequences);
+        const sequenceLengths = new Uint16Array(numSequences);
+        for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
+            const seqStr = msaData.sequences[seqIdx].sequence;
+            sequenceStrings[seqIdx] = seqStr;
+            sequenceLengths[seqIdx] = seqStr.length;
+        }
+        
+        // Character code lookup table for fast AA code mapping
+        const charCodeToAACode = new Int8Array(128);
+        charCodeToAACode.fill(-1);
+        charCodeToAACode[65] = 0; charCodeToAACode[97] = 0;  // A/a
+        charCodeToAACode[82] = 1; charCodeToAACode[114] = 1; // R/r
+        charCodeToAACode[78] = 2; charCodeToAACode[110] = 2; // N/n
+        charCodeToAACode[68] = 3; charCodeToAACode[100] = 3; // D/d
+        charCodeToAACode[67] = 4; charCodeToAACode[99] = 4;  // C/c
+        charCodeToAACode[81] = 5; charCodeToAACode[113] = 5; // Q/q
+        charCodeToAACode[69] = 6; charCodeToAACode[101] = 6; // E/e
+        charCodeToAACode[71] = 7; charCodeToAACode[103] = 7; // G/g
+        charCodeToAACode[72] = 8; charCodeToAACode[104] = 8; // H/h
+        charCodeToAACode[73] = 9; charCodeToAACode[105] = 9; // I/i
+        charCodeToAACode[76] = 10; charCodeToAACode[108] = 10; // L/l
+        charCodeToAACode[75] = 11; charCodeToAACode[107] = 11; // K/k
+        charCodeToAACode[77] = 12; charCodeToAACode[109] = 12; // M/m
+        charCodeToAACode[70] = 13; charCodeToAACode[102] = 13; // F/f
+        charCodeToAACode[80] = 14; charCodeToAACode[112] = 14; // P/p
+        charCodeToAACode[83] = 15; charCodeToAACode[115] = 15; // S/s
+        charCodeToAACode[84] = 16; charCodeToAACode[116] = 16; // T/t
+        charCodeToAACode[87] = 17; charCodeToAACode[119] = 17; // W/w
+        charCodeToAACode[89] = 18; charCodeToAACode[121] = 18; // Y/y
+        charCodeToAACode[86] = 19; charCodeToAACode[118] = 19; // V/v
         
         for (let pos = 0; pos < queryLength; pos++) {
-            const counts = {};
+            // Use typed array for counts (faster than object)
+            const counts = new Uint32Array(20);
             let total = 0;
             
-            for (const seq of msaData.sequences) {
-                if (pos < seq.sequence.length) {
-                    const aa = seq.sequence[pos].toUpperCase();
-                    if (aa !== '-' && aa !== 'X') {
-                        counts[aa] = (counts[aa] || 0) + 1;
-                        total++;
+            // Count amino acids at this position - optimized inner loop
+            for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
+                if (pos < sequenceLengths[seqIdx]) {
+                    const charCode = sequenceStrings[seqIdx].charCodeAt(pos);
+                    // Fast lookup: skip gaps (45='-') and X (88='X', 120='x')
+                    if (charCode !== 45 && charCode !== 88 && charCode !== 120) {
+                        const code = charCodeToAACode[charCode];
+                        if (code >= 0) {
+                            counts[code]++;
+                            total++;
+                        }
                     }
                 }
             }
             
+            // Build frequency object
             const freq = {};
-            for (const aa in counts) {
-                freq[aa] = counts[aa] / total;
+            const invTotal = total > 0 ? 1 / total : 0;
+            for (let i = 0; i < 20; i++) {
+                if (counts[i] > 0) {
+                    freq[aaCodes[i]] = counts[i] * invTotal;
+                }
             }
             frequencies.push(freq);
         }
         
         // Store in msaData for persistence
         msaData.frequencies = frequencies;
-        cachedFrequencies = frequencies;
-        cachedDataHash = dataHash;
-        cachedLogOdds = null;
-        cachedEntropy = null;
-        cachedEntropyHash = null;
         
         return frequencies;
     }
@@ -1931,14 +1965,6 @@
         // Check if already computed and stored in msaData
         if (msaData && msaData.logOdds) {
             return msaData.logOdds;
-        }
-        
-        if (cachedLogOdds) {
-            // Store in msaData for persistence
-            if (msaData) {
-                msaData.logOdds = cachedLogOdds;
-            }
-            return cachedLogOdds;
         }
         
         const logOdds = [];
@@ -1955,64 +1981,9 @@
         if (msaData) {
             msaData.logOdds = logOdds;
         }
-        cachedLogOdds = logOdds;
         return logOdds;
     }
     
-    /**
-     * Calculate Shannon entropy for each position in the MSA
-     * Uses the same frequency calculation as logo/PSSM views
-     * Formula: H = -Σ(p_i * log2(p_i)) / log2(20)
-     * Returns normalized entropy values (0 to 1 scale)
-     * Cached for performance
-     * @returns {Array} - Array of entropy values (one per MSA position)
-     */
-    function calculateEntropy() {
-        if (!msaData) return [];
-        
-        // Check if already computed and stored in msaData
-        if (msaData.entropy) {
-            return msaData.entropy;
-        }
-        
-        // Check cache first
-        const dataHash = msaData.sequences.length + '_' + msaData.queryLength;
-        if (cachedEntropy && cachedEntropyHash === dataHash) {
-            // Store in msaData for persistence
-            msaData.entropy = cachedEntropy;
-            return cachedEntropy;
-        }
-        
-        const frequencies = calculateFrequencies();
-        if (!frequencies || frequencies.length === 0) return [];
-        
-        const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
-        const entropyValues = [];
-        
-        for (let pos = 0; pos < frequencies.length; pos++) {
-            const posFreq = frequencies[pos];
-            
-            // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
-            let entropy = 0;
-            for (const aa in posFreq) {
-                const p = posFreq[aa];
-                if (p > 0) {
-                    entropy -= p * Math.log2(p);
-                }
-            }
-            
-            // Normalize by max entropy (0 to 1 scale)
-            const normalizedEntropy = entropy / maxEntropy;
-            entropyValues.push(normalizedEntropy);
-        }
-        
-        // Store in msaData for persistence
-        msaData.entropy = entropyValues;
-        cachedEntropy = entropyValues;
-        cachedEntropyHash = dataHash;
-        
-        return entropyValues;
-    }
     
     function renderPSSMCanvas() {
         if (!pssmCanvasData || !msaData) return;
@@ -2189,7 +2160,7 @@
         if (!frequencies) return;
         
         const data = useBitScore 
-            ? (cachedLogOdds || calculateLogOdds(frequencies))
+            ? calculateLogOdds(frequencies)
             : frequencies;
         if (!data) return;
         
@@ -3212,7 +3183,7 @@
         if (!frequencies) return;
         
         const data = useBitScore 
-            ? (cachedLogOdds || calculateLogOdds(frequencies))
+            ? calculateLogOdds(frequencies)
             : frequencies;
         if (!data) return;
         
@@ -3420,14 +3391,6 @@
             return msaData;
         },
         
-        /**
-         * Calculate Shannon entropy for each position in the current filtered MSA
-         * Uses the same frequency calculation as logo/PSSM views
-         * @returns {Array} - Array of normalized entropy values (0 to 1 scale, one per MSA position)
-         */
-        calculateEntropy: function() {
-            return calculateEntropy();
-        },
         
         setCoverageCutoff: function(cutoff) {
             coverageCutoff = Math.max(0, Math.min(1, cutoff));
@@ -3459,20 +3422,12 @@
                     clampScrollTop(canvasHeight);
                 }
                 
-                cachedFrequencies = null;
-                cachedLogOdds = null;
-                cachedEntropy = null;
-                cachedEntropyHash = null;
-                cachedDataHash = null;
-                cachedEntropy = null;
-                cachedEntropyHash = null;
-                
                 // Invalidate interaction manager cache (scroll limits depend on sequences.length)
                 if (activeInteractionManager) {
                     activeInteractionManager._invalidateCache();
                 }
                 
-                // Notify callback that filtered MSA has changed (for entropy recalculation)
+                // Notify callback that filtered MSA has changed
                 if (callbacks.onMSAFilterChange) {
                     callbacks.onMSAFilterChange(msaData, currentChain);
                 }
@@ -3532,20 +3487,12 @@
                     clampScrollTop(canvasHeight);
                 }
                 
-                cachedFrequencies = null;
-                cachedLogOdds = null;
-                cachedEntropy = null;
-                cachedEntropyHash = null;
-                cachedDataHash = null;
-                cachedEntropy = null;
-                cachedEntropyHash = null;
-                
                 // Invalidate interaction manager cache (scroll limits depend on sequences.length)
                 if (activeInteractionManager) {
                     activeInteractionManager._invalidateCache();
                 }
                 
-                // Notify callback that filtered MSA has changed (for entropy recalculation)
+                // Notify callback that filtered MSA has changed
                 if (callbacks.onMSAFilterChange) {
                     callbacks.onMSAFilterChange(msaData, currentChain);
                 }
@@ -3612,9 +3559,6 @@
             if (originalMSAData.frequencies) {
                 msaData.frequencies = originalMSAData.frequencies;
             }
-            if (originalMSAData.entropy) {
-                msaData.entropy = originalMSAData.entropy;
-            }
             if (originalMSAData.logOdds) {
                 msaData.logOdds = originalMSAData.logOdds;
             }
@@ -3637,17 +3581,8 @@
             }
             
             // Compute properties if not already present (for filtered data, recompute)
-            // Note: If filters changed, we need to recompute, so clear cached values
-            cachedFrequencies = null;
-            cachedLogOdds = null;
-            cachedDataHash = null;
-            cachedEntropy = null;
-            cachedEntropyHash = null;
-            
-            // Compute and store frequencies, entropy, and logOdds once when MSA is set
-            // This ensures they're available for entropy coloring without recalculation
+            // Compute and store frequencies and logOdds once when MSA is set
             calculateFrequencies(); // This will compute and store in msaData.frequencies
-            calculateEntropy(); // This will compute and store in msaData.entropy
             // logOdds will be computed on-demand when needed for logo view
             
             let canvasWidth = 916;
@@ -3785,13 +3720,6 @@
             // So we need to ensure msaResidueNumbers is set to the filtered version
             msaResidueNumbers = filteredMSA.residueNumbers || null;
             
-            // Clear cached properties since data changed
-            cachedFrequencies = null;
-            cachedLogOdds = null;
-            cachedDataHash = null;
-            cachedEntropy = null;
-            cachedEntropyHash = null;
-            
             // Invalidate interaction manager cache (scroll limits depend on queryLength)
             if (activeInteractionManager) {
                 activeInteractionManager._invalidateCache();
@@ -3917,12 +3845,6 @@
             }
             
             msaViewMode = mode;
-            if (mode === 'logo') {
-                cachedLogOdds = null;
-                cachedEntropy = null;
-                cachedEntropyHash = null;
-            }
-            
             buildViewForMode(mode);
             
             // Adjust scroll position after mode switch
@@ -3964,11 +3886,6 @@
         
         setUseBitScore: function(value) {
             useBitScore = value;
-            if (!useBitScore) {
-                cachedLogOdds = null;
-                cachedEntropy = null;
-                cachedEntropyHash = null;
-            }
             if (msaViewMode === 'logo') {
                 scheduleRender();
             }
@@ -4024,11 +3941,6 @@
             msaCanvasData = null;
             pssmCanvasData = null;
             logoCanvasData = null;
-            cachedFrequencies = null;
-            cachedLogOdds = null;
-            cachedDataHash = null;
-            cachedEntropy = null;
-            cachedEntropyHash = null;
             
             // Reset state variables to initial values
             currentChain = null;
