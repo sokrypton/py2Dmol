@@ -11,6 +11,10 @@ Bonus: [online interactive version](http://py2dmol.solab.org/)
 ```bash
 pip install py2Dmol
 ```
+### For latest experimental build
+```bash
+pip install git+https://github.com/sokrypton/py2Dmol.git
+```
 
 ## Basic Usage
 <a href="https://colab.research.google.com/github/sokrypton/py2Dmol/blob/main/py2Dmol_demo.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
