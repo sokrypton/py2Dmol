@@ -259,6 +259,24 @@ function initializePy2DmolViewer(containerElement) {
     function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
     function getPlddtColor_Colorblind(plddt) { return getPlddtRainbowColor_Colorblind(plddt, 50, 90); }
     
+    // Entropy color: low entropy (conserved, blue) to high entropy (variable, red)
+    // Entropy values are normalized 0-1, where 0 = conserved, 1 = variable
+    function getEntropyColor(entropy) {
+        // Clamp entropy to 0-1 range
+        const normalized = Math.max(0, Math.min(1, entropy || 0));
+        // Low entropy (conserved) -> blue (240), high entropy (variable) -> red (0)
+        const hue = 240 * (1 - normalized); // 0 -> 240 (blue), 1 -> 0 (red)
+        return hsvToRgb(hue, 1.0, 1.0);
+    }
+    
+    // Entropy colorblind: low entropy (conserved, blue) to high entropy (yellow)
+    function getEntropyColor_Colorblind(entropy) {
+        // Clamp entropy to 0-1 range
+        const normalized = Math.max(0, Math.min(1, entropy || 0));
+        // Low entropy (conserved) -> blue (240), high entropy (variable) -> yellow (60)
+        const hue = 240 - normalized * 180; // 240 -> 60 (blue to yellow)
+        return hsvToRgb(hue, 1.0, 1.0);
+    }
 
     function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
     
@@ -342,9 +360,10 @@ function initializePy2DmolViewer(containerElement) {
             this.plddts = [];
             this.chains = [];
             this.positionTypes = [];
+            this.entropy = undefined; // Entropy vector mapped to structure positions
             
-            // Viewer state - Color mode: auto, chain, rainbow, or plddt
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            // Viewer state - Color mode: auto, chain, rainbow, plddt, or entropy
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             this.colorMode = (config.color && validModes.includes(config.color)) ? config.color : 'auto';
             // Ensure it's always valid
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
@@ -1379,6 +1398,14 @@ function initializePy2DmolViewer(containerElement) {
                 for (let i = 0; i < correctCoordsLength; i++) {
                     this.selectionModel.positions.add(i);
                 }
+            }
+            
+            // Remap entropy if entropy mode is active
+            if (this.colorMode === 'entropy') {
+                this._mapEntropyToStructure();
+            } else {
+                // Clear entropy when not in entropy mode
+                this.entropy = undefined;
             }
             
             // Save the restored selection state (setSelection would do this, but we're bypassing it)
@@ -2854,9 +2881,17 @@ function initializePy2DmolViewer(containerElement) {
             const n = this.coords.length;
             
             // Ensure colorMode is valid
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
+            }
+            
+            // Map entropy to structure if entropy mode is active
+            if (this.colorMode === 'entropy') {
+                this._mapEntropyToStructure();
+            } else {
+                // Clear entropy when not in entropy mode
+                this.entropy = undefined;
             }
             
             // Mark colors as needing update when coordinates change
@@ -3279,10 +3314,118 @@ function initializePy2DmolViewer(containerElement) {
             
             // Update UI controls (but don't render yet)
             this.updateUIControls();
+            
+            // Map entropy to structure if entropy mode is active
+            if (this.colorMode === 'entropy') {
+                this._mapEntropyToStructure();
+            }
+        }
+        
+        /**
+         * Map entropy values from current object's MSA to structure positions
+         * Entropy is stored in object.msa.msasBySequence[querySeq].msaData.entropy
+         * This function maps MSA entropy array to structure position indices
+         */
+        _mapEntropyToStructure(objectName = null) {
+            // Use current object if not specified
+            if (!objectName) {
+                objectName = this.currentObjectName;
+            }
+            
+            if (!objectName) {
+                this.entropy = undefined;
+                return;
+            }
+            
+            const object = this.objectsData[objectName];
+            if (!object || !object.msa || !object.msa.msasBySequence || !object.msa.chainToSequence) {
+                this.entropy = undefined;
+                return;
+            }
+            
+            const frameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
+            const frame = object.frames[frameIndex];
+            if (!frame || !frame.chains) {
+                this.entropy = undefined;
+                return;
+            }
+            
+            // Initialize entropy vector with -1 for all positions (full molecule length)
+            const positionCount = frame.chains.length;
+            const entropyVector = new Array(positionCount).fill(-1);
+            
+            // Check if extractChainSequences is available
+            const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function' 
+                ? window.extractChainSequences 
+                : null;
+            
+            if (!extractChainSequences) {
+                this.entropy = entropyVector;
+                return;
+            }
+            
+            // Extract chain sequences from structure
+            const chainSequences = extractChainSequences(frame);
+            
+            // For each chain, get its MSA and map entropy values
+            for (const [chainId, querySeq] of Object.entries(object.msa.chainToSequence)) {
+                const msaEntry = object.msa.msasBySequence[querySeq];
+                if (!msaEntry || !msaEntry.msaData || !msaEntry.msaData.entropy) {
+                    continue; // No entropy data for this chain's MSA
+                }
+                
+                const msaData = msaEntry.msaData;
+                const msaEntropy = msaData.entropy; // Pre-computed entropy array (one per MSA position)
+                const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps
+                
+                const chainSequence = chainSequences[chainId];
+                if (!chainSequence) {
+                    continue; // Chain not found in frame
+                }
+                
+                // Find representative positions for this chain (position_types === 'P')
+                const chainPositions = []; // Array of position indices for this chain
+                
+                for (let i = 0; i < positionCount; i++) {
+                    if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
+                        chainPositions.push(i);
+                    }
+                }
+                
+                if (chainPositions.length === 0) {
+                    continue; // No representative positions found
+                }
+                
+                // Sort positions by residue number to match sequence order
+                chainPositions.sort((a, b) => {
+                    const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                    const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                    return residueNumA - residueNumB;
+                });
+                
+                // Map MSA positions to chain positions (one-to-one mapping)
+                // Query sequence has no gaps, so mapping is straightforward
+                const msaQueryUpper = msaQuerySequence.toUpperCase();
+                const chainSeqUpper = chainSequence.toUpperCase();
+                const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length, msaEntropy.length);
+                
+                for (let i = 0; i < minLength; i++) {
+                    // Check if this MSA position matches the chain sequence position
+                    if (msaQueryUpper[i] === chainSeqUpper[i]) {
+                        // Match found - copy entropy value to corresponding position
+                        const positionIndex = chainPositions[i];
+                        if (positionIndex < entropyVector.length) {
+                            entropyVector[positionIndex] = msaEntropy[i];
+                        }
+                    }
+                }
+            }
+            
+            this.entropy = entropyVector;
         }
 
         _getEffectiveColorMode() {
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
             }
@@ -3319,6 +3462,18 @@ function initializePy2DmolViewer(containerElement) {
                 const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtFunc(plddt);
+            } else if (effectiveColorMode === 'entropy') {
+                const entropyFunc = this.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
+                // Get entropy value from mapped entropy vector
+                const entropy = (this.entropy && atomIndex < this.entropy.length && this.entropy[atomIndex] !== undefined && this.entropy[atomIndex] >= 0) 
+                    ? this.entropy[atomIndex] 
+                    : undefined;
+                if (entropy !== undefined) {
+                    color = entropyFunc(entropy);
+                } else {
+                    // No entropy data for this position (ligand, RNA/DNA, or unmapped) - use default grey
+                    color = { r: 128, g: 128, b: 128 };
+                }
             } else if (effectiveColorMode === 'chain') {
                 const chainId = this.chains[atomIndex] || 'A';
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
@@ -4822,12 +4977,21 @@ function initializePy2DmolViewer(containerElement) {
     
     colorSelect.addEventListener('change', (e) => {
         const selectedMode = e.target.value;
-        const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+        const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
         
         if (validModes.includes(selectedMode)) {
             renderer.colorMode = selectedMode;
             renderer.colorsNeedUpdate = true;
             renderer.plddtColorsNeedUpdate = true;
+            
+            // Map entropy to structure if entropy mode is selected
+            if (selectedMode === 'entropy') {
+                renderer._mapEntropyToStructure();
+            } else {
+                // Clear entropy when switching away from entropy mode
+                renderer.entropy = undefined;
+            }
+            
             renderer.render();
             document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
         } else {

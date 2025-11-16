@@ -554,6 +554,12 @@ function handleObjectChange() {
     if (window.updateMSAContainerVisibility) {
         window.updateMSAContainerVisibility();
     }
+    
+    // Remap entropy if entropy mode is active
+    if (viewerApi?.renderer && viewerApi.renderer.colorMode === 'entropy') {
+        viewerApi.renderer._mapEntropyToStructure();
+        viewerApi.renderer.render();
+    }
 }
 
 
@@ -3802,6 +3808,35 @@ function computeMSAProperties(msaData) {
         msaData.frequencies = frequencies;
     }
     
+    // Compute entropy from frequencies (if frequencies exist and entropy not already computed)
+    if (msaData.frequencies && !msaData.entropy) {
+        const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
+        const entropyValues = [];
+        
+        for (let pos = 0; pos < queryLength; pos++) {
+            const freq = frequencies[pos];
+            if (!freq) {
+                entropyValues.push(0);
+                continue;
+            }
+            
+            // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
+            let entropy = 0;
+            for (const aa in freq) {
+                const p = freq[aa];
+                if (p > 0) {
+                    entropy -= p * Math.log2(p);
+                }
+            }
+            
+            // Normalize by max entropy (0 to 1 scale)
+            const normalizedEntropy = entropy / maxEntropy;
+            entropyValues.push(normalizedEntropy);
+        }
+        
+        msaData.entropy = entropyValues;
+    }
+    
     // logOdds will be computed on-demand when needed for logo view
 }
 
@@ -5126,7 +5161,7 @@ async function handleZipUpload(file, loadAsFrames) {
                                 if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
                                     const {msaData} = msaObj.msasBySequence[defaultChainSeq];
                                     if (window.MSAViewer) {
-                                        loadMSADataIntoViewer(msaData, msaObj.defaultChain, objectName);
+                                        loadMSADataIntoViewer(msaData, msaObj.defaultChain, targetObjectName);
                                         setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
                                     }
                                 }
