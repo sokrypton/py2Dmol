@@ -3654,10 +3654,10 @@ function sequencesMatch(msaQuerySequence, pdbChainSequence) {
     }
     
     // Check if the shorter sequence is contained in the longer one
-    if (msaSequenceNoGaps.length <= pdbSequence.length) {
-        return pdbSequence.includes(msaSequenceNoGaps);
+    if (msaSequence.length <= pdbSequence.length) {
+        return pdbSequence.includes(msaSequence);
     } else {
-        return msaSequenceNoGaps.includes(pdbSequence);
+        return msaSequence.includes(pdbSequence);
     }
 }
 
