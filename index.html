@@ -22,8 +22,8 @@
     <!-- End Global Drop Overlay -->
 
     <!-- Total width (600 + 8 + 340 = 948px) -->
-    <div class="mx-auto" style="width: 948px; position: relative;"> 
-        <div style="position: absolute; top: 0; right: 0; display: flex; gap: 8px;">
+    <div id="main-container" class="mx-auto">
+        <div class="top-right-controls">
             <button id="saveStateButton" class="btn btn-primary">
                 <i class="fa-solid fa-floppy-disk"></i>
                 <span>Save</span>
@@ -36,26 +36,26 @@
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">2Dmol</h1>
         <p class="text-gray-500 mb-4">Load a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
 
-        <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
+        <div id="upload-options-container" class="container-box">
             
             <!-- Use table for reliable layout -->
-            <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 0;">
+            <table id="upload-options-table">
                 <tr>
                     <!-- Left Column: Fetch + Load -->
-                    <td style="width: 50%; padding-right: 12px; vertical-align: top;">
+                    <td>
                         
                         <!-- Fetch Section -->
-                        <label for="fetch-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">PDB (4-char) or UniProt ID</label>
-                        <div id="fetch-input-container" style="margin-bottom: 8px;">
+                        <label for="fetch-id">PDB (4-char) or UniProt ID</label>
+                        <div id="fetch-input-container">
                             <input type="text" id="fetch-id" placeholder="e.g., 4HHB or P0A8I3">
                             <button id="fetch-btn" class="btn btn-primary">Fetch</button>
                         </div>
 
                         <!-- Load Section -->
-                        <div style="display: flex; gap: 8px; align-items: flex-start;">
-                            <div style="flex: 1;">
-                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Load PDB / CIF / ZIP</label>
-                                <div id="uploadControlsContainer" style="display: flex; gap: 8px;">
+                        <div class="flex-gap-8 align-items-start">
+                            <div class="flex-1">
+                                <label for="load-files">Load PDB / CIF / ZIP</label>
+                                <div id="uploadControlsContainer" class="flex-gap-8">
                                      <!-- Load Button (Triggers hidden input) -->
                                      <button id="upload-button" class="btn btn-secondary">
                                          <i class="fa-solid fa-file-arrow-up"></i>
@@ -67,11 +67,11 @@
                             </div>
                             
                             <!-- Separator Bar -->
-                            <div style="width: 1px; background: #e5e7eb; align-self: stretch;"></div>
+                            <div class="separator"></div>
                             
-                            <div style="flex: 1;">
-                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
-                                <div style="display: flex; gap: 8px;">
+                            <div class="flex-1">
+                                <label for="example">Example</label>
+                                <div class="flex-gap-8">
                                     <button id="example-button-1" class="btn btn-success">
                                         <span>A0JNW5</span>
                                     </button>
@@ -85,12 +85,12 @@
                     </td>
                     
                     <!-- Right Column: Options (split into two columns) -->
-                    <td style="vertical-align: top;">
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Options</label>
+                    <td>
+                        <label for="options">Options</label>
                         
-                        <div style="display: flex; gap: 16px;">
+                        <div class="flex-gap-16">
                             <!-- Left Column: Existing Options -->
-                            <div class="upload-options-section" style="margin-bottom: 0; flex: 1;">
+                            <div class="upload-options-section">
                                 
                                 <!-- Load as Frames Toggle -->
                                 <div class="upload-toggle-item">
@@ -130,7 +130,7 @@
                             </div>
                             
                             <!-- Right Column: New Options -->
-                            <div class="upload-options-section" style="margin-bottom: 0; flex: 1;">
+                            <div class="upload-options-section">
                                 
                                 <!-- Load PAE Toggle -->
                                 <div class="upload-toggle-item">
@@ -156,10 +156,10 @@
             </table>
             
             <!-- Status message below the table -->
-            <div id="status-message" style="margin-top: 12px;"></div>
+            <div id="status-message"></div>
         </div>
 
-        <div id="viewer-container" class="py2dmol-viewer-instance" style="display: none;">
+        <div id="viewer-container" class="py2dmol-viewer-instance">
             
             <div id="mainContainer">
                 
@@ -186,10 +186,10 @@
                     <div id="rightPanelContainer" class="container-box">
                         
                         <!-- Toolbar (two rows) -->
-                        <div id="navigationControls" class="toolbar" style="margin-bottom: 4px;">
+                        <div id="navigationControls" class="toolbar">
                           <div class="toolbar-row">
                             <label class="btn-toggle btn-flex" id="orientToggle" title="Orient to best view">
-                              <input type="checkbox" style="display: none;">
+                              <input type="checkbox">
                               <span><i class="fa-solid fa-crosshairs"></i>Orient</span>
                             </label>
 
@@ -232,9 +232,9 @@
 
                         <div id="styleAppearanceContainer" class="control-group">
                             
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="colorSelect" class="font-medium text-gray-700" style="font-size: 12px;">Color:</label>
-                                <select id="colorSelect" style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
+                            <div class="toggle-item-flex">
+                                <label for="colorSelect" class="font-medium text-gray-700 label-font-size-12">Color:</label>
+                                <select id="colorSelect">
                                     <option value="auto">Auto</option>
                                     <option value="plddt">pLDDT</option>
                                     <option value="entropy">Entropy</option>
@@ -247,19 +247,19 @@
                                 </label>
                             </div>
 
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="lineWidthSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Width:</label>
-                                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1" style="flex: 1; min-width: 0;">
+                            <div class="toggle-item-flex">
+                                <div class="flex-1 flex-gap-8 min-width-0">
+                                    <label for="lineWidthSlider" class="font-medium text-gray-700 label-font-size-12">Width:</label>
+                                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
                                 </div>
-                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="orthoSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
-                                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01" style="flex: 1; min-width: 0;">
+                                <div class="flex-1 flex-gap-8 min-width-0">
+                                    <label for="orthoSlider" class="font-medium text-gray-700 label-font-size-12">Ortho:</label>
+                                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
                                 </div>
                             </div>
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="objectSelect" class="font-medium text-gray-700" style="font-size: 12px;">Object:</label>
-                                <select id="objectSelect" style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
+                            <div class="toggle-item-flex">
+                                <label for="objectSelect" class="font-medium text-gray-700 label-font-size-12">Object:</label>
+                                <select id="objectSelect">
                                     <!-- Initially empty -->
                                 </select>
                             </div>
@@ -270,8 +270,8 @@
                     </div>
                     
                     <!-- PAE Canvas Container -->
-                    <div id="paeContainer" class="container-box" style="display: none;">
-                        <canvas id="paeCanvas" style="cursor: crosshair;"></canvas>
+                    <div id="paeContainer" class="container-box">
+                        <canvas id="paeCanvas"></canvas>
                     </div>
                 </div>
             </div>    
@@ -279,18 +279,18 @@
         </div>
 
         <!-- Sequence container with box and toggle -->
-        <div id="sequence-viewer-container" class="container-box sequence-section-container" style="width: 948px; display: none;">
+        <div id="sequence-viewer-container" class="container-box sequence-section-container">
           <div id="sequenceHeader" class="sequence-header">
             <!-- Left side: Mode dropdown -->
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <select id="sequenceModeSelect" class="btn btn-grey btn-small" style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
+            <div class="flex-gap-8">
+              <select id="sequenceModeSelect" class="btn btn-grey btn-small">
                 <option value="sequence" selected>Sequence</option>
                 <option value="chain">Chain</option>
               </select>
             </div>
             
             <!-- Action buttons aligned to the right -->
-            <div class="sequence-actions" style="margin-left: auto;">
+            <div class="sequence-actions">
                 <button id="selectAllResidues" class="btn btn-grey btn-small">Show all</button>
                 <button id="clearAllResidues" class="btn btn-grey btn-small">Hide all</button>
                 <button id="copySelectionButton" class="btn btn-grey btn-small" disabled>Copy selection</button>
@@ -300,57 +300,57 @@
         </div>
 
         <!-- MSA container with box and toggle -->
-        <div id="msa-viewer-container" class="container-box sequence-section-container" style="width: 948px; display: none;">
+        <div id="msa-viewer-container" class="container-box sequence-section-container">
           <div id="msaHeader" class="sequence-header">
             <!-- Left side: Mode dropdown, Save buttons, Sort checkbox, Bit-score checkbox -->
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
+            <div class="flex-gap-8">
+              <select id="msaModeSelect" class="btn btn-grey btn-small">
                 <option value="msa" selected>MSA</option>
                 <option value="pssm">PSSM</option>
                 <option value="logo">Logo</option>
               </select>
-              <div id="msaSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                <button id="msaSaveFastaButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save Fasta</button>
+              <div id="msaSaveContainer">
+                <button id="msaSaveFastaButton" class="btn btn-grey btn-small font-size-11">Save Fasta</button>
               </div>
-              <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
+              <div id="logoSaveContainer">
+                <button id="logoSaveSvgButton" class="btn btn-grey btn-small font-size-11">Save SVG</button>
               </div>
-              <div id="pssmSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                <button id="pssmSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
-                <button id="pssmSaveCsvButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save CSV</button>
+              <div id="pssmSaveContainer">
+                <button id="pssmSaveSvgButton" class="btn btn-grey btn-small font-size-11">Save SVG</button>
+                <button id="pssmSaveCsvButton" class="btn btn-grey btn-small font-size-11">Save CSV</button>
               </div>
-              <div id="msaSortContainer" style="display: flex; align-items: center; gap: 4px;">
-                <label for="msaSortCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                  <input type="checkbox" id="msaSortCheckbox" checked style="cursor: pointer;">
+              <div id="msaSortContainer">
+                <label>
+                  <input type="checkbox" id="msaSortCheckbox" checked>
                   <span>Sort</span>
                 </label>
               </div>
-              <div id="logoBitScoreContainer" style="display: none; align-items: center; gap: 4px;">
-                <label for="logoBitScoreCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                  <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
+              <div id="logoBitScoreContainer">
+                <label>
+                  <input type="checkbox" id="logoBitScoreCheckbox" checked>
                   <span>Bit-score</span>
                 </label>
               </div>
             </div>
             
             <!-- Right: Filters box and Chain selector -->
-            <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
-              <div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
-              <span style="font-size: 12px; color: #666; font-weight: 500;">Filters:</span>
-              <div style="display: flex; align-items: center; gap: 4px;">
-                <label for="coverageSlider" style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
-                <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5" style="width: 100px;">
-                <span id="coverageValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">75%</span>
+            <div class="msa-header-right">
+              <div class="filters-box">
+              <span>Filters:</span>
+              <div class="flex-gap-4">
+                <label for="coverageSlider">cov:</label>
+                <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5">
+                <span id="coverageValue">75%</span>
               </div>
-              <div style="display: flex; align-items: center; gap: 4px;">
-                <label for="identitySlider" style="font-size: 11px; color: #666; white-space: nowrap;">qid:</label>
-                <input type="range" id="identitySlider" min="0" max="100" value="15" step="5" style="width: 100px;">
-                <span id="identityValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">15%</span>
+              <div class="flex-gap-4">
+                <label for="identitySlider">qid:</label>
+                <input type="range" id="identitySlider" min="0" max="100" value="15" step="5">
+                <span id="identityValue">15%</span>
               </div>
-              <span id="msaSequenceCount" style="font-size: 11px; color: #666; white-space: nowrap; min-width: 80px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
+              <span id="msaSequenceCount">-</span>
               </div>
               <!-- Chain selector (hidden by default, shown when multiple chains available) -->
-              <select id="msaChainSelect" class="btn btn-grey btn-small" style="display: none; min-width: 50px; height: 28px; font-size: 12px; padding: 0 8px;"></select>
+              <select id="msaChainSelect" class="btn btn-grey btn-small"></select>
             </div>
           </div>
           <div id="msaView" class="sequence-content"></div>
@@ -362,15 +362,15 @@
     </div>
     
     <!-- Footer -->
-    <footer style="margin-top: 40px; padding: 0; color: #6b7280; font-size: 13px;">
-        <div style="width: 948px; margin: 0 auto; padding: 20px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
-            <div style="flex: 0 0 auto;">
-                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: none;">
-                    <i class="fab fa-github" style="margin-right: 6px;"></i>View on GitHub
+    <footer>
+        <div>
+            <div>
+                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer">
+                    <i class="fab fa-github"></i>View on GitHub
                 </a>
             </div>
-            <div style="flex: 0 0 auto; font-size: 12px;">
-                <i class="fa-solid fa-shield-halved" style="margin-right: 6px; color: #10b981;"></i>
+            <div>
+                <i class="fa-solid fa-shield-halved"></i>
                 <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a server.
             </div>
         </div>

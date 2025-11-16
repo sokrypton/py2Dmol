@@ -173,6 +173,10 @@ if (!window.py2dmol_viewers) {
  * @param {HTMLElement} containerElement The root <div> element for this viewer.
  */
 function initializePy2DmolViewer(containerElement) {
+    const viewerId = window.viewerConfig?.viewer_id || 'standalone-viewer-1';
+    if (window.py2dmol_viewers[viewerId] && window.py2dmol_viewers[viewerId].renderer) {
+        window.py2dmol_viewers[viewerId].renderer.destroy();
+    }
     
     // Helper function to normalize ortho value from old (50-200) or new (0-1) format
     function normalizeOrthoValue(value) {
@@ -322,6 +326,9 @@ function initializePy2DmolViewer(containerElement) {
         constructor(canvas) {
             this.canvas = canvas;
             this.ctx = canvas.getContext('2d');
+            this.isDestroyed = false;
+            this.eventHandlers = {};
+            this.resizeObserver = null;
             
             // Store screen positions of positions for fast highlight drawing
             // Array of {x, y, radius} for each position index, updated during render()
@@ -804,10 +811,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         setupInteraction() {
-            // Add inertia logic
-            this.canvas.addEventListener('mousedown', (e) => {
-                // Only start dragging if we clicked directly on the canvas or the highlight overlay
-                // (the overlay has pointer-events: none, but we check for it just in case)
+            this.eventHandlers.mousedown = (e) => {
                 const isHighlightOverlay = e.target.id === 'highlightOverlay';
                 if (e.target !== this.canvas && !isHighlightOverlay) return;
                 
@@ -822,26 +826,22 @@ function initializePy2DmolViewer(containerElement) {
                     if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
                 }
                 
-                // Add temporary window listeners for drag outside canvas
-                const handleMove = (e) => {
+                this.eventHandlers.mousemove = (e) => {
                     if (!this.isDragging) return;
                     
-                    // Stop canvas drag if interacting with controls
                     const tagName = e.target.tagName;
                     if (tagName === 'INPUT' || tagName === 'SELECT' || tagName === 'BUTTON') {
                         this.isDragging = false;
-                        window.removeEventListener('mousemove', handleMove);
-                        window.removeEventListener('mouseup', handleUp);
+                        window.removeEventListener('mousemove', this.eventHandlers.mousemove);
+                        window.removeEventListener('mouseup', this.eventHandlers.mouseup_window);
                         return;
                     }
                     
                     const now = performance.now();
                     const timeDelta = now - this.lastDragTime;
-
                     const dx = e.clientX - this.lastDragX;
                     const dy = e.clientY - this.lastDragY;
 
-                    // Only update rotation if there's actual movement
                     if (dy !== 0 || dx !== 0) {
                         if (dy !== 0) { 
                             const rot = rotationMatrixX(dy * 0.01); 
@@ -852,15 +852,11 @@ function initializePy2DmolViewer(containerElement) {
                             this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); 
                         }
                     } else {
-                        return; // No movement, skip render
+                        return;
                     }
 
-                    // Store velocity for inertia (disabled for large molecules based on visible segments)
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const totalSegmentCount = object && object.frames && object.frames[this.currentFrame] 
-                        ? (this.segmentIndices ? this.segmentIndices.length : 0)
-                        : 0;
-                    // Count visible segments for inertia determination
+                    const totalSegmentCount = object?.frames?.[this.currentFrame] && this.segmentIndices ? this.segmentIndices.length : 0;
                     let visibleSegmentCount = totalSegmentCount;
                     if (this.visibilityMask && this.segmentIndices) {
                         visibleSegmentCount = 0;
@@ -874,12 +870,10 @@ function initializePy2DmolViewer(containerElement) {
                     const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
                     
                     if (enableInertia && timeDelta > 0) {
-                        // Weighted average to smooth out jerky movements
                         const smoothing = 0.5;
                         this.spinVelocityX = (this.spinVelocityX * (1-smoothing)) + ((dx / timeDelta * 20) * smoothing);
                         this.spinVelocityY = (this.spinVelocityY * (1-smoothing)) + ((dy / timeDelta * 20) * smoothing);
                     } else {
-                        // Disable inertia for large objects
                         this.spinVelocityX = 0;
                         this.spinVelocityY = 0;
                     }
@@ -891,72 +885,58 @@ function initializePy2DmolViewer(containerElement) {
                     this.render(); 
                 };
                 
-                const handleUp = () => {
+                this.eventHandlers.mouseup_window = () => {
                     if (!this.isDragging) return;
                     this.isDragging = false;
-                    window.removeEventListener('mousemove', handleMove);
-                    window.removeEventListener('mouseup', handleUp);
+                    window.removeEventListener('mousemove', this.eventHandlers.mousemove);
+                    window.removeEventListener('mouseup', this.eventHandlers.mouseup_window);
                 };
                 
-                window.addEventListener('mousemove', handleMove);
-                window.addEventListener('mouseup', handleUp);
-            });
+                window.addEventListener('mousemove', this.eventHandlers.mousemove);
+                window.addEventListener('mouseup', this.eventHandlers.mouseup_window);
+            };
             
-            // Canvas-bound mouseup (fallback, but window listener handles it)
-            this.canvas.addEventListener('mouseup', () => {
+            this.eventHandlers.mouseup_canvas = () => {
                 if (!this.isDragging) return;
                 this.isDragging = false;
                 
-                // Clear shadow cache when dragging ends (shadows need recalculation)
                 this.cachedShadows = null;
                 this.cachedTints = null;
-                this.lastShadowRotationMatrix = null; // Force recalculation
+                this.lastShadowRotationMatrix = null;
                 
-                // For large molecules, immediately recalculate shadows
-                // since inertia is disabled and rotation has stopped
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                 const segmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
                 const isLargeMolecule = segmentCount > this.LARGE_MOLECULE_CUTOFF;
                 
                 if (isLargeMolecule) {
-                    // Render immediately with fresh shadows
                     this.render();
                 }
                 
-                // Restart animate loop after dragging ends
                 requestAnimationFrame(() => this.animate());
                 
                 const now = performance.now();
                 const timeDelta = now - this.lastDragTime;
                 
-                if (timeDelta > 100) { // If drag was too slow, or just a click
+                if (timeDelta > 100) {
                     this.spinVelocityX = 0;
                     this.spinVelocityY = 0;
                 }
-                // Else, the velocity from the last mousemove is used by the animate loop
-            });
+            };
 
-            this.canvas.addEventListener('wheel', (e) => {
+            this.eventHandlers.wheel = (e) => {
                 e.preventDefault();
                 this.isZooming = true;
                 this.zoom *= (1 - e.deltaY * 0.001);
                 this.zoom = Math.max(0.1, Math.min(5, this.zoom));
                 this.render();
-                // Clear zoom flag after a short delay to allow render to complete
                 clearTimeout(this.zoomTimeout);
-                this.zoomTimeout = setTimeout(() => {
-                    this.isZooming = false;
-                }, 100);
-            }, { passive: false });
+                this.zoomTimeout = setTimeout(() => { this.isZooming = false; }, 100);
+            };
 
-
-            // Touch Listeners
-            
-            this.canvas.addEventListener('touchstart', (e) => {
-                e.preventDefault(); // Prevent page scroll
+            this.eventHandlers.touchstart = (e) => {
+                e.preventDefault();
                 
                 if (e.touches.length === 1) {
-                    // Start of a drag
                     this.isDragging = true;
                     this.spinVelocityX = 0;
                     this.spinVelocityY = 0;
@@ -968,17 +948,15 @@ function initializePy2DmolViewer(containerElement) {
                         if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
                     }
                 } else if (e.touches.length === 2) {
-                    // Start of a pinch-zoom
-                    this.isDragging = false; // Stop dragging
+                    this.isDragging = false;
                     this.initialPinchDistance = this.getTouchDistance(e.touches[0], e.touches[1]);
                 }
-            }, { passive: false });
+            };
             
-            this.canvas.addEventListener('touchmove', (e) => {
-                e.preventDefault(); // Prevent page scroll
+            this.eventHandlers.touchmove = (e) => {
+                e.preventDefault();
 
                 if (e.touches.length === 1 && this.isDragging) {
-                    // Rotation/Drag
                     const now = performance.now();
                     const timeDelta = now - this.lastDragTime;
                     const touch = e.touches[0];
@@ -989,12 +967,8 @@ function initializePy2DmolViewer(containerElement) {
                     if (dy !== 0) { const rot = rotationMatrixX(dy * 0.01); this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); }
                     if (dx !== 0) { const rot = rotationMatrixY(dx * 0.01); this.rotationMatrix = multiplyMatrices(rot, this.rotationMatrix); }
 
-                    // Store velocity for inertia (disabled for large molecules based on visible segments)
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const totalSegmentCount = object && object.frames && object.frames[this.currentFrame] 
-                        ? (this.segmentIndices ? this.segmentIndices.length : 0)
-                        : 0;
-                    // Count visible segments for inertia determination
+                    const totalSegmentCount = object?.frames?.[this.currentFrame] && this.segmentIndices ? this.segmentIndices.length : 0;
                     let visibleSegmentCount = totalSegmentCount;
                     if (this.visibilityMask && this.segmentIndices) {
                         visibleSegmentCount = 0;
@@ -1012,7 +986,6 @@ function initializePy2DmolViewer(containerElement) {
                         this.spinVelocityX = (this.spinVelocityX * (1-smoothing)) + ((dx / timeDelta * 20) * smoothing);
                         this.spinVelocityY = (this.spinVelocityY * (1-smoothing)) + ((dy / timeDelta * 20) * smoothing);
                     } else {
-                        // Disable inertia for large objects
                         this.spinVelocityX = 0;
                         this.spinVelocityY = 0;
                     }
@@ -1023,8 +996,7 @@ function initializePy2DmolViewer(containerElement) {
                     
                     this.render(); 
                 } else if (e.touches.length === 2) {
-                    // Zoom/Pinch
-                    if (this.initialPinchDistance <= 0) return; // Not initialized
+                    if (this.initialPinchDistance <= 0) return;
                     
                     this.isZooming = true;
                     const currentPinchDistance = this.getTouchDistance(e.touches[0], e.touches[1]);
@@ -1034,32 +1006,23 @@ function initializePy2DmolViewer(containerElement) {
                     this.zoom = Math.max(0.1, Math.min(5, this.zoom));
                     this.render();
                     
-                    // Reset for next move event
                     this.initialPinchDistance = currentPinchDistance;
                     
-                    // Clear zoom flag after a short delay
                     clearTimeout(this.zoomTimeout);
-                    this.zoomTimeout = setTimeout(() => {
-                        this.isZooming = false;
-                    }, 100);
+                    this.zoomTimeout = setTimeout(() => { this.isZooming = false; }, 100);
                 }
-            }, { passive: false });
+            };
             
-            this.canvas.addEventListener('touchend', (e) => {
-                // Handle inertia for drag
+            this.eventHandlers.touchend = (e) => {
                 if (e.touches.length === 0 && this.isDragging) {
                     this.isDragging = false;
                     
-                    // Clear shadow cache when dragging ends (shadows need recalculation)
                     this.cachedShadows = null;
                     this.cachedTints = null;
-                    this.lastShadowRotationMatrix = null; // Force recalculation
+                    this.lastShadowRotationMatrix = null;
                     
-                    // For large molecules (based on visible segments), immediately recalculate shadows
-                    // since inertia is disabled and rotation has stopped
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                     const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
-                    // Count visible segments
                     let visibleSegmentCount = totalSegmentCount;
                     if (this.visibilityMask && this.segmentIndices) {
                         visibleSegmentCount = 0;
@@ -1073,66 +1036,103 @@ function initializePy2DmolViewer(containerElement) {
                     const isLargeMolecule = visibleSegmentCount > this.LARGE_MOLECULE_CUTOFF;
                     
                     if (isLargeMolecule) {
-                        // Render immediately with fresh shadows
                         this.render();
                     }
                     
-                    // Restart animate loop after dragging ends (needed for inertia and auto-rotation)
                     requestAnimationFrame(() => this.animate());
                     
                     const now = performance.now();
                     const timeDelta = now - this.lastDragTime;
                     
-                    if (timeDelta > 100) { // If drag was too slow, or just a tap
+                    if (timeDelta > 100) {
                         this.spinVelocityX = 0;
                         this.spinVelocityY = 0;
                     }
-                    // Else, the velocity from the last touchmove is used by the animate loop
                 }
                 
-                // Handle end of pinch
                 if (e.touches.length < 2) {
                     this.initialPinchDistance = 0;
                 }
                 
-                // If all touches are up, reset dragging
                 if (e.touches.length === 0) {
                     const wasDragging = this.isDragging;
                     this.isDragging = false;
                     
-                    // Clear shadow cache when dragging ends (shadows need recalculation)
                     if (wasDragging) {
                         this.cachedShadows = null;
                         this.cachedTints = null;
-                        this.lastShadowRotationMatrix = null; // Force recalculation
+                        this.lastShadowRotationMatrix = null;
                     }
                     
-                    // Restart animation loop if it was stopped
                     requestAnimationFrame(() => this.animate());
                 }
-            });
+            };
             
-            this.canvas.addEventListener('touchcancel', (e) => {
-                // Handle touch cancellation (e.g., system gesture interference)
+            this.eventHandlers.touchcancel = (e) => {
                 if (this.isDragging) {
                     this.isDragging = false;
                     
-                    // Clear shadow cache when dragging ends (shadows need recalculation)
                     this.cachedShadows = null;
                     this.cachedTints = null;
-                    this.lastShadowRotationMatrix = null; // Force recalculation
+                    this.lastShadowRotationMatrix = null;
                     
-                    // Restart animation loop
                     requestAnimationFrame(() => this.animate());
                 }
                 this.initialPinchDistance = 0;
-            });
+            };
+
+            this.canvas.addEventListener('mousedown', this.eventHandlers.mousedown);
+            this.canvas.addEventListener('mouseup', this.eventHandlers.mouseup_canvas);
+            this.canvas.addEventListener('wheel', this.eventHandlers.wheel, { passive: false });
+            this.canvas.addEventListener('touchstart', this.eventHandlers.touchstart, { passive: false });
+            this.canvas.addEventListener('touchmove', this.eventHandlers.touchmove, { passive: false });
+            this.canvas.addEventListener('touchend', this.eventHandlers.touchend);
+            this.canvas.addEventListener('touchcancel', this.eventHandlers.touchcancel);
         }
         
         getTouchDistance(touch1, touch2) {
             const dx = touch1.clientX - touch2.clientX;
             const dy = touch1.clientY - touch2.clientY;
             return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        destroy() {
+            this.isDestroyed = true;
+            this.stopAnimation();
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                this.mediaRecorder.stop();
+            }
+            this._stopRecordingTracks();
+
+            this.canvas.removeEventListener('mousedown', this.eventHandlers.mousedown);
+            this.canvas.removeEventListener('mouseup', this.eventHandlers.mouseup_canvas);
+            this.canvas.removeEventListener('wheel', this.eventHandlers.wheel);
+            this.canvas.removeEventListener('touchstart', this.eventHandlers.touchstart);
+            this.canvas.removeEventListener('touchmove', this.eventHandlers.touchmove);
+            this.canvas.removeEventListener('touchend', this.eventHandlers.touchend);
+            this.canvas.removeEventListener('touchcancel', this.eventHandlers.touchcancel);
+
+            window.removeEventListener('mousemove', this.eventHandlers.mousemove);
+            window.removeEventListener('mouseup', this.eventHandlers.mouseup_window);
+
+            if (this.paeRenderer) {
+                this.paeRenderer.destroy();
+                this.paeRenderer = null;
+            }
+
+            if (this.resizeObserver) {
+                this.resizeObserver.disconnect();
+                this.resizeObserver = null;
+            }
+
+            this.objectsData = {};
+            this.coords = [];
+            this.segmentIndices = [];
+            this.cachedShadows = null;
+            this.cachedTints = null;
+
+            const ctx = this.canvas.getContext('2d');
+            ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
         }
 
         // Set UI controls from main script
@@ -4564,6 +4564,7 @@ function initializePy2DmolViewer(containerElement) {
 
         // Main animation loop
         animate() {
+            if (this.isDestroyed) return;
             // Skip all work if dragging (mousemove handler calls render directly)
             if (this.isDragging) {
                 // Don't schedule another frame - mousemove will call render directly
