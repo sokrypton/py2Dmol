@@ -8,6 +8,8 @@
 
 let viewerApi = null;
 let batchedObjects = [];
+let is3DViewMode = false;
+let viewer3Dmol = null;
 
 // Helper function to check if PAE data is valid
 function isValidPAE(pae) {
@@ -162,17 +164,26 @@ function initializeViewerConfig() {
 
 function setupCanvasDimensions() {
     const canvasContainer = document.getElementById('canvasContainer');
+    const viewer3dmolContainer = document.getElementById('viewer-3dmol-container');
     const canvas = document.getElementById('canvas');
     const viewerColumn = document.getElementById('viewerColumn');
     
     canvasContainer.style.width = `${FIXED_WIDTH}px`;
     canvasContainer.style.height = `${FIXED_HEIGHT}px`;
+    viewer3dmolContainer.style.width = `${FIXED_WIDTH}px`;
+    viewer3dmolContainer.style.height = `${FIXED_HEIGHT}px`;
     canvas.width = FIXED_WIDTH;
     canvas.height = FIXED_HEIGHT;
     viewerColumn.style.minWidth = `${FIXED_WIDTH}px`;
 }
 
 function setupEventListeners() {
+    // 3D View mode toggle
+    const viewMode3DToggle = document.getElementById('viewMode3DToggle');
+    if (viewMode3DToggle) {
+        viewMode3DToggle.addEventListener('change', handleViewModeToggle);
+    }
+
     // Fetch button
     document.getElementById('fetch-btn').addEventListener('click', handleFetch);
     
@@ -323,6 +334,9 @@ function setupEventListeners() {
                         // Rebuild sequence view if sequence changed
                         buildSequenceView();
                     }
+                }
+                if (is3DViewMode) {
+                    loadCurrentDataInto3DViewer();
                 }
             }
         }
@@ -553,6 +567,10 @@ function handleObjectChange() {
     }
     if (window.updateMSAContainerVisibility) {
         window.updateMSAContainerVisibility();
+    }
+
+    if (is3DViewMode) {
+        loadCurrentDataInto3DViewer();
     }
 }
 
@@ -1995,6 +2013,9 @@ function clearAllObjects() {
             console.error("Failed to reset viewer:", e);
             setStatus("Error: Failed to reset viewer. See console.", true);
         }
+    } else if (viewer3Dmol) {
+        window.destroy3DmolViewer(viewer3Dmol);
+        viewer3Dmol = null;
     } else if (viewerApi && viewerApi.renderer) {
         // Fallback: use renderer method directly
         try {
@@ -5270,6 +5291,53 @@ function initDragAndDrop() {
 function preventDefaults(e) {
     e.preventDefault();
     e.stopPropagation();
+}
+
+// ============================================================================
+// ============================================================================
+// 3Dmol.js Integration
+// ============================================================================
+
+async function handleViewModeToggle(e) {
+    is3DViewMode = e.target.checked;
+    const canvasContainer = document.getElementById('canvasContainer');
+    const viewer3dmolContainer = document.getElementById('viewer-3dmol-container');
+
+    if (is3DViewMode) {
+        canvasContainer.style.display = 'none';
+        viewer3dmolContainer.style.display = 'block';
+
+        if (!viewer3Dmol) {
+            viewer3Dmol = window.create3DmolViewer('viewer-3dmol-container');
+        }
+        loadCurrentDataInto3DViewer();
+
+    } else {
+        canvasContainer.style.display = 'block';
+        viewer3dmolContainer.style.display = 'none';
+        if (viewer3Dmol) {
+            window.destroy3DmolViewer(viewer3Dmol);
+            viewer3Dmol = null;
+        }
+    }
+}
+
+function loadCurrentDataInto3DViewer() {
+    if (!is3DViewMode || !viewer3Dmol || !viewerApi?.renderer) {
+        return;
+    }
+
+    const renderer = viewerApi.renderer;
+    const objectName = renderer.currentObjectName;
+    if (!objectName) return;
+
+    const object = renderer.objectsData[objectName];
+    if (!object || !object.frames || object.frames.length === 0) return;
+
+    const frameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
+    const frame = object.frames[frameIndex];
+
+    window.loadDataInto3Dmol(viewer3Dmol, frame, objectName);
 }
 
 // ============================================================================

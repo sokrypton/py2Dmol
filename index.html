@@ -9,6 +9,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <!-- Numeric.js for SVD calculations -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+    <!-- 3Dmol.js for 3D visualization -->
+    <script src="https://3dmol.org/build/3Dmol-min.js"></script>
     <!-- canvas2svg is now integrated into viewer-mol.js -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJd4gYm4zQ6UvE6j3v/3Tf7U7T2Y9p6gJzU0bW5V6f6G6X6b6W6w6+g6w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link rel="stylesheet" href="web/style.css">
@@ -149,6 +151,15 @@
                                     </label>
                                     <label for="loadMSACheckbox" class="upload-toggle-label">Load MSA</label>
                                 </div>
+
+                                <!-- 3D View Toggle -->
+                                <div class="upload-toggle-item">
+                                    <label class="switch">
+                                        <input type="checkbox" id="viewMode3DToggle">
+                                        <span class="slider-toggle"></span>
+                                    </label>
+                                    <label for="viewMode3DToggle" class="upload-toggle-label">3D View</label>
+                                </div>
                             </div>
                         </div>
                     </td>
@@ -168,6 +179,9 @@
                         <canvas id="canvas"></canvas>
                         <!-- Resize handle -->
                         <div class="resize-handle"></div>
+                    </div>
+                    <div id="viewer-3dmol-container" class="container-box" style="display: none;">
+                        <!-- 3Dmol.js viewer will be injected here -->
                     </div>
                     <div id="controlsContainer" class="container-box">
                         <button id="playButton" class="btn btn-primary btn-min-width-sm"><i class="fa-solid fa-play"></i></button>
@@ -381,6 +395,7 @@
     <script src="py2Dmol/resources/viewer-pae.js"></script>
     <script src="py2Dmol/resources/viewer-seq.js"></script>
     <script src="py2Dmol/resources/viewer-msa.js"></script>
+    <script src="web/viewer-3dmol.js"></script>
     <script src="web/app.js"></script>
 
 </body>
