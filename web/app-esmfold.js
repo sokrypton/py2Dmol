@@ -298,21 +298,6 @@ async function callESMFoldChunked(sequence) {
                     throw new Error(`Chunk ${idx + 1} failed`);
                 }
                 
-                // Debug: check how many residues were returned and sample pLDDT values
-                const atomLines = pdbText.split('\n').filter(line => line.startsWith('ATOM') && line.substring(12, 16).trim() === 'CA');
-                const samplePlddts = [];
-                for (let i = 0; i < Math.min(5, atomLines.length); i++) {
-                    const line = atomLines[i];
-                    if (line.length >= 66) {
-                        const bfactor = parseFloat(line.substring(60, 66).trim());
-                        if (!isNaN(bfactor)) {
-                            samplePlddts.push(bfactor);
-                        }
-                    }
-                }
-                const avgPlddt = samplePlddts.length > 0 ? (samplePlddts.reduce((a, b) => a + b, 0) / samplePlddts.length).toFixed(2) : 'N/A';
-                console.log(`Chunk ${idx + 1}: ESMFold returned ${atomLines.length} CA atoms (expected ${chunk.sequence.length}), sample pLDDT: [${samplePlddts.map(p => p.toFixed(2)).join(', ')}], avg: ${avgPlddt}`);
-                
                 return { pdbText, chunk };
             });
         
@@ -468,16 +453,7 @@ function alignAndStitchChunks(pdbTexts, originalSequence, chunkInfo = null) {
             combined.coords.push(...residuesToAdd);
             const afterAdd = combined.coords.length;
             
-            // Debug: check pLDDT values being added
-            let plddtInfo = '';
-            if (currentChunkData.plddts && currentChunkData.plddts.length > cutpoint) {
-                const plddtsToAdd = currentChunkData.plddts.slice(cutpoint);
-                const samplePlddts = plddtsToAdd.slice(0, Math.min(5, plddtsToAdd.length));
-                const avgPlddt = plddtsToAdd.length > 0 ? (plddtsToAdd.reduce((a, b) => a + b, 0) / plddtsToAdd.length).toFixed(2) : 'N/A';
-                plddtInfo = `, pLDDT: sample=[${samplePlddts.map(p => p.toFixed(1)).join(', ')}], avg=${avgPlddt}`;
-            }
-            
-            console.log(`Chunk ${i + 1}: kept ${residuesToKeepFromPrev} from previous, added ${residuesToAdd.length} from current (cutpoint=${cutpoint}, overlap=${overlap}), total: ${afterAdd}${plddtInfo}`);
+            console.log(`Chunk ${i + 1}: kept ${residuesToKeepFromPrev} from previous, added ${residuesToAdd.length} from current (cutpoint=${cutpoint}, overlap=${overlap}), total: ${afterAdd}`);
             
             if (currentChunkData.plddts) {
                 const plddtsToAdd = currentChunkData.plddts.slice(cutpoint);
@@ -535,22 +511,7 @@ function alignAndStitchChunks(pdbTexts, originalSequence, chunkInfo = null) {
                 // This is a workaround - ideally the stitching should be correct
             }
         } else {
-            // Debug: log final pLDDT statistics
-            let plddtStats = '';
-            if (combined.plddts && combined.plddts.length > 0) {
-                const validPlddts = combined.plddts.filter(p => !isNaN(p) && p !== null && p !== undefined);
-                if (validPlddts.length > 0) {
-                    const minPlddt = Math.min(...validPlddts);
-                    const maxPlddt = Math.max(...validPlddts);
-                    const avgPlddt = validPlddts.reduce((a, b) => a + b, 0) / validPlddts.length;
-                    // Sample pLDDT from different regions
-                    const sample1 = validPlddts.slice(0, 10).map(p => p.toFixed(1)).join(', ');
-                    const sample2 = validPlddts.slice(Math.floor(validPlddts.length / 2), Math.floor(validPlddts.length / 2) + 10).map(p => p.toFixed(1)).join(', ');
-                    const sample3 = validPlddts.slice(-10).map(p => p.toFixed(1)).join(', ');
-                    plddtStats = `, pLDDT: min=${minPlddt.toFixed(1)}, max=${maxPlddt.toFixed(1)}, avg=${avgPlddt.toFixed(1)}, samples: start=[${sample1}], middle=[${sample2}], end=[${sample3}]`;
-                }
-            }
-            console.log(`Successfully stitched ${pdbTexts.length} chunks: final length ${combined.coords.length} matches sequence length ${originalSequence.length}${plddtStats}`);
+            console.log(`Successfully stitched ${pdbTexts.length} chunks: final length ${combined.coords.length} matches sequence length ${originalSequence.length}`);
         }
         
         setStatus(`Successfully stitched ${pdbTexts.length} chunks into ${combined.coords.length} residue structure`);

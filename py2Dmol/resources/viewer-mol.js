@@ -259,6 +259,24 @@ function initializePy2DmolViewer(containerElement) {
     function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
     function getPlddtColor_Colorblind(plddt) { return getPlddtRainbowColor_Colorblind(plddt, 50, 90); }
     
+    // Entropy color: low entropy (conserved, blue) to high entropy (variable, red)
+    // Entropy values are normalized 0-1, where 0 = conserved, 1 = variable
+    function getEntropyColor(entropy) {
+        // Clamp entropy to 0-1 range
+        const normalized = Math.max(0, Math.min(1, entropy || 0));
+        // Low entropy (conserved) -> blue (240), high entropy (variable) -> red (0)
+        const hue = 240 * (1 - normalized); // 0 -> 240 (blue), 1 -> 0 (red)
+        return hsvToRgb(hue, 1.0, 1.0);
+    }
+    
+    // Entropy colorblind: low entropy (conserved, blue) to high entropy (yellow)
+    function getEntropyColor_Colorblind(entropy) {
+        // Clamp entropy to 0-1 range
+        const normalized = Math.max(0, Math.min(1, entropy || 0));
+        // Low entropy (conserved) -> blue (240), high entropy (variable) -> yellow (60)
+        const hue = 240 - normalized * 180; // 240 -> 60 (blue to yellow)
+        return hsvToRgb(hue, 1.0, 1.0);
+    }
 
     function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
     
@@ -274,7 +292,8 @@ function initializePy2DmolViewer(containerElement) {
         'L': 0.4,   // Ligands: thinner baseline
         'P': 1.0,   // Proteins: standard baseline
         'D': 1.6,   // DNA: thicker baseline
-        'R': 1.6    // RNA: thicker baseline
+        'R': 1.6,   // RNA: thicker baseline
+        'C': 0.5    // Contacts: half width of proteins
     };
     
     // Reference lengths for length normalization (typical segment lengths in Å)
@@ -334,7 +353,8 @@ function initializePy2DmolViewer(containerElement) {
                 box: true,
                 pastel: 0.25,
                 pae: false,
-                colorblind: false
+                colorblind: false,
+                depth: false
             };
 
             // Current render state
@@ -342,9 +362,10 @@ function initializePy2DmolViewer(containerElement) {
             this.plddts = [];
             this.chains = [];
             this.positionTypes = [];
+            this.entropy = undefined; // Entropy vector mapped to structure positions
             
-            // Viewer state - Color mode: auto, chain, rainbow, or plddt
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            // Viewer state - Color mode: auto, chain, rainbow, plddt, or entropy
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             this.colorMode = (config.color && validModes.includes(config.color)) ? config.color : 'auto';
             // Ensure it's always valid
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
@@ -356,6 +377,7 @@ function initializePy2DmolViewer(containerElement) {
             this.rotationMatrix = [[1,0,0],[0,1,0],[0,0,1]];
             this.zoom = 1.0;
             this.lineWidth = (typeof config.width === 'number') ? config.width : 3.0;
+            this.relativeOutlineWidth = 3.0; // Default outline width relative to line width
             this.shadowIntensity = 0.95;
             // Perspective/orthographic projection state
             this.perspectiveEnabled = false; // false = orthographic, true = perspective
@@ -367,7 +389,7 @@ function initializePy2DmolViewer(containerElement) {
             
             // Set defaults from config, with fallback
             this.shadowEnabled = (typeof config.shadow === 'boolean') ? config.shadow : true;
-            this.depthEnabled = (typeof config.depth === 'boolean') ? config.depth : true;
+            this.depthEnabled = (typeof config.depth === 'boolean') ? config.depth : false;
             // Outline mode: 'none', 'partial', or 'full'
             if (typeof config.outline === 'string' && ['none', 'partial', 'full'].includes(config.outline)) {
                 this.outlineMode = config.outline;
@@ -469,6 +491,7 @@ function initializePy2DmolViewer(containerElement) {
             this.speedSelect = null;
             this.rotationCheckbox = null;
             this.lineWidthSlider = null;
+            this.outlineWidthSlider = null;
             this.shadowEnabledCheckbox = null; 
             this.outlineModeButton = null; // Button that cycles through outline modes (index.html)
             this.outlineModeSelect = null; // Dropdown for outline modes (viewer.html)
@@ -1112,7 +1135,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.recordButton = recordButton;
@@ -1123,6 +1146,7 @@ function initializePy2DmolViewer(containerElement) {
             this.speedSelect = speedSelect;
             this.rotationCheckbox = rotationCheckbox;
             this.lineWidthSlider = lineWidthSlider;
+            this.outlineWidthSlider = outlineWidthSlider;
             this.shadowEnabledCheckbox = shadowEnabledCheckbox; 
             this.outlineModeButton = outlineModeButton;
             this.outlineModeSelect = outlineModeSelect;
@@ -1130,6 +1154,7 @@ function initializePy2DmolViewer(containerElement) {
             this.colorblindCheckbox = colorblindCheckbox;
             this.orthoSlider = orthoSlider;
             this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
+            this.relativeOutlineWidth = parseFloat(this.outlineWidthSlider.value); // Read default from slider
             this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
 
             // Bind all event listeners
@@ -1189,6 +1214,13 @@ function initializePy2DmolViewer(containerElement) {
 
             this.lineWidthSlider.addEventListener('input', (e) => {
                 this.lineWidth = parseFloat(e.target.value);
+                if (!this.isPlaying) {
+                    this.render();
+                }
+            });
+            
+            this.outlineWidthSlider.addEventListener('input', (e) => {
+                this.relativeOutlineWidth = parseFloat(e.target.value);
                 if (!this.isPlaying) {
                     this.render();
                 }
@@ -1381,6 +1413,14 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
+            // Remap entropy if entropy mode is active
+            if (this.colorMode === 'entropy') {
+                this._mapEntropyToStructure();
+            } else {
+                // Clear entropy when not in entropy mode
+                this.entropy = undefined;
+            }
+            
             // Save the restored selection state (setSelection would do this, but we're bypassing it)
             if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
                 this.objectsData[this.currentObjectName].selectionState = {
@@ -1478,6 +1518,11 @@ function initializePy2DmolViewer(containerElement) {
 
             const object = this.objectsData[targetObjectName];
             const newFrameIndex = object.frames.length; // Index of frame we're about to add
+            
+            // Store contacts if provided in data (object-level)
+            if (data.contacts !== undefined) {
+                object.contacts = data.contacts;
+            }
             
             // Update object-level tracking (for optimization during resolution)
             if (this._hasPlddtData(data)) {
@@ -2854,9 +2899,17 @@ function initializePy2DmolViewer(containerElement) {
             const n = this.coords.length;
             
             // Ensure colorMode is valid
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
+            }
+            
+            // Map entropy to structure if entropy mode is active
+            if (this.colorMode === 'entropy') {
+                this._mapEntropyToStructure();
+            } else {
+                // Clear entropy when not in entropy mode
+                this.entropy = undefined;
             }
             
             // Mark colors as needing update when coordinates change
@@ -3182,6 +3235,65 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             
+            // Add contact segments from object-level contacts
+            if (this.currentObjectName) {
+                const object = this.objectsData[this.currentObjectName];
+                if (object && object.contacts && Array.isArray(object.contacts)) {
+                    for (const contact of object.contacts) {
+                        const resolved = this._resolveContactToIndices(contact, n);
+                        
+                        if (resolved && resolved.idx1 >= 0 && resolved.idx1 < n && 
+                            resolved.idx2 >= 0 && resolved.idx2 < n && resolved.idx1 !== resolved.idx2) {
+                            
+                            const start = this.coords[resolved.idx1];
+                            const end = this.coords[resolved.idx2];
+                            const totalDist = Math.sqrt(start.distanceToSq(end));
+                            const chainId = this.chains[resolved.idx1] || 'A';
+                            
+                            this.segmentIndices.push({
+                                idx1: resolved.idx1,
+                                idx2: resolved.idx2,
+                                colorIndex: 0,
+                                origIndex: resolved.idx1,
+                                chainId: chainId,
+                                type: 'C',
+                                len: totalDist,
+                                contactIdx1: resolved.idx1,
+                                contactIdx2: resolved.idx2
+                            });
+                        }
+                    }
+                }
+            }
+            
+            // Expand rotatedCoords to match coords array
+            const currentCoordsLength = this.coords.length;
+            while (this.rotatedCoords.length < currentCoordsLength) {
+                this.rotatedCoords.push(new Vec3(0, 0, 0));
+            }
+            // But we need to make sure they're all the same length
+            const finalN = this.coords.length;
+            while (this.plddts.length < finalN) {
+                this.plddts.push(50.0);
+            }
+            while (this.chains.length < finalN) {
+                this.chains.push('A');
+            }
+            while (this.positionTypes.length < finalN) {
+                this.positionTypes.push('P'); // Default to protein type for intermediate positions
+            }
+            while (this.positionNames.length < finalN) {
+                this.positionNames.push('UNK');
+            }
+            while (this.residueNumbers.length < finalN) {
+                this.residueNumbers.push(-1);
+            }
+            if (this.perChainIndices) {
+                while (this.perChainIndices.length < finalN) {
+                    this.perChainIndices.push(0);
+                }
+            }
+            
             // Clear shadow cache when molecule changes (rotation comparison becomes invalid)
             this.cachedShadows = null;
             this.cachedTints = null;
@@ -3194,7 +3306,7 @@ function initializePy2DmolViewer(containerElement) {
             this.typeWidthMultipliers = {
                 'atom': ATOM_WIDTH_MULTIPLIER
             };
-            for (const type of ['L', 'P', 'D', 'R']) {
+            for (const type of ['L', 'P', 'D', 'R', 'C']) {
                 this.typeWidthMultipliers[type] = this._calculateTypeWidthMultiplier(type);
             }
             
@@ -3279,10 +3391,118 @@ function initializePy2DmolViewer(containerElement) {
             
             // Update UI controls (but don't render yet)
             this.updateUIControls();
+            
+            // Map entropy to structure if entropy mode is active
+            if (this.colorMode === 'entropy') {
+                this._mapEntropyToStructure();
+            }
+        }
+        
+        /**
+         * Map entropy values from current object's MSA to structure positions
+         * Entropy is stored in object.msa.msasBySequence[querySeq].msaData.entropy
+         * This function maps MSA entropy array to structure position indices
+         */
+        _mapEntropyToStructure(objectName = null) {
+            // Use current object if not specified
+            if (!objectName) {
+                objectName = this.currentObjectName;
+            }
+            
+            if (!objectName) {
+                this.entropy = undefined;
+                return;
+            }
+            
+            const object = this.objectsData[objectName];
+            if (!object || !object.msa || !object.msa.msasBySequence || !object.msa.chainToSequence) {
+                this.entropy = undefined;
+                return;
+            }
+            
+            const frameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
+            const frame = object.frames[frameIndex];
+            if (!frame || !frame.chains) {
+                this.entropy = undefined;
+                return;
+            }
+            
+            // Initialize entropy vector with -1 for all positions (full molecule length)
+            const positionCount = frame.chains.length;
+            const entropyVector = new Array(positionCount).fill(-1);
+            
+            // Check if extractChainSequences is available
+            const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function' 
+                ? window.extractChainSequences 
+                : null;
+            
+            if (!extractChainSequences) {
+                this.entropy = entropyVector;
+                return;
+            }
+            
+            // Extract chain sequences from structure
+            const chainSequences = extractChainSequences(frame);
+            
+            // For each chain, get its MSA and map entropy values
+            for (const [chainId, querySeq] of Object.entries(object.msa.chainToSequence)) {
+                const msaEntry = object.msa.msasBySequence[querySeq];
+                if (!msaEntry || !msaEntry.msaData || !msaEntry.msaData.entropy) {
+                    continue; // No entropy data for this chain's MSA
+                }
+                
+                const msaData = msaEntry.msaData;
+                const msaEntropy = msaData.entropy; // Pre-computed entropy array (one per MSA position)
+                const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps
+                
+                const chainSequence = chainSequences[chainId];
+                if (!chainSequence) {
+                    continue; // Chain not found in frame
+                }
+                
+                // Find representative positions for this chain (position_types === 'P')
+                const chainPositions = []; // Array of position indices for this chain
+                
+                for (let i = 0; i < positionCount; i++) {
+                    if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
+                        chainPositions.push(i);
+                    }
+                }
+                
+                if (chainPositions.length === 0) {
+                    continue; // No representative positions found
+                }
+                
+                // Sort positions by residue number to match sequence order
+                chainPositions.sort((a, b) => {
+                    const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                    const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                    return residueNumA - residueNumB;
+                });
+                
+                // Map MSA positions to chain positions (one-to-one mapping)
+                // Query sequence has no gaps, so mapping is straightforward
+                const msaQueryUpper = msaQuerySequence.toUpperCase();
+                const chainSeqUpper = chainSequence.toUpperCase();
+                const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length, msaEntropy.length);
+                
+                for (let i = 0; i < minLength; i++) {
+                    // Check if this MSA position matches the chain sequence position
+                    if (msaQueryUpper[i] === chainSeqUpper[i]) {
+                        // Match found - copy entropy value to corresponding position
+                        const positionIndex = chainPositions[i];
+                        if (positionIndex < entropyVector.length) {
+                            entropyVector[positionIndex] = msaEntropy[i];
+                        }
+                    }
+                }
+            }
+            
+            this.entropy = entropyVector;
         }
 
         _getEffectiveColorMode() {
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
             }
@@ -3319,6 +3539,18 @@ function initializePy2DmolViewer(containerElement) {
                 const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtFunc(plddt);
+            } else if (effectiveColorMode === 'entropy') {
+                const entropyFunc = this.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
+                // Get entropy value from mapped entropy vector
+                const entropy = (this.entropy && atomIndex < this.entropy.length && this.entropy[atomIndex] !== undefined && this.entropy[atomIndex] >= 0) 
+                    ? this.entropy[atomIndex] 
+                    : undefined;
+                if (entropy !== undefined) {
+                    color = entropyFunc(entropy);
+                } else {
+                    // No entropy data for this position (ligand, RNA/DNA, or unmapped) - use default grey
+                    color = { r: 128, g: 128, b: 128 };
+                }
             } else if (effectiveColorMode === 'chain') {
                 const chainId = this.chains[atomIndex] || 'A';
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
@@ -3380,6 +3612,11 @@ function initializePy2DmolViewer(containerElement) {
 
             // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
             return this.segmentIndices.map(segInfo => {
+                // Contacts always bright red, regardless of color mode (no pastel applied)
+                if (segInfo.type === 'C') {
+                    return { r: 255, g: 0, b: 0 }; // Bright red
+                }
+                
                 const positionIndex = segInfo.origIndex;
                 // getAtomColor() already handles all color modes, ligands, ligand-only chains, pastel, etc.
                 return this.getAtomColor(positionIndex);
@@ -3397,6 +3634,13 @@ function initializePy2DmolViewer(containerElement) {
             
             for (let i = 0; i < m; i++) {
                 const segInfo = this.segmentIndices[i];
+                
+                // Contacts always bright red, regardless of color mode (no pastel applied)
+                if (segInfo.type === 'C') {
+                    colors[i] = { r: 255, g: 0, b: 0 }; // Bright red
+                    continue;
+                }
+                
                 const positionIndex = segInfo.origIndex;
                 const type = segInfo.type;
                 let color;
@@ -3448,9 +3692,85 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         /**
+         * Resolves contact specification to position indices.
+         * @param {Array} contact - Contact specification: [idx1, idx2] or [chain1, res1, chain2, res2]
+         * @returns {{idx1: number, idx2: number}|null} Resolved indices or null if invalid
+         */
+        _resolveContactToIndices(contact, maxIndex = null) {
+            if (!contact || !Array.isArray(contact)) return null;
+            
+            if (contact.length === 2 && typeof contact[0] === 'number' && typeof contact[1] === 'number') {
+                // Direct indices: [idx1, idx2]
+                return { idx1: contact[0], idx2: contact[1] };
+            } else if (contact.length === 4) {
+                // Chain + residue format: [chain1, res1, chain2, res2]
+                const [chain1, res1, chain2, res2] = contact;
+                
+                // Find position indices matching chain+residue
+                // Only search in original structure positions (before intermediate positions were added)
+                const searchLimit = maxIndex !== null ? maxIndex : this.chains.length;
+                let idx1 = -1, idx2 = -1;
+                
+                // Debug: log available chains and residue ranges for first failed contact
+                let debugLogged = false;
+                
+                for (let i = 0; i < searchLimit; i++) {
+                    // Skip intermediate positions (they have residueNumber = -1)
+                    if (this.residueNumbers[i] === -1) continue;
+                    
+                    if (this.chains[i] === chain1 && this.residueNumbers[i] === res1 && idx1 === -1) {
+                        idx1 = i;
+                    }
+                    if (this.chains[i] === chain2 && this.residueNumbers[i] === res2 && idx2 === -1) {
+                        idx2 = i;
+                    }
+                    if (idx1 !== -1 && idx2 !== -1) break;
+                }
+                
+                if (idx1 === -1 || idx2 === -1) {
+                    // Enhanced debugging: show what's available in the structure
+                    if (!debugLogged) {
+                        const availableChains = new Set();
+                        const chainResidueRanges = {};
+                        for (let i = 0; i < Math.min(searchLimit, 1000); i++) { // Limit to first 1000 for performance
+                            if (this.residueNumbers[i] === -1) continue;
+                            const chain = this.chains[i];
+                            const resNum = this.residueNumbers[i];
+                            availableChains.add(chain);
+                            if (!chainResidueRanges[chain]) {
+                                chainResidueRanges[chain] = { min: resNum, max: resNum, samples: [] };
+                            } else {
+                                chainResidueRanges[chain].min = Math.min(chainResidueRanges[chain].min, resNum);
+                                chainResidueRanges[chain].max = Math.max(chainResidueRanges[chain].max, resNum);
+                            }
+                            if (chainResidueRanges[chain].samples.length < 10) {
+                                chainResidueRanges[chain].samples.push(resNum);
+                            }
+                        }
+                        console.warn(`Could not resolve contact: [${chain1}, ${res1}, ${chain2}, ${res2}]`);
+                        console.warn(`  Available chains:`, Array.from(availableChains).sort());
+                        console.warn(`  Residue ranges:`, Object.keys(chainResidueRanges).map(chain => 
+                            `${chain}: ${chainResidueRanges[chain].min}-${chainResidueRanges[chain].max} (samples: ${chainResidueRanges[chain].samples.slice(0, 5).join(', ')})`
+                        ));
+                        console.warn(`  Searching in first ${searchLimit} positions`);
+                        debugLogged = true;
+                    } else {
+                        console.warn(`Could not resolve contact: [${chain1}, ${res1}, ${chain2}, ${res2}]`);
+                    }
+                    return null;
+                }
+                
+                return { idx1, idx2 };
+            }
+            
+            console.warn(`Invalid contact format:`, contact);
+            return null;
+        }
+
+        /**
          * Calculates width multiplier for a given molecule type.
          * Always uses TYPE_BASELINES (no length-based scaling).
-         * @param {string} type - Molecule type ('L', 'P', 'D', 'R')
+         * @param {string} type - Molecule type ('L', 'P', 'D', 'R', 'C')
          * @returns {number} Width multiplier
          */
         _calculateTypeWidthMultiplier(type) {
@@ -3667,10 +3987,24 @@ function initializePy2DmolViewer(containerElement) {
             
             // Build list of visible segment indices early - this is the key optimization
             // A segment is visible if both positions are visible (or no mask = all visible)
+            // For contact segments, check visibility based on original contact endpoints, not intermediate positions
             const visibleSegmentIndices = [];
             for (let i = 0; i < n; i++) {
                 const segInfo = segments[i];
-                if (!visibilityMask || (visibilityMask.has(segInfo.idx1) && visibilityMask.has(segInfo.idx2))) {
+                let isVisible = false;
+                
+                if (!visibilityMask) {
+                    // No mask = all segments visible
+                    isVisible = true;
+                } else if (segInfo.type === 'C' && segInfo.contactIdx1 !== undefined && segInfo.contactIdx2 !== undefined) {
+                    // For contact segments, check visibility based on original contact endpoints
+                    isVisible = visibilityMask.has(segInfo.contactIdx1) && visibilityMask.has(segInfo.contactIdx2);
+                } else {
+                    // For regular segments, check visibility based on segment endpoints
+                    isVisible = visibilityMask.has(segInfo.idx1) && visibilityMask.has(segInfo.idx2);
+                }
+                
+                if (isVisible) {
                     visibleSegmentIndices.push(i);
                 }
             }
@@ -3696,7 +4030,7 @@ function initializePy2DmolViewer(containerElement) {
                 const midX = (start.x + end.x) * 0.5;
                 const midY = (start.y + end.y) * 0.5;
                 const midZ = (start.z + end.z) * 0.5;
-                // Store raw z-value (no clamping) to detect actual range
+                // Use mean z-value for all segments
                 const z = midZ;
                 
                 zValues[segIdx] = z;
@@ -3713,7 +4047,7 @@ function initializePy2DmolViewer(containerElement) {
                 const s = segData[segIdx];
                 s.x = midX;
                 s.y = midY;
-                s.z = midZ;
+                s.z = z; // Use mean z-value for sorting
                 s.len = segInfo.len; // Use pre-calculated length
                 s.zVal = z;
                 // gx/gy are reset in shadow logic
@@ -3825,15 +4159,26 @@ function initializePy2DmolViewer(containerElement) {
             tints.fill(1.0);
             
             // Only sort visible segments - major performance improvement
+            // Sort by z-depth (back to front) - simple, no post-processing
             const visibleOrder = visibleSegmentIndices
-                .map(i => ({ idx: i, z: zValues[i] }))
-                .sort((a, b) => a.z - b.z)
+                .map(i => ({ 
+                    idx: i, 
+                    z: zValues[i]
+                }))
+                .sort((a, b) => {
+                    // Sort by z-depth (back to front)
+                    return a.z - b.z;
+                })
                 .map(item => item.idx);
             
             // Keep full order array for compatibility (but only visible segments will be used)
             // NOTE: This array should NOT be used for calculations - use visibleOrder instead
             // zValues for non-visible segments are uninitialized (0), so sorting is incorrect
-            const order = Array.from({length: n}, (_, i) => i).sort((a, b) => zValues[a] - zValues[b]);
+            // Simple z-depth sorting
+            const order = Array.from({length: n}, (_, i) => i).sort((a, b) => {
+                // Sort by z-depth (back to front)
+                return zValues[a] - zValues[b];
+            });
             
             // visibilityMask already declared above for depth calculation
             
@@ -3867,6 +4212,8 @@ function initializePy2DmolViewer(containerElement) {
                         let maxTint = 0;
                         const s1 = segData[i];
                         const segInfoI = segments[i]; // Cache segment info
+                        const isContactI = segInfoI.type === 'C';
+                        const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
 
                         // Only check visible segments (already filtered)
                         for (let j_idx = i_idx + 1; j_idx < visibleOrder.length; j_idx++) {
@@ -3879,6 +4226,13 @@ function initializePy2DmolViewer(containerElement) {
                             
                             const s2 = segData[j];
                             const segInfo2 = segments[j];
+                            const isContactJ = segInfo2.type === 'C';
+                            const isMoleculeJ = segInfo2.type === 'P' || segInfo2.type === 'D' || segInfo2.type === 'R';
+                            
+                            // Skip if one is contact and one is molecule - contacts don't influence molecule shadows/tints
+                            if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
+                                continue;
+                            }
                             
                             // Call helper function with segment info for width weighting
                             const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
@@ -3949,14 +4303,19 @@ function initializePy2DmolViewer(containerElement) {
                                     cell.length = MAX_SEGMENTS_PER_CELL;
                                 }
                                 // Sort by z-depth descending (front to back) for early exit
+                                // Simple sorting, no post-processing
                                 // Only sort if cell has more than 2 segments (sorting 2 items is unnecessary)
                                 if (cell.length > 2) {
-                                    cell.sort((a, b) => segData[b].z - segData[a].z);
-                                } else if (cell.length === 2 && segData[cell[0]].z < segData[cell[1]].z) {
-                                    // Swap if needed for 2-item case
-                                    const temp = cell[0];
-                                    cell[0] = cell[1];
-                                    cell[1] = temp;
+                                    cell.sort((a, b) => {
+                                        return segData[b].z - segData[a].z;
+                                    });
+                                } else if (cell.length === 2) {
+                                    // For 2-item case, swap if needed for z-depth
+                                    if (segData[cell[0]].z < segData[cell[1]].z) {
+                                        const temp = cell[0];
+                                        cell[0] = cell[1];
+                                        cell[1] = temp;
+                                    }
                                 }
                             }
                         }
@@ -3969,6 +4328,9 @@ function initializePy2DmolViewer(containerElement) {
                             const s1 = segData[i];
                             const gx1 = s1.gx;
                             const gy1 = s1.gy;
+                            const segInfoI = segments[i];
+                            const isContactI = segInfoI.type === 'C';
+                            const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
 
                             if (gx1 < 0) { 
                                 shadows[i] = 1.0;
@@ -4008,6 +4370,14 @@ function initializePy2DmolViewer(containerElement) {
                                         
                                         // Only visible segments are in the grid, so no visibility check needed
                                         const s2 = segData[j];
+                                        const segInfoJ = segments[j];
+                                        const isContactJ = segInfoJ.type === 'C';
+                                        const isMoleculeJ = segInfoJ.type === 'P' || segInfoJ.type === 'D' || segInfoJ.type === 'R';
+                                        
+                                        // Skip if one is contact and one is molecule - contacts don't influence molecule shadows/tints
+                                        if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
+                                            continue;
+                                        }
                                         
                                         // CRITICAL: Only check segments that are in FRONT of i (closer to camera)
                                         // Segment j casts shadow on i only if j.z > i.z (j is in front)
@@ -4021,10 +4391,8 @@ function initializePy2DmolViewer(containerElement) {
                                             break;
                                         }
                                         
-                                        const segInfo2 = segments[j];
-                                        
                                         // Call helper function with segment info for width weighting
-                                        const { shadow, tint } = this._calculateShadowTint(s1, s2, segments[i], segInfo2);
+                                        const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfoJ);
                                         // Saturating accumulation: naturally caps at MAX_SHADOW_SUM
                                         shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
                                         maxTint = Math.max(maxTint, tint);
@@ -4166,17 +4534,23 @@ function initializePy2DmolViewer(containerElement) {
             for (let i = 0; i < numVisibleSegments; i++) {
                 const segIdx = visibleSegmentIndices[i];
                 const segInfo = segments[segIdx];
-                if (!positionToSegments.has(segInfo.idx1)) {
-                    positionToSegments.set(segInfo.idx1, []);
+                
+                // Optimized: single lookup instead of has+get
+                let arr1 = positionToSegments.get(segInfo.idx1);
+                if (!arr1) {
+                    arr1 = [];
+                    positionToSegments.set(segInfo.idx1, arr1);
                 }
-                positionToSegments.get(segInfo.idx1).push(segIdx);
+                arr1.push(segIdx);
                 
                 if (segInfo.idx1 !== segInfo.idx2) {
                     // Only add idx2 if it's different from idx1 (not zero-sized)
-                    if (!positionToSegments.has(segInfo.idx2)) {
-                        positionToSegments.set(segInfo.idx2, []);
+                    let arr2 = positionToSegments.get(segInfo.idx2);
+                    if (!arr2) {
+                        arr2 = [];
+                        positionToSegments.set(segInfo.idx2, arr2);
                     }
-                    positionToSegments.get(segInfo.idx2).push(segIdx);
+                    arr2.push(segIdx);
                 }
             }
             
@@ -4186,6 +4560,129 @@ function initializePy2DmolViewer(containerElement) {
             const segmentOrderMap = new Map();
             for (let orderIdx = 0; orderIdx < visibleOrder.length; orderIdx++) {
                 segmentOrderMap.set(visibleOrder[orderIdx], orderIdx);
+            }
+            
+            // Build maps for polymer segments: position -> segments that share that edge
+            // For polymers, at each position we only need to check segments that actually share the edge
+            // - At position i as start: check segments ending at i (idx2 == i)
+            // - At position i as end: check segments starting at i (idx1 == i)
+            const positionToSegmentsEndingAt = new Map(); // position -> [segIdx] (segments where idx2 == position)
+            const positionToSegmentsStartingAt = new Map(); // position -> [segIdx] (segments where idx1 == position)
+            for (let i = 0; i < numVisibleSegments; i++) {
+                const segIdx = visibleSegmentIndices[i];
+                const segInfo = segments[segIdx];
+                
+                // Track which segments end at each position (optimized: single lookup)
+                let arrEnding = positionToSegmentsEndingAt.get(segInfo.idx2);
+                if (!arrEnding) {
+                    arrEnding = [];
+                    positionToSegmentsEndingAt.set(segInfo.idx2, arrEnding);
+                }
+                arrEnding.push(segIdx);
+                
+                // Track which segments start at each position (for checking end endpoint)
+                if (segInfo.idx1 !== segInfo.idx2) {
+                    let arrStarting = positionToSegmentsStartingAt.get(segInfo.idx1);
+                    if (!arrStarting) {
+                        arrStarting = [];
+                        positionToSegmentsStartingAt.set(segInfo.idx1, arrStarting);
+                    }
+                    arrStarting.push(segIdx);
+                }
+            }
+            
+            // Pre-compute which endpoints should be rounded for each segment
+            // This avoids calling shouldRoundEndpoint() inside the rendering loop
+            // Optimized to use polymer connectivity: only check segments that share the same edge
+            const segmentEndpointRounding = new Map(); // segIdx -> {hasOuterStart: bool, hasOuterEnd: bool}
+            for (let i = 0; i < numVisibleSegments; i++) {
+                const segIdx = visibleSegmentIndices[i];
+                const segInfo = segments[segIdx];
+                const isZeroSized = segInfo.idx1 === segInfo.idx2;
+                const currentOrderIdx = segmentOrderMap.get(segIdx);
+                const isPolymer = segInfo.type === 'P' || segInfo.type === 'D' || segInfo.type === 'R';
+                
+                // Extract properties once (used by both endpoint checks)
+                const currentChainId = segInfo.chainId;
+                const currentType = segInfo.type;
+                
+                // Helper to check if endpoint should be rounded (optimized: only check segments sharing the edge)
+                const shouldRoundEndpoint = (positionIndex) => {
+                    // Zero-sized segments always round
+                    if (isZeroSized) return true;
+                    
+                    // Contacts always have rounded endpoints (single segment per contact)
+                    if (currentType === 'C') {
+                        return true;
+                    }
+                    
+                    // Outer endpoints (terminal positions) always round
+                    if (outerEndpoints.has(positionIndex)) return true;
+                    
+                    // For polymer segments, only check segments that share the same edge
+                    // At a position, segments share the edge if they connect to/from that position
+                    // For polymers: at most 2 segments (one coming in, one going out)
+                    // IMPORTANT: Only check segments within the same polymer type and same chain
+                    // Do NOT compare polymers to ligands/contacts - they are separate
+                    let segmentsToCheck = [];
+                    if (isPolymer) {
+                        // Get segments ending at this position (coming into it)
+                        const segmentsEnding = positionToSegmentsEndingAt.get(positionIndex) || [];
+                        // Get segments starting at this position (going out from it)
+                        const segmentsStarting = positionToSegmentsStartingAt.get(positionIndex) || [];
+                        
+                        // For polymers, max 2 segments - use direct loops instead of spread+filter
+                        for (const sIdx of segmentsEnding) {
+                            const s = segments[sIdx];
+                            if (s.type === currentType && s.chainId === currentChainId) {
+                                segmentsToCheck.push(sIdx);
+                            }
+                        }
+                        for (const sIdx of segmentsStarting) {
+                            const s = segments[sIdx];
+                            if (s.type === currentType && s.chainId === currentChainId) {
+                                segmentsToCheck.push(sIdx);
+                            }
+                        }
+                    } else {
+                        // For non-polymer segments (ligands), only check other ligand segments
+                        // Don't compare to polymers or contacts - they are separate
+                        const allSegmentsAtPosition = positionToSegments.get(positionIndex) || [];
+                        for (const sIdx of allSegmentsAtPosition) {
+                            const s = segments[sIdx];
+                            if (s.type === 'L') {
+                                segmentsToCheck.push(sIdx);
+                            }
+                        }
+                    }
+                    
+                    // Remove duplicates (only needed if array is large enough to have duplicates)
+                    if (!isPolymer && segmentsToCheck.length > 1) {
+                        segmentsToCheck = [...new Set(segmentsToCheck)];
+                    }
+                    
+                    if (segmentsToCheck.length <= 1) {
+                        // Only this segment uses this position, so it's outer
+                        return true;
+                    }
+                    
+                    // Multi-way junction: find the segment with the lowest order index (rendered first, furthest back)
+                    let lowestOrderIdx = currentOrderIdx;
+                    for (const otherSegIdx of segmentsToCheck) {
+                        const otherOrderIdx = segmentOrderMap.get(otherSegIdx);
+                        if (otherOrderIdx !== undefined && otherOrderIdx < lowestOrderIdx) {
+                            lowestOrderIdx = otherOrderIdx;
+                        }
+                    }
+                    
+                    // Only round if this segment is the one rendered first (furthest back)
+                    return currentOrderIdx === lowestOrderIdx;
+                };
+                
+                segmentEndpointRounding.set(segIdx, {
+                    hasOuterStart: shouldRoundEndpoint(segInfo.idx1),
+                    hasOuterEnd: shouldRoundEndpoint(segInfo.idx2)
+                });
             }
             
             // ====================================================================
@@ -4220,26 +4717,29 @@ function initializePy2DmolViewer(containerElement) {
                 let { r, g, b } = colors[idx];
                 r /= 255; g /= 255; b /= 255;
 
-                // Cache zNorm value
-                const zNormVal = zNorm[idx];
+                // Skip shadows/tints/depth for contact segments - keep them bright and flat
+                if (segInfo.type !== 'C') {
+                    // Cache zNorm value
+                    const zNormVal = zNorm[idx];
 
-                if (renderShadows) {
-                    const tintFactor = this.depthEnabled
-                        ? (0.50 * zNormVal + 0.50 * tints[idx]) / 3
-                        : (0.50 * tints[idx]) / 3;
-                    r = r + (1 - r) * tintFactor;
-                    g = g + (1 - g) * tintFactor;
-                    b = b + (1 - b) * tintFactor;
-                    const shadowFactor = this.depthEnabled 
-                        ? (0.20 + 0.25 * zNormVal + 0.55 * shadows[idx])
-                        : (0.20 + 0.80 * shadows[idx]);
-                    r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
-                } else {
-                    if (this.depthEnabled) {
-                        const depthFactor = 0.70 + 0.30 * zNormVal;
-                        r *= depthFactor; g *= depthFactor; b *= depthFactor;
+                    if (renderShadows) {
+                        const tintFactor = this.depthEnabled
+                            ? (0.50 * zNormVal + 0.50 * tints[idx]) / 3
+                            : (0.50 * tints[idx]) / 3;
+                        r = r + (1 - r) * tintFactor;
+                        g = g + (1 - g) * tintFactor;
+                        b = b + (1 - b) * tintFactor;
+                        const shadowFactor = this.depthEnabled 
+                            ? (0.20 + 0.25 * zNormVal + 0.55 * shadows[idx])
+                            : (0.20 + 0.80 * shadows[idx]);
+                        r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
+                    } else {
+                        if (this.depthEnabled) {
+                            const depthFactor = 0.70 + 0.30 * zNormVal;
+                            r *= depthFactor; g *= depthFactor; b *= depthFactor;
+                        }
+                        // If depth coloring disabled, keep original colors unchanged
                     }
-                    // If depth coloring disabled, keep original colors unchanged
                 }
                 
                 // Projection
@@ -4291,46 +4791,10 @@ function initializePy2DmolViewer(containerElement) {
                 const b_int = b * 255 | 0;
                 const color = `rgb(${r_int},${g_int},${b_int})`;
                 
-                // Determine if this segment has outer endpoints (not touching other positions at start/end)
-                // For zero-sized segments, mark both sides as outer endpoints
-                // For multi-way junctions: only the segment rendered first (furthest back) should have rounded caps
-                const isZeroSized = segInfo.idx1 === segInfo.idx2;
-                const currentOrderIdx = segmentOrderMap.get(idx);
-                
-                // Helper function to check if this segment should have rounded caps at a junction
-                // Returns true if: outer endpoint OR this is the first segment (furthest back) at a multi-way junction
-                const shouldRoundEndpoint = (positionIndex) => {
-                    // Zero-sized segments always round
-                    if (isZeroSized) return true;
-                    
-                    // Outer endpoints (terminal positions) always round
-                    if (outerEndpoints.has(positionIndex)) return true;
-                    
-                    // Check if this is a multi-way junction (3+ segments meet here)
-                    const segmentsUsingPosition = positionToSegments.get(positionIndex) || [];
-                    if (segmentsUsingPosition.length <= 1) {
-                        // Only this segment uses this position, so it's outer
-                        return true;
-                    }
-                    
-                    // Multi-way junction: find the segment with the lowest order index (rendered first, furthest back)
-                    let lowestOrderIdx = currentOrderIdx;
-                    for (const otherSegIdx of segmentsUsingPosition) {
-                        const otherOrderIdx = segmentOrderMap.get(otherSegIdx);
-                        if (otherOrderIdx !== undefined && otherOrderIdx < lowestOrderIdx) {
-                            lowestOrderIdx = otherOrderIdx;
-                        }
-                    }
-                    
-                    // Only round if this segment is the one rendered first (furthest back)
-                    return currentOrderIdx === lowestOrderIdx;
-                };
-                
-                // Check if start endpoint should be rounded
-                const hasOuterStart = shouldRoundEndpoint(segInfo.idx1);
-                
-                // Check if end endpoint should be rounded
-                const hasOuterEnd = shouldRoundEndpoint(segInfo.idx2);
+                // Get pre-computed endpoint rounding flags (computed before the loop for performance)
+                const endpointFlags = segmentEndpointRounding.get(idx) || { hasOuterStart: false, hasOuterEnd: false };
+                const hasOuterStart = endpointFlags.hasOuterStart;
+                const hasOuterEnd = endpointFlags.hasOuterEnd;
                 
                 if (this.outlineMode === 'none') {
                     // --- 1-STEP DRAW (No Outline) ---
@@ -4342,7 +4806,7 @@ function initializePy2DmolViewer(containerElement) {
                 } else if (this.outlineMode === 'partial') {
                     // --- 2-STEP DRAW (Partial Outline) - Background segment with butt caps only (no rounded caps) ---
                     const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
-                    const totalOutlineWidth = currentLineWidth + 3.0;
+                    const totalOutlineWidth = currentLineWidth + this.relativeOutlineWidth;
 
                     // Pass 1: Gap filler outline (3px larger than main line) with butt caps only
                     ctx.beginPath();
@@ -4362,7 +4826,7 @@ function initializePy2DmolViewer(containerElement) {
                 } else { // this.outlineMode === 'full'
                     // --- 2-STEP DRAW (Full Outline) - Background segment with rounded caps at outer endpoints ---
                     const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
-                    const totalOutlineWidth = currentLineWidth + 3.0;
+                    const totalOutlineWidth = currentLineWidth + this.relativeOutlineWidth;
 
                     // Pass 1: Gap filler outline (3px larger than main line)
                     // Draw line with butt caps, then add rounded caps manually at outer endpoints
@@ -4398,7 +4862,7 @@ function initializePy2DmolViewer(containerElement) {
             // ====================================================================
             // END OF REFACTORED LOOP
             // ====================================================================
-
+            
             // ====================================================================
             // STORE POSITION SCREEN POSITIONS for fast highlight drawing
             // ====================================================================
@@ -4822,12 +5286,21 @@ function initializePy2DmolViewer(containerElement) {
     
     colorSelect.addEventListener('change', (e) => {
         const selectedMode = e.target.value;
-        const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+        const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
         
         if (validModes.includes(selectedMode)) {
             renderer.colorMode = selectedMode;
             renderer.colorsNeedUpdate = true;
             renderer.plddtColorsNeedUpdate = true;
+            
+            // Map entropy to structure if entropy mode is selected
+            if (selectedMode === 'entropy') {
+                renderer._mapEntropyToStructure();
+            } else {
+                // Clear entropy when switching away from entropy mode
+                renderer.entropy = undefined;
+            }
+            
             renderer.render();
             document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
         } else {
@@ -4881,18 +5354,20 @@ function initializePy2DmolViewer(containerElement) {
     const speedSelect = containerElement.querySelector('#speedSelect');
     const rotationCheckbox = containerElement.querySelector('#rotationCheckbox');
     const lineWidthSlider = containerElement.querySelector('#lineWidthSlider');
+    const outlineWidthSlider = containerElement.querySelector('#outlineWidthSlider');
     const orthoSlider = containerElement.querySelector('#orthoSlider');
 
     
     // Set defaults for width, rotate, and pastel
-    lineWidthSlider.value = renderer.lineWidth;
+    if (lineWidthSlider) lineWidthSlider.value = renderer.lineWidth;
+    if (outlineWidthSlider) outlineWidthSlider.value = renderer.relativeOutlineWidth || 3.0;
     rotationCheckbox.checked = renderer.autoRotate;
 
     // Pass ALL controls to the renderer
     renderer.setUIControls(
         controlsContainer, playButton, recordButton, saveSvgButton,
         frameSlider, frameCounter, objectSelect,
-        speedSelect, rotationCheckbox, lineWidthSlider,
+        speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
         shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
         depthCheckbox, colorblindCheckbox, orthoSlider
     );
@@ -4989,6 +5464,7 @@ function initializePy2DmolViewer(containerElement) {
                     
                     const staticChains = obj.chains; // Might be undefined
                     const staticPositionTypes = obj.position_types; // Might be undefined
+                    const staticContacts = obj.contacts; // Might be undefined
                     
                     for (let i = 0; i < obj.frames.length; i++) {
                         const lightFrame = obj.frames[i];
@@ -5009,6 +5485,14 @@ function initializePy2DmolViewer(containerElement) {
                         };
                         
                         renderer.addFrame(fullFrameData, obj.name);
+                    }
+                    
+                    // Store contacts at object level if present
+                    if (staticContacts) {
+                        const object = renderer.objectsData[obj.name];
+                        if (object) {
+                            object.contacts = staticContacts;
+                        }
                     }
                 }
             }

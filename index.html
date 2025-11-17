@@ -54,7 +54,7 @@
                         <!-- Load Section -->
                         <div style="display: flex; gap: 8px; align-items: flex-start;">
                             <div style="flex: 1;">
-                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Load PDB / CIF / ZIP</label>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Load Files</label>
                                 <div id="uploadControlsContainer" style="display: flex; gap: 8px;">
                                      <!-- Load Button (Triggers hidden input) -->
                                      <button id="upload-button" class="btn btn-secondary">
@@ -62,7 +62,7 @@
                                          <span>Choose Files</span>
                                      </button>
                                      
-                                     <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json" multiple class="hidden">
+                                     <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto" multiple class="hidden">
                                 </div>
                             </div>
                             
@@ -72,11 +72,14 @@
                             <div style="flex: 1;">
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
                                 <div style="display: flex; gap: 8px;">
-                                    <button id="example-button-1" class="btn btn-success">
+                                    <button class="btn btn-success" data-example-value="A0JNW5">
                                         <span>A0JNW5</span>
                                     </button>
-                                    <button id="example-button-2" class="btn btn-success">
+                                    <button class="btn btn-success" data-example-value="1YNE">
                                         <span>1YNE</span>
+                                    </button>
+                                    <button class="btn btn-success" data-example-value="4HHB">
+                                        <span>4HHB</span>
                                     </button>
                                 </div>
                             </div>
@@ -208,7 +211,7 @@
                             </label>
 
                             <label class="btn-toggle btn-flex btn-small" title="Toggle depth-based coloring">
-                              <input type="checkbox" id="depthCheckbox" checked>
+                              <input type="checkbox" id="depthCheckbox">
                               <span>Depth</span>
                             </label>
 
@@ -239,6 +242,7 @@
                                     <option value="plddt">pLDDT</option>
                                     <option value="rainbow">Rainbow</option>
                                     <option value="chain">Chain</option>
+                                    <option value="entropy">Entropy</option>
                                 </select>
                                 <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors">
                                     <input type="checkbox" id="colorblindCheckbox">
@@ -251,6 +255,12 @@
                                     <label for="lineWidthSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Width:</label>
                                     <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1" style="flex: 1; min-width: 0;">
                                 </div>
+                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <label for="outlineWidthSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Outline:</label>
+                                    <input type="range" id="outlineWidthSlider" min="0" max="10" value="3.0" step="0.1" style="flex: 1; min-width: 0;">
+                                </div>
+                            </div>
+                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
                                 <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                     <label for="orthoSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
                                     <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01" style="flex: 1; min-width: 0;">
@@ -299,7 +309,7 @@
         </div>
 
         <!-- MSA container with box and toggle -->
-        <div id="msa-viewer-container" class="container-box sequence-section-container" style="width: 948px; display: none;">
+        <div id="msa-buttons" class="sequence-section-container" style="display: none;">
           <div id="msaHeader" class="sequence-header">
             <!-- Left side: Mode dropdown, Save buttons, Sort checkbox, Bit-score checkbox -->
             <div style="display: flex; align-items: center; gap: 8px;">
@@ -352,9 +362,6 @@
               <select id="msaChainSelect" class="btn btn-grey btn-small" style="display: none; min-width: 50px; height: 28px; font-size: 12px; padding: 0 8px;"></select>
             </div>
           </div>
-          <div id="msaView" class="sequence-content"></div>
-          <!-- Resize handle -->
-          <div class="resize-handle"></div>
         </div>
 
 

@@ -34,6 +34,8 @@ let rotationAnimation = {
 const FIXED_WIDTH = 600;
 const FIXED_HEIGHT = 600;
 const PAE_PLOT_SIZE = 300;
+const DEFAULT_MSA_COVERAGE = 0.75;
+const DEFAULT_MSA_IDENTITY = 0.15;
 
 // ============================================================================
 // INITIALIZATION
@@ -74,7 +76,6 @@ function initializeApp() {
             applySelection: applySelection,
             onMSAFilterChange: (filteredMSAData, chainId) => {
                 // Recompute properties when MSA filters change
-                // The filtered MSA data needs to have frequencies and logOdds recomputed
                 if (!viewerApi?.renderer || !chainId || !filteredMSAData) return;
                 
                 const objectName = viewerApi.renderer.currentObjectName;
@@ -83,12 +84,25 @@ function initializeApp() {
                 const obj = viewerApi.renderer.objectsData[objectName];
                 if (!obj || !obj.msa) return;
                 
-                // Recompute properties
+                // Clear properties to force recomputation with filtered data
+                filteredMSAData.frequencies = null;
+                filteredMSAData.entropy = null;
+                filteredMSAData.logOdds = null;
+                
+                // Recompute properties (frequencies and entropy) from filtered MSA
                 computeMSAProperties(filteredMSAData);
                 
-                // NOTE: We do NOT overwrite stored msaEntry.msaData with filtered data
-                // The stored msaEntry.msaData remains the canonical unfiltered source
-                // The viewer maintains its own filtered copy internally
+                // Apply filters to all MSAs (will reuse computed entropy for active chain)
+                const { coverageCutoff, identityCutoff } = getCurrentMSAFilters();
+                applyFiltersToAllMSAs(objectName, {
+                    coverageCutoff,
+                    identityCutoff,
+                    activeChainId: chainId,
+                    activeFilteredMSAData: filteredMSAData
+                });
+                
+                // Refresh entropy colors for all chains
+                refreshEntropyColors();
             }
         });
     }
@@ -116,6 +130,94 @@ function initializeApp() {
     setStatus("Ready. Upload a file or fetch an ID.");
 }
 
+function refreshEntropyColors() {
+    if (!viewerApi?.renderer || viewerApi.renderer.colorMode !== 'entropy') {
+        return;
+    }
+    
+    const renderer = viewerApi.renderer;
+    renderer._mapEntropyToStructure();
+    renderer.colors = null;
+    renderer.colorsNeedUpdate = true;
+    renderer.render();
+    document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+    
+    if (typeof updateSequenceViewColors === 'function') {
+        updateSequenceViewColors();
+    }
+}
+
+function getCurrentMSAFilters() {
+    const coverage = typeof window.MSAViewer?.getCoverageCutoff === 'function'
+        ? window.MSAViewer.getCoverageCutoff()
+        : DEFAULT_MSA_COVERAGE;
+    const identity = typeof window.MSAViewer?.getIdentityCutoff === 'function'
+        ? window.MSAViewer.getIdentityCutoff()
+        : DEFAULT_MSA_IDENTITY;
+    return {
+        coverageCutoff: Number.isFinite(coverage) ? coverage : DEFAULT_MSA_COVERAGE,
+        identityCutoff: Number.isFinite(identity) ? identity : DEFAULT_MSA_IDENTITY
+    };
+}
+
+/**
+ * Apply filters to all MSAs in an object and update their entropy
+ * Uses MSAViewer.applyFiltersToMSA to avoid code duplication
+ * @param {string} objectName - Name of the object
+ * @param {Object} options - Configuration options
+ */
+function applyFiltersToAllMSAs(objectName, options = {}) {
+    if (!viewerApi?.renderer || !objectName || !window.MSAViewer?.applyFiltersToMSA) return;
+    const obj = viewerApi.renderer.objectsData[objectName];
+    if (!obj || !obj.msa || !obj.msa.msasBySequence) return;
+    
+    const {
+        coverageCutoff = DEFAULT_MSA_COVERAGE,
+        identityCutoff = DEFAULT_MSA_IDENTITY,
+        activeChainId = null,
+        activeFilteredMSAData = null
+    } = options;
+    
+    const activeQuerySeq = activeChainId && obj.msa.chainToSequence
+        ? obj.msa.chainToSequence[activeChainId]
+        : null;
+    const activeEntropy = activeFilteredMSAData?.entropy;
+    
+    // Short-circuit if only one unique MSA and we already have its entropy
+    const uniqueMSAs = Object.keys(obj.msa.msasBySequence);
+    if (uniqueMSAs.length === 1 && activeQuerySeq && activeEntropy) {
+        const msaEntry = obj.msa.msasBySequence[uniqueMSAs[0]];
+        if (msaEntry?.msaData) {
+            msaEntry.msaData.entropy = activeEntropy;
+        }
+        return;
+    }
+    
+    for (const [querySeq, msaEntry] of Object.entries(obj.msa.msasBySequence)) {
+        const sourceData = msaEntry.msaData;
+        if (!sourceData) continue;
+        
+        // Reuse entropy from active chain if it matches
+        if (activeQuerySeq && querySeq === activeQuerySeq && activeEntropy) {
+            sourceData.entropy = activeEntropy;
+            continue;
+        }
+        
+        // Apply filters using MSAViewer's method (avoids code duplication)
+        const filteredMSA = window.MSAViewer.applyFiltersToMSA(sourceData, coverageCutoff, identityCutoff);
+        if (!filteredMSA) continue;
+        
+        // Compute entropy from filtered sequences
+        computeMSAProperties(filteredMSA);
+        
+        if (filteredMSA.entropy) {
+            sourceData.entropy = filteredMSA.entropy;
+        } else {
+            delete sourceData.entropy;
+        }
+    }
+}
+
 function initializeViewerConfig() {
     // Get DOM elements for config sync
     const biounitEl = document.getElementById('biounitCheckbox');
@@ -137,6 +239,7 @@ function initializeViewerConfig() {
         pastel: 0.25,
         pae: true,
         colorblind: false,
+        depth: false,
         viewer_id: "standalone-viewer-1",
         biounit: true,
         ignoreLigands: true
@@ -172,6 +275,92 @@ function setupCanvasDimensions() {
     viewerColumn.style.minWidth = `${FIXED_WIDTH}px`;
 }
 
+/**
+ * Handle example button click - generic function that works for any example button
+ * @param {string} value - The ID/value to set in the input field
+ */
+function handleExampleButtonClick(value) {
+    // Detect which page we're on
+    const fetchIdInput = document.getElementById('fetch-id');
+    const fetchUniprotInput = document.getElementById('fetch-uniprot-id');
+    const isMSAPage = fetchUniprotInput !== null;
+    
+    // Determine which input field and handler to use
+    const inputField = isMSAPage ? fetchUniprotInput : fetchIdInput;
+    const handler = isMSAPage ? handleMSAFetch : handleFetch;
+    
+    if (inputField && value) {
+        inputField.value = value;
+        handler();
+    }
+}
+
+/**
+ * Setup example buttons - unified for both index.html and msa.html
+ * Buttons should have data-example-value attribute with the ID to fetch
+ */
+function setupExampleButtons() {
+    // Find all buttons with data-example-value attribute
+    const exampleButtons = document.querySelectorAll('[data-example-value]');
+    
+    exampleButtons.forEach(button => {
+        const value = button.getAttribute('data-example-value');
+        if (value) {
+            button.addEventListener('click', () => {
+                handleExampleButtonClick(value);
+            });
+        }
+    });
+}
+
+function getMSACanvasContainers() {
+    return Array.from(document.querySelectorAll('.msa-canvas'));
+}
+
+function showMSACanvasContainers() {
+    getMSACanvasContainers().forEach(container => {
+        container.style.display = 'block';
+        container.style.visibility = 'visible';
+    });
+}
+
+function hideMSACanvasContainers() {
+    getMSACanvasContainers().forEach(container => {
+        container.style.display = 'none';
+    });
+}
+
+function removeMSACanvasContainers() {
+    const containers = getMSACanvasContainers();
+    containers.forEach(container => {
+        // Remove resize observers if they exist
+        if (container.resizeObserver) {
+            container.resizeObserver.disconnect();
+        }
+        // Remove from DOM
+        if (container.parentElement) {
+            container.parentElement.removeChild(container);
+        }
+    });
+}
+
+function clearMSAViewerState() {
+    // Remove containers from DOM to prevent accumulation
+    removeMSACanvasContainers();
+    // Clear MSA viewer internal state (this will also clear canvas data references)
+    if (window.MSAViewer?.clear) {
+        try {
+            window.MSAViewer.clear();
+        } catch (err) {
+            console.warn('MSA Viewer clear failed:', err);
+        }
+    }
+    const sequenceCountEl = document.getElementById('msaSequenceCount');
+    if (sequenceCountEl) {
+        sequenceCountEl.textContent = '-';
+    }
+}
+
 function setupEventListeners() {
     // Fetch button
     document.getElementById('fetch-btn').addEventListener('click', handleFetch);
@@ -182,24 +371,8 @@ function setupEventListeners() {
     uploadButton.addEventListener('click', () => fileUploadInput.click());
     fileUploadInput.addEventListener('change', handleFileUpload);
     
-    // Example buttons
-    const exampleButton1 = document.getElementById('example-button-1');
-    if (exampleButton1) {
-        exampleButton1.addEventListener('click', () => {
-            const fetchIdInput = document.getElementById('fetch-id');
-            fetchIdInput.value = 'A0JNW5';
-            handleFetch();
-        });
-    }
-    
-    const exampleButton2 = document.getElementById('example-button-2');
-    if (exampleButton2) {
-        exampleButton2.addEventListener('click', () => {
-            const fetchIdInput = document.getElementById('fetch-id');
-            fetchIdInput.value = '1YNE';
-            handleFetch();
-        });
-    }
+    // Example buttons (unified)
+    setupExampleButtons();
     
     // Save state button
     const saveStateButton = document.getElementById('saveStateButton');
@@ -554,6 +727,8 @@ function handleObjectChange() {
     if (window.updateMSAContainerVisibility) {
         window.updateMSAContainerVisibility();
     }
+    
+    refreshEntropyColors();
 }
 
 
@@ -1101,6 +1276,176 @@ function animateRotation() {
 // Biounit extraction and application functions are now in utils.js
 // Using unified functions: extractBiounitOperations, applyBiounitOperationsToAtoms
 
+
+function parseContactsFile(text) {
+    const contacts = [];
+    const lines = text.split('\n');
+    
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        
+        const parts = trimmed.split(/\s+/);
+        
+        if (parts.length === 2) {
+            // Position indices: "10 50"
+            const idx1 = parseInt(parts[0], 10);
+            const idx2 = parseInt(parts[1], 10);
+            if (!isNaN(idx1) && !isNaN(idx2)) {
+                contacts.push([idx1, idx2]);
+            }
+        } else if (parts.length === 4) {
+            // Chain + residue: "A 10 B 50"
+            const chain1 = parts[0];
+            const res1 = parseInt(parts[1], 10);
+            const chain2 = parts[2];
+            const res2 = parseInt(parts[3], 10);
+            if (!isNaN(res1) && !isNaN(res2)) {
+                contacts.push([chain1, res1, chain2, res2]);
+            }
+        }
+    }
+    
+    return contacts;
+}
+
+async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, loadMSA, loadPAE }) {
+    if (!viewerApi || !viewerApi.renderer) {
+        setStatus("No viewer available. Please load a structure first.", true);
+        return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
+    }
+    
+    const renderer = viewerApi.renderer;
+    const objectSelect = document.getElementById('objectSelect');
+    const currentObjectName = objectSelect && objectSelect.value ? objectSelect.value : renderer.currentObjectName;
+    
+    if (!currentObjectName || !renderer.objectsData[currentObjectName]) {
+        setStatus("No object selected. Please load a structure first.", true);
+        return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
+    }
+    
+    const object = renderer.objectsData[currentObjectName];
+    let metadataAdded = [];
+    
+    // Process PAE files
+    if (loadPAE && jsonFiles.length > 0) {
+        for (const jsonFile of jsonFiles) {
+            try {
+                const jsonText = await jsonFile.readAsync("text");
+                const jsonObject = JSON.parse(jsonText);
+                
+                if (!jsonObject.objects) {
+                    const paeData = extractPaeFromJSON(jsonObject);
+                    if (paeData) {
+                        for (const frame of object.frames) {
+                            frame.pae = paeData;
+                        }
+                        const currentFrame = renderer.currentFrame;
+                        renderer.setFrame(currentFrame);
+                        metadataAdded.push(`PAE from ${jsonFile.name}`);
+                    }
+                }
+            } catch (e) {
+                console.warn(`Failed to process PAE file ${jsonFile.name}:`, e);
+            }
+        }
+    }
+    
+    // Process MSA files
+    if (loadMSA && msaFiles.length > 0) {
+        const chainSequences = extractChainSequences(object.frames[0]);
+        const msaDataList = [];
+        
+        for (const msaFile of msaFiles) {
+            try {
+                const msaText = await msaFile.readAsync("text");
+                const fileName = msaFile.name.toLowerCase();
+                const isA3M = fileName.endsWith('.a3m');
+                const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
+                const isSTO = fileName.endsWith('.sto');
+                
+                if (!isA3M && !isFasta && !isSTO) continue;
+                
+                let msaData = null;
+                if (isA3M && window.MSAViewer && window.MSAViewer.parseA3M) {
+                    msaData = window.MSAViewer.parseA3M(msaText);
+                } else if (isFasta && window.MSAViewer && window.MSAViewer.parseFasta) {
+                    msaData = window.MSAViewer.parseFasta(msaText);
+                } else if (isSTO && window.MSAViewer && window.MSAViewer.parseSTO) {
+                    msaData = window.MSAViewer.parseSTO(msaText);
+                }
+                
+                if (msaData && msaData.querySequence) {
+                    msaDataList.push({ msaData, filename: msaFile.name });
+                }
+            } catch (e) {
+                console.warn(`Failed to process MSA file ${msaFile.name}:`, e);
+            }
+        }
+        
+        if (msaDataList.length > 0) {
+            const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
+            const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
+            
+            if (msaObj && msaObj.availableChains.length > 0) {
+                const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
+                if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
+                    const {msaData} = msaObj.msasBySequence[defaultChainSeq];
+                    if (window.MSAViewer) {
+                        loadMSADataIntoViewer(msaData, msaObj.defaultChain, currentObjectName);
+                        metadataAdded.push(`MSA for ${msaObj.availableChains.length} chain(s)`);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Process contact files
+    if (contactFiles.length > 0) {
+        console.log('[Contact File Processing] Processing', contactFiles.length, 'contact file(s)');
+        for (const contactFile of contactFiles) {
+            try {
+                console.log('[Contact File Processing] Reading file:', contactFile.name);
+                const text = await contactFile.readAsync("text");
+                console.log('[Contact File Processing] File content (first 200 chars):', text.substring(0, 200));
+                const contacts = parseContactsFile(text);
+                console.log('[Contact File Processing] Parsed', contacts.length, 'contact(s):', contacts);
+                
+                if (contacts.length > 0) {
+                    console.log('[Contact File Processing] Setting contacts on object:', currentObjectName);
+                    // Clear any existing contacts and replace with new ones
+                    if (object.contacts && object.contacts.length > 0) {
+                        console.log('[Contact File Processing] Clearing', object.contacts.length, 'existing contact(s)');
+                    }
+                    object.contacts = contacts;
+                    console.log('[Contact File Processing] Object contacts now:', object.contacts.length, 'contact(s)');
+                    // Invalidate segment cache so contacts are regenerated
+                    renderer.cachedSegmentIndices = null;
+                    console.log('[Contact File Processing] Invalidated segment cache, current frame:', renderer.currentFrame);
+                    const currentFrame = renderer.currentFrame;
+                    renderer.setFrame(currentFrame);
+                    console.log('[Contact File Processing] Called setFrame, object data:', renderer.objectsData[currentObjectName]?.contacts);
+                    metadataAdded.push(`${contacts.length} contact(s) from ${contactFile.name}`);
+                } else {
+                    const errorMsg = `Warning: No valid contacts found in ${contactFile.name}. Expected format: "0 30" or "A 10 B 50" (one per line).`;
+                    console.warn('[Contact File Processing]', errorMsg);
+                    setStatus(errorMsg, true);
+                }
+            } catch (e) {
+                console.error(`[Contact File Processing] Failed to process contacts file ${contactFile.name}:`, e);
+                setStatus(`Error processing contacts file ${contactFile.name}: ${e.message}`, true);
+            }
+        }
+    }
+    
+    if (metadataAdded.length > 0) {
+        setStatus(`Added to ${currentObjectName}: ${metadataAdded.join(', ')}`);
+    } else {
+        setStatus("No metadata could be added to the current object.", true);
+    }
+    
+    return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
+}
 
 function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
     let models;
@@ -1661,6 +2006,18 @@ function updateViewerFromGlobalBatch() {
         if (r && obj.msa && r.objectsData[obj.name]) {
             r.objectsData[obj.name].msa = obj.msa;
         }
+        
+        // Set contacts data (replacing any existing contacts)
+        if (r && obj.contacts && r.objectsData[obj.name]) {
+            r.objectsData[obj.name].contacts = obj.contacts;
+            // Invalidate segment cache so contacts are regenerated
+            r.cachedSegmentIndices = null;
+            // Trigger re-render to show contacts
+            if (r.currentObjectName === obj.name) {
+                const currentFrame = r.currentFrame;
+                r.setFrame(currentFrame);
+            }
+        }
     }
 
     if (r) r._batchLoading = false;
@@ -1960,9 +2317,7 @@ function clearAllObjects() {
     // Hide viewer and top panel
     const viewerContainer = document.getElementById('viewer-container');
     const topPanelContainer = document.getElementById('sequence-viewer-container');
-    const msaContainer = document.getElementById('msa-viewer-container');
-    const msaView = document.getElementById('msaView');
-    
+    const msaContainer = document.getElementById('msa-buttons');
     if (viewerContainer) {
         viewerContainer.style.display = 'none';
     }
@@ -1971,9 +2326,6 @@ function clearAllObjects() {
     }
     if (msaContainer) {
         msaContainer.style.display = 'none';
-    }
-    if (msaView) {
-        msaView.classList.add('hidden');
     }
     
     // Clear MSA data
@@ -2053,7 +2405,7 @@ if (window.SequenceViewer) {
  * Shared between msa.html and index.html
  */
 function initializeMSAViewerCommon() {
-    const msaContainer = document.getElementById('msa-viewer-container');
+    const msaContainer = document.getElementById('msa-buttons');
     const msaModeSelect = document.getElementById('msaModeSelect');
     const coverageSlider = document.getElementById('coverageSlider');
     const coverageValue = document.getElementById('coverageValue');
@@ -2420,78 +2772,146 @@ function initializeMSAViewer() {
 }
 
 /**
- * Fetch MSA from AlphaFold DB (for msa.html)
- * @param {string} uniprotId - UniProt ID to fetch
+ * Resolve PDB ID to UniProt ID using PDBe API
+ * @param {string} pdbId - 4-character PDB ID
+ * @returns {Promise<string>} - UniProt ID
  */
-async function handleMSAFetch(uniprotId) {
-    if (!uniprotId) {
-        uniprotId = document.getElementById('fetch-uniprot-id')?.value.trim().toUpperCase();
+async function resolvePDBToUniProt(pdbId) {
+    setStatus(`Looking up UniProt ID for PDB ${pdbId}...`);
+    try {
+        const mappings = await fetchPDBeMappings(pdbId);
+        const uniprotIds = Object.values(mappings)
+            .map(m => m.uniprot_id)
+            .filter(id => id); // Filter out null/undefined
+        
+        if (uniprotIds.length === 0) {
+            throw new Error(`No UniProt mapping found for PDB ID ${pdbId}`);
+        }
+        
+        // Use the first UniProt ID found
+        const uniprotId = uniprotIds[0];
+        setStatus(`Found UniProt ID ${uniprotId} for PDB ${pdbId}`);
+        return uniprotId;
+    } catch (error) {
+        console.error('Error fetching PDBe mappings:', error);
+        throw error;
     }
-    
-    if (!uniprotId) {
-        setStatus('Please enter a UniProt ID', true);
-        return;
-    }
-    
-    // Validate UniProt ID format (typically 6 characters, alphanumeric)
-    if (!/^[A-Z0-9]{6,10}$/.test(uniprotId)) {
-        setStatus('Invalid UniProt ID format. Please enter a valid UniProt ID (e.g., P0A8I3)', true);
-        return;
-    }
-    
+}
+
+/**
+ * Fetch MSA from AlphaFold DB by UniProt ID
+ * @param {string} uniprotId - UniProt ID
+ * @param {string} originalId - Original ID (for error messages)
+ * @returns {Promise<string>} - MSA text content
+ */
+async function fetchMSAFromAlphaFold(uniprotId, originalId = null) {
     setStatus(`Fetching MSA for ${uniprotId} from AlphaFold DB...`);
     
     const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${uniprotId}-F1-msa_v6.a3m`;
     
+    const response = await fetch(msaUrl);
+    if (!response.ok) {
+        if (response.status === 404) {
+            const idDisplay = originalId ? `PDB ${originalId} (UniProt ${uniprotId})` : `UniProt ID ${uniprotId}`;
+            throw new Error(`MSA not found for ${idDisplay}. The structure may not be available in AlphaFold DB.`);
+        }
+        throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
+    }
+    
+    const msaText = await response.text();
+    
+    if (!msaText || msaText.trim().length === 0) {
+        throw new Error('Empty MSA file received');
+    }
+    
+    return msaText;
+}
+
+/**
+ * Load MSA data into viewer and update UI
+ * @param {Object} msaData - Parsed MSA data
+ * @param {string} uniprotId - UniProt ID (for filename display)
+ */
+function loadMSADataIntoViewerStandalone(msaData, uniprotId) {
+    if (!window.MSAViewer || !window.MSAViewer.parseA3M) {
+        setStatus('MSA Viewer not available', true);
+        return false;
+    }
+    
+    if (!msaData || !msaData.querySequence) {
+        setStatus('Failed to parse MSA file', true);
+        return false;
+    }
+    
+    window.MSAViewer.setMSAData(msaData, null);
+    setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+    
+    // Update sequence count
+    const sequenceCountEl = document.getElementById('msaSequenceCount');
+    if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
+        const counts = window.MSAViewer.getSequenceCounts();
+        if (counts) {
+            sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
+        }
+    }
+    
+    // Update file name display (if exists)
+    const fileNameEl = document.getElementById('file-name');
+    if (fileNameEl) {
+        fileNameEl.textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
+    }
+    
+    // Show MSA viewer container
+    const msaContainer = document.getElementById('msa-buttons');
+    if (msaContainer) {
+        msaContainer.style.display = 'block';
+    }
+    showMSACanvasContainers();
+    
+    return true;
+}
+
+/**
+ * Fetch MSA from AlphaFold DB (for msa.html)
+ * Supports both PDB IDs (4 characters) and UniProt IDs
+ * @param {string} id - PDB ID or UniProt ID to fetch
+ */
+async function handleMSAFetch(id) {
+    if (!id) {
+        id = document.getElementById('fetch-uniprot-id')?.value.trim().toUpperCase();
+    }
+    
+    if (!id) {
+        setStatus('Please enter a PDB or UniProt ID', true);
+        return;
+    }
+    
+    let uniprotId = id;
+    const isPDB = id.length === 4 && /^[A-Z0-9]{4}$/.test(id);
+    
+    // If it's a PDB ID, look up UniProt ID from PDBe API
+    if (isPDB) {
+        try {
+            uniprotId = await resolvePDBToUniProt(id);
+        } catch (error) {
+            setStatus(`Error: ${error.message}`, true);
+            return;
+        }
+    } else {
+        // Validate UniProt ID format (typically 6-10 characters, alphanumeric)
+        if (!/^[A-Z0-9]{6,10}$/.test(uniprotId)) {
+            setStatus('Invalid ID format. Please enter a 4-character PDB ID or 6-10 character UniProt ID (e.g., 4HHB or P0A8I3)', true);
+            return;
+        }
+    }
+    
     try {
-        const response = await fetch(msaUrl);
-        if (!response.ok) {
-            if (response.status === 404) {
-                throw new Error(`MSA not found for UniProt ID ${uniprotId}. The structure may not be available in AlphaFold DB.`);
-            }
-            throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
-        }
-        
-        const msaText = await response.text();
-        
-        if (!msaText || msaText.trim().length === 0) {
-            throw new Error('Empty MSA file received');
-        }
+        const msaText = await fetchMSAFromAlphaFold(uniprotId, isPDB ? id : null);
         
         // Parse and load the MSA
         if (window.MSAViewer && window.MSAViewer.parseA3M) {
             const msaData = window.MSAViewer.parseA3M(msaText);
-            if (msaData && msaData.querySequence) {
-                window.MSAViewer.setMSAData(msaData, null);
-                setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
-                
-                // Update sequence count
-        const sequenceCountEl = document.getElementById('msaSequenceCount');
-        if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
-            const counts = window.MSAViewer.getSequenceCounts();
-                    if (counts) {
-                        sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
-                    }
-                }
-                
-                // Update file name display (if exists)
-                const fileNameEl = document.getElementById('file-name');
-                if (fileNameEl) {
-                    fileNameEl.textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
-                }
-                
-                // Show MSA viewer container
-                const msaContainer = document.getElementById('msa-viewer-container');
-                if (msaContainer) {
-                    msaContainer.style.display = 'block';
-                }
-                const msaView = document.getElementById('msaView');
-                if (msaView) {
-                    msaView.classList.remove('hidden');
-                }
-            } else {
-                setStatus('Failed to parse MSA file', true);
-            }
+            loadMSADataIntoViewerStandalone(msaData, uniprotId);
         } else {
             setStatus('MSA Viewer not available', true);
         }
@@ -2563,13 +2983,9 @@ async function handleMSAFileUpload(fileOrEvent) {
                 }
                 
                 // Show MSA viewer container
-                const msaContainer = document.getElementById('msa-viewer-container');
+                const msaContainer = document.getElementById('msa-buttons');
                 if (msaContainer) {
                     msaContainer.style.display = 'block';
-                }
-                const msaView = document.getElementById('msaView');
-                if (msaView) {
-                    msaView.classList.remove('hidden');
                 }
             } else {
                 setStatus('Failed to parse MSA file', true);
@@ -2645,84 +3061,58 @@ function initMSADragAndDrop() {
     document.body.addEventListener('dragover', preventDefaults, false);
 }
 
+/**
+ * Setup MSA page event listeners (unified for both DOMContentLoaded and immediate execution)
+ */
+function setupMSAPageEventListeners() {
+    initializeMSAViewer();
+    
+    // Wire up fetch button
+    const fetchBtn = document.getElementById('fetch-btn');
+    const fetchInput = document.getElementById('fetch-uniprot-id');
+    
+    if (fetchBtn) {
+        fetchBtn.addEventListener('click', () => {
+            handleMSAFetch();
+        });
+    }
+    
+    // Allow Enter key to trigger fetch
+    if (fetchInput) {
+        fetchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                handleMSAFetch();
+            }
+        });
+    }
+    
+    // File upload button
+    const uploadButton = document.getElementById('upload-button');
+    const fileUpload = document.getElementById('file-upload');
+    
+    if (uploadButton && fileUpload) {
+        uploadButton.addEventListener('click', () => {
+            fileUpload.click();
+        });
+        
+        fileUpload.addEventListener('change', handleMSAFileUpload);
+    }
+    
+    // Initialize drag and drop
+    initMSADragAndDrop();
+    
+    // Example buttons (unified)
+    setupExampleButtons();
+}
+
 // Initialize MSA viewer on DOM ready (for msa.html only)
 // Check if we're on msa.html by looking for msa.html-specific elements
 const isMSAHTML = document.getElementById('fetch-uniprot-id') !== null;
 if (isMSAHTML) {
-if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            initializeMSAViewer();
-            
-            // Wire up fetch button
-            const fetchBtn = document.getElementById('fetch-btn');
-            const fetchInput = document.getElementById('fetch-uniprot-id');
-            
-            if (fetchBtn) {
-                fetchBtn.addEventListener('click', () => {
-                    handleMSAFetch();
-                });
-            }
-            
-            // Allow Enter key to trigger fetch
-            if (fetchInput) {
-                fetchInput.addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter') {
-                        handleMSAFetch();
-                    }
-                });
-            }
-            
-            // File upload button
-            const uploadButton = document.getElementById('upload-button');
-            const fileUpload = document.getElementById('file-upload');
-            
-            if (uploadButton && fileUpload) {
-                uploadButton.addEventListener('click', () => {
-                    fileUpload.click();
-                });
-                
-                fileUpload.addEventListener('change', handleMSAFileUpload);
-            }
-            
-            // Initialize drag and drop
-            initMSADragAndDrop();
-        });
-} else {
-    initializeMSAViewer();
-        
-        // Wire up fetch button
-        const fetchBtn = document.getElementById('fetch-btn');
-        const fetchInput = document.getElementById('fetch-uniprot-id');
-        
-        if (fetchBtn) {
-            fetchBtn.addEventListener('click', () => {
-                handleMSAFetch();
-            });
-        }
-        
-        // Allow Enter key to trigger fetch
-        if (fetchInput) {
-            fetchInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    handleMSAFetch();
-                }
-            });
-        }
-        
-        // File upload button
-        const uploadButton = document.getElementById('upload-button');
-        const fileUpload = document.getElementById('file-upload');
-        
-        if (uploadButton && fileUpload) {
-            uploadButton.addEventListener('click', () => {
-                fileUpload.click();
-            });
-            
-            fileUpload.addEventListener('change', handleMSAFileUpload);
-        }
-        
-        // Initialize drag and drop
-        initMSADragAndDrop();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setupMSAPageEventListeners);
+    } else {
+        setupMSAPageEventListeners();
     }
 }
 
@@ -2734,8 +3124,7 @@ function initializeMSAViewerIndex() {
     const { updateMSASequenceCount } = common;
     
     const msaChainSelect = document.getElementById('msaChainSelect');
-    const msaView = document.getElementById('msaView');
-    const msaContainer = document.getElementById('msa-viewer-container');
+    const msaContainer = document.getElementById('msa-buttons');
     
     // Chain selector for single chain support (first pass)
     if (msaChainSelect && window.MSAViewer && viewerApi?.renderer) {
@@ -2877,26 +3266,19 @@ function initializeMSAViewerIndex() {
         const objectName = viewerApi?.renderer?.currentObjectName;
         if (!objectName) {
             msaContainer.style.display = 'none';
-            if (msaView) {
-                msaView.classList.add('hidden');
-            }
             return;
         }
         
         const obj = viewerApi.renderer.objectsData[objectName];
         if (!obj) {
             msaContainer.style.display = 'none';
-            if (msaView) {
-                msaView.classList.add('hidden');
-            }
+            clearMSAViewerState();
             return;
         }
         
         if (!obj.msa) {
             msaContainer.style.display = 'none';
-            if (msaView) {
-                msaView.classList.add('hidden');
-            }
+            clearMSAViewerState();
             return;
         }
         
@@ -2926,9 +3308,6 @@ function initializeMSAViewerIndex() {
         if (hasMSA && msaToLoad && window.MSAViewer) {
             // Show container and view
             msaContainer.style.display = 'block';
-            if (msaView) {
-                msaView.classList.remove('hidden');
-            }
             
             // Force a layout recalculation to ensure container dimensions are available
             void msaContainer.offsetWidth; // Force reflow
@@ -2940,12 +3319,13 @@ function initializeMSAViewerIndex() {
             // This ensures the MSA is filtered correctly when switching objects
             // Selection state is already restored by _switchToObject() before this is called
             applySelectionToMSA();
+            
+            // Remap entropy if entropy mode is active (after MSA is loaded)
+            refreshEntropyColors();
         } else {
             // Hide MSA container if no MSA for this object
             msaContainer.style.display = 'none';
-            if (msaView) {
-                msaView.classList.add('hidden');
-            }
+            clearMSAViewerState();
             
         }
     }
@@ -3152,21 +3532,10 @@ async function handleFetch() {
                                     const pdbSequence = chainData.sequence;
                                     const pdbResidueNumbers = chainData.residueNumbers;
                                     
-                                    // Download MSA from AlphaFold DB
-                                    const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${uniprotId}-F1-msa_v6.a3m`;
-                                    
+                                    // Download MSA from AlphaFold DB (using shared function)
                                     msaPromises.push(
-                                        fetch(msaUrl)
-                                            .then(async (msaResponse) => {
-                                                if (!msaResponse.ok) {
-                                                    if (msaResponse.status === 404) {
-                                                        console.warn(`MSA not found for UniProt ID ${uniprotId} (chain ${chainId})`);
-                                                        return null;
-                                                    }
-                                                    throw new Error(`Failed to fetch MSA (HTTP ${msaResponse.status})`);
-                                                }
-                                                
-                                                const msaText = await msaResponse.text();
+                                        fetchMSAFromAlphaFold(uniprotId)
+                                            .then(async (msaText) => {
                                                 if (!msaText || msaText.trim().length === 0) {
                                                     console.warn(`Empty MSA file for UniProt ID ${uniprotId} (chain ${chainId})`);
                                                     return null;
@@ -3238,14 +3607,10 @@ async function handleFetch() {
                                                 };
                                             }
                                             
-                                            // Show MSA container and view BEFORE loading data (so resize observer gets correct dimensions)
-                                            const msaContainer = document.getElementById('msa-viewer-container');
-                                            const msaView = document.getElementById('msaView');
+                                            // Show MSA container and view BEFORE loading data
+                                            const msaContainer = document.getElementById('msa-buttons');
                                             if (msaContainer) {
                                                 msaContainer.style.display = 'block';
-                                            }
-                                            if (msaView) {
-                                                msaView.classList.remove('hidden');
                                             }
                                             
                                             // Force a layout recalculation to ensure container dimensions are available
@@ -3360,14 +3725,10 @@ async function handleFetch() {
                                                     };
                                                 }
                                                 
-                                                // Show MSA container and view BEFORE loading data (so resize observer gets correct dimensions)
-                                                const msaContainer = document.getElementById('msa-viewer-container');
-                                                const msaView = document.getElementById('msaView');
+                                                // Show MSA container and view BEFORE loading data
+                                                const msaContainer = document.getElementById('msa-buttons');
                                                 if (msaContainer) {
                                                     msaContainer.style.display = 'block';
-                                                }
-                                                if (msaView) {
-                                                    msaView.classList.remove('hidden');
                                                 }
                                                 
                                                 // Force a layout recalculation to ensure container dimensions are available
@@ -3375,13 +3736,10 @@ async function handleFetch() {
                                                     void msaContainer.offsetWidth; // Force reflow
                                                 }
                                                 
-                                                // Load MSA into viewer (this will initialize resize observer with correct dimensions)
+                                                // Load MSA into viewer
                                                 window.MSAViewer.setMSAData(matchedMSA, firstMatchedChain);
                                                 
                                                 // Ensure view is visible after data is set
-                                                if (msaView) {
-                                                    msaView.classList.remove('hidden');
-                                                }
                                                 
                                                 // Update MSA container visibility to ensure it's shown for current object
                                                 if (window.updateMSAContainerVisibility) {
@@ -3658,14 +4016,10 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
     if (filteredMSAData) {
         // Clear existing properties to force recomputation on filtered data
         filteredMSAData.frequencies = null;
+        filteredMSAData.entropy = null;
         filteredMSAData.logOdds = null;
         // Compute properties
         computeMSAProperties(filteredMSAData);
-        
-        // NOTE: We do NOT overwrite stored msaEntry.msaData with filtered data
-        // The stored msaEntry.msaData remains the canonical unfiltered source
-        // The viewer maintains its own filtered copy internally via setMSAData()
-        // This ensures the original unfiltered MSA data is always available for copying
     }
     
     // Update chain selector
@@ -3673,11 +4027,26 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
         window.updateMSAChainSelectorIndex();
     }
     
-    
     // Update sequence count to reflect the loaded MSA
     if (window.updateMSASequenceCount) {
         window.updateMSASequenceCount();
     }
+    showMSACanvasContainers();
+    
+    // Apply filters to all MSAs (will update entropy for all chains)
+    // This is deferred until needed - only computes entropy for other MSAs if they exist
+    if (objectName && filteredMSAData) {
+        const { coverageCutoff, identityCutoff } = getCurrentMSAFilters();
+        applyFiltersToAllMSAs(objectName, {
+            coverageCutoff,
+            identityCutoff,
+            activeChainId: chainId,
+            activeFilteredMSAData: filteredMSAData
+        });
+    }
+    
+    // Ensure entropy colors stay in sync when new MSA data is loaded
+    refreshEntropyColors();
 }
 
 /**
@@ -3800,6 +4169,35 @@ function computeMSAProperties(msaData) {
         }
         
         msaData.frequencies = frequencies;
+    }
+    
+    // Compute entropy from frequencies (if frequencies exist and entropy not already computed)
+    if (msaData.frequencies && !msaData.entropy) {
+        const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
+        const entropyValues = [];
+        
+        for (let pos = 0; pos < queryLength; pos++) {
+            const freq = frequencies[pos];
+            if (!freq) {
+                entropyValues.push(0);
+                continue;
+            }
+            
+            // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
+            let entropy = 0;
+            for (const aa in freq) {
+                const p = freq[aa];
+                if (p > 0) {
+                    entropy -= p * Math.log2(p);
+                }
+            }
+            
+            // Normalize by max entropy (0 to 1 scale)
+            const normalizedEntropy = entropy / maxEntropy;
+            entropyValues.push(normalizedEntropy);
+        }
+        
+        msaData.entropy = entropyValues;
     }
     
     // logOdds will be computed on-demand when needed for logo view
@@ -4449,6 +4847,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     const jsonFiles = [];
     const stateFiles = [];
     const msaFiles = [];
+    const contactFiles = [];
 
     // First pass: identify state files and MSA files
     for (const file of files) {
@@ -4468,6 +4867,8 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                    nameLower.endsWith('.fas') || 
                    nameLower.endsWith('.sto')) {
             msaFiles.push(file);
+        } else if (nameLower.endsWith('.cst')) {
+            contactFiles.push(file);
         }
     }
     
@@ -4525,7 +4926,26 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         }
     }
 
-    // Handle MSA-only input (no structure files)
+    // Handle metadata-only uploads (no structure files) - check BEFORE MSA-only
+    if (structureFiles.length === 0) {
+        const hasMetadata = (loadMSA && msaFiles.length > 0) || 
+                           (loadPAE && jsonFiles.length > 0) || 
+                           contactFiles.length > 0;
+        
+        if (hasMetadata) {
+            // Add metadata to existing object
+            const result = await addMetadataToExistingObject({
+                msaFiles: loadMSA ? msaFiles : [],
+                jsonFiles: loadPAE ? jsonFiles : [],
+                contactFiles,
+                loadMSA,
+                loadPAE
+            });
+            return result;
+        }
+    }
+
+    // Handle MSA-only input (no structure files) - for creating new objects from MSA
     if (structureFiles.length === 0 && msaFilesToProcess.length > 0) {
         // Load MSA files directly without structure matching
         const msaDataList = [];
@@ -4726,13 +5146,9 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 loadMSADataIntoViewer(firstMSA.msaData, 'A', objectName, { updateChainSelector: false });
                 
                 // Show MSA viewer container
-                const msaContainer = document.getElementById('msa-viewer-container');
+                const msaContainer = document.getElementById('msa-buttons');
                 if (msaContainer) {
                     msaContainer.style.display = 'block';
-                }
-                const msaView = document.getElementById('msaView');
-                if (msaView) {
-                    msaView.classList.remove('hidden');
                 }
                 
                 // Update sequence count
@@ -4765,7 +5181,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         };
     }
 
-    // Continue with normal file processing if no state files
+    // If we get here and still no structure files, throw error
     if (structureFiles.length === 0) {
         throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
     }
@@ -4857,6 +5273,51 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             tempBatch
         );
         overallTotalFramesAdded += framesAdded;
+    }
+
+    // Process contact files and add to objects
+    if (contactFiles.length > 0) {
+        for (const contactFile of contactFiles) {
+            try {
+                const text = await contactFile.readAsync("text");
+                const contacts = parseContactsFile(text);
+                
+                if (contacts.length > 0) {
+                    // Try to match contact file to structure by name
+                    const contactBaseName = contactFile.name.replace(/\.cst$/i, '').toLowerCase();
+                    const matchingObject = tempBatch.find(obj => {
+                        const objNameLower = obj.name.toLowerCase();
+                        return objNameLower.includes(contactBaseName) || 
+                               contactBaseName.includes(objNameLower) ||
+                               structureFiles.some(sf => {
+                                   const sfBase = sf.name.replace(/\.(cif|pdb|ent)$/i, '').toLowerCase();
+                                   return contactBaseName.includes(sfBase) || sfBase.includes(contactBaseName);
+                               });
+                    });
+                    
+                    if (matchingObject) {
+                        // Clear any existing contacts and replace with new ones
+                        if (matchingObject.contacts && matchingObject.contacts.length > 0) {
+                            console.log(`[Contact Processing] Clearing ${matchingObject.contacts.length} existing contact(s) from ${matchingObject.name}`);
+                        }
+                        matchingObject.contacts = contacts;
+                        console.log(`[Contact Processing] Set ${contacts.length} contact(s) on ${matchingObject.name}`);
+                    } else if (tempBatch.length > 0) {
+                        // If no match, add to last object
+                        const lastObject = tempBatch[tempBatch.length - 1];
+                        if (lastObject.contacts && lastObject.contacts.length > 0) {
+                            console.log(`[Contact Processing] Clearing ${lastObject.contacts.length} existing contact(s) from ${lastObject.name}`);
+                        }
+                        lastObject.contacts = contacts;
+                        console.log(`[Contact Processing] Set ${contacts.length} contact(s) on ${lastObject.name}`);
+                    }
+                    
+                    // Note: Cache will be invalidated when updateViewerFromGlobalBatch() processes the object
+                }
+            } catch (e) {
+                console.warn(`Failed to process contacts file ${contactFile.name}:`, e);
+            }
+        }
     }
 
     if (tempBatch.length > 0) batchedObjects.push(...tempBatch);
@@ -5126,7 +5587,7 @@ async function handleZipUpload(file, loadAsFrames) {
                                 if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
                                     const {msaData} = msaObj.msasBySequence[defaultChainSeq];
                                     if (window.MSAViewer) {
-                                        loadMSADataIntoViewer(msaData, msaObj.defaultChain, objectName);
+                                        loadMSADataIntoViewer(msaData, msaObj.defaultChain, targetObjectName);
                                         setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
                                     }
                                 }
