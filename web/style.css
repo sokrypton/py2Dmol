@@ -1327,60 +1327,8 @@ table.layout-table td {
 }
 
 /* ============================================================================
-   README PANEL
+   LINK BUTTON (for README and other links)
    ============================================================================ */
-.readme-section {
-    margin-top: var(--container-gap);
-    margin-bottom: 0;
-    width: 100%;
-}
-
-.readme-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 16px;
-    margin-bottom: 16px;
-}
-
-.readme-header h2 {
-    margin: 0;
-    font-size: 20px;
-    color: #111827;
-}
-
-.readme-header p {
-    margin: 4px 0 0 0;
-    color: #6b7280;
-    font-size: 14px;
-}
-
-.readme-content h2,
-.readme-content h3,
-.readme-content h4 {
-    margin-top: 20px;
-    margin-bottom: 8px;
-    color: #111827;
-}
-
-.readme-content p {
-    margin: 0 0 12px 0;
-    color: #374151;
-    line-height: 1.5;
-}
-
-.readme-content ul {
-    margin: 0 0 12px 18px;
-    color: #374151;
-    line-height: 1.5;
-}
-
-.readme-status {
-    margin-top: 12px;
-    font-size: 13px;
-    color: #d97706;
-}
-
 .link-button {
     background: none;
     border: none;
