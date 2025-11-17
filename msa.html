@@ -82,9 +82,9 @@
         <!-- Fetch and Upload Section -->
         <div class="container-box" style="width: 948px; margin-bottom: 10px;">
             <!-- Fetch Section -->
-            <label for="fetch-uniprot-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Fetch from AlphaFold DB (UniProt ID)</label>
+            <label for="fetch-uniprot-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Fetch from AlphaFold DB (PDB or UniProt ID)</label>
             <div id="fetch-input-container" style="margin-bottom: 8px;">
-                <input type="text" id="fetch-uniprot-id" placeholder="e.g., P0A8I3">
+                <input type="text" id="fetch-uniprot-id" placeholder="e.g., 4HHB or P0A8I3">
                 <button id="fetch-btn" class="btn btn-primary">Fetch</button>
             </div>
             
@@ -101,6 +101,19 @@
                 <span id="file-name" style="color: #6b7280; font-size: 14px;"></span>
             </div>
             <div id="status-message" style="display: none; margin-top: 12px;"></div>
+            
+            <!-- Example buttons -->
+            <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
+                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-success" data-example-value="A0JNW5">
+                        <span>A0JNW5</span>
+                    </button>
+                    <button class="btn btn-success" data-example-value="4HHB">
+                        <span>4HHB</span>
+                    </button>
+                </div>
+            </div>
         </div>
         
         <!-- Drag overlay (shown when dragging files over the page) -->
@@ -162,6 +175,21 @@
             </div>
         </div>
     </div>
+    
+    <!-- Footer -->
+    <footer style="margin-top: 40px; padding: 0; color: #6b7280; font-size: 13px;">
+        <div style="width: 948px; margin: 0 auto; padding: 20px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
+            <div style="flex: 0 0 auto;">
+                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: none;">
+                    <i class="fab fa-github" style="margin-right: 6px;"></i>View on GitHub
+                </a>
+            </div>
+            <div style="flex: 0 0 auto; font-size: 12px;">
+                <i class="fa-solid fa-shield-halved" style="margin-right: 6px; color: #10b981;"></i>
+                <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a server.
+            </div>
+        </div>
+    </footer>
     
     <!-- Load MSA viewer script -->
     <script src="py2Dmol/resources/viewer-msa.js"></script>

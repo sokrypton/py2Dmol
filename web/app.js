@@ -172,6 +172,44 @@ function setupCanvasDimensions() {
     viewerColumn.style.minWidth = `${FIXED_WIDTH}px`;
 }
 
+/**
+ * Handle example button click - generic function that works for any example button
+ * @param {string} value - The ID/value to set in the input field
+ */
+function handleExampleButtonClick(value) {
+    // Detect which page we're on
+    const fetchIdInput = document.getElementById('fetch-id');
+    const fetchUniprotInput = document.getElementById('fetch-uniprot-id');
+    const isMSAPage = fetchUniprotInput !== null;
+    
+    // Determine which input field and handler to use
+    const inputField = isMSAPage ? fetchUniprotInput : fetchIdInput;
+    const handler = isMSAPage ? handleMSAFetch : handleFetch;
+    
+    if (inputField && value) {
+        inputField.value = value;
+        handler();
+    }
+}
+
+/**
+ * Setup example buttons - unified for both index.html and msa.html
+ * Buttons should have data-example-value attribute with the ID to fetch
+ */
+function setupExampleButtons() {
+    // Find all buttons with data-example-value attribute
+    const exampleButtons = document.querySelectorAll('[data-example-value]');
+    
+    exampleButtons.forEach(button => {
+        const value = button.getAttribute('data-example-value');
+        if (value) {
+            button.addEventListener('click', () => {
+                handleExampleButtonClick(value);
+            });
+        }
+    });
+}
+
 function setupEventListeners() {
     // Fetch button
     document.getElementById('fetch-btn').addEventListener('click', handleFetch);
@@ -182,24 +220,8 @@ function setupEventListeners() {
     uploadButton.addEventListener('click', () => fileUploadInput.click());
     fileUploadInput.addEventListener('change', handleFileUpload);
     
-    // Example buttons
-    const exampleButton1 = document.getElementById('example-button-1');
-    if (exampleButton1) {
-        exampleButton1.addEventListener('click', () => {
-            const fetchIdInput = document.getElementById('fetch-id');
-            fetchIdInput.value = 'A0JNW5';
-            handleFetch();
-        });
-    }
-    
-    const exampleButton2 = document.getElementById('example-button-2');
-    if (exampleButton2) {
-        exampleButton2.addEventListener('click', () => {
-            const fetchIdInput = document.getElementById('fetch-id');
-            fetchIdInput.value = '1YNE';
-            handleFetch();
-        });
-    }
+    // Example buttons (unified)
+    setupExampleButtons();
     
     // Save state button
     const saveStateButton = document.getElementById('saveStateButton');
@@ -2421,74 +2443,145 @@ function initializeMSAViewer() {
 }
 
 /**
- * Fetch MSA from AlphaFold DB (for msa.html)
- * @param {string} uniprotId - UniProt ID to fetch
+ * Resolve PDB ID to UniProt ID using PDBe API
+ * @param {string} pdbId - 4-character PDB ID
+ * @returns {Promise<string>} - UniProt ID
  */
-async function handleMSAFetch(uniprotId) {
-    if (!uniprotId) {
-        uniprotId = document.getElementById('fetch-uniprot-id')?.value.trim().toUpperCase();
+async function resolvePDBToUniProt(pdbId) {
+    setStatus(`Looking up UniProt ID for PDB ${pdbId}...`);
+    try {
+        const mappings = await fetchPDBeMappings(pdbId);
+        const uniprotIds = Object.values(mappings)
+            .map(m => m.uniprot_id)
+            .filter(id => id); // Filter out null/undefined
+        
+        if (uniprotIds.length === 0) {
+            throw new Error(`No UniProt mapping found for PDB ID ${pdbId}`);
+        }
+        
+        // Use the first UniProt ID found
+        const uniprotId = uniprotIds[0];
+        setStatus(`Found UniProt ID ${uniprotId} for PDB ${pdbId}`);
+        return uniprotId;
+    } catch (error) {
+        console.error('Error fetching PDBe mappings:', error);
+        throw error;
     }
-    
-    if (!uniprotId) {
-        setStatus('Please enter a UniProt ID', true);
-        return;
-    }
-    
-    // Validate UniProt ID format (typically 6 characters, alphanumeric)
-    if (!/^[A-Z0-9]{6,10}$/.test(uniprotId)) {
-        setStatus('Invalid UniProt ID format. Please enter a valid UniProt ID (e.g., P0A8I3)', true);
-        return;
-    }
-    
+}
+
+/**
+ * Fetch MSA from AlphaFold DB by UniProt ID
+ * @param {string} uniprotId - UniProt ID
+ * @param {string} originalId - Original ID (for error messages)
+ * @returns {Promise<string>} - MSA text content
+ */
+async function fetchMSAFromAlphaFold(uniprotId, originalId = null) {
     setStatus(`Fetching MSA for ${uniprotId} from AlphaFold DB...`);
     
     const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${uniprotId}-F1-msa_v6.a3m`;
     
+    const response = await fetch(msaUrl);
+    if (!response.ok) {
+        if (response.status === 404) {
+            const idDisplay = originalId ? `PDB ${originalId} (UniProt ${uniprotId})` : `UniProt ID ${uniprotId}`;
+            throw new Error(`MSA not found for ${idDisplay}. The structure may not be available in AlphaFold DB.`);
+        }
+        throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
+    }
+    
+    const msaText = await response.text();
+    
+    if (!msaText || msaText.trim().length === 0) {
+        throw new Error('Empty MSA file received');
+    }
+    
+    return msaText;
+}
+
+/**
+ * Load MSA data into viewer and update UI
+ * @param {Object} msaData - Parsed MSA data
+ * @param {string} uniprotId - UniProt ID (for filename display)
+ */
+function loadMSADataIntoViewerStandalone(msaData, uniprotId) {
+    if (!window.MSAViewer || !window.MSAViewer.parseA3M) {
+        setStatus('MSA Viewer not available', true);
+        return false;
+    }
+    
+    if (!msaData || !msaData.querySequence) {
+        setStatus('Failed to parse MSA file', true);
+        return false;
+    }
+    
+    window.MSAViewer.setMSAData(msaData, null);
+    setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+    
+    // Update sequence count
+    const sequenceCountEl = document.getElementById('msaSequenceCount');
+    if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
+        const counts = window.MSAViewer.getSequenceCounts();
+        if (counts) {
+            sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
+        }
+    }
+    
+    // Update file name display (if exists)
+    const fileNameEl = document.getElementById('file-name');
+    if (fileNameEl) {
+        fileNameEl.textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
+    }
+    
+    // Show MSA viewer container
+    const msaContainer = document.getElementById('msa-buttons');
+    if (msaContainer) {
+        msaContainer.style.display = 'block';
+    }
+    
+    return true;
+}
+
+/**
+ * Fetch MSA from AlphaFold DB (for msa.html)
+ * Supports both PDB IDs (4 characters) and UniProt IDs
+ * @param {string} id - PDB ID or UniProt ID to fetch
+ */
+async function handleMSAFetch(id) {
+    if (!id) {
+        id = document.getElementById('fetch-uniprot-id')?.value.trim().toUpperCase();
+    }
+    
+    if (!id) {
+        setStatus('Please enter a PDB or UniProt ID', true);
+        return;
+    }
+    
+    let uniprotId = id;
+    const isPDB = id.length === 4 && /^[A-Z0-9]{4}$/.test(id);
+    
+    // If it's a PDB ID, look up UniProt ID from PDBe API
+    if (isPDB) {
+        try {
+            uniprotId = await resolvePDBToUniProt(id);
+        } catch (error) {
+            setStatus(`Error: ${error.message}`, true);
+            return;
+        }
+    } else {
+        // Validate UniProt ID format (typically 6-10 characters, alphanumeric)
+        if (!/^[A-Z0-9]{6,10}$/.test(uniprotId)) {
+            setStatus('Invalid ID format. Please enter a 4-character PDB ID or 6-10 character UniProt ID (e.g., 4HHB or P0A8I3)', true);
+            return;
+        }
+    }
+    
     try {
-        const response = await fetch(msaUrl);
-        if (!response.ok) {
-            if (response.status === 404) {
-                throw new Error(`MSA not found for UniProt ID ${uniprotId}. The structure may not be available in AlphaFold DB.`);
-            }
-            throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
-        }
-        
-        const msaText = await response.text();
-        
-        if (!msaText || msaText.trim().length === 0) {
-            throw new Error('Empty MSA file received');
-        }
+        const msaText = await fetchMSAFromAlphaFold(uniprotId, isPDB ? id : null);
         
         // Parse and load the MSA
         if (window.MSAViewer && window.MSAViewer.parseA3M) {
             const msaData = window.MSAViewer.parseA3M(msaText);
-            if (msaData && msaData.querySequence) {
-                window.MSAViewer.setMSAData(msaData, null);
-                setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
-                
-                // Update sequence count
-        const sequenceCountEl = document.getElementById('msaSequenceCount');
-        if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
-            const counts = window.MSAViewer.getSequenceCounts();
-                    if (counts) {
-                        sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
-                    }
-                }
-                
-                // Update file name display (if exists)
-                const fileNameEl = document.getElementById('file-name');
-                if (fileNameEl) {
-                    fileNameEl.textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
-                }
-                
-                // Show MSA viewer container
-                const msaContainer = document.getElementById('msa-buttons');
-                if (msaContainer) {
-                    msaContainer.style.display = 'block';
-                }
-            } else {
-                setStatus('Failed to parse MSA file', true);
-            }
+            loadMSADataIntoViewerStandalone(msaData, uniprotId);
         } else {
             setStatus('MSA Viewer not available', true);
         }
@@ -2638,84 +2731,58 @@ function initMSADragAndDrop() {
     document.body.addEventListener('dragover', preventDefaults, false);
 }
 
+/**
+ * Setup MSA page event listeners (unified for both DOMContentLoaded and immediate execution)
+ */
+function setupMSAPageEventListeners() {
+    initializeMSAViewer();
+    
+    // Wire up fetch button
+    const fetchBtn = document.getElementById('fetch-btn');
+    const fetchInput = document.getElementById('fetch-uniprot-id');
+    
+    if (fetchBtn) {
+        fetchBtn.addEventListener('click', () => {
+            handleMSAFetch();
+        });
+    }
+    
+    // Allow Enter key to trigger fetch
+    if (fetchInput) {
+        fetchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                handleMSAFetch();
+            }
+        });
+    }
+    
+    // File upload button
+    const uploadButton = document.getElementById('upload-button');
+    const fileUpload = document.getElementById('file-upload');
+    
+    if (uploadButton && fileUpload) {
+        uploadButton.addEventListener('click', () => {
+            fileUpload.click();
+        });
+        
+        fileUpload.addEventListener('change', handleMSAFileUpload);
+    }
+    
+    // Initialize drag and drop
+    initMSADragAndDrop();
+    
+    // Example buttons (unified)
+    setupExampleButtons();
+}
+
 // Initialize MSA viewer on DOM ready (for msa.html only)
 // Check if we're on msa.html by looking for msa.html-specific elements
 const isMSAHTML = document.getElementById('fetch-uniprot-id') !== null;
 if (isMSAHTML) {
-if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            initializeMSAViewer();
-            
-            // Wire up fetch button
-            const fetchBtn = document.getElementById('fetch-btn');
-            const fetchInput = document.getElementById('fetch-uniprot-id');
-            
-            if (fetchBtn) {
-                fetchBtn.addEventListener('click', () => {
-                    handleMSAFetch();
-                });
-            }
-            
-            // Allow Enter key to trigger fetch
-            if (fetchInput) {
-                fetchInput.addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter') {
-                        handleMSAFetch();
-                    }
-                });
-            }
-            
-            // File upload button
-            const uploadButton = document.getElementById('upload-button');
-            const fileUpload = document.getElementById('file-upload');
-            
-            if (uploadButton && fileUpload) {
-                uploadButton.addEventListener('click', () => {
-                    fileUpload.click();
-                });
-                
-                fileUpload.addEventListener('change', handleMSAFileUpload);
-            }
-            
-            // Initialize drag and drop
-            initMSADragAndDrop();
-        });
-} else {
-    initializeMSAViewer();
-        
-        // Wire up fetch button
-        const fetchBtn = document.getElementById('fetch-btn');
-        const fetchInput = document.getElementById('fetch-uniprot-id');
-        
-        if (fetchBtn) {
-            fetchBtn.addEventListener('click', () => {
-                handleMSAFetch();
-            });
-        }
-        
-        // Allow Enter key to trigger fetch
-        if (fetchInput) {
-            fetchInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    handleMSAFetch();
-                }
-            });
-        }
-        
-        // File upload button
-        const uploadButton = document.getElementById('upload-button');
-        const fileUpload = document.getElementById('file-upload');
-        
-        if (uploadButton && fileUpload) {
-            uploadButton.addEventListener('click', () => {
-                fileUpload.click();
-            });
-            
-            fileUpload.addEventListener('change', handleMSAFileUpload);
-        }
-        
-        // Initialize drag and drop
-        initMSADragAndDrop();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setupMSAPageEventListeners);
+    } else {
+        setupMSAPageEventListeners();
     }
 }
 
@@ -3129,21 +3196,10 @@ async function handleFetch() {
                                     const pdbSequence = chainData.sequence;
                                     const pdbResidueNumbers = chainData.residueNumbers;
                                     
-                                    // Download MSA from AlphaFold DB
-                                    const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${uniprotId}-F1-msa_v6.a3m`;
-                                    
+                                    // Download MSA from AlphaFold DB (using shared function)
                                     msaPromises.push(
-                                        fetch(msaUrl)
-                                            .then(async (msaResponse) => {
-                                                if (!msaResponse.ok) {
-                                                    if (msaResponse.status === 404) {
-                                                        console.warn(`MSA not found for UniProt ID ${uniprotId} (chain ${chainId})`);
-                                                        return null;
-                                                    }
-                                                    throw new Error(`Failed to fetch MSA (HTTP ${msaResponse.status})`);
-                                                }
-                                                
-                                                const msaText = await msaResponse.text();
+                                        fetchMSAFromAlphaFold(uniprotId)
+                                            .then(async (msaText) => {
                                                 if (!msaText || msaText.trim().length === 0) {
                                                     console.warn(`Empty MSA file for UniProt ID ${uniprotId} (chain ${chainId})`);
                                                     return null;
