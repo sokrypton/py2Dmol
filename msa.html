@@ -6,149 +6,9 @@
     <title>MSA Viewer - py2Dmol (Resizable)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="web/style.css">
     <style>
-        /* Minimal CSS for MSA viewer */
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #f9fafb;
-            color: #1f2937;
-            padding: 20px;
-            margin: 0;
-        }
-        
-        .container-box {
-            background: #ffffff;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            padding: 12px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-        }
-        
-        .sequence-section-container {
-            width: 948px;
-            height: 520px;  /* Initial height */
-            margin: 0 auto;
-            position: relative;
-            overflow: hidden;
-            min-width: 600px;
-            max-width: 2400px;
-            min-height: 520px;
-        }
-        
-        .sequence-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 8px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid #e5e7eb;
-        }
-        
-        .sequence-content {
-            width: 100%;
-            overflow: hidden;
-        }
-        
-        .sequence-content.hidden {
-            display: none;
-        }
-        
-        #msa-viewer-container {
-            /* No resize constraints - allow flexible sizing */
-        }
-        
-        #msaView {
-            width: 100%;
-            overflow: hidden;
-            margin: 0;
-            padding: 0;
-        }
-        
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 8px 14px;
-            font-size: 14px;
-            font-weight: 500;
-            border-radius: 6px;
-            border: 1px solid #d1d5db;
-            background: #ffffff;
-            color: #374151;
-            cursor: pointer;
-            transition: all 0.2s;
-            gap: 6px;
-        }
-        
-        .btn:hover {
-            background: #f9fafb;
-            border-color: #9ca3af;
-        }
-        
-        .btn-primary {
-            background: #3b82f6;
-            color: white;
-            border-color: #3b82f6;
-        }
-        
-        .btn-primary:hover {
-            background: #2563eb;
-            border-color: #2563eb;
-        }
-        
-        .btn-grey {
-            background: #f3f4f6;
-            border-color: #d1d5db;
-        }
-        
-        .btn-small {
-            padding: 6px 10px;
-            font-size: 12px;
-        }
-        
-        input[type="file"] {
-            display: none;
-        }
-        
-        input[type="range"] {
-            width: 100px;
-            cursor: pointer;
-        }
-        
-        select {
-            padding: 6px 10px;
-            font-size: 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            background: #ffffff;
-            cursor: pointer;
-        }
-        
-        #status-message {
-            margin-top: 12px;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 14px;
-        }
-        
-        #status-message.success {
-            background: #d1fae5;
-            color: #065f46;
-            border: 1px solid #10b981;
-        }
-        
-        #status-message.error {
-            background: #fee2e2;
-            color: #991b1b;
-            border: 1px solid #ef4444;
-        }
-        
-        #status-message.info {
-            background: #dbeafe;
-            color: #1e40af;
-            border: 1px solid #3b82f6;
-        }
-        
+        /* MSA-specific drag overlay styles */
         .drag-overlay {
             position: fixed;
             top: 0;
@@ -167,51 +27,73 @@
         .drag-overlay-content {
             background: white;
             padding: 24px 48px;
-            border-radius: 12px;
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-xl);
             text-align: center;
             font-size: 18px;
             color: #1e40af;
             font-weight: 600;
         }
         
-        .upload-section {
-            margin-bottom: 20px;
+        /* Match fetch input styling from index.html */
+        #fetch-uniprot-id {
+            flex-grow: 1;
+            height: 42px;
+            padding: 0 16px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.2s;
+            background: #ffffff;
         }
         
-        h1 {
-            font-size: 2rem;
-            font-weight: 800;
-            margin-bottom: 8px;
-            color: #111827;
+        #fetch-uniprot-id:hover {
+            border-color: #9ca3af;
         }
         
-        .description {
-            color: #6b7280;
-            margin-bottom: 20px;
+        #fetch-uniprot-id:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            outline: none;
+        }
+        
+        #fetch-uniprot-id::placeholder {
+            color: #9ca3af;
+        }
+        
+        #fetch-input-container {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        #fetch-input-container input {
+            flex-grow: 1;
+            height: 42px;
         }
     </style>
 </head>
-<body>
+<body class="bg-gray-50 text-gray-800 font-sans p-8">
+    <!-- Total width (600 + 8 + 340 = 948px) -->
     <div class="mx-auto" style="width: 948px; position: relative;">
-        <h1><strong>MSA Viewer</strong></h1>
-        <p class="description">Fetch from AlphaFold DB (UniProt ID) or upload A3M, FASTA, or STO file to visualize multiple sequence alignment</p>
+        <h1 class="text-4xl font-extrabold text-gray-900 mb-2">MSA Viewer</h1>
+        <p class="text-gray-500 mb-4">Fetch from AlphaFold DB (UniProt ID) or upload A3M, FASTA, or STO file to visualize multiple sequence alignment</p>
         
         <!-- Fetch and Upload Section -->
-        <div class="container-box upload-section" style="width: 948px; margin-bottom: 10px;">
+        <div class="container-box" style="width: 948px; margin-bottom: 10px;">
             <!-- Fetch Section -->
             <label for="fetch-uniprot-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Fetch from AlphaFold DB (UniProt ID)</label>
-            <div id="fetch-input-container" style="margin-bottom: 12px; display: flex; gap: 8px; align-items: center;">
-                <input type="text" id="fetch-uniprot-id" placeholder="e.g., P0A8I3" style="flex: 1; padding: 6px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+            <div id="fetch-input-container" style="margin-bottom: 8px;">
+                <input type="text" id="fetch-uniprot-id" placeholder="e.g., P0A8I3">
                 <button id="fetch-btn" class="btn btn-primary">Fetch</button>
             </div>
             
             <!-- Upload Section -->
-            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
+            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">
                 Upload MSA File
             </label>
             <div style="display: flex; gap: 8px; align-items: center;">
-                <button id="upload-button" class="btn btn-primary">
+                <button id="upload-button" class="btn btn-secondary">
                     <i class="fa-solid fa-file-arrow-up"></i>
                     <span>Choose MSA File</span>
                 </button>
@@ -229,11 +111,11 @@
         </div>
         
         <!-- MSA Viewer Container -->
-        <div id="msa-viewer-container" class="container-box sequence-section-container" style="display: none;">
+        <div id="msa-buttons" class="container-box sequence-section-container" style="display: none;">
             <div id="msaHeader" class="sequence-header">
                 <!-- Left side: Mode dropdown, Sort checkbox, and Bit-score checkbox -->
                 <div style="display: flex; align-items: center; gap: 8px;">
-                    <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px;">
+                    <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
                         <option value="msa" selected>MSA</option>
                         <option value="pssm">PSSM</option>
                         <option value="logo">Logo</option>
@@ -263,7 +145,7 @@
                 </div>
                 
                 <!-- Right: Filters box -->
-                <div style="display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-left: auto; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
                     <span style="font-size: 12px; color: #666; font-weight: 500;">Filters:</span>
                     <div style="display: flex; align-items: center; gap: 4px;">
                         <label for="coverageSlider" style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
@@ -275,10 +157,9 @@
                         <input type="range" id="identitySlider" min="0" max="100" value="15" step="5" style="width: 100px;">
                         <span id="identityValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">15%</span>
                     </div>
-                    <span id="msaSequenceCount" style="font-size: 11px; color: #666; white-space: nowrap; width: 60px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
+                    <span id="msaSequenceCount" style="font-size: 11px; color: #666; white-space: nowrap; min-width: 80px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
                 </div>
             </div>
-            <div id="msaView" class="sequence-content hidden"></div>
         </div>
     </div>
     
