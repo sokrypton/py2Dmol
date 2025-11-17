@@ -1392,9 +1392,18 @@ table.layout-table td {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    pointer-events: auto;
+    text-decoration: none;
 }
 
 .link-button:hover,
 .link-button:focus-visible {
     text-decoration: underline;
+    color: #2563eb;
+}
+
+.link-button:disabled {
+    color: #9ca3af;
+    cursor: not-allowed;
+    pointer-events: none;
 }

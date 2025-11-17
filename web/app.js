@@ -211,12 +211,20 @@ function convertMarkdownToHtml(markdown) {
 
 function setupReadmeToggle() {
     const readmeSection = document.getElementById('readmeSection');
-    if (!readmeSection) return;
+    if (!readmeSection) {
+        // README section not found - this is OK for pages without README
+        return;
+    }
 
     const openButtons = document.querySelectorAll('[data-readme-toggle="open"]');
     const closeButton = readmeSection.querySelector('[data-readme-toggle="close"]');
     const contentEl = document.getElementById('readmeContent');
     const statusEl = document.getElementById('readmeStatus');
+
+    if (openButtons.length === 0) {
+        // No open buttons found - nothing to set up
+        return;
+    }
 
     let readmeLoaded = false;
     let loading = false;
@@ -252,25 +260,38 @@ function setupReadmeToggle() {
                 statusEl.textContent = 'Unable to load README. Use the GitHub link above as a fallback.';
                 statusEl.classList.remove('hidden');
             }
+            if (contentEl) {
+                contentEl.innerHTML = '<p>Unable to load README file. Please use the GitHub link above to view the documentation.</p>';
+            }
         } finally {
             loading = false;
         }
     }
 
     function showReadme() {
+        if (!readmeSection) return;
         readmeSection.classList.remove('hidden');
         readmeSection.setAttribute('aria-hidden', 'false');
         loadReadme();
     }
 
     function hideReadme() {
+        if (!readmeSection) return;
         readmeSection.classList.add('hidden');
         readmeSection.setAttribute('aria-hidden', 'true');
     }
 
+    // Ensure buttons are enabled and clickable
     openButtons.forEach(button => {
+        // Remove any disabled attribute
+        button.removeAttribute('disabled');
+        // Ensure button is visible and clickable
+        button.style.pointerEvents = 'auto';
+        button.style.cursor = 'pointer';
+        
         button.addEventListener('click', (event) => {
             event.preventDefault();
+            event.stopPropagation();
             showReadme();
         });
     });
@@ -278,6 +299,7 @@ function setupReadmeToggle() {
     if (closeButton) {
         closeButton.addEventListener('click', (event) => {
             event.preventDefault();
+            event.stopPropagation();
             hideReadme();
         });
     }

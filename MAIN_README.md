@@ -68,7 +68,6 @@ The viewer supports loading complete results from **AlphaFold Server** and **Col
 ## Tips and Troubleshooting
 
 - **Entropy colors look gray**: Make sure an MSA is loaded and that entropy mode is selected. Adjust coverage/identity sliders to ensure enough sequences remain after filtering.
-- **Switching objects duplicates MSAs or contacts**: The viewer automatically reuses existing containers. Use **Clear All** before reloading if you want a fresh start.
 - **Fetching AlphaFold MSAs**: When providing a 4-character PDB ID, the app resolves it to a UniProt accession via PDBe and then downloads the AlphaFold alignment.
 - **Performance**: Keep the canvas within reasonable sizes for instant feedback. The resize handle next to the viewer lets you increase or decrease the drawing area as needed.
 
