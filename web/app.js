@@ -76,7 +76,6 @@ function initializeApp() {
             applySelection: applySelection,
             onMSAFilterChange: (filteredMSAData, chainId) => {
                 // Recompute properties when MSA filters change
-                // The filtered MSA data needs to have frequencies and logOdds recomputed
                 if (!viewerApi?.renderer || !chainId || !filteredMSAData) return;
                 
                 const objectName = viewerApi.renderer.currentObjectName;
@@ -93,22 +92,7 @@ function initializeApp() {
                 // Recompute properties (frequencies and entropy) from filtered MSA
                 computeMSAProperties(filteredMSAData);
                 
-                // Update the stored MSA data's entropy so _mapEntropyToStructure can access it
-                // This allows entropy coloring to reflect the filtered MSA
-                // For multi-chain proteins, all chains sharing the same MSA will use the same entropy
-                if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
-                    const querySeq = obj.msa.chainToSequence[chainId];
-                    if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                        const msaEntry = obj.msa.msasBySequence[querySeq];
-                        // Update entropy in stored MSA data to reflect filtered values
-                        // This MSA entry is shared by all chains with the same query sequence
-                        // So updating it here updates entropy for ALL chains that share this MSA
-                        if (filteredMSAData.entropy) {
-                            msaEntry.msaData.entropy = filteredMSAData.entropy;
-                        }
-                    }
-                }
-                
+                // Apply filters to all MSAs (will reuse computed entropy for active chain)
                 const { coverageCutoff, identityCutoff } = getCurrentMSAFilters();
                 applyFiltersToAllMSAs(objectName, {
                     coverageCutoff,
@@ -117,16 +101,8 @@ function initializeApp() {
                     activeFilteredMSAData: filteredMSAData
                 });
                 
-                // Refresh entropy colors for all chains (not just the active one)
-                // _mapEntropyToStructure() already loops through all chains, so this will update all chains
+                // Refresh entropy colors for all chains
                 refreshEntropyColors();
-                
-                // NOTE: We update entropy in stored msaEntry.msaData to reflect filtered values
-                // The stored msaEntry.msaData.sequences remains the canonical unfiltered source
-                // Only entropy (and frequencies) are updated to reflect current filtering
-                // For multi-chain proteins, all chains sharing the same MSA sequence will use the same filtered entropy
-                // The filter sliders in the MSA viewer UI only affect the currently selected chain's display,
-                // but the entropy computation applies to all chains that share the same MSA sequence
             }
         });
     }
@@ -184,64 +160,14 @@ function getCurrentMSAFilters() {
     };
 }
 
-function calculateMSASequenceCoverage(sequence, queryLength) {
-    if (!sequence || !queryLength) return 0;
-    let nonGapCount = 0;
-    for (let i = 0; i < sequence.length; i++) {
-        const ch = sequence[i];
-        if (ch !== '-' && ch !== 'X') {
-            nonGapCount++;
-        }
-    }
-    return nonGapCount / queryLength;
-}
-
-function calculateMSASequenceIdentity(seq1, seq2) {
-    if (!seq1 || !seq2 || seq1.length !== seq2.length) return 0;
-    let matches = 0;
-    let total = 0;
-    for (let i = 0; i < seq1.length; i++) {
-        const c1 = seq1[i].toUpperCase();
-        const c2 = seq2[i].toUpperCase();
-        if (c1 !== '-' && c1 !== 'X' && c2 !== '-' && c2 !== 'X') {
-            total++;
-            if (c1 === c2) matches++;
-        }
-    }
-    return total > 0 ? matches / total : 0;
-}
-
-function filterSequencesForMSA(msaData, coverageCutoff, identityCutoff) {
-    const sequences = msaData?.sequencesOriginal || msaData?.sequences || [];
-    if (!sequences.length) return [];
-    const querySequence = msaData.querySequence;
-    const queryLength = querySequence?.length || 0;
-    
-    let filtered = sequences;
-    
-    if (queryLength > 0) {
-        filtered = filtered.filter(seq => {
-            const coverage = calculateMSASequenceCoverage(seq.sequence, queryLength);
-            return coverage >= coverageCutoff;
-        });
-    }
-    
-    if (querySequence) {
-        filtered = filtered.filter(seq => {
-            if (seq.name === '>query' || seq.name?.toLowerCase().includes('query')) return true;
-            if (seq.identity !== undefined) {
-                return seq.identity >= identityCutoff;
-            }
-            const identity = calculateMSASequenceIdentity(seq.sequence, querySequence);
-            return identity >= identityCutoff;
-        });
-    }
-    
-    return filtered;
-}
-
+/**
+ * Apply filters to all MSAs in an object and update their entropy
+ * Uses MSAViewer.applyFiltersToMSA to avoid code duplication
+ * @param {string} objectName - Name of the object
+ * @param {Object} options - Configuration options
+ */
 function applyFiltersToAllMSAs(objectName, options = {}) {
-    if (!viewerApi?.renderer || !objectName) return;
+    if (!viewerApi?.renderer || !objectName || !window.MSAViewer?.applyFiltersToMSA) return;
     const obj = viewerApi.renderer.objectsData[objectName];
     if (!obj || !obj.msa || !obj.msa.msasBySequence) return;
     
@@ -257,22 +183,31 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
         : null;
     const activeEntropy = activeFilteredMSAData?.entropy;
     
+    // Short-circuit if only one unique MSA and we already have its entropy
+    const uniqueMSAs = Object.keys(obj.msa.msasBySequence);
+    if (uniqueMSAs.length === 1 && activeQuerySeq && activeEntropy) {
+        const msaEntry = obj.msa.msasBySequence[uniqueMSAs[0]];
+        if (msaEntry?.msaData) {
+            msaEntry.msaData.entropy = activeEntropy;
+        }
+        return;
+    }
+    
     for (const [querySeq, msaEntry] of Object.entries(obj.msa.msasBySequence)) {
         const sourceData = msaEntry.msaData;
         if (!sourceData) continue;
         
+        // Reuse entropy from active chain if it matches
         if (activeQuerySeq && querySeq === activeQuerySeq && activeEntropy) {
             sourceData.entropy = activeEntropy;
             continue;
         }
         
-        const filteredSequences = filterSequencesForMSA(sourceData, coverageCutoff, identityCutoff);
-        const filteredMSA = {
-            querySequence: sourceData.querySequence,
-            queryLength: sourceData.queryLength,
-            sequences: filteredSequences
-        };
+        // Apply filters using MSAViewer's method (avoids code duplication)
+        const filteredMSA = window.MSAViewer.applyFiltersToMSA(sourceData, coverageCutoff, identityCutoff);
+        if (!filteredMSA) continue;
         
+        // Compute entropy from filtered sequences
         computeMSAProperties(filteredMSA);
         
         if (filteredMSA.entropy) {
@@ -4085,26 +4020,6 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
         filteredMSAData.logOdds = null;
         // Compute properties
         computeMSAProperties(filteredMSAData);
-        
-        // Update the stored MSA data's entropy so _mapEntropyToStructure can access it
-        // This allows entropy coloring to reflect the filtered MSA
-        if (viewerApi?.renderer && objectName) {
-            const obj = viewerApi.renderer.objectsData[objectName];
-            if (obj && obj.msa && obj.msa.msasBySequence && obj.msa.chainToSequence && chainId) {
-                const querySeq = obj.msa.chainToSequence[chainId];
-                if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                    const msaEntry = obj.msa.msasBySequence[querySeq];
-                    // Update entropy in stored MSA data to reflect filtered values
-                    if (filteredMSAData.entropy) {
-                        msaEntry.msaData.entropy = filteredMSAData.entropy;
-                    }
-                }
-            }
-        }
-        
-        // NOTE: We update entropy in stored msaEntry.msaData to reflect filtered values
-        // The stored msaEntry.msaData.sequences remains the canonical unfiltered source
-        // Only entropy (and frequencies) are updated to reflect current filtering
     }
     
     // Update chain selector
@@ -4112,14 +4027,15 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
         window.updateMSAChainSelectorIndex();
     }
     
-    
     // Update sequence count to reflect the loaded MSA
     if (window.updateMSASequenceCount) {
         window.updateMSASequenceCount();
     }
     showMSACanvasContainers();
     
-    if (objectName) {
+    // Apply filters to all MSAs (will update entropy for all chains)
+    // This is deferred until needed - only computes entropy for other MSAs if they exist
+    if (objectName && filteredMSAData) {
         const { coverageCutoff, identityCutoff } = getCurrentMSAFilters();
         applyFiltersToAllMSAs(objectName, {
             coverageCutoff,

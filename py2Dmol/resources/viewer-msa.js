@@ -3542,6 +3542,31 @@
             return msaData;
         },
         
+        /**
+         * Apply filters to MSA data and return filtered copy
+         * This is a utility function that can be used externally to filter any MSA data
+         * @param {Object} msaDataToFilter - MSA data object to filter
+         * @param {number} coverageCutoff - Minimum coverage threshold (0-1)
+         * @param {number} identityCutoff - Minimum identity threshold (0-1)
+         * @returns {Object} - Filtered MSA data object
+         */
+        applyFiltersToMSA: function(msaDataToFilter, coverageCutoff, identityCutoff) {
+            if (!msaDataToFilter || !msaDataToFilter.sequences) {
+                return null;
+            }
+            
+            const sequencesToFilter = msaDataToFilter.sequencesOriginal || msaDataToFilter.sequences;
+            let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
+            filtered = filterSequencesByIdentity(filtered, msaDataToFilter.querySequence, identityCutoff);
+            
+            return {
+                querySequence: msaDataToFilter.querySequence,
+                queryLength: msaDataToFilter.queryLength,
+                sequences: filtered,
+                sequencesOriginal: msaDataToFilter.sequencesOriginal || msaDataToFilter.sequences
+            };
+        },
+        
         
         setCoverageCutoff: function(cutoff) {
             coverageCutoff = Math.max(0, Math.min(1, cutoff));
