@@ -964,7 +964,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_obj=False, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
+    def from_pdb(self, pdb_id, chains=None, new_obj=False, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and displays the viewer.
@@ -977,6 +977,7 @@ class view:
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
+            contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
         """
         filepath = self._get_filepath_from_pdb_id(pdb_id)
         
@@ -984,7 +985,7 @@ class view:
             self.add_pdb(filepath, chains=chains, new_obj=new_obj, 
                          name=name, paes=None, align=align,
                          use_biounit=use_biounit, biounit_name=biounit_name,
-                         ignore_ligands=ignore_ligands)
+                         ignore_ligands=ignore_ligands, contacts=contacts)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         else:
