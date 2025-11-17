@@ -43,7 +43,7 @@ def align_a_to_b(a, b):
 
 class view:
     def __init__(self, size=(300,300), controls=True, box=True,
-        color="auto", colorblind=False, pastel=0.25, shadow=True, depth=True,
+        color="auto", colorblind=False, pastel=0.25, shadow=True, depth=False,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
         pae=False, pae_size=300, reuse_js=False,
     ):

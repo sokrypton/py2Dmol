@@ -2849,12 +2849,15 @@
         // Clear only canvases for this mode, not all canvases
         // This preserves canvases for other modes
         const existingForThisMode = getCanvasDataForMode(mode);
-        if (existingForThisMode?.container?.parentElement === viewEl) {
+        const parentEl = viewEl.parentElement || viewEl;
+        
+        if (existingForThisMode?.container?.parentElement) {
             // Remove only the canvas for this mode if it exists
-            viewEl.removeChild(existingForThisMode.container);
+            existingForThisMode.container.parentElement.removeChild(existingForThisMode.container);
         }
         // Also remove any orphaned canvas containers (safety check)
-        const existingContainers = viewEl.querySelectorAll('.msa-canvas');
+        // Containers are appended to parentEl, so search there
+        const existingContainers = parentEl.querySelectorAll('.msa-canvas');
         existingContainers.forEach(container => {
             // Only remove if it's not associated with any canvas data
             const isOrphaned = !Array.from(container.querySelectorAll('canvas')).some(canvas => {
@@ -2863,7 +2866,7 @@
                        (logoCanvasData?.canvas === canvas);
             });
             if (isOrphaned) {
-                viewEl.removeChild(container);
+                container.parentElement?.removeChild(container);
             }
         });
 
@@ -4098,6 +4101,25 @@
         },
         
         clear: function() {
+            // Cleanup resize observers before clearing data
+            if (msaCanvasData?.resizeObserver) {
+                msaCanvasData.resizeObserver.disconnect();
+            }
+            if (pssmCanvasData?.resizeObserver) {
+                pssmCanvasData.resizeObserver.disconnect();
+            }
+            if (logoCanvasData?.resizeObserver) {
+                logoCanvasData.resizeObserver.disconnect();
+            }
+            
+            // Remove containers from DOM
+            const containers = document.querySelectorAll('.msa-canvas');
+            containers.forEach(container => {
+                if (container.parentElement) {
+                    container.parentElement.removeChild(container);
+                }
+            });
+            
             msaData = null;
             originalMSAData = null;
             msaCanvasData = null;

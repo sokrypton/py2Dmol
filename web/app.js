@@ -34,6 +34,8 @@ let rotationAnimation = {
 const FIXED_WIDTH = 600;
 const FIXED_HEIGHT = 600;
 const PAE_PLOT_SIZE = 300;
+const DEFAULT_MSA_COVERAGE = 0.75;
+const DEFAULT_MSA_IDENTITY = 0.15;
 
 // ============================================================================
 // INITIALIZATION
@@ -83,12 +85,48 @@ function initializeApp() {
                 const obj = viewerApi.renderer.objectsData[objectName];
                 if (!obj || !obj.msa) return;
                 
-                // Recompute properties
+                // Clear properties to force recomputation with filtered data
+                filteredMSAData.frequencies = null;
+                filteredMSAData.entropy = null;
+                filteredMSAData.logOdds = null;
+                
+                // Recompute properties (frequencies and entropy) from filtered MSA
                 computeMSAProperties(filteredMSAData);
                 
-                // NOTE: We do NOT overwrite stored msaEntry.msaData with filtered data
-                // The stored msaEntry.msaData remains the canonical unfiltered source
-                // The viewer maintains its own filtered copy internally
+                // Update the stored MSA data's entropy so _mapEntropyToStructure can access it
+                // This allows entropy coloring to reflect the filtered MSA
+                // For multi-chain proteins, all chains sharing the same MSA will use the same entropy
+                if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
+                    const querySeq = obj.msa.chainToSequence[chainId];
+                    if (querySeq && obj.msa.msasBySequence[querySeq]) {
+                        const msaEntry = obj.msa.msasBySequence[querySeq];
+                        // Update entropy in stored MSA data to reflect filtered values
+                        // This MSA entry is shared by all chains with the same query sequence
+                        // So updating it here updates entropy for ALL chains that share this MSA
+                        if (filteredMSAData.entropy) {
+                            msaEntry.msaData.entropy = filteredMSAData.entropy;
+                        }
+                    }
+                }
+                
+                const { coverageCutoff, identityCutoff } = getCurrentMSAFilters();
+                applyFiltersToAllMSAs(objectName, {
+                    coverageCutoff,
+                    identityCutoff,
+                    activeChainId: chainId,
+                    activeFilteredMSAData: filteredMSAData
+                });
+                
+                // Refresh entropy colors for all chains (not just the active one)
+                // _mapEntropyToStructure() already loops through all chains, so this will update all chains
+                refreshEntropyColors();
+                
+                // NOTE: We update entropy in stored msaEntry.msaData to reflect filtered values
+                // The stored msaEntry.msaData.sequences remains the canonical unfiltered source
+                // Only entropy (and frequencies) are updated to reflect current filtering
+                // For multi-chain proteins, all chains sharing the same MSA sequence will use the same filtered entropy
+                // The filter sliders in the MSA viewer UI only affect the currently selected chain's display,
+                // but the entropy computation applies to all chains that share the same MSA sequence
             }
         });
     }
@@ -116,6 +154,135 @@ function initializeApp() {
     setStatus("Ready. Upload a file or fetch an ID.");
 }
 
+function refreshEntropyColors() {
+    if (!viewerApi?.renderer || viewerApi.renderer.colorMode !== 'entropy') {
+        return;
+    }
+    
+    const renderer = viewerApi.renderer;
+    renderer._mapEntropyToStructure();
+    renderer.colors = null;
+    renderer.colorsNeedUpdate = true;
+    renderer.render();
+    document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+    
+    if (typeof updateSequenceViewColors === 'function') {
+        updateSequenceViewColors();
+    }
+}
+
+function getCurrentMSAFilters() {
+    const coverage = typeof window.MSAViewer?.getCoverageCutoff === 'function'
+        ? window.MSAViewer.getCoverageCutoff()
+        : DEFAULT_MSA_COVERAGE;
+    const identity = typeof window.MSAViewer?.getIdentityCutoff === 'function'
+        ? window.MSAViewer.getIdentityCutoff()
+        : DEFAULT_MSA_IDENTITY;
+    return {
+        coverageCutoff: Number.isFinite(coverage) ? coverage : DEFAULT_MSA_COVERAGE,
+        identityCutoff: Number.isFinite(identity) ? identity : DEFAULT_MSA_IDENTITY
+    };
+}
+
+function calculateMSASequenceCoverage(sequence, queryLength) {
+    if (!sequence || !queryLength) return 0;
+    let nonGapCount = 0;
+    for (let i = 0; i < sequence.length; i++) {
+        const ch = sequence[i];
+        if (ch !== '-' && ch !== 'X') {
+            nonGapCount++;
+        }
+    }
+    return nonGapCount / queryLength;
+}
+
+function calculateMSASequenceIdentity(seq1, seq2) {
+    if (!seq1 || !seq2 || seq1.length !== seq2.length) return 0;
+    let matches = 0;
+    let total = 0;
+    for (let i = 0; i < seq1.length; i++) {
+        const c1 = seq1[i].toUpperCase();
+        const c2 = seq2[i].toUpperCase();
+        if (c1 !== '-' && c1 !== 'X' && c2 !== '-' && c2 !== 'X') {
+            total++;
+            if (c1 === c2) matches++;
+        }
+    }
+    return total > 0 ? matches / total : 0;
+}
+
+function filterSequencesForMSA(msaData, coverageCutoff, identityCutoff) {
+    const sequences = msaData?.sequencesOriginal || msaData?.sequences || [];
+    if (!sequences.length) return [];
+    const querySequence = msaData.querySequence;
+    const queryLength = querySequence?.length || 0;
+    
+    let filtered = sequences;
+    
+    if (queryLength > 0) {
+        filtered = filtered.filter(seq => {
+            const coverage = calculateMSASequenceCoverage(seq.sequence, queryLength);
+            return coverage >= coverageCutoff;
+        });
+    }
+    
+    if (querySequence) {
+        filtered = filtered.filter(seq => {
+            if (seq.name === '>query' || seq.name?.toLowerCase().includes('query')) return true;
+            if (seq.identity !== undefined) {
+                return seq.identity >= identityCutoff;
+            }
+            const identity = calculateMSASequenceIdentity(seq.sequence, querySequence);
+            return identity >= identityCutoff;
+        });
+    }
+    
+    return filtered;
+}
+
+function applyFiltersToAllMSAs(objectName, options = {}) {
+    if (!viewerApi?.renderer || !objectName) return;
+    const obj = viewerApi.renderer.objectsData[objectName];
+    if (!obj || !obj.msa || !obj.msa.msasBySequence) return;
+    
+    const {
+        coverageCutoff = DEFAULT_MSA_COVERAGE,
+        identityCutoff = DEFAULT_MSA_IDENTITY,
+        activeChainId = null,
+        activeFilteredMSAData = null
+    } = options;
+    
+    const activeQuerySeq = activeChainId && obj.msa.chainToSequence
+        ? obj.msa.chainToSequence[activeChainId]
+        : null;
+    const activeEntropy = activeFilteredMSAData?.entropy;
+    
+    for (const [querySeq, msaEntry] of Object.entries(obj.msa.msasBySequence)) {
+        const sourceData = msaEntry.msaData;
+        if (!sourceData) continue;
+        
+        if (activeQuerySeq && querySeq === activeQuerySeq && activeEntropy) {
+            sourceData.entropy = activeEntropy;
+            continue;
+        }
+        
+        const filteredSequences = filterSequencesForMSA(sourceData, coverageCutoff, identityCutoff);
+        const filteredMSA = {
+            querySequence: sourceData.querySequence,
+            queryLength: sourceData.queryLength,
+            sequences: filteredSequences
+        };
+        
+        computeMSAProperties(filteredMSA);
+        
+        if (filteredMSA.entropy) {
+            sourceData.entropy = filteredMSA.entropy;
+        } else {
+            delete sourceData.entropy;
+        }
+    }
+}
+
 function initializeViewerConfig() {
     // Get DOM elements for config sync
     const biounitEl = document.getElementById('biounitCheckbox');
@@ -137,6 +304,7 @@ function initializeViewerConfig() {
         pastel: 0.25,
         pae: true,
         colorblind: false,
+        depth: false,
         viewer_id: "standalone-viewer-1",
         biounit: true,
         ignoreLigands: true
@@ -208,6 +376,54 @@ function setupExampleButtons() {
             });
         }
     });
+}
+
+function getMSACanvasContainers() {
+    return Array.from(document.querySelectorAll('.msa-canvas'));
+}
+
+function showMSACanvasContainers() {
+    getMSACanvasContainers().forEach(container => {
+        container.style.display = 'block';
+        container.style.visibility = 'visible';
+    });
+}
+
+function hideMSACanvasContainers() {
+    getMSACanvasContainers().forEach(container => {
+        container.style.display = 'none';
+    });
+}
+
+function removeMSACanvasContainers() {
+    const containers = getMSACanvasContainers();
+    containers.forEach(container => {
+        // Remove resize observers if they exist
+        if (container.resizeObserver) {
+            container.resizeObserver.disconnect();
+        }
+        // Remove from DOM
+        if (container.parentElement) {
+            container.parentElement.removeChild(container);
+        }
+    });
+}
+
+function clearMSAViewerState() {
+    // Remove containers from DOM to prevent accumulation
+    removeMSACanvasContainers();
+    // Clear MSA viewer internal state (this will also clear canvas data references)
+    if (window.MSAViewer?.clear) {
+        try {
+            window.MSAViewer.clear();
+        } catch (err) {
+            console.warn('MSA Viewer clear failed:', err);
+        }
+    }
+    const sequenceCountEl = document.getElementById('msaSequenceCount');
+    if (sequenceCountEl) {
+        sequenceCountEl.textContent = '-';
+    }
 }
 
 function setupEventListeners() {
@@ -577,11 +793,7 @@ function handleObjectChange() {
         window.updateMSAContainerVisibility();
     }
     
-    // Remap entropy if entropy mode is active
-    if (viewerApi?.renderer && viewerApi.renderer.colorMode === 'entropy') {
-        viewerApi.renderer._mapEntropyToStructure();
-        viewerApi.renderer.render();
-    }
+    refreshEntropyColors();
 }
 
 
@@ -1129,6 +1341,176 @@ function animateRotation() {
 // Biounit extraction and application functions are now in utils.js
 // Using unified functions: extractBiounitOperations, applyBiounitOperationsToAtoms
 
+
+function parseContactsFile(text) {
+    const contacts = [];
+    const lines = text.split('\n');
+    
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        
+        const parts = trimmed.split(/\s+/);
+        
+        if (parts.length === 2) {
+            // Position indices: "10 50"
+            const idx1 = parseInt(parts[0], 10);
+            const idx2 = parseInt(parts[1], 10);
+            if (!isNaN(idx1) && !isNaN(idx2)) {
+                contacts.push([idx1, idx2]);
+            }
+        } else if (parts.length === 4) {
+            // Chain + residue: "A 10 B 50"
+            const chain1 = parts[0];
+            const res1 = parseInt(parts[1], 10);
+            const chain2 = parts[2];
+            const res2 = parseInt(parts[3], 10);
+            if (!isNaN(res1) && !isNaN(res2)) {
+                contacts.push([chain1, res1, chain2, res2]);
+            }
+        }
+    }
+    
+    return contacts;
+}
+
+async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, loadMSA, loadPAE }) {
+    if (!viewerApi || !viewerApi.renderer) {
+        setStatus("No viewer available. Please load a structure first.", true);
+        return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
+    }
+    
+    const renderer = viewerApi.renderer;
+    const objectSelect = document.getElementById('objectSelect');
+    const currentObjectName = objectSelect && objectSelect.value ? objectSelect.value : renderer.currentObjectName;
+    
+    if (!currentObjectName || !renderer.objectsData[currentObjectName]) {
+        setStatus("No object selected. Please load a structure first.", true);
+        return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
+    }
+    
+    const object = renderer.objectsData[currentObjectName];
+    let metadataAdded = [];
+    
+    // Process PAE files
+    if (loadPAE && jsonFiles.length > 0) {
+        for (const jsonFile of jsonFiles) {
+            try {
+                const jsonText = await jsonFile.readAsync("text");
+                const jsonObject = JSON.parse(jsonText);
+                
+                if (!jsonObject.objects) {
+                    const paeData = extractPaeFromJSON(jsonObject);
+                    if (paeData) {
+                        for (const frame of object.frames) {
+                            frame.pae = paeData;
+                        }
+                        const currentFrame = renderer.currentFrame;
+                        renderer.setFrame(currentFrame);
+                        metadataAdded.push(`PAE from ${jsonFile.name}`);
+                    }
+                }
+            } catch (e) {
+                console.warn(`Failed to process PAE file ${jsonFile.name}:`, e);
+            }
+        }
+    }
+    
+    // Process MSA files
+    if (loadMSA && msaFiles.length > 0) {
+        const chainSequences = extractChainSequences(object.frames[0]);
+        const msaDataList = [];
+        
+        for (const msaFile of msaFiles) {
+            try {
+                const msaText = await msaFile.readAsync("text");
+                const fileName = msaFile.name.toLowerCase();
+                const isA3M = fileName.endsWith('.a3m');
+                const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
+                const isSTO = fileName.endsWith('.sto');
+                
+                if (!isA3M && !isFasta && !isSTO) continue;
+                
+                let msaData = null;
+                if (isA3M && window.MSAViewer && window.MSAViewer.parseA3M) {
+                    msaData = window.MSAViewer.parseA3M(msaText);
+                } else if (isFasta && window.MSAViewer && window.MSAViewer.parseFasta) {
+                    msaData = window.MSAViewer.parseFasta(msaText);
+                } else if (isSTO && window.MSAViewer && window.MSAViewer.parseSTO) {
+                    msaData = window.MSAViewer.parseSTO(msaText);
+                }
+                
+                if (msaData && msaData.querySequence) {
+                    msaDataList.push({ msaData, filename: msaFile.name });
+                }
+            } catch (e) {
+                console.warn(`Failed to process MSA file ${msaFile.name}:`, e);
+            }
+        }
+        
+        if (msaDataList.length > 0) {
+            const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
+            const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
+            
+            if (msaObj && msaObj.availableChains.length > 0) {
+                const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
+                if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
+                    const {msaData} = msaObj.msasBySequence[defaultChainSeq];
+                    if (window.MSAViewer) {
+                        loadMSADataIntoViewer(msaData, msaObj.defaultChain, currentObjectName);
+                        metadataAdded.push(`MSA for ${msaObj.availableChains.length} chain(s)`);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Process contact files
+    if (contactFiles.length > 0) {
+        console.log('[Contact File Processing] Processing', contactFiles.length, 'contact file(s)');
+        for (const contactFile of contactFiles) {
+            try {
+                console.log('[Contact File Processing] Reading file:', contactFile.name);
+                const text = await contactFile.readAsync("text");
+                console.log('[Contact File Processing] File content (first 200 chars):', text.substring(0, 200));
+                const contacts = parseContactsFile(text);
+                console.log('[Contact File Processing] Parsed', contacts.length, 'contact(s):', contacts);
+                
+                if (contacts.length > 0) {
+                    console.log('[Contact File Processing] Setting contacts on object:', currentObjectName);
+                    // Clear any existing contacts and replace with new ones
+                    if (object.contacts && object.contacts.length > 0) {
+                        console.log('[Contact File Processing] Clearing', object.contacts.length, 'existing contact(s)');
+                    }
+                    object.contacts = contacts;
+                    console.log('[Contact File Processing] Object contacts now:', object.contacts.length, 'contact(s)');
+                    // Invalidate segment cache so contacts are regenerated
+                    renderer.cachedSegmentIndices = null;
+                    console.log('[Contact File Processing] Invalidated segment cache, current frame:', renderer.currentFrame);
+                    const currentFrame = renderer.currentFrame;
+                    renderer.setFrame(currentFrame);
+                    console.log('[Contact File Processing] Called setFrame, object data:', renderer.objectsData[currentObjectName]?.contacts);
+                    metadataAdded.push(`${contacts.length} contact(s) from ${contactFile.name}`);
+                } else {
+                    const errorMsg = `Warning: No valid contacts found in ${contactFile.name}. Expected format: "0 30" or "A 10 B 50" (one per line).`;
+                    console.warn('[Contact File Processing]', errorMsg);
+                    setStatus(errorMsg, true);
+                }
+            } catch (e) {
+                console.error(`[Contact File Processing] Failed to process contacts file ${contactFile.name}:`, e);
+                setStatus(`Error processing contacts file ${contactFile.name}: ${e.message}`, true);
+            }
+        }
+    }
+    
+    if (metadataAdded.length > 0) {
+        setStatus(`Added to ${currentObjectName}: ${metadataAdded.join(', ')}`);
+    } else {
+        setStatus("No metadata could be added to the current object.", true);
+    }
+    
+    return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
+}
 
 function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
     let models;
@@ -1688,6 +2070,18 @@ function updateViewerFromGlobalBatch() {
         // Set MSA data (replacing any existing MSA)
         if (r && obj.msa && r.objectsData[obj.name]) {
             r.objectsData[obj.name].msa = obj.msa;
+        }
+        
+        // Set contacts data (replacing any existing contacts)
+        if (r && obj.contacts && r.objectsData[obj.name]) {
+            r.objectsData[obj.name].contacts = obj.contacts;
+            // Invalidate segment cache so contacts are regenerated
+            r.cachedSegmentIndices = null;
+            // Trigger re-render to show contacts
+            if (r.currentObjectName === obj.name) {
+                const currentFrame = r.currentFrame;
+                r.setFrame(currentFrame);
+            }
         }
     }
 
@@ -2537,6 +2931,7 @@ function loadMSADataIntoViewerStandalone(msaData, uniprotId) {
     if (msaContainer) {
         msaContainer.style.display = 'block';
     }
+    showMSACanvasContainers();
     
     return true;
 }
@@ -2942,11 +3337,13 @@ function initializeMSAViewerIndex() {
         const obj = viewerApi.renderer.objectsData[objectName];
         if (!obj) {
             msaContainer.style.display = 'none';
+            clearMSAViewerState();
             return;
         }
         
         if (!obj.msa) {
             msaContainer.style.display = 'none';
+            clearMSAViewerState();
             return;
         }
         
@@ -2987,9 +3384,13 @@ function initializeMSAViewerIndex() {
             // This ensures the MSA is filtered correctly when switching objects
             // Selection state is already restored by _switchToObject() before this is called
             applySelectionToMSA();
+            
+            // Remap entropy if entropy mode is active (after MSA is loaded)
+            refreshEntropyColors();
         } else {
             // Hide MSA container if no MSA for this object
             msaContainer.style.display = 'none';
+            clearMSAViewerState();
             
         }
     }
@@ -3680,14 +4081,30 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
     if (filteredMSAData) {
         // Clear existing properties to force recomputation on filtered data
         filteredMSAData.frequencies = null;
+        filteredMSAData.entropy = null;
         filteredMSAData.logOdds = null;
         // Compute properties
         computeMSAProperties(filteredMSAData);
         
-        // NOTE: We do NOT overwrite stored msaEntry.msaData with filtered data
-        // The stored msaEntry.msaData remains the canonical unfiltered source
-        // The viewer maintains its own filtered copy internally via setMSAData()
-        // This ensures the original unfiltered MSA data is always available for copying
+        // Update the stored MSA data's entropy so _mapEntropyToStructure can access it
+        // This allows entropy coloring to reflect the filtered MSA
+        if (viewerApi?.renderer && objectName) {
+            const obj = viewerApi.renderer.objectsData[objectName];
+            if (obj && obj.msa && obj.msa.msasBySequence && obj.msa.chainToSequence && chainId) {
+                const querySeq = obj.msa.chainToSequence[chainId];
+                if (querySeq && obj.msa.msasBySequence[querySeq]) {
+                    const msaEntry = obj.msa.msasBySequence[querySeq];
+                    // Update entropy in stored MSA data to reflect filtered values
+                    if (filteredMSAData.entropy) {
+                        msaEntry.msaData.entropy = filteredMSAData.entropy;
+                    }
+                }
+            }
+        }
+        
+        // NOTE: We update entropy in stored msaEntry.msaData to reflect filtered values
+        // The stored msaEntry.msaData.sequences remains the canonical unfiltered source
+        // Only entropy (and frequencies) are updated to reflect current filtering
     }
     
     // Update chain selector
@@ -3700,6 +4117,20 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
     if (window.updateMSASequenceCount) {
         window.updateMSASequenceCount();
     }
+    showMSACanvasContainers();
+    
+    if (objectName) {
+        const { coverageCutoff, identityCutoff } = getCurrentMSAFilters();
+        applyFiltersToAllMSAs(objectName, {
+            coverageCutoff,
+            identityCutoff,
+            activeChainId: chainId,
+            activeFilteredMSAData: filteredMSAData
+        });
+    }
+    
+    // Ensure entropy colors stay in sync when new MSA data is loaded
+    refreshEntropyColors();
 }
 
 /**
@@ -4500,6 +4931,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     const jsonFiles = [];
     const stateFiles = [];
     const msaFiles = [];
+    const contactFiles = [];
 
     // First pass: identify state files and MSA files
     for (const file of files) {
@@ -4519,6 +4951,8 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                    nameLower.endsWith('.fas') || 
                    nameLower.endsWith('.sto')) {
             msaFiles.push(file);
+        } else if (nameLower.endsWith('.cst')) {
+            contactFiles.push(file);
         }
     }
     
@@ -4576,7 +5010,26 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         }
     }
 
-    // Handle MSA-only input (no structure files)
+    // Handle metadata-only uploads (no structure files) - check BEFORE MSA-only
+    if (structureFiles.length === 0) {
+        const hasMetadata = (loadMSA && msaFiles.length > 0) || 
+                           (loadPAE && jsonFiles.length > 0) || 
+                           contactFiles.length > 0;
+        
+        if (hasMetadata) {
+            // Add metadata to existing object
+            const result = await addMetadataToExistingObject({
+                msaFiles: loadMSA ? msaFiles : [],
+                jsonFiles: loadPAE ? jsonFiles : [],
+                contactFiles,
+                loadMSA,
+                loadPAE
+            });
+            return result;
+        }
+    }
+
+    // Handle MSA-only input (no structure files) - for creating new objects from MSA
     if (structureFiles.length === 0 && msaFilesToProcess.length > 0) {
         // Load MSA files directly without structure matching
         const msaDataList = [];
@@ -4812,7 +5265,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         };
     }
 
-    // Continue with normal file processing if no state files
+    // If we get here and still no structure files, throw error
     if (structureFiles.length === 0) {
         throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
     }
@@ -4904,6 +5357,51 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             tempBatch
         );
         overallTotalFramesAdded += framesAdded;
+    }
+
+    // Process contact files and add to objects
+    if (contactFiles.length > 0) {
+        for (const contactFile of contactFiles) {
+            try {
+                const text = await contactFile.readAsync("text");
+                const contacts = parseContactsFile(text);
+                
+                if (contacts.length > 0) {
+                    // Try to match contact file to structure by name
+                    const contactBaseName = contactFile.name.replace(/\.cst$/i, '').toLowerCase();
+                    const matchingObject = tempBatch.find(obj => {
+                        const objNameLower = obj.name.toLowerCase();
+                        return objNameLower.includes(contactBaseName) || 
+                               contactBaseName.includes(objNameLower) ||
+                               structureFiles.some(sf => {
+                                   const sfBase = sf.name.replace(/\.(cif|pdb|ent)$/i, '').toLowerCase();
+                                   return contactBaseName.includes(sfBase) || sfBase.includes(contactBaseName);
+                               });
+                    });
+                    
+                    if (matchingObject) {
+                        // Clear any existing contacts and replace with new ones
+                        if (matchingObject.contacts && matchingObject.contacts.length > 0) {
+                            console.log(`[Contact Processing] Clearing ${matchingObject.contacts.length} existing contact(s) from ${matchingObject.name}`);
+                        }
+                        matchingObject.contacts = contacts;
+                        console.log(`[Contact Processing] Set ${contacts.length} contact(s) on ${matchingObject.name}`);
+                    } else if (tempBatch.length > 0) {
+                        // If no match, add to last object
+                        const lastObject = tempBatch[tempBatch.length - 1];
+                        if (lastObject.contacts && lastObject.contacts.length > 0) {
+                            console.log(`[Contact Processing] Clearing ${lastObject.contacts.length} existing contact(s) from ${lastObject.name}`);
+                        }
+                        lastObject.contacts = contacts;
+                        console.log(`[Contact Processing] Set ${contacts.length} contact(s) on ${lastObject.name}`);
+                    }
+                    
+                    // Note: Cache will be invalidated when updateViewerFromGlobalBatch() processes the object
+                }
+            } catch (e) {
+                console.warn(`Failed to process contacts file ${contactFile.name}:`, e);
+            }
+        }
     }
 
     if (tempBatch.length > 0) batchedObjects.push(...tempBatch);
