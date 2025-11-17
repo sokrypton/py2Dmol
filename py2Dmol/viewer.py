@@ -246,11 +246,15 @@ class view:
 
                 light_frames = []
                 for frame in py_obj["frames"]:
+                    # Skip frames without coords (they're invalid)
+                    if "coords" not in frame or not frame["coords"]:
+                        continue
+                    
                     light_frame = {}
                     if "name" in frame and frame["name"] is not None:
                         light_frame["name"] = frame["name"]
-                    if "coords" in frame:
-                        light_frame["coords"] = frame["coords"]
+                    # Coords are required - we already checked above
+                    light_frame["coords"] = frame["coords"]
                     if "plddts" in frame and frame["plddts"] is not None:
                         light_frame["plddts"] = frame["plddts"]
                     if "pae" in frame and frame["pae"] is not None:
@@ -266,9 +270,13 @@ class view:
                         light_frame["chains"] = frame["chains"]
                     light_frames.append(light_frame)
 
+                # Skip objects with no valid frames
+                if not light_frames:
+                    continue
+
                 # For static data, we still need to provide chains and position_types
-                # for the whole object, but only if they exist in the first frame.
-                first_frame = py_obj["frames"][0]
+                # for the whole object, but only if they exist in the first valid frame.
+                first_frame = light_frames[0]
                 obj_to_serialize = {"name": py_obj.get("name"), "frames": light_frames}
                 if "chains" in first_frame and first_frame["chains"] is not None:
                     obj_to_serialize["chains"] = first_frame["chains"]
@@ -599,10 +607,11 @@ class view:
 
         # --- Step 5: Send message if in "live" mode ---
         if self._is_live:
-            # Include contacts in payload if they exist for this object
+            # Include contacts in payload if they exist for this object and are not None/empty
             payload = data_dict.copy()
-            if "contacts" in self.objects[-1] and self.objects[-1]["contacts"] is not None:
-                payload["contacts"] = self.objects[-1]["contacts"]
+            obj_contacts = self.objects[-1].get("contacts")
+            if obj_contacts is not None and len(obj_contacts) > 0:
+                payload["contacts"] = obj_contacts
             
             self._send_message({
                 "type": "py2DmolUpdate",

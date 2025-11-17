@@ -1153,9 +1153,9 @@ function initializePy2DmolViewer(containerElement) {
             this.depthCheckbox = depthCheckbox;
             this.colorblindCheckbox = colorblindCheckbox;
             this.orthoSlider = orthoSlider;
-            this.lineWidth = parseFloat(this.lineWidthSlider.value); // Read default from slider
-            this.relativeOutlineWidth = parseFloat(this.outlineWidthSlider.value); // Read default from slider
-            this.autoRotate = this.rotationCheckbox.checked; // Read default from checkbox
+            this.lineWidth = this.lineWidthSlider ? parseFloat(this.lineWidthSlider.value) : (this.lineWidth || 3.0); // Read default from slider or use existing/default
+            this.relativeOutlineWidth = this.outlineWidthSlider ? parseFloat(this.outlineWidthSlider.value) : (this.relativeOutlineWidth || 3.0); // Read default from slider or use existing/default
+            this.autoRotate = this.rotationCheckbox ? this.rotationCheckbox.checked : false; // Read default from checkbox
 
             // Bind all event listeners
             this.playButton.addEventListener('click', () => {
@@ -1212,19 +1212,23 @@ function initializePy2DmolViewer(containerElement) {
                 this.spinVelocityY = 0;
             });
 
-            this.lineWidthSlider.addEventListener('input', (e) => {
-                this.lineWidth = parseFloat(e.target.value);
-                if (!this.isPlaying) {
-                    this.render();
-                }
-            });
+            if (this.lineWidthSlider) {
+                this.lineWidthSlider.addEventListener('input', (e) => {
+                    this.lineWidth = parseFloat(e.target.value);
+                    if (!this.isPlaying) {
+                        this.render();
+                    }
+                });
+            }
             
-            this.outlineWidthSlider.addEventListener('input', (e) => {
-                this.relativeOutlineWidth = parseFloat(e.target.value);
-                if (!this.isPlaying) {
-                    this.render();
-                }
-            });
+            if (this.outlineWidthSlider) {
+                this.outlineWidthSlider.addEventListener('input', (e) => {
+                    this.relativeOutlineWidth = parseFloat(e.target.value);
+                    if (!this.isPlaying) {
+                        this.render();
+                    }
+                });
+            }
 
             // Ortho slider: controls perspective/orthographic projection
             // Value range: 0.0 (strongest perspective) to 1.0 (full orthographic)
@@ -1525,7 +1529,7 @@ function initializePy2DmolViewer(containerElement) {
             const newFrameIndex = object.frames.length; // Index of frame we're about to add
             
             // Store contacts if provided in data (object-level)
-            if (data.contacts !== undefined) {
+            if (data.contacts !== undefined && data.contacts !== null) {
                 object.contacts = data.contacts;
             }
             
