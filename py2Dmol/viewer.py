@@ -1,5 +1,6 @@
 import json
 import numpy as np
+import re
 from IPython.display import display, HTML, Javascript
     
 import importlib.resources
@@ -274,6 +275,10 @@ class view:
                 if "position_types" in first_frame and first_frame["position_types"] is not None:
                     obj_to_serialize["position_types"] = first_frame["position_types"]
                 
+                # Add contacts if they exist
+                if "contacts" in py_obj and py_obj["contacts"] is not None and len(py_obj["contacts"]) > 0:
+                    obj_to_serialize["contacts"] = py_obj["contacts"]
+                
                 serialized_objects.append(obj_to_serialize)
 
             data_json = json.dumps(serialized_objects)
@@ -355,6 +360,167 @@ class view:
         self._pae = None
         self._is_live = False
 
+    def _parse_contact_color(self, color_str):
+        """
+        Parse color string to RGB dict.
+        Supports color names, hex codes, and rgba format.
+        
+        Args:
+            color_str (str): Color string (name, hex, or rgba)
+            
+        Returns:
+            dict or None: {"r": int, "g": int, "b": int} or None if invalid
+        """
+        if not color_str or not isinstance(color_str, str):
+            return None
+        
+        color_lower = color_str.lower().strip()
+        
+        # Common color names
+        color_names = {
+            'red': {'r': 255, 'g': 0, 'b': 0},
+            'green': {'r': 0, 'g': 255, 'b': 0},
+            'blue': {'r': 0, 'g': 0, 'b': 255},
+            'yellow': {'r': 255, 'g': 255, 'b': 0},
+            'orange': {'r': 255, 'g': 165, 'b': 0},
+            'purple': {'r': 128, 'g': 0, 'b': 128},
+            'cyan': {'r': 0, 'g': 255, 'b': 255},
+            'magenta': {'r': 255, 'g': 0, 'b': 255},
+            'pink': {'r': 255, 'g': 192, 'b': 203},
+            'brown': {'r': 165, 'g': 42, 'b': 42},
+            'black': {'r': 0, 'g': 0, 'b': 0},
+            'white': {'r': 255, 'g': 255, 'b': 255},
+            'gray': {'r': 128, 'g': 128, 'b': 128},
+            'grey': {'r': 128, 'g': 128, 'b': 128}
+        }
+        
+        if color_lower in color_names:
+            return color_names[color_lower]
+        
+        # Hex color (#ff0000 or ff0000)
+        if color_str.startswith('#') or (len(color_str) == 6 and all(c in '0123456789abcdefABCDEF' for c in color_str)):
+            hex_str = color_str[1:] if color_str.startswith('#') else color_str
+            if len(hex_str) == 6:
+                try:
+                    r = int(hex_str[0:2], 16)
+                    g = int(hex_str[2:4], 16)
+                    b = int(hex_str[4:6], 16)
+                    return {'r': r, 'g': g, 'b': b}
+                except ValueError:
+                    return None
+        
+        # RGBA format: rgba(255, 0, 0, 0.8) or rgb(255, 0, 0)
+        rgba_match = re.match(r'rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)', color_str)
+        if rgba_match:
+            try:
+                r = int(rgba_match.group(1))
+                g = int(rgba_match.group(2))
+                b = int(rgba_match.group(3))
+                return {'r': r, 'g': g, 'b': b}
+            except (ValueError, IndexError):
+                return None
+        
+        return None
+
+    def _parse_contacts_file(self, filepath):
+        """
+        Parse .cst contact file.
+        
+        Args:
+            filepath (str): Path to .cst file
+            
+        Returns:
+            list: List of contact arrays
+        """
+        contacts = []
+        try:
+            with open(filepath, 'r') as f:
+                lines = f.readlines()
+            
+            for line in lines:
+                trimmed = line.strip()
+                # Skip empty lines and comment lines (starting with #)
+                if not trimmed or trimmed.startswith('#'):
+                    continue
+                
+                parts = trimmed.split()
+                
+                # Position indices format: "10 50 1.0" or "10 50 1.0 red" (weight is required)
+                if len(parts) >= 3:
+                    try:
+                        idx1 = int(parts[0])
+                        idx2 = int(parts[1])
+                        weight = float(parts[2])
+                        
+                        if weight > 0:
+                            contact = [idx1, idx2, weight]
+                            # Optional color (4th part and beyond)
+                            if len(parts) >= 4:
+                                color_str = ' '.join(parts[3:])  # Join in case color has spaces
+                                color = self._parse_contact_color(color_str)
+                                if color:
+                                    contact.append(color)
+                            contacts.append(contact)
+                            continue
+                    except (ValueError, IndexError):
+                        pass
+                
+                # Chain + residue format: "A 10 B 50 0.5" or "A 10 B 50 0.5 yellow" (weight is required)
+                if len(parts) >= 5:
+                    try:
+                        chain1 = parts[0]
+                        res1 = int(parts[1])
+                        chain2 = parts[2]
+                        res2 = int(parts[3])
+                        weight = float(parts[4])
+                        
+                        if weight > 0:
+                            contact = [chain1, res1, chain2, res2, weight]
+                            # Optional color (6th part and beyond)
+                            if len(parts) >= 6:
+                                color_str = ' '.join(parts[5:])  # Join in case color has spaces
+                                color = self._parse_contact_color(color_str)
+                                if color:
+                                    contact.append(color)
+                            contacts.append(contact)
+                    except (ValueError, IndexError):
+                        pass
+        except Exception as e:
+            print(f"Error parsing contacts file '{filepath}': {e}")
+            return []
+        
+        return contacts
+
+    def _process_contacts(self, contacts):
+        """
+        Process contacts input (filepath string or list of lists).
+        
+        Args:
+            contacts: Either a filepath (str) or list of contact arrays
+            
+        Returns:
+            list: List of contact arrays, or None if invalid
+        """
+        if contacts is None:
+            return None
+        
+        if isinstance(contacts, str):
+            # Filepath - parse it
+            return self._parse_contacts_file(contacts)
+        elif isinstance(contacts, list):
+            # List of contacts - validate and return
+            # Basic validation: check that each contact is a list
+            validated = []
+            for contact in contacts:
+                if isinstance(contact, list) and len(contact) >= 3:
+                    validated.append(contact)
+                else:
+                    print(f"Warning: Skipping invalid contact: {contact}")
+            return validated if validated else None
+        else:
+            print(f"Error: contacts must be a filepath (str) or list of lists, got {type(contacts)}")
+            return None
+
     def new_obj(self, name=None):
         """Starts a new object for subsequent 'add' calls."""
         
@@ -372,7 +538,8 @@ class view:
         self._current_object_data = [] # List to hold frames
         self.objects.append({
             "name": name,
-            "frames": self._current_object_data
+            "frames": self._current_object_data,
+            "contacts": None  # Initialize contacts as None
         })
         
         # Send message *only if* in dynamic/hybrid mode and already displayed
@@ -383,7 +550,7 @@ class view:
             })
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None,
-            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None):
+            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None):
         """
         Adds a new *frame* of data to the viewer.
         
@@ -401,6 +568,7 @@ class view:
             residue_numbers (list, optional): N-length list of PDB residue sequence numbers (resSeq).
                                               One per position. For ligands, multiple positions may share the same residue number.
             atom_types (list, optional): Backward compatibility alias for position_types (deprecated).
+            contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
         """
         
         # --- Step 1: Update Python-side alignment state ---
@@ -423,16 +591,27 @@ class view:
         # --- Step 3: Always save data to Python list ---
         self._current_object_data.append(data_dict)
 
-        # --- Step 4: Send message if in "live" mode ---
+        # --- Step 4: Process contacts if provided ---
+        if contacts is not None:
+            processed_contacts = self._process_contacts(contacts)
+            if processed_contacts is not None:
+                self.objects[-1]["contacts"] = processed_contacts
+
+        # --- Step 5: Send message if in "live" mode ---
         if self._is_live:
+            # Include contacts in payload if they exist for this object
+            payload = data_dict.copy()
+            if "contacts" in self.objects[-1] and self.objects[-1]["contacts"] is not None:
+                payload["contacts"] = self.objects[-1]["contacts"]
+            
             self._send_message({
                 "type": "py2DmolUpdate",
                 "name": self.objects[-1]["name"],
-                "payload": data_dict
+                "payload": payload
             })
 
 
-    def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
+    def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -450,6 +629,7 @@ class view:
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
+            contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
         """
         
         # --- Handle new_obj logic FIRST ---
@@ -457,6 +637,12 @@ class view:
              self.new_obj(name)
         
         current_obj_name = self.objects[-1]["name"]
+        
+        # --- Process contacts if provided ---
+        if contacts is not None:
+            processed_contacts = self._process_contacts(contacts)
+            if processed_contacts is not None:
+                self.objects[-1]["contacts"] = processed_contacts
 
         # --- Load structure ---
         try:
@@ -596,6 +782,53 @@ class view:
                                     position_names.append(residue.name)
                                     residue_numbers.append(residue.seqid.num)
         return coords, plddts, position_chains, position_types, position_names, residue_numbers
+
+    def add_contacts(self, contacts, name=None):
+        """
+        Add contact restraints to an object.
+        
+        Args:
+            contacts: Either a filepath (str) to a .cst file, or a list of contact arrays.
+                     Contact arrays can be:
+                     - Position indices: [idx1, idx2, weight, color?]
+                     - Chain+residue: [chain1, res1, chain2, res2, weight, color?]
+            name (str, optional): Name of the object to add contacts to.
+                                 If None, adds to the last (most recently added) object.
+        
+        Examples:
+            # Load from file
+            viewer.add_contacts("contacts.cst")
+            viewer.add_contacts("contacts.cst", name="protein1")
+            
+            # Set programmatically
+            contacts = [[10, 50, 1.0], ["A", 10, "B", 50, 0.5, {"r": 255, "g": 0, "b": 0}]]
+            viewer.add_contacts(contacts)
+        """
+        processed_contacts = self._process_contacts(contacts)
+        if processed_contacts is None:
+            print("Warning: No valid contacts to add.")
+            return
+        
+        # Find target object
+        if name is None:
+            # Add to last object
+            if not self.objects:
+                print("Error: No objects available. Add a structure first.")
+                return
+            target_obj = self.objects[-1]
+        else:
+            # Find object by name
+            target_obj = None
+            for obj in self.objects:
+                if obj.get("name") == name:
+                    target_obj = obj
+                    break
+            if target_obj is None:
+                print(f"Error: Object '{name}' not found.")
+                return
+        
+        # Store contacts (replace existing)
+        target_obj["contacts"] = processed_contacts
 
     def _get_filepath_from_pdb_id(self, pdb_id):
         """
@@ -903,6 +1136,10 @@ class view:
             # Add redundant fields to object level (only if detected)
             obj_to_serialize.update(redundant_fields)
             
+            # Add contacts if they exist
+            if "contacts" in obj and obj["contacts"] is not None and len(obj["contacts"]) > 0:
+                obj_to_serialize["contacts"] = obj["contacts"]
+            
             objects.append(obj_to_serialize)
         
         # Get viewer state (limited - Python doesn't have access to all JS state)
@@ -993,6 +1230,11 @@ class view:
                         position_names=position_names,
                         residue_numbers=residue_numbers
                     )
+                
+                # Restore contacts data if present
+                if "contacts" in obj_data and obj_data["contacts"] is not None:
+                    if isinstance(obj_data["contacts"], list) and len(obj_data["contacts"]) > 0:
+                        self.objects[-1]["contacts"] = obj_data["contacts"]
         
         # Restore viewer config from state (if available)
         if "viewer_state" in state_data:

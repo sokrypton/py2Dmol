@@ -177,6 +177,102 @@ for frame in range(60):
 
 ---
 
+## Contact Restraints
+
+You can visualize contact restraints (e.g., from experimental data or predictions) as colored lines connecting specific residues in your structure.
+
+### Contact File Format (`.cst`)
+
+Contact files support two formats:
+
+1. **Position indices** (zero-based): `idx1 idx2 weight [color]`
+2. **Chain + residue**: `chain1 res1 chain2 res2 weight [color]`
+
+Lines starting with `#` are treated as comments and ignored.
+
+**Examples:**
+```
+# Contact file example
+10 50 1.0
+20 60 0.5 red
+A 10 B 50 1.0 yellow
+A 20 B 60 0.8 #3b82f6
+```
+
+- **Weight**: Required float value (defaults to 1.0). Controls the line width of the contact.
+- **Color**: Optional. Can be:
+  - Color name: `red`, `yellow`, `blue`, etc.
+  - Hex code: `#3b82f6`, `#ff0000`
+  - RGB: `rgb(255, 0, 0)`
+  - Default: Yellow if not specified
+
+### Adding Contacts
+
+#### Method 1: Using `add_contacts()`
+
+Add contacts to the most recently added object:
+
+```python
+viewer = py2Dmol.view()
+viewer.add_pdb('structure.pdb')
+viewer.add_contacts('contacts.cst')  # Adds to last object
+viewer.show()
+```
+
+Add contacts to a specific named object:
+
+```python
+viewer.new_obj("protein1")
+viewer.add_pdb('protein1.pdb')
+viewer.new_obj("protein2")
+viewer.add_pdb('protein2.pdb')
+viewer.add_contacts('contacts.cst', name="protein1")  # Adds to protein1
+viewer.show()
+```
+
+Add contacts programmatically:
+
+```python
+contacts = [
+    [10, 50, 1.0],  # Position indices: idx1, idx2, weight
+    ["A", 10, "B", 50, 0.5, {"r": 255, "g": 0, "b": 0}]  # Chain format with color
+]
+viewer.add_contacts(contacts)
+viewer.show()
+```
+
+#### Method 2: Using `contacts` Parameter
+
+Add contacts when loading a structure:
+
+```python
+viewer = py2Dmol.view()
+viewer.add_pdb('structure.pdb', contacts='contacts.cst')
+viewer.show()
+```
+
+Add contacts when adding coordinates:
+
+```python
+viewer = py2Dmol.view()
+viewer.add(coords, plddts, chains, types, contacts='contacts.cst')
+viewer.show()
+```
+
+### Example: Visualizing Predicted Contacts
+
+```python
+import py2Dmol
+
+viewer = py2Dmol.view()
+viewer.add_pdb('predicted_structure.pdb', contacts='predicted_contacts.cst')
+viewer.show()
+```
+
+Contacts will appear as colored lines connecting the specified residues, with line width proportional to the weight value.
+
+---
+
 ### Example: Mixed Structure (Protein, DNA, Ligand)
 
 You can manually add coordinates for different molecule types (P, D, R, L).
