@@ -1376,6 +1376,11 @@ function initializePy2DmolViewer(containerElement) {
             // Switch to new object
             this.currentObjectName = newObjectName;
             
+            // Invalidate segment cache to ensure contacts and other object-specific data are regenerated
+            this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesFrame = -1;
+            this.cachedSegmentIndicesObjectName = null;
+            
             // Ensure object has selectionState initialized
             if (!this.objectsData[newObjectName]) {
                 this.objectsData[newObjectName] = {};
@@ -3238,7 +3243,7 @@ function initializePy2DmolViewer(containerElement) {
             // Add contact segments from object-level contacts
             if (this.currentObjectName) {
                 const object = this.objectsData[this.currentObjectName];
-                if (object && object.contacts && Array.isArray(object.contacts)) {
+                if (object && object.contacts && Array.isArray(object.contacts) && object.contacts.length > 0) {
                     for (const contact of object.contacts) {
                         const resolved = this._resolveContactToIndices(contact, n);
                         
@@ -3259,7 +3264,9 @@ function initializePy2DmolViewer(containerElement) {
                                 type: 'C',
                                 len: totalDist,
                                 contactIdx1: resolved.idx1,
-                                contactIdx2: resolved.idx2
+                                contactIdx2: resolved.idx2,
+                                contactWeight: resolved.weight || 1.0,
+                                contactColor: resolved.color || null
                             });
                         }
                     }
@@ -3612,9 +3619,12 @@ function initializePy2DmolViewer(containerElement) {
 
             // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
             return this.segmentIndices.map(segInfo => {
-                // Contacts always bright red, regardless of color mode (no pastel applied)
+                // Contacts use custom color if provided, otherwise yellow (no pastel applied)
                 if (segInfo.type === 'C') {
-                    return { r: 255, g: 0, b: 0 }; // Bright red
+                    if (segInfo.contactColor) {
+                        return segInfo.contactColor; // Use custom color from contact file
+                    }
+                    return { r: 255, g: 255, b: 0 }; // Default yellow
                 }
                 
                 const positionIndex = segInfo.origIndex;
@@ -3635,9 +3645,13 @@ function initializePy2DmolViewer(containerElement) {
             for (let i = 0; i < m; i++) {
                 const segInfo = this.segmentIndices[i];
                 
-                // Contacts always bright red, regardless of color mode (no pastel applied)
+                // Contacts use custom color if provided, otherwise yellow (no pastel applied)
                 if (segInfo.type === 'C') {
-                    colors[i] = { r: 255, g: 0, b: 0 }; // Bright red
+                    if (segInfo.contactColor) {
+                        colors[i] = segInfo.contactColor; // Use custom color from contact file
+                    } else {
+                        colors[i] = { r: 255, g: 255, b: 0 }; // Default yellow
+                    }
                     continue;
                 }
                 
@@ -3693,18 +3707,30 @@ function initializePy2DmolViewer(containerElement) {
 
         /**
          * Resolves contact specification to position indices.
-         * @param {Array} contact - Contact specification: [idx1, idx2] or [chain1, res1, chain2, res2]
-         * @returns {{idx1: number, idx2: number}|null} Resolved indices or null if invalid
+         * @param {Array} contact - Contact specification: [idx1, idx2, weight, color?] or [chain1, res1, chain2, res2, weight, color?]
+         * @returns {{idx1: number, idx2: number, weight: number, color: {r: number, g: number, b: number}|null}|null} Resolved indices, weight, and color or null if invalid
          */
         _resolveContactToIndices(contact, maxIndex = null) {
             if (!contact || !Array.isArray(contact)) return null;
             
-            if (contact.length === 2 && typeof contact[0] === 'number' && typeof contact[1] === 'number') {
-                // Direct indices: [idx1, idx2]
-                return { idx1: contact[0], idx2: contact[1] };
-            } else if (contact.length === 4) {
-                // Chain + residue format: [chain1, res1, chain2, res2]
+            // Extract weight and color
+            let weight = 1.0;
+            let color = null;
+            
+            if (contact.length >= 3 && typeof contact[0] === 'number' && typeof contact[1] === 'number') {
+                // Direct indices format: [idx1, idx2, weight, color?]
+                weight = typeof contact[2] === 'number' ? contact[2] : 1.0;
+                if (contact.length >= 4 && typeof contact[3] === 'object' && contact[3] !== null) {
+                    color = contact[3]; // Color object {r, g, b}
+                }
+                return { idx1: contact[0], idx2: contact[1], weight: weight, color: color };
+            } else if (contact.length >= 5 && typeof contact[0] === 'string') {
+                // Chain + residue format: [chain1, res1, chain2, res2, weight, color?]
                 const [chain1, res1, chain2, res2] = contact;
+                weight = typeof contact[4] === 'number' ? contact[4] : 1.0;
+                if (contact.length >= 6 && typeof contact[5] === 'object' && contact[5] !== null) {
+                    color = contact[5]; // Color object {r, g, b}
+                }
                 
                 // Find position indices matching chain+residue
                 // Only search in original structure positions (before intermediate positions were added)
@@ -3760,7 +3786,7 @@ function initializePy2DmolViewer(containerElement) {
                     return null;
                 }
                 
-                return { idx1, idx2 };
+                return { idx1, idx2, weight: weight, color: color };
             }
             
             console.warn(`Invalid contact format:`, contact);
@@ -3794,7 +3820,14 @@ function initializePy2DmolViewer(containerElement) {
             
             // Use cached width multiplier for this type (O(1) lookup)
             const type = segInfo.type;
-            return this.typeWidthMultipliers?.[type] ?? this._calculateTypeWidthMultiplier(type);
+            const baseMultiplier = this.typeWidthMultipliers?.[type] ?? this._calculateTypeWidthMultiplier(type);
+            
+            // For contacts, apply weight multiplier if available
+            if (type === 'C' && segInfo.contactWeight !== undefined) {
+                return baseMultiplier * segInfo.contactWeight;
+            }
+            
+            return baseMultiplier;
         }
 
         // Helper function for shadow calculation

@@ -42,7 +42,10 @@ const DEFAULT_MSA_IDENTITY = 0.15;
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
-    initializeApp();
+    setupReadmeToggle();
+    if (document.getElementById('viewer-container')) {
+        initializeApp();
+    }
 });
 
 function initializeApp() {
@@ -128,6 +131,156 @@ function initializeApp() {
         paeCanvas.style.display = 'none';
     }
     setStatus("Ready. Upload a file or fetch an ID.");
+}
+
+function escapeHtml(text) {
+    if (typeof text !== 'string') return '';
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function convertMarkdownLinks(text) {
+    // Convert markdown links [text](url) to HTML links
+    return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+        const isExternal = url.startsWith('http://') || url.startsWith('https://');
+        const target = isExternal ? ' target="_blank" rel="noopener noreferrer"' : '';
+        return `<a href="${escapeHtml(url)}"${target} style="color: #3b82f6;">${escapeHtml(linkText)}</a>`;
+    });
+}
+
+function convertMarkdownToHtml(markdown) {
+    if (typeof markdown !== 'string') return '';
+    const lines = markdown.split('\n');
+    let html = '';
+    let inList = false;
+
+    const closeList = () => {
+        if (inList) {
+            html += '</ul>';
+            inList = false;
+        }
+    };
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+            closeList();
+            continue;
+        }
+
+        if (line.startsWith('### ')) {
+            closeList();
+            const content = convertMarkdownLinks(line.slice(4).trim());
+            html += `<h4>${content}</h4>`;
+            continue;
+        }
+        if (line.startsWith('## ')) {
+            closeList();
+            const content = convertMarkdownLinks(line.slice(3).trim());
+            html += `<h3>${content}</h3>`;
+            continue;
+        }
+        if (line.startsWith('# ')) {
+            closeList();
+            const content = convertMarkdownLinks(line.slice(2).trim());
+            html += `<h2>${content}</h2>`;
+            continue;
+        }
+        if (line.startsWith('- ')) {
+            if (!inList) {
+                html += '<ul>';
+                inList = true;
+            }
+            const content = convertMarkdownLinks(line.slice(2).trim());
+            html += `<li>${content}</li>`;
+            continue;
+        }
+
+        closeList();
+        const content = convertMarkdownLinks(line);
+        html += `<p>${content}</p>`;
+    }
+
+    closeList();
+    return html;
+}
+
+function setupReadmeToggle() {
+    const readmeSection = document.getElementById('readmeSection');
+    if (!readmeSection) return;
+
+    const openButtons = document.querySelectorAll('[data-readme-toggle="open"]');
+    const closeButton = readmeSection.querySelector('[data-readme-toggle="close"]');
+    const contentEl = document.getElementById('readmeContent');
+    const statusEl = document.getElementById('readmeStatus');
+
+    let readmeLoaded = false;
+    let loading = false;
+
+    async function loadReadme() {
+        if (readmeLoaded || loading) return;
+        loading = true;
+        if (statusEl) {
+            statusEl.textContent = 'Loading README...';
+            statusEl.classList.remove('hidden');
+        }
+        try {
+            // Detect which page we're on to load the appropriate README
+            const isMSAPage = document.getElementById('fetch-uniprot-id') !== null;
+            const readmeFile = isMSAPage ? 'MSA_README.md' : 'MAIN_README.md';
+            
+            const response = await fetch(readmeFile, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`Failed to fetch README (status ${response.status})`);
+            }
+            const markdown = await response.text();
+            if (contentEl) {
+                contentEl.innerHTML = convertMarkdownToHtml(markdown);
+            }
+            readmeLoaded = true;
+            if (statusEl) {
+                statusEl.textContent = '';
+                statusEl.classList.add('hidden');
+            }
+        } catch (error) {
+            console.error('Failed to load README:', error);
+            if (statusEl) {
+                statusEl.textContent = 'Unable to load README. Use the GitHub link above as a fallback.';
+                statusEl.classList.remove('hidden');
+            }
+        } finally {
+            loading = false;
+        }
+    }
+
+    function showReadme() {
+        readmeSection.classList.remove('hidden');
+        readmeSection.setAttribute('aria-hidden', 'false');
+        loadReadme();
+    }
+
+    function hideReadme() {
+        readmeSection.classList.add('hidden');
+        readmeSection.setAttribute('aria-hidden', 'true');
+    }
+
+    openButtons.forEach(button => {
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            showReadme();
+        });
+    });
+
+    if (closeButton) {
+        closeButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            hideReadme();
+        });
+    }
 }
 
 function refreshEntropyColors() {
@@ -1277,31 +1430,114 @@ function animateRotation() {
 // Using unified functions: extractBiounitOperations, applyBiounitOperationsToAtoms
 
 
+/**
+ * Convert color name or hex/rgba string to RGB object
+ * @param {string} colorStr - Color string (name, hex, or rgba)
+ * @returns {{r: number, g: number, b: number}|null} RGB object or null if invalid
+ */
+function parseContactColor(colorStr) {
+    if (!colorStr || typeof colorStr !== 'string') return null;
+    
+    const colorLower = colorStr.toLowerCase().trim();
+    
+    // Common color names
+    const colorNames = {
+        'red': { r: 255, g: 0, b: 0 },
+        'green': { r: 0, g: 255, b: 0 },
+        'blue': { r: 0, g: 0, b: 255 },
+        'yellow': { r: 255, g: 255, b: 0 },
+        'orange': { r: 255, g: 165, b: 0 },
+        'purple': { r: 128, g: 0, b: 128 },
+        'cyan': { r: 0, g: 255, b: 255 },
+        'magenta': { r: 255, g: 0, b: 255 },
+        'pink': { r: 255, g: 192, b: 203 },
+        'brown': { r: 165, g: 42, b: 42 },
+        'black': { r: 0, g: 0, b: 0 },
+        'white': { r: 255, g: 255, b: 255 },
+        'gray': { r: 128, g: 128, b: 128 },
+        'grey': { r: 128, g: 128, b: 128 }
+    };
+    
+    if (colorNames[colorLower]) {
+        return colorNames[colorLower];
+    }
+    
+    // Hex color (#ff0000 or ff0000)
+    if (colorStr.startsWith('#') || /^[0-9a-fA-F]{6}$/.test(colorStr)) {
+        const hex = colorStr.startsWith('#') ? colorStr.slice(1) : colorStr;
+        if (hex.length === 6) {
+            const r = parseInt(hex.slice(0, 2), 16);
+            const g = parseInt(hex.slice(2, 4), 16);
+            const b = parseInt(hex.slice(4, 6), 16);
+            if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+                return { r, g, b };
+            }
+        }
+    }
+    
+    // RGBA format: rgba(255, 0, 0, 0.8) or rgb(255, 0, 0)
+    const rgbaMatch = colorStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/);
+    if (rgbaMatch) {
+        const r = parseInt(rgbaMatch[1], 10);
+        const g = parseInt(rgbaMatch[2], 10);
+        const b = parseInt(rgbaMatch[3], 10);
+        if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+            return { r, g, b };
+        }
+    }
+    
+    return null;
+}
+
 function parseContactsFile(text) {
     const contacts = [];
     const lines = text.split('\n');
     
     for (const line of lines) {
         const trimmed = line.trim();
+        // Skip empty lines and comment lines (starting with #)
         if (!trimmed || trimmed.startsWith('#')) continue;
         
         const parts = trimmed.split(/\s+/);
         
-        if (parts.length === 2) {
-            // Position indices: "10 50"
+        // Position indices format: "10 50 1.0" or "10 50 1.0 red" (weight is required)
+        if (parts.length >= 3) {
             const idx1 = parseInt(parts[0], 10);
             const idx2 = parseInt(parts[1], 10);
-            if (!isNaN(idx1) && !isNaN(idx2)) {
-                contacts.push([idx1, idx2]);
+            const weight = parseFloat(parts[2]);
+            
+            if (!isNaN(idx1) && !isNaN(idx2) && !isNaN(weight) && weight > 0) {
+                const contact = [idx1, idx2, weight];
+                // Optional color (4th part)
+                if (parts.length >= 4) {
+                    const color = parseContactColor(parts.slice(3).join(' ')); // Join in case color has spaces
+                    if (color) {
+                        contact.push(color);
+                    }
+                }
+                contacts.push(contact);
+                continue;
             }
-        } else if (parts.length === 4) {
-            // Chain + residue: "A 10 B 50"
+        }
+        
+        // Chain + residue format: "A 10 B 50 0.5" or "A 10 B 50 0.5 yellow" (weight is required)
+        if (parts.length >= 5) {
             const chain1 = parts[0];
             const res1 = parseInt(parts[1], 10);
             const chain2 = parts[2];
             const res2 = parseInt(parts[3], 10);
-            if (!isNaN(res1) && !isNaN(res2)) {
-                contacts.push([chain1, res1, chain2, res2]);
+            const weight = parseFloat(parts[4]);
+            
+            if (!isNaN(res1) && !isNaN(res2) && !isNaN(weight) && weight > 0) {
+                const contact = [chain1, res1, chain2, res2, weight];
+                // Optional color (6th part)
+                if (parts.length >= 6) {
+                    const color = parseContactColor(parts.slice(5).join(' ')); // Join in case color has spaces
+                    if (color) {
+                        contact.push(color);
+                    }
+                }
+                contacts.push(contact);
             }
         }
     }
@@ -1402,37 +1638,24 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
     
     // Process contact files
     if (contactFiles.length > 0) {
-        console.log('[Contact File Processing] Processing', contactFiles.length, 'contact file(s)');
         for (const contactFile of contactFiles) {
             try {
-                console.log('[Contact File Processing] Reading file:', contactFile.name);
                 const text = await contactFile.readAsync("text");
-                console.log('[Contact File Processing] File content (first 200 chars):', text.substring(0, 200));
                 const contacts = parseContactsFile(text);
-                console.log('[Contact File Processing] Parsed', contacts.length, 'contact(s):', contacts);
                 
                 if (contacts.length > 0) {
-                    console.log('[Contact File Processing] Setting contacts on object:', currentObjectName);
                     // Clear any existing contacts and replace with new ones
-                    if (object.contacts && object.contacts.length > 0) {
-                        console.log('[Contact File Processing] Clearing', object.contacts.length, 'existing contact(s)');
-                    }
                     object.contacts = contacts;
-                    console.log('[Contact File Processing] Object contacts now:', object.contacts.length, 'contact(s)');
                     // Invalidate segment cache so contacts are regenerated
                     renderer.cachedSegmentIndices = null;
-                    console.log('[Contact File Processing] Invalidated segment cache, current frame:', renderer.currentFrame);
                     const currentFrame = renderer.currentFrame;
                     renderer.setFrame(currentFrame);
-                    console.log('[Contact File Processing] Called setFrame, object data:', renderer.objectsData[currentObjectName]?.contacts);
                     metadataAdded.push(`${contacts.length} contact(s) from ${contactFile.name}`);
                 } else {
-                    const errorMsg = `Warning: No valid contacts found in ${contactFile.name}. Expected format: "0 30" or "A 10 B 50" (one per line).`;
-                    console.warn('[Contact File Processing]', errorMsg);
+                    const errorMsg = `Warning: No valid contacts found in ${contactFile.name}. Expected format: "0 30 1.0" or "A 10 B 50 0.5" (weight required). Optional color: "0 30 1.0 red" or "A 10 B 50 0.5 yellow". Lines starting with # are comments.`;
                     setStatus(errorMsg, true);
                 }
             } catch (e) {
-                console.error(`[Contact File Processing] Failed to process contacts file ${contactFile.name}:`, e);
                 setStatus(`Error processing contacts file ${contactFile.name}: ${e.message}`, true);
             }
         }
@@ -4945,236 +5168,12 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         }
     }
 
-    // Handle MSA-only input (no structure files) - for creating new objects from MSA
+    // Handle MSA-only input (no structure files)
     if (structureFiles.length === 0 && msaFilesToProcess.length > 0) {
-        // Load MSA files directly without structure matching
-        const msaDataList = [];
-        
-        for (const msaFile of msaFilesToProcess) {
-            try {
-                const msaText = await msaFile.readAsync("text");
-                const fileName = msaFile.name.toLowerCase();
-                const isA3M = fileName.endsWith('.a3m');
-                const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
-                const isSTO = fileName.endsWith('.sto');
-                
-                if (!isA3M && !isFasta && !isSTO) {
-                    continue; // Skip unsupported MSA formats
-                }
-                
-                let msaData = null;
-                
-                if (isA3M && window.MSAViewer && window.MSAViewer.parseA3M) {
-                    msaData = window.MSAViewer.parseA3M(msaText);
-                } else if (isFasta && window.MSAViewer && window.MSAViewer.parseFasta) {
-                    msaData = window.MSAViewer.parseFasta(msaText);
-                } else if (isSTO && window.MSAViewer && window.MSAViewer.parseSTO) {
-                    msaData = window.MSAViewer.parseSTO(msaText);
-                }
-                
-                if (!msaData) {
-                    console.error(`Failed to parse MSA file ${msaFile.name}: parser returned null`);
-                    setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: No sequences found`, true);
-                } else if (!msaData.querySequence) {
-                    console.error(`Failed to parse MSA file ${msaFile.name}: No query sequence found`, msaData);
-                    setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: No query sequence found`, true);
-                } else if (msaData.querySequence.length === 0) {
-                    console.error(`Failed to parse MSA file ${msaFile.name}: Query sequence is empty`, msaData);
-                    setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: Query sequence is empty`, true);
-                } else {
-                    msaDataList.push({ msaData, filename: msaFile.name });
-                }
-            } catch (e) {
-                console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
-                setStatus(`Warning: Failed to parse MSA file ${msaFile.name}: ${e.message}`, true);
-            }
-        }
-        
-        if (msaDataList.length > 0) {
-            // Load the first MSA into the viewer
-            const firstMSA = msaDataList[0];
-            if (window.MSAViewer) {
-                // Get the first sequence from MSA (removing gaps)
-                // Use sequencesOriginal if available (preserves original order), otherwise use sequences
-                // sequences array might be sorted, so sequences[0] might not be the actual first sequence
-                let firstSequence = '';
-                const sequencesArray = firstMSA.msaData.sequencesOriginal || firstMSA.msaData.sequences;
-                
-                if (sequencesArray && sequencesArray.length > 0) {
-                    // Get the first sequence in original order and remove gaps
-                    // This is the actual first sequence in the MSA file
-                    const firstSeqWithGaps = sequencesArray[0].sequence;
-                    if (firstSeqWithGaps) {
-                        firstSequence = firstSeqWithGaps.replace(/-/g, '').toUpperCase();
-                    }
-                }
-                
-                // Fallback to querySequence if sequences array is empty or firstSequence is still empty
-                if (!firstSequence || firstSequence.length === 0) {
-                    if (firstMSA.msaData.querySequence) {
-                        // Query sequence has no gaps (removed during parsing)
-                        firstSequence = firstMSA.msaData.querySequence.toUpperCase();
-                    }
-                }
-                
-                // Ensure we have a valid sequence
-                if (!firstSequence || firstSequence.length === 0) {
-                    setStatus('Error: Could not extract sequence from MSA', true);
-                    return {
-                        objectsLoaded: 0,
-                        framesAdded: 0,
-                        structureCount: 0,
-                        paePairedCount: 0,
-                        isTrajectory: false
-                    };
-                }
-                
-                // Create object name from MSA filename
-                const objectName = cleanObjectName(firstMSA.filename.replace(/\.(a3m|fasta|fa|fas|sto)$/i, ''));
-                
-                // Create helix structure for MSA-only uploads
-                // ESMFold API support is available in app-esmfold.js (currently disabled)
-                if (viewerApi && viewerApi.renderer && firstSequence.length > 0) {
-                    // Map 1-letter codes to 3-letter codes
-                    const oneToThree = {
-                        'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS', 'E': 'GLU', 'Q': 'GLN', 'G': 'GLY',
-                        'H': 'HIS', 'I': 'ILE', 'L': 'LEU', 'K': 'LYS', 'M': 'MET', 'F': 'PHE', 'P': 'PRO', 'S': 'SER',
-                        'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL', 'U': 'SEC', 'O': 'PYL', 'X': 'UNK'
-                    };
-                    
-                    // Convert sequence to position data
-                    const n = firstSequence.length;
-                    const coords = [];
-                    const plddts = [];
-                    const positionNames = [];
-                    const chains = [];
-                    const residueNumbers = [];
-                    const positionTypes = [];
-                    
-                    // Create dummy coordinates in 3D space (helix structure)
-                    // Using the helix function from README: radius=2.3, rise=1.5, rotation=100
-                    // This ensures rainbow coloring and other 3D-dependent features work correctly
-                    const radius = 2.3; // Helix radius (from README)
-                    const rise = 1.5; // Rise per residue along helix axis (from README)
-                    const rotation = 100; // Degrees per residue (from README)
-                    const rotationRad = rotation * (Math.PI / 180); // Convert to radians
-                    
-                    for (let i = 0; i < n; i++) {
-                        const aa = firstSequence[i];
-                        const threeLetter = oneToThree[aa] || 'UNK';
-                        
-                        // Create helix coordinates following README formula
-                        // angles = rotation * (π/180) * i
-                        const angle = rotationRad * i;
-                        const x = radius * Math.cos(angle);
-                        const y = radius * Math.sin(angle);
-                        const z = rise * i;
-                        
-                        // Use nested array format [[x, y, z], [x, y, z], ...] to match convertParsedToFrameData
-                        coords.push([x, y, z]);
-                        plddts.push(80.0); // Default pLDDT value
-                        positionNames.push(threeLetter);
-                        chains.push('A');
-                        residueNumbers.push(i + 1);
-                        positionTypes.push('P'); // Protein
-                    }
-                    
-                    // Create frame data matching convertParsedToFrameData structure
-                    const frameData = {
-                        coords: coords, // Nested arrays [[x, y, z], ...]
-                        plddts: plddts, // Array of pLDDT values
-                        position_names: positionNames,
-                        chains: chains,
-                        residue_numbers: residueNumbers,
-                        position_types: positionTypes
-                    };
-                    
-                    // Add frame to renderer
-                    viewerApi.renderer.addFrame(frameData, objectName);
-                    
-                    // Set as current object
-                    viewerApi.renderer.currentObjectName = objectName;
-                    
-                    // Update object selector if it exists
-                    if (viewerApi.renderer.objectSelect) {
-                        let optionExists = false;
-                        for (let i = 0; i < viewerApi.renderer.objectSelect.options.length; i++) {
-                            if (viewerApi.renderer.objectSelect.options[i].value === objectName) {
-                                optionExists = true;
-                                break;
-                            }
-                        }
-                        if (!optionExists) {
-                            const option = document.createElement('option');
-                            option.value = objectName;
-                            option.textContent = objectName;
-                            viewerApi.renderer.objectSelect.appendChild(option);
-                        }
-                        viewerApi.renderer.objectSelect.value = objectName;
-                    }
-                }
-                
-                // Hide viewer-container for MSA-only uploads
-                const viewerContainer = document.getElementById('viewer-container');
-                if (viewerContainer) {
-                    viewerContainer.style.display = 'none';
-                }
-                
-                // Hide PAE container (no PAE data for MSA-only)
-                const paeContainer = document.getElementById('paeContainer');
-                if (paeContainer) {
-                    paeContainer.style.display = 'none';
-                }
-                
-                // Show sequence viewer container
-                const sequenceContainer = document.getElementById('sequence-viewer-container');
-                if (sequenceContainer) {
-                    sequenceContainer.style.display = 'block';
-                }
-                
-                // Build sequence view
-                if (typeof buildSequenceView === 'function') {
-                    buildSequenceView();
-                }
-                
-                // Trigger a render to show the helix
-                if (viewerApi.renderer && viewerApi.renderer.render) {
-                    viewerApi.renderer.render();
-                }
-                
-                // Load MSA data into MSA viewer
-                loadMSADataIntoViewer(firstMSA.msaData, 'A', objectName, { updateChainSelector: false });
-                
-                // Show MSA viewer container
-                const msaContainer = document.getElementById('msa-buttons');
-                if (msaContainer) {
-                    msaContainer.style.display = 'block';
-                }
-                
-                // Update sequence count
-                const sequenceCountEl = document.getElementById('msaSequenceCount');
-                if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
-                    const counts = window.MSAViewer.getSequenceCounts();
-                    if (counts) {
-                        sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
-                    }
-                }
-                
-                if (msaDataList.length === 1) {
-                    setStatus(`Loaded MSA: ${firstMSA.msaData.sequences.length} sequences, length ${firstMSA.msaData.queryLength}`);
-                } else {
-                    setStatus(`Loaded ${msaDataList.length} MSA files. Displaying first MSA: ${firstMSA.msaData.sequences.length} sequences, length ${firstMSA.msaData.queryLength}`);
-                }
-            } else {
-                setStatus('MSA Viewer not available', true);
-            }
-        } else {
-            setStatus('No valid MSA files found. Supported formats: .a3m, .fasta, .fa, .fas, .sto', true);
-        }
-        
+        setStatus('MSA-only uploads are not supported on this page. Please use msa.html for standalone MSAs.', true);
         return {
-            objectsLoaded: msaDataList.length > 0 ? 1 : 0,
-            framesAdded: msaDataList.length > 0 ? 1 : 0,
+            objectsLoaded: 0,
+            framesAdded: 0,
             structureCount: 0,
             paePairedCount: 0,
             isTrajectory: false
@@ -5297,25 +5296,17 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                     
                     if (matchingObject) {
                         // Clear any existing contacts and replace with new ones
-                        if (matchingObject.contacts && matchingObject.contacts.length > 0) {
-                            console.log(`[Contact Processing] Clearing ${matchingObject.contacts.length} existing contact(s) from ${matchingObject.name}`);
-                        }
                         matchingObject.contacts = contacts;
-                        console.log(`[Contact Processing] Set ${contacts.length} contact(s) on ${matchingObject.name}`);
                     } else if (tempBatch.length > 0) {
                         // If no match, add to last object
                         const lastObject = tempBatch[tempBatch.length - 1];
-                        if (lastObject.contacts && lastObject.contacts.length > 0) {
-                            console.log(`[Contact Processing] Clearing ${lastObject.contacts.length} existing contact(s) from ${lastObject.name}`);
-                        }
                         lastObject.contacts = contacts;
-                        console.log(`[Contact Processing] Set ${contacts.length} contact(s) on ${lastObject.name}`);
                     }
                     
                     // Note: Cache will be invalidated when updateViewerFromGlobalBatch() processes the object
                 }
             } catch (e) {
-                console.warn(`Failed to process contacts file ${contactFile.name}:`, e);
+                setStatus(`Error processing contacts file ${contactFile.name}: ${e.message}`, true);
             }
         }
     }
@@ -5881,6 +5872,11 @@ function saveViewerState() {
                 }
             }
             
+            // Add contacts data if it exists
+            if (objectData.contacts && Array.isArray(objectData.contacts) && objectData.contacts.length > 0) {
+                objToSave.contacts = objectData.contacts;
+            }
+            
             objects.push(objToSave);
         }
         
@@ -6114,6 +6110,16 @@ async function loadViewerState(stateData) {
                             }
                         }
                     }
+                }
+                
+                // Store contacts data if present
+                if (objData.contacts && Array.isArray(objData.contacts) && objData.contacts.length > 0) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    renderer.objectsData[objData.name].contacts = objData.contacts;
+                    // Invalidate segment cache so contacts will be regenerated when object is displayed
+                    renderer.cachedSegmentIndices = null;
                 }
             }
         } else {

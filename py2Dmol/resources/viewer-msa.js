@@ -3011,11 +3011,11 @@
         // Calculate available height for heatmap
         const fixedElementsHeight = TICK_ROW_HEIGHT + queryRowHeight + SCROLLBAR_WIDTH;
         const availableHeatmapHeight = containerHeight ? 
-            (containerHeight - fixedElementsHeight) : 
+            ensurePositive(containerHeight - fixedElementsHeight) : 
             baseHeatmapHeight;
         
-        // Calculate scale factor
-        const pssmScaleFactor = availableHeatmapHeight / baseHeatmapHeight;
+        // Calculate scale factor, but never let rows shrink below MSA character height
+        const pssmScaleFactor = Math.max(1, availableHeatmapHeight / baseHeatmapHeight);
         const aaRowHeight = baseAaRowHeight * pssmScaleFactor;
         const heatmapHeight = NUM_AMINO_ACIDS * aaRowHeight;
         const canvasHeight = TICK_ROW_HEIGHT + queryRowHeight + heatmapHeight + SCROLLBAR_WIDTH;
@@ -4153,9 +4153,6 @@
             
             // Reset state variables to initial values
             currentChain = null;
-            
-            // Cleanup resize handler
-            cleanupResizeHandler();
         },
         
         buildMSAView: buildMSAView,

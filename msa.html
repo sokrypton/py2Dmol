@@ -174,15 +174,20 @@
                 </div>
             </div>
         </div>
+        </div>
     </div>
     
     <!-- Footer -->
-    <footer style="margin-top: 40px; padding: 0; color: #6b7280; font-size: 13px;">
-        <div style="width: 948px; margin: 0 auto; padding: 20px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
-            <div style="flex: 0 0 auto;">
+    <footer style="margin-top: var(--container-gap); padding: 0; color: #6b7280; font-size: 13px;">
+        <div style="width: 948px; margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px;">
                 <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: none;">
                     <i class="fab fa-github" style="margin-right: 6px;"></i>View on GitHub
                 </a>
+                <button type="button" class="link-button" data-readme-toggle="open" aria-controls="readmeSection">
+                    <i class="fa-solid fa-book-open"></i>
+                    README
+                </button>
             </div>
             <div style="flex: 0 0 auto; font-size: 12px;">
                 <i class="fa-solid fa-shield-halved" style="margin-right: 6px; color: #10b981;"></i>
@@ -190,6 +195,23 @@
             </div>
         </div>
     </footer>
+    
+    <div id="readmeSection" class="container-box readme-section hidden" aria-hidden="true">
+        <div class="readme-header">
+            <div>
+                <h2>MSA Viewer README</h2>
+                <p>Instructions for standalone MSA viewing and analysis. For structure viewing with integrated MSAs, see <a href="index.html" style="color: #3b82f6;">Main Viewer</a>.</p>
+            </div>
+            <button type="button" class="btn btn-secondary btn-small" data-readme-toggle="close" aria-label="Close README panel">
+                Close
+            </button>
+        </div>
+        <div id="readmeContent" class="readme-content"></div>
+        <div id="readmeStatus" class="readme-status hidden" role="status" aria-live="polite"></div>
+        <p style="font-size: 13px; color: #6b7280; margin-top: 8px;">
+            Prefer Markdown? <a href="https://github.com/sokrypton/py2Dmol/blob/main/MSA_README.md" target="_blank" rel="noopener noreferrer">Open MSA_README.md on GitHub</a> | <a href="index.html" style="color: #3b82f6;">Main Viewer</a>
+        </p>
+    </div>
     
     <!-- Load MSA viewer script -->
     <script src="py2Dmol/resources/viewer-msa.js"></script>
