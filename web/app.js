@@ -1966,9 +1966,7 @@ function clearAllObjects() {
     // Hide viewer and top panel
     const viewerContainer = document.getElementById('viewer-container');
     const topPanelContainer = document.getElementById('sequence-viewer-container');
-    const msaContainer = document.getElementById('msa-viewer-container');
-    const msaView = document.getElementById('msaView');
-    
+    const msaContainer = document.getElementById('msa-buttons');
     if (viewerContainer) {
         viewerContainer.style.display = 'none';
     }
@@ -1977,9 +1975,6 @@ function clearAllObjects() {
     }
     if (msaContainer) {
         msaContainer.style.display = 'none';
-    }
-    if (msaView) {
-        msaView.classList.add('hidden');
     }
     
     // Clear MSA data
@@ -2059,7 +2054,7 @@ if (window.SequenceViewer) {
  * Shared between msa.html and index.html
  */
 function initializeMSAViewerCommon() {
-    const msaContainer = document.getElementById('msa-viewer-container');
+    const msaContainer = document.getElementById('msa-buttons');
     const msaModeSelect = document.getElementById('msaModeSelect');
     const coverageSlider = document.getElementById('coverageSlider');
     const coverageValue = document.getElementById('coverageValue');
@@ -2487,13 +2482,9 @@ async function handleMSAFetch(uniprotId) {
                 }
                 
                 // Show MSA viewer container
-                const msaContainer = document.getElementById('msa-viewer-container');
+                const msaContainer = document.getElementById('msa-buttons');
                 if (msaContainer) {
                     msaContainer.style.display = 'block';
-                }
-                const msaView = document.getElementById('msaView');
-                if (msaView) {
-                    msaView.classList.remove('hidden');
                 }
             } else {
                 setStatus('Failed to parse MSA file', true);
@@ -2569,13 +2560,9 @@ async function handleMSAFileUpload(fileOrEvent) {
                 }
                 
                 // Show MSA viewer container
-                const msaContainer = document.getElementById('msa-viewer-container');
+                const msaContainer = document.getElementById('msa-buttons');
                 if (msaContainer) {
                     msaContainer.style.display = 'block';
-                }
-                const msaView = document.getElementById('msaView');
-                if (msaView) {
-                    msaView.classList.remove('hidden');
                 }
             } else {
                 setStatus('Failed to parse MSA file', true);
@@ -2740,8 +2727,7 @@ function initializeMSAViewerIndex() {
     const { updateMSASequenceCount } = common;
     
     const msaChainSelect = document.getElementById('msaChainSelect');
-    const msaView = document.getElementById('msaView');
-    const msaContainer = document.getElementById('msa-viewer-container');
+    const msaContainer = document.getElementById('msa-buttons');
     
     // Chain selector for single chain support (first pass)
     if (msaChainSelect && window.MSAViewer && viewerApi?.renderer) {
@@ -2883,26 +2869,17 @@ function initializeMSAViewerIndex() {
         const objectName = viewerApi?.renderer?.currentObjectName;
         if (!objectName) {
             msaContainer.style.display = 'none';
-            if (msaView) {
-                msaView.classList.add('hidden');
-            }
             return;
         }
         
         const obj = viewerApi.renderer.objectsData[objectName];
         if (!obj) {
             msaContainer.style.display = 'none';
-            if (msaView) {
-                msaView.classList.add('hidden');
-            }
             return;
         }
         
         if (!obj.msa) {
             msaContainer.style.display = 'none';
-            if (msaView) {
-                msaView.classList.add('hidden');
-            }
             return;
         }
         
@@ -2932,9 +2909,6 @@ function initializeMSAViewerIndex() {
         if (hasMSA && msaToLoad && window.MSAViewer) {
             // Show container and view
             msaContainer.style.display = 'block';
-            if (msaView) {
-                msaView.classList.remove('hidden');
-            }
             
             // Force a layout recalculation to ensure container dimensions are available
             void msaContainer.offsetWidth; // Force reflow
@@ -2949,9 +2923,6 @@ function initializeMSAViewerIndex() {
         } else {
             // Hide MSA container if no MSA for this object
             msaContainer.style.display = 'none';
-            if (msaView) {
-                msaView.classList.add('hidden');
-            }
             
         }
     }
@@ -3244,14 +3215,10 @@ async function handleFetch() {
                                                 };
                                             }
                                             
-                                            // Show MSA container and view BEFORE loading data (so resize observer gets correct dimensions)
-                                            const msaContainer = document.getElementById('msa-viewer-container');
-                                            const msaView = document.getElementById('msaView');
+                                            // Show MSA container and view BEFORE loading data
+                                            const msaContainer = document.getElementById('msa-buttons');
                                             if (msaContainer) {
                                                 msaContainer.style.display = 'block';
-                                            }
-                                            if (msaView) {
-                                                msaView.classList.remove('hidden');
                                             }
                                             
                                             // Force a layout recalculation to ensure container dimensions are available
@@ -3366,14 +3333,10 @@ async function handleFetch() {
                                                     };
                                                 }
                                                 
-                                                // Show MSA container and view BEFORE loading data (so resize observer gets correct dimensions)
-                                                const msaContainer = document.getElementById('msa-viewer-container');
-                                                const msaView = document.getElementById('msaView');
+                                                // Show MSA container and view BEFORE loading data
+                                                const msaContainer = document.getElementById('msa-buttons');
                                                 if (msaContainer) {
                                                     msaContainer.style.display = 'block';
-                                                }
-                                                if (msaView) {
-                                                    msaView.classList.remove('hidden');
                                                 }
                                                 
                                                 // Force a layout recalculation to ensure container dimensions are available
@@ -3381,13 +3344,10 @@ async function handleFetch() {
                                                     void msaContainer.offsetWidth; // Force reflow
                                                 }
                                                 
-                                                // Load MSA into viewer (this will initialize resize observer with correct dimensions)
+                                                // Load MSA into viewer
                                                 window.MSAViewer.setMSAData(matchedMSA, firstMatchedChain);
                                                 
                                                 // Ensure view is visible after data is set
-                                                if (msaView) {
-                                                    msaView.classList.remove('hidden');
-                                                }
                                                 
                                                 // Update MSA container visibility to ensure it's shown for current object
                                                 if (window.updateMSAContainerVisibility) {
@@ -4761,13 +4721,9 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 loadMSADataIntoViewer(firstMSA.msaData, 'A', objectName, { updateChainSelector: false });
                 
                 // Show MSA viewer container
-                const msaContainer = document.getElementById('msa-viewer-container');
+                const msaContainer = document.getElementById('msa-buttons');
                 if (msaContainer) {
                     msaContainer.style.display = 'block';
-                }
-                const msaView = document.getElementById('msaView');
-                if (msaView) {
-                    msaView.classList.remove('hidden');
                 }
                 
                 // Update sequence count

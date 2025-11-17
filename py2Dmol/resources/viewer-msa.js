@@ -496,12 +496,6 @@
         return AMINO_ACID_BACKGROUND_FREQUENCIES[aa.toUpperCase()] || (1 / 20);
     }
     
-    // Resize management
-    let resizeObserver = null;
-    let currentContainerWidth = 948;
-    let currentContainerHeight = 500;  // Initial default height
-    let resizeAnimationFrame = null;
-    
     // Callbacks
     let callbacks = {
         getRenderer: null
@@ -898,97 +892,28 @@
         return CHAR_WIDTH; // Full width for logo/PSSM
     }
     
-    // ============================================================================
-    // RESIZE MANAGEMENT
-    // ============================================================================
-    
-    function initResizeObserver() {
-        const container = document.getElementById('msa-viewer-container');
-        if (!container) return;
-        
-        if (resizeObserver) {
-            resizeObserver.disconnect();
-        }
-        
-        resizeObserver = new ResizeObserver(entries => {
-            for (let entry of entries) {
-                if (resizeAnimationFrame) {
-                    cancelAnimationFrame(resizeAnimationFrame);
-                }
-                
-                resizeAnimationFrame = requestAnimationFrame(() => {
-                    handleContainerResize(entry.contentRect);
-                    resizeAnimationFrame = null;
-                });
-            }
-        });
-        
-        resizeObserver.observe(container);
-        
-        // Get initial content dimensions (contentRect gives us content box, not border box)
-        // Use requestAnimationFrame to ensure container is laid out
-        requestAnimationFrame(() => {
-            const rect = container.getBoundingClientRect();
-            const computedStyle = window.getComputedStyle(container);
-            const paddingLeft = parseFloat(computedStyle.paddingLeft);
-            const paddingRight = parseFloat(computedStyle.paddingRight);
-            const paddingTop = parseFloat(computedStyle.paddingTop);
-            const paddingBottom = parseFloat(computedStyle.paddingBottom);
-            
-            // Content box dimensions
-            const newWidth = Math.floor(rect.width - paddingLeft - paddingRight);
-            const newHeight = Math.floor(rect.height - paddingTop - paddingBottom);
-            
-            // Only update if we got valid dimensions (container is visible)
-            if (newWidth > 0 && newHeight > 0) {
-                currentContainerWidth = newWidth;
-                currentContainerHeight = newHeight;
-                
-                // If MSA data exists, rebuild the view with correct dimensions
-                if (msaData) {
-                    buildViewForMode(msaViewMode);
-                }
-            } else {
-                // Container not visible yet, try again after a short delay
-                setTimeout(() => {
-                    const rect2 = container.getBoundingClientRect();
-                    if (rect2.width > 0 && rect2.height > 0) {
-                        const computedStyle2 = window.getComputedStyle(container);
-                        const paddingLeft2 = parseFloat(computedStyle2.paddingLeft);
-                        const paddingRight2 = parseFloat(computedStyle2.paddingRight);
-                        const paddingTop2 = parseFloat(computedStyle2.paddingTop);
-                        const paddingBottom2 = parseFloat(computedStyle2.paddingBottom);
-                        currentContainerWidth = Math.floor(rect2.width - paddingLeft2 - paddingRight2);
-                        currentContainerHeight = Math.floor(rect2.height - paddingTop2 - paddingBottom2);
-                        if (msaData) {
-                            buildViewForMode(msaViewMode);
-                        }
-                    }
-                }, 100);
-            }
-        });
+    function getCanvasDataForMode(mode) {
+        if (mode === 'msa') return msaCanvasData;
+        if (mode === 'pssm') return pssmCanvasData;
+        if (mode === 'logo') return logoCanvasData;
+        return null;
     }
     
-    function handleContainerResize(rect) {
-        // contentRect from ResizeObserver already gives us content box dimensions (no padding)
-        const newWidth = Math.floor(rect.width);
-        const newHeight = Math.floor(rect.height);
+    // Get canvas container dimensions (accounting for padding)
+    function getContainerDimensions() {
+        const canvasContainer = document.querySelector('.msa-canvas');
         
-        if (newWidth === currentContainerWidth && newHeight === currentContainerHeight) {
-            return; // No actual change
+        // If canvas container exists, use its dimensions
+        if (canvasContainer) {
+            const cr = canvasContainer.getBoundingClientRect();
+            const padding = 12; // var(--container-padding)
+            const width = Math.max(1, Math.floor(cr.width - (padding * 2)) || 948);
+            const height = Math.max(1, Math.floor(cr.height - (padding * 2)) || 420);
+            return { width, height };
         }
-        
-        currentContainerWidth = newWidth;
-        currentContainerHeight = newHeight;
-        
-        // Rebuild the view with new dimensions
-        if (!msaData) return;
-        
-        buildViewForMode(msaViewMode);
-    }
-    
-    function getContainerWidth() {
-        return currentContainerWidth;
+
+        // Fallback: default dimensions
+        return { width: 948, height: 420 };
     }
     
     // ============================================================================
@@ -1335,7 +1260,7 @@
     /**
      * Draw query sequence row (used by MSA, PSSM, and Logo modes)
      */
-    function drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, labelWidth, totalWidth, drawUnderline = true) {
+    function drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, labelWidth, totalWidth, drawUnderline = true, charWidth = CHAR_WIDTH) {
         if (!msaData || !querySeq) return;
         
         // Draw white background, but don't cover the y-axis area (start from labelWidth)
@@ -1344,11 +1269,11 @@
         
         const minX = labelWidth;
         const maxX = logicalWidth;
-        let xOffset = scrollableAreaX - (scrollLeft % CHAR_WIDTH);
+        let xOffset = scrollableAreaX - (scrollLeft % charWidth);
         
         for (let pos = visibleStartPos; pos < visibleEndPos && pos < querySeq.sequence.length; pos++) {
-            if (xOffset + CHAR_WIDTH < minX) {
-                xOffset += CHAR_WIDTH;
+            if (xOffset + charWidth < minX) {
+                xOffset += charWidth;
                 continue;
             }
             if (xOffset >= maxX) break;
@@ -1357,25 +1282,25 @@
             const color = getDayhoffColor(aa);
             const r = color.r, g = color.g, b = color.b;
             
-            if (xOffset + CHAR_WIDTH >= minX && xOffset < maxX) {
+            if (xOffset + charWidth >= minX && xOffset < maxX) {
                 ctx.save();
                 ctx.beginPath();
                 ctx.rect(minX, queryY, maxX - minX, queryRowHeight);
                 ctx.clip();
                 
                 ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                ctx.fillRect(xOffset, queryY, CHAR_WIDTH, queryRowHeight);
+                ctx.fillRect(xOffset, queryY, charWidth, queryRowHeight);
                 
                 ctx.fillStyle = '#000';
                 ctx.font = '10px monospace';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(aa, xOffset + CHAR_WIDTH / 2, queryY + queryRowHeight / 2);
+                ctx.fillText(aa, xOffset + charWidth / 2, queryY + queryRowHeight / 2);
                 
                 ctx.restore();
             }
             
-            xOffset += CHAR_WIDTH;
+            xOffset += charWidth;
         }
         
         // Draw underline (only if requested, for logo mode we draw it above)
@@ -2004,20 +1929,22 @@
         const { scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight } = 
             getScrollableAreaForMode('pssm', logicalWidth, logicalHeight);
         
-        const LABEL_WIDTH = CHAR_WIDTH;
-        const visibleStartPos = Math.floor(scrollLeft / CHAR_WIDTH);
-        const visibleEndPos = Math.min(frequencies.length, visibleStartPos + Math.ceil(scrollableAreaWidth / CHAR_WIDTH) + 1);
+        const LABEL_WIDTH = CHAR_WIDTH * 0.5; // Labels are 1/2 width for PSSM
+        const boxWidth = CHAR_WIDTH * 0.5; // Boxes are 1/2 width
+        const visibleStartPos = Math.floor(scrollLeft / boxWidth);
+        const visibleEndPos = Math.min(frequencies.length, visibleStartPos + Math.ceil(scrollableAreaWidth / boxWidth) + 1);
         
         const tickMinX = LABEL_WIDTH;
         const tickMaxX = logicalWidth;
-        drawTickMarks(ctx, logicalWidth, scrollLeft, CHAR_WIDTH, LABEL_WIDTH, tickMinX, tickMaxX);
+        drawTickMarks(ctx, logicalWidth, scrollLeft, boxWidth, LABEL_WIDTH, tickMinX, tickMaxX);
         
         const queryY = TICK_ROW_HEIGHT;
         const heatmapY = scrollableAreaY + GAP_HEIGHT;
         
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
-        const aaRowHeight = CHAR_WIDTH;
-        const heatmapHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        // Use scaled row height from canvas data if available
+        const aaRowHeight = pssmCanvasData.aaRowHeight || SEQUENCE_ROW_HEIGHT;
+        const heatmapHeight = NUM_AMINO_ACIDS * aaRowHeight;
         
         const heatmapX = LABEL_WIDTH;
         const heatmapWidth = logicalWidth - LABEL_WIDTH;
@@ -2040,11 +1967,11 @@
             ctx.fillText(aa, LABEL_WIDTH / 2, y + aaRowHeight / 2);
         }
         
-        // Draw heatmap
-        let xOffset = heatmapX - (scrollLeft % CHAR_WIDTH);
+        // Draw heatmap (boxes are 1/2 width and height)
+        let xOffset = heatmapX - (scrollLeft % boxWidth);
         for (let pos = visibleStartPos; pos < visibleEndPos && pos < frequencies.length; pos++) {
-            if (xOffset + CHAR_WIDTH < heatmapX) {
-                xOffset += CHAR_WIDTH;
+            if (xOffset + boxWidth < heatmapX) {
+                xOffset += boxWidth;
                 continue;
             }
             if (xOffset >= maxX) break;
@@ -2062,44 +1989,44 @@
                 const finalG = Math.round(white.g + (darkBlue.g - white.g) * probability);
                 const finalB = Math.round(white.b + (darkBlue.b - white.b) * probability);
                 
-                if (xOffset + CHAR_WIDTH >= heatmapX && xOffset < maxX) {
+                if (xOffset + boxWidth >= heatmapX && xOffset < maxX) {
                     ctx.save();
                     ctx.beginPath();
                     ctx.rect(heatmapX, heatmapY, maxX - heatmapX, heatmapHeight);
                     ctx.clip();
                     
                     ctx.fillStyle = `rgb(${finalR}, ${finalG}, ${finalB})`;
-                    ctx.fillRect(xOffset, y, CHAR_WIDTH, aaRowHeight);
+                    ctx.fillRect(xOffset, y, boxWidth, aaRowHeight);
                     
                     ctx.restore();
                 }
             }
             
-            xOffset += CHAR_WIDTH;
+            xOffset += boxWidth;
         }
         
-        // Draw black boxes around wildtype
+        // Draw black boxes around wildtype (boxes are 1/2 width and height)
         const querySeqForBoxes = msaData.sequences.length > 0 ? msaData.sequences[0].sequence : '';
         ctx.strokeStyle = '#000';
         ctx.lineWidth = 1;
-        let boxXOffset = heatmapX - (scrollLeft % CHAR_WIDTH);
+        let boxXOffset = heatmapX - (scrollLeft % boxWidth);
         for (let pos = visibleStartPos; pos < visibleEndPos && pos < frequencies.length; pos++) {
-            if (boxXOffset + CHAR_WIDTH < heatmapX) {
-                boxXOffset += CHAR_WIDTH;
+            if (boxXOffset + boxWidth < heatmapX) {
+                boxXOffset += boxWidth;
                 continue;
             }
             if (boxXOffset >= maxX) break;
             
             const wildtypeAA = pos < querySeqForBoxes.length ? querySeqForBoxes[pos].toUpperCase() : null;
             if (!wildtypeAA) {
-                boxXOffset += CHAR_WIDTH;
+                boxXOffset += boxWidth;
                 continue;
             }
             
             const wildtypeIndex = AMINO_ACIDS_ORDERED.indexOf(wildtypeAA);
             if (wildtypeIndex >= 0) {
                 const y = heatmapY + wildtypeIndex * aaRowHeight;
-                if (boxXOffset + CHAR_WIDTH >= heatmapX && boxXOffset < maxX) {
+                if (boxXOffset + boxWidth >= heatmapX && boxXOffset < maxX) {
                     ctx.save();
                     ctx.beginPath();
                     ctx.rect(heatmapX, heatmapY, maxX - heatmapX, heatmapHeight);
@@ -2107,20 +2034,20 @@
                     
                     ctx.beginPath();
                     ctx.moveTo(boxXOffset, y);
-                    ctx.lineTo(boxXOffset + CHAR_WIDTH, y);
+                    ctx.lineTo(boxXOffset + boxWidth, y);
                     ctx.moveTo(boxXOffset, y + aaRowHeight);
-                    ctx.lineTo(boxXOffset + CHAR_WIDTH, y + aaRowHeight);
+                    ctx.lineTo(boxXOffset + boxWidth, y + aaRowHeight);
                     ctx.moveTo(boxXOffset, y);
                     ctx.lineTo(boxXOffset, y + aaRowHeight);
-                    ctx.moveTo(boxXOffset + CHAR_WIDTH, y);
-                    ctx.lineTo(boxXOffset + CHAR_WIDTH, y + aaRowHeight);
+                    ctx.moveTo(boxXOffset + boxWidth, y);
+                    ctx.lineTo(boxXOffset + boxWidth, y + aaRowHeight);
                     ctx.stroke();
                     
                     ctx.restore();
                 }
             }
             
-            boxXOffset += CHAR_WIDTH;
+            boxXOffset += boxWidth;
         }
         
         // Draw group boundaries
@@ -2134,14 +2061,15 @@
             ctx.stroke();
         }
         
-        // Draw query sequence on top
+        // Draw query sequence on top (boxes are 1/2 width, align with heatmap)
         if (msaData.sequences.length > 0) {
             const querySeq = msaData.sequences[0];
-            drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, LABEL_WIDTH, pssmCanvasData.totalWidth);
+            // Use heatmapX instead of scrollableAreaX to ensure perfect alignment with heatmap boxes
+            drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, heatmapX, visibleStartPos, visibleEndPos, LABEL_WIDTH, pssmCanvasData.totalWidth, true, boxWidth);
         }
         
-        // Draw horizontal scrollbar
-        const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
+        // Draw horizontal scrollbar (boxes are 1/2 width)
+        const totalScrollableWidth = msaData.queryLength * boxWidth;
         drawHorizontalScrollbar(ctx, logicalWidth, logicalHeight, scrollableAreaX, scrollableAreaWidth, LABEL_WIDTH, totalScrollableWidth);
     }
     
@@ -2176,7 +2104,8 @@
         const LOGO_VERTICAL_PADDING = 12;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
         const aaRowHeight = CHAR_WIDTH;
-        const originalLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        // Use scaled logo height from canvas data if available
+        const originalLogoHeight = logoCanvasData.originalLogoHeight || (NUM_AMINO_ACIDS * CHAR_WIDTH * 0.5);
         
         // New layout: Logo at top, black bar above query, query sequence below, tick marks below query, scrollbar at bottom
         const logoY = scrollableAreaY + LOGO_VERTICAL_PADDING;
@@ -2762,71 +2691,245 @@
     // ============================================================================
     // Consolidates canvas and container setup to eliminate duplication
     
-    function createViewCanvas(mode, config) {
-        const { 
-            viewElementId, 
-            calculateDimensions, 
-            additionalCanvasData = {}
-        } = config;
-        
-        const viewEl = document.getElementById(viewElementId);
-        if (!viewEl) {
-            console.warn(`MSA Viewer: ${viewElementId} element not found`);
-            return null;
+    // Helper: Get canvas data for a specific mode
+    function getCanvasDataForMode(mode) {
+        if (mode === 'msa') return msaCanvasData;
+        if (mode === 'pssm') return pssmCanvasData;
+        if (mode === 'logo') return logoCanvasData;
+        return null;
+    }
+    
+    // Helper: Set visibility for all canvas containers based on current mode
+    function setCanvasVisibility(currentMode) {
+        if (msaCanvasData?.container) {
+            msaCanvasData.container.style.display = currentMode === 'msa' ? 'block' : 'none';
         }
-        
-        if (!msaData) {
-            console.warn('MSA Viewer: No MSA data available');
-            return null;
+        if (pssmCanvasData?.container) {
+            pssmCanvasData.container.style.display = currentMode === 'pssm' ? 'block' : 'none';
         }
-        
-        viewEl.innerHTML = '';
-        viewEl.classList.remove('hidden');
-        
-        // Create container
-        const container = document.createElement('div');
-        container.style.overflow = 'hidden';
-        container.style.position = 'relative';
-        container.style.backgroundColor = '#ffffff';
-        container.style.margin = '0';
-        container.style.padding = '0';
-        
-        // Calculate dimensions (mode-specific)
-        const dimensions = calculateDimensions();
-        const { canvasWidth, canvasHeight, totalWidth, totalHeight } = dimensions;
-        
-        // Set container dimensions
-        container.style.width = '100%';
-        container.style.height = canvasHeight + 'px';
-        
-        // Create canvas
+        if (logoCanvasData?.container) {
+            logoCanvasData.container.style.display = currentMode === 'logo' ? 'block' : 'none';
+        }
+    }
+    
+    // Helper: Ensure dimensions are valid, using fallback if needed
+    function ensureValidDimensions(dimensions, fallback) {
+        let { canvasWidth, canvasHeight } = dimensions;
+        if (canvasWidth <= 0 || canvasHeight <= 0) {
+            const fb = fallback || getContainerDimensions();
+            canvasWidth = Math.max(1, fb.width || 948);
+            canvasHeight = Math.max(1, fb.height || 450);
+            dimensions.canvasWidth = canvasWidth;
+            dimensions.canvasHeight = canvasHeight;
+        }
+        return dimensions;
+    }
+    
+    // Helper: Clamp value to minimum
+    function clampMin(value, min) {
+        return Math.max(min, value);
+    }
+    
+    // Helper: Ensure positive value
+    function ensurePositive(value) {
+        return Math.max(1, value);
+    }
+    
+    // Helper: Create canvas element with proper sizing
+    function createCanvasElement(contentWidth, height, dpiMultiplier) {
         const canvas = document.createElement('canvas');
-        canvas.width = canvasWidth * DPI_MULTIPLIER;
-        canvas.height = canvasHeight * DPI_MULTIPLIER;
-        canvas.style.width = canvasWidth + 'px';
-        canvas.style.height = canvasHeight + 'px';
+        canvas.width = ensurePositive(Math.floor(contentWidth * dpiMultiplier));
+        canvas.height = ensurePositive(Math.floor(height * dpiMultiplier));
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
         canvas.style.display = 'block';
-        canvas.style.position = 'relative';
         canvas.style.pointerEvents = 'auto';
         canvas.style.cursor = 'default';
-        canvas.style.margin = '0';
-        canvas.style.padding = '0';
+        return canvas;
+    }
+    
+    // Helper: Create canvas container element
+    function createCanvasContainer(width, height) {
+        const container = document.createElement('div');
+        container.className = 'msa-canvas';
+        container.style.position = 'relative';
+        container.style.overflow = 'hidden';
+        container.style.display = 'block';
+        container.style.visibility = 'visible';
+        container.style.width = width + 'px';
+        container.style.height = height + 'px';
+        return container;
+    }
+    
+    // Helper: Create resize handle element
+    function createResizeHandle() {
+        const resizeHandle = document.createElement('div');
+        resizeHandle.className = 'resize-handle';
+        return resizeHandle;
+    }
+    
+    // Helper: Recalculate scale factors for PSSM and Logo modes
+    function recalculateScaleFactors(mode, height, canvasData) {
+        if (mode === 'pssm') {
+            const queryRowHeight = CHAR_WIDTH;
+            const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
+            const baseAaRowHeight = SEQUENCE_ROW_HEIGHT;
+            const baseHeatmapHeight = NUM_AMINO_ACIDS * baseAaRowHeight;
+            const fixedElementsHeight = TICK_ROW_HEIGHT + queryRowHeight + SCROLLBAR_WIDTH;
+            const availableHeatmapHeight = ensurePositive(height - fixedElementsHeight);
+            const pssmScaleFactor = availableHeatmapHeight / baseHeatmapHeight;
+            const aaRowHeight = baseAaRowHeight * pssmScaleFactor;
+            canvasData.pssmScaleFactor = pssmScaleFactor;
+            canvasData.aaRowHeight = aaRowHeight;
+        } else if (mode === 'logo') {
+            const queryRowHeight = CHAR_WIDTH;
+            const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
+            const LOGO_VERTICAL_PADDING = 12;
+            const baseLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH * 0.5;
+            const fixedElementsHeight = LOGO_VERTICAL_PADDING + queryRowHeight + TICK_ROW_HEIGHT + SCROLLBAR_WIDTH;
+            const availableLogoHeight = ensurePositive(height - fixedElementsHeight);
+            const logoScaleFactor = availableLogoHeight / baseLogoHeight;
+            const originalLogoHeight = baseLogoHeight * logoScaleFactor;
+            canvasData.logoScaleFactor = logoScaleFactor;
+            canvasData.originalLogoHeight = originalLogoHeight;
+        }
+    }
+    
+    // Render function map for mode-based rendering (lazy initialization)
+    function getRenderFunction(mode) {
+        if (mode === 'msa' && typeof renderMSACanvas === 'function') return renderMSACanvas;
+        if (mode === 'pssm' && typeof renderPSSMCanvas === 'function') return renderPSSMCanvas;
+        if (mode === 'logo' && typeof renderLogoCanvas === 'function') return renderLogoCanvas;
+        return null;
+    }
+    
+    function createViewCanvas(mode, config) {
+        const { viewElementId, calculateDimensions, additionalCanvasData } = config;
+
+        const viewEl = document.getElementById(viewElementId);
+        if (!viewEl) {
+            warn('MSA Viewer: View element not found');
+            return null;
+        }
+        if (!msaData) {
+            warn('MSA Viewer: No MSA data available');
+            return null;
+        }
+
+        // Check if canvas already exists for this mode - reuse if possible
+        const existing = getCanvasDataForMode(mode);
+        if (existing?.canvas?.parentElement) {
+            // Reuse existing canvas, just update dimensions
+            setCanvasVisibility(mode);
+            existing.container.style.visibility = 'visible';
+            
+            const dimensions = ensureValidDimensions(calculateDimensions());
+            const { canvasWidth, canvasHeight } = dimensions;
+            
+            // Canvas already exists, return it
+            return { 
+                canvas: existing.canvas, 
+                container: existing.container, 
+                canvasData: existing, 
+                dimensions: { ...dimensions, canvasWidth, canvasHeight }
+            };
+        }
+
+        // New canvas - ensure stage is visible and positioned before calculating dimensions
+        viewEl.classList.remove('hidden');
+        viewEl.style.position = viewEl.style.position || 'relative';
+        
+        // Force layout recalculation to ensure stage has dimensions BEFORE clearing
+        void viewEl.offsetHeight; // Force reflow
+        
+        // Calculate dimensions BEFORE clearing (stage still has content/height)
+        const dimensions = ensureValidDimensions(calculateDimensions());
+        const { canvasWidth, canvasHeight, totalWidth, totalHeight } = dimensions;
+        
+        // Clear only canvases for this mode, not all canvases
+        // This preserves canvases for other modes
+        const existingForThisMode = getCanvasDataForMode(mode);
+        if (existingForThisMode?.container?.parentElement === viewEl) {
+            // Remove only the canvas for this mode if it exists
+            viewEl.removeChild(existingForThisMode.container);
+        }
+        // Also remove any orphaned canvas containers (safety check)
+        const existingContainers = viewEl.querySelectorAll('.msa-canvas');
+        existingContainers.forEach(container => {
+            // Only remove if it's not associated with any canvas data
+            const isOrphaned = !Array.from(container.querySelectorAll('canvas')).some(canvas => {
+                return (msaCanvasData?.canvas === canvas) || 
+                       (pssmCanvasData?.canvas === canvas) || 
+                       (logoCanvasData?.canvas === canvas);
+            });
+            if (isOrphaned) {
+                viewEl.removeChild(container);
+            }
+        });
+
+        // Create canvas container - ensure minimum width of 948px (default from CSS)
+        const minWidth = 948;
+        const finalWidth = clampMin(canvasWidth > 0 ? canvasWidth : minWidth, minWidth);
+        const container = createCanvasContainer(finalWidth, canvasHeight);
+        
+        // Create canvas element - account for padding (12px * 2)
+        const canvasContentWidth = clampMin(finalWidth - 24, 948);
+        const canvas = createCanvasElement(canvasContentWidth, canvasHeight, DPI_MULTIPLIER);
         
         container.appendChild(canvas);
-        viewEl.appendChild(container);
+        container.appendChild(createResizeHandle());
         
-        // Create canvas data object
+        // Append canvas container outside the buttons container (as sibling)
+        (viewEl.parentElement || viewEl).appendChild(container);
+        
+        // Set visibility for all canvases
+        setCanvasVisibility(mode);
+
         const canvasData = {
-            canvas: canvas,
+            canvas,
             ctx: canvas.getContext('2d'),
-            container: container,
-            totalWidth: totalWidth,
-            ...(totalHeight !== undefined && { totalHeight: totalHeight }),
-            ...additionalCanvasData
+            container,
+            totalWidth,
+            ...(totalHeight !== undefined && { totalHeight }),
+            ...(additionalCanvasData || {})
         };
-        
-        // Scale context for high DPI
         canvasData.ctx.scale(DPI_MULTIPLIER, DPI_MULTIPLIER);
+        
+        // Setup resize observer to update canvas when container is resized
+        if (window.ResizeObserver) {
+            const resizeObserver = new ResizeObserver(entries => {
+                for (const entry of entries) {
+                    const { width, height } = entry.contentRect;
+                    if (width > 0 && height > 0) {
+                        // Update canvas backing store to match container size
+                        const newCanvasWidth = ensurePositive(Math.floor(width * DPI_MULTIPLIER));
+                        const newCanvasHeight = ensurePositive(Math.floor(height * DPI_MULTIPLIER));
+                        
+                        if (canvas.width !== newCanvasWidth || canvas.height !== newCanvasHeight) {
+                            canvas.width = newCanvasWidth;
+                            canvas.height = newCanvasHeight;
+                            // Get fresh context after resize
+                            canvasData.ctx = canvas.getContext('2d');
+                            canvasData.ctx.scale(DPI_MULTIPLIER, DPI_MULTIPLIER);
+                            
+                            // Ensure canvas CSS fills container
+                            canvas.style.width = '100%';
+                            canvas.style.height = '100%';
+                            
+                            // Recalculate scale factors for PSSM and Logo modes
+                            recalculateScaleFactors(mode, height, canvasData);
+                            
+                            // Re-render the canvas
+                            const renderFn = getRenderFunction(mode);
+                            if (renderFn) renderFn();
+                        }
+                    }
+                }
+            });
+            resizeObserver.observe(container);
+            // Store observer for cleanup if needed
+            canvasData.resizeObserver = resizeObserver;
+        }
         
         return { canvas, container, canvasData, dimensions };
     }
@@ -2836,18 +2939,14 @@
         const totalWidth = NAME_COLUMN_WIDTH + (msaData.queryLength * MSA_CHAR_WIDTH);
         const totalHeight = (msaData.sequences.length + 1) * SEQUENCE_ROW_HEIGHT;
         
-        // Calculate actual available space
-        const msaHeader = document.getElementById('msaHeader');
-        const headerHeight = msaHeader ? msaHeader.offsetHeight + 8 : 40; // header + margin
-        const containerHeight = currentContainerHeight || 450;
-        const availableHeightForCanvas = containerHeight - headerHeight;
-        const containerWidth = getContainerWidth();
+        // Calculate canvas dimensions
+        const { width: containerWidth, height: containerHeight } = getContainerDimensions();
         
         const result = createViewCanvas('msa', {
-            viewElementId: 'msaView',
+            viewElementId: 'msa-buttons',
             calculateDimensions: () => ({
                 canvasWidth: containerWidth,
-                canvasHeight: availableHeightForCanvas,
+                canvasHeight: containerHeight,
                 totalWidth: totalWidth,
                 totalHeight: totalHeight
             })
@@ -2857,6 +2956,12 @@
         
         const { canvas, canvasData } = result;
         msaCanvasData = canvasData;
+        
+        // Ensure canvas is visible when reusing
+        if (canvasData.container) {
+            canvasData.container.style.display = 'block';
+            canvasData.container.style.visibility = 'visible';
+        }
         
         clampScrollTop(result.dimensions.canvasHeight);
         clampScrollLeft(result.dimensions.canvasWidth, MSA_CHAR_WIDTH);
@@ -2879,31 +2984,51 @@
         activeInteractionManager.setupWheelScrolling();
         activeInteractionManager.setupPointerInteractions();
         
-        // Initial render
+        // Always render - even if canvas was reused, ensure it's drawn
         renderMSACanvas();
     }
     
     function buildPSSMView() {
-        const LABEL_WIDTH = CHAR_WIDTH;
-        const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
-        const containerWidth = getContainerWidth();
+        const LABEL_WIDTH = CHAR_WIDTH * 0.5; // Labels are 1/2 width for PSSM
+        const boxWidth = CHAR_WIDTH * 0.5; // Boxes are 1/2 width
+        const totalWidth = LABEL_WIDTH + (msaData.queryLength * boxWidth);
+        const { width: containerWidth } = getContainerDimensions();
+        // Ensure minimum width
+        const canvasWidth = Math.max(948, containerWidth);
         
-        // FIXED HEIGHT for PSSM mode
+        // DYNAMIC HEIGHT for PSSM mode - scale based on container height
         const queryRowHeight = CHAR_WIDTH;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
-        const heatmapHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        const baseAaRowHeight = SEQUENCE_ROW_HEIGHT; // Base height for MSA characters
+        const baseHeatmapHeight = NUM_AMINO_ACIDS * baseAaRowHeight;
+        
+        // Get container height for scaling
+        const { height: containerHeight } = getContainerDimensions();
+        
+        // Calculate available height for heatmap
+        const fixedElementsHeight = TICK_ROW_HEIGHT + queryRowHeight + SCROLLBAR_WIDTH;
+        const availableHeatmapHeight = containerHeight ? 
+            (containerHeight - fixedElementsHeight) : 
+            baseHeatmapHeight;
+        
+        // Calculate scale factor
+        const pssmScaleFactor = availableHeatmapHeight / baseHeatmapHeight;
+        const aaRowHeight = baseAaRowHeight * pssmScaleFactor;
+        const heatmapHeight = NUM_AMINO_ACIDS * aaRowHeight;
         const canvasHeight = TICK_ROW_HEIGHT + queryRowHeight + heatmapHeight + SCROLLBAR_WIDTH;
         
         const result = createViewCanvas('pssm', {
-            viewElementId: 'msaView',
+            viewElementId: 'msa-buttons',
             calculateDimensions: () => ({
-                canvasWidth: containerWidth,
+                canvasWidth: canvasWidth,
                 canvasHeight: canvasHeight,
                 totalWidth: totalWidth
             }),
             additionalCanvasData: {
                 canvasWidth: containerWidth,
-                totalHeight: canvasHeight
+                totalHeight: canvasHeight,
+                pssmScaleFactor: pssmScaleFactor,
+                aaRowHeight: aaRowHeight
             }
         });
         
@@ -2912,7 +3037,7 @@
         const { canvas, container, canvasData } = result;
         pssmCanvasData = canvasData;
         
-        clampScrollLeft(result.dimensions.canvasWidth, CHAR_WIDTH);
+        clampScrollLeft(result.dimensions.canvasWidth, boxWidth);
         
         // Cleanup previous interaction manager if exists
         if (activeInteractionManager) {
@@ -2921,10 +3046,10 @@
         
         // Setup interaction manager with PSSM-specific configuration
         const interactionConfig = {
-            charWidth: CHAR_WIDTH,
+            charWidth: boxWidth, // Use boxWidth for scrolling
             supportsVerticalScroll: false,
             getScrollableArea: (w, h) => getScrollableAreaForMode('pssm', w, h),
-            getScrollLimits: (w, h) => getScrollLimitsForMode('pssm', CHAR_WIDTH, w, h)
+            getScrollLimits: (w, h) => getScrollLimitsForMode('pssm', boxWidth, w, h)
         };
         
         activeInteractionManager = new ViewInteractionManager(canvas, 'pssm', interactionConfig);
@@ -3005,29 +3130,48 @@
     function buildLogoView() {
         const LABEL_WIDTH = Y_AXIS_WIDTH;
         const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
-        const containerWidth = getContainerWidth();
+        const { width: containerWidth } = getContainerDimensions();
+        // Ensure minimum width
+        const canvasWidth = Math.max(948, containerWidth);
         
-        // FIXED HEIGHT for Logo mode
+        // DYNAMIC HEIGHT for Logo mode - scale based on container height
         // Layout: Logo at top (extends to query), black bar above query, query sequence below, tick marks below query, scrollbar at bottom
         const queryRowHeight = CHAR_WIDTH;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
         const LOGO_VERTICAL_PADDING = 12;
-        const originalLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        const baseLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH * 0.5; // Base logo height is 1/2 the size
+        
+        // Get container height for scaling
+        const msaHeader = document.getElementById('msaHeader');
+        const headerHeight = msaHeader ? msaHeader.offsetHeight + 8 : 40; // header + margin
+        const { height: containerHeight } = getContainerDimensions();
+        
+        // Calculate available height for logo
+        const fixedElementsHeight = LOGO_VERTICAL_PADDING + queryRowHeight + TICK_ROW_HEIGHT + SCROLLBAR_WIDTH;
+        const availableLogoHeight = containerHeight ? 
+            (containerHeight - headerHeight - fixedElementsHeight) : 
+            baseLogoHeight;
+        
+        // Calculate scale factor
+        const logoScaleFactor = availableLogoHeight / baseLogoHeight;
+        const originalLogoHeight = baseLogoHeight * logoScaleFactor;
         const logoStartY = LOGO_VERTICAL_PADDING;
         const queryY = logoStartY + originalLogoHeight; // Logo extends all the way to query with no gap
         const tickY = queryY + queryRowHeight;
         const canvasHeight = tickY + TICK_ROW_HEIGHT + SCROLLBAR_WIDTH;
         
         const result = createViewCanvas('logo', {
-            viewElementId: 'msaView',
+            viewElementId: 'msa-buttons',
             calculateDimensions: () => ({
-                canvasWidth: containerWidth,
+                canvasWidth: canvasWidth,
                 canvasHeight: canvasHeight,
                 totalWidth: totalWidth
             }),
             additionalCanvasData: {
                 canvasWidth: containerWidth,
-                totalHeight: canvasHeight
+                totalHeight: canvasHeight,
+                logoScaleFactor: logoScaleFactor,
+                originalLogoHeight: originalLogoHeight
             }
         });
         
@@ -3076,29 +3220,31 @@
         const GAP_HEIGHT = 0;
         const { scrollableAreaX, scrollableAreaY } = getScrollableAreaForMode('pssm', logicalWidth, logicalHeight);
         
-        const LABEL_WIDTH = CHAR_WIDTH;
+        const LABEL_WIDTH = CHAR_WIDTH * 0.5; // Labels are 1/2 width for PSSM
         const queryY = TICK_ROW_HEIGHT;
         const heatmapY = scrollableAreaY + GAP_HEIGHT;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
-        const aaRowHeight = CHAR_WIDTH;
-        const heatmapHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        // Use scaled row height from canvas data if available
+        const aaRowHeight = pssmCanvasData ? (pssmCanvasData.aaRowHeight || SEQUENCE_ROW_HEIGHT) : SEQUENCE_ROW_HEIGHT;
+        const heatmapHeight = NUM_AMINO_ACIDS * aaRowHeight;
         const heatmapX = LABEL_WIDTH;
-        const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
+        const boxWidth = CHAR_WIDTH * 0.5; // Boxes are 1/2 width
+        const totalWidth = LABEL_WIDTH + (msaData.queryLength * boxWidth);
         
         // For export, render all positions; otherwise use visible range
-        const startPos = forExport ? 0 : Math.floor(scrollLeft / CHAR_WIDTH);
-        const endPos = forExport ? frequencies.length : Math.min(frequencies.length, startPos + Math.ceil((logicalWidth - scrollableAreaX) / CHAR_WIDTH) + 1);
-        const xOffsetStart = forExport ? heatmapX : heatmapX - (scrollLeft % CHAR_WIDTH);
+        const startPos = forExport ? 0 : Math.floor(scrollLeft / boxWidth);
+        const endPos = forExport ? frequencies.length : Math.min(frequencies.length, startPos + Math.ceil((logicalWidth - scrollableAreaX) / boxWidth) + 1);
+        const xOffsetStart = forExport ? heatmapX : heatmapX - (scrollLeft % boxWidth);
         
         // Draw tick marks
         if (forExport) {
             // For export, draw all tick marks across full width
-            drawTickMarks(ctx, logicalWidth, 0, CHAR_WIDTH, LABEL_WIDTH, LABEL_WIDTH, logicalWidth);
+            drawTickMarks(ctx, logicalWidth, 0, boxWidth, LABEL_WIDTH, LABEL_WIDTH, logicalWidth);
         } else {
-            drawTickMarks(ctx, logicalWidth, scrollLeft, CHAR_WIDTH, LABEL_WIDTH, LABEL_WIDTH, logicalWidth);
+            drawTickMarks(ctx, logicalWidth, scrollLeft, boxWidth, LABEL_WIDTH, LABEL_WIDTH, logicalWidth);
         }
         
-        // Draw labels
+        // Draw labels (1/2 width)
         for (let i = 0; i < NUM_AMINO_ACIDS; i++) {
             const aa = AMINO_ACIDS_ORDERED[i];
             const y = heatmapY + i * aaRowHeight;
@@ -3131,13 +3277,13 @@
                 const finalB = Math.round(white.b + (darkBlue.b - white.b) * probability);
                 
                 ctx.fillStyle = `rgb(${finalR}, ${finalG}, ${finalB})`;
-                ctx.fillRect(xOffset, y, CHAR_WIDTH, aaRowHeight);
+                ctx.fillRect(xOffset, y, boxWidth, aaRowHeight);
             }
             
-            xOffset += CHAR_WIDTH;
+            xOffset += boxWidth;
         }
         
-        // Draw black boxes around wildtype
+        // Draw black boxes around wildtype (boxes are 1/2 width and height)
         const querySeqForBoxes = msaData.sequences.length > 0 ? msaData.sequences[0].sequence : '';
         ctx.strokeStyle = '#000';
         ctx.lineWidth = 1;
@@ -3148,10 +3294,10 @@
                 const wildtypeIndex = AMINO_ACIDS_ORDERED.indexOf(wildtypeAA);
                 if (wildtypeIndex >= 0) {
                     const y = heatmapY + wildtypeIndex * aaRowHeight;
-                    ctx.strokeRect(boxXOffset, y, CHAR_WIDTH, aaRowHeight);
+                    ctx.strokeRect(boxXOffset, y, boxWidth, aaRowHeight);
                 }
             }
-            boxXOffset += CHAR_WIDTH;
+            boxXOffset += boxWidth;
         }
         
         // Draw group boundaries
@@ -3161,14 +3307,15 @@
             const y = heatmapY + boundaryIdx * aaRowHeight;
             ctx.beginPath();
             ctx.moveTo(heatmapX, y);
-            ctx.lineTo(heatmapX + (msaData.queryLength * CHAR_WIDTH), y);
+            ctx.lineTo(heatmapX + (msaData.queryLength * boxWidth), y);
             ctx.stroke();
         }
         
-        // Draw query sequence
+        // Draw query sequence (boxes are 1/2 width, align with heatmap)
         if (msaData.sequences.length > 0) {
             const querySeq = msaData.sequences[0];
-            drawQuerySequence(ctx, totalWidth, queryY, queryRowHeight, querySeq, 0, scrollableAreaX, 0, frequencies.length, LABEL_WIDTH, totalWidth, false);
+            // Use heatmapX instead of scrollableAreaX to ensure perfect alignment with heatmap boxes
+            drawQuerySequence(ctx, totalWidth, queryY, queryRowHeight, querySeq, 0, heatmapX, 0, frequencies.length, LABEL_WIDTH, totalWidth, false, boxWidth);
         }
     }
     
@@ -3193,7 +3340,8 @@
         const LOGO_VERTICAL_PADDING = 12;
         const NUM_AMINO_ACIDS = AMINO_ACIDS_ORDERED.length;
         const aaRowHeight = CHAR_WIDTH;
-        const originalLogoHeight = NUM_AMINO_ACIDS * CHAR_WIDTH;
+        // Use scaled logo height from canvas data if available
+        const originalLogoHeight = logoCanvasData ? (logoCanvasData.originalLogoHeight || (NUM_AMINO_ACIDS * CHAR_WIDTH * 0.5)) : (NUM_AMINO_ACIDS * CHAR_WIDTH * 0.5);
         const logoY = scrollableAreaY + LOGO_VERTICAL_PADDING;
         const queryY = logoY + originalLogoHeight;
         const effectiveLogoHeight = queryY - logoY;
@@ -3523,6 +3671,17 @@
         },
         
         setMSAData: function(data, chainId = null) {
+
+    // Ensure container lays out header + stage as grid
+    (function ensureMSALayout() {
+        const container = document.getElementById('msa-viewer-container');
+        const stage = document.getElementById('msaView');
+        if (!container || !stage) return;
+        container.style.display = 'grid';
+        container.style.gridTemplateRows = 'auto auto'; // Both auto-size to content
+        stage.style.position = 'relative';
+    })();
+
             if (!chainId && callbacks.getRenderer) {
                 const renderer = callbacks.getRenderer();
                 if (renderer && renderer.currentObjectName) {
@@ -3605,9 +3764,6 @@
             if (msaViewEl) {
                 msaViewEl.classList.remove('hidden');
             }
-            
-            // Initialize resize observer
-            initResizeObserver();
             
             buildViewForMode(msaViewMode);
         },
@@ -3847,6 +4003,12 @@
             msaViewMode = mode;
             buildViewForMode(mode);
             
+            // Always render after mode switch (even if canvas was reused)
+            // Use requestAnimationFrame to ensure DOM updates are complete
+            requestAnimationFrame(() => {
+                renderForMode(mode);
+            });
+            
             // Adjust scroll position after mode switch
             if (msaData) {
                 let canvasWidth = 916;
@@ -3945,11 +4107,8 @@
             // Reset state variables to initial values
             currentChain = null;
             
-            // Disconnect resize observer
-            if (resizeObserver) {
-                resizeObserver.disconnect();
-                resizeObserver = null;
-            }
+            // Cleanup resize handler
+            cleanupResizeHandler();
         },
         
         buildMSAView: buildMSAView,

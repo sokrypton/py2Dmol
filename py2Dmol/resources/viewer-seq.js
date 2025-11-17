@@ -933,7 +933,7 @@
                     const itemWidth = item.type === 'ligand' ? ligandTokenWidth : charWidth;
                     
                     // Check if we need to wrap
-                    if (currentX + itemWidth > containerWidth - spacing) {
+                    if (currentX + itemWidth > sequenceWidth - spacing) {
                         currentX = lineStartX;
                         lineY += charHeight; // No extra spacing between wrapped lines in same chain
                         maxLineY = Math.max(maxLineY, lineY);
@@ -989,7 +989,7 @@
                     }
                     
                     // Check wrap before adding item
-                    if (currentX + itemWidth > containerWidth - spacing) {
+                    if (currentX + itemWidth > sequenceWidth - spacing) {
                         currentX = lineStartX;
                         lineY += charHeight; // No extra spacing between wrapped lines in same chain
                         maxLineY = Math.max(maxLineY, lineY);
@@ -1168,10 +1168,6 @@
             }
         }
         
-        // Get actual container width to fill it completely
-        const actualContainerRect = sequenceViewEl ? sequenceViewEl.getBoundingClientRect() : null;
-        const displayWidth = actualContainerRect && actualContainerRect.width > 0 ? actualContainerRect.width : containerWidth;
-        
         // Restrict visible height to 32 lines of characters
         const maxVisibleHeight = 32 * charHeight + spacing; // 32 lines + spacing
         const fullHeight = currentY; // Full content height
@@ -1183,7 +1179,7 @@
         const dpiMultiplier = targetDPI / standardDPI;
         
         // Canvas should be full height to render all content
-        canvas.width = displayWidth * dpiMultiplier;
+        canvas.width = sequenceWidth * dpiMultiplier;
         canvas.height = fullHeight * dpiMultiplier;
         
         // Set display size (CSS pixels) - canvas is full height
