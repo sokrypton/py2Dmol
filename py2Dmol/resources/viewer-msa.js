@@ -3730,16 +3730,29 @@
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         
-        // Determine tick interval based on range
+        // X-axis ticks: roughly every 32 pixels using "nice numbers"
+        const targetPixelSpacing = 32;
+        const approxNumTicks = Math.max(1, Math.floor(plotWidth / targetPixelSpacing));
+        
+        // Find the max residue number
         const maxTickValue = residueNumbers && residueNumbers.length > 0 
             ? Math.max(...residueNumbers.filter(n => n !== null && n !== undefined))
             : queryLength;
         
-        const xTickCount = Math.max(1, Math.floor(plotWidth / 100));
-        const rawTickStep = maxTickValue / xTickCount;
-        const multipleOfTen = Math.max(10, Math.ceil(rawTickStep / 10) * 10);
+        // Calculate nice tick interval (Excel-style: 1, 2, 5, 10, 20, 50, 100, ...)
+        const rawInterval = maxTickValue / approxNumTicks;
+        const magnitude = Math.pow(10, Math.floor(Math.log10(rawInterval)));
+        const normalized = rawInterval / magnitude; // between 1 and 10
         
-        // Iterate through positions and show ticks for residue numbers that are multiples
+        let niceFactor;
+        if (normalized <= 1) niceFactor = 1;
+        else if (normalized <= 2) niceFactor = 2;
+        else if (normalized <= 5) niceFactor = 5;
+        else niceFactor = 10;
+        
+        const tickInterval = niceFactor * magnitude;
+        
+        // Draw ticks at multiples of the interval
         for (let pos = 0; pos < queryLength; pos++) {
             let tickValue = pos + 1; // Default: 1-based position
             
@@ -3752,7 +3765,7 @@
             }
             
             // Show tick if value is a multiple of our interval
-            if (tickValue % multipleOfTen === 0) {
+            if (tickValue % tickInterval === 0) {
                 const x = pos >= queryLength - 1 ? plotX + plotWidth : plotX + (pos + 0.5) * charWidth;
                 ctx.fillText(String(tickValue), x, tickBaseY);
             }
@@ -3778,27 +3791,28 @@
         
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
+        
+        // Y-axis ticks: roughly every 16 pixels using "nice numbers"
+        const targetYPixelSpacing = 16;
+        const approxNumYTicks = Math.max(1, Math.floor(heatmapHeight / targetYPixelSpacing));
+        
+        // Calculate nice tick interval (Excel-style: 1, 2, 5, 10, 20, 50, 100, ...)
+        const rawYInterval = maxCoverage / approxNumYTicks;
+        const yMagnitude = Math.pow(10, Math.floor(Math.log10(rawYInterval)));
+        const yNormalized = rawYInterval / yMagnitude; // between 1 and 10
+        
+        let yNiceFactor;
+        if (yNormalized <= 1) yNiceFactor = 1;
+        else if (yNormalized <= 2) yNiceFactor = 2;
+        else if (yNormalized <= 5) yNiceFactor = 5;
+        else yNiceFactor = 10;
+        
+        const yTickInterval = yNiceFactor * yMagnitude;
+        
+        // Generate tick values
         const yTickValues = [];
-        const MIN_PIXEL_SPACING = 32;
-        const powersOfTwo = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
-        let startIndex = 0;
-        for (; startIndex < powersOfTwo.length - 1; startIndex++) {
-            const v1 = powersOfTwo[startIndex];
-            const v2 = powersOfTwo[startIndex + 1];
-            if (v2 > maxCoverage) break;
-            const p1 = (v1 / maxCoverage) * heatmapHeight;
-            const p2 = (v2 / maxCoverage) * heatmapHeight;
-            if (Math.abs(p2 - p1) >= MIN_PIXEL_SPACING) {
-                break;
-            }
-        }
-        for (let i = startIndex; i < powersOfTwo.length; i++) {
-            const val = powersOfTwo[i];
-            if (val > maxCoverage) break;
+        for (let val = yTickInterval; val <= maxCoverage; val += yTickInterval) {
             yTickValues.push(val);
-        }
-        if (yTickValues[yTickValues.length - 1] !== maxCoverage) {
-            yTickValues.push(maxCoverage);
         }
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 1;
