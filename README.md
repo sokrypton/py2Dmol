@@ -316,6 +316,72 @@ viewer.show()
 ```
 ---
 
+## Saving and Loading Viewer State
+
+You can save the entire viewer state (including all loaded structures, configurations, and viewer settings) to a JSON file and restore it later. This is useful for:
+- Sharing exact visualizations with collaborators
+- Saving work for later analysis
+- Creating reproducible figures
+
+### Saving State
+
+Save the current viewer state to a JSON file:
+
+```python
+import py2Dmol
+
+# Create and configure viewer
+viewer = py2Dmol.view(size=(600, 600), shadow=True, depth=True)
+viewer.add_pdb('protein.pdb')
+viewer.show()
+
+# Save the complete state
+viewer.save_state('my_visualization.json')
+```
+
+The state file includes:
+- All loaded structures and their coordinates
+- Current viewer settings (color mode, line width, shadows, etc.)
+- MSA data (if loaded)
+- Contact restraints (if added)
+- Current frame and object selection
+
+### Loading State
+
+Restore a saved state into a new viewer:
+
+```python
+import py2Dmol
+
+# Create new viewer and load saved state
+viewer = py2Dmol.view()
+viewer.load_state('my_visualization.json')
+
+# Display the restored viewer
+viewer.show()
+```
+
+**Note:** After calling `load_state()`, you must call `show()` to display the viewer.
+
+### Complete Save/Load Example
+
+```python
+import py2Dmol
+
+# Session 1: Create and save
+viewer_old = py2Dmol.view(size=(600, 600))
+viewer_old.add_pdb('protein.pdb')
+viewer_old.show()
+viewer_old.save_state('tmp.json')
+
+# Session 2: Load and continue
+viewer = py2Dmol.view()
+viewer.load_state('tmp.json')
+viewer.show()
+```
+
+---
+
 ## Reference
 
 ### Atom Types and Representative Atoms

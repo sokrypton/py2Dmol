@@ -1269,8 +1269,6 @@ class view:
             if vs.get("focal_length"):
                 self.config["ortho"] = vs["focal_length"]
         
-        # Call show() to display
-        if self.objects:
-            self.show()
-        else:
+        # State loaded - user must call show() to display
+        if not self.objects:
             print("Warning: No objects loaded from state file.")
