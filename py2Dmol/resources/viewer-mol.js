@@ -3463,8 +3463,7 @@ function initializePy2DmolViewer(containerElement) {
                 }
                 
                 const msaData = msaEntry.msaData;
-                const msaEntropy = msaData.entropy; // Pre-computed entropy array (one per MSA position)
-                const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps
+                const msaEntropy = msaData.entropy; // Pre-computed entropy array (one per filtered MSA position)
                 
                 const chainSequence = chainSequences[chainId];
                 if (!chainSequence) {
@@ -3472,39 +3471,32 @@ function initializePy2DmolViewer(containerElement) {
                 }
                 
                 // Find representative positions for this chain (position_types === 'P')
-                const chainPositions = []; // Array of position indices for this chain
+                const allChainPositions = []; // Array of all position indices for this chain
                 
                 for (let i = 0; i < positionCount; i++) {
                     if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
-                        chainPositions.push(i);
+                        allChainPositions.push(i);
                     }
                 }
                 
-                if (chainPositions.length === 0) {
+                if (allChainPositions.length === 0) {
                     continue; // No representative positions found
                 }
                 
                 // Sort positions by residue number to match sequence order
-                chainPositions.sort((a, b) => {
+                allChainPositions.sort((a, b) => {
                     const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
                     const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
                     return residueNumA - residueNumB;
                 });
                 
-                // Map MSA positions to chain positions (one-to-one mapping)
-                // Query sequence has no gaps, so mapping is straightforward
-                const msaQueryUpper = msaQuerySequence.toUpperCase();
-                const chainSeqUpper = chainSequence.toUpperCase();
-                const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length, msaEntropy.length);
-                
-                for (let i = 0; i < minLength; i++) {
-                    // Check if this MSA position matches the chain sequence position
-                    if (msaQueryUpper[i] === chainSeqUpper[i]) {
-                        // Match found - copy entropy value to corresponding position
-                        const positionIndex = chainPositions[i];
-                        if (positionIndex < entropyVector.length) {
-                            entropyVector[positionIndex] = msaEntropy[i];
-                        }
+                // Direct 1:1 mapping: msaEntropy[i] -> allChainPositions[i]
+                // MSA entropy array contains ALL positions (dimming is visual only, not in data)
+                const mapLength = Math.min(msaEntropy.length, allChainPositions.length);
+                for (let i = 0; i < mapLength; i++) {
+                    const positionIndex = allChainPositions[i];
+                    if (positionIndex < entropyVector.length) {
+                        entropyVector[positionIndex] = msaEntropy[i];
                     }
                 }
             }

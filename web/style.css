@@ -1287,6 +1287,14 @@ table.layout-table td {
     border-color: var(--color-gray-300);
 }
 
+.msa-canvas--coverage {
+    padding: 0;
+}
+
+.msa-canvas--coverage canvas {
+    border-radius: var(--radius-lg);
+}
+
 /* Hide default resize handle */
 .msa-canvas::-webkit-resizer {
     display: none;

@@ -43,7 +43,7 @@ const DEFAULT_MSA_IDENTITY = 0.15;
 
 document.addEventListener('DOMContentLoaded', () => {
     if (document.getElementById('viewer-container')) {
-        initializeApp();
+    initializeApp();
     }
 });
 
@@ -1521,6 +1521,10 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
 
 function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
     let models;
+    let modresMap = null;
+    let chemCompMap = null;
+    let cachedLoops = null;
+    
     try {
         const wantBU = !!(window.viewerConfig && window.viewerConfig.biounit);
         const isCIF = /^\s*data_/m.test(text) || /_atom_site\./.test(text);
@@ -1528,14 +1532,16 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         
         // Parse all models first
         let parseResult;
-        let cachedLoops = null;
+        
         if (isCIF) {
-            models = parseCIF(text);
-            // Get cached loops from parseCIF result (attached as _cachedLoops property)
-            cachedLoops = models._cachedLoops || window._lastCIFLoops || null;
+            parseResult = parseCIF(text);
+            models = parseResult.models;
+            cachedLoops = parseResult.loops;
+            chemCompMap = parseResult.chemCompMap;
         } else {
             parseResult = parsePDB(text);
             models = parseResult.models;
+            modresMap = parseResult.modresMap;
         }
         
         if (!models || models.length === 0 || models.every(m => m.length === 0)) {
@@ -1609,11 +1615,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         const ignore = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
         if (!ignore) return atoms;
         
-        
-        // Get MODRES and chemCompMap from global storage (set by parsePDB/parseCIF)
-        const modresMap = (typeof window !== 'undefined' && window._lastModresMap) ? window._lastModresMap : null;
-        const chemCompMap = (typeof window !== 'undefined' && window._lastChemCompMap) ? window._lastChemCompMap : null;
-        
+        // Use modresMap and chemCompMap from parent scope (from parse results)
         // Group positions by residue to check for structural characteristics
         const residueMap = new Map();
         for (const atom of atoms) {
@@ -1684,12 +1686,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         // This is needed to filter PAE matrix correctly
         // We need to identify ligands in the ORIGINAL model to map PAE positions correctly
         // IMPORTANT: includeAllResidues=true ensures ALL positions are included to match PAE matrix size
-        const originalFrameData = convertParsedToFrameData(models[i], null, null, true);
-        
-        // Calculate ligand positions using the same robust classification logic
-        // This ensures consistency with maybeFilterLigands and catches misclassified ligands
-        const modresMap = (typeof window !== 'undefined' && window._lastModresMap) ? window._lastModresMap : null;
-        const chemCompMap = (typeof window !== 'undefined' && window._lastChemCompMap) ? window._lastChemCompMap : null;
+        const originalFrameData = convertParsedToFrameData(models[i], modresMap, chemCompMap, true);
         
         // Build position map from original model for classification
         const originalResidueMap = new Map();
@@ -1767,7 +1764,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         const filteredPositionCount = model.length;
         
         // Convert filtered model to get final frame data
-        let frameData = convertParsedToFrameData(model);
+        let frameData = convertParsedToFrameData(model, modresMap, chemCompMap);
         if (frameData.coords.length === 0) continue;
 
         // Store PAE data
@@ -2858,8 +2855,8 @@ async function resolvePDBToUniProt(pdbId) {
         
         if (uniprotIds.length === 0) {
             throw new Error(`No UniProt mapping found for PDB ID ${pdbId}`);
-        }
-        
+    }
+    
         // Use the first UniProt ID found
         const uniprotId = uniprotIds[0];
         setStatus(`Found UniProt ID ${uniprotId} for PDB ${pdbId}`);
@@ -2881,21 +2878,21 @@ async function fetchMSAFromAlphaFold(uniprotId, originalId = null) {
     
     const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${uniprotId}-F1-msa_v6.a3m`;
     
-    const response = await fetch(msaUrl);
-    if (!response.ok) {
-        if (response.status === 404) {
+        const response = await fetch(msaUrl);
+        if (!response.ok) {
+            if (response.status === 404) {
             const idDisplay = originalId ? `PDB ${originalId} (UniProt ${uniprotId})` : `UniProt ID ${uniprotId}`;
             throw new Error(`MSA not found for ${idDisplay}. The structure may not be available in AlphaFold DB.`);
+            }
+            throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
         }
-        throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
-    }
-    
-    const msaText = await response.text();
-    
-    if (!msaText || msaText.trim().length === 0) {
-        throw new Error('Empty MSA file received');
-    }
-    
+        
+        const msaText = await response.text();
+        
+        if (!msaText || msaText.trim().length === 0) {
+            throw new Error('Empty MSA file received');
+        }
+        
     return msaText;
 }
 
@@ -2915,29 +2912,29 @@ function loadMSADataIntoViewerStandalone(msaData, uniprotId) {
         return false;
     }
     
-    window.MSAViewer.setMSAData(msaData, null);
-    setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
-    
-    // Update sequence count
-    const sequenceCountEl = document.getElementById('msaSequenceCount');
-    if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
-        const counts = window.MSAViewer.getSequenceCounts();
-        if (counts) {
-            sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
-        }
-    }
-    
-    // Update file name display (if exists)
-    const fileNameEl = document.getElementById('file-name');
-    if (fileNameEl) {
-        fileNameEl.textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
-    }
-    
-    // Show MSA viewer container
+                window.MSAViewer.setMSAData(msaData, null);
+                setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+                
+                // Update sequence count
+        const sequenceCountEl = document.getElementById('msaSequenceCount');
+        if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
+            const counts = window.MSAViewer.getSequenceCounts();
+                    if (counts) {
+                        sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
+                    }
+                }
+                
+                // Update file name display (if exists)
+                const fileNameEl = document.getElementById('file-name');
+                if (fileNameEl) {
+                    fileNameEl.textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
+                }
+                
+                // Show MSA viewer container
     const msaContainer = document.getElementById('msa-buttons');
-    if (msaContainer) {
-        msaContainer.style.display = 'block';
-    }
+                if (msaContainer) {
+                    msaContainer.style.display = 'block';
+                }
     showMSACanvasContainers();
     
     return true;
@@ -2968,8 +2965,8 @@ async function handleMSAFetch(id) {
         } catch (error) {
             setStatus(`Error: ${error.message}`, true);
             return;
-        }
-    } else {
+                }
+            } else {
         // Validate UniProt ID format (typically 6-10 characters, alphanumeric)
         if (!/^[A-Z0-9]{6,10}$/.test(uniprotId)) {
             setStatus('Invalid ID format. Please enter a 4-character PDB ID or 6-10 character UniProt ID (e.g., 4HHB or P0A8I3)', true);
@@ -3137,46 +3134,46 @@ function initMSADragAndDrop() {
  * Setup MSA page event listeners (unified for both DOMContentLoaded and immediate execution)
  */
 function setupMSAPageEventListeners() {
-    initializeMSAViewer();
-    
-    // Wire up fetch button
-    const fetchBtn = document.getElementById('fetch-btn');
-    const fetchInput = document.getElementById('fetch-uniprot-id');
-    
-    if (fetchBtn) {
-        fetchBtn.addEventListener('click', () => {
-            handleMSAFetch();
-        });
-    }
-    
-    // Allow Enter key to trigger fetch
-    if (fetchInput) {
-        fetchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                handleMSAFetch();
+            initializeMSAViewer();
+            
+            // Wire up fetch button
+            const fetchBtn = document.getElementById('fetch-btn');
+            const fetchInput = document.getElementById('fetch-uniprot-id');
+            
+            if (fetchBtn) {
+                fetchBtn.addEventListener('click', () => {
+                    handleMSAFetch();
+                });
             }
-        });
-    }
-    
-    // File upload button
-    const uploadButton = document.getElementById('upload-button');
-    const fileUpload = document.getElementById('file-upload');
-    
-    if (uploadButton && fileUpload) {
-        uploadButton.addEventListener('click', () => {
-            fileUpload.click();
-        });
-        
-        fileUpload.addEventListener('change', handleMSAFileUpload);
-    }
-    
-    // Initialize drag and drop
-    initMSADragAndDrop();
+            
+            // Allow Enter key to trigger fetch
+            if (fetchInput) {
+                fetchInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        handleMSAFetch();
+                    }
+                });
+            }
+            
+            // File upload button
+            const uploadButton = document.getElementById('upload-button');
+            const fileUpload = document.getElementById('file-upload');
+            
+            if (uploadButton && fileUpload) {
+                uploadButton.addEventListener('click', () => {
+                    fileUpload.click();
+                });
+                
+                fileUpload.addEventListener('change', handleMSAFileUpload);
+            }
+            
+            // Initialize drag and drop
+            initMSADragAndDrop();
     
     // Example buttons (unified)
     setupExampleButtons();
-}
-
+        }
+        
 // Initialize MSA viewer on DOM ready (for msa.html only)
 // Check if we're on msa.html by looking for msa.html-specific elements
 const isMSAHTML = document.getElementById('fetch-uniprot-id') !== null;
@@ -4125,12 +4122,18 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
  * Compute and store frequencies and logOdds in MSA data
  * These properties are computed once and stored with the MSA for performance
  * @param {Object} msaData - MSA data object
+ * @param {Array<boolean>} selectionMask - Optional mask indicating which positions to include (for dim mode)
  */
-function computeMSAProperties(msaData) {
+function computeMSAProperties(msaData, selectionMask = null) {
     if (!msaData || !msaData.sequences || msaData.sequences.length === 0) return;
     
     const queryLength = msaData.queryLength;
     const numSequences = msaData.sequences.length;
+    
+    // Use selectionMask from msaData if not provided
+    if (!selectionMask && msaData.selectionMask) {
+        selectionMask = msaData.selectionMask;
+    }
     const frequencies = msaData.frequencies || [];
     
     // Amino acid code mapping to array index (A=0, R=1, N=2, D=3, C=4, Q=5, E=6, G=7, H=8, I=9, L=10, K=11, M=12, F=13, P=14, S=15, T=16, W=17, Y=18, V=19)
@@ -4205,7 +4208,9 @@ function computeMSAProperties(msaData) {
         charCodeToAACode[86] = 19; // V
         charCodeToAACode[118] = 19; // v
         
-        // Compute frequencies
+        // Compute frequencies for ALL positions (dimming happens during rendering, not computation)
+        const resultFrequencies = [];
+        
         for (let pos = 0; pos < queryLength; pos++) {
             // Use typed array for counts (faster than object)
             const counts = new Uint32Array(20);
@@ -4237,10 +4242,10 @@ function computeMSAProperties(msaData) {
                 }
             }
             
-            frequencies[pos] = freq;
+            resultFrequencies.push(freq);
         }
         
-        msaData.frequencies = frequencies;
+        msaData.frequencies = resultFrequencies;
     }
     
     // Compute entropy from frequencies (if frequencies exist and entropy not already computed)
@@ -4248,8 +4253,9 @@ function computeMSAProperties(msaData) {
         const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
         const entropyValues = [];
         
-        for (let pos = 0; pos < queryLength; pos++) {
-            const freq = frequencies[pos];
+        // Compute entropy for ALL positions (frequencies array contains all positions)
+        for (let i = 0; i < msaData.frequencies.length; i++) {
+            const freq = msaData.frequencies[i];
             if (!freq) {
                 entropyValues.push(0);
                 continue;
@@ -4804,7 +4810,7 @@ function applySelectionToMSA() {
     
     // If all positions are selected, set a flag to indicate no dimming needed
     if (allSelected) {
-        window._msaSelectedPositions = null; // null means all selected (no dimming)
+        obj.msa.selectedPositions = null; // null means all selected (no dimming)
         if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
             window.MSAViewer.updateMSAViewSelectionState();
             // Update sequence count after filtering
@@ -4817,7 +4823,7 @@ function applySelectionToMSA() {
     
     if (selectedPositions.size === 0) {
         // Empty selection - dim everything
-        window._msaSelectedPositions = new Map();
+        obj.msa.selectedPositions = new Map();
         if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
             window.MSAViewer.updateMSAViewSelectionState();
             // Update sequence count after filtering
@@ -4896,9 +4902,9 @@ function applySelectionToMSA() {
         }
     }
     
-    // Store selected MSA positions globally for MSA viewer to use
+    // Store selected MSA positions in object's MSA state (per-object storage)
     // Store even if empty to indicate no selection (for dimming all positions)
-    window._msaSelectedPositions = msaSelectedPositions;
+    obj.msa.selectedPositions = msaSelectedPositions;
     
     // Trigger MSA viewer update
     if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
@@ -5003,7 +5009,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         const hasMetadata = (loadMSA && msaFiles.length > 0) || 
                            (loadPAE && jsonFiles.length > 0) || 
                            contactFiles.length > 0;
-        
+                
         if (hasMetadata) {
             // Add metadata to existing object
             const result = await addMetadataToExistingObject({
@@ -5014,21 +5020,21 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 loadPAE
             });
             return result;
+            }
         }
-    }
-
+        
     // Handle MSA-only input (no structure files)
     if (structureFiles.length === 0 && msaFilesToProcess.length > 0) {
         setStatus('MSA-only uploads are not supported on this page. Please use msa.html for standalone MSAs.', true);
-        return {
-            objectsLoaded: 0,
-            framesAdded: 0,
-            structureCount: 0,
-            paePairedCount: 0,
-            isTrajectory: false
-        };
-    }
-
+                    return {
+                        objectsLoaded: 0,
+                        framesAdded: 0,
+                        structureCount: 0,
+                        paePairedCount: 0,
+                        isTrajectory: false
+                    };
+                }
+                
     // If we get here and still no structure files, throw error
     if (structureFiles.length === 0) {
         throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);

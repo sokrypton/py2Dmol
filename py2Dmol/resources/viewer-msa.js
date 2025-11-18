@@ -1,7 +1,40 @@
 // ============================================================================
-// MSA VIEWER MODULE (Rewritten from scratch)
+// MSA VIEWER MODULE
 // ============================================================================
-// Simple, clean implementation with direct MSA position → atom index mapping
+/**
+ * DATA FLOW ARCHITECTURE
+ * 
+ * 1. SOURCE DATA (immutable after loading)
+ *    sourceMSA ← Loaded from file/API, never modified
+ *    
+ * 2. FILTERING PIPELINE (creates displayedMSA)
+ *    sourceMSA 
+ *      → buildSelectionMask()           [marks selected/dimmed positions]
+ *      → filterByCoverage()             [filters sequences by coverage]
+ *      → filterByIdentity()             [filters sequences by identity]
+ *      → sortByIdentity()               [sorts by identity (optional)]
+ *      → displayedMSA                   [final data with selectionMask]
+ * 
+ * 3. RENDERING (all 4 modes read displayedMSA)
+ *    displayedMSA → MSA Mode      [direct visualization]
+ *    displayedMSA → PSSM Mode     [via computePositionFrequencies]
+ *    displayedMSA → Logo Mode     [via computePositionFrequencies]
+ *    displayedMSA → Coverage Mode [via computeCoverageDataset]
+ * 
+ * 4. UPDATE TRIGGERS (re-run pipeline)
+ *    - Selection change          → applyFiltersAndRender()
+ *    - Coverage slider           → applyFiltersAndRender()
+ *    - Identity slider           → applyFiltersAndRender()
+ *    - Sort toggle               → applyFiltersAndRender()
+ * 
+ * NAMING CONVENTIONS:
+ *    compute*    - Pure calculations (no state changes)
+ *    filter*     - Returns filtered subset
+ *    apply*      - Updates state + triggers render
+ *    build*      - Creates canvas/view setup
+ *    render*     - Draws to canvas
+ *    get*        - Retrieves/derives data
+ */
 
 (function() {
     'use strict';
@@ -384,21 +417,37 @@
     // ============================================================================
     // INTERNAL STATE
     // ============================================================================
-    let msaData = null; // { sequences: [], querySequence: string, queryLength: number, residueNumbers: [] }
-    let originalMSAData = null; // Original unfiltered MSA data
-    let msaResidueNumbers = null; // Array mapping MSA positions to structure residue_numbers values
+    // ============================================================================
+    // DATA STATE - Single Source of Truth
+    // ============================================================================
+    
+    // Primary MSA data (what user currently sees after all filters applied)
+    let displayedMSA = null; // { sequences: [], querySequence: string, queryLength: number, residueNumbers: [] }
+    
+    // Source data (immutable after loading, never filtered)
+    let sourceMSA = null; // Original unfiltered MSA data
+    
+    // Position mapping
+    let positionToResidueMap = null; // Array mapping MSA positions to structure residue_numbers values
+    
+    // Canvas data for each mode
     let msaCanvasData = null; // Canvas-based structure for MSA mode
     let pssmCanvasData = null; // Canvas-based structure for PSSM mode
     let logoCanvasData = null; // Canvas-based structure for Logo mode
-    let msaViewMode = 'msa'; // 'msa', 'pssm', or 'logo'
+    let coverageCanvasData = null; // Canvas-based structure for Coverage mode
+    
+    // View state
+    let msaViewMode = 'msa'; // 'msa', 'pssm', 'logo', or 'coverage'
     let useBitScore = true; // true for bit-score, false for probabilities
-    let sortSequences = true; // true for sorted by similarity, false for original order
-    let currentChain = null; // Current chain ID
     let renderScheduled = false;
-    let coverageCutoff = 0.75;
-    let previewCoverageCutoff = 0.75;
-    let identityCutoff = 0.15;
-    let previewIdentityCutoff = 0.15;
+    
+    // Filter and sort settings
+    let shouldSortByIdentity = true; // true for sorted by similarity, false for original order
+    let activeChainId = null; // Current chain ID
+    let minCoverageThreshold = 0.75;
+    let previewCoverageThreshold = 0.75;
+    let minIdentityThreshold = 0.15;
+    let previewIdentityThreshold = 0.15;
     
     
     // Virtual scrolling state
@@ -502,21 +551,43 @@
     };
     
     // ============================================================================
+    // CONSTANTS
+    // ============================================================================
+    
+    const MIN_CANVAS_WIDTH = 948;
+    const DEFAULT_COVERAGE_HEIGHT = 420;
+    
+    // ============================================================================
     // HELPER FUNCTIONS
     // ============================================================================
+    
+    // ============================================================================
+    // UTILITY FUNCTIONS
+    // ============================================================================
+    
+    function clamp01(value) {
+        return Math.max(0, Math.min(1, value));
+    }
+    
+    function clearCanvas(ctx, width, height) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+    }
+    
+    function isQuerySequence(seqName) {
+        return seqName === '>query' || seqName.toLowerCase().includes('query');
+    }
+    
+    function isGapResidue(residue) {
+        return !residue || residue === '-' || residue === '.' || residue === ' ' || residue === 'X';
+    }
     
     function scheduleRender() {
         if (renderScheduled) return;
         renderScheduled = true;
         requestAnimationFrame(() => {
             renderScheduled = false;
-            if (msaViewMode === 'msa') {
-                renderMSACanvas();
-            } else if (msaViewMode === 'pssm') {
-                renderPSSMCanvas();
-            } else if (msaViewMode === 'logo') {
-                renderLogoCanvas();
-            }
+            renderForMode(msaViewMode);
         });
     }
     
@@ -531,6 +602,9 @@
             case 'logo':
                 buildLogoView();
                 break;
+            case 'coverage':
+                buildCoverageView();
+                break;
         }
     }
     
@@ -544,6 +618,9 @@
                 break;
             case 'logo':
                 renderLogoCanvas();
+                break;
+            case 'coverage':
+                renderCoverageCanvas();
                 break;
         }
     }
@@ -572,66 +649,207 @@
         return name.substring(0, maxLength - 3) + '...';
     }
     
-    function calculateSequenceCoverage(sequence, queryLength) {
+    // ============================================================================
+    // CORE COMPUTATIONS (Pure Functions)
+    // ============================================================================
+    
+    function computeSequenceCoverage(sequence, queryLength, selectionMask = null) {
         if (!sequence || queryLength === 0) return 0;
         let nonGapCount = 0;
+        let effectiveLength = 0;
+        
         for (let i = 0; i < sequence.length; i++) {
-            if (sequence[i] !== '-' && sequence[i] !== 'X') {
+            // Only count positions that are selected (if selectionMask is provided)
+            if (selectionMask && !selectionMask[i]) continue;
+            
+            effectiveLength++;
+            if (!isGapResidue(sequence[i])) {
                 nonGapCount++;
             }
         }
-        return nonGapCount / queryLength;
+        
+        return effectiveLength > 0 ? nonGapCount / effectiveLength : 0;
     }
     
-    function calculateSequenceSimilarity(seq1, seq2) {
+    function computeSequenceIdentity(seq1, seq2, selectionMask = null) {
         if (!seq1 || !seq2 || seq1.length !== seq2.length) return 0;
         let matches = 0;
         let total = 0;
+        
         for (let i = 0; i < seq1.length; i++) {
+            // Only count positions that are selected (if selectionMask is provided)
+            if (selectionMask && !selectionMask[i]) continue;
+            
             const c1 = seq1[i].toUpperCase();
             const c2 = seq2[i].toUpperCase();
-            if (c1 !== '-' && c1 !== 'X' && c2 !== '-' && c2 !== 'X') {
-                total++;
-                if (c1 === c2) matches++;
+            total++;
+            if (!isGapResidue(c1) && !isGapResidue(c2) && c1 === c2) {
+                matches++;
             }
         }
+        
         return total > 0 ? matches / total : 0;
     }
+
+    const COVERAGE_COLOR_STOPS = [
+        { value: 0.0, color: [239, 68, 68] },   // red
+        { value: 0.5, color: [252, 211, 77] },  // yellow
+        { value: 0.75, color: [16, 185, 129] }, // green
+        { value: 1.0, color: [37, 99, 235] }    // blue
+    ];
+
+    function interpolateColor(colorA, colorB, t) {
+        return [
+            Math.round(colorA[0] + (colorB[0] - colorA[0]) * t),
+            Math.round(colorA[1] + (colorB[1] - colorA[1]) * t),
+            Math.round(colorA[2] + (colorB[2] - colorA[2]) * t)
+        ];
+    }
+
+    function getCoverageColor(identity) {
+        const clamped = clamp01(identity || 0);
+        for (let i = 0; i < COVERAGE_COLOR_STOPS.length - 1; i++) {
+            const stopA = COVERAGE_COLOR_STOPS[i];
+            const stopB = COVERAGE_COLOR_STOPS[i + 1];
+            if (clamped >= stopA.value && clamped <= stopB.value) {
+                const span = stopB.value - stopA.value || 1;
+                const t = (clamped - stopA.value) / span;
+                return interpolateColor(stopA.color, stopB.color, t);
+            }
+        }
+        return COVERAGE_COLOR_STOPS[COVERAGE_COLOR_STOPS.length - 1].color;
+    }
     
-    function filterSequencesByCoverage(sequences, minCoverage = 0.5) {
+    // ============================================================================
+    // SELECTION STATE HELPERS
+    // ============================================================================
+    
+    /**
+     * Get current selection state from renderer
+     * @returns {{positions: Map|null, chains: Array<string>|null}}
+     */
+    function getSelectionState() {
+        if (!callbacks.getRenderer) {
+            return { positions: null, chains: null };
+        }
+        
+        const renderer = callbacks.getRenderer();
+        if (!renderer?.currentObjectName) {
+            return { positions: null, chains: null };
+        }
+        
+        const obj = renderer.objectsData[renderer.currentObjectName];
+        if (!obj?.msa || !activeChainId) {
+            return { positions: null, chains: null };
+        }
+        
+        // Get chains that map to this MSA
+        const querySeq = obj.msa.chainToSequence[activeChainId];
+        const msaEntry = querySeq && obj.msa.msasBySequence[querySeq];
+        const chains = msaEntry?.chains || [activeChainId];
+        
+        // Get selection positions from object's MSA state (per-object storage)
+        const positions = obj.msa.selectedPositions !== undefined 
+            ? obj.msa.selectedPositions 
+            : null;
+        
+        return { positions, chains };
+    }
+    
+    // ============================================================================
+    // FILTERING & TRANSFORMATION
+    // ============================================================================
+    
+    /**
+     * Unified filtering pipeline - applies all filters in correct order
+     * @param {Object} sourceData - Original unfiltered MSA data
+     * @param {Object} options - Filter options
+     * @returns {Object} Filtered MSA data
+     */
+    function computeFilteredMSA(sourceData, options = {}) {
+        const {
+            selectedPositions = null,
+            chains = null,
+            minCoverage = minCoverageThreshold,
+            minIdentity = minIdentityThreshold,
+            shouldSort = shouldSortByIdentity
+        } = options;
+        
+        // Prepare base data structure
+        const baseMSAData = {
+            sequences: sourceData.sequencesOriginal || sourceData.sequences,
+            querySequence: sourceData.querySequence,
+            queryLength: sourceData.queryLength,
+            queryIndex: sourceData.queryIndex || 0
+        };
+        if (sourceData.residueNumbers) {
+            baseMSAData.residueNumbers = [...sourceData.residueNumbers];
+        }
+        if (sourceData.sequencesOriginal) {
+            baseMSAData.sequencesOriginal = sourceData.sequencesOriginal;
+        }
+        
+        // 1. Build selection mask (marks selected vs dimmed positions)
+        const selectionProcessed = buildSelectionMask(baseMSAData, chains, selectedPositions);
+        
+        // Get selection mask for computing coverage/identity only on selected positions
+        const mask = selectionProcessed.selectionMask;
+        
+        // 2. Filter by coverage (removes low-coverage sequences)
+        let filtered = filterByCoverage(selectionProcessed.sequences, minCoverage, mask);
+        
+        // 3. Filter by identity (removes low-identity sequences)
+        filtered = filterByIdentity(filtered, selectionProcessed.querySequence, minIdentity, mask);
+        
+        // 4. Sort if enabled
+        if (shouldSort) {
+            filtered = sortByIdentity(filtered, selectionProcessed.querySequence, selectionProcessed.queryLength, mask);
+        }
+        
+        return {
+            sequences: filtered,
+            querySequence: selectionProcessed.querySequence,
+            queryLength: selectionProcessed.queryLength,
+            queryIndex: selectionProcessed.queryIndex || 0,
+            residueNumbers: selectionProcessed.residueNumbers,
+            selectionMask: selectionProcessed.selectionMask // Include selection mask for dimming
+        };
+    }
+    
+    function filterByCoverage(sequences, minCoverage = 0.5, selectionMask = null) {
         if (!sequences || sequences.length === 0) return [];
         const queryLength = sequences[0]?.sequence?.length || 0;
         return sequences.filter(seq => {
-            const coverage = calculateSequenceCoverage(seq.sequence, queryLength);
+            const coverage = computeSequenceCoverage(seq.sequence, queryLength, selectionMask);
             return coverage >= minCoverage;
         });
     }
     
-    function filterSequencesByIdentity(sequences, querySequence, minIdentity = 0.15) {
+    function filterByIdentity(sequences, querySequence, minIdentity = 0.15, selectionMask = null) {
         if (!sequences || sequences.length === 0 || !querySequence) return sequences;
         return sequences.filter(seq => {
-            if (seq.name === '>query' || seq.name.toLowerCase().includes('query')) return true;
+            if (isQuerySequence(seq.name)) return true;
             // Use pre-calculated identity if available, otherwise calculate it
             if (seq.identity !== undefined) {
                 return seq.identity >= minIdentity;
             }
-            const identity = calculateSequenceSimilarity(seq.sequence, querySequence);
+            const identity = computeSequenceIdentity(seq.sequence, querySequence, selectionMask);
             return identity >= minIdentity;
         });
     }
     
-    function sortSequencesByIdentity(sequences, querySequence, queryLength) {
+    function sortByIdentity(sequences, querySequence, queryLength, selectionMask = null) {
         if (!sequences || sequences.length === 0 || !querySequence) return sequences;
         
         const sequencesWithIdentity = sequences.map(seq => ({
             ...seq,
-            identity: calculateSequenceSimilarity(seq.sequence, querySequence),
-            coverage: calculateSequenceCoverage(seq.sequence, queryLength)
+            identity: computeSequenceIdentity(seq.sequence, querySequence, selectionMask),
+            coverage: computeSequenceCoverage(seq.sequence, queryLength, selectionMask)
         }));
         
         sequencesWithIdentity.sort((a, b) => {
-            if (a.name === '>query' || a.name.toLowerCase().includes('query')) return -1;
-            if (b.name === '>query' || b.name.toLowerCase().includes('query')) return 1;
+            if (isQuerySequence(a.name)) return -1;
+            if (isQuerySequence(b.name)) return 1;
             return b.identity - a.identity;
         });
         
@@ -674,7 +892,7 @@
         
         if (sequences.length === 0) return null;
         
-        let queryIndex = sequences.findIndex(s => s.name.toLowerCase().includes('query'));
+        let queryIndex = sequences.findIndex(s => isQuerySequence(s.name));
         if (queryIndex === -1) queryIndex = 0;
         
         const querySequence = sequences[queryIndex].sequence;
@@ -683,7 +901,7 @@
         }
         
         const queryLength = querySequence.length;
-        const sorted = sortSequencesByIdentity(sequences, querySequence, queryLength);
+        const sorted = sortByIdentity(sequences, querySequence, queryLength);
         
         return {
             sequences: sorted,
@@ -774,7 +992,7 @@
             };
         });
         
-        const sorted = sortSequencesByIdentity(filteredSequences, querySequence, queryLength);
+        const sorted = sortByIdentity(filteredSequences, querySequence, queryLength);
         
         return {
             sequences: sorted,
@@ -870,7 +1088,7 @@
             };
         });
         
-        const sorted = sortSequencesByIdentity(filteredSequences, querySequence, queryLength);
+        const sorted = sortByIdentity(filteredSequences, querySequence, queryLength);
         
         return {
             sequences: sorted,
@@ -892,13 +1110,6 @@
         return CHAR_WIDTH; // Full width for logo/PSSM
     }
     
-    function getCanvasDataForMode(mode) {
-        if (mode === 'msa') return msaCanvasData;
-        if (mode === 'pssm') return pssmCanvasData;
-        if (mode === 'logo') return logoCanvasData;
-        return null;
-    }
-    
     // Get canvas container dimensions (accounting for padding)
     function getContainerDimensions() {
         const canvasContainer = document.querySelector('.msa-canvas');
@@ -911,9 +1122,33 @@
             const height = Math.max(1, Math.floor(cr.height - (padding * 2)) || 420);
             return { width, height };
         }
-
+    
         // Fallback: default dimensions
         return { width: 948, height: 420 };
+    }
+
+    // Helper specifically for coverage mode: measure available width next to header
+    function getMSAStageDimensions() {
+        const header = document.getElementById('msa-buttons');
+        if (!header) return null;
+        const parent = header.parentElement || header;
+        const rect = parent.getBoundingClientRect();
+        if (!rect || rect.width <= 0) return null;
+        
+        let paddingX = 0;
+        if (window.getComputedStyle) {
+            const styles = window.getComputedStyle(parent);
+            const parseSize = (value) => {
+                const parsed = parseFloat(value);
+                return Number.isFinite(parsed) ? parsed : 0;
+            };
+            paddingX = parseSize(styles.paddingLeft) + parseSize(styles.paddingRight);
+        }
+        
+        return {
+            width: Math.max(1, Math.floor(rect.width - paddingX)),
+            height: Math.max(1, Math.floor(rect.height))
+        };
     }
     
     // ============================================================================
@@ -939,6 +1174,11 @@
             scrollableAreaY = TICK_ROW_HEIGHT + CHAR_WIDTH;
             scrollableAreaWidth = logicalWidth - scrollableAreaX; // No V-scroll
             scrollableAreaHeight = logicalHeight - scrollableAreaY - SCROLLBAR_WIDTH;
+        } else if (mode === 'coverage') {
+            scrollableAreaX = Y_AXIS_WIDTH;
+            scrollableAreaY = 0;
+            scrollableAreaWidth = logicalWidth - scrollableAreaX; // No scrolling, stretch to fill
+            scrollableAreaHeight = logicalHeight; // Full height, no scrollbar
         } else { // logo
             scrollableAreaX = Y_AXIS_WIDTH;
             // Logo starts at top, query and ticks are below
@@ -959,14 +1199,16 @@
     
     /**
      * Calculate scroll limits for a given mode
-     * @param {string} mode - 'msa', 'pssm', or 'logo'
+     * @param {string} mode - 'msa', 'pssm', 'logo', or 'coverage'
      * @param {number} charWidth - Character width for the mode
      * @param {number} canvasWidth - Canvas width
      * @param {number} canvasHeight - Canvas height
      * @returns {Object} Object with horizontal and vertical scroll limits
      */
     function getScrollLimitsForMode(mode, charWidth, canvasWidth, canvasHeight) {
-        if (!msaData) {
+        // For coverage mode, use sourceMSA if available
+        const dataToUse = (mode === 'coverage' && sourceMSA) ? sourceMSA : displayedMSA;
+        if (!dataToUse) {
             return {
                 horizontal: { total: 0, max: 0 },
                 vertical: { total: 0, max: 0 }
@@ -976,14 +1218,14 @@
         const { scrollableAreaX, scrollableAreaWidth, scrollableAreaHeight } = 
             getScrollableAreaForMode(mode, canvasWidth, canvasHeight);
         
-        const totalScrollableWidth = msaData.queryLength * charWidth;
+        const totalScrollableWidth = dataToUse.queryLength * charWidth;
         const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
         
         let totalScrollableHeight = 0;
         let maxScrollY = 0;
         
         if (mode === 'msa') {
-            totalScrollableHeight = (msaData.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
+            totalScrollableHeight = (dataToUse.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
             maxScrollY = Math.max(0, totalScrollableHeight - scrollableAreaHeight);
         }
         
@@ -1000,15 +1242,15 @@
     }
     
     function clampScrollTop(canvasHeight) {
-        if (!msaData) return;
+        if (!displayedMSA) return;
         const { scrollableAreaHeight } = getScrollableAreaDimensions(canvasHeight);
-        const totalScrollableHeight = (msaData.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
+        const totalScrollableHeight = (displayedMSA.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
         const maxScroll = Math.max(0, totalScrollableHeight - scrollableAreaHeight);
         scrollTop = Math.max(0, Math.min(scrollTop, maxScroll));
     }
     
     function clampScrollLeft(canvasWidth, charWidth) {
-        if (!msaData) return;
+        if (!displayedMSA) return;
         let scrollableAreaX = 0;
         if (msaViewMode === 'msa') {
             scrollableAreaX = NAME_COLUMN_WIDTH;
@@ -1019,13 +1261,13 @@
         }
         
         const scrollableAreaWidth = canvasWidth - scrollableAreaX - (msaViewMode === 'msa' ? SCROLLBAR_WIDTH : 0);
-        const totalContentWidth = msaData.queryLength * charWidth;
+        const totalContentWidth = displayedMSA.queryLength * charWidth;
         const maxScrollLeft = Math.max(0, totalContentWidth - scrollableAreaWidth);
         scrollLeft = Math.max(0, Math.min(scrollLeft, maxScrollLeft));
     }
     
     function getVisibleSequenceRange(canvasHeight) {
-        if (!msaData || !msaCanvasData) return { start: 0, end: 0 };
+        if (!displayedMSA || !msaCanvasData) return { start: 0, end: 0 };
         const { scrollableAreaHeight } = getScrollableAreaDimensions(canvasHeight);
         clampScrollTop(canvasHeight);
         const startSequenceIndex = Math.max(1, Math.floor(scrollTop / SEQUENCE_ROW_HEIGHT));
@@ -1034,24 +1276,24 @@
         const topBuffer = 1;
         const bottomBuffer = 2;
         const start = Math.max(1, startSequenceIndex - topBuffer);
-        const endSequenceIndex = Math.min(msaData.sequences.length, startSequenceIndex + visibleRows + bottomBuffer);
+        const endSequenceIndex = Math.min(displayedMSA.sequences.length, startSequenceIndex + visibleRows + bottomBuffer);
         return { start: start, end: endSequenceIndex };
     }
     
     function drawTickMarks(ctx, logicalWidth, scrollLeft, charWidth, scrollableAreaX, minX, maxX, tickY = 0) {
-        if (!msaData) return;
+        if (!displayedMSA) return;
         const tickRowHeight = TICK_ROW_HEIGHT;
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, tickY, logicalWidth, tickRowHeight);
         
         const visibleStartPos = Math.floor(scrollLeft / charWidth);
-        const visibleEndPos = Math.min(msaData.queryLength, visibleStartPos + Math.ceil((maxX - minX) / charWidth) + 1);
+        const visibleEndPos = Math.min(displayedMSA.queryLength, visibleStartPos + Math.ceil((maxX - minX) / charWidth) + 1);
         
-        // Use filtered residueNumbers from msaData if available, otherwise fall back to global msaResidueNumbers
-        const residueNumbers = msaData.residueNumbers || msaResidueNumbers;
+        // Use filtered residueNumbers from displayedMSA if available, otherwise fall back to global positionToResidueMap
+        const residueNumbers = displayedMSA.residueNumbers || positionToResidueMap;
         
         let xOffset = scrollableAreaX - (scrollLeft % charWidth);
-        for (let pos = visibleStartPos; pos < visibleEndPos && pos < msaData.queryLength; pos++) {
+        for (let pos = visibleStartPos; pos < visibleEndPos && pos < displayedMSA.queryLength; pos++) {
             // Use residue_numbers if available, otherwise use 1-based position numbering
             let tickValue;
             if (residueNumbers && pos < residueNumbers.length && residueNumbers[pos] !== null) {
@@ -1086,7 +1328,7 @@
      * @param {string} chainId - Chain ID to map
      * @returns {Array|null} - Array mapping MSA position to residue_numbers, or null if not available
      */
-    function buildMSAResidueNumbersMapping(chainId) {
+    function computePositionToResidueMapping(chainId, querySequence = null) {
         if (!callbacks.getRenderer) return null;
         
         const renderer = callbacks.getRenderer();
@@ -1103,10 +1345,11 @@
         if (!querySeq) return null;
         
         const msaEntry = obj.msa.msasBySequence[querySeq];
-        if (!msaEntry || !msaEntry.msaData) return null;
+        if (!msaEntry) return null;
         
-        const msaData = msaEntry.msaData;
-        const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps (removed during parsing)
+        // Use provided querySequence or fall back to stored MSA data
+        const msaQuerySequence = querySequence || msaEntry.displayedMSA?.querySequence;
+        if (!msaQuerySequence) return null;
         
         // Check if extractChainSequences is available (from app.js)
         const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function' 
@@ -1261,7 +1504,7 @@
      * Draw query sequence row (used by MSA, PSSM, and Logo modes)
      */
     function drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, labelWidth, totalWidth, drawUnderline = true, charWidth = CHAR_WIDTH) {
-        if (!msaData || !querySeq) return;
+        if (!displayedMSA || !querySeq) return;
         
         // Draw white background, but don't cover the y-axis area (start from labelWidth)
         ctx.fillStyle = '#ffffff';
@@ -1320,7 +1563,7 @@
      * Draw horizontal scrollbar (used by PSSM and Logo modes)
      */
     function drawHorizontalScrollbar(ctx, logicalWidth, logicalHeight, scrollableAreaX, scrollableAreaWidth, labelWidth, totalScrollableWidth) {
-        if (!msaData) return;
+        if (!displayedMSA) return;
         
         const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
         const hScrollbarY = logicalHeight - SCROLLBAR_WIDTH;
@@ -1349,159 +1592,67 @@
     // ============================================================================
     
     /**
-     * Check if an MSA position should be visible (selected)
-     * @param {number} msaPos - MSA position index (0-based)
+     * Build selection mask for MSA positions
+     * Marks which positions are selected (true) vs dimmed (false)
+     * @param {Object} sourceMSAData - Original MSA data
      * @param {Array<string>} chains - Array of chain IDs that map to this MSA
      * @param {Map<string, Set<number>>} msaSelectedPositions - Map of chainId -> Set of selected MSA positions
-     * @returns {boolean} - True if position should be visible
+     * @returns {Object} - MSA data with selectionMask array
      */
-    function isPositionVisible(msaPos, chains, msaSelectedPositions) {
-        if (!chains || chains.length === 0) return true;
-        
-        // null means all positions are selected (default mode)
-        if (msaSelectedPositions === null) return true;
-        
-        // Empty Map means no positions selected - hide everything
-        if (!msaSelectedPositions || msaSelectedPositions.size === 0) return false;
-        
-        const totalChains = chains.length;
-        let selectedCount = 0;
-        
-        for (const chainId of chains) {
-            const chainSelected = msaSelectedPositions.get(chainId);
-            if (chainSelected && chainSelected.has(msaPos)) {
-                selectedCount++;
-            }
-        }
-        
-        // Show if at least one chain has it selected
-        return selectedCount > 0;
-    }
-    
-    /**
-     * Filter MSA data to remove unselected positions
-     * @param {Object} sourceMSAData - Original MSA data to filter
-     * @param {Array<string>} chains - Array of chain IDs that map to this MSA
-     * @param {Map<string, Set<number>>} msaSelectedPositions - Map of chainId -> Set of selected MSA positions
-     * @returns {Object} - Filtered MSA data with only selected positions
-     */
-    function filterMSADataBySelection(sourceMSAData, chains, msaSelectedPositions) {
+    function buildSelectionMask(sourceMSAData, chains, msaSelectedPositions) {
         if (!sourceMSAData || !sourceMSAData.sequences || sourceMSAData.sequences.length === 0) {
             return sourceMSAData;
         }
         
-        // If all positions are selected (null) or no selection data, return original
+        const queryLength = sourceMSAData.queryLength || sourceMSAData.querySequence?.length || 0;
+        const selectionMask = new Array(queryLength);
+        
+        // If null, all positions are selected (default mode)
         if (msaSelectedPositions === null) {
-            return sourceMSAData;
-        }
-        if (!msaSelectedPositions || msaSelectedPositions.size === 0) {
-            // No selection - return empty MSA
-            return {
-                sequences: sourceMSAData.sequences.map(seq => ({ name: seq.name, sequence: '' })),
-                querySequence: '',
-                queryLength: 0,
-                queryIndex: sourceMSAData.queryIndex || 0,
-                residueNumbers: []
-            };
-        }
-        
-        // Build set of visible positions (positions that are selected in at least one chain)
-        const visiblePositions = new Set();
-        if (chains && chains.length > 0) {
-            for (let pos = 0; pos < sourceMSAData.queryLength; pos++) {
-                if (isPositionVisible(pos, chains, msaSelectedPositions)) {
-                    visiblePositions.add(pos);
-                }
-            }
+            selectionMask.fill(true);
+        } else if (!msaSelectedPositions || msaSelectedPositions.size === 0) {
+            // No selection - treat as all selected
+            selectionMask.fill(true);
         } else {
-            // No chain info - show all positions
-            for (let pos = 0; pos < sourceMSAData.queryLength; pos++) {
-                visiblePositions.add(pos);
-            }
-        }
-        
-        if (visiblePositions.size === 0) {
-            // No visible positions - return empty MSA
-            return {
-                sequences: sourceMSAData.sequences.map(seq => ({ name: seq.name, sequence: '' })),
-                querySequence: '',
-                queryLength: 0,
-                queryIndex: sourceMSAData.queryIndex || 0,
-                residueNumbers: []
-            };
-        }
-        
-        // Filter sequences: remove positions that are not visible
-        // Query sequence has no gaps, so mapping is straightforward
-        const querySequence = sourceMSAData.querySequence || '';
-        
-        // Initialize filtered sequences
-        const filteredSequences = [];
-        for (let j = 0; j < sourceMSAData.sequences.length; j++) {
-            filteredSequences.push({ 
-                name: sourceMSAData.sequences[j].name, 
-                sequence: '' 
-            });
-        }
-        
-        const filteredQuerySequence = [];
-        const filteredResidueNumbers = [];
-        
-        // Walk through query sequence (no gaps) and filter based on visibility
-        for (let i = 0; i < querySequence.length; i++) {
-            // Check if this MSA position is visible
-            if (visiblePositions.has(i)) {
-                // Include this position (entire column)
-                for (let seqIdx = 0; seqIdx < sourceMSAData.sequences.length; seqIdx++) {
-                    filteredSequences[seqIdx].sequence += (sourceMSAData.sequences[seqIdx].sequence[i] || '-');
+            // Check each position - show if at least one chain has it selected
+            for (let pos = 0; pos < queryLength; pos++) {
+                if (!chains || chains.length === 0) {
+                    selectionMask[pos] = true;
+                    continue;
                 }
-                filteredQuerySequence.push(querySequence[i]);
                 
-                // Preserve residueNumbers if available
-                // residueNumbers is indexed by query sequence position i
-                if (sourceMSAData.residueNumbers && i < sourceMSAData.residueNumbers.length) {
-                    const residueNum = sourceMSAData.residueNumbers[i];
-                    if (residueNum !== null && residueNum !== undefined) {
-                        filteredResidueNumbers.push(residueNum);
+                let isSelected = false;
+                for (const chainId of chains) {
+                    const chainSelected = msaSelectedPositions.get(chainId);
+                    if (chainSelected && chainSelected.has(pos)) {
+                        isSelected = true;
+                        break; // Early exit optimization
                     }
                 }
+                selectionMask[pos] = isSelected;
             }
         }
         
-        // Calculate new queryLength (query sequence has no gaps)
-        const newQueryLength = filteredQuerySequence.length;
-        const filteredQuerySeqStr = filteredQuerySequence.join('');
-        
-        // Build filtered MSA data
-        const filteredMSA = {
-            sequences: filteredSequences.length > 0 ? filteredSequences : sourceMSAData.sequences.map(seq => ({ name: seq.name, sequence: '' })),
-            querySequence: filteredQuerySeqStr,
-            queryLength: newQueryLength,
-            queryIndex: sourceMSAData.queryIndex || 0
+        return {
+            ...sourceMSAData,
+            selectionMask
         };
-        
-        // Preserve residueNumbers if available - always set it so we know it's filtered
-        // Even if empty, set it so drawTickMarks knows to use filtered data
-        filteredMSA.residueNumbers = filteredResidueNumbers.length > 0 ? filteredResidueNumbers : undefined;
-        
-        // Preserve other properties
-        if (sourceMSAData.sequencesOriginal) {
-            filteredMSA.sequencesOriginal = sourceMSAData.sequencesOriginal;
-        }
-        
-        return filteredMSA;
     }
     
+    // filterBySelectedPositions() removed - now only using dim mode
+    
+    // ============================================================================
+    // RENDERERS (Mode-Specific Drawing)
+    // ============================================================================
+    
     function renderMSACanvas() {
-        if (!msaCanvasData || !msaData) return;
+        if (!msaCanvasData || !displayedMSA) return;
         
         const { canvas, ctx } = msaCanvasData;
         if (!canvas || !ctx) return;
         
         const { logicalWidth, logicalHeight } = getLogicalCanvasDimensions(canvas);
-        
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+        clearCanvas(ctx, logicalWidth, logicalHeight);
         
         clampScrollTop(logicalHeight);
         const visibleRange = getVisibleSequenceRange(logicalHeight);
@@ -1531,7 +1682,7 @@
         
         // Calculate visible position range
         const visibleStartPos = Math.floor(scrollLeft / MSA_CHAR_WIDTH);
-        const visibleEndPos = Math.min(msaData.queryLength, visibleStartPos + Math.ceil(scrollableAreaWidth / MSA_CHAR_WIDTH) + 1);
+        const visibleEndPos = Math.min(displayedMSA.queryLength, visibleStartPos + Math.ceil(scrollableAreaWidth / MSA_CHAR_WIDTH) + 1);
         
         // Draw visible sequences (virtual scrolling)
         // Calculate Y position based on actual sequence index to prevent jumping
@@ -1546,31 +1697,8 @@
         const halfRowHeight = SEQUENCE_ROW_HEIGHT / 2;
         
         // Get selection data and chain mappings for dimming
-        let msaSelectedPositions = null;
-        let chainsForMSA = null;
-        if (callbacks.getRenderer) {
-            const renderer = callbacks.getRenderer();
-            if (renderer && renderer.currentObjectName) {
-                const obj = renderer.objectsData[renderer.currentObjectName];
-                if (obj && obj.msa && currentChain) {
-                    // Get chains that map to this MSA
-                    const querySeq = obj.msa.chainToSequence[currentChain];
-                    if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                        const msaEntry = obj.msa.msasBySequence[querySeq];
-                        chainsForMSA = msaEntry.chains || [currentChain];
-                    } else {
-                        chainsForMSA = [currentChain];
-                    }
-                    
-                    // Get selection data
-                    // Check for selection data (can be null, Map, or undefined)
-                    // null = all selected (no dimming), Map = selection data, undefined = not initialized
-                    if (typeof window !== 'undefined' && window._msaSelectedPositions !== undefined) {
-                        msaSelectedPositions = window._msaSelectedPositions;
-                    }
-                }
-            }
-        }
+        // null = all selected (no dimming), Map = selection data, undefined = not initialized
+        const { positions: msaSelectedPositions, chains: chainsForMSA } = getSelectionState();
         
         // Label rendering options
         const labelOptions = {
@@ -1581,10 +1709,10 @@
         };
         
         // Draw labels for visible sequences (same visibility as sequences - can go under query and tick bar)
-        for (let i = visibleSequenceStart; i < visibleSequenceEnd && i < msaData.sequences.length; i++) {
+        for (let i = visibleSequenceStart; i < visibleSequenceEnd && i < displayedMSA.sequences.length; i++) {
             if (i === 0) continue; // Skip query (drawn separately)
             
-            const seq = msaData.sequences[i];
+            const seq = displayedMSA.sequences[i];
             // Calculate Y based on actual sequence index and scrollTop
             // Sequence i (where i >= 1) should be at: scrollableAreaY + (i-1) * rowHeight - scrollTop
             const y = scrollableAreaY + (i - 1) * SEQUENCE_ROW_HEIGHT - scrollTop;
@@ -1611,7 +1739,16 @@
                 
                 const aa = seq.sequence[pos];
                 const color = getDayhoffColor(aa);
-                const r = color.r, g = color.g, b = color.b;
+                let r = color.r, g = color.g, b = color.b;
+                
+                // Apply dimming if this position is not selected
+                const dimFactor = 0.3;
+                const isSelected = !displayedMSA.selectionMask || displayedMSA.selectionMask[pos];
+                if (!isSelected) {
+                    r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
+                    g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
+                    b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
+                }
                 
                 // Draw cell with clipping
                 if (xOffset + MSA_CHAR_WIDTH >= minX && xOffset < maxX) {
@@ -1624,7 +1761,9 @@
                     ctx.fillRect(xOffset, y, MSA_CHAR_WIDTH, SEQUENCE_ROW_HEIGHT);
                     
                     ctx.fillStyle = '#000';
+                    ctx.globalAlpha = isSelected ? 1.0 : 0.4; // Dim text too
                     ctx.fillText(aa, xOffset + halfCharWidth, y + halfRowHeight);
+                    ctx.globalAlpha = 1.0;
                     
                     ctx.restore();
                 }
@@ -1641,8 +1780,8 @@
         drawTickMarks(ctx, logicalWidth, scrollLeft, MSA_CHAR_WIDTH, scrollableAreaX, scrollableAreaX, logicalWidth, queryY - TICK_ROW_HEIGHT);
         
         // Draw query sequence (on top - must be drawn last to appear above other labels)
-        if (msaData.sequences.length > 0) {
-            const querySeq = msaData.sequences[0];
+        if (displayedMSA.sequences.length > 0) {
+            const querySeq = displayedMSA.sequences[0];
             
             // White background for query row - covers name column too
             ctx.fillStyle = '#ffffff';
@@ -1665,7 +1804,16 @@
                 
                 const aa = querySeq.sequence[pos];
                 const color = getDayhoffColor(aa);
-                const r = color.r, g = color.g, b = color.b;
+                let r = color.r, g = color.g, b = color.b;
+                
+                // Apply dimming if this position is not selected
+                const dimFactor = 0.3;
+                const isSelected = !displayedMSA.selectionMask || displayedMSA.selectionMask[pos];
+                if (!isSelected) {
+                    r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
+                    g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
+                    b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
+                }
                 
                 // Draw cell with clipping
                 if (xOffset + MSA_CHAR_WIDTH >= minX && xOffset < maxX) {
@@ -1681,7 +1829,9 @@
                     ctx.font = '10px monospace';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
+                    ctx.globalAlpha = isSelected ? 1.0 : 0.4; // Dim text too
                     ctx.fillText(aa, xOffset + MSA_CHAR_WIDTH / 2, queryY + queryRowHeight / 2);
+                    ctx.globalAlpha = 1.0;
                     
                     ctx.restore();
                 }
@@ -1703,12 +1853,12 @@
     }
     
     function drawScrollbars(ctx, canvasWidth, canvasHeight, scrollableAreaX, scrollableAreaY, scrollableAreaWidth, scrollableAreaHeight) {
-        if (!msaCanvasData || !msaData) return;
+        if (!msaCanvasData || !displayedMSA) return;
         
         // Calculate scrollable content dimensions
-        const totalScrollableHeight = (msaData.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
+        const totalScrollableHeight = (displayedMSA.sequences.length - 1) * SEQUENCE_ROW_HEIGHT;
         const MSA_CHAR_WIDTH = getCharWidthForMode('msa');
-        const totalScrollableWidth = msaData.queryLength * MSA_CHAR_WIDTH;
+        const totalScrollableWidth = displayedMSA.queryLength * MSA_CHAR_WIDTH;
         
         // Vertical scrollbar
         const maxScroll = Math.max(0, totalScrollableHeight - scrollableAreaHeight);
@@ -1744,10 +1894,10 @@
         ctx.fillRect(0, hScrollbarY, scrollableAreaX, SCROLLBAR_WIDTH);
         
         // Draw position range info
-        if (msaData && msaData.queryLength > 0) {
+        if (displayedMSA && displayedMSA.queryLength > 0) {
             const visibleStartPos = Math.floor(scrollLeft / MSA_CHAR_WIDTH);
-            const visibleEndPos = Math.min(msaData.queryLength, visibleStartPos + Math.ceil(scrollableAreaWidth / MSA_CHAR_WIDTH));
-            const positionText = `${visibleStartPos + 1}-${visibleEndPos} / ${msaData.queryLength}`;
+            const visibleEndPos = Math.min(displayedMSA.queryLength, visibleStartPos + Math.ceil(scrollableAreaWidth / MSA_CHAR_WIDTH));
+            const positionText = `${visibleStartPos + 1}-${visibleEndPos} / ${displayedMSA.queryLength}`;
             
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, hScrollbarY, scrollableAreaX, SCROLLBAR_WIDTH);
@@ -1794,17 +1944,17 @@
         URL.revokeObjectURL(url);
     }
     
-    function calculateFrequencies() {
-        if (!msaData) return null;
+    function computePositionFrequencies() {
+        if (!displayedMSA) return null;
         
-        // Check if already computed and stored in msaData
-        if (msaData.frequencies) {
-            return msaData.frequencies;
+        // Check if already computed and stored in displayedMSA
+        if (displayedMSA.frequencies) {
+            return displayedMSA.frequencies;
         }
         
         const frequencies = [];
-        const queryLength = msaData.queryLength;
-        const numSequences = msaData.sequences.length;
+        const queryLength = displayedMSA.queryLength;
+        const numSequences = displayedMSA.sequences.length;
         
         // Amino acid code mapping to array index
         const aaCodeMap = {
@@ -1818,7 +1968,7 @@
         const sequenceStrings = new Array(numSequences);
         const sequenceLengths = new Uint16Array(numSequences);
         for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
-            const seqStr = msaData.sequences[seqIdx].sequence;
+            const seqStr = displayedMSA.sequences[seqIdx].sequence;
             sequenceStrings[seqIdx] = seqStr;
             sequenceLengths[seqIdx] = seqStr.length;
         }
@@ -1878,18 +2028,18 @@
             frequencies.push(freq);
         }
         
-        // Store in msaData for persistence
-        msaData.frequencies = frequencies;
+        // Store in displayedMSA for persistence
+        displayedMSA.frequencies = frequencies;
         
         return frequencies;
     }
     
-    function calculateLogOdds(frequencies) {
+    function computeLogOddsScores(frequencies) {
         if (!frequencies) return null;
         
-        // Check if already computed and stored in msaData
-        if (msaData && msaData.logOdds) {
-            return msaData.logOdds;
+        // Check if already computed and stored in displayedMSA
+        if (displayedMSA && displayedMSA.logOdds) {
+            return displayedMSA.logOdds;
         }
         
         const logOdds = [];
@@ -1902,26 +2052,24 @@
             logOdds.push(logOddsPos);
         }
         
-        // Store in msaData for persistence
-        if (msaData) {
-            msaData.logOdds = logOdds;
+        // Store in displayedMSA for persistence
+        if (displayedMSA) {
+            displayedMSA.logOdds = logOdds;
         }
         return logOdds;
     }
     
     
     function renderPSSMCanvas() {
-        if (!pssmCanvasData || !msaData) return;
+        if (!pssmCanvasData || !displayedMSA) return;
         
         const { canvas, ctx } = pssmCanvasData;
         if (!canvas || !ctx) return;
         
         const { logicalWidth, logicalHeight } = getLogicalCanvasDimensions(canvas);
+        clearCanvas(ctx, logicalWidth, logicalHeight);
         
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
-        
-        const frequencies = calculateFrequencies();
+        const frequencies = computePositionFrequencies();
         if (!frequencies) return;
         
         const queryRowHeight = CHAR_WIDTH;
@@ -1978,6 +2126,10 @@
             
             const posData = frequencies[pos];
             
+            // Check if position is selected for dimming
+            const dimFactor = 0.3;
+            const isSelected = !displayedMSA.selectionMask || displayedMSA.selectionMask[pos];
+            
             for (let i = 0; i < NUM_AMINO_ACIDS; i++) {
                 const aa = AMINO_ACIDS_ORDERED[i];
                 const probability = posData[aa] || 0;
@@ -1985,9 +2137,16 @@
                 
                 const white = {r: 255, g: 255, b: 255};
                 const darkBlue = {r: 0, g: 0, b: 139};
-                const finalR = Math.round(white.r + (darkBlue.r - white.r) * probability);
-                const finalG = Math.round(white.g + (darkBlue.g - white.g) * probability);
-                const finalB = Math.round(white.b + (darkBlue.b - white.b) * probability);
+                let finalR = Math.round(white.r + (darkBlue.r - white.r) * probability);
+                let finalG = Math.round(white.g + (darkBlue.g - white.g) * probability);
+                let finalB = Math.round(white.b + (darkBlue.b - white.b) * probability);
+                
+                // Apply dimming if this position is not selected
+                if (!isSelected) {
+                    finalR = Math.round(finalR * dimFactor + 255 * (1 - dimFactor));
+                    finalG = Math.round(finalG * dimFactor + 255 * (1 - dimFactor));
+                    finalB = Math.round(finalB * dimFactor + 255 * (1 - dimFactor));
+                }
                 
                 if (xOffset + boxWidth >= heatmapX && xOffset < maxX) {
                     ctx.save();
@@ -2006,7 +2165,7 @@
         }
         
         // Draw black boxes around wildtype (boxes are 1/2 width and height)
-        const querySeqForBoxes = msaData.sequences.length > 0 ? msaData.sequences[0].sequence : '';
+        const querySeqForBoxes = displayedMSA.sequences.length > 0 ? displayedMSA.sequences[0].sequence : '';
         ctx.strokeStyle = '#000';
         ctx.lineWidth = 1;
         let boxXOffset = heatmapX - (scrollLeft % boxWidth);
@@ -2022,6 +2181,11 @@
                 boxXOffset += boxWidth;
                 continue;
             }
+            
+            // Apply dimming to wildtype box stroke if position not selected
+            const isSelected = !displayedMSA.selectionMask || displayedMSA.selectionMask[pos];
+            ctx.strokeStyle = isSelected ? '#000' : '#999';
+            ctx.globalAlpha = isSelected ? 1.0 : 0.4;
             
             const wildtypeIndex = AMINO_ACIDS_ORDERED.indexOf(wildtypeAA);
             if (wildtypeIndex >= 0) {
@@ -2047,6 +2211,7 @@
                 }
             }
             
+            ctx.globalAlpha = 1.0; // Reset alpha after each position
             boxXOffset += boxWidth;
         }
         
@@ -2062,33 +2227,31 @@
         }
         
         // Draw query sequence on top (boxes are 1/2 width, align with heatmap)
-        if (msaData.sequences.length > 0) {
-            const querySeq = msaData.sequences[0];
+        if (displayedMSA.sequences.length > 0) {
+            const querySeq = displayedMSA.sequences[0];
             // Use heatmapX instead of scrollableAreaX to ensure perfect alignment with heatmap boxes
             drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, heatmapX, visibleStartPos, visibleEndPos, LABEL_WIDTH, pssmCanvasData.totalWidth, true, boxWidth);
         }
         
         // Draw horizontal scrollbar (boxes are 1/2 width)
-        const totalScrollableWidth = msaData.queryLength * boxWidth;
+        const totalScrollableWidth = displayedMSA.queryLength * boxWidth;
         drawHorizontalScrollbar(ctx, logicalWidth, logicalHeight, scrollableAreaX, scrollableAreaWidth, LABEL_WIDTH, totalScrollableWidth);
     }
     
     function renderLogoCanvas() {
-        if (!logoCanvasData || !msaData) return;
+        if (!logoCanvasData || !displayedMSA) return;
         
         const { canvas, ctx } = logoCanvasData;
         if (!canvas || !ctx) return;
         
         const { logicalWidth, logicalHeight } = getLogicalCanvasDimensions(canvas);
+        clearCanvas(ctx, logicalWidth, logicalHeight);
         
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
-        
-        const frequencies = calculateFrequencies();
+        const frequencies = computePositionFrequencies();
         if (!frequencies) return;
         
         const data = useBitScore 
-            ? calculateLogOdds(frequencies)
+            ? computeLogOddsScores(frequencies)
             : frequencies;
         if (!data) return;
         
@@ -2275,6 +2438,10 @@
             // Sort ascending (smallest first) so both modes stack from bottom: smallest at bottom, tallest at top
             const aas = Object.keys(letterHeights).sort((a, b) => letterHeights[a] - letterHeights[b]);
             
+            // Check if position is selected for dimming
+            const dimFactor = 0.3;
+            const isSelected = !displayedMSA.selectionMask || displayedMSA.selectionMask[pos];
+            
             // Start from bottom (queryY) and stack upward - extend all the way to query with no gap
             let yOffset = queryY;
             
@@ -2286,7 +2453,14 @@
                 
                 if (shouldDraw && drawHeight > 0) {
                     const color = getDayhoffColor(aa);
-                    const r = color.r, g = color.g, b = color.b;
+                    let r = color.r, g = color.g, b = color.b;
+                    
+                    // Apply dimming if this position is not selected
+                    if (!isSelected) {
+                        r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
+                        g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
+                        b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
+                    }
                     
                     const drawWidth = CHAR_WIDTH;
                     if (drawWidth > 0) {
@@ -2319,8 +2493,8 @@
         }
         
         // Draw query sequence
-        if (msaData.sequences.length > 0) {
-            const querySeq = msaData.sequences[0];
+        if (displayedMSA.sequences.length > 0) {
+            const querySeq = displayedMSA.sequences[0];
             drawQuerySequence(ctx, logicalWidth, queryY, queryRowHeight, querySeq, scrollLeft, scrollableAreaX, visibleStartPos, visibleEndPos, LABEL_WIDTH, logoCanvasData.totalWidth, false);
         }
         
@@ -2343,7 +2517,7 @@
         drawTickMarks(ctx, logicalWidth, scrollLeft, CHAR_WIDTH, LABEL_WIDTH, tickMinX, tickMaxX, tickY);
         
         // Draw horizontal scrollbar at bottom
-        const totalScrollableWidth = msaData.queryLength * CHAR_WIDTH;
+        const totalScrollableWidth = displayedMSA.queryLength * CHAR_WIDTH;
         drawHorizontalScrollbar(ctx, logicalWidth, logicalHeight, scrollableAreaX, scrollableAreaWidth, LABEL_WIDTH, totalScrollableWidth);
         
         // Draw black bar above query sequence LAST so it appears on top (starting from scrollableAreaX, not from 0)
@@ -2545,7 +2719,7 @@
                         const handleDrag = (e) => {
                 if (!this.scrollbarDragState.isDragging || this.scrollbarDragState.dragType !== 'vertical') return;
                 e.preventDefault();
-                // Recalculate scroll limits dynamically (in case msaData.sequences.length changed during filtering)
+                // Recalculate scroll limits dynamically (in case displayedMSA.sequences.length changed during filtering)
                 this._invalidateCache();
                 const limits = this._getScrollLimits();
                 const currentMaxScroll = limits.vertical.max;
@@ -2591,7 +2765,7 @@
                         const handleDrag = (e) => {
                 if (!this.scrollbarDragState.isDragging || this.scrollbarDragState.dragType !== 'horizontal') return;
                 e.preventDefault();
-                // Recalculate scroll limits dynamically (in case msaData.queryLength changed during filtering)
+                // Recalculate scroll limits dynamically (in case displayedMSA.queryLength changed during filtering)
                 this._invalidateCache();
                 const limits = this._getScrollLimits();
                 const currentMaxScrollX = limits.horizontal.max;
@@ -2696,6 +2870,7 @@
         if (mode === 'msa') return msaCanvasData;
         if (mode === 'pssm') return pssmCanvasData;
         if (mode === 'logo') return logoCanvasData;
+        if (mode === 'coverage') return coverageCanvasData;
         return null;
     }
     
@@ -2709,6 +2884,9 @@
         }
         if (logoCanvasData?.container) {
             logoCanvasData.container.style.display = currentMode === 'logo' ? 'block' : 'none';
+        }
+        if (coverageCanvasData?.container) {
+            coverageCanvasData.container.style.display = currentMode === 'coverage' ? 'block' : 'none';
         }
     }
     
@@ -2800,19 +2978,23 @@
         if (mode === 'msa' && typeof renderMSACanvas === 'function') return renderMSACanvas;
         if (mode === 'pssm' && typeof renderPSSMCanvas === 'function') return renderPSSMCanvas;
         if (mode === 'logo' && typeof renderLogoCanvas === 'function') return renderLogoCanvas;
+        if (mode === 'coverage' && typeof renderCoverageCanvas === 'function') return renderCoverageCanvas;
         return null;
     }
     
     function createViewCanvas(mode, config) {
+        const DEFAULT_CONTAINER_PADDING = 12;
         const { viewElementId, calculateDimensions, additionalCanvasData } = config;
+        const hasCustomPadding = typeof config.contentPadding === 'number' && Number.isFinite(config.contentPadding);
+        const resolvedPadding = Math.max(0, hasCustomPadding ? config.contentPadding : DEFAULT_CONTAINER_PADDING);
 
         const viewEl = document.getElementById(viewElementId);
         if (!viewEl) {
-            warn('MSA Viewer: View element not found');
+            console.warn('MSA Viewer: View element not found');
             return null;
         }
-        if (!msaData) {
-            warn('MSA Viewer: No MSA data available');
+        if (!displayedMSA) {
+            console.warn('MSA Viewer: No MSA data available');
             return null;
         }
 
@@ -2863,7 +3045,8 @@
             const isOrphaned = !Array.from(container.querySelectorAll('canvas')).some(canvas => {
                 return (msaCanvasData?.canvas === canvas) || 
                        (pssmCanvasData?.canvas === canvas) || 
-                       (logoCanvasData?.canvas === canvas);
+                       (logoCanvasData?.canvas === canvas) ||
+                       (coverageCanvasData?.canvas === canvas);
             });
             if (isOrphaned) {
                 container.parentElement?.removeChild(container);
@@ -2874,9 +3057,16 @@
         const minWidth = 948;
         const finalWidth = clampMin(canvasWidth > 0 ? canvasWidth : minWidth, minWidth);
         const container = createCanvasContainer(finalWidth, canvasHeight);
+        if (mode) {
+            container.dataset.mode = mode;
+            container.classList.add(`msa-canvas--${mode}`);
+        }
+        container.style.padding = `${resolvedPadding}px`;
         
-        // Create canvas element - account for padding (12px * 2)
-        const canvasContentWidth = clampMin(finalWidth - 24, 948);
+        // Create canvas element - account for padding (2 * resolvedPadding)
+        const paddingToSubtract = resolvedPadding * 2;
+        const minContentWidth = Math.max(1, minWidth - paddingToSubtract);
+        const canvasContentWidth = Math.max(minContentWidth, finalWidth - paddingToSubtract);
         const canvas = createCanvasElement(canvasContentWidth, canvasHeight, DPI_MULTIPLIER);
         
         container.appendChild(canvas);
@@ -2893,6 +3083,7 @@
             ctx: canvas.getContext('2d'),
             container,
             totalWidth,
+            contentPadding: resolvedPadding,
             ...(totalHeight !== undefined && { totalHeight }),
             ...(additionalCanvasData || {})
         };
@@ -2922,6 +3113,15 @@
                             // Recalculate scale factors for PSSM and Logo modes
                             recalculateScaleFactors(mode, height, canvasData);
                             
+                            // For coverage mode, recalculate sequence row height based on new height
+                            if (mode === 'coverage' && canvasData.sequencesWithIdentity) {
+                                const COVERAGE_LINE_HEIGHT = canvasData.COVERAGE_LINE_HEIGHT || 30;
+                                const TICK_ROW_HEIGHT_COVERAGE = canvasData.TICK_ROW_HEIGHT_COVERAGE || 20;
+                                const numSequences = canvasData.numSequences || canvasData.sequencesWithIdentity.length;
+                                const availableHeatmapHeight = height - COVERAGE_LINE_HEIGHT - TICK_ROW_HEIGHT_COVERAGE;
+                                canvasData.sequenceRowHeight = Math.max(0.5, availableHeatmapHeight / numSequences);
+                            }
+                            
                             // Re-render the canvas
                             const renderFn = getRenderFunction(mode);
                             if (renderFn) renderFn();
@@ -2937,10 +3137,14 @@
         return { canvas, container, canvasData, dimensions };
     }
     
+    // ============================================================================
+    // VIEW BUILDERS (Mode-Specific Setup)
+    // ============================================================================
+    
     function buildMSAView() {
         const MSA_CHAR_WIDTH = getCharWidthForMode('msa');
-        const totalWidth = NAME_COLUMN_WIDTH + (msaData.queryLength * MSA_CHAR_WIDTH);
-        const totalHeight = (msaData.sequences.length + 1) * SEQUENCE_ROW_HEIGHT;
+        const totalWidth = NAME_COLUMN_WIDTH + (displayedMSA.queryLength * MSA_CHAR_WIDTH);
+        const totalHeight = (displayedMSA.sequences.length + 1) * SEQUENCE_ROW_HEIGHT;
         
         // Calculate canvas dimensions
         const { width: containerWidth, height: containerHeight } = getContainerDimensions();
@@ -2994,10 +3198,9 @@
     function buildPSSMView() {
         const LABEL_WIDTH = CHAR_WIDTH * 0.5; // Labels are 1/2 width for PSSM
         const boxWidth = CHAR_WIDTH * 0.5; // Boxes are 1/2 width
-        const totalWidth = LABEL_WIDTH + (msaData.queryLength * boxWidth);
+        const totalWidth = LABEL_WIDTH + (displayedMSA.queryLength * boxWidth);
         const { width: containerWidth } = getContainerDimensions();
-        // Ensure minimum width
-        const canvasWidth = Math.max(948, containerWidth);
+        const canvasWidth = Math.max(MIN_CANVAS_WIDTH, containerWidth);
         
         // DYNAMIC HEIGHT for PSSM mode - scale based on container height
         const queryRowHeight = CHAR_WIDTH;
@@ -3098,10 +3301,10 @@
                 const relativeY = pos.y - heatmapY;
                 const aaIndex = Math.floor(relativeY / aaRowHeight);
                 
-                if (position >= 0 && position < msaData.queryLength && 
+                if (position >= 0 && position < displayedMSA.queryLength && 
                     aaIndex >= 0 && aaIndex < NUM_AMINO_ACIDS) {
                     
-                    const frequencies = calculateFrequencies();
+                    const frequencies = computePositionFrequencies();
                     if (frequencies && frequencies[position]) {
                         const aa = AMINO_ACIDS_ORDERED[aaIndex];
                         const probability = frequencies[position][aa] || 0;
@@ -3132,10 +3335,9 @@
     
     function buildLogoView() {
         const LABEL_WIDTH = Y_AXIS_WIDTH;
-        const totalWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
+        const totalWidth = LABEL_WIDTH + (displayedMSA.queryLength * CHAR_WIDTH);
         const { width: containerWidth } = getContainerDimensions();
-        // Ensure minimum width
-        const canvasWidth = Math.max(948, containerWidth);
+        const canvasWidth = Math.max(MIN_CANVAS_WIDTH, containerWidth);
         
         // DYNAMIC HEIGHT for Logo mode - scale based on container height
         // Layout: Logo at top (extends to query), black bar above query, query sequence below, tick marks below query, scrollbar at bottom
@@ -3205,18 +3407,492 @@
         renderLogoCanvas();
     }
     
+    function padOrTruncateSequence(sequence, targetLength) {
+        let normalized = sequence || '';
+        if (normalized.length > targetLength) {
+            normalized = normalized.slice(0, targetLength);
+        } else if (normalized.length < targetLength) {
+            normalized = normalized.padEnd(targetLength, '-');
+        }
+        return normalized;
+    }
+    
+    function computeCoverageDataset() {
+        if (!displayedMSA || !Array.isArray(displayedMSA.sequences) || displayedMSA.sequences.length === 0) {
+            return null;
+        }
+        
+        const querySequence = displayedMSA.querySequence || '';
+        const queryLength = displayedMSA.queryLength || querySequence.length;
+        if (!queryLength) return null;
+        
+        const normalizedQuery = padOrTruncateSequence(querySequence, queryLength);
+        
+        const selectionMask = displayedMSA.selectionMask;
+        
+        const sequencesWithIdentity = displayedMSA.sequences.map((seq, index) => {
+            const normalizedSequence = padOrTruncateSequence(seq.sequence || '', queryLength);
+            const identity = computeSequenceIdentity(normalizedSequence, normalizedQuery, selectionMask);
+            return {
+                ...seq,
+                sequence: normalizedSequence,
+                identity,
+                _originalIndex: index
+            };
+        });
+        
+        sequencesWithIdentity.sort((a, b) => {
+            const aIsQuery = a.name && isQuerySequence(a.name);
+            const bIsQuery = b.name && isQuerySequence(b.name);
+            if (aIsQuery && !bIsQuery) return -1;
+            if (!aIsQuery && bIsQuery) return 1;
+            if (b.identity === a.identity) {
+                return (a._originalIndex ?? 0) - (b._originalIndex ?? 0);
+            }
+            return b.identity - a.identity;
+        });
+        
+        const coveragePerPosition = new Array(queryLength).fill(0);
+        for (const seq of sequencesWithIdentity) {
+            const sequenceString = seq.sequence;
+            for (let i = 0; i < queryLength; i++) {
+                if (!isGapResidue(sequenceString[i])) {
+                    coveragePerPosition[i]++;
+                }
+            }
+            delete seq._originalIndex;
+        }
+        
+        return {
+            sequencesWithIdentity,
+            coveragePerPosition,
+            queryLength,
+            residueNumbers: displayedMSA.residueNumbers
+                ? [...displayedMSA.residueNumbers]
+                : null
+        };
+    }
+    
+    // Helper function to apply filters and update view
+    // This preserves selection state
+    function applyFiltersAndRender() {
+        if (!sourceMSA) return;
+        
+        // Get selection data and chain mappings
+        const { positions: msaSelectedPositions, chains: chainsForMSA } = getSelectionState();
+        
+        const oldSequenceCount = displayedMSA ? displayedMSA.sequences.length : 0;
+        
+        // Apply unified filtering pipeline
+        displayedMSA = computeFilteredMSA(sourceMSA, {
+            selectedPositions: msaSelectedPositions,
+            chains: chainsForMSA,
+            minCoverage: minCoverageThreshold,
+            minIdentity: minIdentityThreshold,
+            shouldSort: shouldSortByIdentity
+        });
+        
+        positionToResidueMap = displayedMSA.residueNumbers || null;
+        
+        const newSequenceCount = displayedMSA.sequences.length;
+        if (oldSequenceCount > 0 && newSequenceCount !== oldSequenceCount) {
+            let canvasHeight = 400;
+            if (msaCanvasData && msaCanvasData.canvas) {
+                canvasHeight = msaCanvasData.canvas.height / DPI_MULTIPLIER;
+            }
+            clampScrollTop(canvasHeight);
+        }
+        
+        // Invalidate interaction manager cache (scroll limits depend on sequences.length)
+        if (activeInteractionManager) {
+            activeInteractionManager._invalidateCache();
+        }
+        
+        // Notify callback that filtered MSA has changed
+        if (callbacks.onMSAFilterChange) {
+            callbacks.onMSAFilterChange(displayedMSA, activeChainId);
+        }
+        
+        // Render the current mode
+        const canvasDataMap = {
+            'msa': msaCanvasData,
+            'pssm': pssmCanvasData,
+            'logo': logoCanvasData,
+            'coverage': coverageCanvasData
+        };
+        
+        const canvasData = canvasDataMap[msaViewMode];
+        if (canvasData && canvasData.canvas) {
+            scheduleRender();
+        } else {
+            buildViewForMode(msaViewMode);
+        }
+    }
+
+    function buildCoverageView() {
+        const dataset = computeCoverageDataset();
+        if (!dataset) {
+            if (!displayedMSA) {
+                console.warn('MSA Viewer: displayedMSA is not set');
+            } else if (!Array.isArray(displayedMSA.sequences)) {
+                console.warn('MSA Viewer: displayedMSA.sequences is not an array:', displayedMSA.sequences);
+            } else if (displayedMSA.sequences.length === 0) {
+                console.warn('MSA Viewer: All sequences were filtered out for coverage view. Consider lowering coverage/identity filter thresholds.');
+            } else if (!displayedMSA.queryLength && !displayedMSA.querySequence?.length) {
+                console.warn('MSA Viewer: Query sequence has no length');
+            } else {
+                console.warn('MSA Viewer: Unknown issue preventing coverage view build');
+            }
+            return;
+        }
+
+        const stageDimensions = getMSAStageDimensions();
+        const { width: containerWidth, height: containerHeight } = getContainerDimensions();
+        const canvasWidth = Math.max(MIN_CANVAS_WIDTH, stageDimensions?.width || containerWidth || 0);
+        const canvasHeight = containerHeight > 150 ? containerHeight : DEFAULT_COVERAGE_HEIGHT;
+        const AXIS_LABEL_HEIGHT = 32;
+        const Y_AXIS_LABEL_WIDTH = 42;
+        
+        const result = createViewCanvas('coverage', {
+            viewElementId: 'msa-buttons',
+            contentPadding: 0,
+            calculateDimensions: () => ({
+                canvasWidth,
+                canvasHeight
+            }),
+            additionalCanvasData: {
+                axisLabelHeight: AXIS_LABEL_HEIGHT,
+                yAxisLabelWidth: Y_AXIS_LABEL_WIDTH
+            }
+        });
+        
+        if (!result) return;
+        
+        const { canvas, container, canvasData } = result;
+        container.classList.add('msa-canvas--coverage');
+        if (canvas) {
+            canvas.style.borderRadius = 'var(--radius-lg)';
+        }
+        
+        coverageCanvasData = canvasData;
+        
+        if (activeInteractionManager) {
+            activeInteractionManager.cleanup();
+            activeInteractionManager = null;
+        }
+        
+        renderCoverageCanvas();
+    }
+    
+    function renderCoverageCanvas() {
+        if (!coverageCanvasData || !displayedMSA) return;
+        
+        const { canvas, ctx } = coverageCanvasData;
+        if (!canvas || !ctx) return;
+        
+        // Build dataset from current displayedMSA (like logo mode does with computePositionFrequencies)
+        const coverageState = computeCoverageDataset();
+        if (!coverageState) return;
+        
+        const { sequencesWithIdentity, coveragePerPosition, queryLength, residueNumbers } = coverageState;
+        if (!sequencesWithIdentity || sequencesWithIdentity.length === 0 || !queryLength) return;
+        
+        const { logicalWidth, logicalHeight } = getLogicalCanvasDimensions(canvas);
+        if (logicalWidth <= 0 || logicalHeight <= 0) return;
+        
+        const axisLabelHeight = coverageCanvasData.axisLabelHeight || 32;
+        const yAxisLabelWidth = coverageCanvasData.yAxisLabelWidth || 40;
+        const numSequences = sequencesWithIdentity.length;
+        
+        const topPadding = 20;
+        const rightPadding = 65; // Space for colorbar and labels with extra padding
+        const plotX = yAxisLabelWidth;
+        const plotY = topPadding;
+        const plotWidth = Math.max(10, logicalWidth - plotX - rightPadding);
+        const heatmapHeight = Math.max(40, logicalHeight - axisLabelHeight - topPadding);
+        const rowHeight = heatmapHeight / Math.max(1, numSequences);
+        const charWidth = plotWidth / queryLength;
+        if (!Number.isFinite(charWidth) || charWidth <= 0) return;
+        
+        clearCanvas(ctx, logicalWidth, logicalHeight);
+        
+        const SCALE_BOOST_X = 2;
+        const SCALE_BOOST_Y = 2;
+        const heatmapPixelWidth = Math.max(1, Math.round(plotWidth * SCALE_BOOST_X));
+        const heatmapPixelHeight = Math.max(1, Math.round(heatmapHeight * SCALE_BOOST_Y));
+        const charWidthPixels = heatmapPixelWidth / queryLength;
+        const rowHeightPixels = heatmapPixelHeight / Math.max(1, numSequences);
+        
+        const imageData = ctx.createImageData(heatmapPixelWidth, heatmapPixelHeight);
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+            data[i + 3] = 255;
+        }
+        
+        const colorCache = sequencesWithIdentity.map(seq => getCoverageColor(seq.identity));
+        const dimFactor = 0.3;
+        
+        for (let pos = 0; pos < queryLength; pos++) {
+            const pixelXStart = Math.max(0, Math.floor(pos * charWidthPixels));
+            const pixelXEnd = (pos === queryLength - 1)
+                ? heatmapPixelWidth
+                : Math.max(pixelXStart + 1, Math.floor((pos + 1) * charWidthPixels));
+            
+            // Check if position is selected for dimming
+            const isSelected = !displayedMSA.selectionMask || displayedMSA.selectionMask[pos];
+            
+            for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
+                const residue = sequencesWithIdentity[seqIdx].sequence[pos];
+                if (isGapResidue(residue)) continue;
+                
+                const pixelYStart = Math.max(0, Math.floor(seqIdx * rowHeightPixels));
+                const pixelYEnd = (seqIdx === numSequences - 1)
+                    ? heatmapPixelHeight
+                    : Math.max(pixelYStart + 1, Math.floor((seqIdx + 1) * rowHeightPixels));
+                
+                const rgb = colorCache[seqIdx];
+                let r = rgb[0], g = rgb[1], b = rgb[2];
+                
+                // Apply dimming if this position is not selected
+                if (!isSelected) {
+                    r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
+                    g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
+                    b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
+                }
+                
+                for (let py = pixelYStart; py < pixelYEnd; py++) {
+                    const rowOffset = py * heatmapPixelWidth;
+                    for (let px = pixelXStart; px < pixelXEnd; px++) {
+                        const idx = (rowOffset + px) * 4;
+                        data[idx] = r;
+                        data[idx + 1] = g;
+                        data[idx + 2] = b;
+                        data[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+        
+        const offscreenCanvas = document.createElement('canvas');
+        offscreenCanvas.width = heatmapPixelWidth;
+        offscreenCanvas.height = heatmapPixelHeight;
+        const offscreenCtx = offscreenCanvas.getContext('2d');
+        offscreenCtx.putImageData(imageData, 0, 0);
+        
+        ctx.save();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(
+            offscreenCanvas,
+            0,
+            0,
+            heatmapPixelWidth,
+            heatmapPixelHeight,
+            plotX,
+            plotY,
+            plotWidth,
+            heatmapHeight
+        );
+        ctx.restore();
+        
+        const maxCoverage = Math.max(...coveragePerPosition, 1);
+        const normalizeCount = (value) => value / maxCoverage;
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        coveragePerPosition.forEach((value, pos) => {
+            const x = pos === queryLength - 1 ? plotX + plotWidth : plotX + (pos * charWidth) + (charWidth / 2);
+            const normalized = normalizeCount(value);
+            const y = plotY + heatmapHeight - (normalized * heatmapHeight);
+            if (pos === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        });
+        ctx.stroke();
+        
+        const tickBaseY = plotY + heatmapHeight + 2;
+        ctx.fillStyle = '#000000';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        
+        // Determine tick interval based on range
+        const maxTickValue = residueNumbers && residueNumbers.length > 0 
+            ? Math.max(...residueNumbers.filter(n => n !== null && n !== undefined))
+            : queryLength;
+        
+        const xTickCount = Math.max(1, Math.floor(plotWidth / 100));
+        const rawTickStep = maxTickValue / xTickCount;
+        const multipleOfTen = Math.max(10, Math.ceil(rawTickStep / 10) * 10);
+        
+        // Iterate through positions and show ticks for residue numbers that are multiples
+        for (let pos = 0; pos < queryLength; pos++) {
+            let tickValue = pos + 1; // Default: 1-based position
+            
+            // Use residue number if available
+            if (residueNumbers && pos < residueNumbers.length) {
+                const residueNum = residueNumbers[pos];
+                if (residueNum !== null && residueNum !== undefined) {
+                    tickValue = residueNum;
+                }
+            }
+            
+            // Show tick if value is a multiple of our interval
+            if (tickValue % multipleOfTen === 0) {
+                const x = pos >= queryLength - 1 ? plotX + plotWidth : plotX + (pos + 0.5) * charWidth;
+                ctx.fillText(String(tickValue), x, tickBaseY);
+            }
+        }
+        const axisXLine = plotX;
+        const axisYLine = plotY + heatmapHeight;
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(axisXLine, plotY);
+        ctx.lineTo(axisXLine, axisYLine);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(axisXLine, axisYLine);
+        ctx.lineTo(plotX + plotWidth, axisYLine);
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText('Positions', plotX + plotWidth / 2, tickBaseY + 12);
+        ctx.restore();
+        
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        const yTickValues = [];
+        const MIN_PIXEL_SPACING = 32;
+        const powersOfTwo = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
+        let startIndex = 0;
+        for (; startIndex < powersOfTwo.length - 1; startIndex++) {
+            const v1 = powersOfTwo[startIndex];
+            const v2 = powersOfTwo[startIndex + 1];
+            if (v2 > maxCoverage) break;
+            const p1 = (v1 / maxCoverage) * heatmapHeight;
+            const p2 = (v2 / maxCoverage) * heatmapHeight;
+            if (Math.abs(p2 - p1) >= MIN_PIXEL_SPACING) {
+                break;
+            }
+        }
+        for (let i = startIndex; i < powersOfTwo.length; i++) {
+            const val = powersOfTwo[i];
+            if (val > maxCoverage) break;
+            yTickValues.push(val);
+        }
+        if (yTickValues[yTickValues.length - 1] !== maxCoverage) {
+            yTickValues.push(maxCoverage);
+        }
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
+        yTickValues.forEach(val => {
+            const normalized = normalizeCount(val);
+            const y = plotY + heatmapHeight - normalized * heatmapHeight;
+            ctx.fillText(String(val), plotX - 6, y);
+            ctx.beginPath();
+            ctx.moveTo(plotX - 6, y);
+            ctx.lineTo(plotX - 2, y);
+            ctx.stroke();
+        });
+        ctx.textBaseline = 'middle';
+        ctx.fillText('0', plotX - 6, axisYLine);
+        ctx.save();
+        ctx.translate(10, plotY + heatmapHeight / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText('Sequences', 0, -6);
+        ctx.restore();
+        
+        // Draw colorbar for sequence identity
+        const colorbarWidth = 15;
+        const colorbarHeight = Math.min(120, heatmapHeight - 18); // Leave space for QID label at top
+        const colorbarX = plotX + plotWidth + 15; // Symmetric padding from plot edge
+        const colorbarSteps = 100;
+        
+        // Calculate panel dimensions (includes padding around colorbar and labels)
+        const panelPadding = 6;
+        const labelWidth = 22; // Space for labels like "100"
+        const qidLabelHeight = 12;
+        const panelX = colorbarX - panelPadding;
+        const panelY = plotY; // Align panel top to bitmap top
+        const colorbarY = panelY + qidLabelHeight + panelPadding; // Position colorbar below QID label
+        const panelWidth = colorbarWidth + labelWidth + panelPadding * 2;
+        const panelHeight = qidLabelHeight + panelPadding + colorbarHeight + panelPadding;
+        
+        // Draw panel background with subtle shadow
+        ctx.fillStyle = '#f8f8f8';
+        ctx.fillRect(panelX + 1, panelY + 1, panelWidth, panelHeight); // Shadow
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(panelX, panelY, panelWidth, panelHeight);
+        
+        // Draw panel border
+        ctx.strokeStyle = '#d0d0d0';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(panelX, panelY, panelWidth, panelHeight);
+        
+        // Draw gradient
+        for (let i = 0; i < colorbarSteps; i++) {
+            const identity = 1 - (i / (colorbarSteps - 1)); // Top = 1.0 (blue), bottom = 0.0 (red)
+            const rgb = getCoverageColor(identity);
+            ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+            const stepHeight = colorbarHeight / colorbarSteps;
+            const stepY = colorbarY + i * stepHeight;
+            ctx.fillRect(colorbarX, stepY, colorbarWidth, Math.ceil(stepHeight) + 1);
+        }
+        
+        // Draw colorbar border
+        ctx.strokeStyle = '#666666';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(colorbarX, colorbarY, colorbarWidth, colorbarHeight);
+        
+        // Draw colorbar labels
+        ctx.fillStyle = '#000000';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        
+        const colorbarLabels = [
+            { value: 1.0, label: '100' },
+            { value: 0.75, label: '75' },
+            { value: 0.5, label: '50' },
+            { value: 0.25, label: '25' },
+            { value: 0.0, label: '0' }
+        ];
+        
+        colorbarLabels.forEach(({ value, label }) => {
+            const labelY = colorbarY + (1 - value) * colorbarHeight;
+            ctx.fillText(label, colorbarX + colorbarWidth + 4, labelY);
+        });
+        
+        // Draw "QID" label at top inside panel
+        ctx.fillStyle = '#333333';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText('QID', colorbarX + colorbarWidth / 2, panelY + 3);
+    }
+    
     // ============================================================================
     // SVG EXPORT HELPERS
     // ============================================================================
     
     // Render PSSM to any context (canvas or SVG) - full view, no scrolling
     function renderPSSMToContext(ctx, logicalWidth, logicalHeight, forExport) {
-        if (!msaData) return;
+        if (!displayedMSA) return;
         
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, logicalWidth, logicalHeight);
         
-        const frequencies = calculateFrequencies();
+        const frequencies = computePositionFrequencies();
         if (!frequencies) return;
         
         const queryRowHeight = CHAR_WIDTH;
@@ -3232,7 +3908,7 @@
         const heatmapHeight = NUM_AMINO_ACIDS * aaRowHeight;
         const heatmapX = LABEL_WIDTH;
         const boxWidth = CHAR_WIDTH * 0.5; // Boxes are 1/2 width
-        const totalWidth = LABEL_WIDTH + (msaData.queryLength * boxWidth);
+        const totalWidth = LABEL_WIDTH + (displayedMSA.queryLength * boxWidth);
         
         // For export, render all positions; otherwise use visible range
         const startPos = forExport ? 0 : Math.floor(scrollLeft / boxWidth);
@@ -3287,7 +3963,7 @@
         }
         
         // Draw black boxes around wildtype (boxes are 1/2 width and height)
-        const querySeqForBoxes = msaData.sequences.length > 0 ? msaData.sequences[0].sequence : '';
+        const querySeqForBoxes = displayedMSA.sequences.length > 0 ? displayedMSA.sequences[0].sequence : '';
         ctx.strokeStyle = '#000';
         ctx.lineWidth = 1;
         let boxXOffset = xOffsetStart;
@@ -3310,13 +3986,13 @@
             const y = heatmapY + boundaryIdx * aaRowHeight;
             ctx.beginPath();
             ctx.moveTo(heatmapX, y);
-            ctx.lineTo(heatmapX + (msaData.queryLength * boxWidth), y);
+            ctx.lineTo(heatmapX + (displayedMSA.queryLength * boxWidth), y);
             ctx.stroke();
         }
         
         // Draw query sequence (boxes are 1/2 width, align with heatmap)
-        if (msaData.sequences.length > 0) {
-            const querySeq = msaData.sequences[0];
+        if (displayedMSA.sequences.length > 0) {
+            const querySeq = displayedMSA.sequences[0];
             // Use heatmapX instead of scrollableAreaX to ensure perfect alignment with heatmap boxes
             drawQuerySequence(ctx, totalWidth, queryY, queryRowHeight, querySeq, 0, heatmapX, 0, frequencies.length, LABEL_WIDTH, totalWidth, false, boxWidth);
         }
@@ -3324,16 +4000,16 @@
     
     // Render Logo to any context (canvas or SVG) - full view, no scrolling
     function renderLogoToContext(ctx, logicalWidth, logicalHeight, forExport) {
-        if (!msaData) return;
+        if (!displayedMSA) return;
         
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, logicalWidth, logicalHeight);
         
-        const frequencies = calculateFrequencies();
+        const frequencies = computePositionFrequencies();
         if (!frequencies) return;
         
         const data = useBitScore 
-            ? calculateLogOdds(frequencies)
+            ? computeLogOddsScores(frequencies)
             : frequencies;
         if (!data) return;
         
@@ -3495,8 +4171,8 @@
         ctx.fillRect(scrollableAreaX, queryY, logicalWidth - scrollableAreaX, 1);
         
         // Draw query sequence
-        if (msaData.sequences.length > 0) {
-            const querySeq = msaData.sequences[0];
+        if (displayedMSA.sequences.length > 0) {
+            const querySeq = displayedMSA.sequences[0];
             // For export, ensure query sequence aligns with logo by using same xOffset calculation
             if (forExport) {
                 // Draw query sequence aligned with logo stacks
@@ -3539,163 +4215,67 @@
         parseSTO: parseSTO,
         
         getMSAData: function() {
-            return msaData;
+            return displayedMSA;
         },
         
         /**
          * Apply filters to MSA data and return filtered copy
          * This is a utility function that can be used externally to filter any MSA data
-         * @param {Object} msaDataToFilter - MSA data object to filter
-         * @param {number} coverageCutoff - Minimum coverage threshold (0-1)
-         * @param {number} identityCutoff - Minimum identity threshold (0-1)
+         * @param {Object} displayedMSAToFilter - MSA data object to filter
+         * @param {number} minCoverageThreshold - Minimum coverage threshold (0-1)
+         * @param {number} minIdentityThreshold - Minimum identity threshold (0-1)
          * @returns {Object} - Filtered MSA data object
          */
-        applyFiltersToMSA: function(msaDataToFilter, coverageCutoff, identityCutoff) {
-            if (!msaDataToFilter || !msaDataToFilter.sequences) {
+        applyFiltersToMSA: function(displayedMSAToFilter, minCoverageThreshold, minIdentityThreshold) {
+            if (!displayedMSAToFilter || !displayedMSAToFilter.sequences) {
                 return null;
             }
             
-            const sequencesToFilter = msaDataToFilter.sequencesOriginal || msaDataToFilter.sequences;
-            let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
-            filtered = filterSequencesByIdentity(filtered, msaDataToFilter.querySequence, identityCutoff);
+            const sequencesToFilter = displayedMSAToFilter.sequencesOriginal || displayedMSAToFilter.sequences;
+            let filtered = filterByCoverage(sequencesToFilter, minCoverageThreshold);
+            filtered = filterByIdentity(filtered, displayedMSAToFilter.querySequence, minIdentityThreshold);
             
             return {
-                querySequence: msaDataToFilter.querySequence,
-                queryLength: msaDataToFilter.queryLength,
+                querySequence: displayedMSAToFilter.querySequence,
+                queryLength: displayedMSAToFilter.queryLength,
                 sequences: filtered,
-                sequencesOriginal: msaDataToFilter.sequencesOriginal || msaDataToFilter.sequences
+                sequencesOriginal: displayedMSAToFilter.sequencesOriginal || displayedMSAToFilter.sequences
             };
         },
         
         
         setCoverageCutoff: function(cutoff) {
-            coverageCutoff = Math.max(0, Math.min(1, cutoff));
-            if (originalMSAData) {
-                const oldSequenceCount = msaData ? msaData.sequences.length : 0;
-                
-                // Use original order sequences for filtering
-                const sequencesToFilter = originalMSAData.sequencesOriginal || originalMSAData.sequences;
-                let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
-                filtered = filterSequencesByIdentity(filtered, originalMSAData.querySequence, identityCutoff);
-                
-                // Apply sorting if enabled
-                const finalSequences = sortSequences 
-                    ? sortSequencesByIdentity(filtered, originalMSAData.querySequence, originalMSAData.queryLength)
-                    : filtered;
-                
-                msaData = {
-                    sequences: finalSequences,
-                    querySequence: originalMSAData.querySequence,
-                    queryLength: originalMSAData.queryLength
-                };
-                
-                const newSequenceCount = msaData.sequences.length;
-                if (oldSequenceCount > 0 && newSequenceCount !== oldSequenceCount) {
-                    let canvasHeight = 400;
-                    if (msaCanvasData && msaCanvasData.canvas) {
-                        canvasHeight = msaCanvasData.canvas.height / DPI_MULTIPLIER;
-                    }
-                    clampScrollTop(canvasHeight);
-                }
-                
-                // Invalidate interaction manager cache (scroll limits depend on sequences.length)
-                if (activeInteractionManager) {
-                    activeInteractionManager._invalidateCache();
-                }
-                
-                // Notify callback that filtered MSA has changed
-                if (callbacks.onMSAFilterChange) {
-                    callbacks.onMSAFilterChange(msaData, currentChain);
-                }
-                
-                if (msaCanvasData && msaCanvasData.canvas && msaViewMode === 'msa') {
-                    scheduleRender();
-                } else if (pssmCanvasData && pssmCanvasData.canvas && msaViewMode === 'pssm') {
-                    scheduleRender();
-                } else if (logoCanvasData && logoCanvasData.canvas && msaViewMode === 'logo') {
-                    scheduleRender();
-                } else {
-                    buildViewForMode(msaViewMode);
-                }
-            }
+            minCoverageThreshold = clamp01(cutoff);
+            applyFiltersAndRender();
         },
         
         getCoverageCutoff: function() {
-            return coverageCutoff;
+            return minCoverageThreshold;
         },
         
         setPreviewCoverageCutoff: function(cutoff) {
-            previewCoverageCutoff = Math.max(0, Math.min(1, cutoff));
+            previewCoverageThreshold = clamp01(cutoff);
         },
         
         applyPreviewCoverageCutoff: function() {
-            coverageCutoff = previewCoverageCutoff;
-            this.setCoverageCutoff(coverageCutoff);
+            this.setCoverageCutoff(previewCoverageThreshold);
         },
         
         setIdentityCutoff: function(cutoff) {
-            identityCutoff = Math.max(0, Math.min(1, cutoff));
-            if (originalMSAData) {
-                const oldSequenceCount = msaData ? msaData.sequences.length : 0;
-                
-                // Use original order sequences for filtering
-                const sequencesToFilter = originalMSAData.sequencesOriginal || originalMSAData.sequences;
-                let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
-                filtered = filterSequencesByIdentity(filtered, originalMSAData.querySequence, identityCutoff);
-                
-                // Apply sorting if enabled
-                const finalSequences = sortSequences 
-                    ? sortSequencesByIdentity(filtered, originalMSAData.querySequence, originalMSAData.queryLength)
-                    : filtered;
-                
-                msaData = {
-                    sequences: finalSequences,
-                    querySequence: originalMSAData.querySequence,
-                    queryLength: originalMSAData.queryLength
-                };
-                
-                const newSequenceCount = msaData.sequences.length;
-                if (oldSequenceCount > 0 && newSequenceCount !== oldSequenceCount) {
-                    let canvasHeight = 400;
-                    if (msaCanvasData && msaCanvasData.canvas) {
-                        canvasHeight = msaCanvasData.canvas.height / DPI_MULTIPLIER;
-                    }
-                    clampScrollTop(canvasHeight);
-                }
-                
-                // Invalidate interaction manager cache (scroll limits depend on sequences.length)
-                if (activeInteractionManager) {
-                    activeInteractionManager._invalidateCache();
-                }
-                
-                // Notify callback that filtered MSA has changed
-                if (callbacks.onMSAFilterChange) {
-                    callbacks.onMSAFilterChange(msaData, currentChain);
-                }
-                
-                if (msaCanvasData && msaCanvasData.canvas && msaViewMode === 'msa') {
-                    scheduleRender();
-                } else if (pssmCanvasData && pssmCanvasData.canvas && msaViewMode === 'pssm') {
-                    scheduleRender();
-                } else if (logoCanvasData && logoCanvasData.canvas && msaViewMode === 'logo') {
-                    scheduleRender();
-                } else {
-                    buildViewForMode(msaViewMode);
-                }
-            }
+            minIdentityThreshold = clamp01(cutoff);
+            applyFiltersAndRender();
         },
         
         getIdentityCutoff: function() {
-            return identityCutoff;
+            return minIdentityThreshold;
         },
         
         setPreviewIdentityCutoff: function(cutoff) {
-            previewIdentityCutoff = Math.max(0, Math.min(1, cutoff));
+            previewIdentityThreshold = clamp01(cutoff);
         },
         
         applyPreviewIdentityCutoff: function() {
-            identityCutoff = previewIdentityCutoff;
-            this.setIdentityCutoff(identityCutoff);
+            this.setIdentityCutoff(previewIdentityThreshold);
         },
         
         setMSAData: function(data, chainId = null) {
@@ -3723,53 +4303,44 @@
                     }
                 }
             }
-            currentChain = chainId;
-            originalMSAData = data;
+            activeChainId = chainId;
+            sourceMSA = data;
             
-            // Use original order sequences for filtering
-            const sequencesToFilter = originalMSAData.sequencesOriginal || originalMSAData.sequences;
-            let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
-            filtered = filterSequencesByIdentity(filtered, originalMSAData.querySequence, identityCutoff);
+            // Build residue_numbers mapping from structure if available BEFORE filtering
+            // This maps MSA positions to structure residue_numbers values for display
+            if (!sourceMSA.residueNumbers) {
+                // Build residue_numbers mapping from structure if available
+                // Pass the querySequence directly from sourceMSA to avoid circular dependency
+                const mapping = computePositionToResidueMapping(chainId, sourceMSA.querySequence);
+                if (mapping) {
+                    sourceMSA.residueNumbers = mapping;
+                }
+            }
             
-            // Apply sorting if enabled
-            const finalSequences = sortSequences 
-                ? sortSequencesByIdentity(filtered, originalMSAData.querySequence, originalMSAData.queryLength)
-                : filtered;
+            // Apply unified filtering pipeline (no selection on initial load)
+            const { positions: msaSelectedPositions, chains: chainsForMSA } = getSelectionState();
+            displayedMSA = computeFilteredMSA(sourceMSA, {
+                selectedPositions: msaSelectedPositions,
+                chains: chainsForMSA,
+                minCoverage: minCoverageThreshold,
+                minIdentity: minIdentityThreshold,
+                shouldSort: shouldSortByIdentity
+            });
             
-            msaData = {
-                sequences: finalSequences,
-                querySequence: originalMSAData.querySequence,
-                queryLength: originalMSAData.queryLength
-            };
+            // Update global position map
+            positionToResidueMap = displayedMSA.residueNumbers || null;
             
             // Copy computed properties from original data if they exist
-            if (originalMSAData.frequencies) {
-                msaData.frequencies = originalMSAData.frequencies;
+            if (sourceMSA.frequencies) {
+                displayedMSA.frequencies = sourceMSA.frequencies;
             }
-            if (originalMSAData.logOdds) {
-                msaData.logOdds = originalMSAData.logOdds;
-            }
-            
-            // Build residue_numbers mapping from structure if available
-            // This maps MSA positions to structure residue_numbers values for display
-            msaResidueNumbers = null;
-            if (originalMSAData.residueNumbers) {
-                // Use provided residueNumbers if available
-                msaResidueNumbers = originalMSAData.residueNumbers;
-                msaData.residueNumbers = msaResidueNumbers;
-            } else {
-                // Build residue_numbers mapping from structure if available
-                msaResidueNumbers = buildMSAResidueNumbersMapping(chainId);
-                if (msaResidueNumbers) {
-                    msaData.residueNumbers = msaResidueNumbers;
-                    // CRITICAL: Also update originalMSAData so it's available for filtering
-                    originalMSAData.residueNumbers = msaResidueNumbers;
-                }
+            if (sourceMSA.logOdds) {
+                displayedMSA.logOdds = sourceMSA.logOdds;
             }
             
             // Compute properties if not already present (for filtered data, recompute)
             // Compute and store frequencies and logOdds once when MSA is set
-            calculateFrequencies(); // This will compute and store in msaData.frequencies
+            computePositionFrequencies(); // This will compute and store in displayedMSA.frequencies
             // logOdds will be computed on-demand when needed for logo view
             
             let canvasWidth = 916;
@@ -3797,7 +4368,7 @@
         },
         
         setChain: function(chainId) {
-            currentChain = chainId;
+            activeChainId = chainId;
             if (callbacks.getRenderer) {
                 const renderer = callbacks.getRenderer();
                 if (renderer && renderer.currentObjectName) {
@@ -3805,8 +4376,8 @@
                     if (obj && obj.msa && obj.msa.msasBySequence && obj.msa.chainToSequence) {
                         const querySeq = obj.msa.chainToSequence[chainId];
                         if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                            const {msaData} = obj.msa.msasBySequence[querySeq];
-                            this.setMSAData(msaData, chainId);
+                            const {displayedMSA} = obj.msa.msasBySequence[querySeq];
+                            this.setMSAData(displayedMSA, chainId);
                         }
                     }
                 }
@@ -3814,12 +4385,12 @@
         },
         
         getCurrentChain: function() {
-            return currentChain;
+            return activeChainId;
         },
         
         updateMSAViewSelectionState: function() {
             // Filter MSA data based on selection and rebuild view
-            if (!originalMSAData) {
+            if (!sourceMSA) {
                 // No MSA data - just trigger re-render
                 if (msaViewMode === 'msa' && msaCanvasData) {
                     scheduleRender();
@@ -3827,86 +4398,35 @@
                     scheduleRender();
                 } else if (msaViewMode === 'logo' && logoCanvasData) {
                     scheduleRender();
+                } else if (msaViewMode === 'coverage' && coverageCanvasData) {
+                    scheduleRender();
                 }
                 return;
             }
             
             // Get selection data and chain mappings
-            let msaSelectedPositions = null;
-            let chainsForMSA = null;
-            if (callbacks.getRenderer) {
-                const renderer = callbacks.getRenderer();
-                if (renderer && renderer.currentObjectName) {
-                    const obj = renderer.objectsData[renderer.currentObjectName];
-                    if (obj && obj.msa && currentChain) {
-                        // Get chains that map to this MSA
-                        const querySeq = obj.msa.chainToSequence[currentChain];
-                        if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                            const msaEntry = obj.msa.msasBySequence[querySeq];
-                            chainsForMSA = msaEntry.chains || [currentChain];
-                        } else {
-                            chainsForMSA = [currentChain];
-                        }
-                        
-                        // Get selection data
-                        if (typeof window !== 'undefined' && window._msaSelectedPositions !== undefined) {
-                            msaSelectedPositions = window._msaSelectedPositions;
-                        }
-                    }
-                }
-            }
+            const { positions: msaSelectedPositions, chains: chainsForMSA } = getSelectionState();
             
-            // First filter by selection to remove unselected positions
-            // This ensures coverage/identity filters are calculated on the selected regions only
-            const baseMSAData = {
-                sequences: originalMSAData.sequencesOriginal || originalMSAData.sequences,
-                querySequence: originalMSAData.querySequence,
-                queryLength: originalMSAData.queryLength,
-                queryIndex: originalMSAData.queryIndex || 0
-            };
+            // Apply unified filtering pipeline
+            displayedMSA = computeFilteredMSA(sourceMSA, {
+                selectedPositions: msaSelectedPositions,
+                chains: chainsForMSA,
+                minCoverage: minCoverageThreshold,
+                minIdentity: minIdentityThreshold,
+                shouldSort: shouldSortByIdentity
+            });
             
-            // Preserve residueNumbers if available - need to copy the array
-            if (originalMSAData.residueNumbers) {
-                baseMSAData.residueNumbers = [...originalMSAData.residueNumbers];
-            }
-            if (originalMSAData.sequencesOriginal) {
-                baseMSAData.sequencesOriginal = originalMSAData.sequencesOriginal;
-            }
-            
-            // Filter by selection first (removes unselected positions)
-            const selectionFilteredMSA = filterMSADataBySelection(baseMSAData, chainsForMSA, msaSelectedPositions);
-            
-            // Now apply coverage/identity filters to the selection-filtered MSA
-            // This calculates coverage/identity based on the selected regions only
-            const sequencesToFilter = selectionFilteredMSA.sequences;
-            let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
-            filtered = filterSequencesByIdentity(filtered, selectionFilteredMSA.querySequence, identityCutoff);
-            
-            // Apply sorting if enabled
-            const finalSequences = sortSequences 
-                ? sortSequencesByIdentity(filtered, selectionFilteredMSA.querySequence, selectionFilteredMSA.queryLength)
-                : filtered;
-            
-            // Create final MSA data with both selection and coverage/identity filtering applied
-            const filteredMSA = {
-                sequences: finalSequences,
-                querySequence: selectionFilteredMSA.querySequence,
-                queryLength: selectionFilteredMSA.queryLength,
-                queryIndex: selectionFilteredMSA.queryIndex || 0,
-                residueNumbers: selectionFilteredMSA.residueNumbers
-            };
-            
-            // Update msaData with filtered version
-            msaData = filteredMSA;
-            
-            // CRITICAL: Update msaResidueNumbers to the filtered array
-            // drawTickMarks uses msaData.residueNumbers || msaResidueNumbers
-            // So we need to ensure msaResidueNumbers is set to the filtered version
-            msaResidueNumbers = filteredMSA.residueNumbers || null;
+            // Update positionToResidueMap to the filtered array
+            positionToResidueMap = displayedMSA.residueNumbers || null;
             
             // Invalidate interaction manager cache (scroll limits depend on queryLength)
             if (activeInteractionManager) {
                 activeInteractionManager._invalidateCache();
+            }
+            
+            // Notify callback that filtered MSA has changed (recompute entropy with new selection)
+            if (callbacks.onMSAFilterChange) {
+                callbacks.onMSAFilterChange(displayedMSA, activeChainId);
             }
             
             // Rebuild view for current mode
@@ -3918,7 +4438,7 @@
         },
         
         saveLogoAsSvg: function() {
-            if (!logoCanvasData || !logoCanvasData.canvas || !msaData) {
+            if (!logoCanvasData || !logoCanvasData.canvas || !displayedMSA) {
                 console.error('Logo canvas or MSA data not available');
                 return;
             }
@@ -3928,7 +4448,7 @@
             
             // Calculate full width needed for all positions
             const LABEL_WIDTH = Y_AXIS_WIDTH;
-            const fullWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
+            const fullWidth = LABEL_WIDTH + (displayedMSA.queryLength * CHAR_WIDTH);
             
             // Create SVG context with full width
             const svgCtx = new SimpleCanvas2SVG(fullWidth, logicalHeight);
@@ -3942,7 +4462,7 @@
         },
         
         savePSSMAsSvg: function() {
-            if (!pssmCanvasData || !pssmCanvasData.canvas || !msaData) {
+            if (!pssmCanvasData || !pssmCanvasData.canvas || !displayedMSA) {
                 console.error('PSSM canvas or MSA data not available');
                 return;
             }
@@ -3952,7 +4472,7 @@
             
             // Calculate full width needed for all positions
             const LABEL_WIDTH = CHAR_WIDTH;
-            const fullWidth = LABEL_WIDTH + (msaData.queryLength * CHAR_WIDTH);
+            const fullWidth = LABEL_WIDTH + (displayedMSA.queryLength * CHAR_WIDTH);
             
             // Create SVG context with full width
             const svgCtx = new SimpleCanvas2SVG(fullWidth, logicalHeight);
@@ -3966,12 +4486,12 @@
         },
         
         savePSSMAsCsv: function() {
-            if (!msaData) {
+            if (!displayedMSA) {
                 console.error('MSA data not available');
                 return;
             }
             
-            const frequencies = calculateFrequencies();
+            const frequencies = computePositionFrequencies();
             if (!frequencies || frequencies.length === 0) {
                 console.error('No frequency data available');
                 return;
@@ -3997,7 +4517,7 @@
         },
         
         saveMSAAsFasta: function() {
-            if (!msaData || !msaData.sequences || msaData.sequences.length === 0) {
+            if (!displayedMSA || !displayedMSA.sequences || displayedMSA.sequences.length === 0) {
                 console.error('MSA data not available');
                 return;
             }
@@ -4005,7 +4525,7 @@
             // Build FASTA output from currently filtered/visible sequences
             let fasta = '';
             
-            for (const seq of msaData.sequences) {
+            for (const seq of displayedMSA.sequences) {
                 // FASTA format: >name\nsequence\n
                 const name = seq.name || 'Unknown';
                 const sequence = seq.sequence || '';
@@ -4021,7 +4541,7 @@
         },
         
         setMSAMode: function(mode) {
-            if (msaViewMode !== mode && msaData) {
+            if (msaViewMode !== mode && displayedMSA) {
                 const oldCharWidth = msaViewMode === 'msa' ? CHAR_WIDTH / 2 : CHAR_WIDTH;
                 const newCharWidth = mode === 'msa' ? CHAR_WIDTH / 2 : CHAR_WIDTH;
                 const charPosition = scrollLeft / oldCharWidth;
@@ -4038,7 +4558,7 @@
             });
             
             // Adjust scroll position after mode switch
-            if (msaData) {
+            if (displayedMSA) {
                 let canvasWidth = 916;
                 let charWidth = getCharWidthForMode(mode);
                 let scrollableAreaX = 0;
@@ -4055,11 +4575,15 @@
                     canvasWidth = logoCanvasData.canvas.width / DPI_MULTIPLIER;
                     scrollableAreaX = Y_AXIS_WIDTH;
                     charWidth = CHAR_WIDTH;
+                } else if (mode === 'coverage' && coverageCanvasData && coverageCanvasData.canvas) {
+                    canvasWidth = coverageCanvasData.canvas.width / DPI_MULTIPLIER;
+                    scrollableAreaX = Y_AXIS_WIDTH;
+                    charWidth = CHAR_WIDTH;
                 }
                 
                 if (canvasWidth > 0) {
                     const scrollableAreaWidth = canvasWidth - scrollableAreaX - (mode === 'msa' ? SCROLLBAR_WIDTH : 0);
-                    const totalScrollableWidth = msaData.queryLength * charWidth;
+                    const totalScrollableWidth = displayedMSA.queryLength * charWidth;
                     const maxScrollX = Math.max(0, totalScrollableWidth - scrollableAreaWidth);
                     const oldScrollLeft = scrollLeft;
                     scrollLeft = Math.max(0, Math.min(maxScrollX, scrollLeft));
@@ -4082,45 +4606,23 @@
         },
         
         getSortSequences: function() {
-            return sortSequences;
+            return shouldSortByIdentity;
         },
         
         setSortSequences: function(value) {
-            sortSequences = value;
-            if (originalMSAData && msaViewMode === 'msa') {
-                // Reapply filtering and sorting
-                const sequencesToFilter = originalMSAData.sequencesOriginal || originalMSAData.sequences;
-                let filtered = filterSequencesByCoverage(sequencesToFilter, coverageCutoff);
-                filtered = filterSequencesByIdentity(filtered, originalMSAData.querySequence, identityCutoff);
-                
-                // Apply sorting if enabled
-                const finalSequences = sortSequences 
-                    ? sortSequencesByIdentity(filtered, originalMSAData.querySequence, originalMSAData.queryLength)
-                    : filtered;
-                
-                msaData = {
-                    sequences: finalSequences,
-                    querySequence: originalMSAData.querySequence,
-                    queryLength: originalMSAData.queryLength
-                };
-                
-                // Invalidate interaction manager cache (scroll limits depend on sequences.length)
-                if (activeInteractionManager) {
-                    activeInteractionManager._invalidateCache();
-                }
-                
-                if (msaCanvasData && msaCanvasData.canvas) {
-                    scheduleRender();
-                }
+            shouldSortByIdentity = value;
+            if (sourceMSA) {
+                // Use unified filtering pipeline
+                applyFiltersAndRender();
             }
         },
         
         getSequenceCounts: function() {
-            const filtered = msaData ? msaData.sequences.length : 0;
+            const filtered = displayedMSA ? displayedMSA.sequences.length : 0;
             // Use sequencesOriginal for total count (all sequences before any filtering)
             // If sequencesOriginal doesn't exist, fall back to sequences
-            const total = originalMSAData 
-                ? (originalMSAData.sequencesOriginal ? originalMSAData.sequencesOriginal.length : originalMSAData.sequences.length)
+            const total = sourceMSA 
+                ? (sourceMSA.sequencesOriginal ? sourceMSA.sequencesOriginal.length : sourceMSA.sequences.length)
                 : 0;
             return { filtered, total };
         },
@@ -4136,6 +4638,9 @@
             if (logoCanvasData?.resizeObserver) {
                 logoCanvasData.resizeObserver.disconnect();
             }
+            if (coverageCanvasData?.resizeObserver) {
+                coverageCanvasData.resizeObserver.disconnect();
+            }
             
             // Remove containers from DOM
             const containers = document.querySelectorAll('.msa-canvas');
@@ -4145,14 +4650,15 @@
                 }
             });
             
-            msaData = null;
-            originalMSAData = null;
+            displayedMSA = null;
+            sourceMSA = null;
             msaCanvasData = null;
             pssmCanvasData = null;
             logoCanvasData = null;
+            coverageCanvasData = null;
             
             // Reset state variables to initial values
-            currentChain = null;
+            activeChainId = null;
         },
         
         buildMSAView: buildMSAView,

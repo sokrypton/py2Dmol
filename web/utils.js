@@ -659,9 +659,6 @@ function parsePDB(text) {
         models.push(currentModelAtoms);
     }
     
-    // Store MODRES map globally for use in convertParsedToFrameData
-    window._lastModresMap = modresMap;
-    
     return { models, modresMap };
 }
 
@@ -674,9 +671,6 @@ function parseCIF(text) {
     
     // Parse chemical component table first (for modified residue detection)
     const loops = parseMinimalCIF_light(text);
-    
-    // Cache loops globally for biounit extraction to reuse
-    window._lastCIFLoops = loops;
     
     const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
     
@@ -711,9 +705,6 @@ function parseCIF(text) {
             }
         }
     }
-    
-    // Store chemCompMap globally for use in convertParsedToFrameData
-    window._lastChemCompMap = chemCompMap;
     
     const modelMap = new Map();
     const lines = text.split('\n');
@@ -852,14 +843,11 @@ function parseCIF(text) {
     
     const modelCount = modelMap.size;
 
-    const result = Array.from(modelMap.keys())
+    const models = Array.from(modelMap.keys())
         .sort((a, b) => a - b)
         .map(id => modelMap.get(id));
     
-    // Attach cached loops to result for reuse
-    result._cachedLoops = loops;
-    
-    return result;
+    return { models, loops, chemCompMap };
 }
 
 /**
@@ -1357,16 +1345,6 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     const position_types = [];
     const residues = [];
     const residue_numbers = [];
-    
-    // Use global MODRES map if not provided (for backward compatibility)
-    if (!modresMap && typeof window !== 'undefined' && window._lastModresMap) {
-        modresMap = window._lastModresMap;
-    }
-    
-    // Use global CIF chemCompMap if not provided (for backward compatibility)
-    if (!chemCompMap && typeof window !== 'undefined' && window._lastChemCompMap) {
-        chemCompMap = window._lastChemCompMap;
-    }
 
     const residueMap = new Map();
     for (const atom of atoms) {
@@ -1865,13 +1843,8 @@ function extractCIFBiounitOperations(text, cachedLoops = null) {
         // Use cached loops if provided
         loops = cachedLoops;
     } else {
-        // Check global cache first
-        if (window._lastCIFLoops) {
-            loops = window._lastCIFLoops;
-        } else {
-            // Parse all loops if not cached
-            loops = parseMinimalCIF_light(text);
-        }
+        // Parse all loops if not cached
+        loops = parseMinimalCIF_light(text);
     }
     
     const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
@@ -2090,10 +2063,6 @@ function buildBioFromCIF(text) {
             }
         }
     }
-    
-    // Store chemCompMap in a global or pass it through
-    // For now, we'll attach it to the returned object so convertParsedToFrameData can use it
-    window._lastChemCompMap = chemCompMap;
 
     // Atom table
     const atomL = loops.find(([cols]) => cols.some(c => c.startsWith('_atom_site.')));
