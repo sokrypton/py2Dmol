@@ -5206,8 +5206,16 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                             if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
                                 const {msaData} = msaObj.msasBySequence[defaultChainSeq];
                                 if (window.MSAViewer) {
-                                    loadMSADataIntoViewer(msaData, msaObj.defaultChain, objectName);
+                                    loadMSADataIntoViewer(msaData, msaObj.defaultChain, currentObjectName);
                                     setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
+                                    
+                                    // Update MSA container visibility and chain selector
+                                    if (window.updateMSAContainerVisibility) {
+                                        window.updateMSAContainerVisibility();
+                                    }
+                                    if (window.updateMSAChainSelectorIndex) {
+                                        window.updateMSAChainSelectorIndex();
+                                    }
                                 }
                             }
                         } else {
