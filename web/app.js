@@ -4797,39 +4797,31 @@ function applySelectionToMSA() {
     // Get selected positions
     const selection = renderer.getSelection();
     let selectedPositions = new Set();
-    let allSelected = false;
+    
+    // Check if we have an explicit selection mode
+    const isExplicitMode = selection && selection.selectionMode === 'explicit';
     
     if (selection && selection.positions && selection.positions.size > 0) {
         selectedPositions = new Set(selection.positions);
     } else if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
         selectedPositions = new Set(renderer.visibilityMask);
-        } else {
-        // No explicit selection - all positions visible (default mode)
-        allSelected = true;
     }
     
-    // If all positions are selected, set a flag to indicate no dimming needed
-    if (allSelected) {
-        obj.msa.selectedPositions = null; // null means all selected (no dimming)
-        if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
-            window.MSAViewer.updateMSAViewSelectionState();
-            // Update sequence count after filtering
-            if (window.updateMSASequenceCount) {
-                window.updateMSASequenceCount();
-            }
-        }
-        return;
-    }
-    
-    if (selectedPositions.size === 0) {
+    // Handle empty selection in explicit mode (Hide All was clicked)
+    if (isExplicitMode && selectedPositions.size === 0) {
         // Empty selection - dim everything
         obj.msa.selectedPositions = new Map();
         if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
             window.MSAViewer.updateMSAViewSelectionState();
-            // Update sequence count after filtering
-            if (window.updateMSASequenceCount) {
-                window.updateMSASequenceCount();
-            }
+        }
+        return;
+    }
+    
+    // If no selection or default mode, all positions are selected (no dimming)
+    if (selectedPositions.size === 0) {
+        obj.msa.selectedPositions = null; // null means all selected (no dimming)
+        if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
+            window.MSAViewer.updateMSAViewSelectionState();
         }
         return;
     }
@@ -4906,13 +4898,9 @@ function applySelectionToMSA() {
     // Store even if empty to indicate no selection (for dimming all positions)
     obj.msa.selectedPositions = msaSelectedPositions;
     
-    // Trigger MSA viewer update
+    // Trigger MSA viewer update (only updates visual dimming, no filtering)
     if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
         window.MSAViewer.updateMSAViewSelectionState();
-        // Update sequence count after filtering
-        if (window.updateMSASequenceCount) {
-            window.updateMSASequenceCount();
-        }
     }
 }
 

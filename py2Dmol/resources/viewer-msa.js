@@ -789,21 +789,21 @@
             baseMSAData.sequencesOriginal = sourceData.sequencesOriginal;
         }
         
-        // 1. Build selection mask (marks selected vs dimmed positions)
+        // 1. Build selection mask (marks selected vs dimmed positions) - for visual dimming only
         const selectionProcessed = buildSelectionMask(baseMSAData, chains, selectedPositions);
         
-        // Get selection mask for computing coverage/identity only on selected positions
-        const mask = selectionProcessed.selectionMask;
-        
         // 2. Filter by coverage (removes low-coverage sequences)
-        let filtered = filterByCoverage(selectionProcessed.sequences, minCoverage, mask);
+        // Note: Pass null for mask so filtering is based on all positions, not just selected ones
+        let filtered = filterByCoverage(selectionProcessed.sequences, minCoverage, null);
         
         // 3. Filter by identity (removes low-identity sequences)
-        filtered = filterByIdentity(filtered, selectionProcessed.querySequence, minIdentity, mask);
+        // Note: Pass null for mask so filtering is based on all positions, not just selected ones
+        filtered = filterByIdentity(filtered, selectionProcessed.querySequence, minIdentity, null);
         
         // 4. Sort if enabled
+        // Note: Pass null for mask so sorting is based on all positions, not just selected ones
         if (shouldSort) {
-            filtered = sortByIdentity(filtered, selectionProcessed.querySequence, selectionProcessed.queryLength, mask);
+            filtered = sortByIdentity(filtered, selectionProcessed.querySequence, selectionProcessed.queryLength, null);
         }
         
         return {
@@ -1616,12 +1616,12 @@
         const queryLength = sourceMSAData.queryLength || sourceMSAData.querySequence?.length || 0;
         const selectionMask = new Array(queryLength);
         
-        // If null, all positions are selected (default mode)
-        if (msaSelectedPositions === null) {
+        // If null or undefined, all positions are selected (default mode)
+        if (msaSelectedPositions === null || msaSelectedPositions === undefined) {
             selectionMask.fill(true);
-        } else if (!msaSelectedPositions || msaSelectedPositions.size === 0) {
-            // No selection - treat as all selected
-            selectionMask.fill(true);
+        } else if (msaSelectedPositions.size === 0) {
+            // Empty Map - dim everything (Hide All was clicked)
+            selectionMask.fill(false);
         } else {
             // Check each position - show if at least one chain has it selected
             for (let pos = 0; pos < queryLength; pos++) {
@@ -3807,19 +3807,22 @@
         else if (yNormalized <= 5) yNiceFactor = 5;
         else yNiceFactor = 10;
         
-        const yTickInterval = yNiceFactor * yMagnitude;
+        const yTickInterval = Math.max(1, yNiceFactor * yMagnitude); // Ensure at least 1
         
-        // Generate tick values
+        // Generate tick values (only integers)
         const yTickValues = [];
         for (let val = yTickInterval; val <= maxCoverage; val += yTickInterval) {
-            yTickValues.push(val);
+            if (Number.isInteger(val)) {
+                yTickValues.push(val);
+            }
         }
+        
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 1;
         yTickValues.forEach(val => {
             const normalized = normalizeCount(val);
             const y = plotY + heatmapHeight - normalized * heatmapHeight;
-            ctx.fillText(String(val), plotX - 6, y);
+            ctx.fillText(String(Math.round(val)), plotX - 6, y);
             ctx.beginPath();
             ctx.moveTo(plotX - 6, y);
             ctx.lineTo(plotX - 2, y);
@@ -4412,48 +4415,20 @@
         },
         
         updateMSAViewSelectionState: function() {
-            // Filter MSA data based on selection and rebuild view
-            if (!sourceMSA) {
-                // No MSA data - just trigger re-render
-                if (msaViewMode === 'msa' && msaCanvasData) {
-                    scheduleRender();
-                } else if (msaViewMode === 'pssm' && pssmCanvasData) {
-                    scheduleRender();
-                } else if (msaViewMode === 'logo' && logoCanvasData) {
-                    scheduleRender();
-                } else if (msaViewMode === 'coverage' && coverageCanvasData) {
-                    scheduleRender();
-                }
+            // Update selection mask for visual dimming only (no filtering)
+            if (!sourceMSA || !displayedMSA) {
                 return;
             }
             
             // Get selection data and chain mappings
             const { positions: msaSelectedPositions, chains: chainsForMSA } = getSelectionState();
             
-            // Apply unified filtering pipeline
-            displayedMSA = computeFilteredMSA(sourceMSA, {
-                selectedPositions: msaSelectedPositions,
-                chains: chainsForMSA,
-                minCoverage: minCoverageThreshold,
-                minIdentity: minIdentityThreshold,
-                shouldSort: shouldSortByIdentity
-            });
+            // Update only the selection mask in displayedMSA (for dimming)
+            const selectionProcessed = buildSelectionMask(displayedMSA, chainsForMSA, msaSelectedPositions);
+            displayedMSA.selectionMask = selectionProcessed.selectionMask;
             
-            // Update positionToResidueMap to the filtered array
-            positionToResidueMap = displayedMSA.residueNumbers || null;
-            
-            // Invalidate interaction manager cache (scroll limits depend on queryLength)
-            if (activeInteractionManager) {
-                activeInteractionManager._invalidateCache();
-            }
-            
-            // Notify callback that filtered MSA has changed (recompute entropy with new selection)
-            if (callbacks.onMSAFilterChange) {
-                callbacks.onMSAFilterChange(displayedMSA, activeChainId);
-            }
-            
-            // Rebuild view for current mode
-            buildViewForMode(msaViewMode);
+            // Just re-render the current view with updated dimming
+            scheduleRender();
         },
         
         getMSAMode: function() {
