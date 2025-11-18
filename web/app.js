@@ -5387,13 +5387,13 @@ async function handleZipUpload(file, loadAsFrames) {
             
             if (targetObjectName) {
                 // Check if MSA loading is enabled
+                // For ZIP files with MSAs, always load them (checkbox only controls fetching from AlphaFold DB)
                 const loadMSACheckbox = document.getElementById('loadMSACheckbox');
-                const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false; // Default to disabled
+                const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false;
                 
-                // Process MSA files using the same logic as in processFiles (only if Load MSA is enabled)
-                if (!loadMSA) {
-                    setStatus(`Skipping MSA files (Load MSA is disabled).`, false);
-                    return;
+                // If checkbox is disabled and we have MSA files in the ZIP, load them anyway
+                if (!loadMSA && allMSAFiles.length > 0) {
+                    console.log(`Loading ${allMSAFiles.length} MSA file(s) from ZIP (checkbox only controls AlphaFold DB fetching)`);
                 }
                 
                 // Use sequence-based matching for all MSA files (same as processFiles)
@@ -5435,6 +5435,14 @@ async function handleZipUpload(file, loadAsFrames) {
                                     if (window.MSAViewer) {
                                         loadMSADataIntoViewer(msaData, msaObj.defaultChain, targetObjectName);
                                         setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
+                                        
+                                        // Update MSA container visibility and chain selector
+                                        if (window.updateMSAContainerVisibility) {
+                                            window.updateMSAContainerVisibility();
+                                        }
+                                        if (window.updateMSAChainSelectorIndex) {
+                                            window.updateMSAChainSelectorIndex();
+                                        }
                                     }
                                 }
                             }

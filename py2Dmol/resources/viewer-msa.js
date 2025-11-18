@@ -1523,7 +1523,16 @@
             
             const aa = querySeq.sequence[pos];
             const color = getDayhoffColor(aa);
-            const r = color.r, g = color.g, b = color.b;
+            let r = color.r, g = color.g, b = color.b;
+            
+            // Apply dimming if position not selected
+            const isSelected = !displayedMSA.selectionMask || displayedMSA.selectionMask[pos];
+            if (!isSelected) {
+                const dimFactor = 0.4;
+                r = Math.floor(r + (255 - r) * (1 - dimFactor));
+                g = Math.floor(g + (255 - g) * (1 - dimFactor));
+                b = Math.floor(b + (255 - b) * (1 - dimFactor));
+            }
             
             if (xOffset + charWidth >= minX && xOffset < maxX) {
                 ctx.save();
@@ -1534,7 +1543,7 @@
                 ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
                 ctx.fillRect(xOffset, queryY, charWidth, queryRowHeight);
                 
-                ctx.fillStyle = '#000';
+                ctx.fillStyle = isSelected ? '#000' : '#999';
                 ctx.font = '10px monospace';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
