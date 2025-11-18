@@ -3431,6 +3431,20 @@
             return null;
         }
         
+        // Initialize cache on sourceMSA if not present
+        if (sourceMSA && !sourceMSA._coverageCache) {
+            sourceMSA._coverageCache = {
+                displayedMSA: null,
+                dataset: null
+            };
+        }
+        
+        // Return cached result if displayedMSA hasn't changed
+        if (sourceMSA && sourceMSA._coverageCache && 
+            sourceMSA._coverageCache.displayedMSA === displayedMSA) {
+            return sourceMSA._coverageCache.dataset;
+        }
+        
         const querySequence = displayedMSA.querySequence || '';
         const queryLength = displayedMSA.queryLength || querySequence.length;
         if (!queryLength) return null;
@@ -3472,7 +3486,7 @@
             delete seq._originalIndex;
         }
         
-        return {
+        const result = {
             sequencesWithIdentity,
             coveragePerPosition,
             queryLength,
@@ -3480,6 +3494,14 @@
                 ? [...displayedMSA.residueNumbers]
                 : null
         };
+        
+        // Cache the result on sourceMSA
+        if (sourceMSA && sourceMSA._coverageCache) {
+            sourceMSA._coverageCache.displayedMSA = displayedMSA;
+            sourceMSA._coverageCache.dataset = result;
+        }
+        
+        return result;
     }
     
     // Helper function to apply filters and update view
