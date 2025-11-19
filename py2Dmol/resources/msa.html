@@ -1,0 +1,1476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MSA Viewer - py2Dmol</title>
+    <style>
+        /* Basic styles for MSA viewer */
+        .container-box {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background-color: #ffffff;
+            padding: 12px;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        }
+        .sequence-section-container {
+            width: 100%;
+            height: 100%;
+        }
+        .sequence-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            border: 1px solid transparent;
+        }
+        .btn-grey {
+            background-color: #f3f4f6;
+            border-color: #d1d5db;
+            color: #374151;
+        }
+        .btn-grey:hover {
+            background-color: #e5e7eb;
+        }
+        .btn-small {
+            font-size: 12px;
+            padding: 4px 8px;
+            height: 28px;
+        }
+        /* ============================================================================
+   CSS VARIABLES & DESIGN TOKENS
+   ============================================================================ */
+:root {
+    --color-primary: #3b82f6;
+    --color-primary-hover: #2563eb;
+    --color-primary-dark: #1d4ed8;
+    --color-success: #10b981;
+    --color-success-hover: #059669;
+    --color-success-dark: #047857;
+    --color-danger: #ef4444;
+    --color-danger-hover: #dc2626;
+    --color-danger-dark: #b91c1c;
+    --color-gray-50: #f9fafb;
+    --color-gray-100: #f3f4f6;
+    --color-gray-200: #e5e7eb;
+    --color-gray-300: #d1d5db;
+    --color-gray-400: #9ca3af;
+    --color-gray-500: #6b7280;
+    --color-gray-600: #4b5563;
+    --color-gray-700: #374151;
+    --color-gray-800: #1f2937;
+    --color-gray-900: #111827;
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-full: 9999px;
+    --btn-radius: 6px;
+    --btn-height: 36px;
+    --btn-height-small: 28px;
+    --btn-padding-x: 14px;
+    --btn-padding-x-small: 10px;
+    --btn-font-size: 14px;
+    --btn-font-size-small: 12px;
+    --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    --container-padding: 12px;
+    --container-gap: 10px;
+}
+
+/* ============================================================================
+   BASE & LAYOUT
+   ============================================================================ */
+.py2dmol-viewer-instance * {
+    box-sizing: border-box;
+}
+
+/* ============================================================================
+   STANDARD CONTAINER BOX
+   ============================================================================ */
+.container-box {
+    background: #ffffff;
+    border: 1px solid var(--color-gray-200);
+    border-radius: var(--radius-lg);
+    padding: var(--container-padding);
+    box-shadow: var(--shadow-md);
+    transition: box-shadow var(--transition-base), border-color var(--transition-base);
+}
+
+.container-box:hover {
+    box-shadow: var(--shadow-lg);
+    border-color: var(--color-gray-300);
+}
+
+/* [EDIT] Centered viewer on the page */
+.py2dmol-viewer-instance {
+    position: relative;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: transparent;
+    display: block;
+    margin: 0 auto;
+    width: 948px;
+    line-height: 1.5;
+}
+/* [END EDIT] */
+
+.py2dmol-viewer-instance #mainContainer {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 8px;
+    background: transparent;
+}
+
+.py2dmol-viewer-instance #viewerColumn {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 600px;
+}
+
+.py2dmol-viewer-instance #canvasContainer {
+    display: inline-block;
+    overflow: auto;
+    resize: both;
+    width: 600px;
+    height: 600px;
+    min-width: 200px;
+    min-height: 200px;
+    position: relative;
+}
+
+.py2dmol-viewer-instance #canvasContainer.container-box {
+    /* Inherits all container-box styles from .container-box */
+    /* Intentionally empty - styles inherited from .container-box */
+    display: block; /* Prevent empty ruleset warning */
+}
+
+/* Hide default resize handle for canvasContainer */
+.py2dmol-viewer-instance #canvasContainer::-webkit-resizer {
+    display: none;
+}
+
+/* Custom resize handle for canvasContainer */
+.py2dmol-viewer-instance #canvasContainer .resize-handle {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+    z-index: 100;
+    pointer-events: none;
+}
+
+.py2dmol-viewer-instance #canvasContainer:hover .resize-handle {
+    opacity: 0.8;
+}
+
+.py2dmol-viewer-instance #canvasContainer .resize-handle::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 0 0 16px 16px;
+    border-color: transparent transparent #3b82f6 transparent;
+}
+
+.py2dmol-viewer-instance #canvas {
+    background: #ffffff;
+    cursor: grab;
+    display: block;
+    touch-action: none;
+    transition: cursor var(--transition-fast);
+}
+
+.py2dmol-viewer-instance #canvas:active {
+    cursor: grabbing;
+}
+
+.py2dmol-viewer-instance #rightPanelsContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+    align-self: flex-start;
+}
+
+.py2dmol-viewer-instance #rightPanelContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 340px;
+}
+
+.py2dmol-viewer-instance #rightPanelContainer.container-box {
+    /* Inherits all container-box styles from .container-box */
+    /* Intentionally empty - styles inherited from .container-box */
+    display: flex; /* Prevent empty ruleset warning */
+}
+
+/* ============================================================================
+   UNIFIED BUTTON SYSTEM
+   ============================================================================ */
+
+/* Base button class - all buttons inherit from this */
+.btn {
+    height: var(--btn-height);
+    padding: 0 var(--btn-padding-x);
+    border-radius: var(--btn-radius);
+    font-size: var(--btn-font-size);
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    box-shadow: var(--shadow-sm);
+    color: white;
+    text-align: center;
+}
+
+/* Small button modifier */
+.btn-small {
+    height: var(--btn-height-small);
+    padding: 0 var(--btn-padding-x-small);
+    font-size: var(--btn-font-size-small);
+    line-height: var(--btn-height-small);
+}
+
+/* Unified hover state for all buttons */
+.btn:hover:not(:disabled) {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+/* Unified active state for all buttons */
+.btn:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm);
+}
+
+/* Unified disabled state */
+.btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+    box-shadow: none;
+    transform: none;
+}
+
+/* Color variants */
+.btn-primary {
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-primary-dark) 100%);
+}
+
+.btn-primary:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+.btn-secondary {
+    background: linear-gradient(135deg, var(--color-gray-600) 0%, var(--color-gray-700) 100%);
+}
+
+.btn-secondary.active {
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
+}
+
+.btn-secondary:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--color-gray-700) 0%, var(--color-gray-800) 100%);
+}
+
+.btn-secondary:focus-visible {
+    outline: 2px solid var(--color-gray-600);
+    outline-offset: 2px;
+}
+
+.btn-success {
+    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+}
+
+.btn-success:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
+}
+
+.btn-success:focus-visible {
+    outline: 2px solid var(--color-success);
+    outline-offset: 2px;
+}
+
+.btn-danger {
+    background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger-hover) 100%);
+}
+
+.btn-danger:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--color-danger-hover) 0%, var(--color-danger-dark) 100%);
+}
+
+.btn-danger:focus-visible {
+    outline: 2px solid var(--color-danger);
+    outline-offset: 2px;
+}
+
+.btn-grey {
+    background: var(--color-gray-200);
+    color: var(--color-gray-700);
+}
+
+.btn-grey:hover:not(:disabled) {
+    background: var(--color-gray-300);
+}
+
+.btn-grey:active:not(:disabled) {
+    background: var(--color-gray-400);
+}
+
+/* Active state for grey buttons (used by nav-button.active) */
+.btn-grey.active,
+.nav-button.active {
+    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+    color: white;
+}
+
+.btn-grey.active:hover:not(:disabled),
+.nav-button.active:hover:not(:disabled) {
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
+}
+
+
+/* .btn-blue removed - use .btn-primary instead */
+
+.btn-disabled {
+    background: linear-gradient(135deg, var(--color-gray-200), var(--color-gray-300));
+    color: var(--color-gray-400);
+}
+
+/* Button utility classes */
+.btn-flex {
+    flex: 1;
+}
+
+.btn-no-margin {
+    margin: 0;
+}
+
+.btn-icon-only {
+    min-width: 36px; /* Prevent collapsing below minimum for icon buttons */
+}
+
+.btn-min-width-sm {
+    min-width: 80px;
+}
+
+.btn-min-width-md {
+    min-width: 100px;
+}
+
+.btn-min-width-lg {
+    min-width: 170px;
+}
+
+/* Specific button overrides (for backward compatibility) */
+#fetch-btn {
+    min-width: 100px;
+}
+
+#upload-button {
+    min-width: 170px;
+}
+
+#example-button-1,
+#example-button-2 {
+    flex: 1;
+}
+
+/* Control buttons (Play button) - now uses .btn-primary with min-width utility */
+
+/* ============================================================================
+   NAVIGATION BUTTONS (TOOLBAR)
+   ============================================================================ */
+.py2dmol-viewer-instance {
+    --btn-h: 36px;
+    --gap: 8px;
+}
+
+.py2dmol-viewer-instance .toolbar-row {
+    display: flex;
+    gap: var(--gap);
+}
+
+.py2dmol-viewer-instance .toolbar-row > * {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+#prevObjectButton,
+#nextObjectButton {
+    flex: 0 0 48px;
+    padding: 0;
+    text-align: center;
+}
+
+/* Navigation buttons - extends .btn base class */
+/* Note: nav-button should be used with .btn class: <button class="btn nav-button"> */
+.nav-button {
+    /* Inherits all base .btn styles when used with .btn */
+    line-height: var(--btn-height);
+}
+
+.nav-button.btn-small {
+    line-height: var(--btn-height-small);
+}
+
+/* Greyed-out state for navigation buttons */
+.nav-button.greyed-out {
+    background: var(--color-gray-100);
+    color: var(--color-gray-400);
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.nav-button.greyed-out:hover {
+    background: var(--color-gray-100);
+    color: var(--color-gray-400);
+}
+
+/* Scoped nav-button styles for viewer instance (backward compatibility) */
+.py2dmol-viewer-instance .nav-button {
+    line-height: var(--btn-h);
+}
+
+/* ============================================================================
+   TOGGLE SWITCHES (UNIFIED STYLE)
+   ============================================================================ */
+/* Base toggle switch - used for all checkboxes styled as toggles */
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider-toggle {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #cbd5e1;
+    transition: .3s;
+    border-radius: 24px;
+}
+
+.slider-toggle:before {
+    position: absolute;
+    content: "";
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.switch input:checked + .slider-toggle {
+    background-color: #3b82f6;
+}
+
+.switch input:focus + .slider-toggle {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.switch input:checked + .slider-toggle:before {
+    transform: translateX(20px);
+}
+
+/* ============================================================================
+   BUTTON-STYLE TOGGLES (for toolbar)
+   ============================================================================ */
+.py2dmol-viewer-instance .btn-toggle {
+    position: relative;
+    padding: 0;
+    border: none;
+    border-radius: var(--btn-radius);
+    background: transparent;
+    box-shadow: none;
+    height: var(--btn-height); /* Use standard button height */
+    min-width: 0; /* Allow flex shrinking in toolbar */
+}
+
+.py2dmol-viewer-instance .btn-toggle:hover {
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+}
+
+.py2dmol-viewer-instance .btn-toggle input[type="checkbox"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    margin: 0;
+    cursor: pointer;
+}
+
+.py2dmol-viewer-instance .btn-toggle > span {
+    /* Apply .btn base styles */
+    width: 100%;
+    min-width: 0; /* Allow shrinking in flex container */
+    height: var(--btn-height); /* Use standard button height */
+    padding: 0 var(--btn-padding-x); /* Use standard button padding */
+    border-radius: var(--btn-radius);
+    font-size: var(--btn-font-size); /* Use standard button font size */
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    box-shadow: var(--shadow-sm);
+    transition: all 0.2s;
+    background: var(--color-gray-200);
+    color: var(--color-gray-700);
+    box-sizing: border-box;
+}
+
+/* Small button toggle variant */
+.py2dmol-viewer-instance .btn-toggle.btn-small {
+    height: var(--btn-height-small);
+}
+
+.py2dmol-viewer-instance .btn-toggle.btn-small > span {
+    height: var(--btn-height-small);
+    padding: 0 var(--btn-padding-x-small);
+    font-size: var(--btn-font-size-small);
+}
+
+.py2dmol-viewer-instance .btn-toggle input:checked + span {
+    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+    color: #fff;
+}
+
+.py2dmol-viewer-instance .btn-toggle input:not(:checked) + span:hover {
+    background: var(--color-gray-300);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+.py2dmol-viewer-instance .btn-toggle input:checked + span:hover {
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+/* Icon button styles (record, save SVG, etc.) - unified with base button styles */
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only > span {
+    min-width: 36px; /* Prevent collapsing below minimum */
+}
+
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only.btn-small > span {
+    min-width: 28px; /* Smaller min-width for small icon buttons */
+}
+
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only > span > i {
+    font-size: 1em;
+    line-height: 1;
+}
+
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only:hover:not(:disabled) > span {
+    background: var(--color-gray-300);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+.py2dmol-viewer-instance .btn-toggle.btn-icon-only:active:not(:disabled) > span {
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm);
+}
+
+.py2dmol-viewer-instance .btn-toggle:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.py2dmol-viewer-instance .btn-toggle:disabled > span {
+    background: var(--color-gray-200);
+    box-shadow: none;
+    transform: none;
+    cursor: not-allowed;
+}
+
+/* ============================================================================
+   SLIDERS
+   ============================================================================ */
+
+/* Frame slider */
+.py2dmol-viewer-instance #frameSlider {
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #e5e7eb;
+    border-radius: 3px;
+    outline: none;
+    flex-grow: 1;
+    margin: 0 12px;
+    vertical-align: middle;
+}
+
+.py2dmol-viewer-instance #frameSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #frameSlider::-webkit-slider-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+.py2dmol-viewer-instance #frameSlider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #frameSlider::-moz-range-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+/* Line width slider */
+.py2dmol-viewer-instance #lineWidthSlider {
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #e5e7eb;
+    border-radius: 3px;
+    outline: none;
+    flex-grow: 1;
+    margin-top: 0;
+}
+
+.py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+.py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+/* Ortho slider - inherits from general slider styles */
+.py2dmol-viewer-instance #orthoSlider {
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #e5e7eb;
+    border-radius: 3px;
+    outline: none;
+    flex-grow: 1;
+    margin-top: 0;
+}
+
+.py2dmol-viewer-instance #orthoSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #orthoSlider::-webkit-slider-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+.py2dmol-viewer-instance #orthoSlider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.py2dmol-viewer-instance #orthoSlider::-moz-range-thumb:hover {
+    background: #2563eb;
+    transform: scale(1.1);
+}
+
+/* ============================================================================
+   SELECT DROPDOWNS
+   ============================================================================ */
+
+.py2dmol-viewer-instance #colorSelect,
+.py2dmol-viewer-instance #objectSelect {
+    font-size: 14px;
+    padding: 8px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #374151;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-grow: 1;
+    width: 170px;
+    min-width: 150px;
+    flex-shrink: 0;
+}
+
+/* Small color/object select (matches btn-small height) */
+.py2dmol-viewer-instance #colorSelect[style*="height: 28px"],
+.py2dmol-viewer-instance #objectSelect[style*="height: 28px"] {
+    height: 28px;
+    font-size: 12px;
+    padding: 0 8px;
+    min-width: 100px;
+}
+
+.py2dmol-viewer-instance #colorSelect:hover,
+.py2dmol-viewer-instance #objectSelect:hover {
+    border-color: #9ca3af;
+}
+
+.py2dmol-viewer-instance #colorSelect:focus,
+.py2dmol-viewer-instance #objectSelect:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
+}
+
+.py2dmol-viewer-instance #speedSelect {
+    font-size: 14px;
+    padding: 8px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #374151;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 70px;
+}
+
+.py2dmol-viewer-instance #speedSelect:hover {
+    border-color: #9ca3af;
+}
+
+.py2dmol-viewer-instance #speedSelect:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
+}
+
+/* ============================================================================
+   CONTROL GROUPS & CONTAINERS
+   ============================================================================ */
+.py2dmol-viewer-instance #controlsContainer {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    width: 100%;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+}
+
+.py2dmol-viewer-instance #controlsContainer.container-box {
+    /* Inherits all container-box styles, padding can be overridden if needed */
+    padding: var(--container-padding) 16px; /* Slightly more horizontal padding for controls */
+}
+
+.py2dmol-viewer-instance #navigationControls.toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.py2dmol-viewer-instance .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.py2dmol-viewer-instance .toggle-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+}
+
+.py2dmol-viewer-instance .toggle-item > label {
+    font-weight: 500;
+    color: #374151;
+    font-size: 14px;
+    text-align: left;
+    flex-shrink: 1;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.py2dmol-viewer-instance #frameCounter {
+    color: #374151;
+    min-width: 100px;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+/* #sequence-viewer-container display is controlled by JS */
+
+/* Override sequence-section-container styles for sequence viewer */
+#sequence-viewer-container {
+    min-height: auto; /* Override the 520px min-height from .sequence-section-container */
+    height: auto; /* Let content determine height */
+    overflow: visible; /* Override overflow: hidden from .sequence-section-container */
+    resize: none; /* Disable resizing for sequence viewer */
+}
+
+/* [EDIT] Removed old #sequenceViewContainer styles */
+
+/* [EDIT] Updated #sequenceView styles for canvas-based rendering */
+#sequenceView {
+    display: block;
+    max-height: 400px; /* Fixed height with scrollbar */
+    overflow-y: auto; /* Always show scrollbar when content exceeds height */
+    overflow-x: hidden; /* Prevent horizontal scrollbar */
+    position: relative;
+}
+
+/* Make scrollbar visible and styled */
+#sequenceView::-webkit-scrollbar {
+    width: 12px; /* Width of the scrollbar */
+}
+
+#sequenceView::-webkit-scrollbar-track {
+    background: #f1f1f1; /* Background of the scrollbar track */
+    border-radius: 6px;
+}
+
+#sequenceView::-webkit-scrollbar-thumb {
+    background: #888; /* Color of the scrollbar thumb */
+    border-radius: 6px;
+    border: 2px solid #f1f1f1; /* Space around thumb */
+}
+
+#sequenceView::-webkit-scrollbar-thumb:hover {
+    background: #555; /* Darker color on hover */
+}
+
+/* Canvas element for sequence viewer */
+#sequenceCanvas {
+    cursor: crosshair;
+    display: block;
+    margin: 0;
+    padding: 0;
+    /* width and height are set inline by JavaScript - don't override */
+    box-sizing: border-box;
+    touch-action: none; /* Prevent default touch behaviors */
+}
+/* [END EDIT] */
+
+
+/* ============================================================================
+   PAE CONTAINER
+   ============================================================================ */
+.py2dmol-viewer-instance #paeContainer {
+    display: none;
+    width: 340px;
+    aspect-ratio: 1;
+    position: relative;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.py2dmol-viewer-instance #paeContainer.container-box {
+    /* Inherits all container-box styles */
+    padding: 0; /* PAE canvas needs no padding */
+}
+
+.py2dmol-viewer-instance #paeCanvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    border: none;
+    background: transparent;
+}
+
+/* Object select in sequence header */
+#sequence-viewer-container #objectSelect {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 14px;
+    background: #ffffff;
+    color: #374151;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 150px;
+}
+
+#sequence-viewer-container #objectSelect:hover {
+    border-color: #9ca3af;
+}
+
+#sequence-viewer-container #objectSelect:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
+}
+
+/* ============================================================================
+   INPUT FIELDS
+   ============================================================================ */
+#fetch-id {
+    flex-grow: 1;
+    height: 42px;
+    padding: 0 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.2s;
+    background: #ffffff;
+}
+
+#fetch-id:hover {
+    border-color: #9ca3af;
+}
+
+#fetch-id:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    outline: none;
+}
+
+#fetch-id::placeholder {
+    color: #9ca3af;
+}
+
+#fetch-input-container {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+#fetch-input-container input {
+    flex-grow: 1;
+    height: 42px;
+}
+
+/* ============================================================================
+   UPLOAD CONTROLS
+   ============================================================================ */
+/* No additional styles needed - button defined above */
+
+.upload-options-section {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 10px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+}
+
+.upload-option-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6b7280;
+    margin-bottom: 4px;
+}
+
+.upload-toggle-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.upload-toggle-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: #374151;
+    cursor: pointer;
+    margin: 0;
+    user-select: none;
+}
+
+/* ============================================================================
+   STATUS MESSAGE
+   ============================================================================ */
+#status-message {
+    display: none;
+    margin-top: 20px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    border: 1px solid;
+    background: #dbeafe;
+    border-color: #3b82f6;
+    color: #1e40af;
+}
+
+#status-message:not(:empty) {
+    display: block;
+}
+
+/* ============================================================================
+   GLOBAL DROP OVERLAY
+   ============================================================================ */
+#global-drop-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.95);
+    border: 4px dashed #3b82f6;
+    z-index: 10000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    border-radius: 16px;
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+}
+
+#global-drop-overlay p {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #3b82f6;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+/* ============================================================================
+   PAGE STYLING
+   ============================================================================ */
+body {
+    background: #f9fafb;
+}
+
+h1 {
+    color: #111827;
+    letter-spacing: -0.025em;
+}
+
+.text-gray-500 {
+    color: #6b7280;
+}
+
+.bg-white.p-6.rounded-2xl {
+    background: #ffffff;
+    padding: 24px;
+    border-radius: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+    border: 1px solid #e5e7eb;
+}
+
+/* ============================================================================
+   UTILITY CLASSES
+   ============================================================================ */
+.vertical-divider-md {
+    width: 1px;
+    background: linear-gradient(to bottom, transparent, #e5e7eb 10%, #e5e7eb 90%, transparent);
+}
+
+.hidden {
+    display: none !important;
+}
+
+table.layout-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+table.layout-table td {
+    vertical-align: top;
+}
+
+/* Selection Mode Toggle */
+.selection-mode-toggle {
+    display: flex;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.selection-mode-toggle label {
+    flex: 1;
+    text-align: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    background-color: #f9fafb;
+    color: #4b5563;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
+    position: relative;
+}
+
+.selection-mode-toggle label:first-of-type {
+    border-right: 1px solid #d1d5db;
+}
+
+.selection-mode-toggle input[type="radio"] {
+    display: none;
+}
+
+.selection-mode-toggle input[type="radio"]:checked + span {
+    color: #ffffff;
+}
+
+.selection-mode-toggle label:has(input:checked) {
+    background-color: #4f46e5;
+    color: #ffffff;
+}
+
+/* [EDIT] Removed old opacity styles for .residue-span */
+
+/* [EDIT] Appended new styles for accordion, pills, and sequence view */
+/* Sequence section container with box */
+.sequence-section-container {
+    margin-top: var(--container-gap);
+    margin-bottom: 8px;
+    overflow: hidden;
+    position: relative;
+    min-width: 600px;
+    max-width: 2400px;
+    min-height: 520px;
+}
+
+.sequence-section-container.container-box {
+    /* Inherits all container-box styles from .container-box */
+    /* Intentionally empty - styles inherited from .container-box */
+    display: block; /* Prevent empty ruleset warning */
+}
+
+/* Reduce bottom margin when collapsed to remove extra white space */
+.sequence-section-container.collapsed {
+  margin-bottom: 4px;
+}
+
+/* Sequence header with toggle */
+.sequence-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 0;
+}
+
+.sequence-content:not(.hidden) {
+  margin-top: 8px;
+}
+
+.sequence-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.sequence-toggle-btn:hover {
+  color: #1f2937;
+}
+
+.sequence-toggle-btn .chevron {
+  font-size: 24px;
+  color: #6b7280;
+  transition: transform 0.2s ease;
+  line-height: 1;
+  font-weight: normal;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.sequence-title {
+  font-weight: 600;
+  color: #374151;
+  font-size: 15px;
+}
+
+.sequence-content.hidden {
+  display: none;
+}
+
+.sequence-actions {
+  display: none;
+  gap: 8px;
+}
+
+.sequence-actions[style*="display: flex"] {
+  display: flex !important;
+}
+
+/* Removed - now handled by .btn-small modifier above */
+
+/* Chain buttons and residue characters are now drawn on canvas - no CSS needed for HTML elements */
+
+/* Sequence view container */
+/* [EDIT] Canvas-based rendering - no HTML element styles needed */
+/* [END EDIT] */
+
+
+/* === MSA Viewer === */
+#msa-buttons {
+    min-width: auto;
+    width: auto;
+    height: auto;
+    min-height: auto;
+    overflow: visible;
+    resize: none;
+    background: transparent;
+    border: none;
+    padding: 0;
+    box-shadow: none;
+    border-radius: 0;
+}
+
+/* Canvas container */
+.msa-canvas {
+    position: relative;
+    display: block;
+    resize: both;
+    overflow: hidden;
+    min-width: 200px;
+    min-height: 200px;
+    width: 948px; /* Default starting width */
+    margin-top: var(--container-gap);
+    background: #ffffff;
+    border: 1px solid var(--color-gray-200);
+    border-radius: var(--radius-lg);
+    padding: var(--container-padding);
+    box-shadow: var(--shadow-md);
+    transition: box-shadow var(--transition-base), border-color var(--transition-base);
+}
+
+.msa-canvas:hover {
+    box-shadow: var(--shadow-lg);
+    border-color: var(--color-gray-300);
+}
+
+.msa-canvas--coverage {
+    padding: 0;
+}
+
+.msa-canvas--coverage canvas {
+    border-radius: var(--radius-lg);
+}
+
+/* Hide default resize handle */
+.msa-canvas::-webkit-resizer {
+    display: none;
+}
+
+/* Custom resize handle */
+.msa-canvas .resize-handle {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+    z-index: 100;
+    pointer-events: none;
+}
+
+.msa-canvas:hover .resize-handle {
+    opacity: 0.8;
+}
+
+.msa-canvas .resize-handle::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 0 0 16px 16px;
+    border-color: transparent transparent #3b82f6 transparent;
+}
+
+.msa-canvas canvas {
+    display: block;
+}
+
+/* ============================================================================
+   LINK BUTTON (for README and other links)
+   ============================================================================ */
+.link-button {
+    background: none;
+    border: none;
+    color: #3b82f6;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    pointer-events: auto;
+    text-decoration: none;
+}
+
+.link-button:hover,
+.link-button:focus-visible {
+    text-decoration: underline;
+    color: #2563eb;
+}
+
+.link-button:disabled {
+    color: #9ca3af;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+    </style>
+</head>
+<body style="font-family: sans-serif;">
+    <!-- DATA_INJECTION_POINT -->
+    <div id="msa-viewer-container" style="width: 948px; position: relative;">
+        <!-- MSA Viewer Container -->
+        <div id="msa-buttons" class="container-box sequence-section-container">
+            <div id="msaHeader" class="sequence-header">
+                <!-- Left side: Mode dropdown, Sort checkbox, and Bit-score checkbox -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px;">
+                        <option value="msa" selected>MSA</option>
+                        <option value="pssm">PSSM</option>
+                        <option value="logo">Logo</option>
+                        <option value="coverage">Coverage</option>
+                    </select>
+                    <div id="msaSortContainer" style="display: flex; align-items: center; gap: 4px;">
+                        <label for="msaSortCheckbox" style="font-size: 12px; color: #666; cursor: pointer;">
+                            <input type="checkbox" id="msaSortCheckbox" checked style="cursor: pointer;">
+                            Sort
+                        </label>
+                    </div>
+                    <div id="logoBitScoreContainer" style="display: none; align-items: center; gap: 4px;">
+                        <label for="logoBitScoreCheckbox" style="font-size: 12px; color: #666; cursor: pointer;">
+                            <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
+                            Bit-score
+                        </label>
+                    </div>
+                    <div id="msaSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="msaSaveFastaButton" class="btn btn-grey btn-small">Save Fasta</button>
+                    </div>
+                    <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="logoSaveSvgButton" class="btn btn-grey btn-small">Save SVG</button>
+                    </div>
+                    <div id="pssmSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="pssmSaveSvgButton" class="btn btn-grey btn-small">Save SVG</button>
+                        <button id="pssmSaveCsvButton" class="btn btn-grey btn-small">Save CSV</button>
+                    </div>
+                </div>
+
+                <!-- Right: Filters box -->
+                <div style="display: flex; align-items: center; gap: 10px; margin-left: auto; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
+                    <span style="font-size: 12px; font-weight: 500;">Filters:</span>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <label for="coverageSlider" style="font-size: 11px;">cov:</label>
+                        <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5" style="width: 100px;">
+                        <span id="coverageValue" style="font-size: 11px; width: 40px; text-align: right;">75%</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <label for="identitySlider" style="font-size: 11px;">qid:</label>
+                        <input type="range" id="identitySlider" min="0" max="100" value="15" step="5" style="width: 100px;">
+                        <span id="identityValue" style="font-size: 11px; width: 40px; text-align: right;">15%</span>
+                    </div>
+                    <span id="msaSequenceCount" style="font-size: 11px; min-width: 80px; text-align: center;">-</span>
+                </div>
+            </div>
+            <div id="msa-canvas-container"></div>
+        </div>
+    </div>
+</body>
+</html>

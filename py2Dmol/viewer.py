@@ -1272,3 +1272,59 @@ class view:
         # State loaded - user must call show() to display
         if not self.objects:
             print("Warning: No objects loaded from state file.")
+
+    def _display_msa_viewer(self, msa_data):
+        """
+        Internal: Renders the MSA viewer's HTML.
+
+        Args:
+            msa_data (dict): MSA data.
+
+        Returns:
+            str: The complete HTML string for the MSA viewer.
+        """
+        with importlib.resources.open_text(py2dmol_resources, 'msa.html') as f:
+            html_template = f.read()
+
+        data_script = f'<script id="msa-data">window.msaData = {json.dumps(msa_data)};</script>'
+
+        # Inject data into the HTML template
+        final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", data_script)
+
+        # Add the MSA viewer JS
+        with importlib.resources.open_text(py2dmol_resources, 'viewer-msa.js') as f:
+            js_content = f.read()
+        final_html += f"<script>{js_content}</script>"
+
+        # Add initialization script
+        final_html += """
+        <script>
+            (function() {
+                if (typeof initializePy2DmolMSAViewer === 'function') {
+                    initializePy2DmolMSAViewer();
+                } else {
+                    console.error("py2dmol: Failed to find initializePy2DmolMSAViewer function.");
+                }
+            })();
+        </script>
+        """
+        return final_html
+
+    def _parse_msa(self, msa):
+        """
+        Parses MSA data from a file or a list of strings.
+        """
+        if isinstance(msa, str) and os.path.exists(msa):
+            with open(msa, 'r') as f:
+                msa = f.read()
+        return msa
+
+    def view_msa(self, msa, return_html=False):
+        """
+        Displays an MSA.
+        """
+        msa_data = self._parse_msa(msa)
+        html_to_display = self._display_msa_viewer(msa_data)
+        if return_html:
+            return html_to_display
+        self._display_html(html_to_display)

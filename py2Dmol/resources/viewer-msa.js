@@ -4663,5 +4663,24 @@
         buildPSSMView: buildPSSMView,
         buildLogoView: buildLogoView
     };
+
+    function initializePy2DmolMSAViewer() {
+        if (window.msaData) {
+            const msaData = parseA3M(window.msaData);
+            window.MSAViewer.setMSAData(msaData, null);
+
+            const msaContainer = document.getElementById('msa-buttons');
+            if (msaContainer) {
+                msaContainer.style.display = 'block';
+            }
+        }
+    }
+    window.initializePy2DmolMSAViewer = initializePy2DmolMSAViewer;
     
+    // Initialize MSA viewer on DOM ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializePy2DmolMSAViewer);
+    } else {
+        initializePy2DmolMSAViewer();
+    }
 })();
