@@ -245,7 +245,15 @@ class view:
                     continue
 
                 light_frames = []
-                for frame in py_obj["frames"]:
+                # Track previous frame data for change detection
+                prev_plddts = None
+                prev_chains = None
+                prev_position_types = None
+                prev_position_names = None
+                prev_residue_numbers = None
+                prev_bonds = None
+                
+                for frame_idx, frame in enumerate(py_obj["frames"]):
                     # Skip frames without coords (they're invalid)
                     if "coords" not in frame or not frame["coords"]:
                         continue
@@ -253,21 +261,59 @@ class view:
                     light_frame = {}
                     if "name" in frame and frame["name"] is not None:
                         light_frame["name"] = frame["name"]
+                    
                     # Coords are required - we already checked above
                     light_frame["coords"] = frame["coords"]
-                    if "plddts" in frame and frame["plddts"] is not None:
-                        light_frame["plddts"] = frame["plddts"]
+                    
+                    # Only include other fields if they differ from previous frame
+                    # Always include for frame 0
+                    
+                    # plddts
+                    curr_plddts = frame.get("plddts")
+                    if frame_idx == 0 or curr_plddts != prev_plddts:
+                        if curr_plddts is not None:
+                            light_frame["plddts"] = curr_plddts
+                        prev_plddts = curr_plddts
+                    
+                    # pae (always include if present, usually only in frame 0)
                     if "pae" in frame and frame["pae"] is not None:
                         light_frame["pae"] = frame["pae"]
-                    if "position_names" in frame and frame["position_names"] is not None:
-                        light_frame["position_names"] = frame["position_names"]
-                    if "residue_numbers" in frame and frame["residue_numbers"] is not None:
-                        light_frame["residue_numbers"] = frame["residue_numbers"]
-                    # Include position_types and chains at frame level for proper inheritance
-                    if "position_types" in frame and frame["position_types"] is not None:
-                        light_frame["position_types"] = frame["position_types"]
-                    if "chains" in frame and frame["chains"] is not None:
-                        light_frame["chains"] = frame["chains"]
+                    
+                    # position_names
+                    curr_position_names = frame.get("position_names")
+                    if frame_idx == 0 or curr_position_names != prev_position_names:
+                        if curr_position_names is not None:
+                            light_frame["position_names"] = curr_position_names
+                        prev_position_names = curr_position_names
+                    
+                    # residue_numbers
+                    curr_residue_numbers = frame.get("residue_numbers")
+                    if frame_idx == 0 or curr_residue_numbers != prev_residue_numbers:
+                        if curr_residue_numbers is not None:
+                            light_frame["residue_numbers"] = curr_residue_numbers
+                        prev_residue_numbers = curr_residue_numbers
+                    
+                    # position_types
+                    curr_position_types = frame.get("position_types")
+                    if frame_idx == 0 or curr_position_types != prev_position_types:
+                        if curr_position_types is not None:
+                            light_frame["position_types"] = curr_position_types
+                        prev_position_types = curr_position_types
+                    
+                    # chains
+                    curr_chains = frame.get("chains")
+                    if frame_idx == 0 or curr_chains != prev_chains:
+                        if curr_chains is not None:
+                            light_frame["chains"] = curr_chains
+                        prev_chains = curr_chains
+                    
+                    # bonds
+                    curr_bonds = frame.get("bonds")
+                    if frame_idx == 0 or curr_bonds != prev_bonds:
+                        if curr_bonds is not None:
+                            light_frame["bonds"] = curr_bonds
+                        prev_bonds = curr_bonds
+                    
                     light_frames.append(light_frame)
 
                 # Skip objects with no valid frames
@@ -286,7 +332,11 @@ class view:
                 # Add contacts if they exist
                 if "contacts" in py_obj and py_obj["contacts"] is not None and len(py_obj["contacts"]) > 0:
                     obj_to_serialize["contacts"] = py_obj["contacts"]
-                
+
+                # Add bonds if they exist
+                if "bonds" in py_obj and py_obj["bonds"] is not None and len(py_obj["bonds"]) > 0:
+                    obj_to_serialize["bonds"] = py_obj["bonds"]
+
                 serialized_objects.append(obj_to_serialize)
 
             data_json = json.dumps(serialized_objects)
@@ -353,19 +403,21 @@ class view:
         # Clear python data
         self.objects = []
         self._current_object_data = None
-            
+
         # Dynamic mode: send clear message if viewer is active
         if self._is_live:
             self._send_message({
                 "type": "py2DmolClearAll"
             })
-            
+
         # Reset python state
         self._coords = None
         self._plddts = None
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._position_names = None
+        self._position_residue_numbers = None
         self._is_live = False
 
     def _parse_contact_color(self, color_str):
@@ -529,15 +581,52 @@ class view:
             print(f"Error: contacts must be a filepath (str) or list of lists, got {type(contacts)}")
             return None
 
+    def _process_bonds(self, bonds):
+        """
+        Process bonds input (list of bond pairs).
+
+        Args:
+            bonds: List of bond arrays, where each bond is [idx1, idx2]
+
+        Returns:
+            list: List of validated bond pairs [[idx1, idx2], ...], or None if invalid
+        """
+        if bonds is None:
+            return None
+
+        if not isinstance(bonds, list):
+            print(f"Error: bonds must be a list of [idx1, idx2] pairs, got {type(bonds)}")
+            return None
+
+        # Validate and process bonds
+        validated_bonds = []
+        for bond in bonds:
+            if isinstance(bond, (list, tuple)) and len(bond) >= 2:
+                try:
+                    idx1, idx2 = int(bond[0]), int(bond[1])
+                    # Validate indices
+                    if idx1 >= 0 and idx2 >= 0 and idx1 != idx2:
+                        validated_bonds.append([idx1, idx2])
+                    else:
+                        print(f"Warning: Skipping invalid bond {bond} (indices must be non-negative and distinct)")
+                except (ValueError, TypeError):
+                    print(f"Warning: Skipping invalid bond {bond} (indices must be integers)")
+            else:
+                print(f"Warning: Skipping invalid bond format {bond} (expected [idx1, idx2])")
+
+        return validated_bonds if validated_bonds else None
+
     def new_obj(self, name=None):
         """Starts a new object for subsequent 'add' calls."""
-        
+
         # This is a new object, reset the alignment reference
-        self._coords = None 
+        self._coords = None
         self._plddts = None
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._position_names = None
+        self._position_residue_numbers = None
 
         if name is None:
             name = f"{len(self.objects)}"
@@ -558,7 +647,7 @@ class view:
             })
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None,
-            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None):
+            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None):
         """
         Adds a new *frame* of data to the viewer.
         
@@ -577,6 +666,7 @@ class view:
                                               One per position. For ligands, multiple positions may share the same residue number.
             atom_types (list, optional): Backward compatibility alias for position_types (deprecated).
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
+            bonds (list, optional): List of bonds. Each bond is [atom_idx1, atom_idx2].
         """
         
         # --- Step 1: Update Python-side alignment state ---
@@ -605,14 +695,24 @@ class view:
             if processed_contacts is not None:
                 self.objects[-1]["contacts"] = processed_contacts
 
+        # --- Step 4b: Process bonds if provided ---
+        if bonds is not None:
+            processed_bonds = self._process_bonds(bonds)
+            if processed_bonds is not None and len(processed_bonds) > 0:
+                self.objects[-1]["bonds"] = processed_bonds
+
         # --- Step 5: Send message if in "live" mode ---
         if self._is_live:
-            # Include contacts in payload if they exist for this object and are not None/empty
+            # Include contacts and bonds in payload if they exist for this object and are not None/empty
             payload = data_dict.copy()
             obj_contacts = self.objects[-1].get("contacts")
             if obj_contacts is not None and len(obj_contacts) > 0:
                 payload["contacts"] = obj_contacts
-            
+
+            obj_ligand_bonds = self.objects[-1].get("bonds")
+            if obj_ligand_bonds is not None and len(obj_ligand_bonds) > 0:
+                payload["bonds"] = obj_ligand_bonds
+
             self._send_message({
                 "type": "py2DmolUpdate",
                 "name": self.objects[-1]["name"],
@@ -703,11 +803,11 @@ class view:
             if coords:
                 coords_np = np.array(coords)
                 plddts_np = np.array(plddts) if plddts else np.full(len(coords), 50.0)
-                
+
                 # Handle case where plddts might be empty from parse
                 if len(coords_np) > 0 and len(plddts_np) != len(coords_np):
                     plddts_np = np.full(len(coords_np), 50.0)
-                
+
                 # Only add PAE matrix to the first model
                 pae_to_add = paes[i] if paes and i < len(paes) else None
 
@@ -720,12 +820,13 @@ class view:
                     position_names=position_names,
                     residue_numbers=residue_numbers)
 
+
     def _parse_model(self, model, chains_filter, ignore_ligands=False):
         """
         Helper function to parse a gemmi.Model object.
-        
+
         Returns:
-            tuple: (coords, plddts, position_chains, position_types, 
+            tuple: (coords, plddts, position_chains, position_types,
                     position_names, residue_numbers)
             - residue_numbers: List of PDB residue sequence numbers (one per position)
                               For ligands: multiple positions share the same residue number
@@ -790,6 +891,7 @@ class view:
                                     position_types.append('L')
                                     position_names.append(residue.name)
                                     residue_numbers.append(residue.seqid.num)
+
         return coords, plddts, position_chains, position_types, position_names, residue_numbers
 
     def add_contacts(self, contacts, name=None):
@@ -838,6 +940,69 @@ class view:
         
         # Store contacts (replace existing)
         target_obj["contacts"] = processed_contacts
+
+    def add_bonds(self, bonds, name=None):
+        """
+        Define explicit bonds between atoms.
+
+        If provided, these bonds replace the default distance-based bonding (2.0 Å cutoff).
+        This is useful for ligands or other structures where the automatic bonding is inaccurate.
+
+        Args:
+            bonds: A list of bond definitions. Each bond is a list/tuple of:
+                   [idx1, idx2]  - Position indices (0-based) of atoms to connect
+
+                   Example: [[0, 1], [1, 2], [2, 3]]  # Connect atoms 0-1, 1-2, 2-3
+            name (str, optional): Name of the object to add bonds to.
+                                 If None, adds to the last (most recently added) object.
+
+        Examples:
+            # Define explicit bonds
+            viewer.add_pdb('structure.pdb')
+            bonds = [
+                [0, 1],   # Connect atom 0 to atom 1
+                [1, 2],   # Connect atom 1 to atom 2
+                [2, 3],   # Connect atom 2 to atom 3
+            ]
+            viewer.add_bonds(bonds)
+            viewer.show()
+        """
+        if bonds is None or not bonds:
+            print("Warning: No valid bonds to add.")
+            return
+
+        # Validate bond format (expects list/array format [[idx1, idx2], ...])
+        processed_bonds = []
+        for bond in bonds:
+            if isinstance(bond, (list, tuple)) and len(bond) >= 2:
+                idx1, idx2 = bond[0], bond[1]
+                if isinstance(idx1, int) and isinstance(idx2, int) and idx1 >= 0 and idx2 >= 0:
+                    processed_bonds.append([idx1, idx2])
+
+        if not processed_bonds:
+            print("Warning: No valid bonds could be processed.")
+            return
+
+        # Find target object
+        if name is None:
+            # Add to last object
+            if not self.objects:
+                print("Error: No objects available. Add a structure first.")
+                return
+            target_obj = self.objects[-1]
+        else:
+            # Find object by name
+            target_obj = None
+            for obj in self.objects:
+                if obj.get("name") == name:
+                    target_obj = obj
+                    break
+            if target_obj is None:
+                print(f"Error: Object '{name}' not found.")
+                return
+
+        # Store bonds (replace existing)
+        target_obj["bonds"] = processed_bonds
 
     def _get_filepath_from_pdb_id(self, pdb_id):
         """
@@ -1065,7 +1230,7 @@ class view:
             return {}
         
         redundant = {}
-        for field in ['chains', 'position_types']:
+        for field in ['chains', 'position_types', 'bonds']:
             # Skip if not present in any frame
             if not any(field in frame and frame[field] is not None for frame in frames):
                 continue
@@ -1093,14 +1258,17 @@ class view:
     def save_state(self, filepath):
         """
         Saves the current viewer state (objects, frames, viewer settings, selection) to a JSON file.
-        
+
         Args:
             filepath (str): Path to save the state file.
         """
-        import os
-        
         # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
+        try:
+            dir_path = os.path.dirname(filepath) if os.path.dirname(filepath) else '.'
+            os.makedirs(dir_path, exist_ok=True)
+        except OSError as e:
+            print(f"Error: Could not create directory for state file: {e}")
+            return
         
         # Collect all objects
         objects = []
@@ -1118,7 +1286,7 @@ class view:
                     frame_data["plddts"] = [round(p) for p in frame["plddts"]]
                 
                 # Copy other fields
-                for key in ["chains", "position_types", "position_names", "residue_numbers"]:
+                for key in ["chains", "position_types", "position_names", "residue_numbers", "bonds"]:
                     if key in frame:
                         frame_data[key] = frame[key]
                 
@@ -1149,7 +1317,11 @@ class view:
             # Add contacts if they exist
             if "contacts" in obj and obj["contacts"] is not None and len(obj["contacts"]) > 0:
                 obj_to_serialize["contacts"] = obj["contacts"]
-            
+
+            # Add bonds if they exist
+            if "bonds" in obj and obj["bonds"] is not None and len(obj["bonds"]) > 0:
+                obj_to_serialize["bonds"] = obj["bonds"]
+
             objects.append(obj_to_serialize)
         
         # Get viewer state (limited - Python doesn't have access to all JS state)
@@ -1185,12 +1357,19 @@ class view:
     def load_state(self, filepath):
         """
         Loads a saved viewer state from a JSON file.
-        
+
         Args:
             filepath (str): Path to the state file to load.
         """
-        with open(filepath, 'r') as f:
-            state_data = json.load(f)
+        try:
+            with open(filepath, 'r') as f:
+                state_data = json.load(f)
+        except FileNotFoundError:
+            print(f"Error: State file '{filepath}' not found.")
+            return
+        except json.JSONDecodeError:
+            print(f"Error: State file '{filepath}' is not valid JSON.")
+            return
         
         # Clear existing objects
         self.objects = []
@@ -1219,14 +1398,20 @@ class view:
                         continue
                     
                     # Robust resolution: frame-level > object-level > None (will use defaults in add())
-                    chains = frame_data.get("chains") or obj_chains
+                    chains = frame_data.get("chains") if "chains" in frame_data else obj_chains
                     # Backward compatibility: support atom_types as alias for position_types
-                    position_types = frame_data.get("position_types") or frame_data.get("atom_types") or obj_position_types
+                    if "position_types" in frame_data:
+                        position_types = frame_data.get("position_types")
+                    elif "atom_types" in frame_data:
+                        position_types = frame_data.get("atom_types")
+                    else:
+                        position_types = obj_position_types
                     plddts = np.array(frame_data.get("plddts", [])) if frame_data.get("plddts") else None
                     position_names = frame_data.get("position_names")
                     residue_numbers = frame_data.get("residue_numbers")
                     pae = np.array(frame_data.get("pae")) if frame_data.get("pae") else None
-                    
+                    bonds = frame_data.get("bonds")
+
                     # add() will apply defaults for None values
                     self.add(
                         coords,
@@ -1238,13 +1423,19 @@ class view:
                         name=None,
                         align=False,  # Don't re-align loaded data
                         position_names=position_names,
-                        residue_numbers=residue_numbers
+                        residue_numbers=residue_numbers,
+                        bonds=bonds
                     )
                 
                 # Restore contacts data if present
                 if "contacts" in obj_data and obj_data["contacts"] is not None:
                     if isinstance(obj_data["contacts"], list) and len(obj_data["contacts"]) > 0:
                         self.objects[-1]["contacts"] = obj_data["contacts"]
+
+                # Restore bonds data if present at object level
+                if "bonds" in obj_data and obj_data["bonds"] is not None:
+                    if isinstance(obj_data["bonds"], list) and len(obj_data["bonds"]) > 0:
+                        self.objects[-1]["bonds"] = obj_data["bonds"]
         
         # Restore viewer config from state (if available)
         if "viewer_state" in state_data:

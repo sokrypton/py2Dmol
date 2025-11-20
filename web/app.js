@@ -43,17 +43,17 @@ const DEFAULT_MSA_IDENTITY = 0.15;
 
 document.addEventListener('DOMContentLoaded', () => {
     if (document.getElementById('viewer-container')) {
-    initializeApp();
+        initializeApp();
     }
 });
 
 function initializeApp() {
     // Initialize viewer config
     initializeViewerConfig();
-    
+
     // Setup canvas dimensions
     setupCanvasDimensions();
-    
+
     // Initialize the renderer
     try {
         const viewerContainer = document.getElementById('viewer-container');
@@ -63,10 +63,10 @@ function initializeApp() {
         setStatus("Error: Failed to initialize viewer. See console.", true);
         return;
     }
-    
+
     // Get viewer API reference
     viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
-    
+
     // Setup MSA viewer callbacks (after viewerApi is initialized)
     if (window.MSAViewer) {
         window.MSAViewer.setCallbacks({
@@ -79,21 +79,21 @@ function initializeApp() {
             onMSAFilterChange: (filteredMSAData, chainId) => {
                 // Recompute properties when MSA filters change
                 if (!viewerApi?.renderer || !chainId || !filteredMSAData) return;
-                
+
                 const objectName = viewerApi.renderer.currentObjectName;
                 if (!objectName) return;
-                
+
                 const obj = viewerApi.renderer.objectsData[objectName];
                 if (!obj || !obj.msa) return;
-                
+
                 // Clear properties to force recomputation with filtered data
                 filteredMSAData.frequencies = null;
                 filteredMSAData.entropy = null;
                 filteredMSAData.logOdds = null;
-                
+
                 // Recompute properties (frequencies and entropy) from filtered MSA
                 computeMSAProperties(filteredMSAData);
-                
+
                 // Apply filters to all MSAs (will reuse computed entropy for active chain)
                 const { coverageCutoff, identityCutoff } = getCurrentMSAFilters();
                 applyFiltersToAllMSAs(objectName, {
@@ -102,13 +102,13 @@ function initializeApp() {
                     activeChainId: chainId,
                     activeFilteredMSAData: filteredMSAData
                 });
-                
+
                 // Refresh entropy colors for all chains
                 refreshEntropyColors();
             }
         });
     }
-    
+
     // Initialize highlight overlay after viewer is created
     if (viewerApi?.renderer && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
         // Trigger initialization by calling drawHighlights (which will initialize if needed)
@@ -117,13 +117,13 @@ function initializeApp() {
             window.SequenceViewer.drawHighlights();
         }
     }
-    
+
     // Setup all event listeners
     setupEventListeners();
-    
+
     // Initialize drag and drop
     initDragAndDrop();
-    
+
     // Set initial state
     const paeCanvas = document.getElementById('paeCanvas');
     if (paeCanvas) {
@@ -136,14 +136,14 @@ function refreshEntropyColors() {
     if (!viewerApi?.renderer || viewerApi.renderer.colorMode !== 'entropy') {
         return;
     }
-    
+
     const renderer = viewerApi.renderer;
     renderer._mapEntropyToStructure();
     renderer.colors = null;
     renderer.colorsNeedUpdate = true;
     renderer.render();
     document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
-    
+
     if (typeof updateSequenceViewColors === 'function') {
         updateSequenceViewColors();
     }
@@ -172,19 +172,19 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
     if (!viewerApi?.renderer || !objectName || !window.MSAViewer?.applyFiltersToMSA) return;
     const obj = viewerApi.renderer.objectsData[objectName];
     if (!obj || !obj.msa || !obj.msa.msasBySequence) return;
-    
+
     const {
         coverageCutoff = DEFAULT_MSA_COVERAGE,
         identityCutoff = DEFAULT_MSA_IDENTITY,
         activeChainId = null,
         activeFilteredMSAData = null
     } = options;
-    
+
     const activeQuerySeq = activeChainId && obj.msa.chainToSequence
         ? obj.msa.chainToSequence[activeChainId]
         : null;
     const activeEntropy = activeFilteredMSAData?.entropy;
-    
+
     // Short-circuit if only one unique MSA and we already have its entropy
     const uniqueMSAs = Object.keys(obj.msa.msasBySequence);
     if (uniqueMSAs.length === 1 && activeQuerySeq && activeEntropy) {
@@ -194,24 +194,24 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
         }
         return;
     }
-    
+
     for (const [querySeq, msaEntry] of Object.entries(obj.msa.msasBySequence)) {
         const sourceData = msaEntry.msaData;
         if (!sourceData) continue;
-        
+
         // Reuse entropy from active chain if it matches
         if (activeQuerySeq && querySeq === activeQuerySeq && activeEntropy) {
             sourceData.entropy = activeEntropy;
             continue;
         }
-        
+
         // Apply filters using MSAViewer's method (avoids code duplication)
         const filteredMSA = window.MSAViewer.applyFiltersToMSA(sourceData, coverageCutoff, identityCutoff);
         if (!filteredMSA) continue;
-        
+
         // Compute entropy from filtered sequences
         computeMSAProperties(filteredMSA);
-        
+
         if (filteredMSA.entropy) {
             sourceData.entropy = filteredMSA.entropy;
         } else {
@@ -223,8 +223,8 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
 function initializeViewerConfig() {
     // Get DOM elements for config sync
     const biounitEl = document.getElementById('biounitCheckbox');
-    const ignoreLigandsEl = document.getElementById('ignoreLigandsCheckbox');
-    
+    const loadLigandsEl = document.getElementById('loadLigandsCheckbox');
+
     // Initialize global viewer config
     window.viewerConfig = {
         size: [FIXED_WIDTH, FIXED_HEIGHT],
@@ -244,23 +244,27 @@ function initializeViewerConfig() {
         depth: false,
         viewer_id: "standalone-viewer-1",
         biounit: true,
-        ignoreLigands: true
+        ignoreLigands: false // Default: load ligands (reversed from checkbox)
     };
-    
+
     // Sync UI with config
-    if (biounitEl) biounitEl.checked = !!window.viewerConfig.biounit;
-    if (ignoreLigandsEl) ignoreLigandsEl.checked = !!window.viewerConfig.ignoreLigands;
-    
-    // Wire change listeners
+    if (biounitEl) {
+        biounitEl.checked = window.viewerConfig.biounit;
+    }
+    if (loadLigandsEl) {
+        // Reversed logic: checkbox checked = load ligands = ignoreLigands false
+        loadLigandsEl.checked = !window.viewerConfig.ignoreLigands;
+    } // Wire change listeners
     if (biounitEl) {
         biounitEl.addEventListener('change', () => {
             window.viewerConfig.biounit = biounitEl.checked;
         });
     }
-    
-    if (ignoreLigandsEl) {
-        ignoreLigandsEl.addEventListener('change', () => {
-            window.viewerConfig.ignoreLigands = ignoreLigandsEl.checked;
+
+    if (loadLigandsEl) {
+        loadLigandsEl.addEventListener('change', () => {
+            // Reversed logic: checkbox checked = load ligands = ignoreLigands false
+            window.viewerConfig.ignoreLigands = !loadLigandsEl.checked;
         });
     }
 }
@@ -269,7 +273,7 @@ function setupCanvasDimensions() {
     const canvasContainer = document.getElementById('canvasContainer');
     const canvas = document.getElementById('canvas');
     const viewerColumn = document.getElementById('viewerColumn');
-    
+
     canvasContainer.style.width = `${FIXED_WIDTH}px`;
     canvasContainer.style.height = `${FIXED_HEIGHT}px`;
     canvas.width = FIXED_WIDTH;
@@ -286,11 +290,11 @@ function handleExampleButtonClick(value) {
     const fetchIdInput = document.getElementById('fetch-id');
     const fetchUniprotInput = document.getElementById('fetch-uniprot-id');
     const isMSAPage = fetchUniprotInput !== null;
-    
+
     // Determine which input field and handler to use
     const inputField = isMSAPage ? fetchUniprotInput : fetchIdInput;
     const handler = isMSAPage ? handleMSAFetch : handleFetch;
-    
+
     if (inputField && value) {
         inputField.value = value;
         handler();
@@ -304,7 +308,7 @@ function handleExampleButtonClick(value) {
 function setupExampleButtons() {
     // Find all buttons with data-example-value attribute
     const exampleButtons = document.querySelectorAll('[data-example-value]');
-    
+
     exampleButtons.forEach(button => {
         const value = button.getAttribute('data-example-value');
         if (value) {
@@ -366,33 +370,33 @@ function clearMSAViewerState() {
 function setupEventListeners() {
     // Fetch button
     document.getElementById('fetch-btn').addEventListener('click', handleFetch);
-    
+
     // Upload button
     const uploadButton = document.getElementById('upload-button');
     const fileUploadInput = document.getElementById('file-upload');
     uploadButton.addEventListener('click', () => fileUploadInput.click());
     fileUploadInput.addEventListener('change', handleFileUpload);
-    
+
     // Example buttons (unified)
     setupExampleButtons();
-    
-    // Save state button
+
+    // Save state button (main save button at top-right)
     const saveStateButton = document.getElementById('saveStateButton');
     if (saveStateButton) {
         saveStateButton.addEventListener('click', saveViewerState);
     }
-    
+
     // Save SVG button (camera button)
     // Save SVG button is now handled by viewer-mol.js via setUIControls (same as Record button)
     // No need to set up listener here - renderer handles it
-    
+
     // Copy selection button (moved to sequence actions)
     const copySelectionButton = document.getElementById('copySelectionButton');
     if (copySelectionButton) {
         copySelectionButton.addEventListener('click', () => {
             if (viewerApi && viewerApi.renderer && viewerApi.renderer.extractSelection) {
                 viewerApi.renderer.extractSelection();
-                
+
                 // Also apply selection to MSA viewer
                 applySelectionToMSA();
             } else {
@@ -400,12 +404,12 @@ function setupEventListeners() {
             }
         });
     }
-    
+
     // Navigation buttons
     const orientToggle = document.getElementById('orientToggle');
     const prevObjectButton = document.getElementById('prevObjectButton');
     const nextObjectButton = document.getElementById('nextObjectButton');
-    
+
     if (orientToggle) {
         // Handle click on the label/span (not the hidden checkbox)
         const orientSpan = orientToggle.querySelector('span');
@@ -418,34 +422,34 @@ function setupEventListeners() {
     }
     if (prevObjectButton) prevObjectButton.addEventListener('click', gotoPreviousObject);
     if (nextObjectButton) nextObjectButton.addEventListener('click', gotoNextObject);
-    
+
     // Object and color select
     const objectSelect = document.getElementById('objectSelect');
     // Note: colorSelect event listener is handled in viewer-mol.js initializePy2DmolViewer()
     // We don't need a duplicate listener here
-    
+
     if (objectSelect) objectSelect.addEventListener('change', handleObjectChange);
 
     // Attach sequence controls
     const sequenceView = document.getElementById('sequenceView');
     const selectAllBtn = document.getElementById('selectAllResidues'); // Button ID kept for compatibility, but shows "Show all"
-    const clearAllBtn  = document.getElementById('clearAllResidues'); // Button ID kept for compatibility, but shows "Hide all"
+    const clearAllBtn = document.getElementById('clearAllResidues'); // Button ID kept for compatibility, but shows "Hide all"
     const sequenceActions = document.querySelector('.sequence-actions');
-    
+
     // Sequence panel is always visible now
     if (sequenceView) {
-      sequenceView.classList.remove('hidden');
-      const container = document.getElementById('sequence-viewer-container');
-      if (container) {
-        container.classList.remove('collapsed');
-      }
-      if (sequenceActions) {
-        sequenceActions.style.display = 'flex';
-      }
+        sequenceView.classList.remove('hidden');
+        const container = document.getElementById('sequence-viewer-container');
+        if (container) {
+            container.classList.remove('collapsed');
+        }
+        if (sequenceActions) {
+            sequenceActions.style.display = 'flex';
+        }
     }
     // Sequence view mode dropdown
     const sequenceModeSelect = document.getElementById('sequenceModeSelect');
-    
+
     // Helper function to sync dropdown with current mode
     function updateSequenceModeDropdown() {
         if (sequenceModeSelect && window.SequenceViewer) {
@@ -453,12 +457,12 @@ function setupEventListeners() {
             sequenceModeSelect.value = currentMode ? 'sequence' : 'chain';
         }
     }
-    
+
     if (sequenceModeSelect && window.SequenceViewer) {
         // Set initial value
         const initialMode = window.SequenceViewer.getSequenceViewMode ? window.SequenceViewer.getSequenceViewMode() : true;
         sequenceModeSelect.value = initialMode ? 'sequence' : 'chain';
-        
+
         // Handle mode change
         sequenceModeSelect.addEventListener('change', (e) => {
             const mode = e.target.value;
@@ -470,18 +474,18 @@ function setupEventListeners() {
             buildSequenceView();
         });
     }
-    
+
     // Initialize sequence mode to enabled by default
     if (window.SequenceViewer) {
         window.SequenceViewer.setSequenceViewMode(true);
     }
-    
+
     // Initialize dropdown state to reflect default sequence mode
     updateSequenceModeDropdown();
-    
+
     // Expose update function globally for programmatic mode changes
     window.updateSequenceModeDropdown = updateSequenceModeDropdown;
-    
+
     // Monitor frame changes to update sequence view during animation
     let lastCheckedFrame = -1;
     function checkFrameChange() {
@@ -505,37 +509,37 @@ function setupEventListeners() {
     }
     // Start monitoring frame changes
     requestAnimationFrame(checkFrameChange);
-    
+
     if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); showAllResidues(); });
-    if (clearAllBtn)  clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); hideAllResidues(); });
-    
+    if (clearAllBtn) clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); hideAllResidues(); });
+
     // Update copy selection button state when selection changes
     function updateCopySelectionButtonState() {
         const copyBtn = document.getElementById('copySelectionButton');
         if (!copyBtn || !viewerApi?.renderer) return;
-        
+
         const renderer = viewerApi.renderer;
         const objectName = renderer.currentObjectName;
         if (!objectName) {
             copyBtn.disabled = true;
             return;
         }
-        
+
         const object = renderer.objectsData[objectName];
         if (!object || !object.frames || object.frames.length === 0) {
             copyBtn.disabled = true;
             return;
         }
-        
+
         const frame = object.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
         if (!frame || !frame.coords) {
             copyBtn.disabled = true;
             return;
         }
-        
+
         const totalPositions = frame.coords.length;
         const selection = renderer.getSelection();
-        
+
         // Get selected positions
         let selectedPositions = new Set();
         if (selection && selection.positions && selection.positions.size > 0) {
@@ -549,17 +553,17 @@ function setupEventListeners() {
                 selectedPositions.add(i);
             }
         }
-        
+
         // Enable only if selection is non-zero and non-full-length
         const hasSelection = selectedPositions.size > 0;
         const isPartialSelection = selectedPositions.size > 0 && selectedPositions.size < totalPositions;
         copyBtn.disabled = !(hasSelection && isPartialSelection);
     }
-    
+
     // Update button state on selection changes
     // Listen for selection change events (add listener globally, will work after viewer is initialized)
     document.addEventListener('py2dmol-selection-change', updateCopySelectionButtonState);
-    
+
     // Also update on object/frame changes (set up after viewer is initialized)
     function setupCopyButtonStateUpdates() {
         if (viewerApi && viewerApi.renderer) {
@@ -574,7 +578,7 @@ function setupEventListeners() {
             }
         }
     }
-    
+
     // Set up after viewer is initialized
     setTimeout(() => {
         setupCopyButtonStateUpdates();
@@ -597,7 +601,7 @@ function setupEventListeners() {
         updateSequenceViewColors();
         updateSequenceViewSelectionState();
     });
-    
+
     // Listen for selection changes (including PAE selections)
     document.addEventListener('py2dmol-selection-change', (e) => {
         // Sync chain pills with selection model
@@ -607,10 +611,10 @@ function setupEventListeners() {
         // Update MSA selection mapping and view
         applySelectionToMSA();
     });
-    
+
     // Update navigation button states
     updateObjectNavigationButtons();
-    
+
     // Depth toggle
     const depthCheckbox = document.getElementById('depthCheckbox');
     if (depthCheckbox) {
@@ -632,19 +636,18 @@ function setStatus(message, isError = false) {
     const statusElement = document.getElementById('status-message');
     if (statusElement) {
         // msa.html style
-    statusElement.textContent = message;
+        statusElement.textContent = message;
         statusElement.style.display = 'block';
         statusElement.className = isError ? 'error' : 'info';
-        
+
         // Keep messages visible - do not auto-hide
     } else {
         // index.html style (fallback if status-message doesn't exist)
         const statusElementIndex = document.getElementById('status');
         if (statusElementIndex) {
             statusElementIndex.textContent = message;
-            statusElementIndex.className = `mt-4 text-sm font-medium ${
-        isError ? 'text-red-700 bg-red-100 border-red-200' : 'text-blue-700 bg-blue-50 border-blue-200'
-    } p-2 rounded-lg border`;
+            statusElementIndex.className = `mt-4 text-sm font-medium ${isError ? 'text-red-700 bg-red-100 border-red-200' : 'text-blue-700 bg-blue-50 border-blue-200'
+                } p-2 rounded-lg border`;
             statusElementIndex.classList.remove('hidden');
         }
     }
@@ -653,7 +656,7 @@ function setStatus(message, isError = false) {
 function gotoPreviousObject() {
     const objectSelect = document.getElementById('objectSelect');
     if (!objectSelect || objectSelect.options.length === 0) return;
-    
+
     const currentIndex = objectSelect.selectedIndex;
     const newIndex = currentIndex > 0 ? currentIndex - 1 : objectSelect.options.length - 1;
     objectSelect.selectedIndex = newIndex;
@@ -663,7 +666,7 @@ function gotoPreviousObject() {
 function gotoNextObject() {
     const objectSelect = document.getElementById('objectSelect');
     if (!objectSelect || objectSelect.options.length === 0) return;
-    
+
     const currentIndex = objectSelect.selectedIndex;
     const newIndex = currentIndex < objectSelect.options.length - 1 ? currentIndex + 1 : 0;
     objectSelect.selectedIndex = newIndex;
@@ -674,13 +677,13 @@ function updateObjectNavigationButtons() {
     const objectSelect = document.getElementById('objectSelect');
     const prevButton = document.getElementById('prevObjectButton');
     const nextButton = document.getElementById('nextObjectButton');
-    
+
     if (!objectSelect || !prevButton || !nextButton) return;
-    
+
     const shouldDisable = objectSelect.options.length <= 1;
     prevButton.disabled = shouldDisable;
     nextButton.disabled = shouldDisable;
-    
+
     // Add greyed-out class for visual feedback
     if (shouldDisable) {
         prevButton.classList.add('greyed-out');
@@ -693,14 +696,14 @@ function updateObjectNavigationButtons() {
 
 function handleObjectChange() {
     const objectSelect = document.getElementById('objectSelect');
-    
+
     const selectedObject = objectSelect.value;
     if (!selectedObject) return;
-    
+
     // Selection state is now managed per-object in the renderer's objectSelect change handler
     // Each object maintains its own selection state that is saved/restored automatically
     // No need to reset here - the renderer handles it
-    
+
     // Sync MSA data from batchedObjects to renderer's objectsData if needed
     // This ensures MSA data is available even if it was added after initial load
     if (viewerApi?.renderer) {
@@ -710,18 +713,18 @@ function handleObjectChange() {
             rendererObj.msa = batchedObj.msa;
         }
     }
-    
+
     if (viewerApi?.renderer && typeof viewerApi.renderer.updatePAEContainerVisibility === 'function') {
         viewerApi.renderer.updatePAEContainerVisibility();
     }
-    
+
     // Clear preview selection when switching objects
     if (window.SequenceViewer?.clearPreview) window.SequenceViewer.clearPreview();
-    
+
     // Rebuild sequence view for the new object
     buildSequenceView();
     // (no defaulting here — renderer already restored the object's saved selection)
-    
+
     // Update MSA chain selector and container visibility for index.html
     if (window.updateMSAChainSelectorIndex) {
         window.updateMSAChainSelectorIndex();
@@ -729,7 +732,7 @@ function handleObjectChange() {
     if (window.updateMSAContainerVisibility) {
         window.updateMSAContainerVisibility();
     }
-    
+
     refreshEntropyColors();
 }
 
@@ -743,18 +746,18 @@ function handleObjectChange() {
 function applyBestViewRotation(animate = true) {
     if (!viewerApi || !viewerApi.renderer) return;
     const renderer = viewerApi.renderer;
-    
+
     const objectSelect = document.getElementById('objectSelect');
     const objectName = objectSelect ? objectSelect.value : null;
     if (!objectName) return;
-    
+
     const object = renderer.objectsData[objectName];
     if (!object || !object.frames || object.frames.length === 0) return;
 
     const currentFrame = renderer.currentFrame || 0;
     const frame = object.frames[currentFrame];
     if (!frame || !frame.coords || frame.coords.length === 0) return;
-    
+
     // Ensure frame data is loaded into renderer if not already
     if (renderer.coords.length === 0 || renderer.lastRenderedFrame !== currentFrame) {
         renderer._loadFrameData(currentFrame, true); // Load without render
@@ -763,13 +766,13 @@ function applyBestViewRotation(animate = true) {
     // Get current selection to determine which positions to use for orienting
     const selection = renderer.getSelection();
     let selectedPositionIndices = null;
-    
+
     // Determine which positions to use: selected positions if available, otherwise all positions
     if (selection && selection.positions && selection.positions.size > 0) {
         // Use only selected positions
         selectedPositionIndices = selection.positions;
-    } else if (selection && selection.selectionMode === 'default' && 
-               (!selection.chains || selection.chains.size === 0)) {
+    } else if (selection && selection.selectionMode === 'default' &&
+        (!selection.chains || selection.chains.size === 0)) {
         // Default mode with no explicit selection: use all positions
         selectedPositionIndices = null; // Will use all positions
     } else if (selection && selection.chains && selection.chains.size > 0) {
@@ -811,7 +814,7 @@ function applyBestViewRotation(animate = true) {
     let visibleCenter = null;
     let visibleExtent = null;
     let frameExtent = 0;
-    
+
     if (coordsForBestView.length > 0) {
         // Calculate center from selected positions
         const sum = [0, 0, 0];
@@ -825,7 +828,7 @@ function applyBestViewRotation(animate = true) {
             sum[1] / coordsForBestView.length,
             sum[2] / coordsForBestView.length
         ];
-        
+
         // Calculate extent from selected positions
         let maxDistSq = 0;
         let sumDistSq = 0;
@@ -839,10 +842,10 @@ function applyBestViewRotation(animate = true) {
         }
         visibleExtent = Math.sqrt(maxDistSq);
         frameExtent = visibleExtent;
-        
+
         // Calculate standard deviation for selected positions
         const selectedPositionsStdDev = coordsForBestView.length > 0 ? Math.sqrt(sumDistSq / coordsForBestView.length) : 0;
-        
+
         // Store stdDev for animation
         rotationAnimation.visibleStdDev = selectedPositionsStdDev;
         rotationAnimation.originalStdDev = selectedPositionsStdDev;
@@ -851,14 +854,14 @@ function applyBestViewRotation(animate = true) {
         rotationAnimation.visibleStdDev = null;
         rotationAnimation.originalStdDev = null;
     }
-    
+
     const Rcur = renderer.rotationMatrix;
-    
+
     // Get canvas dimensions to determine longest axis
     const canvas = renderer.canvas;
     const canvasWidth = canvas ? (parseInt(canvas.style.width) || canvas.width) : null;
     const canvasHeight = canvas ? (parseInt(canvas.style.height) || canvas.height) : null;
-    
+
     // Use filtered coordinates (selected positions only) for best view rotation
     const Rtarget = bestViewTargetRotation_relaxed_AUTO(coordsForBestView, Rcur, canvasWidth, canvasHeight);
 
@@ -873,16 +876,16 @@ function applyBestViewRotation(animate = true) {
     let targetCenter = null;
     let targetExtent = null;
     let targetZoom = renderer.zoom;
-    
+
     // Get canvas dimensions for zoom calculation (already retrieved above, but keep for clarity)
     // canvasWidth and canvasHeight are already available from above
-    
+
     if (visibleCenter && visibleExtent && coordsForBestView.length > 0) {
         // Center is the same regardless of rotation (it's a 3D point)
         // Use center and extent calculated from selected positions
         targetCenter = visibleCenter;
         targetExtent = visibleExtent;
-        
+
         // Calculate zoom adjustment based on final orientation and window dimensions
         // The renderer now accounts for window aspect ratio, so we should set zoom to 1.0
         // to let the renderer calculate the appropriate base scale based on selected positions extent
@@ -893,7 +896,7 @@ function applyBestViewRotation(animate = true) {
         // a mismatch with the current frame's actual extent, leading to zoom jumps
         // We'll keep zoom the same since the extent should be consistent now
         targetZoom = renderer.zoom;
-        
+
         // Store frame-specific extent for use during animation
         // This ensures the renderer uses the correct extent for the current frame
         if (frameExtent > 0) {
@@ -911,15 +914,15 @@ function applyBestViewRotation(animate = true) {
             renderer.rotationCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
         }
     }
-    
+
     renderer.spinVelocityX = 0;
     renderer.spinVelocityY = 0;
-    
+
     // If animate is false, set values directly and render once
     if (!animate) {
         // Set rotation matrix directly
         renderer.rotationMatrix = Rtarget.map(row => [...row]);
-        
+
         // Set center and extent directly
         if (targetCenter) {
             renderer.temporaryCenter = {
@@ -936,10 +939,10 @@ function applyBestViewRotation(animate = true) {
                 renderer.temporaryExtent = null;
             }
         }
-        
+
         // Set zoom directly
         renderer.zoom = targetZoom;
-        
+
         // Update stdDev if needed
         if (rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined) {
             object.stdDev = rotationAnimation.visibleStdDev;
@@ -949,7 +952,7 @@ function applyBestViewRotation(animate = true) {
                 const PERSPECTIVE_MIN_MULT = 1.5;
                 const PERSPECTIVE_MAX_MULT = 20.0;
                 const normalizedValue = parseFloat(renderer.orthoSlider.value);
-                
+
                 if (normalizedValue < 1.0) {
                     const baseSize = object.stdDev * STD_DEV_MULT;
                     const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
@@ -957,12 +960,12 @@ function applyBestViewRotation(animate = true) {
                 }
             }
         }
-        
+
         // Render once with final state
         renderer.render();
         return;
     }
-    
+
     // Set up animation
     rotationAnimation.startMatrix = Rcur.map(row => [...row]);
     rotationAnimation.targetMatrix = Rtarget.map(row => [...row]);
@@ -971,7 +974,7 @@ function applyBestViewRotation(animate = true) {
     rotationAnimation.duration = duration;
     rotationAnimation.startTime = performance.now();
     rotationAnimation.object = object;
-    
+
     // Set up center and extent interpolation
     if (targetCenter) {
         // Calculate current center if temporaryCenter is not set
@@ -1001,7 +1004,7 @@ function applyBestViewRotation(animate = true) {
                 };
             }
         }
-        
+
         rotationAnimation.startCenter = currentCenter;
         rotationAnimation.targetCenter = {
             x: targetCenter[0],
@@ -1029,7 +1032,7 @@ function applyBestViewRotation(animate = true) {
         // For multi-frame objects, use frame-specific extent to prevent zoom jumps
         rotationAnimation.targetExtent = targetExtent; // Will be frameExtent if set above
     }
-    
+
     // Start animation
     rotationAnimation.active = true;
     // Set renderer flag to skip shadow/tint updates during orient animation for large systems
@@ -1070,7 +1073,7 @@ function animateRotation() {
     const now = performance.now();
     const elapsed = now - rotationAnimation.startTime;
     let progress = elapsed / rotationAnimation.duration;
-    
+
     // Ensure animation completes: if we're very close to the end or past it, force completion
     // This handles timing edge cases and ensures we always reach the target
     if (progress >= 0.99 || elapsed >= rotationAnimation.duration) {
@@ -1081,7 +1084,7 @@ function animateRotation() {
         // Zoom is already set in the interpolation section above
         // Set rotation matrix and other parameters
         renderer.rotationMatrix = rotationAnimation.targetMatrix;
-        
+
         if (rotationAnimation.targetCenter) {
             // Vec3 is defined in viewer-mol.js - access via window or use object literal
             const target = rotationAnimation.targetCenter;
@@ -1098,7 +1101,7 @@ function animateRotation() {
                 renderer.temporaryExtent = null;
             }
         }
-        
+
         // Set final stdDev to visible subset's stdDev if it was modified during animation
         if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined) {
             rotationAnimation.object.stdDev = rotationAnimation.visibleStdDev;
@@ -1109,7 +1112,7 @@ function animateRotation() {
                 const PERSPECTIVE_MIN_MULT = 1.5;
                 const PERSPECTIVE_MAX_MULT = 20.0;
                 const normalizedValue = parseFloat(renderer.orthoSlider.value);
-                
+
                 if (normalizedValue < 1.0) {
                     const baseSize = rotationAnimation.object.stdDev * STD_DEV_MULT;
                     const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
@@ -1117,7 +1120,7 @@ function animateRotation() {
                 }
             }
         }
-        
+
         // Clear orient animation flag before rendering
         renderer.isOrientAnimating = false;
         // Clear shadow/tint cache to force recalculation with new rotation
@@ -1160,7 +1163,7 @@ function animateRotation() {
         );
         renderer.rotationMatrix = lerped;
     }
-    
+
     // Interpolate zoom during animation - use same easing for consistency
     // Ensure we reach exactly the target value to prevent jumps
     if (rotationAnimation.targetZoom !== undefined && rotationAnimation.startZoom !== null) {
@@ -1173,16 +1176,16 @@ function animateRotation() {
             renderer.zoom = rotationAnimation.startZoom + (rotationAnimation.targetZoom - rotationAnimation.startZoom) * t;
         }
     }
-    
+
     // Interpolate stdDev during animation if visible subset exists
     // This affects ortho focal length calculation, so we update it smoothly
-    if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined && 
+    if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined &&
         rotationAnimation.originalStdDev !== null && rotationAnimation.originalStdDev !== undefined) {
         const t = eased;
         // Interpolate stdDev from original to visible subset's stdDev
-        rotationAnimation.object.stdDev = rotationAnimation.originalStdDev + 
+        rotationAnimation.object.stdDev = rotationAnimation.originalStdDev +
             (rotationAnimation.visibleStdDev - rotationAnimation.originalStdDev) * t;
-        
+
         // Update focal length smoothly during animation to coordinate with stdDev changes
         // This ensures ortho/perspective settings stay in sync with the structure size
         if (renderer.orthoSlider && renderer.perspectiveEnabled) {
@@ -1190,14 +1193,14 @@ function animateRotation() {
             const PERSPECTIVE_MIN_MULT = 1.5;
             const PERSPECTIVE_MAX_MULT = 20.0;
             const normalizedValue = parseFloat(renderer.orthoSlider.value);
-            
+
             if (normalizedValue < 1.0) {
                 const baseSize = rotationAnimation.object.stdDev * STD_DEV_MULT;
                 const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
                 renderer.focalLength = baseSize * multiplier;
             }
         }
-        
+
         // Trigger ortho slider update to recalculate focal length with new stdDev
         // This ensures the slider's internal state is updated
         const orthoSlider = document.getElementById('orthoSlider');
@@ -1205,7 +1208,7 @@ function animateRotation() {
             orthoSlider.dispatchEvent(new Event('input'));
         }
     }
-    
+
     // Interpolate center and extent during animation - use same easing for consistency
     if (rotationAnimation.targetCenter && rotationAnimation.startCenter) {
         // If at completion, use exact target values to avoid any rounding errors
@@ -1266,7 +1269,7 @@ function animateRotation() {
             // Otherwise, keep extent set to the frame-specific extent
         }
     }
-    
+
     renderer.render();
     requestAnimationFrame(animateRotation);
 }
@@ -1286,9 +1289,9 @@ function animateRotation() {
  */
 function parseContactColor(colorStr) {
     if (!colorStr || typeof colorStr !== 'string') return null;
-    
+
     const colorLower = colorStr.toLowerCase().trim();
-    
+
     // Common color names
     const colorNames = {
         'red': { r: 255, g: 0, b: 0 },
@@ -1306,11 +1309,11 @@ function parseContactColor(colorStr) {
         'gray': { r: 128, g: 128, b: 128 },
         'grey': { r: 128, g: 128, b: 128 }
     };
-    
+
     if (colorNames[colorLower]) {
         return colorNames[colorLower];
     }
-    
+
     // Hex color (#ff0000 or ff0000)
     if (colorStr.startsWith('#') || /^[0-9a-fA-F]{6}$/.test(colorStr)) {
         const hex = colorStr.startsWith('#') ? colorStr.slice(1) : colorStr;
@@ -1323,7 +1326,7 @@ function parseContactColor(colorStr) {
             }
         }
     }
-    
+
     // RGBA format: rgba(255, 0, 0, 0.8) or rgb(255, 0, 0)
     const rgbaMatch = colorStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/);
     if (rgbaMatch) {
@@ -1334,27 +1337,27 @@ function parseContactColor(colorStr) {
             return { r, g, b };
         }
     }
-    
+
     return null;
 }
 
 function parseContactsFile(text) {
     const contacts = [];
     const lines = text.split('\n');
-    
+
     for (const line of lines) {
         const trimmed = line.trim();
         // Skip empty lines and comment lines (starting with #)
         if (!trimmed || trimmed.startsWith('#')) continue;
-        
+
         const parts = trimmed.split(/\s+/);
-        
+
         // Position indices format: "10 50 1.0" or "10 50 1.0 red" (weight is required)
         if (parts.length >= 3) {
             const idx1 = parseInt(parts[0], 10);
             const idx2 = parseInt(parts[1], 10);
             const weight = parseFloat(parts[2]);
-            
+
             if (!isNaN(idx1) && !isNaN(idx2) && !isNaN(weight) && weight > 0) {
                 const contact = [idx1, idx2, weight];
                 // Optional color (4th part)
@@ -1368,7 +1371,7 @@ function parseContactsFile(text) {
                 continue;
             }
         }
-        
+
         // Chain + residue format: "A 10 B 50 0.5" or "A 10 B 50 0.5 yellow" (weight is required)
         if (parts.length >= 5) {
             const chain1 = parts[0];
@@ -1376,7 +1379,7 @@ function parseContactsFile(text) {
             const chain2 = parts[2];
             const res2 = parseInt(parts[3], 10);
             const weight = parseFloat(parts[4]);
-            
+
             if (!isNaN(res1) && !isNaN(res2) && !isNaN(weight) && weight > 0) {
                 const contact = [chain1, res1, chain2, res2, weight];
                 // Optional color (6th part)
@@ -1390,7 +1393,7 @@ function parseContactsFile(text) {
             }
         }
     }
-    
+
     return contacts;
 }
 
@@ -1399,26 +1402,26 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
         setStatus("No viewer available. Please load a structure first.", true);
         return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
     }
-    
+
     const renderer = viewerApi.renderer;
     const objectSelect = document.getElementById('objectSelect');
     const currentObjectName = objectSelect && objectSelect.value ? objectSelect.value : renderer.currentObjectName;
-    
+
     if (!currentObjectName || !renderer.objectsData[currentObjectName]) {
         setStatus("No object selected. Please load a structure first.", true);
         return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
     }
-    
+
     const object = renderer.objectsData[currentObjectName];
     let metadataAdded = [];
-    
+
     // Process PAE files
     if (loadPAE && jsonFiles.length > 0) {
         for (const jsonFile of jsonFiles) {
             try {
                 const jsonText = await jsonFile.readAsync("text");
                 const jsonObject = JSON.parse(jsonText);
-                
+
                 if (!jsonObject.objects) {
                     const paeData = extractPaeFromJSON(jsonObject);
                     if (paeData) {
@@ -1435,12 +1438,12 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
             }
         }
     }
-    
+
     // Process MSA files
     if (loadMSA && msaFiles.length > 0) {
         const chainSequences = extractChainSequences(object.frames[0]);
         const msaDataList = [];
-        
+
         for (const msaFile of msaFiles) {
             try {
                 const msaText = await msaFile.readAsync("text");
@@ -1448,9 +1451,9 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
                 const isA3M = fileName.endsWith('.a3m');
                 const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
                 const isSTO = fileName.endsWith('.sto');
-                
+
                 if (!isA3M && !isFasta && !isSTO) continue;
-                
+
                 let msaData = null;
                 if (isA3M && window.MSAViewer && window.MSAViewer.parseA3M) {
                     msaData = window.MSAViewer.parseA3M(msaText);
@@ -1459,7 +1462,7 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
                 } else if (isSTO && window.MSAViewer && window.MSAViewer.parseSTO) {
                     msaData = window.MSAViewer.parseSTO(msaText);
                 }
-                
+
                 if (msaData && msaData.querySequence) {
                     msaDataList.push({ msaData, filename: msaFile.name });
                 }
@@ -1467,15 +1470,15 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
                 console.warn(`Failed to process MSA file ${msaFile.name}:`, e);
             }
         }
-        
+
         if (msaDataList.length > 0) {
-            const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
+            const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
             const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
-            
+
             if (msaObj && msaObj.availableChains.length > 0) {
                 const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
                 if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
-                    const {msaData} = msaObj.msasBySequence[defaultChainSeq];
+                    const { msaData } = msaObj.msasBySequence[defaultChainSeq];
                     if (window.MSAViewer) {
                         loadMSADataIntoViewer(msaData, msaObj.defaultChain, currentObjectName);
                         metadataAdded.push(`MSA for ${msaObj.availableChains.length} chain(s)`);
@@ -1484,14 +1487,14 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
             }
         }
     }
-    
+
     // Process contact files
     if (contactFiles.length > 0) {
         for (const contactFile of contactFiles) {
             try {
                 const text = await contactFile.readAsync("text");
                 const contacts = parseContactsFile(text);
-                
+
                 if (contacts.length > 0) {
                     // Clear any existing contacts and replace with new ones
                     object.contacts = contacts;
@@ -1509,13 +1512,13 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
             }
         }
     }
-    
+
     if (metadataAdded.length > 0) {
         setStatus(`Added to ${currentObjectName}: ${metadataAdded.join(', ')}`);
     } else {
         setStatus("No metadata could be added to the current object.", true);
     }
-    
+
     return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
 }
 
@@ -1524,38 +1527,44 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
     let modresMap = null;
     let chemCompMap = null;
     let cachedLoops = null;
-    
+    let conectMap = null;
+    let structConn = null;
+    let chemCompBondMap = null;
+
     try {
         const wantBU = !!(window.viewerConfig && window.viewerConfig.biounit);
         const isCIF = /^\s*data_/m.test(text) || /_atom_site\./.test(text);
-        
-        
+
+
         // Parse all models first
         let parseResult;
-        
+
         if (isCIF) {
             parseResult = parseCIF(text);
             models = parseResult.models;
             cachedLoops = parseResult.loops;
             chemCompMap = parseResult.chemCompMap;
+            structConn = parseResult.structConn;
+            chemCompBondMap = parseResult.chemCompBondMap;
         } else {
             parseResult = parsePDB(text);
             models = parseResult.models;
             modresMap = parseResult.modresMap;
+            conectMap = parseResult.conectMap;
         }
-        
+
         if (!models || models.length === 0 || models.every(m => m.length === 0)) {
             throw new Error(`Could not parse any models or atoms from ${name}.`);
         }
-        
+
         // Apply biounit transformation to all models if requested
         if (wantBU && models.length > 0) {
-            
+
             // Fast-negative: only scan for BU if the file hints it's present
             const hasBiounitHints = isCIF
                 ? /_pdbx_struct_(assembly_gen|oper_list)\./.test(text)
                 : /REMARK 350/.test(text);
-            
+
             // Extract operations ONCE for all models using unified function
             // Pass cached loops to avoid re-parsing
             const operations = hasBiounitHints ? extractBiounitOperations(text, isCIF, cachedLoops) : null;
@@ -1564,7 +1573,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
 
             if (operations && operations.length > 0) {
                 // Apply operations to each model using unified function
-                models = models.map(modelAtoms => 
+                models = models.map(modelAtoms =>
                     applyBiounitOperationsToAtoms(modelAtoms, operations)
                 );
             }
@@ -1584,7 +1593,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
 
     // Check if object with same name already exists in tempBatch or batchedObjects
     // If it exists, replace it instead of creating a duplicate
-    
+
     let targetObject = tempBatch.find(obj => obj.name === targetObjectName) || null;
     if (!targetObject) {
         // Also check in existing batchedObjects
@@ -1614,7 +1623,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
     function maybeFilterLigands(atoms) {
         const ignore = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
         if (!ignore) return atoms;
-        
+
         // Use modresMap and chemCompMap from parent scope (from parse results)
         // Group positions by residue to check for structural characteristics
         const residueMap = new Map();
@@ -1632,10 +1641,10 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             }
             residueMap.get(resKey).atoms.push(atom);
         }
-        
+
         // Convert residueMap to array for connectivity checks
         const allResidues = Array.from(residueMap.values());
-        
+
         // Sort positions by chain and residue_numbers for proper neighbor checking
         allResidues.sort((a, b) => {
             if (a.chain !== b.chain) {
@@ -1643,28 +1652,28 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             }
             return a.resSeq - b.resSeq;
         });
-        
+
         // Use the same classification logic as convertParsedToFrameData
         // to ensure consistency (with connectivity checks)
         const result = atoms.filter(a => {
             if (!a) return false;
             // ATOM records are always kept (standard protein/nucleic)
             if (a.record !== 'HETATM') return true;
-            
+
             // For HETATM: check if it's a real amino acid or nucleic acid
             const resKey = `${a.chain}:${a.resSeq}:${a.resName}`;
             const residue = residueMap.get(resKey);
             if (!residue) return false;
-            
+
             // Use the unified classification functions from utils.js with connectivity checks
             const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues);
             const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues);
-            
+
             // Keep if it's a real protein or nucleic acid, filter out if it's a ligand
             return is_protein || (nucleicType !== null);
         });
-        
-        
+
+
         return result;
     }
 
@@ -1672,6 +1681,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
     // STEP 1: Load all frames into memory
     // ========================================================================
     const rawFrames = [];
+    let previousBonds = undefined; // Track bonds for change detection
     for (let i = 0; i < models.length; i++) {
         if (!loadAsFramesCheckbox.checked && i > 0) {
             const modelObjectName = `${targetObjectName}_model_${i + 1}`;
@@ -1686,8 +1696,8 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         // This is needed to filter PAE matrix correctly
         // We need to identify ligands in the ORIGINAL model to map PAE positions correctly
         // IMPORTANT: includeAllResidues=true ensures ALL positions are included to match PAE matrix size
-        const originalFrameData = convertParsedToFrameData(models[i], modresMap, chemCompMap, true);
-        
+        const originalFrameData = convertParsedToFrameData(models[i], modresMap, chemCompMap, true, conectMap, structConn, chemCompBondMap);
+
         // Build position map from original model for classification
         const originalResidueMap = new Map();
         for (const atom of models[i]) {
@@ -1704,7 +1714,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             }
             originalResidueMap.get(resKey).atoms.push(atom);
         }
-        
+
         // Convert to array for connectivity checks
         const originalAllResidues = Array.from(originalResidueMap.values());
         originalAllResidues.sort((a, b) => {
@@ -1713,24 +1723,24 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             }
             return a.resSeq - b.resSeq;
         });
-        
+
         // Map each position in originalFrameData to its corresponding position and check if it's a ligand
         const originalIsLigandPosition = [];
-        
+
         // Cache classification results per position to avoid re-classifying the same position
         const residueClassificationCache = new Map(); // resKey -> {is_protein, nucleicType}
-        
+
         if (originalFrameData.position_types && originalFrameData.position_names && originalFrameData.residue_numbers) {
             for (let idx = 0; idx < originalFrameData.position_types.length; idx++) {
                 const positionType = originalFrameData.position_types[idx];
                 const resName = originalFrameData.position_names[idx];
                 const resSeq = originalFrameData.residue_numbers[idx];
                 const chain = originalFrameData.chains ? originalFrameData.chains[idx] : '';
-                
+
                 // Find the position in the original model
                 const resKey = chain + ':' + resSeq + ':' + resName;
                 const residue = originalResidueMap.get(resKey);
-                
+
                 if (residue) {
                     // Check cache first to avoid re-classifying the same position
                     let classification = residueClassificationCache.get(resKey);
@@ -1738,12 +1748,12 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                         // Use the same classification logic as maybeFilterLigands (with connectivity checks)
                         const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues);
                         const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues);
-                        
+
                         // Cache the result
                         classification = { is_protein, nucleicType };
                         residueClassificationCache.set(resKey, classification);
                     }
-                    
+
                     // It's a ligand if it's NOT protein AND NOT nucleic acid
                     originalIsLigandPosition.push(!classification.is_protein && classification.nucleicType === null);
                 } else {
@@ -1753,18 +1763,27 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             }
         } else {
             // Fallback: use position_types if available
-            originalIsLigandPosition.push(...(originalFrameData.position_types ? 
-                originalFrameData.position_types.map(type => type === 'L') : 
+            originalIsLigandPosition.push(...(originalFrameData.position_types ?
+                originalFrameData.position_types.map(type => type === 'L') :
                 Array(originalFrameData.coords.length).fill(false)));
         }
-        
+
         // Filter ligands from model
         const model = maybeFilterLigands(models[i]);
         const originalPositionCount = models[i].length;
         const filteredPositionCount = model.length;
-        
-        // Convert filtered model to get final frame data
-        let frameData = convertParsedToFrameData(model, modresMap, chemCompMap);
+
+        // Convert parsed atoms to frame data
+        // Pass conectMap (PDB) and structConn (CIF) for bond resolution
+        let frameData = convertParsedToFrameData(
+            model,
+            modresMap,
+            chemCompMap,
+            false, // includeAllResidues = false (normal mode)
+            conectMap,
+            structConn,
+            chemCompBondMap
+        );
         if (frameData.coords.length === 0) continue;
 
         // Store PAE data
@@ -1773,10 +1792,10 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             if (ignoreLigands && originalIsLigandPosition.length > 0) {
                 // PAE matrix indices map directly to position indices in originalFrameData
                 // We need to filter out ligand positions from the PAE matrix
-                
+
                 // Count total ligands identified
                 const totalLigands = originalIsLigandPosition.filter(x => x).length;
-                
+
                 // First, check if PAE size matches originalFrameData size
                 if (paeData.length === originalIsLigandPosition.length) {
                     // Sizes match - PAE includes all positions, filter out ligands
@@ -1790,7 +1809,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                             ligandCountInPAERange++;
                         }
                     }
-                    
+
                     if (ligandCountInPAERange > 0) {
                         // PAE includes some ligands in its range, filter them out
                         // Create a truncated ligand position array for the PAE range
@@ -1803,7 +1822,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                 } else {
                     // PAE is larger - truncate to match originalFrameData size, then filter
                     console.warn(`PAE matrix size (${paeData.length}) is larger than frame data size (${originalIsLigandPosition.length}). Truncating and filtering...`);
-                    const truncatedPae = paeData.slice(0, originalIsLigandPosition.length).map(row => 
+                    const truncatedPae = paeData.slice(0, originalIsLigandPosition.length).map(row =>
                         row.slice(0, originalIsLigandPosition.length)
                     );
                     frameData.pae = filterPAEForLigands(truncatedPae, originalIsLigandPosition);
@@ -1815,8 +1834,31 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             frameData.pae = null;
         }
 
+        // Extract ligand bonds from the model (per-frame with change detection)
+        // Only include bonds in frameObj if they differ from previous frame
+        let bonds = undefined;
+
+        // Check if explicit bonds were already parsed and returned in frameData
+        if (frameData.bonds && frameData.bonds.length > 0) {
+            // This frame has explicit bonds defined
+            bonds = frameData.bonds;
+        } else if (i === 0) {
+            // Only compute fallback bonds for frame 0 (will be inherited by other frames)
+            const hasLigands = frameData.position_types && frameData.position_types.some(type => type === 'L');
+
+            if (hasLigands) {
+                // Fallback: Extract bonds using distance-based method
+                const extractedBonds = extractLigandBondsFromAtoms(model, frameData);
+                if (extractedBonds && extractedBonds.length > 0) {
+                    bonds = extractedBonds;
+                }
+            }
+            // If no ligands, silently skip bond extraction
+        }
+        // For frames > 0 without explicit bonds: undefined = inherit from frame 0 in viewer
+
         // Deep copy frame data
-        rawFrames.push({
+        const frameObj = {
             coords: frameData.coords.map(c => [...c]),
             chains: frameData.chains ? [...frameData.chains] : undefined,
             position_types: frameData.position_types ? [...frameData.position_types] : undefined,
@@ -1824,9 +1866,26 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             position_names: frameData.position_names ? [...frameData.position_names] : undefined,
             residue_numbers: frameData.residue_numbers ? [...frameData.residue_numbers] : undefined,
             pae: frameData.pae
-        });
+        };
+
+        // Only include bond data if it differs from previous frame (optimization)
+        // Compare current bonds with previous frame's bonds
+        const bondsChanged = (i === 0) || // Always include for first frame
+            (bonds !== undefined && bonds !== previousBonds);
+
+        if (bondsChanged && bonds !== undefined) {
+            frameObj.bonds = bonds;
+        }
+        // If bonds haven't changed, omit from frameObj - viewer will inherit
+
+        // Track bonds for next iteration
+        if (bonds !== undefined) {
+            previousBonds = bonds;
+        }
+
+        rawFrames.push(frameObj);
     }
-    
+
 
     if (rawFrames.length === 0) {
         setStatus(`Warning: Found models, but no backbone atoms in ${name}.`, true);
@@ -1842,7 +1901,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         // Determine reference frame: first frame in targetObject (if exists) or first in rawFrames
         const referenceFrames = targetObject.frames.length > 0 ? targetObject.frames : rawFrames;
         const firstFrame = referenceFrames[0];
-        
+
         if (firstFrame && rawFrames.length > 0) {
             // Determine which chain to use for alignment (use first available chain from reference frame)
             let alignmentChainId = null;
@@ -1856,7 +1915,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                     }
                 }
             }
-            
+
             // Extract alignment coordinates from reference frame (first frame)
             const firstFrameAlignCoords = [];
             if (alignmentChainId !== null) {
@@ -1871,11 +1930,11 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                     firstFrameAlignCoords.push([...firstFrame.coords[j]]); // Copy array
                 }
             }
-            
+
             // Align each new frame in rawFrames to the reference frame
             for (let i = 0; i < rawFrames.length; i++) {
                 const currFrame = rawFrames[i];
-                
+
                 // Extract alignment coordinates from current frame
                 const currFrameAlignCoords = [];
                 if (alignmentChainId !== null) {
@@ -1890,10 +1949,10 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                         currFrameAlignCoords.push([...currFrame.coords[j]]); // Copy array
                     }
                 }
-                
+
                 // Only align if we have matching coordinate counts
-                if (firstFrameAlignCoords.length > 0 && 
-                    currFrameAlignCoords.length > 0 && 
+                if (firstFrameAlignCoords.length > 0 &&
+                    currFrameAlignCoords.length > 0 &&
                     firstFrameAlignCoords.length === currFrameAlignCoords.length) {
                     try {
                         // Align current frame to reference frame
@@ -1902,7 +1961,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                             currFrameAlignCoords,       // Alignment subset of current frame
                             firstFrameAlignCoords       // Alignment subset of reference frame
                         );
-                        
+
                         // Update all coordinates in the frame
                         for (let k = 0; k < currFrame.coords.length; k++) {
                             currFrame.coords[k][0] = alignedCoords[k][0];
@@ -1942,10 +2001,10 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             }
         }
     }
-    
+
     for (let i = 0; i < rawFrames.length; i++) {
         const frame = rawFrames[i];
-        
+
         // Extract centering chain coordinates
         const centeringCoords = [];
         if (centeringChainId !== null) {
@@ -1960,7 +2019,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                 centeringCoords.push(frame.coords[j]);
             }
         }
-        
+
         if (centeringCoords.length > 0) {
             // Compute center of centering chain (or all positions)
             const center = [0, 0, 0];
@@ -1972,7 +2031,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
             center[0] /= centeringCoords.length;
             center[1] /= centeringCoords.length;
             center[2] /= centeringCoords.length;
-            
+
             // Subtract center from all coordinates
             for (const coord of frame.coords) {
                 coord[0] -= center[0];
@@ -2018,7 +2077,7 @@ function updateViewerFromGlobalBatch() {
     const newNames = [];
 
     if (r) r._batchLoading = true;
-    
+
     for (const obj of batchedObjects) {
         if (!obj || !obj.frames || obj.frames.length === 0) continue;
 
@@ -2033,7 +2092,7 @@ function updateViewerFromGlobalBatch() {
             // Existing object: determine if we're replacing or appending
             const have = r.objectsData[obj.name]?.frames?.length || 0;
             const want = obj.frames.length;
-            
+
             // If we're adding frames beyond what exists, append them
             // Otherwise, replace the entire object (e.g., when fetching same PDB)
             if (want > have) {
@@ -2053,15 +2112,15 @@ function updateViewerFromGlobalBatch() {
                     const option = objectSelect.querySelector(`option[value="${obj.name}"]`);
                     if (option) option.remove();
                 }
-                
+
                 // Delete the object completely (this clears frames, selection, MSA, sequence, etc.)
                 if (r.objectsData[obj.name]) {
                     delete r.objectsData[obj.name];
                 }
-                
+
                 // Remove from existing set so it's treated as new
                 existing.delete(obj.name);
-                
+
                 // Recreate as new object
                 viewerApi.handlePythonNewObject(obj.name);
                 newNames.push(obj.name);
@@ -2075,7 +2134,7 @@ function updateViewerFromGlobalBatch() {
         if (r && obj.msa && r.objectsData[obj.name]) {
             r.objectsData[obj.name].msa = obj.msa;
         }
-        
+
         // Set contacts data (replacing any existing contacts)
         if (r && obj.contacts && r.objectsData[obj.name]) {
             r.objectsData[obj.name].contacts = obj.contacts;
@@ -2132,108 +2191,108 @@ function updateViewerFromGlobalBatch() {
 
 
 function updateChainSelectionUI() {
-  /* [EDIT] This function no longer builds UI (pills). 
-     It just sets the default selected state if there is truly no saved selection. */
+    /* [EDIT] This function no longer builds UI (pills). 
+       It just sets the default selected state if there is truly no saved selection. */
 
-  const r = viewerApi?.renderer;
-  const name = r?.currentObjectName;
-  if (!r || !name) return;
+    const r = viewerApi?.renderer;
+    const name = r?.currentObjectName;
+    if (!r || !name) return;
 
-  const obj = r.objectsData?.[name];
-  if (!obj?.frames?.length) return;
+    const obj = r.objectsData?.[name];
+    if (!obj?.frames?.length) return;
 
-  const ss = r.objectsData?.[name]?.selectionState;
-  // Only default if there is truly no user selection saved
-  const hasAnySelection =
-    ss &&
-    (
-      ss.selectionMode !== 'default' ||
-      (ss.positions && ss.positions.size > 0) ||
-      (ss.chains && ss.chains.size > 0) ||
-      (ss.paeBoxes && ss.paeBoxes.length > 0)
-    );
+    const ss = r.objectsData?.[name]?.selectionState;
+    // Only default if there is truly no user selection saved
+    const hasAnySelection =
+        ss &&
+        (
+            ss.selectionMode !== 'default' ||
+            (ss.positions && ss.positions.size > 0) ||
+            (ss.chains && ss.chains.size > 0) ||
+            (ss.paeBoxes && ss.paeBoxes.length > 0)
+        );
 
-  if (hasAnySelection) return;
+    if (hasAnySelection) return;
 
-  // Let the renderer compute the correct "all" internally
-  if (typeof r.resetToDefault === 'function') {
-    r.resetToDefault();
-  } else if (typeof r.setSelection === 'function') {
-    // Fallback: empty/default request which the renderer normalizes to "all"
-    r.setSelection({ selectionMode: 'default', positions: new Set(), chains: new Set() });
-  }
+    // Let the renderer compute the correct "all" internally
+    if (typeof r.resetToDefault === 'function') {
+        r.resetToDefault();
+    } else if (typeof r.setSelection === 'function') {
+        // Fallback: empty/default request which the renderer normalizes to "all"
+        r.setSelection({ selectionMode: 'default', positions: new Set(), chains: new Set() });
+    }
 }
 
 function setChainResiduesSelected(chain, selected) {
-  if (!viewerApi?.renderer) return;
-  const current = viewerApi.renderer.getSelection();
-  const objectName = viewerApi.renderer.currentObjectName;
-  if (!objectName) return;
-  
-  const obj = viewerApi.renderer.objectsData[objectName];
-  if (!obj?.frames?.length) return;
-  const frame0 = obj.frames[0];
-  if (!frame0?.residue_numbers || !frame0?.chains) return;
+    if (!viewerApi?.renderer) return;
+    const current = viewerApi.renderer.getSelection();
+    const objectName = viewerApi.renderer.currentObjectName;
+    if (!objectName) return;
 
-  // Get all available chains
-  const allChains = new Set(frame0.chains);
-  
-  // Determine current chain selection
-  // If chains.size === 0 and mode is 'default', all chains are selected
-  let currentChains = new Set(current.chains);
-  if (currentChains.size === 0 && current.selectionMode === 'default') {
-    currentChains = new Set(allChains);
-  }
-  
-  const newChains = new Set(currentChains);
-  
-  // getSelection() now normalizes default mode to have all positions, so we can use it directly
-  const newPositions = new Set(current.positions);
-  
-  if (selected) {
-    newChains.add(chain);
-    // When selecting a chain, add all positions from that chain
-    // This preserves existing position selections from other chains
-    for (let i = 0; i < frame0.chains.length; i++) {
-      if (frame0.chains[i] === chain) {
-        newPositions.add(i); // Add position (Set.add is idempotent, so safe)
-      }
+    const obj = viewerApi.renderer.objectsData[objectName];
+    if (!obj?.frames?.length) return;
+    const frame0 = obj.frames[0];
+    if (!frame0?.residue_numbers || !frame0?.chains) return;
+
+    // Get all available chains
+    const allChains = new Set(frame0.chains);
+
+    // Determine current chain selection
+    // If chains.size === 0 and mode is 'default', all chains are selected
+    let currentChains = new Set(current.chains);
+    if (currentChains.size === 0 && current.selectionMode === 'default') {
+        currentChains = new Set(allChains);
     }
-  } else {
-    newChains.delete(chain);
-    // When deselecting a chain, remove all positions from that chain
-    // This preserves position selections from other chains
-    for (let i = 0; i < frame0.chains.length; i++) {
-      if (frame0.chains[i] === chain) {
-        newPositions.delete(i);
-      }
+
+    const newChains = new Set(currentChains);
+
+    // getSelection() now normalizes default mode to have all positions, so we can use it directly
+    const newPositions = new Set(current.positions);
+
+    if (selected) {
+        newChains.add(chain);
+        // When selecting a chain, add all positions from that chain
+        // This preserves existing position selections from other chains
+        for (let i = 0; i < frame0.chains.length; i++) {
+            if (frame0.chains[i] === chain) {
+                newPositions.add(i); // Add position (Set.add is idempotent, so safe)
+            }
+        }
+    } else {
+        newChains.delete(chain);
+        // When deselecting a chain, remove all positions from that chain
+        // This preserves position selections from other chains
+        for (let i = 0; i < frame0.chains.length; i++) {
+            if (frame0.chains[i] === chain) {
+                newPositions.delete(i);
+            }
+        }
     }
-  }
-  
-  // Determine selection mode
-  // If we have explicit position selections (partial selections), always use 'explicit' mode
-  // to preserve the partial selections. Only use 'default' if we have no position selections
-  // and all chains are selected.
-  const allChainsSelected = newChains.size === allChains.size && 
-                            Array.from(newChains).every(c => allChains.has(c));
-  const hasPartialSelections = newPositions.size > 0 && 
-                               newPositions.size < frame0.chains.length;
-  
-  // Use explicit mode if we have partial selections OR if not all chains are selected OR if no positions are selected
-  // This allows all chains to be deselected (empty chains set with explicit mode)
-  const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
-  
-  // If all chains are selected AND no partial selections AND we have positions, use empty chains set with default mode
-  // Otherwise, keep explicit chain selection (allows empty chains)
-  const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
-  
-  viewerApi.renderer.setSelection({ 
-    chains: chainsToSet,
-    positions: newPositions,
-    selectionMode: selectionMode,
-    paeBoxes: []  // Clear PAE boxes when editing chain selection
-  });
-  // Event listener will update UI, no need to call applySelection()
+
+    // Determine selection mode
+    // If we have explicit position selections (partial selections), always use 'explicit' mode
+    // to preserve the partial selections. Only use 'default' if we have no position selections
+    // and all chains are selected.
+    const allChainsSelected = newChains.size === allChains.size &&
+        Array.from(newChains).every(c => allChains.has(c));
+    const hasPartialSelections = newPositions.size > 0 &&
+        newPositions.size < frame0.chains.length;
+
+    // Use explicit mode if we have partial selections OR if not all chains are selected OR if no positions are selected
+    // This allows all chains to be deselected (empty chains set with explicit mode)
+    const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
+
+    // If all chains are selected AND no partial selections AND we have positions, use empty chains set with default mode
+    // Otherwise, keep explicit chain selection (allows empty chains)
+    const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
+
+    viewerApi.renderer.setSelection({
+        chains: chainsToSet,
+        positions: newPositions,
+        selectionMode: selectionMode,
+        paeBoxes: []  // Clear PAE boxes when editing chain selection
+    });
+    // Event listener will update UI, no need to call applySelection()
 }
 
 /** Alt-click a chain label to toggle selection of all positions in that chain */
@@ -2254,13 +2313,13 @@ function toggleChainResidues(chain) {
         }
     }
     const allSelected = chainPositionIndices.length > 0 && chainPositionIndices.every(positionIndex => current.positions.has(positionIndex));
-    
+
     const newPositions = new Set(current.positions);
     chainPositionIndices.forEach(positionIndex => {
         if (allSelected) newPositions.delete(positionIndex);
         else newPositions.add(positionIndex);
     });
-    
+
     // When toggling positions, we need to update chains to include all chains that have selected positions
     // to prevent the chain filter from hiding positions we just selected
     const newChains = new Set();
@@ -2270,11 +2329,11 @@ function toggleChainResidues(chain) {
             newChains.add(positionChain);
         }
     }
-    
+
     // Determine if we have partial selections (not all positions from all chains)
     const hasPartialSelections = newPositions.size > 0 && newPositions.size < frame.chains.length;
-    
-    viewerApi.renderer.setSelection({ 
+
+    viewerApi.renderer.setSelection({
         positions: newPositions,
         chains: newChains,
         selectionMode: hasPartialSelections ? 'explicit' : 'default',
@@ -2291,42 +2350,42 @@ function syncChainPillsToSelection() {
 }
 
 function applySelection(previewPositions = null) {
-  if (!viewerApi || !viewerApi.renderer) return;
+    if (!viewerApi || !viewerApi.renderer) return;
 
-  const objectName = viewerApi.renderer.currentObjectName;
-  if (!objectName) {
-    if (viewerApi.renderer.resetSelection) {
-      viewerApi.renderer.resetSelection();
-    } else {
-    viewerApi.renderer.visibilityMask = null;
-    viewerApi.renderer.render();
+    const objectName = viewerApi.renderer.currentObjectName;
+    if (!objectName) {
+        if (viewerApi.renderer.resetSelection) {
+            viewerApi.renderer.resetSelection();
+        } else {
+            viewerApi.renderer.visibilityMask = null;
+            viewerApi.renderer.render();
+        }
+        return;
     }
-    return;
-  }
 
-  // Get current selection
-  const current = viewerApi.renderer.getSelection();
-  
-  // Get visible chains from selection model (chain buttons are now on canvas)
-  let visibleChains = current?.chains || new Set();
-  // If in default mode with no explicit chains, all chains are visible
-  if (current?.selectionMode === 'default' && (!current.chains || current.chains.size === 0)) {
-    // Get all chains from renderer
-    if (viewerApi.renderer.chains) {
-      visibleChains = new Set(viewerApi.renderer.chains);
+    // Get current selection
+    const current = viewerApi.renderer.getSelection();
+
+    // Get visible chains from selection model (chain buttons are now on canvas)
+    let visibleChains = current?.chains || new Set();
+    // If in default mode with no explicit chains, all chains are visible
+    if (current?.selectionMode === 'default' && (!current.chains || current.chains.size === 0)) {
+        // Get all chains from renderer
+        if (viewerApi.renderer.chains) {
+            visibleChains = new Set(viewerApi.renderer.chains);
+        }
     }
-  }
 
-  // Use preview selection if provided, otherwise use current selection
-  const positionsToUse = previewPositions !== null ? previewPositions : current.positions;
+    // Use preview selection if provided, otherwise use current selection
+    const positionsToUse = previewPositions !== null ? previewPositions : current.positions;
 
-  viewerApi.renderer.setSelection({
-    positions: positionsToUse,
-    chains: visibleChains
-    // Keep current PAE boxes and mode
-  });
-  
-  // Note: updateSequenceViewSelectionState will be called via event listener
+    viewerApi.renderer.setSelection({
+        positions: positionsToUse,
+        chains: visibleChains
+        // Keep current PAE boxes and mode
+    });
+
+    // Note: updateSequenceViewSelectionState will be called via event listener
 }
 
 
@@ -2364,25 +2423,25 @@ function clearHighlight() {
 }
 
 function showAllResidues() {
-  if (!viewerApi?.renderer) return;
-  // Reset to default (show all positions/chains) - this also clears PAE boxes
-  viewerApi.renderer.resetToDefault();
-  // UI will update via event listener
+    if (!viewerApi?.renderer) return;
+    // Reset to default (show all positions/chains) - this also clears PAE boxes
+    viewerApi.renderer.resetToDefault();
+    // UI will update via event listener
 }
 
 function hideAllResidues() {
-  if (!viewerApi?.renderer) return;
-  // Use renderer's clearSelection method to hide all
-  viewerApi.renderer.clearSelection();
-  // UI will update via event listener
+    if (!viewerApi?.renderer) return;
+    // Use renderer's clearSelection method to hide all
+    viewerApi.renderer.clearSelection();
+    // UI will update via event listener
 }
 
 function clearAllObjects() {
     // Clear all batched objects
     batchedObjects = [];
-    
+
     // Clear PAE tracking
-    
+
     // Hide viewer and top panel
     const viewerContainer = document.getElementById('viewer-container');
     const topPanelContainer = document.getElementById('sequence-viewer-container');
@@ -2396,7 +2455,7 @@ function clearAllObjects() {
     if (msaContainer) {
         msaContainer.style.display = 'none';
     }
-    
+
     // Clear MSA data
     if (window.MSAViewer && window.MSAViewer.clear) {
         try {
@@ -2405,7 +2464,7 @@ function clearAllObjects() {
             console.error("Failed to clear MSA viewer:", e);
         }
     }
-    
+
     // Use viewer's comprehensive reset method
     if (viewerApi && viewerApi.handlePythonResetAll) {
         try {
@@ -2445,7 +2504,7 @@ if (window.SequenceViewer) {
         clearHighlight: clearHighlight,
         applySelection: applySelection
     });
-    
+
     // Initialize highlight overlay after viewer is created
     // This will be called after initializePy2DmolViewer completes
     function initializeHighlightOverlayIfNeeded() {
@@ -2460,7 +2519,7 @@ if (window.SequenceViewer) {
             }
         }
     }
-    
+
     // Initialize overlay when viewer is ready
     if (viewerApi?.renderer) {
         initializeHighlightOverlayIfNeeded();
@@ -2480,10 +2539,10 @@ function initializeMSAViewerCommon() {
     const coverageValue = document.getElementById('coverageValue');
     const identitySlider = document.getElementById('identitySlider');
     const identityValue = document.getElementById('identityValue');
-    
+
     // MSA viewer will be shown/hidden based on whether MSA data exists
     // Container starts hidden, will be shown when MSA data is loaded
-    
+
     // Initialize coverage slider
     if (coverageSlider && coverageValue) {
         // Set initial value (75% = 0.75) if MSAViewer is available
@@ -2495,7 +2554,7 @@ function initializeMSAViewerCommon() {
             coverageSlider.value = 75;
             coverageValue.textContent = '75%';
         }
-        
+
         // Update value display and apply filter
         const applyCoverageFilter = () => {
             const value = parseInt(coverageSlider.value);
@@ -2512,19 +2571,19 @@ function initializeMSAViewerCommon() {
                 }
             }
         };
-        
+
         // Update display during drag
         coverageSlider.addEventListener('input', () => {
             const value = parseInt(coverageSlider.value);
             coverageValue.textContent = value + '%';
         });
-        
+
         // Apply filter when user releases slider
         coverageSlider.addEventListener('mouseup', applyCoverageFilter);
         coverageSlider.addEventListener('touchend', applyCoverageFilter);
         coverageSlider.addEventListener('change', applyCoverageFilter);
     }
-    
+
     // Initialize identity slider
     if (identitySlider && identityValue) {
         // Set initial value (15% = 0.15) if MSAViewer is available
@@ -2536,7 +2595,7 @@ function initializeMSAViewerCommon() {
             identitySlider.value = 15;
             identityValue.textContent = '15%';
         }
-        
+
         // Update value display and apply filter
         const applyIdentityFilter = () => {
             const value = parseInt(identitySlider.value);
@@ -2553,19 +2612,19 @@ function initializeMSAViewerCommon() {
                 }
             }
         };
-        
+
         // Update display during drag
         identitySlider.addEventListener('input', () => {
             const value = parseInt(identitySlider.value);
             identityValue.textContent = value + '%';
         });
-        
+
         // Apply filter when user releases slider
         identitySlider.addEventListener('mouseup', applyIdentityFilter);
         identitySlider.addEventListener('touchend', applyIdentityFilter);
         identitySlider.addEventListener('change', applyIdentityFilter);
     }
-    
+
     // Handle MSA mode dropdown selection
     const msaSortContainer = document.getElementById('msaSortContainer');
     const msaSortCheckbox = document.getElementById('msaSortCheckbox');
@@ -2578,7 +2637,7 @@ function initializeMSAViewerCommon() {
     const logoSaveSvgButton = document.getElementById('logoSaveSvgButton');
     const pssmSaveSvgButton = document.getElementById('pssmSaveSvgButton');
     const pssmSaveCsvButton = document.getElementById('pssmSaveCsvButton');
-    
+
     // Set initial button visibility based on default mode (MSA)
     if (msaSaveContainer) {
         msaSaveContainer.style.display = 'flex';
@@ -2592,29 +2651,29 @@ function initializeMSAViewerCommon() {
     if (msaSortContainer) {
         msaSortContainer.style.display = 'flex'; // Show sort checkbox for MSA mode
     }
-    
+
     if (msaModeSelect && window.MSAViewer) {
         // Set initial value
         const initialMode = window.MSAViewer.getMSAMode ? window.MSAViewer.getMSAMode() : 'msa';
         msaModeSelect.value = initialMode;
-        
+
         // Handle mode change
         msaModeSelect.addEventListener('change', (e) => {
             const mode = e.target.value;
             if (window.MSAViewer) {
                 window.MSAViewer.setMSAMode(mode);
             }
-            
+
             // Show/hide sort checkbox for MSA mode
             if (msaSortContainer) {
                 msaSortContainer.style.display = (mode === 'msa') ? 'flex' : 'none';
             }
-            
+
             // Show/hide bit-score checkbox for logo mode
             if (logoBitScoreContainer) {
                 logoBitScoreContainer.style.display = (mode === 'logo') ? 'flex' : 'none';
             }
-            
+
             // Show/hide save buttons based on mode
             if (msaSaveContainer) {
                 msaSaveContainer.style.display = (mode === 'msa') ? 'flex' : 'none';
@@ -2626,13 +2685,13 @@ function initializeMSAViewerCommon() {
                 pssmSaveContainer.style.display = (mode === 'pssm') ? 'flex' : 'none';
             }
         });
-        
+
         // Show/hide bit-score checkbox based on initial mode
         if (logoBitScoreContainer) {
             logoBitScoreContainer.style.display = initialMode === 'logo' ? 'flex' : 'none';
         }
     }
-    
+
     // Wire up save button event listeners
     if (msaSaveFastaButton && window.MSAViewer) {
         msaSaveFastaButton.addEventListener('click', (e) => {
@@ -2643,7 +2702,7 @@ function initializeMSAViewerCommon() {
             }
         });
     }
-    
+
     if (logoSaveSvgButton && window.MSAViewer) {
         logoSaveSvgButton.addEventListener('click', (e) => {
             e.preventDefault();
@@ -2653,7 +2712,7 @@ function initializeMSAViewerCommon() {
             }
         });
     }
-    
+
     if (pssmSaveSvgButton && window.MSAViewer) {
         pssmSaveSvgButton.addEventListener('click', (e) => {
             e.preventDefault();
@@ -2663,7 +2722,7 @@ function initializeMSAViewerCommon() {
             }
         });
     }
-    
+
     if (pssmSaveCsvButton && window.MSAViewer) {
         pssmSaveCsvButton.addEventListener('click', (e) => {
             e.preventDefault();
@@ -2673,7 +2732,7 @@ function initializeMSAViewerCommon() {
             }
         });
     }
-    
+
     if (msaSortCheckbox) {
         msaSortCheckbox.addEventListener('change', (e) => {
             if (window.MSAViewer) {
@@ -2681,12 +2740,12 @@ function initializeMSAViewerCommon() {
             }
         });
     }
-    
+
     // Handle bit-score checkbox
     if (logoBitScoreCheckbox && window.MSAViewer) {
         // Set initial value (checked = true = bit-score mode)
         logoBitScoreCheckbox.checked = window.MSAViewer.getUseBitScore ? window.MSAViewer.getUseBitScore() : true;
-        
+
         // Handle checkbox change
         logoBitScoreCheckbox.addEventListener('change', (e) => {
             const useBitScore = e.target.checked;
@@ -2695,7 +2754,7 @@ function initializeMSAViewerCommon() {
             }
         });
     }
-    
+
     // Function to update MSA sequence count display
     function updateMSASequenceCount() {
         const sequenceCountEl = document.getElementById('msaSequenceCount');
@@ -2708,10 +2767,10 @@ function initializeMSAViewerCommon() {
             }
         }
     }
-    
+
     // Store globally so it can be called from applySelectionToMSA
     window.updateMSASequenceCount = updateMSASequenceCount;
-    
+
     return { updateMSASequenceCount };
 }
 
@@ -2721,26 +2780,26 @@ function initializeMSAViewerCommon() {
 function initializeMSAViewer() {
     const common = initializeMSAViewerCommon();
     const { updateMSASequenceCount } = common;
-    
+
     // Function to update chain selector UI
     // Shows all chains from structure (like viewer-seq), highlights chains with MSAs
     function updateMSAChainSelector() {
         const chainSelectContainer = document.getElementById('msaChainSelectContainer');
         const chainSelect = document.getElementById('msaChainSelect');
         if (!chainSelect || !chainSelectContainer || !viewerApi?.renderer) return;
-        
+
         const objectName = viewerApi.renderer.currentObjectName;
         if (!objectName) {
             chainSelectContainer.style.display = 'none';
             return;
         }
-        
+
         const obj = viewerApi.renderer.objectsData[objectName];
         if (!obj || !obj.frames || obj.frames.length === 0) {
             chainSelectContainer.style.display = 'none';
             return;
         }
-        
+
         // Get all chains from structure (from first frame, like viewer-seq does)
         const firstFrame = obj.frames[0];
         const allChains = new Set();
@@ -2749,12 +2808,12 @@ function initializeMSAViewer() {
                 if (chain) allChains.add(chain);
             });
         }
-        
+
         if (allChains.size === 0) {
             chainSelectContainer.style.display = 'none';
             return;
         }
-        
+
         // Get chains with MSAs (for highlighting/validation)
         const chainsWithMSA = new Set();
         if (obj.msa) {
@@ -2762,16 +2821,16 @@ function initializeMSAViewer() {
                 obj.msa.availableChains.forEach(chain => chainsWithMSA.add(chain));
             }
         }
-        
+
         // Rebuild options if needed (sorted alphabetically, show all chains)
         const currentOptions = Array.from(chainSelect.options).map(opt => opt.value);
         const sortedAllChains = Array.from(allChains).sort();
         const chainsChanged = currentOptions.length !== sortedAllChains.length ||
-                             !sortedAllChains.every(chain => currentOptions.includes(chain));
-        
+            !sortedAllChains.every(chain => currentOptions.includes(chain));
+
         // Preserve current selection before rebuilding
         const preservedValue = chainSelect.value;
-        
+
         if (chainsChanged) {
             chainSelect.innerHTML = '';
             sortedAllChains.forEach(chainId => {
@@ -2783,10 +2842,10 @@ function initializeMSAViewer() {
                 chainSelect.appendChild(option);
             });
         }
-        
+
         // Get current chain from MSA viewer (source of truth)
         const currentChain = window.MSAViewer?.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
-        
+
         // Update dropdown to match current chain
         if (currentChain && allChains.has(currentChain) && chainsWithMSA.has(currentChain)) {
             chainSelect.value = currentChain;
@@ -2796,32 +2855,32 @@ function initializeMSAViewer() {
             const firstChainWithMSA = sortedAllChains.find(c => chainsWithMSA.has(c));
             chainSelect.value = firstChainWithMSA || sortedAllChains[0];
         }
-        
+
         chainSelectContainer.style.display = allChains.size > 0 ? 'flex' : 'none';
     }
-    
+
     // Handle MSA chain selector
     const msaChainSelect = document.getElementById('msaChainSelect');
     if (msaChainSelect && window.MSAViewer && viewerApi?.renderer) {
         msaChainSelect.addEventListener('change', (e) => {
             const chainId = e.target.value;
             if (!chainId) return;
-            
+
             const objectName = viewerApi.renderer.currentObjectName;
             if (!objectName) return;
-            
+
             const obj = viewerApi.renderer.objectsData[objectName];
             if (!obj || !obj.msa) return;
-            
+
             if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
                 const querySeq = obj.msa.chainToSequence[chainId];
                 if (querySeq && obj.msa.msasBySequence[querySeq]) {
-                    const {msaData} = obj.msa.msasBySequence[querySeq];
+                    const { msaData } = obj.msa.msasBySequence[querySeq];
                     loadMSADataIntoViewer(msaData, chainId, objectName);
-                    
+
                     // Apply current object's selection to MSA (refilter based on selection state)
                     applySelectionToMSA();
-                    
+
                     setTimeout(() => {
                         if (msaChainSelect.value !== chainId) {
                             msaChainSelect.value = chainId;
@@ -2831,7 +2890,7 @@ function initializeMSAViewer() {
             }
         });
     }
-    
+
     // Set empty callbacks for msa.html (MSA viewer is read-only, doesn't need renderer)
     if (window.MSAViewer) {
         window.MSAViewer.setCallbacks({
@@ -2852,11 +2911,11 @@ async function resolvePDBToUniProt(pdbId) {
         const uniprotIds = Object.values(mappings)
             .map(m => m.uniprot_id)
             .filter(id => id); // Filter out null/undefined
-        
+
         if (uniprotIds.length === 0) {
             throw new Error(`No UniProt mapping found for PDB ID ${pdbId}`);
-    }
-    
+        }
+
         // Use the first UniProt ID found
         const uniprotId = uniprotIds[0];
         setStatus(`Found UniProt ID ${uniprotId} for PDB ${pdbId}`);
@@ -2875,24 +2934,24 @@ async function resolvePDBToUniProt(pdbId) {
  */
 async function fetchMSAFromAlphaFold(uniprotId, originalId = null) {
     setStatus(`Fetching MSA for ${uniprotId} from AlphaFold DB...`);
-    
+
     const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${uniprotId}-F1-msa_v6.a3m`;
-    
-        const response = await fetch(msaUrl);
-        if (!response.ok) {
-            if (response.status === 404) {
+
+    const response = await fetch(msaUrl);
+    if (!response.ok) {
+        if (response.status === 404) {
             const idDisplay = originalId ? `PDB ${originalId} (UniProt ${uniprotId})` : `UniProt ID ${uniprotId}`;
             throw new Error(`MSA not found for ${idDisplay}. The structure may not be available in AlphaFold DB.`);
-            }
-            throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
         }
-        
-        const msaText = await response.text();
-        
-        if (!msaText || msaText.trim().length === 0) {
-            throw new Error('Empty MSA file received');
-        }
-        
+        throw new Error(`Failed to fetch MSA (HTTP ${response.status})`);
+    }
+
+    const msaText = await response.text();
+
+    if (!msaText || msaText.trim().length === 0) {
+        throw new Error('Empty MSA file received');
+    }
+
     return msaText;
 }
 
@@ -2906,37 +2965,37 @@ function loadMSADataIntoViewerStandalone(msaData, uniprotId) {
         setStatus('MSA Viewer not available', true);
         return false;
     }
-    
+
     if (!msaData || !msaData.querySequence) {
         setStatus('Failed to parse MSA file', true);
         return false;
     }
-    
-                window.MSAViewer.setMSAData(msaData, null);
-                setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
-                
-                // Update sequence count
-        const sequenceCountEl = document.getElementById('msaSequenceCount');
-        if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
-            const counts = window.MSAViewer.getSequenceCounts();
-                    if (counts) {
-                        sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
-                    }
-                }
-                
-                // Update file name display (if exists)
-                const fileNameEl = document.getElementById('file-name');
-                if (fileNameEl) {
-                    fileNameEl.textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
-                }
-                
-                // Show MSA viewer container
+
+    window.MSAViewer.setMSAData(msaData, null);
+    setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+
+    // Update sequence count
+    const sequenceCountEl = document.getElementById('msaSequenceCount');
+    if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
+        const counts = window.MSAViewer.getSequenceCounts();
+        if (counts) {
+            sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
+        }
+    }
+
+    // Update file name display (if exists)
+    const fileNameEl = document.getElementById('file-name');
+    if (fileNameEl) {
+        fileNameEl.textContent = `AF-${uniprotId}-F1-msa_v6.a3m`;
+    }
+
+    // Show MSA viewer container
     const msaContainer = document.getElementById('msa-buttons');
-                if (msaContainer) {
-                    msaContainer.style.display = 'block';
-                }
+    if (msaContainer) {
+        msaContainer.style.display = 'block';
+    }
     showMSACanvasContainers();
-    
+
     return true;
 }
 
@@ -2949,15 +3008,15 @@ async function handleMSAFetch(id) {
     if (!id) {
         id = document.getElementById('fetch-uniprot-id')?.value.trim().toUpperCase();
     }
-    
+
     if (!id) {
         setStatus('Please enter a PDB or UniProt ID', true);
         return;
     }
-    
+
     let uniprotId = id;
     const isPDB = id.length === 4 && /^[A-Z0-9]{4}$/.test(id);
-    
+
     // If it's a PDB ID, look up UniProt ID from PDBe API
     if (isPDB) {
         try {
@@ -2965,18 +3024,18 @@ async function handleMSAFetch(id) {
         } catch (error) {
             setStatus(`Error: ${error.message}`, true);
             return;
-                }
-            } else {
+        }
+    } else {
         // Validate UniProt ID format (typically 6-10 characters, alphanumeric)
         if (!/^[A-Z0-9]{6,10}$/.test(uniprotId)) {
             setStatus('Invalid ID format. Please enter a 4-character PDB ID or 6-10 character UniProt ID (e.g., 4HHB or P0A8I3)', true);
             return;
         }
     }
-    
+
     try {
         const msaText = await fetchMSAFromAlphaFold(uniprotId, isPDB ? id : null);
-        
+
         // Parse and load the MSA
         if (window.MSAViewer && window.MSAViewer.parseA3M) {
             const msaData = window.MSAViewer.parseA3M(msaText);
@@ -3007,28 +3066,28 @@ async function handleMSAFileUpload(fileOrEvent) {
     } else {
         return;
     }
-    
+
     const fileName = file.name.toLowerCase();
     const isA3M = fileName.endsWith('.a3m');
     const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
     const isSTO = fileName.endsWith('.sto');
-    
+
     if (!isA3M && !isFasta && !isSTO) {
         setStatus('Please upload an A3M (.a3m), FASTA (.fasta, .fa, .fas), or STO (.sto) file', true);
         return;
     }
-    
+
     // Update file name display (if exists)
     const fileNameEl = document.getElementById('file-name');
     if (fileNameEl) {
         fileNameEl.textContent = file.name;
     }
-    
+
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
             const msaText = e.target.result;
-            
+
             let msaData = null;
             if (isA3M && window.MSAViewer && window.MSAViewer.parseA3M) {
                 msaData = window.MSAViewer.parseA3M(msaText);
@@ -3037,11 +3096,11 @@ async function handleMSAFileUpload(fileOrEvent) {
             } else if (isSTO && window.MSAViewer && window.MSAViewer.parseSTO) {
                 msaData = window.MSAViewer.parseSTO(msaText);
             }
-            
+
             if (msaData && msaData.querySequence) {
                 window.MSAViewer.setMSAData(msaData, null);
                 setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
-                
+
                 // Update sequence count
                 const sequenceCountEl = document.getElementById('msaSequenceCount');
                 if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
@@ -3050,7 +3109,7 @@ async function handleMSAFileUpload(fileOrEvent) {
                         sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
                     }
                 }
-                
+
                 // Show MSA viewer container
                 const msaContainer = document.getElementById('msa-buttons');
                 if (msaContainer) {
@@ -3077,14 +3136,14 @@ function initMSADragAndDrop() {
     const dragOverlay = document.getElementById('drag-overlay');
     const fileUpload = document.getElementById('file-upload');
     if (!dragOverlay || !fileUpload) return;
-    
+
     let dragCounter = 0;
-    
+
     function preventDefaults(e) {
         e.preventDefault();
         e.stopPropagation();
     }
-    
+
     document.body.addEventListener('dragenter', (e) => {
         preventDefaults(e);
         if (dragCounter === 0 && dragOverlay) {
@@ -3092,7 +3151,7 @@ function initMSADragAndDrop() {
         }
         dragCounter++;
     }, false);
-    
+
     document.body.addEventListener('dragleave', (e) => {
         preventDefaults(e);
         dragCounter--;
@@ -3102,14 +3161,14 @@ function initMSADragAndDrop() {
             }
         }
     }, false);
-    
+
     document.body.addEventListener('drop', (e) => {
         preventDefaults(e);
         dragCounter = 0;
         if (dragOverlay) {
             dragOverlay.style.display = 'none';
         }
-        
+
         const files = e.dataTransfer.files;
         if (files && files.length > 0) {
             const file = files[0];
@@ -3117,7 +3176,7 @@ function initMSADragAndDrop() {
             const isA3M = fileName.endsWith('.a3m');
             const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
             const isSTO = fileName.endsWith('.sto');
-            
+
             if (isA3M || isFasta || isSTO) {
                 fileUpload.files = files;
                 handleMSAFileUpload({ target: { files: files } });
@@ -3126,7 +3185,7 @@ function initMSADragAndDrop() {
             }
         }
     }, false);
-    
+
     document.body.addEventListener('dragover', preventDefaults, false);
 }
 
@@ -3134,46 +3193,46 @@ function initMSADragAndDrop() {
  * Setup MSA page event listeners (unified for both DOMContentLoaded and immediate execution)
  */
 function setupMSAPageEventListeners() {
-            initializeMSAViewer();
-            
-            // Wire up fetch button
-            const fetchBtn = document.getElementById('fetch-btn');
-            const fetchInput = document.getElementById('fetch-uniprot-id');
-            
-            if (fetchBtn) {
-                fetchBtn.addEventListener('click', () => {
-                    handleMSAFetch();
-                });
+    initializeMSAViewer();
+
+    // Wire up fetch button
+    const fetchBtn = document.getElementById('fetch-btn');
+    const fetchInput = document.getElementById('fetch-uniprot-id');
+
+    if (fetchBtn) {
+        fetchBtn.addEventListener('click', () => {
+            handleMSAFetch();
+        });
+    }
+
+    // Allow Enter key to trigger fetch
+    if (fetchInput) {
+        fetchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                handleMSAFetch();
             }
-            
-            // Allow Enter key to trigger fetch
-            if (fetchInput) {
-                fetchInput.addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter') {
-                        handleMSAFetch();
-                    }
-                });
-            }
-            
-            // File upload button
-            const uploadButton = document.getElementById('upload-button');
-            const fileUpload = document.getElementById('file-upload');
-            
-            if (uploadButton && fileUpload) {
-                uploadButton.addEventListener('click', () => {
-                    fileUpload.click();
-                });
-                
-                fileUpload.addEventListener('change', handleMSAFileUpload);
-            }
-            
-            // Initialize drag and drop
-            initMSADragAndDrop();
-    
+        });
+    }
+
+    // File upload button
+    const uploadButton = document.getElementById('upload-button');
+    const fileUpload = document.getElementById('file-upload');
+
+    if (uploadButton && fileUpload) {
+        uploadButton.addEventListener('click', () => {
+            fileUpload.click();
+        });
+
+        fileUpload.addEventListener('change', handleMSAFileUpload);
+    }
+
+    // Initialize drag and drop
+    initMSADragAndDrop();
+
     // Example buttons (unified)
     setupExampleButtons();
-        }
-        
+}
+
 // Initialize MSA viewer on DOM ready (for msa.html only)
 // Check if we're on msa.html by looking for msa.html-specific elements
 const isMSAHTML = document.getElementById('fetch-uniprot-id') !== null;
@@ -3191,10 +3250,10 @@ if (isMSAHTML) {
 function initializeMSAViewerIndex() {
     const common = initializeMSAViewerCommon();
     const { updateMSASequenceCount } = common;
-    
+
     const msaChainSelect = document.getElementById('msaChainSelect');
     const msaContainer = document.getElementById('msa-buttons');
-    
+
     // Chain selector for single chain support (first pass)
     if (msaChainSelect && window.MSAViewer && viewerApi?.renderer) {
         // Update chain selector when object changes
@@ -3204,21 +3263,21 @@ function initializeMSAViewerIndex() {
                 msaChainSelect.style.display = 'none';
                 return;
             }
-            
+
             const obj = viewerApi.renderer.objectsData[objectName];
             if (!obj || !obj.frames || obj.frames.length === 0) {
                 msaChainSelect.style.display = 'none';
                 return;
             }
-            
+
             // New sequence-based structure: group chains by MSA sequence (homo-oligomers)
             if (obj.msa && obj.msa.msasBySequence && obj.msa.chainToSequence) {
                 // Build chain groups from msaToChains (if available) or from msasBySequence
                 const chainGroups = {}; // chainKey -> {chains: [chainId, ...], querySeq: string}
-                
+
                 // Use msaToChains if available, otherwise build from msasBySequence
                 const msaToChains = obj.msa.msaToChains || {};
-                
+
                 if (Object.keys(msaToChains).length > 0) {
                     // Use msaToChains to group chains
                     for (const [querySeq, chains] of Object.entries(msaToChains)) {
@@ -3248,9 +3307,9 @@ function initializeMSAViewerIndex() {
                         }
                     }
                 }
-                
+
                 const chainGroupKeys = Object.keys(chainGroups).sort();
-                
+
                 if (chainGroupKeys.length > 1 || (chainGroupKeys.length === 1 && chainGroups[chainGroupKeys[0]].chains.length > 1)) {
                     // Multiple chain groups or single group with multiple chains - show selector
                     msaChainSelect.innerHTML = '';
@@ -3261,7 +3320,7 @@ function initializeMSAViewerIndex() {
                         option.textContent = chains.length > 1 ? chains.join('') : chains[0]; // "AC" or "A"
                         msaChainSelect.appendChild(option);
                     });
-                    
+
                     // Set default selection to first group or current chain's group
                     const defaultChain = obj.msa.defaultChain || (obj.msa.availableChains && obj.msa.availableChains[0]);
                     if (defaultChain) {
@@ -3275,7 +3334,7 @@ function initializeMSAViewerIndex() {
                     } else {
                         msaChainSelect.value = chainGroupKeys[0];
                     }
-                    
+
                     msaChainSelect.style.display = 'block';
                 } else {
                     // Single chain group with single chain - hide selector
@@ -3285,18 +3344,18 @@ function initializeMSAViewerIndex() {
                 msaChainSelect.style.display = 'none';
             }
         }
-        
+
         // Handle chain selection change
         msaChainSelect.addEventListener('change', (e) => {
             const chainKey = e.target.value; // Can be "A", "AC", etc.
             if (!chainKey) return;
-            
+
             const objectName = viewerApi.renderer.currentObjectName;
             if (!objectName) return;
-            
+
             const obj = viewerApi.renderer.objectsData[objectName];
             if (!obj || !obj.msa) return;
-            
+
             // New sequence-based structure: chain key represents one or more chains
             if (obj.msa.msasBySequence && obj.msa.chainToSequence) {
                 // Get first chain from chain key (all chains in key share same MSA)
@@ -3305,13 +3364,13 @@ function initializeMSAViewerIndex() {
                     const querySeq = obj.msa.chainToSequence[firstChain];
                     const msaEntry = obj.msa.msasBySequence[querySeq];
                     if (msaEntry) {
-                        const {msaData} = msaEntry;
+                        const { msaData } = msaEntry;
                         // Load MSA for first chain (all chains in key share same MSA)
                         window.MSAViewer.setMSAData(msaData, firstChain);
-                        
+
                         // Update default chain to first chain in the key
                         obj.msa.defaultChain = firstChain;
-                        
+
                         // Update renderer for selected chain key
                         const currentFrameIndex = viewerApi.renderer.currentFrame || 0;
                         viewerApi.renderer._loadFrameData(currentFrameIndex, false);
@@ -3319,53 +3378,53 @@ function initializeMSAViewerIndex() {
                 }
             }
         });
-        
+
         // Update chain selector when object changes
         // Store update function globally so it can be called from other places
         window.updateMSAChainSelectorIndex = updateMSAChainSelectorIndex;
-        
+
         // Initial update
         updateMSAChainSelectorIndex();
     }
-    
+
     // Show/hide MSA container based on whether MSA data exists and load MSA when switching objects
     function updateMSAContainerVisibility() {
         if (!msaContainer) return;
-        
+
         const objectName = viewerApi?.renderer?.currentObjectName;
         if (!objectName) {
             msaContainer.style.display = 'none';
             return;
         }
-        
+
         const obj = viewerApi.renderer.objectsData[objectName];
         if (!obj) {
             msaContainer.style.display = 'none';
             clearMSAViewerState();
             return;
         }
-        
+
         if (!obj.msa) {
             msaContainer.style.display = 'none';
             clearMSAViewerState();
             return;
         }
-        
+
         // Determine which MSA to load (handle both old and new formats)
         let msaToLoad = null;
         let chainId = null;
         let hasMSA = false;
-        
+
         // New sequence-based structure
         if (obj.msa.msasBySequence && obj.msa.chainToSequence && obj.msa.availableChains) {
             // Use default chain or first available
-            const targetChain = obj.msa.defaultChain || 
-                               (obj.msa.availableChains.length > 0 ? obj.msa.availableChains[0] : null);
-            
+            const targetChain = obj.msa.defaultChain ||
+                (obj.msa.availableChains.length > 0 ? obj.msa.availableChains[0] : null);
+
             if (targetChain && obj.msa.chainToSequence[targetChain]) {
                 const querySeq = obj.msa.chainToSequence[targetChain];
                 const msaEntry = obj.msa.msasBySequence[querySeq];
-                
+
                 if (msaEntry) {
                     msaToLoad = msaEntry.msaData;
                     chainId = targetChain;
@@ -3373,53 +3432,53 @@ function initializeMSAViewerIndex() {
                 }
             }
         }
-        
+
         if (hasMSA && msaToLoad && window.MSAViewer) {
             // Show container and view
             msaContainer.style.display = 'block';
-            
+
             // Force a layout recalculation to ensure container dimensions are available
             void msaContainer.offsetWidth; // Force reflow
-            
+
             // Load MSA data into viewer (this will update the display)
             loadMSADataIntoViewer(msaToLoad, chainId, objectName);
-            
+
             // Apply current object's selection to MSA (refilter based on selection state)
             // This ensures the MSA is filtered correctly when switching objects
             // Selection state is already restored by _switchToObject() before this is called
             applySelectionToMSA();
-            
+
             // Remap entropy if entropy mode is active (after MSA is loaded)
             refreshEntropyColors();
         } else {
             // Hide MSA container if no MSA for this object
             msaContainer.style.display = 'none';
             clearMSAViewerState();
-            
+
         }
     }
-    
+
     // Update container visibility when object changes
-if (viewerApi && viewerApi.renderer) {
+    if (viewerApi && viewerApi.renderer) {
         // Store update function globally
         window.updateMSAContainerVisibility = updateMSAContainerVisibility;
-        
+
         // Initial update
         updateMSAContainerVisibility();
     }
-    
+
     // Update sequence count when MSA data is set
     if (window.MSAViewer && window.MSAViewer.setMSAData) {
         const originalSetMSAData = window.MSAViewer.setMSAData;
         // Only wrap if not already wrapped
         if (!originalSetMSAData._indexHtmlWrapped) {
-            window.MSAViewer.setMSAData = function(data, chainId) {
+            window.MSAViewer.setMSAData = function (data, chainId) {
                 originalSetMSAData.call(this, data, chainId);
                 updateMSASequenceCount();
             };
             window.MSAViewer.setMSAData._indexHtmlWrapped = true;
         }
-        
+
         // Initial update
         updateMSASequenceCount();
     }
@@ -3429,9 +3488,9 @@ if (viewerApi && viewerApi.renderer) {
 // Check if we're on index.html by looking for index.html-specific elements
 const isIndexHTML = document.getElementById('fetch-id') !== null && document.getElementById('fetch-uniprot-id') === null;
 if (isIndexHTML) {
-if (document.readyState === 'loading') {
+    if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initializeMSAViewerIndex);
-} else {
+    } else {
         initializeMSAViewerIndex();
     }
 }
@@ -3464,7 +3523,7 @@ function updateSequenceViewSelectionState() {
 async function handleFetch() {
     const tempBatch = [];
     const fetchId = document.getElementById('fetch-id').value.trim().toUpperCase();
-    
+
     if (!fetchId) {
         setStatus("Please enter a PDB or UniProt ID.", true);
         return;
@@ -3524,18 +3583,18 @@ async function handleFetch() {
             cleanObjectName(name),
             tempBatch
         );
-        
+
         batchedObjects.push(...tempBatch);
         updateViewerFromGlobalBatch();
-        
+
         // Auto-download MSA for PDB structures (only if Load MSA is enabled)
         if (isPDB && window.MSAViewer && loadMSA) {
             try {
                 setStatus(`Fetching UniProt mappings for ${fetchId}...`);
-                
+
                 // Fetch UniProt to PDB mappings from PDBe API
                 const siftsMappings = await fetchPDBeMappings(fetchId);
-                
+
                 if (Object.keys(siftsMappings).length === 0) {
                     setStatus(
                         `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
@@ -3546,61 +3605,61 @@ async function handleFetch() {
                     // Get the object that was just loaded
                     const objectName = cleanObjectName(name);
                     const renderer = viewerApi?.renderer;
-                    
+
                     if (renderer && renderer.objectsData && renderer.objectsData[objectName]) {
                         const object = renderer.objectsData[objectName];
-                        
+
                         if (object && object.frames && object.frames.length > 0) {
                             // Extract chain sequences from first frame
                             const firstFrame = object.frames[0];
                             const chainSequences = extractChainSequences(firstFrame);
-                            
+
                             if (Object.keys(chainSequences).length > 0) {
                                 // Download MSAs for each chain with UniProt mapping
                                 const msaDataList = [];
                                 const msaPromises = [];
-                                
+
                                 // Extract chain sequences with residue number mappings
                                 const chainSequencesWithResnums = {};
                                 for (let i = 0; i < firstFrame.chains.length; i++) {
                                     const chainId = firstFrame.chains[i];
                                     const positionType = firstFrame.position_types ? firstFrame.position_types[i] : 'P';
-                                    
+
                                     // Keep all polymer residues, even if index is null/missing
                                     if (positionType !== 'P') continue;
-                                    
+
                                     // Sanitize the residue number to a number or null
                                     const rawIndex = firstFrame.residue_numbers ? firstFrame.residue_numbers[i] : null;
                                     const numericIndex = rawIndex == null ? null : Number(rawIndex);
                                     const residueNum = Number.isFinite(numericIndex) ? numericIndex : null;
-                                    
+
                                     if (!chainSequencesWithResnums[chainId]) {
                                         chainSequencesWithResnums[chainId] = {
                                             sequence: '',
                                             residueNumbers: [] // Maps sequence position -> PDB residue number (can be null)
                                         };
                                     }
-                                    
+
                                     const positionName = firstFrame.position_names[i];
                                     const aa = RESIDUE_TO_AA[positionName?.toUpperCase()] || 'X';
                                     chainSequencesWithResnums[chainId].sequence += aa;
                                     chainSequencesWithResnums[chainId].residueNumbers.push(residueNum);
                                 }
-                                
+
                                 for (const [chainId, siftsMapping] of Object.entries(siftsMappings)) {
                                     if (!siftsMapping.uniprot_id) continue;
-                                    
+
                                     const uniprotId = siftsMapping.uniprot_id;
                                     const chainData = chainSequencesWithResnums[chainId];
-                                    
+
                                     if (!chainData || !chainData.sequence) {
                                         console.warn(`No PDB sequence found for chain ${chainId}`);
                                         continue;
                                     }
-                                    
+
                                     const pdbSequence = chainData.sequence;
                                     const pdbResidueNumbers = chainData.residueNumbers;
-                                    
+
                                     // Download MSA from AlphaFold DB (using shared function)
                                     msaPromises.push(
                                         fetchMSAFromAlphaFold(uniprotId)
@@ -3609,19 +3668,19 @@ async function handleFetch() {
                                                     console.warn(`Empty MSA file for UniProt ID ${uniprotId} (chain ${chainId})`);
                                                     return null;
                                                 }
-                                                
+
                                                 // Parse MSA
                                                 const msaData = window.MSAViewer.parseA3M(msaText);
-                                                
+
                                                 if (!msaData || !msaData.querySequence) {
                                                     console.warn(`Failed to parse MSA for UniProt ID ${uniprotId} (chain ${chainId})`);
                                                     return null;
                                                 }
-                                                
+
                                                 // Trim/align MSA to match PDB sequence
                                                 // Pass residue numbers so we can map correctly
                                                 const trimmedMSA = trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers);
-                                                
+
                                                 return {
                                                     chainId,
                                                     msaData: trimmedMSA,
@@ -3634,10 +3693,10 @@ async function handleFetch() {
                                             })
                                     );
                                 }
-                                
+
                                 // Wait for all MSA downloads to complete
                                 const msaResults = await Promise.all(msaPromises);
-                                
+
                                 // Filter out null results and build msaDataList
                                 for (const result of msaResults) {
                                     if (result) {
@@ -3647,23 +3706,23 @@ async function handleFetch() {
                                         });
                                     }
                                 }
-                                
+
                                 if (msaDataList.length > 0) {
                                     // Match MSAs to chains by sequence
-                                    const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
-                                    
+                                    const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
+
                                     // Initialize MSA structure for object (sequence-based, supports homo-oligomers)
                                     if (Object.keys(chainToMSA).length > 0) {
                                         // Store MSA data in object (consolidated function)
                                         const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
-                                        
+
                                         if (msaObj && msaObj.availableChains.length > 0) {
-                                            
+
                                             // Get MSA for default chain
                                             const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
-                                            const {msaData: matchedMSA} = msaObj.msasBySequence[defaultChainSeq];
+                                            const { msaData: matchedMSA } = msaObj.msasBySequence[defaultChainSeq];
                                             const firstMatchedChain = msaObj.defaultChain;
-                                            
+
                                             // Also add MSA to batchedObjects for consistency and persistence
                                             const batchedObj = batchedObjects.find(obj => obj.name === objectName);
                                             if (batchedObj) {
@@ -3675,21 +3734,21 @@ async function handleFetch() {
                                                     msaToChains: msaObj.msaToChains
                                                 };
                                             }
-                                            
+
                                             // Show MSA container and view BEFORE loading data
                                             const msaContainer = document.getElementById('msa-buttons');
                                             if (msaContainer) {
                                                 msaContainer.style.display = 'block';
                                             }
-                                            
+
                                             // Force a layout recalculation to ensure container dimensions are available
                                             if (msaContainer) {
                                                 void msaContainer.offsetWidth; // Force reflow
                                             }
-                                            
+
                                             // Load MSA into viewer (consolidated function handles all setup)
                                             loadMSADataIntoViewer(matchedMSA, firstMatchedChain, objectName);
-                                            
+
                                             setStatus(
                                                 `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
                                                 `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
@@ -3736,52 +3795,52 @@ async function handleFetch() {
                 );
             }
         }
-        
+
         // Auto-download MSA for AFDB structures (only if Load MSA is enabled)
         if (isAFDB && window.MSAViewer && loadMSA) {
             try {
                 const msaUrl = `https://alphafold.ebi.ac.uk/files/msa/AF-${fetchId}-F1-msa_v6.a3m`;
                 setStatus(`Fetching MSA for ${fetchId}...`);
-                
+
                 const msaResponse = await fetch(msaUrl);
                 if (msaResponse.ok) {
                     const msaText = await msaResponse.text();
                     if (msaText && msaText.trim().length > 0) {
                         // Parse MSA
                         const msaData = window.MSAViewer.parseA3M(msaText);
-                        
+
                         if (msaData && msaData.querySequence) {
                             // Get the object that was just loaded
                             const objectName = cleanObjectName(name);
                             const renderer = viewerApi?.renderer;
-                            
+
                             if (renderer && renderer.objectsData && renderer.objectsData[objectName]) {
                                 const object = renderer.objectsData[objectName];
-                                
+
                                 if (object && object.frames && object.frames.length > 0) {
                                     // Extract chain sequences from first frame
                                     const firstFrame = object.frames[0];
                                     const chainSequences = extractChainSequences(firstFrame);
-                                    
+
                                     if (Object.keys(chainSequences).length > 0) {
                                         // Match MSA to chains
                                         const msaDataList = [{ msaData, filename: `AF-${fetchId}-F1-msa_v6.a3m` }];
-                                        const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
-                                        
+                                        const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
+
                                         // Initialize MSA structure for object (sequence-based, supports homo-oligomers)
                                         if (Object.keys(chainToMSA).length > 0) {
                                             // Store MSA data in object (consolidated function)
                                             const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
-                                            
+
                                             if (msaObj && msaObj.availableChains.length > 0) {
-                                                
+
                                                 // Get MSA for default chain
                                                 const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
-                                                const {msaData: matchedMSA} = msaObj.msasBySequence[defaultChainSeq];
+                                                const { msaData: matchedMSA } = msaObj.msasBySequence[defaultChainSeq];
                                                 const firstMatchedChain = msaObj.defaultChain;
-                                                
+
                                                 // MSA properties (frequencies, logOdds) are computed when MSA is loaded
-                                                
+
                                                 // Also add MSA to batchedObjects for consistency and persistence
                                                 const batchedObj = batchedObjects.find(obj => obj.name === objectName);
                                                 if (batchedObj) {
@@ -3793,33 +3852,33 @@ async function handleFetch() {
                                                         msaToChains: msaObj.msaToChains,
                                                     };
                                                 }
-                                                
+
                                                 // Show MSA container and view BEFORE loading data
                                                 const msaContainer = document.getElementById('msa-buttons');
                                                 if (msaContainer) {
                                                     msaContainer.style.display = 'block';
                                                 }
-                                                
+
                                                 // Force a layout recalculation to ensure container dimensions are available
                                                 if (msaContainer) {
                                                     void msaContainer.offsetWidth; // Force reflow
                                                 }
-                                                
+
                                                 // Load MSA into viewer
                                                 window.MSAViewer.setMSAData(matchedMSA, firstMatchedChain);
-                                                
+
                                                 // Ensure view is visible after data is set
-                                                
+
                                                 // Update MSA container visibility to ensure it's shown for current object
                                                 if (window.updateMSAContainerVisibility) {
                                                     window.updateMSAContainerVisibility();
                                                 }
-                                                
+
                                                 // Update chain selector to show available chains
                                                 if (window.updateMSAChainSelectorIndex) {
                                                     window.updateMSAChainSelectorIndex();
                                                 }
-                                                
+
                                                 setStatus(
                                                     `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
                                                     `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}). ` +
@@ -3868,10 +3927,10 @@ async function handleFetch() {
                 );
             }
         } else {
-        setStatus(
-            `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
-            `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}).`
-        );
+            setStatus(
+                `Successfully fetched and loaded ${tempBatch.length} object(s) ` +
+                `(${framesAdded} total frame${framesAdded !== 1 ? 's' : ''}).`
+            );
         }
 
     } catch (e) {
@@ -3890,11 +3949,11 @@ async function handleFetch() {
 
 // Residue name to single-letter amino acid code mapping
 const RESIDUE_TO_AA = {
-    ALA:'A', ARG:'R', ASN:'N', ASP:'D', CYS:'C', GLU:'E', GLN:'Q', GLY:'G',
-    HIS:'H', ILE:'I', LEU:'L', LYS:'K', MET:'M', PHE:'F', PRO:'P', SER:'S',
-    THR:'T', TRP:'W', TYR:'Y', VAL:'V', SEC:'U', PYL:'O',
+    ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLU: 'E', GLN: 'Q', GLY: 'G',
+    HIS: 'H', ILE: 'I', LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P', SER: 'S',
+    THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V', SEC: 'U', PYL: 'O',
     // common modified residues → canonical letters
-    MSE:'M', HSD:'H', HSE:'H', HID:'H', HIE:'H', HIP:'H'
+    MSE: 'M', HSD: 'H', HSE: 'H', HID: 'H', HIE: 'H', HIP: 'H'
 };
 
 // ============================================================================
@@ -3913,32 +3972,32 @@ function extractChainSequences(frame) {
     if (!frame || !frame.chains || !frame.position_names) {
         return {};
     }
-    
+
     const chainSequences = {};
     const chainPositionData = {}; // chainId -> array of {positionName, residueNum}
-    
+
     // Group positions by chain
     for (let i = 0; i < frame.chains.length; i++) {
         const chainId = frame.chains[i];
         const positionName = frame.position_names[i];
         const residueNum = frame.residue_numbers ? frame.residue_numbers[i] : i;
         const positionType = frame.position_types ? frame.position_types[i] : 'P';
-        
+
         // Only process protein positions (skip ligands, nucleic acids for now)
         if (positionType !== 'P') continue;
-        
+
         if (!chainPositionData[chainId]) {
             chainPositionData[chainId] = [];
         }
         chainPositionData[chainId].push({ positionName, residueNum });
     }
-    
+
     // Convert position names to single-letter codes for each chain
     for (const chainId of Object.keys(chainPositionData)) {
         const positionData = chainPositionData[chainId];
         // Sort by residue number to maintain order
         positionData.sort((a, b) => a.residueNum - b.residueNum);
-        
+
         // Convert to sequence string
         const sequence = positionData.map(p => {
             const positionName = (p.positionName || '').toString().trim().toUpperCase();
@@ -3949,12 +4008,12 @@ function extractChainSequences(frame) {
             }
             return RESIDUE_TO_AA[standardPositionName] || 'X'; // X for unknown
         }).join('');
-        
+
         if (sequence.length > 0) {
             chainSequences[chainId] = sequence;
         }
     }
-    
+
     return chainSequences;
 }
 
@@ -3970,24 +4029,24 @@ window.extractChainSequences = extractChainSequences;
  */
 function sequencesMatch(msaQuerySequence, pdbChainSequence) {
     if (!msaQuerySequence || !pdbChainSequence) return false;
-    
+
     // Query sequence has no gaps, so direct comparison
     const msaSequence = msaQuerySequence.toUpperCase();
     const pdbSequence = pdbChainSequence.toUpperCase();
-    
+
     // Exact match
     if (msaSequence === pdbSequence) return true;
-    
+
     // Allow for small differences (e.g., missing terminal residues)
     // Check if one sequence is contained in the other (with some tolerance)
     const minLen = Math.min(msaSequence.length, pdbSequence.length);
     const maxLen = Math.max(msaSequence.length, pdbSequence.length);
-    
+
     // If lengths are very different (>10%), don't match
     if (maxLen > 0 && (maxLen - minLen) / maxLen > 0.1) {
         return false;
     }
-    
+
     // Check if the shorter sequence is contained in the longer one
     if (msaSequence.length <= pdbSequence.length) {
         return pdbSequence.includes(msaSequence);
@@ -4008,51 +4067,51 @@ function storeMSADataInObject(object, chainToMSA, msaToChains) {
     if (!object || !chainToMSA || Object.keys(chainToMSA).length === 0) {
         return null;
     }
-    
-        // Initialize MSA structure if it doesn't exist
-        if (!object.msa) {
-            object.msa = {
-                msasBySequence: {}, // querySequence -> {msaData, chains}
-                chainToSequence: {}, // chainId -> querySequence
-                availableChains: [],
-                defaultChain: null,
-                msaToChains: {} // querySequence -> [chainId, ...]
+
+    // Initialize MSA structure if it doesn't exist
+    if (!object.msa) {
+        object.msa = {
+            msasBySequence: {}, // querySequence -> {msaData, chains}
+            chainToSequence: {}, // chainId -> querySequence
+            availableChains: [],
+            defaultChain: null,
+            msaToChains: {} // querySequence -> [chainId, ...]
+        };
+    }
+
+    const msaObj = object.msa;
+
+    // Store msaToChains mapping
+    msaObj.msaToChains = msaToChains;
+
+    // Store unique MSAs and map chains
+    for (const [chainId, { msaData }] of Object.entries(chainToMSA)) {
+        const querySeq = msaData.querySequence.toUpperCase();
+
+        // Store MSA by sequence (only one per unique sequence)
+        // msaData is stored directly - it remains the canonical unfiltered source
+        // (We no longer mutate it, so no deep copy needed)
+        if (!msaObj.msasBySequence[querySeq]) {
+            msaObj.msasBySequence[querySeq] = {
+                msaData,
+                chains: msaToChains[querySeq] || []
             };
         }
-        
-        const msaObj = object.msa;
-        
-        // Store msaToChains mapping
-        msaObj.msaToChains = msaToChains;
-        
-        // Store unique MSAs and map chains
-        for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
-            const querySeq = msaData.querySequence.toUpperCase();
-            
-            // Store MSA by sequence (only one per unique sequence)
-            // msaData is stored directly - it remains the canonical unfiltered source
-            // (We no longer mutate it, so no deep copy needed)
-            if (!msaObj.msasBySequence[querySeq]) {
-                msaObj.msasBySequence[querySeq] = { 
-                    msaData, 
-                    chains: msaToChains[querySeq] || []
-                };
-            }
-        
+
         // Map chain to sequence
         msaObj.chainToSequence[chainId] = querySeq;
-        
+
         // Add to available chains
         if (!msaObj.availableChains.includes(chainId)) {
             msaObj.availableChains.push(chainId);
         }
     }
-    
+
     // Set default chain (first available)
     if (msaObj.availableChains.length > 0 && !msaObj.defaultChain) {
         msaObj.defaultChain = msaObj.availableChains[0];
     }
-    
+
     return msaObj;
 }
 
@@ -4070,16 +4129,16 @@ function storeMSADataInObject(object, chainToMSA, msaToChains) {
  */
 function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
     if (!window.MSAViewer || !msaData) return;
-    
+
     const {
         updateChainSelector = true
     } = options;
-    
+
     // Load MSA data into viewer
     // NOTE: We do NOT mutate stored msaEntry.msaData - it remains the canonical unfiltered source
     // The viewer maintains its own filtered copy internally
     window.MSAViewer.setMSAData(msaData, chainId);
-    
+
     // Get filtered MSA data and recompute properties based on current filtering
     const filteredMSAData = window.MSAViewer.getMSAData();
     if (filteredMSAData) {
@@ -4090,18 +4149,18 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
         // Compute properties
         computeMSAProperties(filteredMSAData);
     }
-    
+
     // Update chain selector
     if (updateChainSelector && window.updateMSAChainSelectorIndex) {
         window.updateMSAChainSelectorIndex();
     }
-    
+
     // Update sequence count to reflect the loaded MSA
     if (window.updateMSASequenceCount) {
         window.updateMSASequenceCount();
     }
     showMSACanvasContainers();
-    
+
     // Apply filters to all MSAs (will update entropy for all chains)
     // This is deferred until needed - only computes entropy for other MSAs if they exist
     if (objectName && filteredMSAData) {
@@ -4113,7 +4172,7 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
             activeFilteredMSAData: filteredMSAData
         });
     }
-    
+
     // Ensure entropy colors stay in sync when new MSA data is loaded
     refreshEntropyColors();
 }
@@ -4126,16 +4185,16 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
  */
 function computeMSAProperties(msaData, selectionMask = null) {
     if (!msaData || !msaData.sequences || msaData.sequences.length === 0) return;
-    
+
     const queryLength = msaData.queryLength;
     const numSequences = msaData.sequences.length;
-    
+
     // Use selectionMask from msaData if not provided
     if (!selectionMask && msaData.selectionMask) {
         selectionMask = msaData.selectionMask;
     }
     const frequencies = msaData.frequencies || [];
-    
+
     // Amino acid code mapping to array index (A=0, R=1, N=2, D=3, C=4, Q=5, E=6, G=7, H=8, I=9, L=10, K=11, M=12, F=13, P=14, S=15, T=16, W=17, Y=18, V=19)
     const aaCodeMap = {
         'A': 0, 'R': 1, 'N': 2, 'D': 3, 'C': 4, 'Q': 5, 'E': 6, 'G': 7, 'H': 8,
@@ -4144,7 +4203,7 @@ function computeMSAProperties(msaData, selectionMask = null) {
     };
     // Reverse mapping: array index to amino acid code
     const aaCodes = ['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P', 'S', 'T', 'W', 'Y', 'V'];
-    
+
     // Compute frequencies
     if (!msaData.frequencies) {
         // Pre-extract all sequence strings to avoid repeated property access
@@ -4155,14 +4214,14 @@ function computeMSAProperties(msaData, selectionMask = null) {
             sequenceStrings[seqIdx] = seqStr;
             sequenceLengths[seqIdx] = seqStr.length;
         }
-        
+
         // Pre-allocate arrays
         if (!msaData.frequencies) {
             for (let pos = 0; pos < queryLength; pos++) {
                 frequencies.push({});
             }
         }
-        
+
         // Character code lookup table for fast AA code mapping (ASCII: A=65, Z=90, a=97, z=122)
         // Maps char codes directly to array indices, -1 for invalid
         const charCodeToAACode = new Int8Array(128);
@@ -4207,15 +4266,15 @@ function computeMSAProperties(msaData, selectionMask = null) {
         charCodeToAACode[121] = 18; // y
         charCodeToAACode[86] = 19; // V
         charCodeToAACode[118] = 19; // v
-        
+
         // Compute frequencies for ALL positions (dimming happens during rendering, not computation)
         const resultFrequencies = [];
-        
+
         for (let pos = 0; pos < queryLength; pos++) {
             // Use typed array for counts (faster than object)
             const counts = new Uint32Array(20);
             let total = 0;
-            
+
             // Count amino acids at this position - optimized inner loop
             for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
                 if (pos < sequenceLengths[seqIdx]) {
@@ -4230,29 +4289,29 @@ function computeMSAProperties(msaData, selectionMask = null) {
                     }
                 }
             }
-            
+
             // Build frequency object
             const freq = {};
             const invTotal = total > 0 ? 1 / total : 0;
-            
+
             for (let i = 0; i < 20; i++) {
                 if (counts[i] > 0) {
                     const p = counts[i] * invTotal;
                     freq[aaCodes[i]] = p;
                 }
             }
-            
+
             resultFrequencies.push(freq);
         }
-        
+
         msaData.frequencies = resultFrequencies;
     }
-    
+
     // Compute entropy from frequencies (if frequencies exist and entropy not already computed)
     if (msaData.frequencies && !msaData.entropy) {
         const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
         const entropyValues = [];
-        
+
         // Compute entropy for ALL positions (frequencies array contains all positions)
         for (let i = 0; i < msaData.frequencies.length; i++) {
             const freq = msaData.frequencies[i];
@@ -4260,7 +4319,7 @@ function computeMSAProperties(msaData, selectionMask = null) {
                 entropyValues.push(0);
                 continue;
             }
-            
+
             // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
             let entropy = 0;
             for (const aa in freq) {
@@ -4269,15 +4328,15 @@ function computeMSAProperties(msaData, selectionMask = null) {
                     entropy -= p * Math.log2(p);
                 }
             }
-            
+
             // Normalize by max entropy (0 to 1 scale)
             const normalizedEntropy = entropy / maxEntropy;
             entropyValues.push(normalizedEntropy);
         }
-        
+
         msaData.entropy = entropyValues;
     }
-    
+
     // logOdds will be computed on-demand when needed for logo view
 }
 
@@ -4293,7 +4352,7 @@ function mergeMSAs(msaDataList) {
         computeMSAProperties(msaDataList[0].msaData);
         return msaDataList[0].msaData;
     }
-    
+
     // Use first MSA as base (preserve query sequence and metadata)
     const baseMSA = msaDataList[0].msaData;
     const mergedMSA = {
@@ -4302,7 +4361,7 @@ function mergeMSAs(msaDataList) {
         sequences: [...baseMSA.sequences], // Start with first MSA's sequences
         filenames: msaDataList.map(m => m.filename || '').filter(f => f)
     };
-    
+
     // Track unique sequences (by sequence string, case-insensitive, ignoring gaps)
     const sequenceSet = new Set();
     // Add base sequences
@@ -4312,12 +4371,12 @@ function mergeMSAs(msaDataList) {
             sequenceSet.add(seqKey);
         }
     }
-    
+
     // Merge sequences from other MSAs
     for (let i = 1; i < msaDataList.length; i++) {
-        const {msaData} = msaDataList[i];
+        const { msaData } = msaDataList[i];
         if (!msaData || !msaData.sequences) continue;
-        
+
         for (const seq of msaData.sequences) {
             const seqKey = (seq.sequence || '').replace(/-/g, '').toUpperCase();
             if (seqKey && !sequenceSet.has(seqKey)) {
@@ -4326,10 +4385,10 @@ function mergeMSAs(msaDataList) {
             }
         }
     }
-    
+
     // Compute properties for merged MSA
     computeMSAProperties(mergedMSA);
-    
+
     return mergedMSA;
 }
 
@@ -4344,12 +4403,12 @@ function matchMSAsToChains(msaDataList, chainSequences) {
     // First, collect all MSAs per chain (before merging)
     const chainToMSAList = {}; // chainId -> [{msaData, filename}, ...]
     const msaToChains = {}; // querySequence -> [chainId, ...]
-    
-    for (const {msaData, filename} of msaDataList) {
+
+    for (const { msaData, filename } of msaDataList) {
         if (!msaData || !msaData.querySequence) continue;
-        
+
         const msaQuerySequence = msaData.querySequence.toUpperCase();
-        
+
         // Find all chains that match this MSA's query sequence
         const matchedChains = [];
         for (const [chainId, chainSequence] of Object.entries(chainSequences)) {
@@ -4362,7 +4421,7 @@ function matchMSAsToChains(msaDataList, chainSequences) {
                 matchedChains.push(chainId);
             }
         }
-        
+
         // Store which chains this MSA maps to (before merging)
         if (matchedChains.length > 0) {
             if (!msaToChains[msaQuerySequence]) {
@@ -4376,7 +4435,7 @@ function matchMSAsToChains(msaDataList, chainSequences) {
             }
         }
     }
-    
+
     // Now merge MSAs for each chain that has multiple MSAs
     const chainToMSA = {}; // chainId -> {msaData}
     for (const [chainId, msaList] of Object.entries(chainToMSAList)) {
@@ -4392,11 +4451,11 @@ function matchMSAsToChains(msaDataList, chainSequences) {
             chainToMSA[chainId] = { msaData: msaList[0].msaData };
         }
     }
-    
+
     // Update msaToChains to reflect merged MSAs
     // Group chains by their merged MSA query sequence
     const mergedMsaToChains = {};
-    for (const [chainId, {msaData}] of Object.entries(chainToMSA)) {
+    for (const [chainId, { msaData }] of Object.entries(chainToMSA)) {
         const querySeq = msaData.querySequence.toUpperCase(); // Query sequence has no gaps
         if (!mergedMsaToChains[querySeq]) {
             mergedMsaToChains[querySeq] = [];
@@ -4405,7 +4464,7 @@ function matchMSAsToChains(msaDataList, chainSequences) {
             mergedMsaToChains[querySeq].push(chainId);
         }
     }
-    
+
     return { chainToMSA, msaToChains: mergedMsaToChains };
 }
 
@@ -4422,7 +4481,7 @@ function matchMSAsToChains(msaDataList, chainSequences) {
 async function fetchPDBeMappings(pdbId) {
     const pdbCode = pdbId.toLowerCase();
     const apiUrl = `https://www.ebi.ac.uk/pdbe/api/mappings/uniprot/${pdbCode}/`;
-    
+
     try {
         const response = await fetch(apiUrl);
         if (!response.ok) {
@@ -4431,35 +4490,35 @@ async function fetchPDBeMappings(pdbId) {
             }
             throw new Error(`Failed to fetch PDBe mappings (HTTP ${response.status})`);
         }
-        
+
         const data = await response.json();
-        
+
         // Parse the response structure
         // Format: {"1ubq": {"UniProt": {"P0CG48": {"mappings": [...]}}}}
         const pdbEntry = data[pdbCode];
         if (!pdbEntry || !pdbEntry.UniProt) {
             return {};
         }
-        
+
         // Check if UniProt object is empty (no mappings available)
         const uniprotEntries = Object.entries(pdbEntry.UniProt);
         if (uniprotEntries.length === 0) {
             return {}; // Empty UniProt object, return empty mappings
         }
-        
+
         const mappings = {};
-        
+
         // Iterate over each UniProt entry
         for (const [uniprotId, uniprotData] of uniprotEntries) {
             if (!uniprotData.mappings || !Array.isArray(uniprotData.mappings)) {
                 continue;
             }
-            
+
             // Process each mapping range
             for (const mapping of uniprotData.mappings) {
                 const chainId = mapping.chain_id;
                 if (!chainId) continue;
-                
+
                 // Initialize mapping for this chain if not exists
                 // If chain already exists from a different UniProt ID, skip (use first one)
                 if (!mappings[chainId]) {
@@ -4473,33 +4532,33 @@ async function fetchPDBeMappings(pdbId) {
                     console.warn(`Chain ${chainId} already mapped to ${mappings[chainId].uniprot_id}, skipping ${uniprotId}`);
                     continue;
                 }
-                
+
                 // Build residue-to-residue mappings from the range
                 // Use residue_number (internal PDB numbering) for mapping
                 const pdbStart = mapping.start.residue_number;
                 const pdbEnd = mapping.end.residue_number;
                 const unpStart = mapping.unp_start;
                 const unpEnd = mapping.unp_end;
-                
+
                 // Validate the range (check for null/undefined, not truthiness, to handle negative numbers)
                 if (pdbStart == null || pdbEnd == null || unpStart == null || unpEnd == null) {
                     console.warn(`Invalid mapping range for chain ${chainId}:`, mapping);
                     continue;
                 }
-                
+
                 // Calculate the length of the mapped region
                 const pdbRangeLength = pdbEnd - pdbStart + 1;
                 const unpRangeLength = unpEnd - unpStart + 1;
-                
+
                 // The ranges should have the same length (1-to-1 mapping)
                 // But handle cases where they might differ slightly
                 const rangeLength = Math.min(pdbRangeLength, unpRangeLength);
-                
+
                 // Create mappings for each residue in the range
                 for (let i = 0; i < rangeLength; i++) {
                     const pdbResnum = pdbStart + i;
                     const unpResnum = unpStart + i;
-                    
+
                     // Only add if not already mapped (in case of overlapping ranges)
                     // Prefer earlier mappings if there are conflicts
                     // Use String() to ensure consistent key type (handles negative numbers correctly)
@@ -4513,7 +4572,7 @@ async function fetchPDBeMappings(pdbId) {
                 }
             }
         }
-        
+
         return mappings;
     } catch (e) {
         console.error(`Error fetching PDBe mappings for ${pdbCode.toUpperCase()}:`, e);
@@ -4539,31 +4598,31 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
     if (!msaData || !msaData.querySequence || !pdbSequence) {
         return msaData; // Return original if invalid input
     }
-    
+
     // Get UniProt sequence from MSA (query sequence has no gaps)
     const uniprotSequence = msaData.querySequence.toUpperCase();
     const pdbSeqUpper = pdbSequence.toUpperCase();
-    
+
     // If sequences already match (after removing gaps), no trimming needed
     if (uniprotSequence === pdbSeqUpper) {
         return msaData;
     }
-    
+
     // Build mapping: PDB sequence position (0-indexed) -> MSA column index
     const pdbToMsaCol = {};
-    
+
     // If we have SIFTS residue mappings, use them for precise alignment
     if (siftsMapping && siftsMapping.pdb_to_uniprot && Object.keys(siftsMapping.pdb_to_uniprot).length > 0) {
         // Map PDB sequence positions to UniProt positions, then to MSA columns
         // First, build UniProt position -> MSA column mapping
         // Query sequence has no gaps, so mapping is one-to-one
         const uniprotToMsaCol = {};
-        
+
         for (let msaCol = 0; msaCol < msaData.querySequence.length; msaCol++) {
             const uniprotPos = msaCol + 1; // 1-indexed UniProt position
             uniprotToMsaCol[uniprotPos] = msaCol;
         }
-        
+
         // Now map PDB sequence positions to MSA columns via UniProt
         // Use pdbResidueNumbers if available, otherwise assume sequential numbering starting from 1
         if (pdbResidueNumbers && pdbResidueNumbers.length === pdbSequence.length) {
@@ -4585,7 +4644,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
                 }
                 // If pdbResnum is not in mapping, it will be treated as an insertion (gap column)
             }
-            } else {
+        } else {
             // Fallback: assume PDB residue numbers are sequential starting from 1
             for (const [pdbResnumStr, uniprotResnum] of Object.entries(siftsMapping.pdb_to_uniprot)) {
                 const pdbResnum = parseInt(pdbResnumStr);
@@ -4605,10 +4664,10 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
         // Try to find where PDB sequence aligns with UniProt sequence
         const pdbInUniprot = uniprotSequence.indexOf(pdbSeqUpper);
         const uniprotInPdb = pdbSeqUpper.indexOf(uniprotSequence);
-        
+
         let msaStartOffset = 0;
         let pdbStartOffset = 0;
-        
+
         if (pdbInUniprot >= 0) {
             // PDB sequence is contained in UniProt sequence
             msaStartOffset = pdbInUniprot;
@@ -4617,16 +4676,16 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
             // UniProt sequence is contained in PDB sequence
             msaStartOffset = 0;
             pdbStartOffset = uniprotInPdb;
-                } else {
+        } else {
             // Try to align from the start, allowing for small mismatches
             msaStartOffset = 0;
             pdbStartOffset = 0;
         }
-        
+
         // Build mapping for positions that exist in both
         let msaPos = msaStartOffset;
         let pdbPos = pdbStartOffset;
-        
+
         for (let msaCol = 0; msaCol < msaData.querySequence.length && pdbPos < pdbSequence.length; msaCol++) {
             if (msaData.querySequence[msaCol] !== '-') {
                 if (msaPos < uniprotSequence.length && pdbPos < pdbSeqUpper.length) {
@@ -4644,25 +4703,25 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
             }
         }
     }
-    
+
     // Build trimmed MSA: iterate through PDB positions in order
     // For each PDB position:
     //   - If mapped to MSA: use that MSA column
     //   - If not mapped (PDB insertion): add gap column
     const trimmedSequences = [];
     const trimmedQuerySequence = [];
-    
+
     // Build trimmed sequences column by column, matching PDB sequence exactly
     for (let pdbIdx = 0; pdbIdx < pdbSequence.length; pdbIdx++) {
         const msaCol = pdbToMsaCol[pdbIdx];
-        
+
         if (msaCol !== undefined && msaCol < msaData.querySequence.length) {
             // This PDB position maps to an MSA column
             // Use the MSA character, but mutate query sequence to match PDB if different
             const msaChar = msaData.querySequence[msaCol];
             // For query sequence, always use PDB character to ensure exact match
             trimmedQuerySequence.push(pdbSequence[pdbIdx]);
-            
+
             // For other sequences, use MSA character (or gap if it's a gap in MSA)
             for (let seqIdx = 0; seqIdx < msaData.sequences.length; seqIdx++) {
                 if (!trimmedSequences[seqIdx]) {
@@ -4671,8 +4730,8 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
                         sequence: []
                     };
                 }
-                const seqChar = (msaCol < msaData.sequences[seqIdx].sequence.length) 
-                    ? msaData.sequences[seqIdx].sequence[msaCol] 
+                const seqChar = (msaCol < msaData.sequences[seqIdx].sequence.length)
+                    ? msaData.sequences[seqIdx].sequence[msaCol]
                     : '-';
                 trimmedSequences[seqIdx].sequence.push(seqChar);
             }
@@ -4680,7 +4739,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
             // This PDB position is an insertion (not in UniProt/MSA)
             // Add gap column for all MSA sequences, but use PDB character for query sequence
             trimmedQuerySequence.push(pdbSequence[pdbIdx]);
-            
+
             // Add gaps for all other sequences
             for (let seqIdx = 0; seqIdx < msaData.sequences.length; seqIdx++) {
                 if (!trimmedSequences[seqIdx]) {
@@ -4693,18 +4752,18 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
             }
         }
     }
-    
+
     // Convert sequence arrays to strings
     const trimmedSequencesFinal = trimmedSequences.map(seq => ({
         ...seq,
         sequence: seq.sequence.join('')
     }));
-    
+
     // Ensure the query sequence is included in the sequences array
     // The query sequence should match the trimmed query sequence exactly
     const trimmedQuerySeqStr = trimmedQuerySequence.join('');
     const queryIndex = msaData.queryIndex !== undefined ? msaData.queryIndex : 0;
-    
+
     // Update the query sequence in the sequences array to match the trimmed version
     // The query sequence entry should be updated to use the trimmed query sequence
     if (trimmedSequencesFinal.length > 0) {
@@ -4714,8 +4773,8 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
         } else {
             // If queryIndex is out of bounds, add query sequence at the beginning
             trimmedSequencesFinal.unshift({
-                name: trimmedSequencesFinal[0]?.name?.toLowerCase().includes('query') 
-                    ? trimmedSequencesFinal[0].name 
+                name: trimmedSequencesFinal[0]?.name?.toLowerCase().includes('query')
+                    ? trimmedSequencesFinal[0].name
                     : 'query',
                 sequence: trimmedQuerySeqStr,
                 identity: 1.0,
@@ -4731,7 +4790,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
             coverage: 1.0
         });
     }
-    
+
     // Recalculate identity and coverage for all sequences after trimming
     const trimmedQueryLength = trimmedQuerySeqStr.length;
     for (const seq of trimmedSequencesFinal) {
@@ -4751,7 +4810,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
                 }
             }
             seq.identity = total > 0 ? matches / total : 0;
-            
+
             // Calculate coverage (non-gap positions / query length)
             let nonGapCount = 0;
             for (let i = 0; i < seq.sequence.length; i++) {
@@ -4762,7 +4821,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
             seq.coverage = trimmedQueryLength > 0 ? nonGapCount / trimmedQueryLength : 0;
         }
     }
-    
+
     // Create trimmed MSA data object
     // Query sequence now exactly matches PDB sequence
     const trimmedMSA = {
@@ -4771,7 +4830,7 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
         sequences: trimmedSequencesFinal,
         queryIndex: queryIndex >= 0 && queryIndex < trimmedSequencesFinal.length ? queryIndex : 0
     };
-    
+
     return trimmedMSA;
 }
 
@@ -4782,31 +4841,31 @@ function trimMSAToPDB(msaData, pdbSequence, siftsMapping, pdbResidueNumbers = nu
  */
 function applySelectionToMSA() {
     if (!viewerApi?.renderer || !window.MSAViewer) return;
-    
+
     const renderer = viewerApi.renderer;
     const objectName = renderer.currentObjectName;
     if (!objectName) return;
-    
+
     const obj = renderer.objectsData[objectName];
     if (!obj || !obj.frames || obj.frames.length === 0) return;
     if (!obj.msa || !obj.msa.msasBySequence || !obj.msa.chainToSequence) return;
-    
+
     const frame = obj.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
     if (!frame || !frame.chains) return;
-    
+
     // Get selected positions
     const selection = renderer.getSelection();
     let selectedPositions = new Set();
-    
+
     // Check if we have an explicit selection mode
     const isExplicitMode = selection && selection.selectionMode === 'explicit';
-    
+
     if (selection && selection.positions && selection.positions.size > 0) {
         selectedPositions = new Set(selection.positions);
     } else if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
         selectedPositions = new Set(renderer.visibilityMask);
     }
-    
+
     // Handle empty selection in explicit mode (Hide All was clicked)
     if (isExplicitMode && selectedPositions.size === 0) {
         // Empty selection - dim everything
@@ -4816,7 +4875,7 @@ function applySelectionToMSA() {
         }
         return;
     }
-    
+
     // If no selection or default mode, all positions are selected (no dimming)
     if (selectedPositions.size === 0) {
         obj.msa.selectedPositions = null; // null means all selected (no dimming)
@@ -4825,7 +4884,7 @@ function applySelectionToMSA() {
         }
         return;
     }
-    
+
     // Determine allowed chains
     let allowedChains;
     if (selection && selection.chains && selection.chains.size > 0) {
@@ -4834,50 +4893,50 @@ function applySelectionToMSA() {
         // All chains allowed
         allowedChains = new Set(renderer.chains);
     }
-    
+
     // Map structure positions to MSA positions for each chain
     const msaSelectedPositions = new Map(); // chainId -> Set of MSA position indices
-    
+
     for (const [chainId, querySeq] of Object.entries(obj.msa.chainToSequence)) {
         if (!allowedChains.has(chainId)) continue;
-        
+
         const msaEntry = obj.msa.msasBySequence[querySeq];
         if (!msaEntry || !msaEntry.msaData) continue;
-        
+
         const msaData = msaEntry.msaData;
         const msaQuerySequence = msaData.querySequence; // Query sequence has no gaps (removed during parsing)
-        
+
         // Extract chain sequence from structure
         const chainSequences = extractChainSequences(frame);
         const chainSequence = chainSequences[chainId];
         if (!chainSequence) continue;
-        
+
         // Find representative positions for this chain (position_types === 'P')
         const chainPositions = []; // Array of position indices for this chain
         const positionCount = frame.chains.length;
-        
+
         for (let i = 0; i < positionCount; i++) {
             if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
                 chainPositions.push(i);
             }
         }
-        
+
         if (chainPositions.length === 0) continue;
-        
+
         // Sort positions by residue number to match sequence order
         chainPositions.sort((a, b) => {
             const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
             const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
             return residueNumA - residueNumB;
         });
-        
+
         // Map MSA positions to chain positions (one-to-one mapping)
         // Query sequence has no gaps, so mapping is straightforward
         const msaQueryUpper = msaQuerySequence.toUpperCase();
         const chainSeqUpper = chainSequence.toUpperCase();
         const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length);
         const chainMSASelectedPositions = new Set();
-        
+
         for (let i = 0; i < minLength; i++) {
             // Check if this MSA position matches the chain sequence position
             if (msaQueryUpper[i] === chainSeqUpper[i]) {
@@ -4888,16 +4947,16 @@ function applySelectionToMSA() {
                 }
             }
         }
-        
+
         if (chainMSASelectedPositions.size > 0) {
             msaSelectedPositions.set(chainId, chainMSASelectedPositions);
         }
     }
-    
+
     // Store selected MSA positions in object's MSA state (per-object storage)
     // Store even if empty to indicate no selection (for dimming all positions)
     obj.msa.selectedPositions = msaSelectedPositions;
-    
+
     // Trigger MSA viewer update (only updates visual dimming, no filtering)
     if (window.MSAViewer && window.MSAViewer.updateMSAViewSelectionState) {
         window.MSAViewer.updateMSAViewSelectionState();
@@ -4919,7 +4978,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     for (const file of files) {
         const nameLower = file.name.toLowerCase();
         if (file.name.startsWith('__MACOSX/') || file.name.startsWith('._')) continue;
-        
+
         // Check for state file extension
         if (nameLower.endsWith('.py2dmol.json')) {
             stateFiles.push(file);
@@ -4927,24 +4986,24 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             jsonFiles.push(file);
         } else if (nameLower.match(/\.(cif|pdb|ent)$/)) {
             structureFiles.push(file);
-        } else if (nameLower.endsWith('.a3m') || 
-                   nameLower.endsWith('.fasta') || 
-                   nameLower.endsWith('.fa') || 
-                   nameLower.endsWith('.fas') || 
-                   nameLower.endsWith('.sto')) {
+        } else if (nameLower.endsWith('.a3m') ||
+            nameLower.endsWith('.fasta') ||
+            nameLower.endsWith('.fa') ||
+            nameLower.endsWith('.fas') ||
+            nameLower.endsWith('.sto')) {
             msaFiles.push(file);
         } else if (nameLower.endsWith('.cst')) {
             contactFiles.push(file);
         }
     }
-    
+
     // Helper functions are now in global scope (defined above)
     // Check if PAE and MSA loading are enabled
     const loadPAECheckbox = document.getElementById('loadPAECheckbox');
     const loadMSACheckbox = document.getElementById('loadMSACheckbox');
     const loadPAE = loadPAECheckbox ? loadPAECheckbox.checked : true; // Default to enabled
     const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false; // Default to disabled
-    
+
     // Store MSA files for processing after structures are loaded
     // If there are no structure files, always process MSA files (MSA-only mode)
     // Otherwise, only process MSA files if the checkbox is checked
@@ -4956,7 +5015,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         try {
             const jsonText = await jsonFile.readAsync("text");
             const jsonObject = JSON.parse(jsonText);
-            
+
             // Check if this is a state file (has objects array)
             if (jsonObject.objects && Array.isArray(jsonObject.objects)) {
                 stateFiles.push(jsonFile);
@@ -4980,7 +5039,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             const stateFile = stateFiles[0];
             const jsonText = await stateFile.readAsync("text");
             const stateData = JSON.parse(jsonText);
-            
+
             if (stateData.objects && Array.isArray(stateData.objects)) {
                 await loadViewerState(stateData);
                 return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
@@ -4994,10 +5053,10 @@ async function processFiles(files, loadAsFrames, groupName = null) {
 
     // Handle metadata-only uploads (no structure files) - check BEFORE MSA-only
     if (structureFiles.length === 0) {
-        const hasMetadata = (loadMSA && msaFiles.length > 0) || 
-                           (loadPAE && jsonFiles.length > 0) || 
-                           contactFiles.length > 0;
-                
+        const hasMetadata = (loadMSA && msaFiles.length > 0) ||
+            (loadPAE && jsonFiles.length > 0) ||
+            contactFiles.length > 0;
+
         if (hasMetadata) {
             // Add metadata to existing object
             const result = await addMetadataToExistingObject({
@@ -5008,21 +5067,21 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 loadPAE
             });
             return result;
-            }
         }
-        
+    }
+
     // Handle MSA-only input (no structure files)
     if (structureFiles.length === 0 && msaFilesToProcess.length > 0) {
         setStatus('MSA-only uploads are not supported on this page. Please use msa.html for standalone MSAs.', true);
-                    return {
-                        objectsLoaded: 0,
-                        framesAdded: 0,
-                        structureCount: 0,
-                        paePairedCount: 0,
-                        isTrajectory: false
-                    };
-                }
-                
+        return {
+            objectsLoaded: 0,
+            framesAdded: 0,
+            structureCount: 0,
+            paePairedCount: 0,
+            isTrajectory: false
+        };
+    }
+
     // If we get here and still no structure files, throw error
     if (structureFiles.length === 0) {
         throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
@@ -5095,7 +5154,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         let paeData = null;
         const structBaseName = structFile.name.replace(/\.(cif|pdb|ent)$/i, '');
         const bestMatchJson = loadPAE ? getBestJsonMatch(structBaseName, jsonContentsMap) : null;
-        
+
         if (bestMatchJson && loadPAE) {
             paeData = extractPaeFromJSON(bestMatchJson);
             if (paeData) paePairedCount++;
@@ -5123,20 +5182,20 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             try {
                 const text = await contactFile.readAsync("text");
                 const contacts = parseContactsFile(text);
-                
+
                 if (contacts.length > 0) {
                     // Try to match contact file to structure by name
                     const contactBaseName = contactFile.name.replace(/\.cst$/i, '').toLowerCase();
                     const matchingObject = tempBatch.find(obj => {
                         const objNameLower = obj.name.toLowerCase();
-                        return objNameLower.includes(contactBaseName) || 
-                               contactBaseName.includes(objNameLower) ||
-                               structureFiles.some(sf => {
-                                   const sfBase = sf.name.replace(/\.(cif|pdb|ent)$/i, '').toLowerCase();
-                                   return contactBaseName.includes(sfBase) || sfBase.includes(contactBaseName);
-                               });
+                        return objNameLower.includes(contactBaseName) ||
+                            contactBaseName.includes(objNameLower) ||
+                            structureFiles.some(sf => {
+                                const sfBase = sf.name.replace(/\.(cif|pdb|ent)$/i, '').toLowerCase();
+                                return contactBaseName.includes(sfBase) || sfBase.includes(contactBaseName);
+                            });
                     });
-                    
+
                     if (matchingObject) {
                         // Clear any existing contacts and replace with new ones
                         matchingObject.contacts = contacts;
@@ -5145,7 +5204,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                         const lastObject = tempBatch[tempBatch.length - 1];
                         lastObject.contacts = contacts;
                     }
-                    
+
                     // Note: Cache will be invalidated when updateViewerFromGlobalBatch() processes the object
                 }
             } catch (e) {
@@ -5160,11 +5219,11 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     // Process MSA files AFTER structures are loaded (only if Load MSA is enabled)
     if (msaFilesToProcess.length > 0 && loadMSA) {
         // Get current object name (or use first available)
-        const currentObjectName = viewerApi?.renderer?.currentObjectName || 
-                                 (viewerApi?.renderer?.objectsData && 
-                                  Object.keys(viewerApi.renderer.objectsData).length > 0 ?
-                                  Object.keys(viewerApi.renderer.objectsData)[0] : null);
-        
+        const currentObjectName = viewerApi?.renderer?.currentObjectName ||
+            (viewerApi?.renderer?.objectsData &&
+                Object.keys(viewerApi.renderer.objectsData).length > 0 ?
+                Object.keys(viewerApi.renderer.objectsData)[0] : null);
+
         if (currentObjectName && viewerApi?.renderer) {
             const object = viewerApi.renderer.objectsData[currentObjectName];
             if (!object || !object.frames || object.frames.length === 0) {
@@ -5173,18 +5232,18 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 // Extract chain sequences from first frame
                 const firstFrame = object.frames[0];
                 const chainSequences = extractChainSequences(firstFrame);
-                
+
                 if (Object.keys(chainSequences).length === 0) {
                     setStatus("Warning: Could not extract sequences from structure. MSA matching skipped.", true);
                 } else {
                     // Parse all MSA files and extract query sequences
                     const msaDataList = [];
-                    
+
                     for (const msaFile of msaFilesToProcess) {
                         try {
                             const msaText = await msaFile.readAsync("text");
                             const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText) : null;
-                            
+
                             if (msaData && msaData.querySequence) {
                                 msaDataList.push({ msaData, filename: msaFile.name });
                             }
@@ -5192,23 +5251,23 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                             console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
                         }
                     }
-                    
+
                     if (msaDataList.length > 0) {
                         // Match MSAs to chains by sequence
-                        const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
-                        
+                        const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
+
                         // Store MSA data in object (consolidated function)
                         const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
-                        
+
                         if (msaObj && msaObj.availableChains.length > 0) {
                             // Load default chain's MSA
                             const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
                             if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
-                                const {msaData} = msaObj.msasBySequence[defaultChainSeq];
+                                const { msaData } = msaObj.msasBySequence[defaultChainSeq];
                                 if (window.MSAViewer) {
                                     loadMSADataIntoViewer(msaData, msaObj.defaultChain, currentObjectName);
                                     setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
-                                    
+
                                     // Update MSA container visibility and chain selector
                                     if (window.updateMSAContainerVisibility) {
                                         window.updateMSAContainerVisibility();
@@ -5238,7 +5297,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
 
 async function handleZipUpload(file, loadAsFrames) {
     setStatus(`Unzipping ${file.name} and collecting data...`);
-    
+
     try {
         const zip = new JSZip();
         const content = await zip.loadAsync(file);
@@ -5246,63 +5305,63 @@ async function handleZipUpload(file, loadAsFrames) {
         // Group files by directory (folder)
         // Key: directory path (empty string for root), Value: array of files in that directory
         const filesByDirectory = new Map();
-        
+
         content.forEach((relativePath, zipEntry) => {
             if (relativePath.startsWith('__MACOSX/') ||
                 relativePath.startsWith('._') ||
                 zipEntry.dir) return;
-            
+
             const normalizedPath = relativePath.replace(/^\/+|\/+$/g, ''); // Remove leading/trailing slashes
             const fileName = normalizedPath.split('/').pop(); // Get just the filename
-            
+
             // Check if it's a structural, JSON, or MSA file by extension
             const nameLower = fileName.toLowerCase();
             if (!nameLower.match(/\.(cif|pdb|ent|json|a3m)$/)) {
                 // Not a structural, JSON, or MSA file, skip it
                 return;
             }
-            
+
             // Determine directory path (empty string for root)
-            const dirPath = normalizedPath.includes('/') 
+            const dirPath = normalizedPath.includes('/')
                 ? normalizedPath.substring(0, normalizedPath.lastIndexOf('/'))
                 : ''; // Root directory
-            
+
             const fileEntry = {
                 name: fileName, // Use just the filename, not the full path
                 readAsync: (type) => zipEntry.async(type)
             };
-            
+
             // Group by directory
             if (!filesByDirectory.has(dirPath)) {
                 filesByDirectory.set(dirPath, []);
             }
             filesByDirectory.get(dirPath).push(fileEntry);
         });
-        
+
         // If no files found, throw error
         if (filesByDirectory.size === 0) {
             throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
         }
-        
+
         // Collect all MSA files from all directories (for AF3 structure)
         const allMSAFiles = [];
         for (const [dirPath, fileList] of filesByDirectory.entries()) {
             const msaFilesInDir = fileList.filter(f => {
                 const nameLower = f.name.toLowerCase();
-                return nameLower.endsWith('.a3m') || 
-                       nameLower.endsWith('.fasta') || 
-                       nameLower.endsWith('.fa') || 
-                       nameLower.endsWith('.fas') || 
-                       nameLower.endsWith('.sto');
+                return nameLower.endsWith('.a3m') ||
+                    nameLower.endsWith('.fasta') ||
+                    nameLower.endsWith('.fa') ||
+                    nameLower.endsWith('.fas') ||
+                    nameLower.endsWith('.sto');
             });
             allMSAFiles.push(...msaFilesInDir);
         }
-        
+
         // Determine which directories to process (for structure files)
         // Only go to subdirectories if no files found in root
         const rootFiles = filesByDirectory.get('');
         const directoriesToProcess = [];
-        
+
         if (rootFiles && rootFiles.length > 0) {
             // Root has files, only process root
             directoriesToProcess.push('');
@@ -5311,36 +5370,36 @@ async function handleZipUpload(file, loadAsFrames) {
             const subdirs = Array.from(filesByDirectory.keys()).filter(path => path !== '').sort();
             directoriesToProcess.push(...subdirs);
         }
-        
+
         // If still no directories to process, throw error
         if (directoriesToProcess.length === 0) {
             throw new Error(`No structural files (*.cif, *.pdb, *.ent) found.`);
         }
-        
+
         // Process each directory separately (structure files)
         let totalObjectsLoaded = 0;
         let totalFramesAdded = 0;
         let totalPaePairedCount = 0;
         let firstObjectName = null; // Track first object name for MSA association
-        
+
         for (const dirPath of directoriesToProcess) {
             const fileList = filesByDirectory.get(dirPath);
-            
+
             // Filter out MSA files from this directory (we'll process them separately)
             const structureFileList = fileList.filter(f => {
                 const nameLower = f.name.toLowerCase();
-                return !(nameLower.endsWith('.a3m') || 
-                        nameLower.endsWith('.fasta') || 
-                        nameLower.endsWith('.fa') || 
-                        nameLower.endsWith('.fas') || 
-                        nameLower.endsWith('.sto'));
+                return !(nameLower.endsWith('.a3m') ||
+                    nameLower.endsWith('.fasta') ||
+                    nameLower.endsWith('.fa') ||
+                    nameLower.endsWith('.fas') ||
+                    nameLower.endsWith('.sto'));
             });
-            
+
             // Skip if no structure files in this directory
             if (structureFileList.length === 0) continue;
-            
+
             // Determine group name: use directory name if in subdirectory, otherwise use ZIP filename
-            const groupName = dirPath 
+            const groupName = dirPath
                 ? cleanObjectName(dirPath.split('/').pop()) // Use folder name
                 : cleanObjectName(file.name.replace(/\.zip$/i, '')); // Use ZIP filename for root
 
@@ -5364,50 +5423,50 @@ async function handleZipUpload(file, loadAsFrames) {
 
             // Process structure files in this directory as a separate object
             const stats = await processFiles(structureFileList, loadAsFrames, groupName);
-            
+
             // Track first object name for MSA association
             if (!firstObjectName && viewerApi?.renderer?.currentObjectName) {
                 firstObjectName = viewerApi.renderer.currentObjectName;
             }
-            
+
             totalObjectsLoaded += (stats.isTrajectory ? 1 : stats.objectsLoaded);
             totalFramesAdded += stats.framesAdded;
             totalPaePairedCount += stats.paePairedCount;
         }
-        
+
         // Now process MSA files from all directories and associate with objects
         if (allMSAFiles.length > 0 && viewerApi?.renderer) {
             // Determine which object to associate MSA with
             // Use current object (last processed), or first object if available
             const targetObjectName = viewerApi.renderer.currentObjectName || firstObjectName;
-            
+
             if (targetObjectName) {
                 // Check if MSA loading is enabled
                 // For ZIP files with MSAs, always load them (checkbox only controls fetching from AlphaFold DB)
                 const loadMSACheckbox = document.getElementById('loadMSACheckbox');
                 const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false;
-                
+
                 // If checkbox is disabled and we have MSA files in the ZIP, load them anyway
                 if (!loadMSA && allMSAFiles.length > 0) {
                     console.log(`Loading ${allMSAFiles.length} MSA file(s) from ZIP (checkbox only controls AlphaFold DB fetching)`);
                 }
-                
+
                 // Use sequence-based matching for all MSA files (same as processFiles)
                 const object = viewerApi.renderer.objectsData[targetObjectName];
                 if (object && object.frames && object.frames.length > 0) {
                     // Extract chain sequences from first frame
                     const firstFrame = object.frames[0];
                     const chainSequences = extractChainSequences(firstFrame);
-                    
+
                     if (Object.keys(chainSequences).length > 0) {
                         // Parse all MSA files and extract query sequences
                         const msaDataList = [];
-                        
+
                         for (const msaFile of allMSAFiles) {
                             try {
                                 const msaText = await msaFile.readAsync("text");
                                 const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText) : null;
-                                
+
                                 if (msaData && msaData.querySequence) {
                                     msaDataList.push({ msaData, filename: msaFile.name });
                                 }
@@ -5415,23 +5474,23 @@ async function handleZipUpload(file, loadAsFrames) {
                                 console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
                             }
                         }
-                        
+
                         if (msaDataList.length > 0) {
                             // Match MSAs to chains by sequence
-                            const {chainToMSA, msaToChains} = matchMSAsToChains(msaDataList, chainSequences);
-                            
+                            const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
+
                             // Store MSA data in object (consolidated function)
                             const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
-                            
+
                             if (msaObj && msaObj.availableChains.length > 0) {
                                 // Load default chain's MSA
                                 const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
                                 if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
-                                    const {msaData} = msaObj.msasBySequence[defaultChainSeq];
+                                    const { msaData } = msaObj.msasBySequence[defaultChainSeq];
                                     if (window.MSAViewer) {
                                         loadMSADataIntoViewer(msaData, msaObj.defaultChain, targetObjectName);
                                         setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
-                                        
+
                                         // Update MSA container visibility and chain selector
                                         if (window.updateMSAContainerVisibility) {
                                             window.updateMSAContainerVisibility();
@@ -5513,21 +5572,21 @@ function handleFileUpload(event) {
         (async () => {
             try {
                 const stats = await processFiles(looseFiles, loadAsFrames);
-                
+
                 // If processFiles returned early due to state file, stats will indicate it
-                if (stats.objectsLoaded === 0 && stats.framesAdded === 0 && 
-                    looseFiles.some(f => f.name.toLowerCase().endsWith('.py2dmol.json') || 
-                                       f.name.toLowerCase().endsWith('.json'))) {
+                if (stats.objectsLoaded === 0 && stats.framesAdded === 0 &&
+                    looseFiles.some(f => f.name.toLowerCase().endsWith('.py2dmol.json') ||
+                        f.name.toLowerCase().endsWith('.json'))) {
                     // State file was loaded, status already set by loadViewerState
                     return;
                 }
-                
+
                 const objectsLoaded = stats.isTrajectory ? 1 : stats.objectsLoaded;
                 const sourceName = looseFiles.length > 1 ?
                     `${looseFiles.length} files` : looseFiles[0].name;
                 const paeMessage = stats.paePairedCount > 0 ?
                     ` (${stats.paePairedCount}/${stats.structureCount} PAE matrices paired)` : '';
-                
+
                 setStatus(
                     `Successfully loaded ${objectsLoaded} new object(s) from ${sourceName} ` +
                     `(${stats.framesAdded} total frame${stats.framesAdded !== 1 ? 's' : ''}${paeMessage}).`
@@ -5593,9 +5652,9 @@ function detectRedundantFields(frames) {
      * Returns object with field_name: value for redundant fields.
      */
     if (!frames || frames.length === 0) return {};
-    
+
     const redundant = {};
-    for (const field of ['chains', 'position_types']) {
+    for (const field of ['chains', 'position_types', 'bonds']) {
         // Find first non-null value
         let firstValue = null;
         for (const frame of frames) {
@@ -5604,19 +5663,19 @@ function detectRedundantFields(frames) {
                 break;
             }
         }
-        
+
         if (firstValue == null) continue;
-        
+
         // Check if all frames have same value (or null/undefined)
-        const allSame = frames.every(f => 
+        const allSame = frames.every(f =>
             f[field] == null || JSON.stringify(f[field]) === JSON.stringify(firstValue)
         );
-        
+
         if (allSame) {
             redundant[field] = firstValue;
         }
     }
-    
+
     return redundant;
 }
 
@@ -5625,36 +5684,37 @@ function saveViewerState() {
         setStatus("Error: No viewer data to save.", true);
         return;
     }
-    
+
     const renderer = viewerApi.renderer;
-    
+
     try {
         // Collect all objects
         const objects = [];
         for (const [objectName, objectData] of Object.entries(renderer.objectsData)) {
             const frameDataList = [];
-            
+
             // Collect all frame data
             for (const frame of objectData.frames) {
                 const frameData = {};
-                
+
                 // Round coordinates to 2 decimal places
                 if (frame.coords) {
-                    frameData.coords = frame.coords.map(coord => 
+                    frameData.coords = frame.coords.map(coord =>
                         coord.map(c => Math.round(c * 100) / 100)
                     );
                 }
-                
+
                 // Round pLDDT to integers
                 if (frame.plddts) {
                     frameData.plddts = frame.plddts.map(p => Math.round(p));
                 }
-                
+
                 // Copy other fields as-is (omit null/undefined)
                 if (frame.chains) frameData.chains = frame.chains;
                 if (frame.position_types) frameData.position_types = frame.position_types;
                 if (frame.residue_numbers) frameData.residue_numbers = frame.residue_numbers;
-                
+                if (frame.bonds) frameData.bonds = frame.bonds;
+
                 // Map modified residues to standard equivalents (e.g., MSE -> MET)
                 if (frame.position_names) {
                     frameData.position_names = frame.position_names.map(resName => {
@@ -5665,42 +5725,42 @@ function saveViewerState() {
                         return resName; // Fallback if function not available
                     });
                 }
-                
+
                 // Round PAE to 1 decimal place
                 if (frame.pae) {
-                    frameData.pae = frame.pae.map(row => 
+                    frameData.pae = frame.pae.map(row =>
                         row.map(val => Math.round(val * 10) / 10)
                     );
                 }
-                
+
                 frameDataList.push(frameData);
             }
-            
+
             // Detect redundant fields (same across all frames)
             const redundant = detectRedundantFields(frameDataList);
-            
+
             // Remove redundant fields from frames (only if identical)
             const frames = [];
             for (const frameData of frameDataList) {
-                const cleanedFrame = {...frameData};
+                const cleanedFrame = { ...frameData };
                 for (const field in redundant) {
-                    if (cleanedFrame[field] != null && 
+                    if (cleanedFrame[field] != null &&
                         JSON.stringify(cleanedFrame[field]) === JSON.stringify(redundant[field])) {
                         delete cleanedFrame[field];
                     }
                 }
                 frames.push(cleanedFrame);
             }
-            
+
             // Create object with redundant fields at object level
             const objToSave = {
                 name: objectName,
                 frames: frames,
-                hasPAE: checkObjectHasPAE({frames: frames})
+                hasPAE: checkObjectHasPAE({ frames: frames })
             };
             // Add redundant fields to object level (only if detected)
             Object.assign(objToSave, redundant);
-            
+
             // Add MSA data if it exists
             if (objectData.msa) {
                 // Check if it's sequence-based structure (new format for PDB MSAs)
@@ -5713,7 +5773,7 @@ function saveViewerState() {
                         defaultChain: objectData.msa.defaultChain || null,
                         msaToChains: objectData.msa.msaToChains || {}
                     };
-                    
+
                     // Save MSA data for each unique sequence
                     for (const [querySeq, msaEntry] of Object.entries(objectData.msa.msasBySequence)) {
                         if (msaEntry && msaEntry.msaData) {
@@ -5730,19 +5790,19 @@ function saveViewerState() {
                     }
                 }
             }
-            
+
             // Add contacts data if it exists
             if (objectData.contacts && Array.isArray(objectData.contacts) && objectData.contacts.length > 0) {
                 objToSave.contacts = objectData.contacts;
             }
-            
+
             objects.push(objToSave);
         }
-        
+
         // Get viewer state
         const orthoSlider = document.getElementById('orthoSlider');
         const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 1.0;
-        
+
         const viewerState = {
             current_object_name: renderer.currentObjectName,
             current_frame: renderer.currentFrame,
@@ -5759,23 +5819,23 @@ function saveViewerState() {
             ortho_slider_value: orthoSliderValue, // Save the normalized slider value (0.0-1.0)
             animation_speed: renderer.animationSpeed || 100
         };
-        
+
         // Save MSA state (current chain) - only if MSA data actually exists
         if (window.MSAViewer) {
             // Check if there's actual MSA data in the viewer
             const msaData = window.MSAViewer.getMSAData ? window.MSAViewer.getMSAData() : null;
             // Also check if any objects have MSA data
             const hasObjectMSA = Object.values(renderer.objectsData).some(obj => obj.msa != null);
-            
+
             // Only save msa_chain if there's actual MSA data
             if (msaData || hasObjectMSA) {
-            const currentChain = window.MSAViewer.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
-            if (currentChain) {
-                viewerState.msa_chain = currentChain;
+                const currentChain = window.MSAViewer.getCurrentChain ? window.MSAViewer.getCurrentChain() : null;
+                if (currentChain) {
+                    viewerState.msa_chain = currentChain;
                 }
             }
         }
-        
+
         // Get selection state for ALL objects
         const selectionsByObject = {};
         for (const [objectName, objectData] of Object.entries(renderer.objectsData)) {
@@ -5783,76 +5843,39 @@ function saveViewerState() {
                 selectionsByObject[objectName] = {
                     positions: Array.from(objectData.selectionState.positions),
                     chains: Array.from(objectData.selectionState.chains),
-                    pae_boxes: objectData.selectionState.paeBoxes.map(box => ({...box})),
+                    pae_boxes: objectData.selectionState.paeBoxes.map(box => ({ ...box })),
                     selection_mode: objectData.selectionState.selectionMode
                 };
             }
         }
-        
+
         // Create state object
         const stateData = {
             objects: objects,
             viewer_state: viewerState,
             selections_by_object: selectionsByObject
         };
-        
+
         // Create filename with timestamp
         const now = new Date();
         const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
         const jsonFilename = `py2dmol_state_${timestamp}.json`;
-        const zipFilename = `py2dmol_state_${timestamp}.zip`;
-        
+
         // Create JSON string
         const jsonString = JSON.stringify(stateData, null, 2);
-        
-        // Check if JSZip is available
-        if (typeof JSZip !== 'undefined') {
-            // Create zip file
-            const zip = new JSZip();
-            zip.file(jsonFilename, jsonString);
-            
-            // Generate zip blob with lower compression (level 1 = faster, less compression)
-            zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } })
-                .then((blob) => {
-                    // Download zip file
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = zipFilename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    
-                    setStatus(`State saved to ${zipFilename}`);
-                })
-                .catch((error) => {
-                    console.error("Failed to create zip file:", error);
-                    // Fallback to JSON download
-                    const blob = new Blob([jsonString], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = jsonFilename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    setStatus(`State saved to ${jsonFilename} (zip failed, saved as JSON)`);
-                });
-        } else {
-            // Fallback to JSON download if JSZip not available
-            const blob = new Blob([jsonString], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = jsonFilename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            setStatus(`State saved to ${jsonFilename}`);
-        }
+
+        // Download JSON file
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = jsonFilename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        setStatus(`State saved to ${jsonFilename}`);
     } catch (e) {
         console.error("Failed to save state:", e);
         setStatus(`Error saving state: ${e.message}`, true);
@@ -5871,19 +5894,19 @@ async function loadViewerState(stateData) {
         setStatus("Error: Viewer not initialized.", true);
         return;
     }
-    
+
     const renderer = viewerApi.renderer;
-    
+
     try {
         // Clear existing objects
         renderer.clearAllObjects();
-        
+
         // Ensure viewer container is visible
         const viewerContainer = document.getElementById('viewer-container');
         const topPanelContainer = document.getElementById('sequence-viewer-container');
         if (viewerContainer) viewerContainer.style.display = 'flex';
         if (topPanelContainer) topPanelContainer.style.display = 'block';
-        
+
         // Restore objects
         if (stateData.objects && Array.isArray(stateData.objects) && stateData.objects.length > 0) {
             for (const objData of stateData.objects) {
@@ -5891,24 +5914,25 @@ async function loadViewerState(stateData) {
                     console.warn("Skipping invalid object in state file:", objData);
                     continue;
                 }
-                
+
                 // Get object-level defaults (may be undefined)
                 const objChains = objData.chains;
                 const objPositionTypes = objData.position_types;
-                
+                const objBonds = objData.bonds;
+
                 renderer.addObject(objData.name);
-                
+
                 // Temporarily disable auto frame setting during batch load
                 const wasPlaying = renderer.isPlaying;
                 renderer.isPlaying = true; // Prevent setFrame from being called during addFrame
-                
+
                 for (const frameData of objData.frames) {
                     // Robust resolution: frame-level > object-level > undefined (will use defaults)
                     if (!frameData.coords || frameData.coords.length === 0) {
                         console.warn("Skipping frame with no coordinates");
                         continue;
                     }
-                    
+
                     // Resolve with fallbacks (undefined will trigger defaults in addFrame/setCoords)
                     const resolvedFrame = {
                         coords: frameData.coords,
@@ -5917,16 +5941,17 @@ async function loadViewerState(stateData) {
                         plddts: frameData.plddts,  // undefined if missing (will use inheritance or default)
                         pae: frameData.pae,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
-                        residue_numbers: frameData.residue_numbers  // undefined if missing (will default)
+                        residue_numbers: frameData.residue_numbers,  // undefined if missing (will default)
+                        bonds: frameData.bonds || objBonds  // undefined if both missing
                     };
-                    
+
                     renderer.addFrame(resolvedFrame, objData.name);
                 }
-                
+
                 // Restore playing state
                 renderer.isPlaying = wasPlaying;
-                
-                
+
+
                 // Store MSA data if present
                 if (objData.msa) {
                     if (!renderer.objectsData[objData.name]) {
@@ -5942,7 +5967,7 @@ async function loadViewerState(stateData) {
                             defaultChain: objData.msa.defaultChain || null,
                             msaToChains: objData.msa.msaToChains || {}
                         };
-                        
+
                         // Restore MSA data for each unique sequence
                         for (const [querySeq, msaEntry] of Object.entries(objData.msa.msasBySequence)) {
                             if (msaEntry && msaEntry.msaData) {
@@ -5953,15 +5978,15 @@ async function loadViewerState(stateData) {
                                     queryLength: msaEntry.msaData.queryLength,
                                     queryIndex: msaEntry.msaData.queryIndex !== undefined ? msaEntry.msaData.queryIndex : 0
                                 };
-                                
+
                                 // Set sequencesOriginal for filtering (use sequences if not saved)
                                 restoredMSAData.sequencesOriginal = msaEntry.msaData.sequencesOriginal || msaEntry.msaData.sequences;
-                                
+
                                 renderer.objectsData[objData.name].msa.msasBySequence[querySeq] = {
                                     msaData: restoredMSAData,
                                     chains: msaEntry.chains || []
                                 };
-                                
+
                                 // Recompute properties (frequencies, logOdds, positionIndex)
                                 if (typeof computeMSAProperties === 'function') {
                                     computeMSAProperties(restoredMSAData);
@@ -5970,7 +5995,7 @@ async function loadViewerState(stateData) {
                         }
                     }
                 }
-                
+
                 // Store contacts data if present
                 if (objData.contacts && Array.isArray(objData.contacts) && objData.contacts.length > 0) {
                     if (!renderer.objectsData[objData.name]) {
@@ -5985,11 +6010,11 @@ async function loadViewerState(stateData) {
             setStatus("Error: No valid objects found in state file.", true);
             return;
         }
-        
+
         // Restore viewer state
         if (stateData.viewer_state) {
             const vs = stateData.viewer_state;
-            
+
             // Set current object first (before setting frame)
             if (vs.current_object_name && renderer.objectsData[vs.current_object_name]) {
                 renderer.currentObjectName = vs.current_object_name;
@@ -6004,17 +6029,17 @@ async function loadViewerState(stateData) {
                     renderer.objectSelect.value = firstObjName;
                 }
             }
-            
+
             // Restore rotation
             if (vs.rotation_matrix && Array.isArray(vs.rotation_matrix)) {
                 renderer.rotationMatrix = vs.rotation_matrix;
             }
-            
+
             // Restore zoom
             if (typeof vs.zoom === 'number') {
                 renderer.zoom = vs.zoom;
             }
-            
+
             // Restore color mode
             if (vs.color_mode) {
                 const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
@@ -6029,7 +6054,7 @@ async function loadViewerState(stateData) {
                     }
                 }
             }
-            
+
             // Restore line width
             if (typeof vs.line_width === 'number') {
                 renderer.lineWidth = vs.line_width;
@@ -6039,7 +6064,7 @@ async function loadViewerState(stateData) {
                     lineWidthSlider.dispatchEvent(new Event('input'));
                 }
             }
-            
+
             // Restore shadow
             if (typeof vs.shadow_enabled === 'boolean') {
                 renderer.shadowEnabled = vs.shadow_enabled;
@@ -6049,7 +6074,7 @@ async function loadViewerState(stateData) {
                     shadowCheckbox.dispatchEvent(new Event('change'));
                 }
             }
-            
+
             // Restore depth
             if (typeof vs.depth_enabled === 'boolean') {
                 renderer.depthEnabled = vs.depth_enabled;
@@ -6059,7 +6084,7 @@ async function loadViewerState(stateData) {
                     depthCheckbox.dispatchEvent(new Event('change'));
                 }
             }
-            
+
             // Restore outline mode
             if (typeof vs.outline_mode === 'string' && ['none', 'partial', 'full'].includes(vs.outline_mode)) {
                 renderer.outlineMode = vs.outline_mode;
@@ -6069,7 +6094,7 @@ async function loadViewerState(stateData) {
                 renderer.outlineMode = vs.outline_enabled ? 'full' : 'none';
                 renderer.updateOutlineButtonStyle();
             }
-            
+
             // Restore colorblind mode
             if (typeof vs.colorblind_mode === 'boolean') {
                 renderer.colorblindMode = vs.colorblind_mode;
@@ -6079,23 +6104,23 @@ async function loadViewerState(stateData) {
                     colorblindCheckbox.dispatchEvent(new Event('change'));
                 }
             }
-            
+
             // Restore pastel level
             if (typeof vs.pastel_level === 'number') {
                 renderer.pastelLevel = vs.pastel_level;
             }
-            
+
             // Restore ortho slider value (this will set perspective_enabled and focal_length correctly)
             if (typeof vs.ortho_slider_value === 'number') {
                 const orthoSlider = document.getElementById('orthoSlider');
                 if (orthoSlider) {
                     let normalizedValue = vs.ortho_slider_value;
-                    
+
                     // Handle old state files that saved 50-200 range
                     if (normalizedValue > 1.0) {
                         normalizedValue = (normalizedValue - 50) / 150;
                     }
-                    
+
                     // Clamp value to valid range (0.0-1.0)
                     normalizedValue = Math.max(0.0, Math.min(1.0, normalizedValue));
                     orthoSlider.value = normalizedValue;
@@ -6111,7 +6136,7 @@ async function loadViewerState(stateData) {
                     const object = renderer.currentObjectName ? renderer.objectsData[renderer.currentObjectName] : null;
                     const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
                     const multiplier = vs.focal_length / maxExtent;
-                    
+
                     let normalizedValue = 0.5; // default
                     if (multiplier >= 20.0) {
                         // Orthographic mode
@@ -6120,19 +6145,19 @@ async function loadViewerState(stateData) {
                         // Perspective mode - reverse the calculation
                         normalizedValue = (multiplier - 1.5) / (20.0 - 1.5);
                     }
-                    
+
                     normalizedValue = Math.max(0.0, Math.min(1.0, normalizedValue));
                     orthoSlider.value = normalizedValue;
                     orthoSlider.dispatchEvent(new Event('input'));
                 }
             }
-            
+
             // Restore animation speed
             if (typeof vs.animation_speed === 'number') {
                 renderer.animationSpeed = vs.animation_speed;
             }
         }
-        
+
         // Restore selection states for ALL objects BEFORE setting frame
         // This ensures selection states are available when _switchToObject is called
         if (stateData.selections_by_object) {
@@ -6148,13 +6173,13 @@ async function loadViewerState(stateData) {
                             selectionMode: 'default'
                         };
                     }
-                    
+
                     // Restore the saved selection state
                     let positions = new Set();
                     if (ss.positions !== undefined && Array.isArray(ss.positions)) {
                         positions = new Set(ss.positions.filter(a => typeof a === 'number' && a >= 0));
                     }
-                    
+
                     renderer.objectsData[objectName].selectionState = {
                         positions: positions,
                         chains: new Set(ss.chains || []),
@@ -6164,7 +6189,7 @@ async function loadViewerState(stateData) {
                 }
             }
         }
-        
+
         // Set frame (this triggers render and PAE update)
         // Use setTimeout to ensure objects are fully loaded and DOM is ready
         setTimeout(() => {
@@ -6177,27 +6202,27 @@ async function loadViewerState(stateData) {
                         renderer.objectSelect.value = firstObjName;
                     }
                 }
-                
+
                 // Restore the current object's selection to the selectionModel
                 // This must happen before setFrame so the selection is applied correctly
                 if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]?.selectionState) {
                     renderer._switchToObject(renderer.currentObjectName); // This will restore the selection
                 }
-                
+
                 // Verify object exists before setting frame
                 if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
                     const obj = renderer.objectsData[renderer.currentObjectName];
                     if (obj.frames && obj.frames.length > 0) {
                         if (stateData.viewer_state) {
                             const vs = stateData.viewer_state;
-                            const targetFrame = (typeof vs.current_frame === 'number' && vs.current_frame >= 0 && vs.current_frame < obj.frames.length) 
-                                ? vs.current_frame 
+                            const targetFrame = (typeof vs.current_frame === 'number' && vs.current_frame >= 0 && vs.current_frame < obj.frames.length)
+                                ? vs.current_frame
                                 : 0;
                             renderer.setFrame(targetFrame);
                         } else {
                             renderer.setFrame(0);
                         }
-                        
+
                         // Explicitly ensure PAE data is set if available
                         // (setFrame should handle this, but we verify here)
                         if (renderer.paeRenderer && obj.frames && obj.frames.length > 0) {
@@ -6207,12 +6232,12 @@ async function loadViewerState(stateData) {
                                 renderer.paeRenderer.setData(currentFrameData.pae);
                             }
                         }
-                        
+
                         // Rebuild sequence view and update UI first
                         buildSequenceView();
                         // (no defaulting here — renderer already restored the object's saved selection)
                         updateObjectNavigationButtons();
-                        
+
                         // Restore MSA state and load MSA data into viewer
                         const currentObj = renderer.objectsData[renderer.currentObjectName];
                         if (currentObj && currentObj.msa && currentObj.msa.msasBySequence && currentObj.msa.chainToSequence) {
@@ -6223,33 +6248,33 @@ async function loadViewerState(stateData) {
                             } else {
                                 chainToLoad = currentObj.msa.defaultChain || currentObj.msa.availableChains[0];
                             }
-                            
+
                             if (chainToLoad && currentObj.msa.chainToSequence[chainToLoad]) {
                                 const querySeq = currentObj.msa.chainToSequence[chainToLoad];
                                 const msaEntry = currentObj.msa.msasBySequence[querySeq];
-                                
-                                    if (msaEntry && msaEntry.msaData && window.MSAViewer) {
-                                        // Load MSA data into viewer
-                                        loadMSADataIntoViewer(msaEntry.msaData, chainToLoad, renderer.currentObjectName);
+
+                                if (msaEntry && msaEntry.msaData && window.MSAViewer) {
+                                    // Load MSA data into viewer
+                                    loadMSADataIntoViewer(msaEntry.msaData, chainToLoad, renderer.currentObjectName);
                                 }
                             }
                         }
-                        
+
                         // Trigger object change handler to ensure UI is fully updated
                         if (renderer.objectSelect) {
                             handleObjectChange();
                         }
-                        
+
                         // Ensure MSA container visibility is updated after loading state
                         if (window.updateMSAContainerVisibility) {
                             window.updateMSAContainerVisibility();
                         }
-                        
-                        
-                        
+
+
+
                         // Force a render to ensure everything is displayed
                         renderer.render();
-                        
+
                         setStatus("State loaded successfully.");
                     } else {
                         setStatus("Error: Object has no frames.", true);
@@ -6271,3 +6296,4 @@ async function loadViewerState(stateData) {
 
 // Expose saveViewerState globally for Python interface compatibility
 window.saveViewerState = saveViewerState;
+

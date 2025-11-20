@@ -1,20 +1,24 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>2Dmol</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- JSZip library for handling AlphaFold zip outputs -->
+    <!-- JSZip library for handling zip file uploads -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <!-- Numeric.js for SVD calculations -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
     <!-- canvas2svg is now integrated into viewer-mol.js -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJd4gYm4zQ6UvE6j3v/3Tf7U7T2Y9p6gJzU0bW5V6f6G6X6b6W6w6+g6w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+        xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLMDJd4gYm4zQ6UvE6j3v/3Tf7U7T2Y9p6gJzU0bW5V6f6G6X6b6W6w6+g6w=="
+        crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link rel="stylesheet" href="web/style.css">
 </head>
+
 <body class="bg-gray-50 text-gray-800 font-sans p-8">
-    
+
     <!-- Global Drop Overlay Element -->
     <div id="global-drop-overlay">
         <p><i class="fa-solid fa-cloud-arrow-up mr-3"></i> Drop File Anywhere to Load</p>
@@ -22,7 +26,7 @@
     <!-- End Global Drop Overlay -->
 
     <!-- Total width (600 + 8 + 340 = 948px) -->
-    <div class="mx-auto" style="width: 948px; position: relative;"> 
+    <div class="mx-auto" style="width: 948px; position: relative;">
         <div style="position: absolute; top: 0; right: 0; display: flex; gap: 8px;">
             <button id="saveStateButton" class="btn btn-primary">
                 <i class="fa-solid fa-floppy-disk"></i>
@@ -34,18 +38,21 @@
             </button>
         </div>
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">2Dmol</h1>
-        <p class="text-gray-500 mb-4">Load a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID) to visualize protein structures.</p>
+        <p class="text-gray-500 mb-4">Load a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID)
+            to visualize protein structures.</p>
 
         <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
-            
+
             <!-- Use table for reliable layout -->
             <table style="width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 0;">
                 <tr>
                     <!-- Left Column: Fetch + Load -->
                     <td style="width: 50%; padding-right: 12px; vertical-align: top;">
-                        
+
                         <!-- Fetch Section -->
-                        <label for="fetch-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">PDB (4-char) or UniProt ID</label>
+                        <label for="fetch-id"
+                            style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">PDB
+                            (4-char) or UniProt ID</label>
                         <div id="fetch-input-container" style="margin-bottom: 8px;">
                             <input type="text" id="fetch-id" placeholder="e.g., 4HHB or P0A8I3">
                             <button id="fetch-btn" class="btn btn-primary">Fetch</button>
@@ -54,23 +61,28 @@
                         <!-- Load Section -->
                         <div style="display: flex; gap: 8px; align-items: flex-start;">
                             <div style="flex: 1;">
-                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Load Files</label>
+                                <label
+                                    style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Load
+                                    Files</label>
                                 <div id="uploadControlsContainer" style="display: flex; gap: 8px;">
-                                     <!-- Load Button (Triggers hidden input) -->
-                                     <button id="upload-button" class="btn btn-secondary">
-                                         <i class="fa-solid fa-file-arrow-up"></i>
-                                         <span>Choose Files</span>
-                                     </button>
-                                     
-                                     <input type="file" id="file-upload" accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto" multiple class="hidden">
+                                    <!-- Load Button (Triggers hidden input) -->
+                                    <button id="upload-button" class="btn btn-secondary">
+                                        <i class="fa-solid fa-file-arrow-up"></i>
+                                        <span>Choose Files</span>
+                                    </button>
+
+                                    <input type="file" id="file-upload"
+                                        accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto" multiple
+                                        class="hidden">
                                 </div>
                             </div>
-                            
+
                             <!-- Separator Bar -->
                             <div style="width: 1px; background: #e5e7eb; align-self: stretch;"></div>
-                            
+
                             <div style="flex: 1;">
-                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
+                                <label
+                                    style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
                                 <div style="display: flex; gap: 8px;">
                                     <button class="btn btn-success" data-example-value="Q5VSL9">
                                         <span>Q5VSL9</span>
@@ -86,55 +98,39 @@
                         </div>
 
                     </td>
-                    
+
                     <!-- Right Column: Options (split into two columns) -->
                     <td style="vertical-align: top;">
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Options</label>
-                        
+                        <label
+                            style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Options</label>
+
                         <div style="display: flex; gap: 16px;">
                             <!-- Left Column: Existing Options -->
                             <div class="upload-options-section" style="margin-bottom: 0; flex: 1;">
-                                
+
                                 <!-- Load as Frames Toggle -->
                                 <div class="upload-toggle-item">
                                     <label class="switch">
-                                        <input type="checkbox" id="loadAsFramesCheckbox" checked> 
+                                        <input type="checkbox" id="loadAsFramesCheckbox" checked>
                                         <span class="slider-toggle"></span>
                                     </label>
                                     <label for="loadAsFramesCheckbox" class="upload-toggle-label">Load as Frames</label>
                                 </div>
-                                
+
                                 <!-- Align Frames Toggle -->
                                 <div class="upload-toggle-item">
                                     <label class="switch">
-                                        <input type="checkbox" id="alignFramesCheckbox" checked> 
+                                        <input type="checkbox" id="alignFramesCheckbox" checked>
                                         <span class="slider-toggle"></span>
                                     </label>
                                     <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
                                 </div>
 
-                                <!-- Bioassembly Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="biounitCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="biounitCheckbox" class="upload-toggle-label">Load Biounit</label>
-                                </div>
-
-                                <!-- Ignore Ligands Toggle -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="ignoreLigandsCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="ignoreLigandsCheckbox" class="upload-toggle-label">Ignore Ligands</label>
-                                </div>
                             </div>
-                            
+
                             <!-- Right Column: New Options -->
                             <div class="upload-options-section" style="margin-bottom: 0; flex: 1;">
-                                
+
                                 <!-- Load PAE Toggle -->
                                 <div class="upload-toggle-item">
                                     <label class="switch">
@@ -143,7 +139,7 @@
                                     </label>
                                     <label for="loadPAECheckbox" class="upload-toggle-label">Load PAE</label>
                                 </div>
-                                
+
                                 <!-- Load MSA Toggle -->
                                 <div class="upload-toggle-item">
                                     <label class="switch">
@@ -152,20 +148,38 @@
                                     </label>
                                     <label for="loadMSACheckbox" class="upload-toggle-label">Load MSA</label>
                                 </div>
+
+                                <!-- Load Biounit Toggle -->
+                                <div class="upload-toggle-item">
+                                    <label class="switch">
+                                        <input type="checkbox" id="biounitCheckbox" checked>
+                                        <span class="slider-toggle"></span>
+                                    </label>
+                                    <label for="biounitCheckbox" class="upload-toggle-label">Load Biounit</label>
+                                </div>
+
+                                <!-- Load Ligands Toggle (reversed from Ignore Ligands) -->
+                                <div class="upload-toggle-item">
+                                    <label class="switch">
+                                        <input type="checkbox" id="loadLigandsCheckbox" checked>
+                                        <span class="slider-toggle"></span>
+                                    </label>
+                                    <label for="loadLigandsCheckbox" class="upload-toggle-label">Load Ligands</label>
+                                </div>
                             </div>
                         </div>
                     </td>
                 </tr>
             </table>
-            
+
             <!-- Status message below the table -->
             <div id="status-message" style="margin-top: 12px;"></div>
         </div>
 
         <div id="viewer-container" class="py2dmol-viewer-instance" style="display: none;">
-            
+
             <div id="mainContainer">
-                
+
                 <div id="viewerColumn">
                     <div id="canvasContainer" class="container-box">
                         <canvas id="canvas"></canvas>
@@ -173,7 +187,8 @@
                         <div class="resize-handle"></div>
                     </div>
                     <div id="controlsContainer" class="container-box">
-                        <button id="playButton" class="btn btn-primary btn-min-width-sm"><i class="fa-solid fa-play"></i></button>
+                        <button id="playButton" class="btn btn-primary btn-min-width-sm"><i
+                                class="fa-solid fa-play"></i></button>
                         <input type="range" id="frameSlider" min="0" max="0" value="0">
                         <span id="frameCounter">Frame: 0 / 0</span>
                         <select id="speedSelect">
@@ -183,61 +198,66 @@
                         </select>
                     </div>
                 </div>
-                
+
                 <!-- Right side panels container -->
                 <div id="rightPanelsContainer">
                     <div id="rightPanelContainer" class="container-box">
-                        
+
                         <!-- Toolbar (two rows) -->
                         <div id="navigationControls" class="toolbar" style="margin-bottom: 4px;">
-                          <div class="toolbar-row">
-                            <label class="btn-toggle btn-flex" id="orientToggle" title="Orient to best view">
-                              <input type="checkbox" style="display: none;">
-                              <span><i class="fa-solid fa-crosshairs"></i>Orient</span>
-                            </label>
+                            <div class="toolbar-row">
+                                <label class="btn-toggle btn-flex" id="orientToggle" title="Orient to best view">
+                                    <input type="checkbox" style="display: none;">
+                                    <span><i class="fa-solid fa-crosshairs"></i>Orient</span>
+                                </label>
 
-                            <!-- Rotate: checkbox styled as a button -->
-                            <label class="btn-toggle btn-flex" id="rotateToggle" title="Toggle auto-rotation">
-                              <input type="checkbox" id="rotationCheckbox">
-                              <span><i class="fa-solid fa-rotate"></i>Rotate</span>
-                            </label>
-                          </div>
+                                <!-- Rotate: checkbox styled as a button -->
+                                <label class="btn-toggle btn-flex" id="rotateToggle" title="Toggle auto-rotation">
+                                    <input type="checkbox" id="rotationCheckbox">
+                                    <span><i class="fa-solid fa-rotate"></i>Rotate</span>
+                                </label>
+                            </div>
 
-                          <!-- New second row -->
-                          <div class="toolbar-row">
-                            <label class="btn-toggle btn-flex btn-small" title="Toggle shadow">
-                              <input type="checkbox" id="shadowEnabledCheckbox" checked>
-                              <span>Shadow</span>
-                            </label>
+                            <!-- New second row -->
+                            <div class="toolbar-row">
+                                <label class="btn-toggle btn-flex btn-small" title="Toggle shadow">
+                                    <input type="checkbox" id="shadowEnabledCheckbox" checked>
+                                    <span>Shadow</span>
+                                </label>
 
-                            <label class="btn-toggle btn-flex btn-small" title="Toggle depth-based coloring">
-                              <input type="checkbox" id="depthCheckbox">
-                              <span>Depth</span>
-                            </label>
+                                <label class="btn-toggle btn-flex btn-small" title="Toggle depth-based coloring">
+                                    <input type="checkbox" id="depthCheckbox">
+                                    <span>Depth</span>
+                                </label>
 
-                            <button id="outlineModeButton" class="btn-toggle btn-flex btn-small" title="Cycle outline mode: none → partial → full">
-                              <span>Outline</span>
-                            </button>
-                            
-                            <button id="recordButton" class="btn-toggle btn-flex btn-icon-only btn-small" title="Record animation to video file">
-                              <span>
-                                <i class="fa-solid fa-video"></i>
-                              </span>
-                            </button>
-                            
-                            <button id="saveSvgButton" class="btn-toggle btn-flex btn-icon-only btn-small" title="Save as SVG">
-                              <span>
-                                <i class="fa-solid fa-camera"></i>
-                              </span>
-                            </button>
-                          </div>
-                        </div>   
+                                <button id="outlineModeButton" class="btn-toggle btn-flex btn-small"
+                                    title="Cycle outline mode: none → partial → full">
+                                    <span>Outline</span>
+                                </button>
+
+                                <button id="recordButton" class="btn-toggle btn-flex btn-icon-only btn-small"
+                                    title="Record animation to video file">
+                                    <span>
+                                        <i class="fa-solid fa-video"></i>
+                                    </span>
+                                </button>
+
+                                <button id="saveSvgButton" class="btn-toggle btn-flex btn-icon-only btn-small"
+                                    title="Save as SVG">
+                                    <span>
+                                        <i class="fa-solid fa-camera"></i>
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
 
                         <div id="styleAppearanceContainer" class="control-group">
-                            
+
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="colorSelect" class="font-medium text-gray-700" style="font-size: 12px;">Color:</label>
-                                <select id="colorSelect" style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
+                                <label for="colorSelect" class="font-medium text-gray-700"
+                                    style="font-size: 12px;">Color:</label>
+                                <select id="colorSelect"
+                                    style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
                                     <option value="auto">Auto</option>
                                     <option value="plddt">pLDDT</option>
                                     <option value="rainbow">Rainbow</option>
@@ -252,137 +272,166 @@
 
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
                                 <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="lineWidthSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Width:</label>
-                                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1" style="flex: 1; min-width: 0;">
+                                    <label for="lineWidthSlider" class="font-medium text-gray-700"
+                                        style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Width:</label>
+                                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1"
+                                        style="flex: 1; min-width: 0;">
                                 </div>
                                 <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="outlineWidthSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Outline:</label>
-                                    <input type="range" id="outlineWidthSlider" min="0" max="10" value="3.0" step="0.1" style="flex: 1; min-width: 0;">
+                                    <label for="outlineWidthSlider" class="font-medium text-gray-700"
+                                        style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Outline:</label>
+                                    <input type="range" id="outlineWidthSlider" min="0" max="10" value="3.0" step="0.1"
+                                        style="flex: 1; min-width: 0;">
                                 </div>
                             </div>
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
                                 <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="orthoSlider" class="font-medium text-gray-700" style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
-                                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01" style="flex: 1; min-width: 0;">
+                                    <label for="orthoSlider" class="font-medium text-gray-700"
+                                        style="min-width: 35px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
+                                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01"
+                                        style="flex: 1; min-width: 0;">
                                 </div>
                             </div>
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="objectSelect" class="font-medium text-gray-700" style="font-size: 12px;">Object:</label>
-                                <select id="objectSelect" style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
+                                <label for="objectSelect" class="font-medium text-gray-700"
+                                    style="font-size: 12px;">Object:</label>
+                                <select id="objectSelect"
+                                    style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
                                     <!-- Initially empty -->
                                 </select>
                             </div>
-                                                    
+
                         </div>
 
 
                     </div>
-                    
+
                     <!-- PAE Canvas Container -->
                     <div id="paeContainer" class="container-box" style="display: none;">
                         <canvas id="paeCanvas" style="cursor: crosshair;"></canvas>
                     </div>
                 </div>
-            </div>    
-            
+            </div>
+
         </div>
 
         <!-- Sequence container with box and toggle -->
-        <div id="sequence-viewer-container" class="container-box sequence-section-container" style="width: 948px; display: none;">
-          <div id="sequenceHeader" class="sequence-header">
-            <!-- Left side: Mode dropdown -->
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <select id="sequenceModeSelect" class="btn btn-grey btn-small" style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
-                <option value="sequence" selected>Sequence</option>
-                <option value="chain">Chain</option>
-              </select>
+        <div id="sequence-viewer-container" class="container-box sequence-section-container"
+            style="width: 948px; display: none;">
+            <div id="sequenceHeader" class="sequence-header">
+                <!-- Left side: Mode dropdown -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <select id="sequenceModeSelect" class="btn btn-grey btn-small"
+                        style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
+                        <option value="sequence" selected>Sequence</option>
+                        <option value="chain">Chain</option>
+                    </select>
+                </div>
+
+                <!-- Action buttons aligned to the right -->
+                <div class="sequence-actions" style="margin-left: auto;">
+                    <button id="selectAllResidues" class="btn btn-grey btn-small">Show all</button>
+                    <button id="clearAllResidues" class="btn btn-grey btn-small">Hide all</button>
+                    <button id="copySelectionButton" class="btn btn-grey btn-small" disabled>Copy selection</button>
+                </div>
             </div>
-            
-            <!-- Action buttons aligned to the right -->
-            <div class="sequence-actions" style="margin-left: auto;">
-                <button id="selectAllResidues" class="btn btn-grey btn-small">Show all</button>
-                <button id="clearAllResidues" class="btn btn-grey btn-small">Hide all</button>
-                <button id="copySelectionButton" class="btn btn-grey btn-small" disabled>Copy selection</button>
-            </div>
-          </div>
-          <div id="sequenceView" class="sequence-content hidden"></div>
+            <div id="sequenceView" class="sequence-content hidden"></div>
         </div>
 
         <!-- MSA container with box and toggle -->
         <div id="msa-buttons" class="sequence-section-container" style="display: none;">
-          <div id="msaHeader" class="sequence-header">
-            <!-- Left side: Mode dropdown, Save buttons, Sort checkbox, Bit-score checkbox -->
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
-                <option value="msa" selected>MSA</option>
-                <option value="pssm">PSSM</option>
-                <option value="logo">Logo</option>
-                <option value="coverage">Coverage</option>
-              </select>
-              <div id="msaSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                <button id="msaSaveFastaButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save Fasta</button>
-              </div>
-              <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
-              </div>
-              <div id="pssmSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                <button id="pssmSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
-                <button id="pssmSaveCsvButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save CSV</button>
-              </div>
-              <div id="msaSortContainer" style="display: flex; align-items: center; gap: 4px;">
-                <label for="msaSortCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                  <input type="checkbox" id="msaSortCheckbox" checked style="cursor: pointer;">
-                  <span>Sort</span>
-                </label>
-              </div>
-              <div id="logoBitScoreContainer" style="display: none; align-items: center; gap: 4px;">
-                <label for="logoBitScoreCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                  <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
-                  <span>Bit-score</span>
-                </label>
-              </div>
+            <div id="msaHeader" class="sequence-header">
+                <!-- Left side: Mode dropdown, Save buttons, Sort checkbox, Bit-score checkbox -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <select id="msaModeSelect" class="btn btn-grey btn-small"
+                        style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
+                        <option value="msa" selected>MSA</option>
+                        <option value="pssm">PSSM</option>
+                        <option value="logo">Logo</option>
+                        <option value="coverage">Coverage</option>
+                    </select>
+                    <div id="msaSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="msaSaveFastaButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            Fasta</button>
+                    </div>
+                    <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            SVG</button>
+                    </div>
+                    <div id="pssmSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="pssmSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            SVG</button>
+                        <button id="pssmSaveCsvButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            CSV</button>
+                    </div>
+                    <div id="msaSortContainer" style="display: flex; align-items: center; gap: 4px;">
+                        <label for="msaSortCheckbox"
+                            style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="msaSortCheckbox" checked style="cursor: pointer;">
+                            <span>Sort</span>
+                        </label>
+                    </div>
+                    <div id="logoBitScoreContainer" style="display: none; align-items: center; gap: 4px;">
+                        <label for="logoBitScoreCheckbox"
+                            style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
+                            <span>Bit-score</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Right: Filters box and Chain selector -->
+                <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
+                    <div
+                        style="display: flex; align-items: center; gap: 10px; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
+                        <span style="font-size: 12px; color: #666; font-weight: 500;">Filters:</span>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <label for="coverageSlider"
+                                style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
+                            <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5"
+                                style="width: 100px;">
+                            <span id="coverageValue"
+                                style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">75%</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <label for="identitySlider"
+                                style="font-size: 11px; color: #666; white-space: nowrap;">qid:</label>
+                            <input type="range" id="identitySlider" min="0" max="100" value="15" step="5"
+                                style="width: 100px;">
+                            <span id="identityValue"
+                                style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">15%</span>
+                        </div>
+                        <span id="msaSequenceCount"
+                            style="font-size: 11px; color: #666; white-space: nowrap; min-width: 80px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
+                    </div>
+                    <!-- Chain selector (hidden by default, shown when multiple chains available) -->
+                    <select id="msaChainSelect" class="btn btn-grey btn-small"
+                        style="display: none; min-width: 50px; height: 28px; font-size: 12px; padding: 0 8px;"></select>
+                </div>
             </div>
-            
-            <!-- Right: Filters box and Chain selector -->
-            <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
-              <div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
-              <span style="font-size: 12px; color: #666; font-weight: 500;">Filters:</span>
-              <div style="display: flex; align-items: center; gap: 4px;">
-                <label for="coverageSlider" style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
-                <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5" style="width: 100px;">
-                <span id="coverageValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">75%</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 4px;">
-                <label for="identitySlider" style="font-size: 11px; color: #666; white-space: nowrap;">qid:</label>
-                <input type="range" id="identitySlider" min="0" max="100" value="15" step="5" style="width: 100px;">
-                <span id="identityValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">15%</span>
-              </div>
-              <span id="msaSequenceCount" style="font-size: 11px; color: #666; white-space: nowrap; min-width: 80px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
-              </div>
-              <!-- Chain selector (hidden by default, shown when multiple chains available) -->
-              <select id="msaChainSelect" class="btn btn-grey btn-small" style="display: none; min-width: 50px; height: 28px; font-size: 12px; padding: 0 8px;"></select>
-            </div>
-          </div>
         </div>
 
-        </div>
     </div>
-    
+    </div>
+
     <!-- Footer -->
     <footer style="margin-top: var(--container-gap); padding: 0; color: #6b7280; font-size: 13px;">
-        <div style="width: 948px; margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
+        <div
+            style="width: 948px; margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
             <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px;">
-                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: none;">
+                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer"
+                    style="color: #3b82f6; text-decoration: none;">
                     <i class="fab fa-github" style="margin-right: 6px;"></i>View on GitHub
                 </a>
             </div>
             <div style="flex: 0 0 auto; font-size: 12px;">
                 <i class="fa-solid fa-shield-halved" style="margin-right: 6px; color: #10b981;"></i>
-                <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a server.
+                <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a
+                server.
             </div>
         </div>
     </footer>
-    
+
     <!-- Load scripts in order -->
     <script src="web/utils.js"></script>
     <script src="py2Dmol/resources/viewer-mol.js"></script>
@@ -392,4 +441,5 @@
     <script src="web/app.js"></script>
 
 </body>
+
 </html>

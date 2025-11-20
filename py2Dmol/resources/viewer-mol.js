@@ -480,6 +480,11 @@ function initializePy2DmolViewer(containerElement) {
             // Computed when frame data is loaded, used by sequence and PAE viewers
             this.ligandGroups = new Map();
 
+            // Explicit bonds: Array of [idx1, idx2] pairs defining bonds between any atoms/positions
+            // Can be between P (protein), D (DNA), R (RNA), L (ligand), or mixed types
+            // If provided, these bonds are rendered as regular segments with proper type handling
+            this.bonds = null;
+
             // UI elements
             this.playButton = null;
             this.recordButton = null;
@@ -1385,6 +1390,9 @@ function initializePy2DmolViewer(containerElement) {
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
 
+            // Clear renderer bonds (will be restored from object data when frames load)
+            this.bonds = null;
+
             // Ensure object has selectionState initialized
             if (!this.objectsData[newObjectName]) {
                 this.objectsData[newObjectName] = {};
@@ -1468,6 +1476,8 @@ function initializePy2DmolViewer(containerElement) {
                     totalPositions: 0,
                     _lastPlddtFrame: -1,
                     _lastPaeFrame: -1,
+                    bonds: null,
+                    contacts: null,
                     selectionState: {
                         positions: new Set(),
                         chains: new Set(),
@@ -1531,6 +1541,11 @@ function initializePy2DmolViewer(containerElement) {
             // Store contacts if provided in data (object-level)
             if (data.contacts !== undefined && data.contacts !== null) {
                 object.contacts = data.contacts;
+            }
+
+            // Store explicit bonds if provided in data (object-level)
+            if (data.bonds !== undefined && data.bonds !== null) {
+                object.bonds = data.bonds;
             }
 
             // Update object-level tracking (for optimization during resolution)
@@ -1766,7 +1781,8 @@ function initializePy2DmolViewer(containerElement) {
                     position_types: frame.position_types ? [] : undefined,
                     position_names: frame.position_names ? [] : undefined,
                     residue_numbers: frame.residue_numbers ? [] : undefined,
-                    pae: undefined // Will be handled separately
+                    pae: undefined, // Will be handled separately
+                    bonds: undefined // Will be handled separately
                 };
 
                 // Extract data for each selected position
@@ -1810,6 +1826,29 @@ function initializePy2DmolViewer(containerElement) {
                         newPAE.push(row);
                     }
                     extractedFrame.pae = newPAE;
+                }
+
+                // Filter bonds if present
+                if (frame.bonds && Array.isArray(frame.bonds) && frame.bonds.length > 0) {
+                    const selectedIndicesSet = new Set(selectedIndices);
+                    // Create mapping from original indices to new indices
+                    const indexMap = new Map();
+                    for (let newIdx = 0; newIdx < selectedIndices.length; newIdx++) {
+                        indexMap.set(selectedIndices[newIdx], newIdx);
+                    }
+
+                    // Extract bonds where both endpoints are in selection
+                    const extractedBonds = [];
+                    for (const [idx1, idx2] of frame.bonds) {
+                        if (selectedIndicesSet.has(idx1) && selectedIndicesSet.has(idx2)) {
+                            const newIdx1 = indexMap.get(idx1);
+                            const newIdx2 = indexMap.get(idx2);
+                            extractedBonds.push([newIdx1, newIdx2]);
+                        }
+                    }
+                    if (extractedBonds.length > 0) {
+                        extractedFrame.bonds = extractedBonds;
+                    }
                 }
 
                 // Add extracted frame to new object
@@ -2895,7 +2934,8 @@ function initializePy2DmolViewer(containerElement) {
                         (data.pae && data.pae.length > 0),
                         data.position_names,
                         data.residue_numbers,
-                        skipRender
+                        skipRender,
+                        data.bonds
                     );
                 }
             } catch (e) {
@@ -2903,8 +2943,25 @@ function initializePy2DmolViewer(containerElement) {
             }
         }
 
-        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false) {
+        setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null) {
             this.coords = coords;
+
+            // Set bonds from parameter or from object's stored bonds
+            if (bonds !== null && bonds !== undefined) {
+                // Frame has explicit bonds - use them
+                this.bonds = bonds;
+                // Store in object for reuse
+                if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
+                    this.objectsData[this.currentObjectName].bonds = bonds;
+                }
+            } else if (this.currentObjectName && this.objectsData[this.currentObjectName] && this.objectsData[this.currentObjectName].bonds) {
+                // No bonds for this frame - use object's stored bonds
+                this.bonds = this.objectsData[this.currentObjectName].bonds;
+            } else {
+                // No bonds - will use distance calculation
+                this.bonds = null;
+            }
+
             const n = this.coords.length;
 
             // Ensure colorMode is valid
@@ -2925,12 +2982,58 @@ function initializePy2DmolViewer(containerElement) {
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
 
-            // --- Handle Defaults for Missing Data ---
-            this.plddts = (plddts && plddts.length === n) ? plddts : Array(n).fill(50.0);
-            this.chains = (chains && chains.length === n) ? chains : Array(n).fill('A');
-            this.positionTypes = (positionTypes && positionTypes.length === n) ? positionTypes : Array(n).fill('P');
-            this.positionNames = (positionNames && positionNames.length === n) ? positionNames : Array(n).fill('UNK');
-            this.residueNumbers = (residueNumbers && residueNumbers.length === n) ? residueNumbers : Array.from({ length: n }, (_, i) => i + 1);
+            // --- Handle Data Inheritance and Defaults ---
+            // Use provided data if available, otherwise inherit from cache, otherwise use defaults
+
+            // plddts: inherit from previous frame if not provided
+            if (plddts && plddts.length === n) {
+                this.plddts = plddts;
+                this.cachedPlddts = plddts;
+            } else if (this.cachedPlddts && this.cachedPlddts.length === n) {
+                this.plddts = this.cachedPlddts; // Inherit
+            } else {
+                this.plddts = Array(n).fill(50.0); // Default
+            }
+
+            // chains: inherit from previous frame if not provided
+            if (chains && chains.length === n) {
+                this.chains = chains;
+                this.cachedChains = chains;
+            } else if (this.cachedChains && this.cachedChains.length === n) {
+                this.chains = this.cachedChains; // Inherit
+            } else {
+                this.chains = Array(n).fill('A'); // Default
+            }
+
+            // positionTypes: inherit from previous frame if not provided
+            if (positionTypes && positionTypes.length === n) {
+                this.positionTypes = positionTypes;
+                this.cachedPositionTypes = positionTypes;
+            } else if (this.cachedPositionTypes && this.cachedPositionTypes.length === n) {
+                this.positionTypes = this.cachedPositionTypes; // Inherit
+            } else {
+                this.positionTypes = Array(n).fill('P'); // Default
+            }
+
+            // positionNames: inherit from previous frame if not provided
+            if (positionNames && positionNames.length === n) {
+                this.positionNames = positionNames;
+                this.cachedPositionNames = positionNames;
+            } else if (this.cachedPositionNames && this.cachedPositionNames.length === n) {
+                this.positionNames = this.cachedPositionNames; // Inherit
+            } else {
+                this.positionNames = Array(n).fill('UNK'); // Default
+            }
+
+            // residueNumbers: inherit from previous frame if not provided
+            if (residueNumbers && residueNumbers.length === n) {
+                this.residueNumbers = residueNumbers;
+                this.cachedResidueNumbers = residueNumbers;
+            } else if (this.cachedResidueNumbers && this.cachedResidueNumbers.length === n) {
+                this.residueNumbers = this.cachedResidueNumbers; // Inherit
+            } else {
+                this.residueNumbers = Array.from({ length: n }, (_, i) => i + 1); // Default
+            }
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
@@ -3151,10 +3254,40 @@ function initializePy2DmolViewer(containerElement) {
                     }
                 }
 
-                // Compute ligand bonds
-                // If ligand groups are available, only compute distances within each group
-                // Otherwise, fall back to computing distances within each chain
-                if (this.ligandGroups && this.ligandGroups.size > 0) {
+                // Compute explicit bonds (from user input or structure file)
+                // These can be between ANY position types (P, D, R, L, etc.)
+                if (this.bonds && Array.isArray(this.bonds) && this.bonds.length > 0) {
+                    // Use explicit bond definitions
+                    for (const [idx1, idx2] of this.bonds) {
+                        // Validate indices
+                        if (idx1 < 0 || idx1 >= this.coords.length ||
+                            idx2 < 0 || idx2 >= this.coords.length) {
+                            continue;
+                        }
+
+                        const start = this.coords[idx1];
+                        const end = this.coords[idx2];
+                        const distSq = start.distanceToSq(end);
+                        const chainId = this.chains[idx1] || 'A';
+                        // Determine segment type based on position types of both ends
+                        const type1 = this.positionTypes?.[idx1] || 'L';
+                        const type2 = this.positionTypes?.[idx2] || 'L';
+                        // Use most restrictive type (P > D/R > L)
+                        const segmentType = (type1 === 'P' || type2 === 'P') ? 'P' :
+                                           ((type1 === 'D' || type2 === 'D') ? 'D' :
+                                            ((type1 === 'R' || type2 === 'R') ? 'R' : 'L'));
+
+                        this.segmentIndices.push({
+                            idx1: idx1,
+                            idx2: idx2,
+                            colorIndex: 0,
+                            origIndex: idx1,
+                            chainId: chainId,
+                            type: segmentType,
+                            len: Math.sqrt(distSq)
+                        });
+                    }
+                } else if (this.ligandGroups && this.ligandGroups.size > 0) {
                     // Use ligand groups: only compute distances within each group
                     for (const [groupKey, ligandPositionIndices] of this.ligandGroups.entries()) {
                         // Compute pairwise distances only within this ligand group
@@ -3370,11 +3503,15 @@ function initializePy2DmolViewer(containerElement) {
             const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
             const resolvedPae = this._resolvePaeData(object, frameIndex);
 
+            // Get bonds from object-level if available
+            const resolvedBonds = object.bonds || null;
+
             // Create resolved data object (use resolved values if frame doesn't have its own)
             const resolvedData = {
                 ...data,
                 plddts: resolvedPlddt !== null ? resolvedPlddt : data.plddts,
-                pae: resolvedPae !== null ? resolvedPae : data.pae
+                pae: resolvedPae !== null ? resolvedPae : data.pae,
+                bonds: resolvedBonds
             };
 
             // Load 3D data (with skipRender option)
