@@ -5,7 +5,7 @@
 // It can be used in both web and Python interfaces.
 // Now uses canvas-based rendering for improved performance.
 
-(function() {
+(function () {
     'use strict';
 
     // ============================================================================
@@ -19,10 +19,19 @@
     let highlightOverlayCanvas = null; // Overlay canvas for drawing highlights on main viewer
     let highlightOverlayCtx = null;
     let hoveredResidueInfo = null; // { chain, resName, resSeq } for tooltip display
-    
+
+    // Virtual scrolling state
+    let scrollTop = 0;
+    let scrollLeft = 0;
+    const SCROLLBAR_WIDTH = 15;
+    const SCROLLBAR_PADDING = 2;
+    const SCROLLBAR_TRACK_COLOR = '#f0f0f0';
+    const SCROLLBAR_THUMB_COLOR = '#b0b0b0';
+    const SCROLLBAR_THUMB_COLOR_NO_SCROLL = '#d0d0d0';
+
     // Per-object preview state (single source of truth for preview during drag)
     const previewByObject = new Map();
-    
+
     // Callbacks for integration with host application
     let callbacks = {
         getRenderer: null,           // () => renderer instance
@@ -38,19 +47,19 @@
     // ============================================================================
     // HELPER FUNCTIONS
     // ============================================================================
-    
+
     // Get current object name from renderer
     function getCurrentObjectName() {
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         return renderer?.currentObjectName || null;
     }
-    
+
     // Get preview selection for current object
     function getLocalPreview() {
         const name = getCurrentObjectName();
         return name ? (previewByObject.get(name) || null) : null;
     }
-    
+
     // Set preview selection for current object
     function setLocalPreview(setOrNull) {
         const name = getCurrentObjectName();
@@ -62,11 +71,11 @@
             previewByObject.delete(name);
         }
     }
-    
+
     // Check if sequence differs between frames
     function sequencesDiffer(frame1, frame2) {
         if (!frame1 || !frame2) return true;
-        
+
         // Check number of positions: prefer position_names or chains length, fallback to coords.length / 3
         function getPositionCount(frame) {
             if (frame.position_names && frame.position_names.length > 0) {
@@ -79,12 +88,12 @@
             }
             return 0;
         }
-        
+
         const n1 = getPositionCount(frame1);
         const n2 = getPositionCount(frame2);
         if (n1 !== n2) return true;
         if (n1 === 0) return false; // Both empty, consider same
-        
+
         // Check if position_names differ (if available)
         const positionNames1 = frame1.position_names || [];
         const positionNames2 = frame2.position_names || [];
@@ -93,7 +102,7 @@
                 if (positionNames1[i] !== positionNames2[i]) return true;
             }
         }
-        
+
         // Check if chains differ (if available)
         const chains1 = frame1.chains || [];
         const chains2 = frame2.chains || [];
@@ -102,7 +111,7 @@
                 if (chains1[i] !== chains2[i]) return true;
             }
         }
-        
+
         // Check if position_types differ (if available)
         const position_types1 = frame1.position_types || [];
         const position_types2 = frame2.position_types || [];
@@ -111,7 +120,7 @@
                 if (position_types1[i] !== position_types2[i]) return true;
             }
         }
-        
+
         return false;
     }
 
@@ -131,11 +140,11 @@
         // Support both mouse and touch events
         const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : e.changedTouches[0].clientX);
         const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : e.changedTouches[0].clientY);
-        
+
         // Get mouse position relative to canvas (in display pixels)
         const displayX = clientX - rect.left;
         const displayY = clientY - rect.top;
-        
+
         // Scale to canvas logical coordinates (accounting for DPI multiplier)
         // Calculate DPI multiplier (200 DPI / 96 DPI standard)
         const targetDPI = 200;
@@ -144,17 +153,17 @@
         // Canvas internal size is dpiMultiplier * display size, but context is scaled, so we want display pixels
         const scaleX = (canvas.width / dpiMultiplier) / rect.width;
         const scaleY = (canvas.height / dpiMultiplier) / rect.height;
-        
-        return { 
-            x: displayX * scaleX, 
-            y: displayY * scaleY 
+
+        return {
+            x: displayX * scaleX,
+            y: displayY * scaleY
         };
     }
 
     // Find position at canvas position
     function getResidueAtCanvasPosition(x, y, layout) {
         if (!layout || !layout.residuePositions) return null;
-        
+
         for (const pos of layout.residuePositions) {
             if (x >= pos.x && x < pos.x + pos.width && y >= pos.y && y < pos.y + pos.height) {
                 return pos; // Return position object with residueData
@@ -166,7 +175,7 @@
     // Find chain label at canvas position
     function getChainLabelAtCanvasPosition(x, y, layout) {
         if (!layout || !layout.chainLabelPositions) return null;
-        
+
         for (const pos of layout.chainLabelPositions) {
             if (x >= pos.x && x < pos.x + pos.width && y >= pos.y && y < pos.y + pos.height) {
                 return pos;
@@ -174,45 +183,48 @@
         }
         return null;
     }
-    
+
     // Unified detection function for all selectable items
     function getSelectableItemAtPosition(x, y, layout, sequenceViewMode) {
         if (!layout || !layout.selectableItems) return null;
-        
+
+        // Adjust Y coordinate for scroll offset
+        const adjustedY = y + scrollTop;
+
         // Filter items based on mode
         let items = layout.selectableItems;
         if (!sequenceViewMode) {
             // In chain mode, only chain items are selectable
             items = items.filter(item => item.type === 'chain');
         }
-        
+
         // Separate items by type for priority checking
         const residueLigandItems = items.filter(item => item.type === 'residue' || item.type === 'ligand');
         const chainItems = items.filter(item => item.type === 'chain');
-        
+
         // Priority 1: Check position/ligand items first (exact bounds)
         // These should take precedence over chain items in sequence mode
         for (const item of residueLigandItems) {
             const bounds = item.bounds;
             if (x >= bounds.x && x < bounds.x + bounds.width &&
-                y >= bounds.y && y < bounds.y + bounds.height) {
+                adjustedY >= bounds.y && adjustedY < bounds.y + bounds.height) {
                 return item;
             }
         }
-        
+
         // Priority 2: Check chain items
         // In sequence mode, only match if clicking in the actual chain button area
         // In chain mode, match if both X and Y are within button bounds (preserve column position)
         for (const item of chainItems) {
             const bounds = item.bounds;
-            
+
             if (sequenceViewMode) {
                 // In sequence mode, only match chain button if clicking in button area
                 // Use chainLabelPositions to get actual button bounds
                 const chainPos = layout.chainLabelPositions?.find(p => p.chainId === item.chainId);
                 if (chainPos) {
                     if (x >= chainPos.x && x < chainPos.x + chainPos.width &&
-                        y >= chainPos.y && y < chainPos.y + chainPos.height) {
+                        adjustedY >= chainPos.y && adjustedY < chainPos.y + chainPos.height) {
                         return item;
                     }
                 }
@@ -223,13 +235,12 @@
                 const chainPos = layout.chainLabelPositions?.find(p => p.chainId === item.chainId);
                 if (chainPos) {
                     if (x >= chainPos.x && x < chainPos.x + chainPos.width &&
-                        y >= chainPos.y && y < chainPos.y + chainPos.height) {
+                        adjustedY >= chainPos.y && adjustedY < chainPos.y + chainPos.height) {
                         return item;
                     }
                 }
             }
         }
-        
         return null;
     }
 
@@ -242,7 +253,7 @@
         // Draw background
         let bgColor;
         let textColor;
-        
+
         if (isSelected) {
             bgColor = `rgb(${chainColor.r}, ${chainColor.g}, ${chainColor.b})`;
             // Calculate contrast color
@@ -258,17 +269,17 @@
             bgColor = `rgb(${dimmed.r}, ${dimmed.g}, ${dimmed.b})`;
             textColor = '#000000';
         }
-        
+
         ctx.fillStyle = bgColor;
         ctx.fillRect(x, y, width, height);
-        
+
         // Draw text
         ctx.fillStyle = textColor;
         ctx.font = '12px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(chainId, x + width / 2, y + height / 2);
-        
+
         // Draw border if selected
         if (isSelected) {
             ctx.strokeStyle = '#000000';
@@ -286,24 +297,24 @@
         let r = color.r;
         let g = color.g;
         let b = color.b;
-        
+
         if (!isSelected) {
             r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
             g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
             b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
         }
-        
+
         // Draw background
         ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
         ctx.fillRect(x, y, width, height);
-        
+
         // Draw text
         ctx.fillStyle = '#000000';
         ctx.font = '12px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(letter, x + width / 2, y + height / 2);
-        
+
         // Draw border if selected
         if (isSelected) {
             ctx.strokeStyle = '#000000';
@@ -321,28 +332,28 @@
         let r = color.r;
         let g = color.g;
         let b = color.b;
-        
+
         if (!isSelected) {
             r = Math.round(r * dimFactor + 255 * (1 - dimFactor));
             g = Math.round(g * dimFactor + 255 * (1 - dimFactor));
             b = Math.round(b * dimFactor + 255 * (1 - dimFactor));
         }
-        
+
         // Draw background
         ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
         ctx.fillRect(x, y, width, height);
-        
+
         // Draw text (smaller font, truncated to fit in 2 char widths)
         ctx.fillStyle = '#000000';
         ctx.font = '9px monospace'; // Smaller font for ligand name
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        
+
         // Truncate ligand name to fit in 2 character widths (approximately 20px)
         const maxLength = 8; // Approximate max chars that fit in 2 char widths with smaller font
         const displayName = ligandName.length > maxLength ? ligandName.substring(0, maxLength - 1) + '…' : ligandName;
         ctx.fillText(displayName, x + width / 2, y + height / 2);
-        
+
         // Draw border if selected
         if (isSelected) {
             ctx.strokeStyle = '#000000';
@@ -354,21 +365,64 @@
         }
     }
 
+    // Draw scrollbars (vertical only for sequence viewer)
+    function drawScrollbars(ctx, canvasWidth, canvasHeight, scrollableAreaHeight, fullContentHeight) {
+        if (!sequenceCanvasData) return;
+
+        // Vertical scrollbar dimensions
+        const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
+        const scrollRatio = maxScrollTop > 0 ? scrollTop / maxScrollTop : 0;
+        const thumbHeight = Math.max(20, (scrollableAreaHeight / fullContentHeight) * scrollableAreaHeight);
+        const thumbY = scrollRatio * (scrollableAreaHeight - thumbHeight);
+        const vScrollbarX = canvasWidth - SCROLLBAR_WIDTH;
+
+        // Draw vertical scrollbar track
+        ctx.fillStyle = SCROLLBAR_TRACK_COLOR;
+        ctx.fillRect(vScrollbarX, 0, SCROLLBAR_WIDTH, scrollableAreaHeight);
+
+        // Draw vertical scrollbar thumb
+        if (maxScrollTop > 0) {
+            ctx.fillStyle = SCROLLBAR_THUMB_COLOR;
+            ctx.fillRect(vScrollbarX + SCROLLBAR_PADDING, thumbY,
+                SCROLLBAR_WIDTH - SCROLLBAR_PADDING * 2, thumbHeight);
+        } else {
+            // No scrolling needed - show disabled thumb
+            ctx.fillStyle = SCROLLBAR_THUMB_COLOR_NO_SCROLL;
+            ctx.fillRect(vScrollbarX + SCROLLBAR_PADDING, 0,
+                SCROLLBAR_WIDTH - SCROLLBAR_PADDING * 2, scrollableAreaHeight);
+        }
+    }
+
     // Main canvas rendering function
     function renderSequenceCanvas() {
         if (!sequenceCanvasData) return;
-        
+
         const { canvas, ctx, allResidueData, chainBoundaries, layout, sortedPositionEntries } = sequenceCanvasData;
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer) return;
-        
+
+        // Calculate logical dimensions (accounting for DPI multiplier)
+        const targetDPI = 200;
+        const standardDPI = 96;
+        const dpiMultiplier = targetDPI / standardDPI;
+        const logicalWidth = canvas.width / dpiMultiplier;
+        const logicalHeight = canvas.height / dpiMultiplier;
+
+        // Calculate scrollable area
+        const fullContentHeight = layout.fullContentHeight || logicalHeight;
+        const scrollableAreaHeight = logicalHeight; // Scrollbar is on the right side, not adding to height
+        const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
+
+        // Clamp scrollTop to valid range
+        scrollTop = Math.max(0, Math.min(maxScrollTop, scrollTop));
+
         // Clear canvas
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
+        ctx.clearRect(0, 0, logicalWidth, logicalHeight);
+
         // Get selection state - use selectionModel directly to avoid expensive getSelection() copy
         const selectionModel = renderer.selectionModel;
         const previewSelectionSet = getLocalPreview();
-        
+
         // Determine visible positions - avoid unnecessary Set copies
         let visiblePositions;
         if (previewSelectionSet && previewSelectionSet.size > 0) {
@@ -392,18 +446,18 @@
                 visiblePositions = new Set();
             }
         }
-        
+
         const dimFactor = 0.3; // Same as PAE plot
-        
-        // Draw chain labels
+
+        // Draw chain labels (with virtual scrolling)
         if (layout.chainLabelPositions) {
             // During drag, compute chain selection from preview positions
             let chainSelection = selectionModel?.chains;
             let selectionMode = selectionModel?.selectionMode;
-            
+
             // Check if we're in a drag operation (previewSelectionSet exists, even if empty Set)
             const isDragging = previewSelectionSet !== null;
-            
+
             if (isDragging) {
                 // Compute chains from preview positions during drag (even if previewSelectionSet is empty)
                 const objectName = renderer.currentObjectName;
@@ -426,22 +480,30 @@
                 const totalPositions = frame?.chains?.length || 0;
                 const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalPositions;
                 const allChains = new Set(frame?.chains || []);
-                const allChainsSelected = previewChains.size === allChains.size && 
-                                        Array.from(previewChains).every(c => allChains.has(c));
+                const allChainsSelected = previewChains.size === allChains.size &&
+                    Array.from(previewChains).every(c => allChains.has(c));
                 selectionMode = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? 'default' : 'explicit';
             }
-            
+
+            // Only render chains that are visible in the current scroll position
             for (const chainPos of layout.chainLabelPositions) {
+                const yOffset = chainPos.y - scrollTop;
+
+                // Skip if chain is outside visible area
+                if (yOffset + chainPos.height < 0 || yOffset > scrollableAreaHeight) {
+                    continue;
+                }
+
                 const chainId = chainPos.chainId;
-                const isSelected = chainSelection?.has(chainId) || 
+                const isSelected = chainSelection?.has(chainId) ||
                     (selectionMode === 'default' && (!chainSelection || chainSelection.size === 0));
-                const chainColor = renderer?.getChainColorForChainId?.(chainId) || {r: 128, g: 128, b: 128};
-                
+                const chainColor = renderer?.getChainColorForChainId?.(chainId) || { r: 128, g: 128, b: 128 };
+
                 drawChainLabelOnCanvas(
                     ctx,
                     chainId,
                     chainPos.x,
-                    chainPos.y,
+                    yOffset,
                     chainPos.width,
                     chainPos.height,
                     isSelected,
@@ -450,45 +512,54 @@
                 );
             }
         }
-        
-        // Draw position characters and ligand tokens
+
+        // Draw position characters and ligand tokens (with virtual scrolling)
         if (layout.residuePositions && allResidueData) {
             // Get renderer's getAtomColor function for dynamic color computation
             const hasGetAtomColor = renderer?.getAtomColor;
-            
+            // Cache effective color mode to avoid redundant lookups in the loop
+            const effectiveColorMode = renderer?._getEffectiveColorMode?.() || 'auto';
+
             for (const pos of layout.residuePositions) {
+                const yOffset = pos.y - scrollTop;
+
+                // Skip if residue is outside visible area
+                if (yOffset + pos.height < 0 || yOffset > scrollableAreaHeight) {
+                    continue;
+                }
+
                 const residueData = pos.residueData;
                 if (!residueData) continue;
-                
+
                 // Compute color dynamically based on current renderer state
-                let color = {r: 128, g: 128, b: 128}; // Default fallback grey
-                
+                let color = { r: 128, g: 128, b: 128 }; // Default fallback grey
+
                 if (residueData.positionIndex === -1) {
                     // Gap markers (missing positions) use stored light grey color
-                    color = residueData.color || {r: 240, g: 240, b: 240};
+                    color = residueData.color || { r: 240, g: 240, b: 240 };
                 } else if (residueData.isLigandToken && residueData.positionIndices && residueData.positionIndices.length > 0) {
                     // For ligand tokens, use first position's color
                     const firstPositionIndex = residueData.positionIndices[0];
                     if (hasGetAtomColor && !Number.isNaN(firstPositionIndex) && firstPositionIndex >= 0) {
-                        color = renderer.getAtomColor(firstPositionIndex);
+                        color = renderer.getAtomColor(firstPositionIndex, effectiveColorMode);
                     }
                 } else if (residueData.positionIndex >= 0) {
                     // For regular positions, use position's color
                     if (hasGetAtomColor && !Number.isNaN(residueData.positionIndex)) {
-                        color = renderer.getAtomColor(residueData.positionIndex);
+                        color = renderer.getAtomColor(residueData.positionIndex, effectiveColorMode);
                     }
                 }
-                
+
                 // Check if this is a ligand token (has positionIndices array)
                 if (residueData.isLigandToken && residueData.positionIndices) {
                     // For ligand tokens, check if any position in the ligand is selected
                     const isSelected = residueData.positionIndices.some(positionIndex => visiblePositions.has(positionIndex));
-                    
+
                     drawLigandTokenOnCanvas(
                         ctx,
                         residueData.ligandName || 'LIG',
                         pos.x,
-                        pos.y,
+                        yOffset,
                         pos.width,
                         pos.height,
                         color,
@@ -501,7 +572,7 @@
                         ctx,
                         '-', // Always use "-" for gaps
                         pos.x,
-                        pos.y,
+                        yOffset,
                         pos.width,
                         pos.height,
                         color,
@@ -511,12 +582,12 @@
                 } else if (residueData.positionIndex >= 0) {
                     // Regular position character
                     const isSelected = visiblePositions.has(residueData.positionIndex);
-                    
+
                     drawResidueCharOnCanvas(
                         ctx,
                         residueData.letter,
                         pos.x,
-                        pos.y,
+                        yOffset,
                         pos.width,
                         pos.height,
                         color,
@@ -526,14 +597,17 @@
                 }
             }
         }
-        
+
+        // Draw scrollbar
+        drawScrollbars(ctx, logicalWidth, logicalHeight, scrollableAreaHeight, fullContentHeight);
+
         // Draw hover highlight if needed (will be handled in event handlers)
     }
 
     // ============================================================================
     // MAIN SEQUENCE VIEWER FUNCTIONS
     // ============================================================================
-    
+
     function buildSequenceView() {
         const sequenceViewEl = document.getElementById('sequenceView');
         if (!sequenceViewEl) return;
@@ -562,10 +636,10 @@
         if (!currentFrame || !currentFrame.coords || currentFrame.coords.length === 0) return;
 
         // Check if sequence actually changed - only rebuild if it did
-        const lastFrame = lastSequenceFrameIndex >= 0 && lastSequenceFrameIndex < object.frames.length 
-            ? object.frames[lastSequenceFrameIndex] 
+        const lastFrame = lastSequenceFrameIndex >= 0 && lastSequenceFrameIndex < object.frames.length
+            ? object.frames[lastSequenceFrameIndex]
             : null;
-        
+
         // Only rebuild if sequence changed or this is first build
         if (lastFrame && !sequencesDiffer(currentFrame, lastFrame) && sequenceCanvasData) {
             // Sequence hasn't changed, just update colors and selection
@@ -584,7 +658,7 @@
         const residueNumbers = currentFrame.residue_numbers || [];
         const chains = currentFrame.chains || [];
         const position_types = currentFrame.position_types || [];
-        
+
         // Determine number of positions: prefer position_names or chains length, fallback to coords.length / 3
         let n = 0;
         if (positionNames.length > 0) {
@@ -595,13 +669,13 @@
             // coords is flat array [x, y, z, ...], so divide by 3
             n = Math.floor(currentFrame.coords.length / 3);
         }
-        
+
         if (n === 0) return;
-        
-        
+
+
         // Check if position names are available - if not, we can't group ligands with names
         const hasPositionNames = positionNames && positionNames.length === n;
-        
+
         // Create one entry per position (one position = one position, no collapsing)
         // Default to chain 'A', position name 'UNK', sequential position index, and type 'P' (protein)
         const positionEntries = [];
@@ -621,7 +695,7 @@
             if (a.chain > b.chain) return 1;
             return a.positionIndex - b.positionIndex;
         });
-        
+
         // Track chain boundaries for unified sequence
         const chainBoundaries = [];
         let currentChain = null;
@@ -650,42 +724,42 @@
 
         // Protein amino acid mapping (3-letter to 1-letter)
         const threeToOne = {
-            'ALA':'A', 'ARG':'R', 'ASN':'N', 'ASP':'D', 'CYS':'C', 'GLU':'E', 'GLN':'Q', 'GLY':'G', 'HIS':'H', 'ILE':'I',
-            'LEU':'L', 'LYS':'K', 'MET':'M', 'PHE':'F', 'PRO':'P', 'SER':'S', 'THR':'T', 'TRP':'W', 'TYR':'Y', 'VAL':'V',
-            'SEC':'U', 'PYL':'O'
+            'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C', 'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+            'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P', 'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
+            'SEC': 'U', 'PYL': 'O'
         };
 
         // DNA nucleotide mapping
         const dnaMapping = {
-            'DA':'A', 'DT':'T', 'DC':'C', 'DG':'G',
-            'A':'A', 'T':'T', 'C':'C', 'G':'G',  // Alternative naming
-            'ADE':'A', 'THY':'T', 'CYT':'C', 'GUA':'G'  // Alternative naming
+            'DA': 'A', 'DT': 'T', 'DC': 'C', 'DG': 'G',
+            'A': 'A', 'T': 'T', 'C': 'C', 'G': 'G',  // Alternative naming
+            'ADE': 'A', 'THY': 'T', 'CYT': 'C', 'GUA': 'G'  // Alternative naming
         };
-        
+
         // RNA nucleotide mapping
         const rnaMapping = {
-            'A':'A', 'U':'U', 'C':'C', 'G':'G',
-            'RA':'A', 'RU':'U', 'RC':'C', 'RG':'G',  // Alternative naming
-            'ADE':'A', 'URA':'U', 'CYT':'C', 'GUA':'G',  // Alternative naming
-            'URI':'U', 'UMP':'U', 'URD':'U',  // Uridine variations
-            'RURA':'U', 'RURI':'U'  // More RNA uracil variations
+            'A': 'A', 'U': 'U', 'C': 'C', 'G': 'G',
+            'RA': 'A', 'RU': 'U', 'RC': 'C', 'RG': 'G',  // Alternative naming
+            'ADE': 'A', 'URA': 'U', 'CYT': 'C', 'GUA': 'G',  // Alternative naming
+            'URI': 'U', 'UMP': 'U', 'URD': 'U',  // Uridine variations
+            'RURA': 'U', 'RURI': 'U'  // More RNA uracil variations
         };
-        
+
         // Detect sequence type based on position names
         const detectSequenceType = (positionNames) => {
             if (positionNames.length === 0) return 'protein';
-            
+
             let dnaCount = 0;
             let rnaCount = 0;
             let proteinCount = 0;
-            
+
             // First pass: check for unambiguous indicators (U = RNA, T/DT = DNA)
             let hasU = false;
             let hasT = false;
-            
+
             for (const resName of positionNames) {
                 const upperResName = (resName || '').toString().trim().toUpperCase();
-                
+
                 // RNA-specific: U is RNA-only
                 if (upperResName === 'U' || upperResName.startsWith('RU') || upperResName.includes('URI') || upperResName.includes('URA')) {
                     hasU = true;
@@ -708,7 +782,7 @@
                     proteinCount++;
                 }
             }
-            
+
             // If we found U (RNA-specific) and no T, it's definitely RNA
             if (hasU && !hasT) {
                 return 'rna';
@@ -717,7 +791,7 @@
             if (hasT && !hasU) {
                 return 'dna';
             }
-            
+
             // Otherwise, determine type based on majority
             if (dnaCount > rnaCount && dnaCount > proteinCount) {
                 return 'dna';
@@ -727,7 +801,7 @@
                 return 'protein';
             }
         };
-        
+
         // Build chain-to-sequence-type mapping for unified sequence
         const chainSequenceTypes = {};
         for (const boundary of chainBoundaries) {
@@ -735,12 +809,12 @@
             const chainResidueNames = chainResidues.map(r => r.resName);
             chainSequenceTypes[boundary.chain] = detectSequenceType(chainResidueNames);
         }
-        
+
         // Helper function to get position letter based on chain's sequence type
         const getPositionLetter = (position) => {
             const chainType = chainSequenceTypes[position.chain] || 'protein';
             let upper = (position.resName || '').toString().trim().toUpperCase();
-            
+
             // Map modified residues to standard equivalents (e.g., MSE -> MET)
             // Use getStandardResidueName if available (from utils.js), otherwise use local mapping
             if (typeof getStandardResidueName === 'function') {
@@ -757,7 +831,7 @@
                     upper = modifiedToStandard[upper];
                 }
             }
-            
+
             if (chainType === 'dna') {
                 return dnaMapping[upper] || 'N';
             } else if (chainType === 'rna') {
@@ -777,12 +851,12 @@
         const charWidth = 10; // Monospace character width
         const charHeight = 14; // Line height
         const spacing = 4; // Spacing between elements
-        
+
         // Chain button uses same dimensions as sequence characters
         // Find the maximum chain ID length to make all buttons the same size
         const maxChainIdLength = Math.max(...chainBoundaries.map(b => b.chain.length), 3);
         const chainButtonWidth = (charWidth * maxChainIdLength + 20) * 2 / 3; // Fixed width for all buttons (2/3 of original size)
-        
+
         // Calculate dynamic line breaks based on container width
         // Get actual container width to fill it completely
         const containerRect = sequenceViewEl ? sequenceViewEl.getBoundingClientRect() : null;
@@ -800,10 +874,10 @@
         canvas.style.cursor = 'crosshair';
         canvas.style.display = 'block';
         canvas.style.width = '100%';
-        
+
         // Store all position data (not elements)
         const allResidueData = [];
-        
+
         // Calculate layout positions
         const layout = {
             charWidth,
@@ -815,22 +889,22 @@
             residuePositions: [],
             selectableItems: [] // Unified selectable items array
         };
-        
+
         let currentY = spacing;
         let maxWidth = 0;
-        
+
         if (sequenceViewMode) {
             // SEQUENCE MODE: One row per chain
             for (const boundary of chainBoundaries) {
                 const chainId = boundary.chain;
                 const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-                
+
                 // Chain label position
                 const chainLabelX = spacing;
                 const chainLabelY = currentY;
                 const actualButtonWidth = chainButtonWidth + Math.round(4 * 2 / 3);
                 const chainLabelHeight = charHeight;
-                
+
                 layout.chainLabelPositions.push({
                     chainId,
                     positionIndex: chainPositions[0].positionIndex,
@@ -839,20 +913,20 @@
                     width: actualButtonWidth,
                     height: chainLabelHeight
                 });
-                
+
                 // Sequence positions
                 let currentX = chainLabelX + actualButtonWidth + spacing;
                 let lineStartX = currentX;
                 let lineY = currentY;
                 let maxLineY = lineY; // Track maximum Y for this chain
-                
+
                 let lastResSeq = null;
                 let lastPositionType = null;
                 const ligandTokenWidth = charWidth * 2; // Ligand tokens take 2 character widths
-                
+
                 // Get ligand groups from renderer (computed using shared utility)
                 const ligandGroups = renderer?.ligandGroups || new Map();
-                
+
                 // Create reverse map: position index -> ligand group key (for quick lookup)
                 const positionToLigandGroup = new Map();
                 for (const [groupKey, positionIndicesInGroup] of ligandGroups) {
@@ -860,19 +934,19 @@
                         positionToLigandGroup.set(positionIndex, groupKey);
                     }
                 }
-                
+
                 // Track which ligand groups we've already processed
                 const processedLigandGroups = new Set();
-                
+
                 // Group positions into display items (regular positions or ligand tokens)
                 const displayItems = [];
                 let i = 0;
                 while (i < chainPositions.length) {
                     const position = chainPositions[i];
-                    
+
                     // Check if this position belongs to a ligand group
                     const ligandGroupKey = positionToLigandGroup.get(position.positionIndex);
-                    
+
                     if (ligandGroupKey && !processedLigandGroups.has(ligandGroupKey)) {
                         // This position is part of a ligand group - create ligand token
                         const ligandPositionIndices = ligandGroups.get(ligandGroupKey);
@@ -887,14 +961,14 @@
                                     break;
                                 }
                             }
-                            
+
                             if (firstPositionInChain) {
                                 // Create ligand token even if position name is missing (use fallback name)
                                 // This ensures ligands are grouped even when residue_numbers/position_names are missing
-                                const ligandResName = (hasPositionNames && firstPositionInChain.resName && firstPositionInChain.resName !== 'UNK') 
-                                    ? firstPositionInChain.resName 
+                                const ligandResName = (hasPositionNames && firstPositionInChain.resName && firstPositionInChain.resName !== 'UNK')
+                                    ? firstPositionInChain.resName
                                     : 'LIG'; // Fallback name for ligands without position names
-                                
+
                                 // Create ligand token (color will be computed dynamically at render time)
                                 displayItems.push({
                                     type: 'ligand',
@@ -903,10 +977,10 @@
                                     positionIndices: ligandPositionIndices,
                                     chain: firstPositionInChain.chain
                                 });
-                                
+
                                 // Mark this ligand group as processed
                                 processedLigandGroups.add(ligandGroupKey);
-                                
+
                                 // Skip all positions in this ligand group
                                 while (i < chainPositions.length && ligandPositionIndices.includes(chainPositions[i].positionIndex)) {
                                     i++;
@@ -915,7 +989,7 @@
                             }
                         }
                     }
-                    
+
                     // Regular position (ligands with grouping are handled above)
                     displayItems.push({
                         type: 'atom',
@@ -923,39 +997,39 @@
                     });
                     i++;
                 }
-                
+
                 // Now render display items
                 for (let itemIdx = 0; itemIdx < displayItems.length; itemIdx++) {
                     const item = displayItems[itemIdx];
                     const prevItem = itemIdx > 0 ? displayItems[itemIdx - 1] : null;
-                    
+
                     // Determine width for this item
                     const itemWidth = item.type === 'ligand' ? ligandTokenWidth : charWidth;
-                    
+
                     // Check if we need to wrap
                     if (currentX + itemWidth > sequenceWidth - spacing) {
                         currentX = lineStartX;
                         lineY += charHeight; // No extra spacing between wrapped lines in same chain
                         maxLineY = Math.max(maxLineY, lineY);
                     }
-                    
+
                     // Add spacing/gaps between items
                     if (prevItem) {
                         const prevResSeq = prevItem.type === 'ligand' ? prevItem.resSeq : prevItem.atom.resSeq;
                         const prevPositionType = prevItem.type === 'ligand' ? 'L' : prevItem.atom.positionType;
                         const currResSeq = item.type === 'ligand' ? item.resSeq : item.atom.resSeq;
                         const currPositionType = item.type === 'ligand' ? 'L' : item.atom.positionType;
-                        
+
                         const positionTypeChanged = prevPositionType !== currPositionType;
                         const ligandResSeqChanged = currPositionType === 'L' && prevPositionType === 'L' && prevResSeq !== currResSeq;
                         const samePositionType = prevPositionType === currPositionType;
                         const resSeqDiff = currResSeq - prevResSeq;
                         const resSeqChanged = prevResSeq !== currResSeq;
-                        const isChainBreak = samePositionType && 
-                                             resSeqChanged &&
-                                             (prevPositionType === 'P' || prevPositionType === 'D' || prevPositionType === 'R') &&
-                                             resSeqDiff > 1;
-                        
+                        const isChainBreak = samePositionType &&
+                            resSeqChanged &&
+                            (prevPositionType === 'P' || prevPositionType === 'D' || prevPositionType === 'R') &&
+                            resSeqDiff > 1;
+
                         if (positionTypeChanged || ligandResSeqChanged) {
                             // Add spacer
                             currentX += charWidth;
@@ -969,12 +1043,12 @@
                                     lineY += charHeight; // No extra spacing between wrapped lines in same chain
                                     maxLineY = Math.max(maxLineY, lineY);
                                 }
-                                
+
                                 layout.residuePositions.push({
                                     residueData: {
                                         positionIndex: -1, // Gap marker
                                         letter: '-',
-                                        color: {r: 240, g: 240, b: 240},
+                                        color: { r: 240, g: 240, b: 240 },
                                         resSeq: prevResSeq + g + 1,
                                         chain: item.chain
                                     },
@@ -987,14 +1061,14 @@
                             }
                         }
                     }
-                    
+
                     // Check wrap before adding item
                     if (currentX + itemWidth > sequenceWidth - spacing) {
                         currentX = lineStartX;
                         lineY += charHeight; // No extra spacing between wrapped lines in same chain
                         maxLineY = Math.max(maxLineY, lineY);
                     }
-                    
+
                     if (item.type === 'ligand') {
                         // Create ligand token data (color will be computed dynamically at render time)
                         const ligandTokenData = {
@@ -1006,7 +1080,7 @@
                             resName: item.resName
                         };
                         allResidueData.push(ligandTokenData);
-                        
+
                         // Store position
                         layout.residuePositions.push({
                             residueData: ligandTokenData,
@@ -1019,7 +1093,7 @@
                         // Regular position
                         const atom = item.atom;
                         const letter = getPositionLetter(atom);
-                        
+
                         // Store position data (color will be computed dynamically at render time)
                         const residueData = {
                             positionIndex: atom.positionIndex,
@@ -1029,7 +1103,7 @@
                             resName: atom.resName // Store position name for tooltip
                         };
                         allResidueData.push(residueData);
-                        
+
                         // Store position
                         layout.residuePositions.push({
                             residueData,
@@ -1039,7 +1113,7 @@
                             height: charHeight
                         });
                     }
-                    
+
                     currentX += itemWidth;
                     if (item.type === 'ligand') {
                         lastResSeq = item.resSeq;
@@ -1049,7 +1123,7 @@
                         lastPositionType = item.atom.positionType;
                     }
                 }
-                
+
                 // Update currentY for next chain (use maxLineY to account for wrapping)
                 currentY = maxLineY + charHeight + spacing;
                 maxWidth = Math.max(maxWidth, currentX);
@@ -1059,17 +1133,17 @@
             let currentX = spacing;
             let lineStartX = spacing;
             let lineY = currentY;
-            
+
             for (const boundary of chainBoundaries) {
                 const chainId = boundary.chain;
                 const actualButtonWidth = chainButtonWidth + Math.round(4 * 2 / 3);
-                
+
                 // Check if we need to wrap
                 if (currentX + actualButtonWidth > containerWidth - spacing) {
                     currentX = lineStartX;
                     lineY += charHeight + spacing;
                 }
-                
+
                 layout.chainLabelPositions.push({
                     chainId,
                     positionIndex: sortedPositionEntries[boundary.startIndex].positionIndex,
@@ -1078,17 +1152,17 @@
                     width: actualButtonWidth,
                     height: charHeight
                 });
-                
+
                 currentX += actualButtonWidth + spacing;
                 maxWidth = Math.max(maxWidth, currentX);
             }
-            
+
             currentY = lineY + charHeight + spacing;
         }
-        
+
         // Build unified selectableItems array
         let itemIndex = 0;
-        
+
         // Add chain items (one per chain)
         for (const chainPos of layout.chainLabelPositions) {
             const chainId = chainPos.chainId;
@@ -1096,7 +1170,7 @@
             if (boundary) {
                 const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
                 const positionIndices = chainPositions.map(a => a.positionIndex);
-                
+
                 // For chain items, expand hit box to full row height to eliminate gaps
                 // Find the row height (next chain's Y - this chain's Y, or end of canvas)
                 let rowHeight = chainPos.height;
@@ -1116,7 +1190,7 @@
                         rowHeight = Math.max(charHeight, rowHeight);
                     }
                 }
-                
+
                 layout.selectableItems.push({
                     type: 'chain',
                     id: `chain-${chainId}`,
@@ -1132,14 +1206,14 @@
                 });
             }
         }
-        
+
         // Add position and ligand items (only in sequence mode, or if we want them in chain mode too)
         if (sequenceViewMode) {
             for (const residuePos of layout.residuePositions) {
                 const residueData = residuePos.residueData;
                 let positionIndices;
                 let type;
-                
+
                 if (residueData.isLigandToken && residueData.positionIndices) {
                     type = 'ligand';
                     positionIndices = residueData.positionIndices;
@@ -1149,11 +1223,11 @@
                 } else {
                     continue; // Skip invalid items
                 }
-                
+
                 layout.selectableItems.push({
                     type: type,
-                    id: type === 'ligand' 
-                        ? `ligand-${residueData.positionIndices[0]}` 
+                    id: type === 'ligand'
+                        ? `ligand-${residueData.positionIndices[0]}`
                         : `residue-${residueData.positionIndex}`,
                     positionIndices: positionIndices,
                     residueData: residueData,
@@ -1167,41 +1241,46 @@
                 });
             }
         }
-        
-        // Restrict visible height to 32 lines of characters
-        const maxVisibleHeight = 32 * charHeight + spacing; // 32 lines + spacing
-        const fullHeight = currentY; // Full content height
-        
+
+        // Calculate visible area dimensions
+        const maxVisibleLines = 32; // Maximum number of lines to show at once (same as before)
+        const maxVisibleHeight = maxVisibleLines * charHeight + spacing;
+        const fullContentHeight = currentY; // Full content height (actual total)
+
+        // Store fullContentHeight in layout for later use
+        layout.fullContentHeight = fullContentHeight;
+        layout.scrollbarWidth = SCROLLBAR_WIDTH;
+
+        // Canvas dimensions: visible area + scrollbar space
+        // Add SCROLLBAR_WIDTH to width to prevent scrollbar from overlapping content
+        const logicalWidth = sequenceWidth + SCROLLBAR_WIDTH;
+        const logicalHeight = Math.min(fullContentHeight, maxVisibleHeight);
+
         // Set canvas internal dimensions to achieve 200 DPI (pixels per inch)
         // Standard web DPI is 96, so 200 DPI = 200/96 ≈ 2.083x multiplier
         const targetDPI = 200;
         const standardDPI = 96;
         const dpiMultiplier = targetDPI / standardDPI;
-        
-        // Canvas should be full height to render all content
-        canvas.width = sequenceWidth * dpiMultiplier;
-        canvas.height = fullHeight * dpiMultiplier;
-        
-        // Set display size (CSS pixels) - canvas is full height
+
+        // Canvas logical size is fixed to visible area (not full content)
+        canvas.width = logicalWidth * dpiMultiplier;
+        canvas.height = logicalHeight * dpiMultiplier;
+
+        // Set display size (CSS pixels) - canvas is fixed visible size
         canvas.style.width = '100%';
-        canvas.style.height = fullHeight + 'px';
-        
-        // Restrict container height to 32 lines and enable scrolling if needed
-        if (fullHeight > maxVisibleHeight) {
-            sequenceViewEl.style.overflowY = 'auto';
-            sequenceViewEl.style.maxHeight = maxVisibleHeight + 'px';
-        } else {
-            sequenceViewEl.style.overflowY = 'visible';
-            sequenceViewEl.style.maxHeight = 'none';
-        }
-        
+        canvas.style.height = logicalHeight + 'px';
+
+        // Remove native scrolling - we'll use custom scrollbar
+        sequenceViewEl.style.overflowY = 'visible';
+        sequenceViewEl.style.maxHeight = 'none';
+
         const ctx = canvas.getContext('2d');
-        
+
         // Scale context by DPI multiplier to account for high-resolution canvas
         ctx.scale(dpiMultiplier, dpiMultiplier);
-        
+
         sequenceViewEl.appendChild(canvas);
-        
+
         // Store structure
         sequenceCanvasData = {
             canvas,
@@ -1212,10 +1291,10 @@
             layout,
             mode: sequenceViewMode
         };
-        
+
         // Setup canvas event handlers
         setupCanvasSequenceEvents();
-        
+
         // Initial render
         renderSequenceCanvas();
     }
@@ -1223,26 +1302,26 @@
     // Canvas-based sequence event handlers
     function setupCanvasSequenceEvents() {
         if (!sequenceCanvasData) return;
-        
+
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer) return;
-        
+
         // Store drag state (shared across all chains)
         // initialSelectionState: tracks the selection state at drag start
         // dragUnselectMode: true if we started on a selected item (unselect mode), false if we started on unselected (select mode)
         // dragStartItem: the selectable item where drag started (unified system)
         // dragEndItemIndex: the index of the selectable item where drag currently ends
         // Simple drag state
-        const dragState = { 
+        const dragState = {
             active: false,           // Is a drag operation active?
             startItem: null,         // Item where drag started
             endItemIndex: -1,        // Current end item index
             initialPositions: null,  // Selection state before drag started
             unselectMode: false      // true = unselecting, false = selecting
         };
-        
+
         const { canvas, allResidueData, chainBoundaries, sortedPositionEntries, layout } = sequenceCanvasData;
-        
+
         // Remove old event listeners by cloning the canvas
         const newCanvas = canvas.cloneNode(false);
         canvas.parentNode.replaceChild(newCanvas, canvas);
@@ -1253,14 +1332,30 @@
         const standardDPI = 96;
         const dpiMultiplier = targetDPI / standardDPI;
         sequenceCanvasData.ctx.scale(dpiMultiplier, dpiMultiplier);
-        
+
+        // Mouse wheel scrolling
+        newCanvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+
+            const fullContentHeight = layout.fullContentHeight || 0;
+            const logicalHeight = newCanvas.height / dpiMultiplier;
+            const scrollableAreaHeight = logicalHeight;
+            const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
+
+            // Vertical scrolling
+            const delta = e.deltaY;
+            scrollTop = Math.max(0, Math.min(maxScrollTop, scrollTop + delta));
+
+            scheduleRender();
+        }, { passive: false });
+
         // Helper: Apply selection to renderer
         const applySelection = (positions) => {
             const objectName = renderer.currentObjectName;
             const obj = renderer.objectsData[objectName];
             const frame = obj?.frames?.[0];
             if (!frame) return;
-            
+
             const newChains = new Set();
             if (frame.chains) {
                 for (const positionIndex of positions) {
@@ -1270,23 +1365,23 @@
                     }
                 }
             }
-            
+
             const totalPositions = frame.chains?.length || 0;
             const hasPartialSelections = positions.size > 0 && positions.size < totalPositions;
             const allChains = new Set(frame.chains);
-            const allChainsSelected = newChains.size === allChains.size && 
-                                    Array.from(newChains).every(c => allChains.has(c));
+            const allChainsSelected = newChains.size === allChains.size &&
+                Array.from(newChains).every(c => allChains.has(c));
             const selectionMode = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? 'default' : 'explicit';
             const chainsToSet = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? new Set() : newChains;
-            
-            renderer.setSelection({ 
+
+            renderer.setSelection({
                 positions: positions,
                 chains: chainsToSet,
                 selectionMode: selectionMode,
-                paeBoxes: [] 
+                paeBoxes: []
             });
         };
-        
+
         // Helper: Toggle positions in an item
         const toggleItemPositions = (item, currentPositions) => {
             const newPositions = new Set(currentPositions);
@@ -1301,12 +1396,12 @@
             }
             return newPositions;
         };
-        
+
         // Helper: Compute selection from item range
         const computeSelectionFromRange = (startIndex, endIndex, basePositions, unselectMode) => {
             const [min, max] = [Math.min(startIndex, endIndex), Math.max(startIndex, endIndex)];
             const newPositions = new Set(basePositions);
-            
+
             for (let i = min; i <= max; i++) {
                 const item = layout.selectableItems[i];
                 if (item && item.positionIndices) {
@@ -1319,23 +1414,23 @@
                     });
                 }
             }
-            
+
             return newPositions;
         };
-        
+
         // Mouse down handler
         newCanvas.addEventListener('mousedown__DISABLED', (e) => {
             if (e.button !== 0) return;
-            
+
             const pos = getCanvasPositionFromMouse(e, newCanvas);
             const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
             if (!item) return;
-            
+
             // Chain buttons: toggle immediately, no drag
             if (item.type === 'chain') {
                 const chainId = item.chainId;
                 const current = renderer?.getSelection();
-                const isSelected = current?.chains?.has(chainId) || 
+                const isSelected = current?.chains?.has(chainId) ||
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
                 if (e.altKey && callbacks.toggleChainResidues) {
                     callbacks.toggleChainResidues(chainId);
@@ -1346,44 +1441,44 @@
                 scheduleRender();
                 return;
             }
-            
+
             // Position/ligand: toggle immediately, then set up for potential drag
             const current = renderer?.getSelection();
             const currentPositions = current?.positions || new Set();
-            
+
             // Toggle immediately
             const toggledPositions = toggleItemPositions(item, currentPositions);
             applySelection(toggledPositions);
             lastSequenceUpdateHash = null;
             scheduleRender();
-            
+
             // Set up drag state (using toggled state as baseline)
-            const wasSelected = item.positionIndices.length > 0 && 
+            const wasSelected = item.positionIndices.length > 0 &&
                 item.positionIndices.every(pi => currentPositions.has(pi));
             dragState.active = false;
             dragState.startItem = item;
             dragState.endItemIndex = item.index;
             dragState.initialPositions = new Set(toggledPositions);
             dragState.unselectMode = !wasSelected; // After toggle, mode is flipped
-            
+
             // Set up window listeners for drag
             const handleMove = (e) => {
                 if (!dragState.startItem) return;
-                
+
                 // Check if button still pressed
                 const buttons = e.buttons !== undefined ? e.buttons : (e.which || 0);
                 if (!(buttons & 1)) return;
-                
+
                 const dragPos = getCanvasPositionFromMouse(e, newCanvas);
                 const endItem = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
-                
+
                 if (endItem && endItem.index !== dragState.startItem.index) {
                     // Moved to different item - start/continue drag
                     dragState.active = true;
-                    
+
                     if (endItem.index !== dragState.endItemIndex) {
                         dragState.endItemIndex = endItem.index;
-                        
+
                         // Compute preview selection
                         const previewPositions = computeSelectionFromRange(
                             dragState.startItem.index,
@@ -1391,7 +1486,7 @@
                             dragState.initialPositions,
                             dragState.unselectMode
                         );
-                        
+
                         if (callbacks.setPreviewSelectionSet) {
                             callbacks.setPreviewSelectionSet(previewPositions);
                         }
@@ -1400,16 +1495,16 @@
                     }
                 }
             };
-            
+
             const handleUp = () => {
                 const previewSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
-                
+
                 // If drag happened, apply the drag selection
                 if (dragState.active && previewSet) {
                     applySelection(previewSet);
                 }
                 // Otherwise, toggle was already applied on mousedown
-                
+
                 // Cleanup
                 if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
                 dragState.active = false;
@@ -1418,26 +1513,26 @@
                 dragState.initialPositions = null;
                 lastSequenceUpdateHash = null;
                 scheduleRender();
-                
+
                 window.removeEventListener('mousemove', handleMove);
                 window.removeEventListener('mouseup', handleUp);
             };
-            
+
             window.addEventListener('mousemove', handleMove);
             window.addEventListener('mouseup', handleUp);
         });
-        
+
         // Mouse move handler - only handle hover
         newCanvas.addEventListener('mousemove', (e) => {
             if (!sequenceCanvasData || sequenceCanvasData.canvas !== newCanvas) return;
-            
+
             // Don't handle hover during drag
             if (dragState.active) return;
-            
+
             const pos = getCanvasPositionFromMouse(e, newCanvas);
             const chainLabelPos = getChainLabelAtCanvasPosition(pos.x, pos.y, layout);
             const residuePos = getResidueAtCanvasPosition(pos.x, pos.y, layout);
-            
+
             if (residuePos && residuePos.residueData) {
                 const residueData = residuePos.residueData;
                 if (residueData.isLigandToken && residueData.positionIndices && callbacks.highlightAtoms) {
@@ -1481,7 +1576,7 @@
                 window.SequenceViewer.drawHighlights();
             }
         });
-        
+
         newCanvas.addEventListener('mouseup', () => {
             // Cleanup handled by window listener
         });
@@ -1493,22 +1588,22 @@
                 window.SequenceViewer.drawHighlights();
             }
         });
-        
+
         // Touch event handlers - same logic as mouse handlers
         newCanvas.addEventListener('touchstart__DISABLED', (e) => {
             if (e.touches.length !== 1) return;
             e.preventDefault();
-            
+
             const touch = e.touches[0];
             const pos = getCanvasPositionFromMouse(touch, newCanvas);
             const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
             if (!item) return;
-            
+
             // Chain buttons: toggle immediately, no drag
             if (item.type === 'chain') {
                 const chainId = item.chainId;
                 const current = renderer?.getSelection();
-                const isSelected = current?.chains?.has(chainId) || 
+                const isSelected = current?.chains?.has(chainId) ||
                     (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
                 if (callbacks.setChainResiduesSelected) {
                     callbacks.setChainResiduesSelected(chainId, !isSelected);
@@ -1517,43 +1612,43 @@
                 scheduleRender();
                 return;
             }
-            
+
             // Position/ligand: toggle immediately, then set up for potential drag
             const current = renderer?.getSelection();
             const currentPositions = current?.positions || new Set();
-            
+
             // Toggle immediately
             const toggledPositions = toggleItemPositions(item, currentPositions);
             applySelection(toggledPositions);
             lastSequenceUpdateHash = null;
             scheduleRender();
-            
+
             // Set up drag state (using toggled state as baseline)
-            const wasSelected = item.positionIndices.length > 0 && 
+            const wasSelected = item.positionIndices.length > 0 &&
                 item.positionIndices.every(pi => currentPositions.has(pi));
             dragState.active = false;
             dragState.startItem = item;
             dragState.endItemIndex = item.index;
             dragState.initialPositions = new Set(toggledPositions);
             dragState.unselectMode = !wasSelected; // After toggle, mode is flipped
-            
+
             // Set up window listeners for drag
             const handleMove = (e) => {
                 if (e.touches.length !== 1) return;
                 e.preventDefault();
                 if (!dragState.startItem) return;
-                
+
                 const dragTouch = e.touches[0];
                 const dragPos = getCanvasPositionFromMouse(dragTouch, newCanvas);
                 const endItem = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
-                
+
                 if (endItem && endItem.index !== dragState.startItem.index) {
                     // Moved to different item - start/continue drag
                     dragState.active = true;
-                    
+
                     if (endItem.index !== dragState.endItemIndex) {
                         dragState.endItemIndex = endItem.index;
-                        
+
                         // Compute preview selection
                         const previewPositions = computeSelectionFromRange(
                             dragState.startItem.index,
@@ -1561,7 +1656,7 @@
                             dragState.initialPositions,
                             dragState.unselectMode
                         );
-                        
+
                         if (callbacks.setPreviewSelectionSet) {
                             callbacks.setPreviewSelectionSet(previewPositions);
                         }
@@ -1570,17 +1665,17 @@
                     }
                 }
             };
-            
+
             const handleEnd = (e) => {
                 e.preventDefault();
                 const previewSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
-                
+
                 // If drag happened, apply the drag selection
                 if (dragState.active && previewSet) {
                     applySelection(previewSet);
                 }
                 // Otherwise, toggle was already applied on touchstart
-                
+
                 // Cleanup
                 if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
                 dragState.active = false;
@@ -1589,17 +1684,17 @@
                 dragState.initialPositions = null;
                 lastSequenceUpdateHash = null;
                 scheduleRender();
-                
+
                 window.removeEventListener('touchmove', handleMove);
                 window.removeEventListener('touchend', handleEnd);
                 window.removeEventListener('touchcancel', handleEnd);
             };
-            
+
             window.addEventListener('touchmove', handleMove, { passive: false });
             window.addEventListener('touchend', handleEnd, { passive: false });
             window.addEventListener('touchcancel', handleEnd, { passive: false });
         });
-        
+
         // === Unified selection handlers (press → optional drag → release) ===
         // Applies to chain, sequence, and ligand. Chain toggles on release (no drag),
         // sequence/ligand preview during drag; commit on release.
@@ -1607,6 +1702,49 @@
             if (e.button !== 0) return;
 
             const pos = getCanvasPositionFromMouse(e, newCanvas);
+
+            //Check if clicked on scrollbar
+            const logicalWidth = newCanvas.width / dpiMultiplier;
+            const logicalHeight = newCanvas.height / dpiMultiplier;
+            const vScrollbarX = logicalWidth - SCROLLBAR_WIDTH;
+            const scrollableAreaHeight = logicalHeight;
+
+            if (pos.x >= vScrollbarX && pos.y <= scrollableAreaHeight) {
+                // Clicked on vertical scrollbar
+                e.preventDefault();
+
+                const fullContentHeight = layout.fullContentHeight || 0;
+                const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
+
+                if (maxScrollTop > 0) {
+                    // Calculate scroll position from mouse Y
+                    const thumbHeight = Math.max(20, (scrollableAreaHeight / fullContentHeight) * scrollableAreaHeight);
+                    const clickedRatio = pos.y / scrollableAreaHeight;
+                    scrollTop = Math.max(0, Math.min(maxScrollTop, clickedRatio * fullContentHeight));
+
+                    scheduleRender();
+
+                    // Set up drag tracking for scrollbar
+                    const onMouseMove = (moveE) => {
+                        const movePos = getCanvasPositionFromMouse(moveE, newCanvas);
+                        const newRatio = Math.max(0, Math.min(1, movePos.y / scrollableAreaHeight));
+                        scrollTop = Math.max(0, Math.min(maxScrollTop, newRatio * fullContentHeight));
+                        scheduleRender();
+                    };
+
+                    const onMouseUp = () => {
+                        document.removeEventListener('mousemove', onMouseMove);
+                        document.removeEventListener('mouseup', onMouseUp);
+                    };
+
+                    document.addEventListener('mousemove', onMouseMove);
+                    document.addEventListener('mouseup', onMouseUp);
+                }
+
+                return;
+            }
+
+            // Regular selection logic (not on scrollbar)
             const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
             if (!item) return;
 
@@ -1801,7 +1939,7 @@
     // Colors are now computed dynamically in renderSequenceCanvas(), so we just need to trigger a re-render
     function updateSequenceViewColors() {
         if (!sequenceCanvasData) return;
-        
+
         // Invalidate hash to force redraw with new colors (computed dynamically)
         lastSequenceUpdateHash = null;
         scheduleRender();
@@ -1816,9 +1954,9 @@
         // Determine what's actually visible from the unified model or visibilityMask
         // Use previewSelectionSet during drag for live feedback
         let visiblePositions = new Set();
-        
+
         const previewSelectionSet = getLocalPreview();
-        
+
         if (previewSelectionSet && previewSelectionSet.size > 0) {
             // During drag, use preview selection for live feedback (already position indices)
             visiblePositions = new Set(previewSelectionSet);
@@ -1854,17 +1992,17 @@
     // ============================================================================
     // HIGHLIGHT OVERLAY MANAGEMENT
     // ============================================================================
-    
+
     // Initialize highlight overlay canvas (positioned over main molecule viewer)
     function initializeHighlightOverlay() {
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer || !renderer.canvas) return;
-        
+
         // Remove existing overlay if it exists
         if (highlightOverlayCanvas && highlightOverlayCanvas.parentElement) {
             highlightOverlayCanvas.parentElement.removeChild(highlightOverlayCanvas);
         }
-        
+
         // Create highlight overlay canvas that sits on top of main canvas
         highlightOverlayCanvas = document.createElement('canvas');
         highlightOverlayCanvas.id = 'highlightOverlay';
@@ -1873,34 +2011,34 @@
         highlightOverlayCanvas.style.zIndex = '10';
         highlightOverlayCanvas.style.left = '0';
         highlightOverlayCanvas.style.top = '0';
-        
+
         // Position it relative to the canvas container
         const container = renderer.canvas.parentElement;
         if (container) {
             container.style.position = 'relative';
             container.appendChild(highlightOverlayCanvas);
         }
-        
+
         highlightOverlayCtx = highlightOverlayCanvas.getContext('2d');
-        
+
         // Update overlay canvas size to match main canvas
         updateHighlightOverlaySize();
     }
-    
+
     // Update highlight overlay canvas size and position to match main canvas
     function updateHighlightOverlaySize() {
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer || !highlightOverlayCanvas || !highlightOverlayCtx || !renderer.canvas) return;
-        
+
         const displayWidth = renderer.displayWidth || renderer.canvas.width;
         const displayHeight = renderer.displayHeight || renderer.canvas.height;
-        
+
         // Set canvas size
         highlightOverlayCanvas.width = displayWidth;
         highlightOverlayCanvas.height = displayHeight;
         highlightOverlayCanvas.style.width = displayWidth + 'px';
         highlightOverlayCanvas.style.height = displayHeight + 'px';
-        
+
         // Position overlay to match main canvas position within container
         // Get the main canvas position relative to its container
         const mainCanvas = renderer.canvas;
@@ -1908,28 +2046,28 @@
         if (container) {
             const containerRect = container.getBoundingClientRect();
             const canvasRect = mainCanvas.getBoundingClientRect();
-            
+
             // Calculate offset of canvas within container
             const offsetLeft = canvasRect.left - containerRect.left;
             const offsetTop = canvasRect.top - containerRect.top;
-            
+
             highlightOverlayCanvas.style.left = offsetLeft + 'px';
             highlightOverlayCanvas.style.top = offsetTop + 'px';
         }
     }
-    
+
     // Draw highlights on overlay canvas without re-rendering main scene
     function drawHighlights() {
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer || !renderer.canvas) {
             return;
         }
-        
+
         // Skip drawing highlights during dragging to prevent interference with drag operations
         if (renderer.isDragging) {
             return;
         }
-        
+
         // Initialize overlay if it doesn't exist yet
         if (!highlightOverlayCanvas || !highlightOverlayCtx) {
             initializeHighlightOverlay();
@@ -1938,32 +2076,60 @@
                 return;
             }
         }
-        
-        if (!renderer.positionScreenPositions) {
-            return;
-        }
-        
+
+        // [OPTIMIZATION] Removed legacy check for positionScreenPositions
+        // The renderer now uses SoA arrays or getHighlightCoordinates API
+        // if (!renderer.positionScreenPositions) {
+        //    return;
+        // }
+
         // Update overlay canvas size to match main canvas
         updateHighlightOverlaySize();
-        
+
         // Clear overlay canvas
         const displayWidth = renderer.displayWidth || renderer.canvas.width;
         const displayHeight = renderer.displayHeight || renderer.canvas.height;
         highlightOverlayCtx.clearRect(0, 0, displayWidth, displayHeight);
-        
+
         // Draw highlights if any
         const highlightFillStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
         const highlightStrokeStyle = 'rgba(255, 255, 0, 1.0)'; // Yellow border
         const highlightLineWidth = 1;
-        
+
         highlightOverlayCtx.fillStyle = highlightFillStyle;
         highlightOverlayCtx.strokeStyle = highlightStrokeStyle;
         highlightOverlayCtx.lineWidth = highlightLineWidth;
-        
+
         // Highlight multiple positions if specified (preferred method)
-        if (renderer.highlightedAtoms !== null && renderer.highlightedAtoms instanceof Set && renderer.highlightedAtoms.size > 0) {
-            for (const positionIndex of renderer.highlightedAtoms) {
-                if (positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
+        // [OPTIMIZATION] Phase 6: Use public API for highlights
+        // This decouples the sequence viewer from the internal implementation details of the renderer
+        if (renderer.getHighlightCoordinates) {
+            const coords = renderer.getHighlightCoordinates();
+            for (const pos of coords) {
+                highlightOverlayCtx.beginPath();
+                highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
+                highlightOverlayCtx.fill();
+                highlightOverlayCtx.stroke();
+            }
+        } else {
+            // Fallback for older renderer versions (if any)
+            if (renderer.highlightedAtoms !== null && renderer.highlightedAtoms instanceof Set && renderer.highlightedAtoms.size > 0) {
+                for (const positionIndex of renderer.highlightedAtoms) {
+                    if (renderer.positionScreenPositions &&
+                        positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
+                        const pos = renderer.positionScreenPositions[positionIndex];
+                        if (pos) {
+                            highlightOverlayCtx.beginPath();
+                            highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
+                            highlightOverlayCtx.fill();
+                            highlightOverlayCtx.stroke();
+                        }
+                    }
+                }
+            } else if (renderer.highlightedAtom !== null && renderer.highlightedAtom !== undefined && typeof renderer.highlightedAtom === 'number') {
+                const positionIndex = renderer.highlightedAtom;
+                if (renderer.positionScreenPositions &&
+                    positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
                     const pos = renderer.positionScreenPositions[positionIndex];
                     if (pos) {
                         highlightOverlayCtx.beginPath();
@@ -1973,19 +2139,8 @@
                     }
                 }
             }
-        } else if (renderer.highlightedAtom !== null && renderer.highlightedAtom !== undefined && typeof renderer.highlightedAtom === 'number') {
-            const positionIndex = renderer.highlightedAtom;
-            if (positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
-                const pos = renderer.positionScreenPositions[positionIndex];
-                if (pos) {
-                    highlightOverlayCtx.beginPath();
-                    highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
-                    highlightOverlayCtx.fill();
-                    highlightOverlayCtx.stroke();
-                }
-            }
         }
-        
+
         // Draw tooltip in bottom right corner if hovering over sequence
         if (hoveredResidueInfo) {
             const padding = 10;
@@ -1994,18 +2149,18 @@
             const textColor = 'rgba(255, 255, 255, 0.95)';
             const bgColor = 'rgba(0, 0, 0, 0.75)';
             const cornerRadius = 4;
-            
+
             highlightOverlayCtx.font = `${fontSize}px monospace`;
             highlightOverlayCtx.textAlign = 'right';
             highlightOverlayCtx.textBaseline = 'bottom';
-            
+
             // Build tooltip text
             const lines = [
                 `Chain: ${hoveredResidueInfo.chain}`,
                 `Residue: ${hoveredResidueInfo.resName}`,
                 `Index: ${hoveredResidueInfo.resSeq}`
             ];
-            
+
             // Measure text to size background
             const textMetrics = lines.map(line => highlightOverlayCtx.measureText(line));
             const maxWidth = Math.max(...textMetrics.map(m => m.width));
@@ -2013,11 +2168,11 @@
             const bgPadding = 8;
             const bgWidth = maxWidth + bgPadding * 2;
             const bgHeight = totalHeight + bgPadding * 2;
-            
+
             // Position in bottom right corner
             const x = displayWidth - padding;
             const y = displayHeight - padding;
-            
+
             // Draw background with rounded corners
             highlightOverlayCtx.fillStyle = bgColor;
             highlightOverlayCtx.beginPath();
@@ -2031,7 +2186,7 @@
             highlightOverlayCtx.arcTo(x, y - bgHeight, x - cornerRadius, y - bgHeight, cornerRadius);
             highlightOverlayCtx.closePath();
             highlightOverlayCtx.fill();
-            
+
             // Draw text
             highlightOverlayCtx.fillStyle = textColor;
             lines.forEach((line, i) => {
@@ -2043,10 +2198,10 @@
     // ============================================================================
     // PUBLIC API
     // ============================================================================
-    
+
     window.SequenceViewer = {
         // Initialize callbacks
-        setCallbacks: function(cb) {
+        setCallbacks: function (cb) {
             callbacks = Object.assign({}, callbacks, cb);
             // Try to initialize highlight overlay when callbacks are set
             // (will be re-initialized when renderer becomes available if not ready yet)
@@ -2057,34 +2212,34 @@
                 }
             }
         },
-        
+
         // Main functions
         buildSequenceView: buildSequenceView,
         updateSequenceViewColors: updateSequenceViewColors,
         updateSequenceViewSelectionState: updateSequenceViewSelectionState,
-        
+
         // Highlight overlay functions
         drawHighlights: drawHighlights,
         updateHighlightOverlaySize: updateHighlightOverlaySize,
-        
+
         // State management
-        setSequenceViewMode: function(mode) {
+        setSequenceViewMode: function (mode) {
             sequenceViewMode = mode;
         },
-        
-        getSequenceViewMode: function() {
+
+        getSequenceViewMode: function () {
             return sequenceViewMode;
         },
-        
+
         // Clear state
-        clear: function() {
+        clear: function () {
             sequenceCanvasData = null;
             lastSequenceFrameIndex = -1;
             lastSequenceUpdateHash = null;
         },
-        
+
         // Clear preview for current object
-        clearPreview: function() {
+        clearPreview: function () {
             setLocalPreview(null);
             lastSequenceUpdateHash = null;
             scheduleRender();

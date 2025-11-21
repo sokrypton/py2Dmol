@@ -1770,9 +1770,41 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
  */
 function filterPAEForLigands(paeData, isLigandPosition) {
     if (!paeData || !isLigandPosition || isLigandPosition.length === 0) {
+        // If TypedArray, return copy
+        if (paeData && paeData.slice) return paeData.slice();
         return paeData ? paeData.map(row => [...row]) : null;
     }
 
+    // Handle TypedArray (flat)
+    if (paeData.buffer) {
+        const n = Math.sqrt(paeData.length);
+        // Calculate new size
+        let newN = 0;
+        for (let i = 0; i < isLigandPosition.length; i++) {
+            if (!isLigandPosition[i]) newN++;
+        }
+
+        // If no ligands to filter, return copy
+        if (newN === n) return paeData.slice();
+
+        const filtered = new paeData.constructor(newN * newN);
+        let r = 0;
+        for (let i = 0; i < n; i++) {
+            if (!isLigandPosition[i]) {
+                let c = 0;
+                for (let j = 0; j < n; j++) {
+                    if (!isLigandPosition[j]) {
+                        filtered[r * newN + c] = paeData[i * n + j];
+                        c++;
+                    }
+                }
+                r++;
+            }
+        }
+        return filtered;
+    }
+
+    // Handle Array of Arrays (legacy)
     const filteredPae = [];
     for (let rowIdx = 0; rowIdx < paeData.length; rowIdx++) {
         if (!isLigandPosition[rowIdx]) {
@@ -1789,34 +1821,156 @@ function filterPAEForLigands(paeData, isLigandPosition) {
 }
 
 /**
- * Extract PAE matrix from JSON object
- * @param {object} paeJson - PAE JSON data
- * @returns {Array<Array<number>>|null} - PAE matrix or null
+ * Fast extraction of PAE data from JSON text without full parsing.
+ * Looks for "predicted_aligned_error": [[...]] pattern.
+ * @param {string} text - JSON text
+ * @returns {Uint8Array|null} - Flattened PAE matrix as Uint8Array or null
  */
-function extractPaeFromJSON(paeJson, warnIfMissing = false) {
-    if (!paeJson) return null;
-    if (paeJson.pae && Array.isArray(paeJson.pae)) return paeJson.pae;
-    if (paeJson.predicted_aligned_error && Array.isArray(paeJson.predicted_aligned_error)) {
-        return paeJson.predicted_aligned_error;
-    }
-    if (Array.isArray(paeJson) && paeJson.length > 0 && paeJson[0].predicted_aligned_error) {
-        return paeJson[0].predicted_aligned_error;
-    }
-    // Check for AlphaFold3 format: paeJson might have a nested structure
-    if (paeJson.predicted_aligned_error && typeof paeJson.predicted_aligned_error === 'object') {
-        // Try nested structure
-        const nested = paeJson.predicted_aligned_error;
-        if (nested.pae && Array.isArray(nested.pae)) return nested.pae;
-        if (nested.predicted_aligned_error && Array.isArray(nested.predicted_aligned_error)) {
-            return nested.predicted_aligned_error;
+function fastExtractPaeFromText(text) {
+    if (!text) return null;
+
+    // Find start of predicted_aligned_error
+    // We look for "predicted_aligned_error" followed by optional whitespace and colon and [[
+    const match = /"predicted_aligned_error"\s*:\s*\[\s*\[/.exec(text);
+    if (!match) return null;
+
+    const startIdx = match.index + match[0].length - 1; // Point to the first [ of [[
+
+    // We need to parse the array of arrays.
+    // Since we want to avoid full JSON parse, we can try to extract just this section.
+    // However, counting brackets is safer.
+
+    let bracketCount = 0;
+    let endIdx = -1;
+    let inString = false;
+    let escape = false;
+
+    for (let i = startIdx; i < text.length; i++) {
+        const char = text[i];
+
+        if (escape) {
+            escape = false;
+            continue;
+        }
+
+        if (char === '\\') {
+            escape = true;
+            continue;
+        }
+
+        if (char === '"') {
+            inString = !inString;
+            continue;
+        }
+
+        if (!inString) {
+            if (char === '[') {
+                bracketCount++;
+            } else if (char === ']') {
+                bracketCount--;
+                if (bracketCount === 0) {
+                    endIdx = i + 1;
+                    break;
+                }
+            }
         }
     }
-    if (warnIfMissing) {
-        console.warn("Could not find PAE matrix in JSON.");
+
+    if (endIdx === -1) return null;
+
+    const paeJson = text.substring(startIdx, endIdx);
+
+    try {
+        // Parse just the matrix part
+        const paeMatrix = JSON.parse(paeJson);
+        return flattenPaeToArray(paeMatrix);
+    } catch (e) {
+        console.warn("Fast PAE parse failed, falling back", e);
+        return null;
     }
-    return null;
 }
 
+/**
+ * Helper to flatten and scale PAE matrix to Uint8Array
+ */
+function flattenPaeToArray(paeMatrix) {
+    if (!Array.isArray(paeMatrix) || paeMatrix.length === 0) return null;
+
+    const n = paeMatrix.length;
+    const totalSize = n * n;
+    const flattened = new Uint8Array(totalSize);
+
+    for (let i = 0; i < n; i++) {
+        const row = paeMatrix[i];
+        if (!Array.isArray(row)) return null; // Should be square matrix
+
+        const rowLen = row.length;
+        const len = Math.min(n, rowLen);
+
+        for (let j = 0; j < len; j++) {
+            // Scale: val * 8 (max 31.75 * 8 = 254)
+            // Clamp to 0-255
+            let val = Math.round(row[j] * 8);
+            if (val > 255) val = 255;
+            if (val < 0) val = 0;
+            flattened[i * n + j] = val;
+        }
+    }
+    return flattened;
+}
+
+/**
+ * Extract PAE matrix from JSON object and flatten it to Uint8Array
+ * @param {object} json - PAE JSON data
+ * @returns {Uint8Array|null} - Flattened PAE matrix or null
+ */
+function extractPaeFromJSON(json) {
+    try {
+        // 1. Check for pre-extracted format (our optimization)
+        if (json.is_pae_extracted && json.data) {
+            if (json.data instanceof Uint8Array) {
+                return json.data;
+            }
+            return new Uint8Array(json.data);
+        }
+
+        let paeMatrix = null;
+
+        // 2. Standard AlphaFold format: [{ "predicted_aligned_error": [[...]] }]
+        if (Array.isArray(json) && json.length > 0 && json[0].predicted_aligned_error) {
+            paeMatrix = json[0].predicted_aligned_error;
+        }
+        // 3. Object format: { "predicted_aligned_error": [[...]] }
+        else if (json.predicted_aligned_error) {
+            paeMatrix = json.predicted_aligned_error;
+        }
+        // 4. "pae" key format (some variations)
+        else if (json.pae) {
+            paeMatrix = json.pae;
+        }
+
+        if (!paeMatrix) {
+            // It might be that 'json' IS the matrix (array of arrays)
+            if (Array.isArray(json) && json.length > 0 && Array.isArray(json[0])) {
+                // Heuristic: check if it looks like a square matrix of numbers
+                if (json.length === json[0].length && typeof json[0][0] === 'number') {
+                    paeMatrix = json;
+                }
+            }
+        }
+
+        if (!paeMatrix) {
+            // console.warn("Could not find PAE matrix in JSON.");
+            return null;
+        }
+
+        return flattenPaeToArray(paeMatrix);
+
+    } catch (e) {
+        console.error("Error extracting PAE matrix:", e);
+        return null;
+    }
+}
 /**
  * Clean object name by removing file extensions
  * @param {string} name - Original name
