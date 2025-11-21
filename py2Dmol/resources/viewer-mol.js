@@ -5122,19 +5122,19 @@ function initializePy2DmolViewer(containerElement) {
                 let currentLineWidth = baseLineWidthPixels * widthMultiplier;
 
                 if (this.perspectiveEnabled) {
-                    // Approximate perspective scale from radii ratio
-                    // radius = base * widthMult * perspectiveScale * 0.5
-                    // perspectiveScale = radius / (base * widthMult * 0.5)
-                    // We can just average the stored radii and reverse the width multiplier
-                    // But simpler: just use the stored radii directly to infer scale?
-                    // Actually, we stored screenRadius which includes perspective.
-                    // Let's re-calculate scale from stored radii for line width
-                    // This is slightly redundant but accurate enough
-                    const r1 = screenRadius[idx1];
-                    const r2 = screenRadius[idx2];
-                    // Reconstruct line width from radii (radius is approx half line width)
-                    // This is faster than re-calculating perspective scale
-                    currentLineWidth = (r1 + r2); // Average diameter
+                    // Apply perspective scaling to the segment width
+                    // Calculate the average perspective scale for this segment
+                    // based on the Z-coordinates of its endpoints
+                    const vec1 = rotated[idx1];
+                    const vec2 = rotated[idx2];
+                    const z1 = this.focalLength - vec1.z;
+                    const z2 = this.focalLength - vec2.z;
+
+                    // Average perspective scale for the segment
+                    const avgPerspectiveScale = (this.focalLength / z1 + this.focalLength / z2) / 2;
+
+                    // Apply perspective scale to the base width (which already includes widthMultiplier)
+                    currentLineWidth *= avgPerspectiveScale;
                 }
 
                 currentLineWidth = Math.max(0.5, currentLineWidth);

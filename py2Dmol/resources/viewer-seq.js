@@ -20,6 +20,15 @@
     let highlightOverlayCtx = null;
     let hoveredResidueInfo = null; // { chain, resName, resSeq } for tooltip display
 
+    // Virtual scrolling state
+    let scrollTop = 0;
+    let scrollLeft = 0;
+    const SCROLLBAR_WIDTH = 15;
+    const SCROLLBAR_PADDING = 2;
+    const SCROLLBAR_TRACK_COLOR = '#f0f0f0';
+    const SCROLLBAR_THUMB_COLOR = '#b0b0b0';
+    const SCROLLBAR_THUMB_COLOR_NO_SCROLL = '#d0d0d0';
+
     // Per-object preview state (single source of truth for preview during drag)
     const previewByObject = new Map();
 
@@ -179,6 +188,9 @@
     function getSelectableItemAtPosition(x, y, layout, sequenceViewMode) {
         if (!layout || !layout.selectableItems) return null;
 
+        // Adjust Y coordinate for scroll offset
+        const adjustedY = y + scrollTop;
+
         // Filter items based on mode
         let items = layout.selectableItems;
         if (!sequenceViewMode) {
@@ -195,7 +207,7 @@
         for (const item of residueLigandItems) {
             const bounds = item.bounds;
             if (x >= bounds.x && x < bounds.x + bounds.width &&
-                y >= bounds.y && y < bounds.y + bounds.height) {
+                adjustedY >= bounds.y && adjustedY < bounds.y + bounds.height) {
                 return item;
             }
         }
@@ -212,7 +224,7 @@
                 const chainPos = layout.chainLabelPositions?.find(p => p.chainId === item.chainId);
                 if (chainPos) {
                     if (x >= chainPos.x && x < chainPos.x + chainPos.width &&
-                        y >= chainPos.y && y < chainPos.y + chainPos.height) {
+                        adjustedY >= chainPos.y && adjustedY < chainPos.y + chainPos.height) {
                         return item;
                     }
                 }
@@ -223,13 +235,12 @@
                 const chainPos = layout.chainLabelPositions?.find(p => p.chainId === item.chainId);
                 if (chainPos) {
                     if (x >= chainPos.x && x < chainPos.x + chainPos.width &&
-                        y >= chainPos.y && y < chainPos.y + chainPos.height) {
+                        adjustedY >= chainPos.y && adjustedY < chainPos.y + chainPos.height) {
                         return item;
                     }
                 }
             }
         }
-
         return null;
     }
 
@@ -354,6 +365,34 @@
         }
     }
 
+    // Draw scrollbars (vertical only for sequence viewer)
+    function drawScrollbars(ctx, canvasWidth, canvasHeight, scrollableAreaHeight, fullContentHeight) {
+        if (!sequenceCanvasData) return;
+
+        // Vertical scrollbar dimensions
+        const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
+        const scrollRatio = maxScrollTop > 0 ? scrollTop / maxScrollTop : 0;
+        const thumbHeight = Math.max(20, (scrollableAreaHeight / fullContentHeight) * scrollableAreaHeight);
+        const thumbY = scrollRatio * (scrollableAreaHeight - thumbHeight);
+        const vScrollbarX = canvasWidth - SCROLLBAR_WIDTH;
+
+        // Draw vertical scrollbar track
+        ctx.fillStyle = SCROLLBAR_TRACK_COLOR;
+        ctx.fillRect(vScrollbarX, 0, SCROLLBAR_WIDTH, scrollableAreaHeight);
+
+        // Draw vertical scrollbar thumb
+        if (maxScrollTop > 0) {
+            ctx.fillStyle = SCROLLBAR_THUMB_COLOR;
+            ctx.fillRect(vScrollbarX + SCROLLBAR_PADDING, thumbY,
+                SCROLLBAR_WIDTH - SCROLLBAR_PADDING * 2, thumbHeight);
+        } else {
+            // No scrolling needed - show disabled thumb
+            ctx.fillStyle = SCROLLBAR_THUMB_COLOR_NO_SCROLL;
+            ctx.fillRect(vScrollbarX + SCROLLBAR_PADDING, 0,
+                SCROLLBAR_WIDTH - SCROLLBAR_PADDING * 2, scrollableAreaHeight);
+        }
+    }
+
     // Main canvas rendering function
     function renderSequenceCanvas() {
         if (!sequenceCanvasData) return;
@@ -362,8 +401,23 @@
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer) return;
 
+        // Calculate logical dimensions (accounting for DPI multiplier)
+        const targetDPI = 200;
+        const standardDPI = 96;
+        const dpiMultiplier = targetDPI / standardDPI;
+        const logicalWidth = canvas.width / dpiMultiplier;
+        const logicalHeight = canvas.height / dpiMultiplier;
+
+        // Calculate scrollable area
+        const fullContentHeight = layout.fullContentHeight || logicalHeight;
+        const scrollableAreaHeight = logicalHeight; // Scrollbar is on the right side, not adding to height
+        const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
+
+        // Clamp scrollTop to valid range
+        scrollTop = Math.max(0, Math.min(maxScrollTop, scrollTop));
+
         // Clear canvas
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.clearRect(0, 0, logicalWidth, logicalHeight);
 
         // Get selection state - use selectionModel directly to avoid expensive getSelection() copy
         const selectionModel = renderer.selectionModel;
@@ -395,7 +449,7 @@
 
         const dimFactor = 0.3; // Same as PAE plot
 
-        // Draw chain labels
+        // Draw chain labels (with virtual scrolling)
         if (layout.chainLabelPositions) {
             // During drag, compute chain selection from preview positions
             let chainSelection = selectionModel?.chains;
@@ -431,7 +485,15 @@
                 selectionMode = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? 'default' : 'explicit';
             }
 
+            // Only render chains that are visible in the current scroll position
             for (const chainPos of layout.chainLabelPositions) {
+                const yOffset = chainPos.y - scrollTop;
+
+                // Skip if chain is outside visible area
+                if (yOffset + chainPos.height < 0 || yOffset > scrollableAreaHeight) {
+                    continue;
+                }
+
                 const chainId = chainPos.chainId;
                 const isSelected = chainSelection?.has(chainId) ||
                     (selectionMode === 'default' && (!chainSelection || chainSelection.size === 0));
@@ -441,7 +503,7 @@
                     ctx,
                     chainId,
                     chainPos.x,
-                    chainPos.y,
+                    yOffset,
                     chainPos.width,
                     chainPos.height,
                     isSelected,
@@ -451,7 +513,7 @@
             }
         }
 
-        // Draw position characters and ligand tokens
+        // Draw position characters and ligand tokens (with virtual scrolling)
         if (layout.residuePositions && allResidueData) {
             // Get renderer's getAtomColor function for dynamic color computation
             const hasGetAtomColor = renderer?.getAtomColor;
@@ -459,6 +521,13 @@
             const effectiveColorMode = renderer?._getEffectiveColorMode?.() || 'auto';
 
             for (const pos of layout.residuePositions) {
+                const yOffset = pos.y - scrollTop;
+
+                // Skip if residue is outside visible area
+                if (yOffset + pos.height < 0 || yOffset > scrollableAreaHeight) {
+                    continue;
+                }
+
                 const residueData = pos.residueData;
                 if (!residueData) continue;
 
@@ -490,7 +559,7 @@
                         ctx,
                         residueData.ligandName || 'LIG',
                         pos.x,
-                        pos.y,
+                        yOffset,
                         pos.width,
                         pos.height,
                         color,
@@ -503,7 +572,7 @@
                         ctx,
                         '-', // Always use "-" for gaps
                         pos.x,
-                        pos.y,
+                        yOffset,
                         pos.width,
                         pos.height,
                         color,
@@ -518,7 +587,7 @@
                         ctx,
                         residueData.letter,
                         pos.x,
-                        pos.y,
+                        yOffset,
                         pos.width,
                         pos.height,
                         color,
@@ -528,6 +597,9 @@
                 }
             }
         }
+
+        // Draw scrollbar
+        drawScrollbars(ctx, logicalWidth, logicalHeight, scrollableAreaHeight, fullContentHeight);
 
         // Draw hover highlight if needed (will be handled in event handlers)
     }
@@ -1170,9 +1242,19 @@
             }
         }
 
-        // Restrict visible height to 32 lines of characters
-        const maxVisibleHeight = 32 * charHeight + spacing; // 32 lines + spacing
-        const fullHeight = currentY; // Full content height
+        // Calculate visible area dimensions
+        const maxVisibleLines = 32; // Maximum number of lines to show at once (same as before)
+        const maxVisibleHeight = maxVisibleLines * charHeight + spacing;
+        const fullContentHeight = currentY; // Full content height (actual total)
+
+        // Store fullContentHeight in layout for later use
+        layout.fullContentHeight = fullContentHeight;
+        layout.scrollbarWidth = SCROLLBAR_WIDTH;
+
+        // Canvas dimensions: visible area + scrollbar space
+        // Add SCROLLBAR_WIDTH to width to prevent scrollbar from overlapping content
+        const logicalWidth = sequenceWidth + SCROLLBAR_WIDTH;
+        const logicalHeight = Math.min(fullContentHeight, maxVisibleHeight);
 
         // Set canvas internal dimensions to achieve 200 DPI (pixels per inch)
         // Standard web DPI is 96, so 200 DPI = 200/96 ≈ 2.083x multiplier
@@ -1180,22 +1262,17 @@
         const standardDPI = 96;
         const dpiMultiplier = targetDPI / standardDPI;
 
-        // Canvas should be full height to render all content
-        canvas.width = sequenceWidth * dpiMultiplier;
-        canvas.height = fullHeight * dpiMultiplier;
+        // Canvas logical size is fixed to visible area (not full content)
+        canvas.width = logicalWidth * dpiMultiplier;
+        canvas.height = logicalHeight * dpiMultiplier;
 
-        // Set display size (CSS pixels) - canvas is full height
+        // Set display size (CSS pixels) - canvas is fixed visible size
         canvas.style.width = '100%';
-        canvas.style.height = fullHeight + 'px';
+        canvas.style.height = logicalHeight + 'px';
 
-        // Restrict container height to 32 lines and enable scrolling if needed
-        if (fullHeight > maxVisibleHeight) {
-            sequenceViewEl.style.overflowY = 'auto';
-            sequenceViewEl.style.maxHeight = maxVisibleHeight + 'px';
-        } else {
-            sequenceViewEl.style.overflowY = 'visible';
-            sequenceViewEl.style.maxHeight = 'none';
-        }
+        // Remove native scrolling - we'll use custom scrollbar
+        sequenceViewEl.style.overflowY = 'visible';
+        sequenceViewEl.style.maxHeight = 'none';
 
         const ctx = canvas.getContext('2d');
 
@@ -1255,6 +1332,22 @@
         const standardDPI = 96;
         const dpiMultiplier = targetDPI / standardDPI;
         sequenceCanvasData.ctx.scale(dpiMultiplier, dpiMultiplier);
+
+        // Mouse wheel scrolling
+        newCanvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+
+            const fullContentHeight = layout.fullContentHeight || 0;
+            const logicalHeight = newCanvas.height / dpiMultiplier;
+            const scrollableAreaHeight = logicalHeight;
+            const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
+
+            // Vertical scrolling
+            const delta = e.deltaY;
+            scrollTop = Math.max(0, Math.min(maxScrollTop, scrollTop + delta));
+
+            scheduleRender();
+        }, { passive: false });
 
         // Helper: Apply selection to renderer
         const applySelection = (positions) => {
@@ -1609,6 +1702,49 @@
             if (e.button !== 0) return;
 
             const pos = getCanvasPositionFromMouse(e, newCanvas);
+
+            //Check if clicked on scrollbar
+            const logicalWidth = newCanvas.width / dpiMultiplier;
+            const logicalHeight = newCanvas.height / dpiMultiplier;
+            const vScrollbarX = logicalWidth - SCROLLBAR_WIDTH;
+            const scrollableAreaHeight = logicalHeight;
+
+            if (pos.x >= vScrollbarX && pos.y <= scrollableAreaHeight) {
+                // Clicked on vertical scrollbar
+                e.preventDefault();
+
+                const fullContentHeight = layout.fullContentHeight || 0;
+                const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
+
+                if (maxScrollTop > 0) {
+                    // Calculate scroll position from mouse Y
+                    const thumbHeight = Math.max(20, (scrollableAreaHeight / fullContentHeight) * scrollableAreaHeight);
+                    const clickedRatio = pos.y / scrollableAreaHeight;
+                    scrollTop = Math.max(0, Math.min(maxScrollTop, clickedRatio * fullContentHeight));
+
+                    scheduleRender();
+
+                    // Set up drag tracking for scrollbar
+                    const onMouseMove = (moveE) => {
+                        const movePos = getCanvasPositionFromMouse(moveE, newCanvas);
+                        const newRatio = Math.max(0, Math.min(1, movePos.y / scrollableAreaHeight));
+                        scrollTop = Math.max(0, Math.min(maxScrollTop, newRatio * fullContentHeight));
+                        scheduleRender();
+                    };
+
+                    const onMouseUp = () => {
+                        document.removeEventListener('mousemove', onMouseMove);
+                        document.removeEventListener('mouseup', onMouseUp);
+                    };
+
+                    document.addEventListener('mousemove', onMouseMove);
+                    document.addEventListener('mouseup', onMouseUp);
+                }
+
+                return;
+            }
+
+            // Regular selection logic (not on scrollbar)
             const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
             if (!item) return;
 
