@@ -278,6 +278,49 @@ function initializePy2DmolViewer(containerElement) {
         return hsvToRgb(hue, 1.0, 1.0);
     }
 
+    // AlphaFold pLDDT color scheme (4 categories based on confidence)
+    // Based on PyMOL AlphaFold plugin colors
+    function getPlddtAFColor(plddt) {
+        // DeepMind uses 4 color categories:
+        // >= 100: n0 - Very high confidence (blue) [not used, max is typically 100]
+        // >= 90:  n1 - High confidence (cyan)
+        // >= 70:  n2 - Confident (yellow)
+        // >= 50:  n3 - Low confidence (orange)
+        // < 50:   n3 - Very low confidence (red) [actually orange-red]
+
+        if (plddt >= 90) {
+            // Cyan: [0.416, 0.796, 0.945]
+            return { r: Math.round(0.416 * 255), g: Math.round(0.796 * 255), b: Math.round(0.945 * 255) };
+        } else if (plddt >= 70) {
+            // Yellow: [0.996, 0.851, 0.212]
+            return { r: Math.round(0.996 * 255), g: Math.round(0.851 * 255), b: Math.round(0.212 * 255) };
+        } else if (plddt >= 50) {
+            // Orange: [0.992, 0.490, 0.302]
+            return { r: Math.round(0.992 * 255), g: Math.round(0.490 * 255), b: Math.round(0.302 * 255) };
+        } else {
+            // Red-orange (slightly more red): [1.0, 0.4, 0.2]
+            return { r: 255, g: 102, b: 51 };
+        }
+    }
+
+    // AlphaFold pLDDT color scheme for colorblind mode (uses different colors)
+    function getPlddtAFColor_Colorblind(plddt) {
+        // Use blue, green, yellow, red for better colorblind accessibility
+        if (plddt >= 90) {
+            // Blue
+            return { r: 0, g: 100, b: 255 };
+        } else if (plddt >= 70) {
+            // Green
+            return { r: 0, g: 200, b: 100 };
+        } else if (plddt >= 50) {
+            // Yellow
+            return { r: 255, g: 255, b: 0 };
+        } else {
+            // Red
+            return { r: 255, g: 0, b: 0 };
+        }
+    }
+
     function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
 
     // PAE color functions moved to viewer-pae.js
@@ -364,8 +407,8 @@ function initializePy2DmolViewer(containerElement) {
             this.positionTypes = [];
             this.entropy = undefined; // Entropy vector mapped to structure positions
 
-            // Viewer state - Color mode: auto, chain, rainbow, plddt, or entropy
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+            // Viewer state - Color mode: auto, chain, rainbow, plddt, DeepMind, or entropy
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
             this.colorMode = (config.color && validModes.includes(config.color)) ? config.color : 'auto';
             // Ensure it's always valid
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
@@ -419,6 +462,21 @@ function initializePy2DmolViewer(containerElement) {
             // Flags to track when color arrays need recalculation
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
+
+            // [OPTIMIZATION] Phase 4: Allocation-free rendering
+            // Pre-allocated arrays to replace Maps/Sets in render loop
+            this.adjList = null;         // Array of arrays: adjList[posIdx] = [segIdx1, segIdx2, ...]
+            this.segmentOrder = null;    // Int32Array: segmentOrder[segIdx] = renderOrderIndex
+            this.segmentFrame = null;    // Int32Array: segmentFrame[segIdx] = frameId (last rendered frame)
+            this.renderFrameId = 0;      // Counter for render frames to validate segmentFrame entries
+
+            // [OPTIMIZATION] Phase 5: Micro-optimizations
+            this.segmentEndpointFlags = null; // Uint8Array: bit 0=start, bit 1=end
+            this.screenX = null;              // Float32Array: screen X for each position
+            this.screenY = null;              // Float32Array: screen Y for each position
+            this.screenRadius = null;         // Float32Array: screen radius for each position
+            this.screenValid = null;          // Int32Array: frameId if valid/visible, 0 otherwise
+            this.screenFrameId = 0;           // Counter for screen projection validity
 
             // Animation & State
             this.objectsData = {};
@@ -1430,11 +1488,14 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
 
-            // Remap entropy if entropy mode is active
-            if (this.colorMode === 'entropy') {
+            // Populate entropy data from MSA if available
+            if (this.objectsData[newObjectName]?.msa?.msasBySequence && this.objectsData[newObjectName]?.msa?.chainToSequence) {
+                this._mapEntropyToStructure(newObjectName);
+            } else if (this.colorMode === 'entropy') {
+                // If entropy mode is active but no MSA, try to map it anyway
                 this._mapEntropyToStructure();
             } else {
-                // Clear entropy when not in entropy mode
+                // No MSA data - clear entropy
                 this.entropy = undefined;
             }
 
@@ -2203,7 +2264,16 @@ function initializePy2DmolViewer(containerElement) {
 
         // Check if PAE data is valid
         _isValidPAE(pae) {
-            return pae && Array.isArray(pae) && pae.length > 0;
+            if (!pae) return false;
+            // Standard array or TypedArray
+            if ((Array.isArray(pae) && pae.length > 0) || (pae.buffer && pae.length > 0)) return true;
+            // Array-like object (JSON serialized Uint8Array)
+            if (typeof pae === 'object' && typeof pae.length !== 'number') {
+                // Check if it has keys that look like indices
+                const keys = Object.keys(pae);
+                return keys.length > 0 && !isNaN(parseInt(keys[0]));
+            }
+            return false;
         }
 
         // Check if frame has valid plddt data
@@ -2505,6 +2575,27 @@ function initializePy2DmolViewer(containerElement) {
                 }
                 this.startAnimation();
             }
+        }
+
+        // Load data for a specific frame
+        _loadFrameData(frameIndex) {
+            console.time(`_loadFrameData ${frameIndex}`);
+            if (frameIndex < 0 || !this.currentObjectName || frameIndex >= this.objectsData[this.currentObjectName].frames.length) return;
+
+            const frame = this.objectsData[this.currentObjectName].frames[frameIndex];
+            this.atoms = frame.atoms;
+            this.bonds = frame.bonds;
+
+            // Update PAE data if available
+            console.time(`_resolvePaeData ${frameIndex}`);
+            this._resolvePaeData(frame);
+            console.timeEnd(`_resolvePaeData ${frameIndex}`);
+
+            // Update secondary structure if available
+            if (frame.ss) {
+                this.ss = frame.ss;
+            }
+            console.timeEnd(`_loadFrameData ${frameIndex}`);
         }
 
         // Start playback
@@ -2965,7 +3056,7 @@ function initializePy2DmolViewer(containerElement) {
             const n = this.coords.length;
 
             // Ensure colorMode is valid
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
             }
@@ -2976,6 +3067,7 @@ function initializePy2DmolViewer(containerElement) {
             } else {
                 // Clear entropy when not in entropy mode
                 this.entropy = undefined;
+                this._updateEntropyOptionVisibility();
             }
 
             // Mark colors as needing update when coordinates change
@@ -3274,8 +3366,8 @@ function initializePy2DmolViewer(containerElement) {
                         const type2 = this.positionTypes?.[idx2] || 'L';
                         // Use most restrictive type (P > D/R > L)
                         const segmentType = (type1 === 'P' || type2 === 'P') ? 'P' :
-                                           ((type1 === 'D' || type2 === 'D') ? 'D' :
-                                            ((type1 === 'R' || type2 === 'R') ? 'R' : 'L'));
+                            ((type1 === 'D' || type2 === 'D') ? 'D' :
+                                ((type1 === 'R' || type2 === 'R') ? 'R' : 'L'));
 
                         this.segmentIndices.push({
                             idx1: idx1,
@@ -3437,27 +3529,60 @@ function initializePy2DmolViewer(containerElement) {
                         this.perChainIndices.push(0);
                     }
                 }
+            }
 
-                // Clear shadow cache when molecule changes (rotation comparison becomes invalid)
-                this.cachedShadows = null;
-                this.cachedTints = null;
-                this.lastShadowRotationMatrix = null;
-
-                // Always use reference lengths (no robust scaling)
-
-                // Calculate and cache width multipliers per type (O(4) instead of O(N))
-                // This avoids recalculating width for each segment during rendering and shadow/tint
-                this.typeWidthMultipliers = {
-                    'atom': ATOM_WIDTH_MULTIPLIER
-                };
-                for (const type of ['L', 'P', 'D', 'R', 'C']) {
-                    this.typeWidthMultipliers[type] = this._calculateTypeWidthMultiplier(type);
-                }
-
-                // Cache the calculated segment indices for this frame
+            // Cache the calculated segment indices for this frame
+            // This block was previously inside the `if (!this.cachedSegmentIndices || ...)` block.
+            // Moving it here ensures it runs whenever segments are generated or updated,
+            // regardless of whether they were loaded from cache or newly computed.
+            if (this.currentFrame >= 0 && this.currentObjectName) {
                 this.cachedSegmentIndices = this.segmentIndices.map(seg => ({ ...seg }));
                 this.cachedSegmentIndicesFrame = this.currentFrame;
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
+            }
+
+            // [OPTIMIZATION] Ensure static adjacency list and arrays exist
+            // This must run regardless of whether we used cache or generated segments
+            const numSegments = this.segmentIndices.length;
+            const numPositions = this.coords.length;
+
+            // Check if we need to (re)build the optimization structures
+            // Rebuild if:
+            // 1. adjList is missing or wrong size (coords changed)
+            // 2. segmentOrder is missing or too small (segments increased)
+            // 3. We just generated new segments (canUseCache was false) - though if cache was false, we likely need to rebuild anyway
+
+            const needBuild = !this.adjList ||
+                this.adjList.length !== numPositions ||
+                !this.segmentOrder ||
+                this.segmentOrder.length < numSegments;
+
+            if (needBuild) {
+                // Build adjacency list
+                this.adjList = new Array(numPositions);
+                for (let i = 0; i < numPositions; i++) this.adjList[i] = [];
+
+                // Allocate arrays if needed
+                if (!this.segmentOrder || this.segmentOrder.length < numSegments) {
+                    this.segmentOrder = new Int32Array(numSegments);
+                    this.segmentFrame = new Int32Array(numSegments);
+                    this.segmentEndpointFlags = new Uint8Array(numSegments);
+                }
+
+                // Allocate screen coordinate arrays
+                if (!this.screenX || this.screenX.length < numPositions) {
+                    this.screenX = new Float32Array(numPositions);
+                    this.screenY = new Float32Array(numPositions);
+                    this.screenRadius = new Float32Array(numPositions);
+                    this.screenValid = new Int32Array(numPositions);
+                }
+
+                // Populate adjacency list
+                for (let i = 0; i < numSegments; i++) {
+                    const seg = this.segmentIndices[i];
+                    if (seg.idx1 < numPositions) this.adjList[seg.idx1].push(i);
+                    if (seg.idx2 < numPositions) this.adjList[seg.idx2].push(i);
+                }
             }
 
             // Pre-allocate segData array
@@ -3469,6 +3594,7 @@ function initializePy2DmolViewer(containerElement) {
             }
 
             // Pre-calculate colors ONCE (if not plddt)
+            // effectiveColorMode is not available yet during setCoords, so it will be calculated on demand
             this.colors = this._calculateSegmentColors();
             this.colorsNeedUpdate = false;
 
@@ -3559,12 +3685,14 @@ function initializePy2DmolViewer(containerElement) {
 
             if (!objectName) {
                 this.entropy = undefined;
+                this._updateEntropyOptionVisibility();
                 return;
             }
 
             const object = this.objectsData[objectName];
             if (!object || !object.msa || !object.msa.msasBySequence || !object.msa.chainToSequence) {
                 this.entropy = undefined;
+                this._updateEntropyOptionVisibility();
                 return;
             }
 
@@ -3572,6 +3700,7 @@ function initializePy2DmolViewer(containerElement) {
             const frame = object.frames[frameIndex];
             if (!frame || !frame.chains) {
                 this.entropy = undefined;
+                this._updateEntropyOptionVisibility();
                 return;
             }
 
@@ -3586,6 +3715,7 @@ function initializePy2DmolViewer(containerElement) {
 
             if (!extractChainSequences) {
                 this.entropy = entropyVector;
+                this._updateEntropyOptionVisibility();
                 return;
             }
 
@@ -3639,17 +3769,44 @@ function initializePy2DmolViewer(containerElement) {
             }
 
             this.entropy = entropyVector;
+
+            // Update entropy option visibility in color dropdown
+            this._updateEntropyOptionVisibility();
+        }
+
+        /**
+         * Show or hide the Entropy color option based on whether entropy data is available
+         */
+        _updateEntropyOptionVisibility() {
+            const entropyOption = document.getElementById('entropyColorOption');
+            if (entropyOption) {
+                // Show entropy option if we have valid entropy data
+                const hasEntropy = this.entropy && this.entropy.some(val => val !== undefined && val >= 0);
+                entropyOption.hidden = !hasEntropy;
+
+                // If entropy option is hidden and currently selected, switch to auto
+                if (!hasEntropy && this.colorMode === 'entropy') {
+                    this.colorMode = 'auto';
+                    if (this.colorSelect) {
+                        this.colorSelect.value = 'auto';
+                    }
+                    this.colorsNeedUpdate = true;
+                    this.render();
+                }
+            }
         }
 
         _getEffectiveColorMode() {
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
+                console.warn('Invalid colorMode:', this.colorMode, 'resetting to auto');
                 this.colorMode = 'auto';
             }
 
             // If 'auto', resolve to the calculated mode
             if (this.colorMode === 'auto') {
-                return this.resolvedAutoColor || 'rainbow';
+                const resolved = this.resolvedAutoColor || 'rainbow';
+                return resolved;
             }
 
             return this.colorMode;
@@ -3663,12 +3820,15 @@ function initializePy2DmolViewer(containerElement) {
          *                             For ligands, one position = one heavy atom.
          * @returns {{r: number, g: number, b: number}} RGB color object
          */
-        getAtomColor(atomIndex) {
+        getAtomColor(atomIndex, effectiveColorMode = null) {
             if (atomIndex < 0 || atomIndex >= this.coords.length) {
                 return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
             }
 
-            const effectiveColorMode = this._getEffectiveColorMode();
+            // Use provided color mode or calculate it once
+            if (!effectiveColorMode) {
+                effectiveColorMode = this._getEffectiveColorMode();
+            }
             const type = (this.positionTypes && atomIndex < this.positionTypes.length) ? this.positionTypes[atomIndex] : undefined;
             let color;
 
@@ -3679,6 +3839,11 @@ function initializePy2DmolViewer(containerElement) {
                 const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtFunc(plddt);
+            } else if (effectiveColorMode === 'deepmind') {
+                // DeepMind colors don't use colorblind mode - always use standard colors
+                const plddtAfFunc = getPlddtAFColor;
+                const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
+                color = plddtAfFunc(plddt);
             } else if (effectiveColorMode === 'entropy') {
                 const entropyFunc = this.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
                 // Get entropy value from mapped entropy vector
@@ -3730,6 +3895,11 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
 
+            // Don't apply pastel to DeepMind mode - preserve saturated AF confidence colors
+            if (effectiveColorMode === 'deepmind') {
+                return color;
+            }
+
             return this._applyPastel(color);
         }
 
@@ -3746,9 +3916,14 @@ function initializePy2DmolViewer(containerElement) {
 
         // Calculate segment colors (chain or rainbow)
         // Uses getAtomColor() as single source of truth for all color logic
-        _calculateSegmentColors() {
+        _calculateSegmentColors(effectiveColorMode = null) {
             const m = this.segmentIndices.length;
             if (m === 0) return [];
+
+            // Cache effective color mode to avoid calling _getEffectiveColorMode() for every position
+            if (!effectiveColorMode) {
+                effectiveColorMode = this._getEffectiveColorMode();
+            }
 
             // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
             return this.segmentIndices.map(segInfo => {
@@ -3762,7 +3937,7 @@ function initializePy2DmolViewer(containerElement) {
 
                 const positionIndex = segInfo.origIndex;
                 // getAtomColor() already handles all color modes, ligands, ligand-only chains, pastel, etc.
-                return this.getAtomColor(positionIndex);
+                return this.getAtomColor(positionIndex, effectiveColorMode);
             });
         }
 
@@ -3773,7 +3948,15 @@ function initializePy2DmolViewer(containerElement) {
 
             const colors = new Array(m);
 
-            const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
+            // Select the appropriate plddt color function based on effective color mode
+            const effectiveMode = this._getEffectiveColorMode();
+            let plddtFunc;
+            if (effectiveMode === 'deepmind') {
+                // DeepMind colors don't use colorblind mode - always use standard colors
+                plddtFunc = getPlddtAFColor;
+            } else {
+                plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
+            }
 
             for (let i = 0; i < m; i++) {
                 const segInfo = this.segmentIndices[i];
@@ -3801,7 +3984,8 @@ function initializePy2DmolViewer(containerElement) {
                     const plddt2 = (this.plddts[plddt2_idx] !== null && this.plddts[plddt2_idx] !== undefined) ? this.plddts[plddt2_idx] : 50;
                     color = plddtFunc((plddt1 + plddt2) / 2); // Use selected plddt function
                 }
-                colors[i] = this._applyPastel(color);
+                // Don't apply pastel to DeepMind mode - preserve saturated AF confidence colors
+                colors[i] = effectiveMode === 'deepmind' ? color : this._applyPastel(color);
             }
             return colors;
         }
@@ -4120,7 +4304,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // Select pre-calculated color array
             let colors;
-            if (effectiveColorMode === 'plddt') {
+            if (effectiveColorMode === 'plddt' || effectiveColorMode === 'deepmind') {
                 if (!this.plddtColors || this.plddtColors.length !== n || this.plddtColorsNeedUpdate) {
                     this.plddtColors = this._calculatePlddtColors();
                     this.plddtColorsNeedUpdate = false;
@@ -4128,7 +4312,8 @@ function initializePy2DmolViewer(containerElement) {
                 colors = this.plddtColors;
             } else {
                 if (!this.colors || this.colors.length !== n || this.colorsNeedUpdate) {
-                    this.colors = this._calculateSegmentColors();
+                    // Pass effectiveColorMode to avoid redundant _getEffectiveColorMode() calls
+                    this.colors = this._calculateSegmentColors(effectiveColorMode);
                     this.colorsNeedUpdate = false;
                 }
                 colors = this.colors;
@@ -4137,11 +4322,11 @@ function initializePy2DmolViewer(containerElement) {
             // Safety check: ensure color arrays match segment count
             if (!colors || colors.length !== n) {
                 console.warn("Color array mismatch, recalculating.");
-                this.colors = this._calculateSegmentColors();
+                this.colors = this._calculateSegmentColors(effectiveColorMode);
                 this.plddtColors = this._calculatePlddtColors();
                 this.colorsNeedUpdate = false;
                 this.plddtColorsNeedUpdate = false;
-                colors = (effectiveColorMode === 'plddt') ? this.plddtColors : this.colors;
+                colors = (effectiveColorMode === 'plddt' || effectiveColorMode === 'deepmind') ? this.plddtColors : this.colors;
                 if (colors.length !== n) {
                     console.error("Color array mismatch even after recalculation. Aborting render.");
                     return; // Still bad, abort render
@@ -4324,27 +4509,38 @@ function initializePy2DmolViewer(containerElement) {
             shadows.fill(1.0);
             tints.fill(1.0);
 
-            // Only sort visible segments - major performance improvement
-            // Sort by z-depth (back to front) - simple, no post-processing
-            const visibleOrder = visibleSegmentIndices
-                .map(i => ({
-                    idx: i,
-                    z: zValues[i]
-                }))
-                .sort((a, b) => {
-                    // Sort by z-depth (back to front)
-                    return a.z - b.z;
-                })
-                .map(item => item.idx);
+            // Limit number of rendered segments for performance
+            const RENDER_CUTOFF = 50000; // Fully opaque segments
+            const FADE_RANGE = 0;    // Fading segments
 
-            // Keep full order array for compatibility (but only visible segments will be used)
-            // NOTE: This array should NOT be used for calculations - use visibleOrder instead
-            // zValues for non-visible segments are uninitialized (0), so sorting is incorrect
-            // Simple z-depth sorting
-            const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => {
-                // Sort by z-depth (back to front)
-                return zValues[a] - zValues[b];
-            });
+            // [OPTIMIZATION] Allocation-free sorting
+            // Sort visibleSegmentIndices in-place using zValues lookup
+            // This avoids creating N objects and 2 intermediate arrays per frame
+            // Sort by z-depth (back to front)
+            visibleSegmentIndices.sort((a, b) => zValues[a] - zValues[b]);
+
+            // Use the sorted array directly
+            let visibleOrder = visibleSegmentIndices;
+
+            // [OPTIMIZATION] Apply culling immediately after sorting
+            // visibleOrder is sorted back-to-front (index 0 is furthest, index N-1 is closest)
+            // We want to keep the END of the array (closest segments)
+            const totalVisible = visibleOrder.length;
+            const maxRender = RENDER_CUTOFF + FADE_RANGE;
+
+            if (totalVisible > maxRender) {
+                // Keep the last maxRender segments (closest to camera)
+                visibleOrder = visibleOrder.slice(totalVisible - maxRender);
+            }
+
+            // Update numRendered to reflect the culled count
+            // IMPORTANT: This variable is used in subsequent loops (grid, endpoint detection)
+            // We must update it so those loops only process the segments we intend to render
+            const numRendered = visibleOrder.length;
+
+            // [OPTIMIZATION] Removed redundant 'order' array sorting
+            // Previously we sorted all N segments here, but it was never used for rendering
+            // This saves O(N log N) operations and significant memory allocation
 
             // visibilityMask already declared above for depth calculation
 
@@ -4431,8 +4627,9 @@ function initializePy2DmolViewer(containerElement) {
                         const invCellSize = 1.0 / gridCellSize;
 
                         // Only calculate grid positions for visible segments
-                        for (let i = 0; i < numVisibleSegments; i++) {
-                            const segIdx = visibleSegmentIndices[i];
+                        // [OPTIMIZATION] Use visibleOrder (culled list) instead of visibleSegmentIndices
+                        for (let i = 0; i < numRendered; i++) {
+                            const segIdx = visibleOrder[i];
                             const s = segData[segIdx];
                             const gx = Math.floor((s.x - gridMin) * invCellSize);
                             const gy = Math.floor((s.y - gridMin) * invCellSize);
@@ -4448,8 +4645,9 @@ function initializePy2DmolViewer(containerElement) {
 
                         // Populate grid with all visible segments BEFORE calculating shadows
                         // Sort segments within each cell by z-depth (front to back) for early exit optimization
-                        for (let i = 0; i < numVisibleSegments; i++) {
-                            const segIdx = visibleSegmentIndices[i];
+                        // [OPTIMIZATION] Use visibleOrder (culled list)
+                        for (let i = 0; i < numRendered; i++) {
+                            const segIdx = visibleOrder[i];
                             const s = segData[segIdx];
                             if (s.gx >= 0 && s.gy >= 0) {
                                 const gridIndex = s.gx + s.gy * GRID_DIM;
@@ -4637,26 +4835,11 @@ function initializePy2DmolViewer(containerElement) {
             let scaleX = (displayWidth * padding) / (xProjectedExtent * 2);
             let scaleY = (displayHeight * padding) / (yProjectedExtent * 2);
 
-            // Account for perspective projection if enabled
-            // In perspective mode, apparent size depends on z-depth relative to focal length
-            if (this.perspectiveEnabled && this.focalLength > 0) {
-                // Estimate average z-depth at the center of the structure
-                // For a structure centered at origin after rotation, z-depth is approximately 0
-                // But we need to account for the structure's extent in z-direction
-                // Use the center z-depth as reference (structure is centered, so center z ≈ 0)
-                const centerZ = 0;
-                const avgZ = centerZ; // Average z-depth for perspective calculation
-
-                // Perspective scale factor: focalLength / (focalLength - z)
-                // For z near 0, this is approximately 1.0
-                const perspectiveScale = this.focalLength / (this.focalLength - avgZ);
-
-                // Adjust base scale to account for perspective
-                // Perspective makes objects appear larger when closer, so we need to scale down
-                // to compensate and ensure the structure fits in the viewport
-                scaleX /= perspectiveScale;
-                scaleY /= perspectiveScale;
-            }
+            // Note: Do NOT compensate for perspective at the viewport scale level.
+            // Individual atoms already get scaled correctly by their own perspective factor
+            // (perspectiveScale = focalLength / z at line 5003).
+            // The previous compensation code (using avgZ=0) was mathematically incorrect and
+            // caused width jumps when switching between perspective modes near ortho=1.0
 
             // Use the minimum scale to ensure structure fits in both dimensions
             // This accounts for window aspect ratio
@@ -4675,180 +4858,172 @@ function initializePy2DmolViewer(containerElement) {
             // DETECT OUTER ENDPOINTS - For rounded edges on outer segments
             // ====================================================================
             // Build a map of position connections to identify outer endpoints
-            // Only count connections for visible segments
-            const positionConnections = new Map();
-            for (let i = 0; i < numVisibleSegments; i++) {
-                const segIdx = visibleSegmentIndices[i];
-                const segInfo = segments[segIdx];
-                // Count how many times each position appears as an endpoint
-                positionConnections.set(segInfo.idx1, (positionConnections.get(segInfo.idx1) || 0) + 1);
-                positionConnections.set(segInfo.idx2, (positionConnections.get(segInfo.idx2) || 0) + 1);
+            // [OPTIMIZATION] Phase 4: Allocation-free endpoint detection
+            // Use pre-computed adjList and frame-based tracking to avoid Map/Set creation
+
+            // 1. Mark visible segments in the frame tracking array
+            this.renderFrameId++;
+            const currentFrameId = this.renderFrameId;
+            const segmentOrder = this.segmentOrder;
+            const segmentFrame = this.segmentFrame;
+
+            for (let i = 0; i < numRendered; i++) {
+                const segIdx = visibleOrder[i];
+                segmentOrder[segIdx] = i; // Store render order (0 is furthest)
+                segmentFrame[segIdx] = currentFrameId; // Mark as visible in this frame
             }
 
-            // Identify outer endpoints (positions that appear only once - terminal positions)
-            const outerEndpoints = new Set();
-            for (const [positionIndex, count] of positionConnections.entries()) {
-                if (count === 1) {
-                    outerEndpoints.add(positionIndex);
-                }
-            }
+            // 2. Pre-compute which endpoints should be rounded
+            // Iterate over visible segments and check their endpoints using adjList
+            // [OPTIMIZATION] Use Uint8Array for flags instead of Map
+            const segmentEndpointFlags = this.segmentEndpointFlags;
 
-            // Build a map of position index -> list of segment indices that use that position as an endpoint
-            // This helps us detect if an endpoint is covered by another segment
-            // Only add visible segments to the map
-            const positionToSegments = new Map();
-            for (let i = 0; i < numVisibleSegments; i++) {
-                const segIdx = visibleSegmentIndices[i];
-                const segInfo = segments[segIdx];
-
-                // Optimized: single lookup instead of has+get
-                let arr1 = positionToSegments.get(segInfo.idx1);
-                if (!arr1) {
-                    arr1 = [];
-                    positionToSegments.set(segInfo.idx1, arr1);
-                }
-                arr1.push(segIdx);
-
-                if (segInfo.idx1 !== segInfo.idx2) {
-                    // Only add idx2 if it's different from idx1 (not zero-sized)
-                    let arr2 = positionToSegments.get(segInfo.idx2);
-                    if (!arr2) {
-                        arr2 = [];
-                        positionToSegments.set(segInfo.idx2, arr2);
-                    }
-                    arr2.push(segIdx);
-                }
-            }
-
-            // Build a map from segment index to its position in the render order
-            // Segments later in order are closer to camera (rendered on top)
-            // Only map visible segments since we only draw visible ones and positionToSegments only contains visible segments
-            const segmentOrderMap = new Map();
-            for (let orderIdx = 0; orderIdx < visibleOrder.length; orderIdx++) {
-                segmentOrderMap.set(visibleOrder[orderIdx], orderIdx);
-            }
-
-            // Build maps for polymer segments: position -> segments that share that edge
-            // For polymers, at each position we only need to check segments that actually share the edge
-            // - At position i as start: check segments ending at i (idx2 == i)
-            // - At position i as end: check segments starting at i (idx1 == i)
-            const positionToSegmentsEndingAt = new Map(); // position -> [segIdx] (segments where idx2 == position)
-            const positionToSegmentsStartingAt = new Map(); // position -> [segIdx] (segments where idx1 == position)
-            for (let i = 0; i < numVisibleSegments; i++) {
-                const segIdx = visibleSegmentIndices[i];
-                const segInfo = segments[segIdx];
-
-                // Track which segments end at each position (optimized: single lookup)
-                let arrEnding = positionToSegmentsEndingAt.get(segInfo.idx2);
-                if (!arrEnding) {
-                    arrEnding = [];
-                    positionToSegmentsEndingAt.set(segInfo.idx2, arrEnding);
-                }
-                arrEnding.push(segIdx);
-
-                // Track which segments start at each position (for checking end endpoint)
-                if (segInfo.idx1 !== segInfo.idx2) {
-                    let arrStarting = positionToSegmentsStartingAt.get(segInfo.idx1);
-                    if (!arrStarting) {
-                        arrStarting = [];
-                        positionToSegmentsStartingAt.set(segInfo.idx1, arrStarting);
-                    }
-                    arrStarting.push(segIdx);
-                }
-            }
-
-            // Pre-compute which endpoints should be rounded for each segment
-            // This avoids calling shouldRoundEndpoint() inside the rendering loop
-            // Optimized to use polymer connectivity: only check segments that share the same edge
-            const segmentEndpointRounding = new Map(); // segIdx -> {hasOuterStart: bool, hasOuterEnd: bool}
-            for (let i = 0; i < numVisibleSegments; i++) {
-                const segIdx = visibleSegmentIndices[i];
+            for (let i = 0; i < numRendered; i++) {
+                const segIdx = visibleOrder[i];
                 const segInfo = segments[segIdx];
                 const isZeroSized = segInfo.idx1 === segInfo.idx2;
-                const currentOrderIdx = segmentOrderMap.get(segIdx);
+                const currentOrderIdx = i; // We know the order is 'i' from the loop
                 const isPolymer = segInfo.type === 'P' || segInfo.type === 'D' || segInfo.type === 'R';
 
                 // Extract properties once (used by both endpoint checks)
                 const currentChainId = segInfo.chainId;
                 const currentType = segInfo.type;
 
-                // Helper to check if endpoint should be rounded (optimized: only check segments sharing the edge)
+                // Helper to check if endpoint should be rounded
                 const shouldRoundEndpoint = (positionIndex) => {
                     // Zero-sized segments always round
                     if (isZeroSized) return true;
 
-                    // Contacts always have rounded endpoints (single segment per contact)
-                    if (currentType === 'C') {
-                        return true;
-                    }
+                    // Contacts always have rounded endpoints
+                    if (currentType === 'C') return true;
 
-                    // Outer endpoints (terminal positions) always round
-                    if (outerEndpoints.has(positionIndex)) return true;
+                    // Check connected segments using static adjacency list
+                    const connectedSegments = this.adjList[positionIndex];
+                    if (!connectedSegments) return true; // Should not happen if adjList is built correctly
 
-                    // For polymer segments, only check segments that share the same edge
-                    // At a position, segments share the edge if they connect to/from that position
-                    // For polymers: at most 2 segments (one coming in, one going out)
-                    // IMPORTANT: Only check segments within the same polymer type and same chain
-                    // Do NOT compare polymers to ligands/contacts - they are separate
-                    let segmentsToCheck = [];
-                    if (isPolymer) {
-                        // Get segments ending at this position (coming into it)
-                        const segmentsEnding = positionToSegmentsEndingAt.get(positionIndex) || [];
-                        // Get segments starting at this position (going out from it)
-                        const segmentsStarting = positionToSegmentsStartingAt.get(positionIndex) || [];
-
-                        // For polymers, max 2 segments - use direct loops instead of spread+filter
-                        for (const sIdx of segmentsEnding) {
-                            const s = segments[sIdx];
-                            if (s.type === currentType && s.chainId === currentChainId) {
-                                segmentsToCheck.push(sIdx);
-                            }
-                        }
-                        for (const sIdx of segmentsStarting) {
-                            const s = segments[sIdx];
-                            if (s.type === currentType && s.chainId === currentChainId) {
-                                segmentsToCheck.push(sIdx);
-                            }
-                        }
-                    } else {
-                        // For non-polymer segments (ligands), only check other ligand segments
-                        // Don't compare to polymers or contacts - they are separate
-                        const allSegmentsAtPosition = positionToSegments.get(positionIndex) || [];
-                        for (const sIdx of allSegmentsAtPosition) {
-                            const s = segments[sIdx];
-                            if (s.type === 'L') {
-                                segmentsToCheck.push(sIdx);
-                            }
-                        }
-                    }
-
-                    // Remove duplicates (only needed if array is large enough to have duplicates)
-                    if (!isPolymer && segmentsToCheck.length > 1) {
-                        segmentsToCheck = [...new Set(segmentsToCheck)];
-                    }
-
-                    if (segmentsToCheck.length <= 1) {
-                        // Only this segment uses this position, so it's outer
-                        return true;
-                    }
-
-                    // Multi-way junction: find the segment with the lowest order index (rendered first, furthest back)
+                    // Filter for RELEVANT visible segments sharing this position
+                    let relevantCount = 0;
                     let lowestOrderIdx = currentOrderIdx;
-                    for (const otherSegIdx of segmentsToCheck) {
-                        const otherOrderIdx = segmentOrderMap.get(otherSegIdx);
-                        if (otherOrderIdx !== undefined && otherOrderIdx < lowestOrderIdx) {
-                            lowestOrderIdx = otherOrderIdx;
+
+                    const len = connectedSegments.length;
+                    for (let k = 0; k < len; k++) {
+                        const otherSegIdx = connectedSegments[k];
+
+                        // 1. Check visibility: must be in current frame
+                        if (segmentFrame[otherSegIdx] !== currentFrameId) continue;
+
+                        const otherSeg = segments[otherSegIdx];
+
+                        // 2. Check connectivity type rules
+                        let isRelevant = false;
+                        if (isPolymer) {
+                            // For polymers: must match type and chain
+                            if (otherSeg.type === currentType && otherSeg.chainId === currentChainId) {
+                                isRelevant = true;
+                            }
+                        } else {
+                            // For ligands: only check other ligands
+                            if (otherSeg.type === 'L') {
+                                isRelevant = true;
+                            }
+                        }
+
+                        if (isRelevant) {
+                            relevantCount++;
+
+                            // Check render order
+                            const otherOrderIdx = segmentOrder[otherSegIdx];
+                            if (otherOrderIdx < lowestOrderIdx) {
+                                lowestOrderIdx = otherOrderIdx;
+                            }
                         }
                     }
 
-                    // Only round if this segment is the one rendered first (furthest back)
+                    // Logic:
+                    // 1. If only 1 relevant segment (itself), it's an outer endpoint -> Round
+                    // 2. If multiple, only round if THIS segment is the one rendered first (lowest order)
+                    if (relevantCount <= 1) return true;
+
                     return currentOrderIdx === lowestOrderIdx;
                 };
 
-                segmentEndpointRounding.set(segIdx, {
-                    hasOuterStart: shouldRoundEndpoint(segInfo.idx1),
-                    hasOuterEnd: shouldRoundEndpoint(segInfo.idx2)
-                });
+                let flags = 0;
+                if (shouldRoundEndpoint(segInfo.idx1)) flags |= 1; // Bit 0: Start
+                if (shouldRoundEndpoint(segInfo.idx2)) flags |= 2; // Bit 1: End
+                segmentEndpointFlags[segIdx] = flags;
+            }
+
+            // [OPTIMIZATION] Phase 5: SoA Projection Loop
+            // Project all visible atoms once and store in SoA arrays
+            this.screenFrameId++;
+            const screenFrameId = this.screenFrameId;
+            const screenX = this.screenX;
+            const screenY = this.screenY;
+            const screenRadius = this.screenRadius;
+            const screenValid = this.screenValid;
+
+            // Helper to project a position if not already projected
+            const projectPosition = (idx) => {
+                if (screenValid[idx] === screenFrameId) return; // Already projected
+
+                const vec = rotated[idx];
+                let x, y, radius;
+
+                // Calculate width multiplier (simplified for positions)
+                let widthMultiplier = 0.5;
+                if (this.positionTypes && idx < this.positionTypes.length) {
+                    // Reuse logic: simplified width calculation for atoms
+                    const type = this.positionTypes[idx];
+                    widthMultiplier = (this.typeWidthMultipliers && this.typeWidthMultipliers[type]) || 0.5;
+                }
+                let atomLineWidth = baseLineWidthPixels * widthMultiplier;
+
+                if (this.perspectiveEnabled) {
+                    const z = this.focalLength - vec.z;
+                    if (z < 0.01) {
+                        // Invalid (behind camera)
+                        screenValid[idx] = 0; // Mark invalid
+                        return;
+                    }
+                    const perspectiveScale = this.focalLength / z;
+                    x = centerX + (vec.x * scale * perspectiveScale);
+                    y = centerY - (vec.y * scale * perspectiveScale);
+                    atomLineWidth *= perspectiveScale;
+                } else {
+                    x = centerX + vec.x * scale;
+                    y = centerY - vec.y * scale;
+                }
+
+                radius = Math.max(2, atomLineWidth * 0.5);
+
+                screenX[idx] = x;
+                screenY[idx] = y;
+                screenRadius[idx] = radius;
+                screenValid[idx] = screenFrameId;
+            };
+
+            // Iterate visible segments and project their endpoints
+            for (let i = 0; i < numRendered; i++) {
+                const segIdx = visibleOrder[i];
+                const segInfo = segments[segIdx];
+                projectPosition(segInfo.idx1);
+                projectPosition(segInfo.idx2);
+            }
+
+            // [OPTIMIZATION] Ensure highlighted atoms are projected even if not in visible segments
+            const numPositions = rotated.length;
+            if (this.highlightedAtoms && this.highlightedAtoms.size > 0) {
+                for (const idx of this.highlightedAtoms) {
+                    if (idx >= 0 && idx < numPositions) {
+                        projectPosition(idx);
+                    }
+                }
+            }
+            if (this.highlightedAtom !== null && this.highlightedAtom !== undefined) {
+                const idx = this.highlightedAtom;
+                if (idx >= 0 && idx < numPositions) {
+                    projectPosition(idx);
+                }
             }
 
             // ====================================================================
@@ -4874,8 +5049,27 @@ function initializePy2DmolViewer(containerElement) {
                 }
             };
 
+            // [OPTIMIZATION] Simplified loop - visibleOrder is already culled
             // Only iterate over visible segments - no need for visibility check inside loop
-            for (const idx of visibleOrder) {
+            for (let i = 0; i < numRendered; i++) {
+                const idx = visibleOrder[i];
+
+                // Calculate opacity based on position in visibleOrder
+                // i=0 is furthest (start of sliced array), i=numRendered-1 is closest
+                // Distance from front: numRendered - 1 - i
+                const distFromFront = numRendered - 1 - i;
+
+                let opacity = 1.0;
+                if (distFromFront >= RENDER_CUTOFF) {
+                    // In the fading range
+                    // distFromFront goes from RENDER_CUTOFF to RENDER_CUTOFF + FADE_RANGE
+                    // normalized fade: 0 (at cutoff) to 1 (at max range)
+                    const fadePos = (distFromFront - RENDER_CUTOFF) / FADE_RANGE;
+                    opacity = 1.0 - fadePos;
+                    // Clamp just in case
+                    opacity = Math.max(0, Math.min(1, opacity));
+                }
+
                 // --- 1. COMMON CALCULATIONS (Do these ONCE) ---
                 const segInfo = segments[idx];
 
@@ -4908,36 +5102,19 @@ function initializePy2DmolViewer(containerElement) {
                     }
                 }
 
-                // Projection
-                const start = rotated[segInfo.idx1];
-                const end = rotated[segInfo.idx2];
+                // Projection (Use pre-computed SoA values)
+                const idx1 = segInfo.idx1;
+                const idx2 = segInfo.idx2;
 
-                let x1, y1, x2, y2;
-                let perspectiveScale1 = 1.0;
-                let perspectiveScale2 = 1.0;
-
-                if (this.perspectiveEnabled) {
-                    const z1 = this.focalLength - start.z;
-                    const z2 = this.focalLength - end.z;
-
-                    if (z1 < 0.01 || z2 < 0.01) {
-                        continue;
-                    }
-
-                    perspectiveScale1 = this.focalLength / z1;
-                    perspectiveScale2 = this.focalLength / z2;
-
-                    x1 = centerX + (start.x * scale * perspectiveScale1);
-                    y1 = centerY - (start.y * scale * perspectiveScale1);
-                    x2 = centerX + (end.x * scale * perspectiveScale2);
-                    y2 = centerY - (end.y * scale * perspectiveScale2);
-                } else {
-                    // Orthographic projection
-                    x1 = centerX + start.x * scale;
-                    y1 = centerY - start.y * scale;
-                    x2 = centerX + end.x * scale;
-                    y2 = centerY - end.y * scale;
+                // If either endpoint is invalid (behind camera), skip segment
+                if (screenValid[idx1] !== screenFrameId || screenValid[idx2] !== screenFrameId) {
+                    continue;
                 }
+
+                const x1 = screenX[idx1];
+                const y1 = screenY[idx1];
+                const x2 = screenX[idx2];
+                const y2 = screenY[idx2];
 
                 // Width Calculation: unified approach using helper
                 const s = segData[idx];
@@ -4945,8 +5122,19 @@ function initializePy2DmolViewer(containerElement) {
                 let currentLineWidth = baseLineWidthPixels * widthMultiplier;
 
                 if (this.perspectiveEnabled) {
-                    const avgPerspectiveScale = (perspectiveScale1 + perspectiveScale2) / 2;
-                    currentLineWidth *= avgPerspectiveScale;
+                    // Approximate perspective scale from radii ratio
+                    // radius = base * widthMult * perspectiveScale * 0.5
+                    // perspectiveScale = radius / (base * widthMult * 0.5)
+                    // We can just average the stored radii and reverse the width multiplier
+                    // But simpler: just use the stored radii directly to infer scale?
+                    // Actually, we stored screenRadius which includes perspective.
+                    // Let's re-calculate scale from stored radii for line width
+                    // This is slightly redundant but accurate enough
+                    const r1 = screenRadius[idx1];
+                    const r2 = screenRadius[idx2];
+                    // Reconstruct line width from radii (radius is approx half line width)
+                    // This is faster than re-calculating perspective scale
+                    currentLineWidth = (r1 + r2); // Average diameter
                 }
 
                 currentLineWidth = Math.max(0.5, currentLineWidth);
@@ -4955,12 +5143,21 @@ function initializePy2DmolViewer(containerElement) {
                 const r_int = r * 255 | 0;
                 const g_int = g * 255 | 0;
                 const b_int = b * 255 | 0;
-                const color = `rgb(${r_int},${g_int},${b_int})`;
 
-                // Get pre-computed endpoint rounding flags (computed before the loop for performance)
-                const endpointFlags = segmentEndpointRounding.get(idx) || { hasOuterStart: false, hasOuterEnd: false };
-                const hasOuterStart = endpointFlags.hasOuterStart;
-                const hasOuterEnd = endpointFlags.hasOuterEnd;
+                // Use rgba for opacity
+                const color = `rgba(${r_int},${g_int},${b_int},${opacity.toFixed(2)})`;
+
+                // For gap filler (outline), also apply opacity
+                // Note: Gap filler is usually darker/lighter, here we just darken
+                const gapR = r_int * 0.7 | 0;
+                const gapG = g_int * 0.7 | 0;
+                const gapB = b_int * 0.7 | 0;
+                const gapFillerColor = `rgba(${gapR},${gapG},${gapB},${opacity.toFixed(2)})`;
+
+                // Get pre-computed endpoint rounding flags (Uint8Array)
+                const flags = segmentEndpointFlags[idx];
+                const hasOuterStart = (flags & 1) !== 0;
+                const hasOuterEnd = (flags & 2) !== 0;
 
                 if (this.outlineMode === 'none') {
                     // --- 1-STEP DRAW (No Outline) ---
@@ -4971,7 +5168,6 @@ function initializePy2DmolViewer(containerElement) {
                     ctx.stroke();
                 } else if (this.outlineMode === 'partial') {
                     // --- 2-STEP DRAW (Partial Outline) - Background segment with butt caps only (no rounded caps) ---
-                    const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
                     const totalOutlineWidth = currentLineWidth + this.relativeOutlineWidth;
 
                     // Pass 1: Gap filler outline (3px larger than main line) with butt caps only
@@ -4991,7 +5187,6 @@ function initializePy2DmolViewer(containerElement) {
                     ctx.stroke();
                 } else { // this.outlineMode === 'full'
                     // --- 2-STEP DRAW (Full Outline) - Background segment with rounded caps at outer endpoints ---
-                    const gapFillerColor = `rgb(${r_int * 0.7 | 0},${g_int * 0.7 | 0},${b_int * 0.7 | 0})`;
                     const totalOutlineWidth = currentLineWidth + this.relativeOutlineWidth;
 
                     // Pass 1: Gap filler outline (3px larger than main line)
@@ -5032,58 +5227,10 @@ function initializePy2DmolViewer(containerElement) {
             // ====================================================================
             // STORE POSITION SCREEN POSITIONS for fast highlight drawing
             // ====================================================================
-            // Store screen positions of all positions for overlay highlight drawing
-            // This allows us to draw highlights without re-rendering the entire scene
-            const numPositions = rotated.length;
-            this.positionScreenPositions = new Array(numPositions);
-
-            for (let positionIndex = 0; positionIndex < numPositions; positionIndex++) {
-                if (positionIndex < rotated.length && rotated[positionIndex]) {
-                    const atom = rotated[positionIndex];
-                    let x, y, radius;
-
-                    // Get position type to determine appropriate line width multiplier
-                    // Positions are zero-length segments, so use unified helper
-                    let widthMultiplier = 0.5; // Default for positions
-                    if (this.positionTypes && positionIndex < this.positionTypes.length) {
-                        const type = this.positionTypes[positionIndex];
-                        // Create dummy segInfo for position (zero-length segment)
-                        const dummySegInfo = {
-                            type: type,
-                            idx1: positionIndex,
-                            idx2: positionIndex, // Same index = zero-length
-                            len: 0
-                        };
-                        const dummySegData = { len: 0, x: atom.x, y: atom.y, z: atom.z };
-                        widthMultiplier = this._calculateSegmentWidthMultiplier(dummySegData, dummySegInfo);
-                    }
-                    let atomLineWidth = baseLineWidthPixels * widthMultiplier;
-
-                    if (this.perspectiveEnabled) {
-                        const z = this.focalLength - atom.z;
-                        if (z < 0.01) {
-                            // Behind camera, mark as invalid
-                            this.positionScreenPositions[positionIndex] = null;
-                            continue;
-                        } else {
-                            const perspectiveScale = this.focalLength / z;
-                            x = centerX + (atom.x * scale * perspectiveScale);
-                            y = centerY - (atom.y * scale * perspectiveScale);
-                            atomLineWidth *= perspectiveScale;
-                            radius = Math.max(2, atomLineWidth * 0.5);
-                        }
-                    } else {
-                        // Orthographic projection
-                        x = centerX + atom.x * scale;
-                        y = centerY - atom.y * scale;
-                        radius = Math.max(2, atomLineWidth * 0.5);
-                    }
-
-                    this.positionScreenPositions[positionIndex] = { x, y, radius };
-                } else {
-                    this.positionScreenPositions[positionIndex] = null;
-                }
-            }
+            // [OPTIMIZATION] Phase 5: Removed redundant position loop
+            // Screen positions are already computed in SoA arrays (screenX, screenY, screenRadius)
+            // during the projection phase above.
+            // The sequence viewer will access these arrays directly.
 
             // Draw highlights on overlay canvas (doesn't require full render)
             // Highlight overlay is now managed by sequence viewer
@@ -5091,6 +5238,42 @@ function initializePy2DmolViewer(containerElement) {
             if (!this.isDragging && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
                 window.SequenceViewer.drawHighlights();
             }
+        }
+
+        // [OPTIMIZATION] Phase 6: Public API for highlights
+        // Returns array of {x, y, radius} for currently highlighted atoms
+        // Decouples external viewers from internal SoA arrays
+        getHighlightCoordinates() {
+            const coords = [];
+            // Ensure arrays exist
+            if (!this.screenValid || !this.screenX || !this.screenY || !this.screenRadius) {
+                return coords;
+            }
+
+            const addCoord = (idx) => {
+                // Check if projected in current frame
+                if (idx >= 0 && idx < this.screenValid.length && this.screenValid[idx] === this.screenFrameId) {
+                    coords.push({
+                        x: this.screenX[idx],
+                        y: this.screenY[idx],
+                        radius: this.screenRadius[idx]
+                    });
+                }
+            };
+
+            // Add multiple highlights
+            if (this.highlightedAtoms && this.highlightedAtoms.size > 0) {
+                for (const idx of this.highlightedAtoms) {
+                    addCoord(idx);
+                }
+            }
+
+            // Add single highlight
+            if (this.highlightedAtom !== null && this.highlightedAtom !== undefined) {
+                addCoord(this.highlightedAtom);
+            }
+
+            return coords;
         }
 
         // Main animation loop
@@ -5452,7 +5635,7 @@ function initializePy2DmolViewer(containerElement) {
 
     colorSelect.addEventListener('change', (e) => {
         const selectedMode = e.target.value;
-        const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'entropy'];
+        const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
 
         if (validModes.includes(selectedMode)) {
             renderer.colorMode = selectedMode;
@@ -5586,9 +5769,10 @@ function initializePy2DmolViewer(containerElement) {
 
     // 7. Add function for Python to call (for new frames)
     // These are now locally scoped consts, not on window
-    const handlePythonUpdate = (jsonData, objectName) => {
+    const handlePythonUpdate = (jsonDataOrObject, objectName) => {
         try {
-            const data = JSON.parse(jsonData);
+            // Accept either JSON string or raw object to avoid Uint8Array serialization issues
+            const data = typeof jsonDataOrObject === 'string' ? JSON.parse(jsonDataOrObject) : jsonDataOrObject;
             // Pass name to addFrame
             renderer.addFrame(data, objectName);
         } catch (e) {
@@ -5668,6 +5852,14 @@ function initializePy2DmolViewer(containerElement) {
             if (window.staticObjectData.length > 0) {
                 renderer.currentObjectName = window.staticObjectData[0].name;
                 renderer.objectSelect.value = window.staticObjectData[0].name;
+
+                // Populate entropy data from MSA if available
+                const firstObjectName = window.staticObjectData[0].name;
+                if (renderer.objectsData[firstObjectName]?.msa?.msasBySequence &&
+                    renderer.objectsData[firstObjectName]?.msa?.chainToSequence) {
+                    renderer._mapEntropyToStructure(firstObjectName);
+                }
+
                 renderer.setFrame(0);
                 // Update PAE container visibility after initial load
                 // Use requestAnimationFrame to ensure PAE renderer is initialized

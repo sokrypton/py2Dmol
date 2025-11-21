@@ -113,7 +113,10 @@ class view:
             payload["position_types"] = list(self._position_types)
 
         if self._pae is not None:
-            payload["pae"] = np.round(self._pae, 0).astype(int).tolist()
+            # Flatten and scale to 0-255 (x8) for Uint8Array compatibility in frontend
+            # This reduces JSON size significantly compared to list of lists of floats
+            scaled_pae = np.clip(np.round(self._pae * 8), 0, 255).astype(np.uint8)
+            payload["pae"] = scaled_pae.flatten().tolist()
 
         if self._position_names is not None:
             payload["position_names"] = list(self._position_names)
@@ -1290,9 +1293,17 @@ class view:
                     if key in frame:
                         frame_data[key] = frame[key]
                 
-                # Round PAE to 1 decimal place
+                # Handle PAE data
                 if "pae" in frame and frame["pae"] is not None:
-                    frame_data["pae"] = [[round(val, 1) for val in row] for row in frame["pae"]]
+                    pae_data = frame["pae"]
+                    # Check if it's a flattened list (new format) or 2D list (legacy)
+                    if isinstance(pae_data, list) and len(pae_data) > 0:
+                        if isinstance(pae_data[0], list):
+                            # Legacy 2D list - round to 1 decimal place
+                            frame_data["pae"] = [[round(val, 1) for val in row] for row in pae_data]
+                        else:
+                            # Flattened list (already scaled 0-255) - save as is
+                            frame_data["pae"] = pae_data
                 
                 frames.append(frame_data)
             

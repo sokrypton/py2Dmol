@@ -1,19 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>py2Dmol_viewer</title>
     <style>
-        * { box-sizing: border-box; }
-        
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
             padding: 8px;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: transparent;
         }
-        
+
         #mainContainer {
             display: flex;
             flex-direction: row;
@@ -21,7 +24,7 @@
             gap: 15px;
             background: transparent;
         }
-        
+
         #viewerColumn {
             display: flex;
             flex-direction: column;
@@ -35,16 +38,16 @@
             overflow: auto;
             background: #ffffff;
             resize: both;
-            min-width: 150px; 
+            min-width: 150px;
             min-height: 150px;
             position: relative;
         }
-        
+
         /* Hide default resize handle */
         #canvasContainer::-webkit-resizer {
             display: none;
         }
-        
+
         /* Custom resize handle */
         #canvasContainer .resize-handle {
             position: absolute;
@@ -58,11 +61,11 @@
             z-index: 100;
             pointer-events: none;
         }
-        
+
         #canvasContainer:hover .resize-handle {
             opacity: 0.8;
         }
-        
+
         #canvasContainer .resize-handle::before {
             content: '';
             position: absolute;
@@ -74,14 +77,14 @@
             border-width: 0 0 16px 16px;
             border-color: transparent transparent #3b82f6 transparent;
         }
-        
+
         #canvas {
             background: #ffffff;
             cursor: grab;
             display: block;
             touch-action: none;
         }
-        
+
         #canvas:active {
             cursor: grabbing;
         }
@@ -99,24 +102,24 @@
             cursor: pointer;
             font-family: inherit;
         }
-        
+
         select:hover,
         .controlButton:hover:not(:disabled) {
             border-color: #d1d5db;
             background: #f9fafb;
         }
-        
+
         select:active,
         .controlButton:active:not(:disabled) {
             background: #f3f4f6;
         }
-        
+
         select:focus,
         .controlButton:focus {
             outline: none;
             border-color: #3b82f6;
         }
-        
+
         select:disabled,
         .controlButton:disabled {
             opacity: 0.6;
@@ -124,7 +127,7 @@
             background: #f3f4f6;
             color: #9ca3af;
         }
-        
+
         /* Ensure range inputs have no border/outline */
         input[type="range"] {
             border: none !important;
@@ -143,40 +146,40 @@
             white-space: nowrap;
             margin: 0;
         }
-        
+
         .controlButton:not(.btn-toggle) {
             /* Regular buttons get padding */
         }
-        
+
         .btn-toggle {
             /* Toggle buttons have no padding - label has it */
             padding: 0;
             border: none;
             background: transparent;
         }
-        
+
         .btn-toggle:hover {
             border: none;
             background: transparent;
         }
-        
-        #recordButton, 
+
+        #recordButton,
         #playButton {
             min-width: 28px;
             padding: 0 5px;
         }
-        
+
         #recordButton {
             color: #ef4444;
             font-size: 14px;
             line-height: 1;
         }
-        
+
         #recordButton:hover:not(:disabled) {
             color: #dc2626;
             background: #fef2f2;
         }
-        
+
         #recordButton:active:not(:disabled) {
             color: #b91c1c;
             background: #fee2e2;
@@ -189,7 +192,7 @@
             display: block;
             width: 100%;
         }
-        
+
         .btn-toggle input[type="checkbox"] {
             position: absolute;
             opacity: 0;
@@ -197,7 +200,7 @@
             height: 0;
             pointer-events: none;
         }
-        
+
         .btn-toggle .btn-label {
             display: block;
             padding: 4px 8px;
@@ -214,30 +217,30 @@
             font-size: 12px;
             font-weight: 500;
         }
-        
+
         .btn-toggle .btn-label:hover {
             background: #f9fafb;
             border-color: #d1d5db;
         }
-        
+
         .btn-toggle .btn-label:active {
             background: #f3f4f6;
         }
-        
+
         /* Checked state for toggle buttons */
-        .btn-toggle input[type="checkbox"]:checked + .btn-label {
+        .btn-toggle input[type="checkbox"]:checked+.btn-label {
             background: #e5e7eb;
             border-color: #d1d5db;
             color: #374151;
         }
-        
-        .btn-toggle input[type="checkbox"]:checked + .btn-label:hover {
+
+        .btn-toggle input[type="checkbox"]:checked+.btn-label:hover {
             background: #d1d5db;
             border-color: #9ca3af;
             color: #374151;
         }
-        
-        .btn-toggle input[type="checkbox"]:checked + .btn-label:active {
+
+        .btn-toggle input[type="checkbox"]:checked+.btn-label:active {
             background: #9ca3af;
             border-color: #6b7280;
             color: #374151;
@@ -252,9 +255,9 @@
             gap: 5px;
             flex-wrap: nowrap;
         }
-        
+
         #frameSlider {
-            flex-grow: 1; 
+            flex-grow: 1;
             width: auto;
             min-width: 100px;
             margin: 0;
@@ -262,18 +265,18 @@
             outline: none !important;
             box-shadow: none !important;
         }
-        
+
         #frameCounter {
             color: #374151;
             min-width: 90px;
             font-size: 12px;
             flex-shrink: 0;
         }
-        
+
         #speedSelect {
             min-width: 60px;
         }
-        
+
         #rightPanelContainer {
             display: flex;
             flex-direction: column;
@@ -285,21 +288,21 @@
             background: #f9fafb;
             flex-shrink: 0;
         }
-        
+
         /* Control groups and items */
         .control-group {
             display: flex;
             flex-direction: column;
             gap: 5px;
         }
-        
+
         .toggle-item {
             display: flex;
             align-items: center;
             gap: 5px;
             width: 100%;
         }
-        
+
         .toggle-item label {
             font-size: 12px;
             font-weight: 500;
@@ -308,27 +311,27 @@
             flex-shrink: 0;
             white-space: nowrap;
         }
-        
+
         .toggle-item select {
             flex-grow: 1;
         }
-        
+
         .btn-row {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 5px;
         }
-        
+
         .btn-row .controlButton {
             width: 100%;
             min-width: 0;
             height: 28px;
         }
-        
+
         .btn-row .btn-toggle {
             display: block;
         }
-        
+
         .btn-row .btn-toggle .btn-label {
             width: 100%;
             box-sizing: border-box;
@@ -345,14 +348,14 @@
             margin: 0;
             padding: 0;
         }
-        
+
         input[type="range"]::-webkit-slider-runnable-track {
             width: 100%;
             height: 5px;
             background: #e5e7eb;
             border-radius: 3px;
         }
-        
+
         input[type="range"]::-moz-range-track {
             width: 100%;
             height: 5px;
@@ -360,7 +363,7 @@
             border-radius: 3px;
             border: none;
         }
-        
+
         input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
             appearance: none;
@@ -373,7 +376,7 @@
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
             margin-top: -4.5px;
         }
-        
+
         input[type="range"]::-moz-range-thumb {
             width: 10px;
             height: 10px;
@@ -383,23 +386,23 @@
             border: 2px solid white;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
         }
-        
+
         input[type="range"]:hover::-webkit-slider-thumb {
             background: #2563eb;
         }
-        
+
         input[type="range"]:hover::-moz-range-thumb {
             background: #2563eb;
         }
-        
+
         input[type="range"]:active::-webkit-slider-thumb {
             background: #1d4ed8;
         }
-        
+
         input[type="range"]:active::-moz-range-thumb {
             background: #1d4ed8;
         }
-        
+
         /* PAE Container */
         #paeContainer {
             display: none;
@@ -414,7 +417,7 @@
             position: relative;
             flex-shrink: 0;
         }
-        
+
         #paeCanvas {
             width: 100%;
             height: 100%;
@@ -424,12 +427,12 @@
             left: 0;
             touch-action: none;
         }
-        
+
         /* Error message styles */
         .py2dmol-container {
             position: relative;
         }
-        
+
         .py2dmol-init-error {
             display: none;
             position: absolute;
@@ -446,12 +449,12 @@
             border-radius: 12px;
             z-index: 100;
         }
-        
+
         .py2dmol-init-error p {
             margin: 0;
             font-weight: 500;
         }
-        
+
         .py2dmol-init-error code {
             background: #fee2e2;
             padding: 2px 5px;
@@ -460,9 +463,10 @@
         }
     </style>
 </head>
+
 <body>
     <div id="mainContainer">
-        
+
         <!-- Left Column -->
         <div id="viewerColumn">
             <!-- Canvas -->
@@ -485,35 +489,35 @@
                 </select>
             </div>
         </div>
-        
+
         <!-- PAE Canvas -->
         <div id="paeContainer">
             <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
         </div>
-        
+
         <!-- Right Panel -->
         <div id="rightPanelContainer">
             <div class="control-group">
-                
+
                 <!-- Object Selection -->
                 <div class="toggle-item">
                     <select id="objectSelect" style="flex-grow: 1; width: 100%;">
                         <!-- Populated by JS -->
                     </select>
                 </div>
-                
+
                 <!-- Appearance & Rendering -->
                 <div class="toggle-item">
                     <label for="colorSelect">Color:</label>
                     <select id="colorSelect">
                         <option value="auto">Auto</option>
                         <option value="plddt">pLDDT</option>
+                        <option value="deepmind">DeepMind</option>
                         <option value="rainbow">Rainbow</option>
                         <option value="chain">Chain</option>
-                        <option value="entropy">Entropy</option>
                     </select>
                 </div>
-                
+
                 <div class="toggle-item">
                     <label for="outlineModeSelect">Outline:</label>
                     <select id="outlineModeSelect">
@@ -522,7 +526,7 @@
                         <option value="full">Full</option>
                     </select>
                 </div>
-                
+
                 <!-- Visual Effects -->
                 <div class="btn-row">
                     <label class="controlButton btn-toggle" title="Toggle shadow">
@@ -534,18 +538,18 @@
                         <span class="btn-label">Colorblind</span>
                     </label>
                 </div>
-                
+
                 <!-- Sliders -->
                 <div class="toggle-item" style="margin-top: 3px;">
                     <label for="lineWidthSlider">Width:</label>
                     <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
                 </div>
-                
+
                 <div class="toggle-item" style="margin-top: 3px;">
                     <label for="orthoSlider">Ortho:</label>
                     <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
                 </div>
-                
+
                 <!-- Actions -->
                 <div class="btn-row" style="margin-top: 6px;">
                     <label class="controlButton btn-toggle" title="Toggle auto-rotation">
@@ -554,11 +558,12 @@
                     </label>
                     <button id="saveSvgButton" class="controlButton" title="Save as SVG">Save SVG</button>
                 </div>
-                
+
             </div>
         </div>
 
     </div>
     <!-- DATA_INJECTION_POINT -->
 </body>
+
 </html>

@@ -11,7 +11,7 @@ let batchedObjects = [];
 
 // Helper function to check if PAE data is valid
 function isValidPAE(pae) {
-    return pae && Array.isArray(pae) && pae.length > 0;
+    return pae && ((Array.isArray(pae) && pae.length > 0) || (pae.buffer && pae.length > 0));
 }
 
 // Helper function to check if object data has PAE (checks frames directly)
@@ -600,6 +600,10 @@ function setupEventListeners() {
         // Update colors in sequence view when color mode changes
         updateSequenceViewColors();
         updateSequenceViewSelectionState();
+        // Update PAE viewer colors when color mode changes
+        if (viewerApi?.renderer?.paeRenderer) {
+            viewerApi.renderer.paeRenderer.render();
+        }
     });
 
     // Listen for selection changes (including PAE selections)
@@ -711,6 +715,14 @@ function handleObjectChange() {
         const rendererObj = viewerApi.renderer.objectsData[selectedObject];
         if (batchedObj && batchedObj.msa && rendererObj && !rendererObj.msa) {
             rendererObj.msa = batchedObj.msa;
+        }
+    }
+
+    // After MSA is synced, remap entropy if MSA data now exists
+    if (viewerApi?.renderer && selectedObject) {
+        const rendererObj = viewerApi.renderer.objectsData[selectedObject];
+        if (rendererObj && rendererObj.msa && rendererObj.msa.msasBySequence && rendererObj.msa.chainToSequence) {
+            viewerApi.renderer._mapEntropyToStructure(selectedObject);
         }
     }
 
@@ -1796,15 +1808,20 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                 // Count total ligands identified
                 const totalLigands = originalIsLigandPosition.filter(x => x).length;
 
+                // Determine dimensions
+                const isFlat = !!paeData.buffer;
+                const n = isFlat ? Math.sqrt(paeData.length) : paeData.length;
+                const m = originalIsLigandPosition.length;
+
                 // First, check if PAE size matches originalFrameData size
-                if (paeData.length === originalIsLigandPosition.length) {
+                if (n === m) {
                     // Sizes match - PAE includes all positions, filter out ligands
                     frameData.pae = filterPAEForLigands(paeData, originalIsLigandPosition);
-                } else if (paeData.length < originalIsLigandPosition.length) {
+                } else if (n < m) {
                     // PAE is smaller - it might already exclude ligands, but we need to verify
-                    // Count how many ligands are in the first paeData.length positions
+                    // Count how many ligands are in the first n positions
                     let ligandCountInPAERange = 0;
-                    for (let i = 0; i < paeData.length; i++) {
+                    for (let i = 0; i < n; i++) {
                         if (originalIsLigandPosition[i]) {
                             ligandCountInPAERange++;
                         }
@@ -1813,22 +1830,34 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
                     if (ligandCountInPAERange > 0) {
                         // PAE includes some ligands in its range, filter them out
                         // Create a truncated ligand position array for the PAE range
-                        const truncatedLigandPositions = originalIsLigandPosition.slice(0, paeData.length);
+                        const truncatedLigandPositions = originalIsLigandPosition.slice(0, n);
                         frameData.pae = filterPAEForLigands(paeData, truncatedLigandPositions);
                     } else {
                         // No ligands in PAE range - PAE already excludes ligands, use as-is
-                        frameData.pae = paeData.map(row => [...row]);
+                        frameData.pae = isFlat ? paeData.slice() : paeData.map(row => [...row]);
                     }
                 } else {
                     // PAE is larger - truncate to match originalFrameData size, then filter
-                    console.warn(`PAE matrix size (${paeData.length}) is larger than frame data size (${originalIsLigandPosition.length}). Truncating and filtering...`);
-                    const truncatedPae = paeData.slice(0, originalIsLigandPosition.length).map(row =>
-                        row.slice(0, originalIsLigandPosition.length)
-                    );
-                    frameData.pae = filterPAEForLigands(truncatedPae, originalIsLigandPosition);
+                    console.warn(`PAE matrix size (${n}) is larger than frame data size (${m}). Truncating and filtering...`);
+
+                    if (isFlat) {
+                        // Truncate flat array to m x m
+                        const truncated = new paeData.constructor(m * m);
+                        for (let i = 0; i < m; i++) {
+                            for (let j = 0; j < m; j++) {
+                                truncated[i * m + j] = paeData[i * n + j];
+                            }
+                        }
+                        frameData.pae = filterPAEForLigands(truncated, originalIsLigandPosition);
+                    } else {
+                        const truncatedPae = paeData.slice(0, m).map(row =>
+                            row.slice(0, m)
+                        );
+                        frameData.pae = filterPAEForLigands(truncatedPae, originalIsLigandPosition);
+                    }
                 }
             } else {
-                frameData.pae = paeData.map(row => [...row]);
+                frameData.pae = (paeData && paeData.buffer) ? paeData.slice() : paeData.map(row => [...row]);
             }
         } else {
             frameData.pae = null;
@@ -2086,7 +2115,7 @@ function updateViewerFromGlobalBatch() {
             viewerApi.handlePythonNewObject(obj.name);
             newNames.push(obj.name);
             for (const frame of obj.frames) {
-                viewerApi.handlePythonUpdate(JSON.stringify(frame), obj.name);
+                viewerApi.handlePythonUpdate(frame, obj.name);
             }
         } else {
             // Existing object: determine if we're replacing or appending
@@ -2098,7 +2127,7 @@ function updateViewerFromGlobalBatch() {
             if (want > have) {
                 // Appending frames to existing object
                 for (let i = have; i < want; i++) {
-                    viewerApi.handlePythonUpdate(JSON.stringify(obj.frames[i]), obj.name);
+                    viewerApi.handlePythonUpdate(obj.frames[i], obj.name);
                 }
             } else {
                 // Replacing existing object: clear everything and recreate
@@ -2125,7 +2154,7 @@ function updateViewerFromGlobalBatch() {
                 viewerApi.handlePythonNewObject(obj.name);
                 newNames.push(obj.name);
                 for (const frame of obj.frames) {
-                    viewerApi.handlePythonUpdate(JSON.stringify(frame), obj.name);
+                    viewerApi.handlePythonUpdate(frame, obj.name);
                 }
             }
         }
@@ -3867,6 +3896,11 @@ async function handleFetch() {
                                                 // Load MSA into viewer
                                                 window.MSAViewer.setMSAData(matchedMSA, firstMatchedChain);
 
+                                                // Map entropy from MSA
+                                                if (viewerApi?.renderer && objectName) {
+                                                    viewerApi.renderer._mapEntropyToStructure(objectName);
+                                                }
+
                                                 // Ensure view is visible after data is set
 
                                                 // Update MSA container visibility to ensure it's shown for current object
@@ -5009,20 +5043,53 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     // Otherwise, only process MSA files if the checkbox is checked
     const msaFilesToProcess = msaFiles.length > 0 && (structureFiles.length === 0 || loadMSA) ? msaFiles : [];
 
-    // Load JSON files and check for state file signature
-    const jsonContentsMap = new Map();
-    const jsonLoadPromises = jsonFiles.map(jsonFile => new Promise(async (resolve) => {
-        try {
-            const jsonText = await jsonFile.readAsync("text");
-            const jsonObject = JSON.parse(jsonText);
 
-            // Check if this is a state file (has objects array)
-            if (jsonObject.objects && Array.isArray(jsonObject.objects)) {
-                stateFiles.push(jsonFile);
-            } else {
-                // Regular PAE JSON file
+    // Pre-extract all JSON files in parallel to avoid sequential decompression bottleneck
+    let jsonFileDataArray = [];
+    if (jsonFiles.length > 0) {
+        const jsonFileDataPromises = jsonFiles.map(async (jsonFile) => {
+            try {
+                const jsonText = await jsonFile.readAsync("text");
+                return { file: jsonFile, text: jsonText, error: null };
+            } catch (e) {
+                console.warn(`Failed to read JSON file ${jsonFile.name}:`, e);
+                return { file: jsonFile, text: null, error: e };
+            }
+        });
+
+        jsonFileDataArray = await Promise.all(jsonFileDataPromises);
+    }
+
+    // Now process all the extracted files in parallel
+    const jsonContentsMap = new Map();
+    const jsonLoadPromises = jsonFileDataArray.map(({ file: jsonFile, text: jsonText, error }) => new Promise(async (resolve) => {
+        if (error || !jsonText) {
+            resolve();
+            return;
+        }
+
+        try {
+            // Try fast PAE extraction first (avoids parsing entire JSON)
+            const fastPae = fastExtractPaeFromText(jsonText);
+
+            if (fastPae) {
+                // Successfully extracted PAE directly, store it
                 const jsonBaseName = jsonFile.name.replace(/\.json$/i, '');
-                jsonContentsMap.set(jsonBaseName, jsonObject);
+                // Store as a minimal object with just the PAE data
+                // Note: fastPae is now a Uint8Array
+                jsonContentsMap.set(jsonBaseName, { data: fastPae, is_pae_extracted: true });
+            } else {
+                // Fall back to full JSON parse (for state files or non-PAE JSONs)
+                const jsonObject = JSON.parse(jsonText);
+
+                // Check if this is a state file (has objects array)
+                if (jsonObject.objects && Array.isArray(jsonObject.objects)) {
+                    stateFiles.push(jsonFile);
+                } else {
+                    // Regular PAE JSON file
+                    const jsonBaseName = jsonFile.name.replace(/\.json$/i, '');
+                    jsonContentsMap.set(jsonBaseName, jsonObject);
+                }
             }
         } catch (e) {
             console.warn(`Failed to parse JSON file ${jsonFile.name}:`, e);
@@ -5119,61 +5186,68 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             const structRankMatch = structBaseName.match(/_rank_(\d+)_/i);
             const jsonRankMatch = jsonBaseName.match(/_rank_(\d+)_/i);
 
-            let rankBonus = 0;
-            if (structRankMatch && jsonRankMatch && structRankMatch[1] === structRankMatch[1]) {
-                rankBonus = 100;
-                const structInternalModel = structBaseName.match(/_model_(\d+)_/i);
-                const jsonInternalModel = jsonBaseName.match(/_model_(\d+)_/i);
-                if (structInternalModel && jsonInternalModel &&
-                    structInternalModel[1] === jsonInternalModel[1]) {
-                    rankBonus += 50;
-                }
-                const structSeed = structBaseName.match(/_seed_(\d+)/i);
-                const jsonSeed = jsonBaseName.match(/_seed_(\d+)/i);
-                if (structSeed && jsonSeed && structSeed[1] === jsonSeed[1]) {
-                    rankBonus += 25;
-                }
+            if (structRankMatch && jsonRankMatch && structRankMatch[1] === jsonRankMatch[1]) {
+                modelNumBonus += 50;
             }
 
-            const finalScore = score + nameHintScore + modelNumBonus + rankBonus;
+            const totalScore = score * 10 + nameHintScore + modelNumBonus;
 
-            if (finalScore > bestScore) {
-                // Don't warn when checking candidates - only warn on final extraction
-                const paeMatrix = extractPaeFromJSON(paeJson, false);
-                if (paeMatrix) {
-                    bestScore = finalScore;
+            if (totalScore > bestScore) {
+                // Check if it looks like PAE data without expensive flattening
+                // We just check for existence of keys here
+                let hasPae = false;
+                if (paeJson.pae || paeJson.predicted_aligned_error) hasPae = true;
+                else if (Array.isArray(paeJson) && paeJson.length > 0 && paeJson[0].predicted_aligned_error) hasPae = true;
+
+                if (hasPae) {
+                    bestScore = totalScore;
                     bestMatch = paeJson;
                 }
             }
         }
-        return bestScore > 0 ? bestMatch : null;
+
+        return bestMatch;
     }
 
     // Process structure files
-    for (const structFile of structureFiles) {
-        let paeData = null;
-        const structBaseName = structFile.name.replace(/\.(cif|pdb|ent)$/i, '');
-        const bestMatchJson = loadPAE ? getBestJsonMatch(structBaseName, jsonContentsMap) : null;
+    for (const file of structureFiles) {
+        try {
+            const text = await file.readAsync("text");
 
-        if (bestMatchJson && loadPAE) {
-            paeData = extractPaeFromJSON(bestMatchJson);
-            if (paeData) paePairedCount++;
+            const baseName = cleanObjectName(file.name);
+
+            // Find matching PAE data
+            const paeJson = getBestJsonMatch(baseName, jsonContentsMap);
+
+            let paeData = null;
+            if (paeJson) {
+                // If it's already a Uint8Array (from worker or optimized path), use it directly
+                if (paeJson instanceof Uint8Array) {
+                    paeData = paeJson;
+                } else {
+                    // Otherwise extract it
+                    paeData = extractPaeFromJSON(paeJson);
+                }
+                if (paeData) paePairedCount++;
+            }
+
+            const trajectoryObjectName = loadAsFrames && structureFiles.length > 1 ?
+                (groupName || cleanObjectName(structureFiles[0].name)) :
+                baseName;
+
+            const framesAdded = processStructureToTempBatch(
+                text,
+                file.name,
+                paeData,
+                trajectoryObjectName,
+                tempBatch
+            );
+
+            overallTotalFramesAdded += framesAdded;
+        } catch (e) {
+            console.error(`Error processing file ${file.name}:`, e);
+            setStatus(`Error processing ${file.name}: ${e.message}`, true);
         }
-
-        const text = await structFile.readAsync("text");
-
-        const trajectoryObjectName = loadAsFrames && structureFiles.length > 1 ?
-            (groupName || cleanObjectName(structureFiles[0].name)) :
-            structBaseName;
-
-        const framesAdded = processStructureToTempBatch(
-            text,
-            structFile.name,
-            paeData,
-            trajectoryObjectName,
-            tempBatch
-        );
-        overallTotalFramesAdded += framesAdded;
     }
 
     // Process contact files and add to objects
@@ -5267,6 +5341,11 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                                 if (window.MSAViewer) {
                                     loadMSADataIntoViewer(msaData, msaObj.defaultChain, currentObjectName);
                                     setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
+
+                                    // Map entropy from MSA
+                                    if (viewerApi?.renderer && currentObjectName) {
+                                        viewerApi.renderer._mapEntropyToStructure(currentObjectName);
+                                    }
 
                                     // Update MSA container visibility and chain selector
                                     if (window.updateMSAContainerVisibility) {
@@ -5442,84 +5521,85 @@ async function handleZipUpload(file, loadAsFrames) {
 
             if (targetObjectName) {
                 // Check if MSA loading is enabled
-                // For ZIP files with MSAs, always load them (checkbox only controls fetching from AlphaFold DB)
                 const loadMSACheckbox = document.getElementById('loadMSACheckbox');
                 const loadMSA = loadMSACheckbox ? loadMSACheckbox.checked : false;
 
-                // If checkbox is disabled and we have MSA files in the ZIP, load them anyway
-                if (!loadMSA && allMSAFiles.length > 0) {
-                    console.log(`Loading ${allMSAFiles.length} MSA file(s) from ZIP (checkbox only controls AlphaFold DB fetching)`);
-                }
+                // Skip MSA loading if checkbox is disabled
+                if (!loadMSA) {
+                    console.log(`Skipping ${allMSAFiles.length} MSA file(s) from ZIP (Load MSA checkbox is disabled)`);
+                    // Continue to next section without loading MSAs
+                } else {
 
-                // Use sequence-based matching for all MSA files (same as processFiles)
-                const object = viewerApi.renderer.objectsData[targetObjectName];
-                if (object && object.frames && object.frames.length > 0) {
-                    // Extract chain sequences from first frame
-                    const firstFrame = object.frames[0];
-                    const chainSequences = extractChainSequences(firstFrame);
+                    // Use sequence-based matching for all MSA files (same as processFiles)
+                    const object = viewerApi.renderer.objectsData[targetObjectName];
+                    if (object && object.frames && object.frames.length > 0) {
+                        // Extract chain sequences from first frame
+                        const firstFrame = object.frames[0];
+                        const chainSequences = extractChainSequences(firstFrame);
 
-                    if (Object.keys(chainSequences).length > 0) {
-                        // Parse all MSA files and extract query sequences
-                        const msaDataList = [];
+                        if (Object.keys(chainSequences).length > 0) {
+                            // Parse all MSA files and extract query sequences
+                            const msaDataList = [];
 
-                        for (const msaFile of allMSAFiles) {
-                            try {
-                                const msaText = await msaFile.readAsync("text");
-                                const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText) : null;
+                            for (const msaFile of allMSAFiles) {
+                                try {
+                                    const msaText = await msaFile.readAsync("text");
+                                    const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText) : null;
 
-                                if (msaData && msaData.querySequence) {
-                                    msaDataList.push({ msaData, filename: msaFile.name });
+                                    if (msaData && msaData.querySequence) {
+                                        msaDataList.push({ msaData, filename: msaFile.name });
+                                    }
+                                } catch (e) {
+                                    console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
                                 }
-                            } catch (e) {
-                                console.error(`Failed to parse MSA file ${msaFile.name}:`, e);
                             }
-                        }
 
-                        if (msaDataList.length > 0) {
-                            // Match MSAs to chains by sequence
-                            const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
+                            if (msaDataList.length > 0) {
+                                // Match MSAs to chains by sequence
+                                const { chainToMSA, msaToChains } = matchMSAsToChains(msaDataList, chainSequences);
 
-                            // Store MSA data in object (consolidated function)
-                            const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
+                                // Store MSA data in object (consolidated function)
+                                const msaObj = storeMSADataInObject(object, chainToMSA, msaToChains);
 
-                            if (msaObj && msaObj.availableChains.length > 0) {
-                                // Load default chain's MSA
-                                const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
-                                if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
-                                    const { msaData } = msaObj.msasBySequence[defaultChainSeq];
-                                    if (window.MSAViewer) {
-                                        loadMSADataIntoViewer(msaData, msaObj.defaultChain, targetObjectName);
-                                        setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
+                                if (msaObj && msaObj.availableChains.length > 0) {
+                                    // Load default chain's MSA
+                                    const defaultChainSeq = msaObj.chainToSequence[msaObj.defaultChain];
+                                    if (defaultChainSeq && msaObj.msasBySequence[defaultChainSeq]) {
+                                        const { msaData } = msaObj.msasBySequence[defaultChainSeq];
+                                        if (window.MSAViewer) {
+                                            loadMSADataIntoViewer(msaData, msaObj.defaultChain, targetObjectName);
+                                            setStatus(`Loaded MSAs: ${msaObj.availableChains.length} chain(s) matched to ${Object.keys(msaObj.msasBySequence).length} unique MSA(s)`);
 
-                                        // Update MSA container visibility and chain selector
-                                        if (window.updateMSAContainerVisibility) {
-                                            window.updateMSAContainerVisibility();
-                                        }
-                                        if (window.updateMSAChainSelectorIndex) {
-                                            window.updateMSAChainSelectorIndex();
+                                            // Update MSA container visibility and chain selector
+                                            if (window.updateMSAContainerVisibility) {
+                                                window.updateMSAContainerVisibility();
+                                            }
+                                            if (window.updateMSAChainSelectorIndex) {
+                                                window.updateMSAChainSelectorIndex();
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                } else {
-                    // No structure loaded yet - parse first MSA for immediate display
-                    const firstMSAFile = allMSAFiles[0];
-                    if (firstMSAFile) {
-                        try {
-                            const msaText = await firstMSAFile.readAsync("text");
-                            const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText) : null;
-                            if (msaData && window.MSAViewer) {
-                                window.MSAViewer.setMSAData(msaData);
-                                setStatus(`Loaded MSA from ${firstMSAFile.name}. Load structure to match to chains.`);
+                    } else {
+                        // No structure loaded yet - parse first MSA for immediate display
+                        const firstMSAFile = allMSAFiles[0];
+                        if (firstMSAFile) {
+                            try {
+                                const msaText = await firstMSAFile.readAsync("text");
+                                const msaData = window.MSAViewer ? window.MSAViewer.parseA3M(msaText) : null;
+                                if (msaData && window.MSAViewer) {
+                                    window.MSAViewer.setMSAData(msaData);
+                                    setStatus(`Loaded MSA from ${firstMSAFile.name}. Load structure to match to chains.`);
+                                }
+                            } catch (e) {
+                                console.error(`Failed to parse MSA file:`, e);
                             }
-                        } catch (e) {
-                            console.error(`Failed to parse MSA file:`, e);
                         }
                     }
                 }
-            }
+            } // Close else block for loadMSA check
         }
 
         // Update status with totals
@@ -5726,11 +5806,21 @@ function saveViewerState() {
                     });
                 }
 
-                // Round PAE to 1 decimal place
+                // Handle PAE data (Uint8Array, flattened array, or 2D array)
                 if (frame.pae) {
-                    frameData.pae = frame.pae.map(row =>
-                        row.map(val => Math.round(val * 10) / 10)
-                    );
+                    if (frame.pae instanceof Uint8Array) {
+                        // Convert Uint8Array to regular array for JSON serialization
+                        // It is already flattened and scaled (0-255)
+                        frameData.pae = Array.from(frame.pae);
+                    } else if (Array.isArray(frame.pae) && frame.pae.length > 0 && typeof frame.pae[0] === 'number') {
+                        // Already a flattened array (e.g. from Python or loaded state)
+                        frameData.pae = frame.pae;
+                    } else if (Array.isArray(frame.pae) && frame.pae.length > 0 && Array.isArray(frame.pae[0])) {
+                        // Legacy 2D array - round to 1 decimal place
+                        frameData.pae = frame.pae.map(row =>
+                            row.map(val => Math.round(val * 10) / 10)
+                        );
+                    }
                 }
 
                 frameDataList.push(frameData);
@@ -6042,7 +6132,7 @@ async function loadViewerState(stateData) {
 
             // Restore color mode
             if (vs.color_mode) {
-                const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+                const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
                 if (validModes.includes(vs.color_mode)) {
                     renderer.colorMode = vs.color_mode;
                     const colorSelect = document.getElementById('colorSelect');
