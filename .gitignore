@@ -1,1 +1,14 @@
 .DS_Store
+
+# Backup files
+*.bak
+*.backup
+*.tmp
+*~
+
+# Plan/documentation files
+implementation_plan.md
+
+# IDE
+.vscode/
+.idea/
