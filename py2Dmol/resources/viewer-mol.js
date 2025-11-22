@@ -2523,16 +2523,10 @@ function initializePy2DmolViewer(containerElement) {
                 this.frameSlider.value = this.currentFrame;
             }
 
-            this.frameCounter.textContent = `Frame: ${total > 0 ? current : 0} / ${total}`;
+            this.frameCounter.textContent = `${total > 0 ? current : 0} / ${total}`;
 
             // Update overlay button
             if (this.overlayButton) {
-                // Change symbol when overlay is active
-                this.overlayButton.textContent = this.overlayMode ? '⊖' : '⚏';
-                this.overlayButton.style.background = this.overlayMode ? '#3b82f6' : '';
-                this.overlayButton.style.color = this.overlayMode ? '#fff' : '';
-                this.overlayButton.style.borderColor = this.overlayMode ? '#2563eb' : '';
-
                 // Disable overlay button if only 1 frame
                 this.overlayButton.disabled = (total <= 1);
 
@@ -2750,6 +2744,13 @@ function initializePy2DmolViewer(containerElement) {
                 // Exiting overlay mode - return to single frame view
                 this.overlayFrames = null;
                 this.overlayAutoColor = null;
+                this.frameIdMap = null;
+
+                // Invalidate segment cache to force rebuild from single-frame data
+                this.cachedSegmentIndices = null;
+                this.cachedSegmentIndicesFrame = -1;
+                this.cachedSegmentIndicesObjectName = null;
+
                 const currentFrame = Math.max(0, this.currentFrame);
                 this.setFrame(currentFrame);
             }
@@ -3162,7 +3163,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.frameSlider.max = '0';
             }
             if (this.frameCounter) {
-                this.frameCounter.textContent = 'Frame: 0/0';
+                this.frameCounter.textContent = '0/0';
             }
             if (this.playButton) {
                 this.playButton.textContent = '▶︎';
@@ -5719,6 +5720,13 @@ function initializePy2DmolViewer(containerElement) {
 
     // ADDED: ResizeObserver to handle canvas resizing
     const canvasContainer = containerElement.querySelector('#canvasContainer');
+
+    // Set initial container dimensions to match canvas size
+    // This prevents the container from shrinking when the window is closed/reopened
+    if (canvasContainer) {
+        canvasContainer.style.width = displayWidth + 'px';
+        canvasContainer.style.height = displayHeight + 'px';
+    }
     if (canvasContainer && window.ResizeObserver) {
         let resizeTimeout;
         const resizeObserver = new ResizeObserver(entries => {

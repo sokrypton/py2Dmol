@@ -171,16 +171,34 @@
             line-height: 1;
         }
 
-        /* Overlay button active state (when overlay mode is on) */
-        #overlayButton.active {
+        /* Button styling (primary/secondary) */
+        .btn {
+            border: 1px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
             background: #3b82f6;
             color: white;
             border-color: #2563eb;
         }
 
-        #overlayButton.active:hover:not(:disabled) {
+        .btn-primary:hover:not(:disabled) {
             background: #2563eb;
             border-color: #1d4ed8;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: inherit;
+            border-color: transparent;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #f3f4f6;
         }
 
         #recordButton {
@@ -264,9 +282,9 @@
         #controlsContainer {
             display: flex;
             align-items: center;
-            padding: 0 10px;
+            padding: 0 5px;
             width: 100%;
-            gap: 5px;
+            gap: 3px;
             flex-wrap: nowrap;
         }
 
@@ -282,7 +300,7 @@
 
         #frameCounter {
             color: #374151;
-            min-width: 90px;
+            min-width: 50px;
             font-size: 12px;
             flex-shrink: 0;
         }
@@ -495,13 +513,13 @@
                 <button id="playButton" class="controlButton">▶</button>
                 <button id="recordButton" class="controlButton" title="Record animation to video file">⏺</button>
                 <input type="range" id="frameSlider" min="0" max="0" value="0">
-                <span id="frameCounter">Frame: 0 / 0</span>
+                <span id="frameCounter">0 / 0</span>
                 <select id="speedSelect">
                     <option value="100">1x</option>
                     <option value="50">2x</option>
                     <option value="25">4x</option>
                 </select>
-                <button id="overlayButton" class="controlButton" title="Overlay all frames"
+                <button id="overlayButton" class="controlButton btn btn-secondary" title="Overlay all frames"
                     style="font-weight: 400;">⧉</button>
             </div>
         </div>

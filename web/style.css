@@ -616,7 +616,7 @@
     border-radius: 3px;
     outline: none;
     flex-grow: 1;
-    margin: 0 12px;
+    margin: 0 8px;
     vertical-align: middle;
 }
 
@@ -856,7 +856,7 @@
 
 .py2dmol-viewer-instance #frameCounter {
     color: #374151;
-    min-width: 100px;
+    min-width: 50px;
     font-weight: 500;
     font-size: 14px;
 }

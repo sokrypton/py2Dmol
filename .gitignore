@@ -12,3 +12,6 @@ implementation_plan.md
 # IDE
 .vscode/
 .idea/
+*.cif
+/.ipynb_checkpoints
+*.json

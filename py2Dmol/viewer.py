@@ -1230,22 +1230,30 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_obj=False, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, overrides=None):
+    def from_pdb(self, pdb_id, chains=None, new_obj=True, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, overrides=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
-        and displays the viewer.
-        
+        and adds it to the viewer.
+
+        Each call creates a new object (separate structure), but all structures appear
+        in the same viewer window. The viewer is displayed on the first call.
+
         Args:
             pdb_id (str): 4-character PDB code or a path to a local PDB/CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
-            new_obj (bool, optional): If True, starts a new object. Defaults to False.
-            name (str, optional): Name for the new object.
+            new_obj (bool, optional): If True, starts a new object. Defaults to True.
+                                     Set to False to add as frames to the last object.
+            name (str, optional): Name for the new object. If not provided, uses the PDB ID.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
         """
         filepath = self._get_filepath_from_pdb_id(pdb_id)
+
+        # Auto-generate name from PDB ID if not provided
+        if name is None and len(pdb_id) == 4 and pdb_id.isalnum():
+            name = pdb_id.upper()
         
         if filepath:
             self.add_pdb(filepath, chains=chains, new_obj=new_obj, 
@@ -1257,23 +1265,31 @@ class view:
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, new_obj=False, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
+    def from_afdb(self, uniprot_id, chains=None, new_obj=True, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
-        and displays the viewer.
-        
-        If `show_pae=True` was set in the `view()` constructor, this will also
+        and adds it to the viewer.
+
+        Each call creates a new object (separate structure), but all structures appear
+        in the same viewer window. The viewer is displayed on the first call.
+
+        If `pae=True` was set in the `view()` constructor, this will also
         download and display the PAE matrix.
-        
+
         Args:
             uniprot_id (str): UniProt accession code (e.g., "P0A8I3").
             chains (list, optional): Specific chains to load. Defaults to all.
-            new_obj (bool, optional): If True, starts a new object. Defaults to False.
-            name (str, optional): Name for the new object.
+            new_obj (bool, optional): If True, starts a new object. Defaults to True.
+                                     Set to False to add as frames to the last object.
+            name (str, optional): Name for the new object. If not provided, uses the UniProt ID.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
         """
+
+        # Auto-generate name from UniProt ID if not provided
+        if name is None:
+            name = uniprot_id.upper()
 
         # --- Download structure and (maybe) PAE ---
         struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self.config["pae"])
@@ -1300,14 +1316,19 @@ class view:
     def show(self):
         """
         Displays the viewer.
-        
+
         - If called *before* adding data, it creates an empty "live" viewer
           that will be dynamically updated.
-        
+
         - If called *after* adding data, it creates a final, 100% static
           viewer that is persistent in the notebook.
+
+        - If already displayed (live), subsequent calls are ignored.
         """
-        
+
+        if self._is_live:
+            return  # Already displayed, don't create a duplicate
+
         if not self.objects:
             # --- "Go Live" Mode ---
             # .show() was called *before* .add()
