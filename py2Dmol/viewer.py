@@ -40,6 +40,11 @@ def align_a_to_b(a, b):
   a_aligned = (a_cent @ R) + b_mean
   return a_aligned
 
+# --- Color System Constants ---
+
+VALID_COLOR_MODES = {"chain", "plddt", "rainbow", "auto", "entropy", "deepmind"}
+"""Valid color modes for protein visualization."""
+
 # --- Color Utilities ---
 
 def _normalize_color(color):
@@ -67,15 +72,13 @@ def _normalize_color(color):
     if color is None:
         return None
 
-    valid_modes = {"chain", "plddt", "rainbow", "auto", "entropy", "deepmind"}
-
     # Handle dict (advanced) format
     if isinstance(color, dict):
         return {"type": "advanced", "value": color}
 
     # Handle string format
     color_str = str(color).lower()
-    if color_str in valid_modes:
+    if color_str in VALID_COLOR_MODES:
         return {"type": "mode", "value": color_str}
     else:
         return {"type": "literal", "value": color}
@@ -218,6 +221,13 @@ class view:
       if self._position_residue_numbers is not None and len(self._position_residue_numbers) != n_positions:
           print(f"Warning: Residue numbers length mismatch. Ignoring residue numbers for this frame.")
           self._position_residue_numbers = None
+
+    def _find_object_by_name(self, name):
+        """Find and return object by name, or None if not found."""
+        for obj in self.objects:
+            if obj.get("name") == name:
+                return obj
+        return None
 
     def _send_message(self, message_dict):
         """Generates JS to directly call the viewer's API."""
@@ -811,12 +821,7 @@ class view:
                      }
         """
         # Find the object
-        target_obj = None
-        for obj in self.objects:
-            if obj.get("name") == name:
-                target_obj = obj
-                break
-
+        target_obj = self._find_object_by_name(name)
         if target_obj is None:
             print(f"Error: Object '{name}' not found.")
             return
@@ -862,20 +867,12 @@ class view:
         
         # --- Handle new_obj logic FIRST ---
         # If name is provided, check if an object with that name already exists
-        target_obj = None
         if name is not None:
-            # Search for existing object with this name
-            for obj in self.objects:
-                if obj.get("name") == name:
-                    target_obj = obj
-                    break
-
-        # If found existing object with same name, add to it (don't create new_obj)
-        if target_obj is not None:
-            new_obj = False  # Add frames to existing object
-        # If name is provided and different from current object, force new_obj
-        elif name is not None and self.objects and self.objects[-1]["name"] != name:
-            new_obj = True
+            target_obj = self._find_object_by_name(name)
+            if target_obj is not None:
+                new_obj = False  # Add frames to existing object
+            elif self.objects and self.objects[-1]["name"] != name:
+                new_obj = True  # Different object name, create new
 
         if new_obj or not self.objects:
              self.new_obj(name)

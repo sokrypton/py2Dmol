@@ -364,7 +364,7 @@ function initializePy2DmolViewer(containerElement) {
                 // Advanced dict at object level
                 if (objColor.value.object) {
                     const objLevelColor = objColor.value.object;
-                    if (typeof objLevelColor === 'string' && ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'].includes(objLevelColor.toLowerCase())) {
+                    if (typeof objLevelColor === 'string' && VALID_COLOR_MODES.includes(objLevelColor.toLowerCase())) {
                         resolvedMode = objLevelColor.toLowerCase();
                     } else {
                         resolvedLiteralColor = objLevelColor;
@@ -389,7 +389,7 @@ function initializePy2DmolViewer(containerElement) {
                     // Check frame-level key first
                     if (adv.frame) {
                         const frameLevelColor = adv.frame;
-                        if (typeof frameLevelColor === 'string' && ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'].includes(frameLevelColor.toLowerCase())) {
+                        if (typeof frameLevelColor === 'string' && VALID_COLOR_MODES.includes(frameLevelColor.toLowerCase())) {
                             resolvedMode = frameLevelColor.toLowerCase();
                             resolvedLiteralColor = null;
                         } else {
@@ -400,7 +400,7 @@ function initializePy2DmolViewer(containerElement) {
                     // === Level 3: Chain-level color ===
                     if (adv.chain && chainId && adv.chain[chainId]) {
                         const chainColor = adv.chain[chainId];
-                        if (typeof chainColor === 'string' && ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'].includes(chainColor.toLowerCase())) {
+                        if (typeof chainColor === 'string' && VALID_COLOR_MODES.includes(chainColor.toLowerCase())) {
                             resolvedMode = chainColor.toLowerCase();
                             resolvedLiteralColor = null;
                         } else {
@@ -411,7 +411,7 @@ function initializePy2DmolViewer(containerElement) {
                     // === Level 4: Position-level color (highest priority) ===
                     if (adv.position && adv.position[posIndex] !== undefined) {
                         const posColor = adv.position[posIndex];
-                        if (typeof posColor === 'string' && ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'].includes(posColor.toLowerCase())) {
+                        if (typeof posColor === 'string' && VALID_COLOR_MODES.includes(posColor.toLowerCase())) {
                             resolvedMode = posColor.toLowerCase();
                             resolvedLiteralColor = null;
                         } else {
@@ -431,6 +431,9 @@ function initializePy2DmolViewer(containerElement) {
     // ============================================================================
     // RENDERING CONSTANTS
     // ============================================================================
+
+    // Valid color modes for protein coloring
+    const VALID_COLOR_MODES = ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'];
 
     // Type-specific baseline multipliers (maintains visual hierarchy)
     const TYPE_BASELINES = {
