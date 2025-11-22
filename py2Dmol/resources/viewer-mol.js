@@ -588,7 +588,7 @@ function initializePy2DmolViewer(containerElement) {
 
         setClearColor(isTransparent) {
             this.isTransparent = isTransparent;
-            this.render(); // Re-render with new clear color
+            this.render('setClearColor'); // Re-render with new clear color
         }
 
         // [PATCH] --- Unified Selection API ---
@@ -715,7 +715,7 @@ function initializePy2DmolViewer(containerElement) {
             if (n === 0) {
                 this.visibilityMask = null;
                 if (!skip3DRender) {
-                    this.render();
+                    this.render('_composeAndApplyMask: empty coords');
                 }
                 return;
             }
@@ -811,7 +811,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // Only render 3D viewer if not skipping (e.g., during PAE drag)
             if (!skip3DRender) {
-                this.render();
+                this.render('_composeAndApplyMask');
             }
 
             // Always dispatch event to notify UI of selection change (sequence/PAE viewers need this)
@@ -1136,7 +1136,7 @@ function initializePy2DmolViewer(containerElement) {
 
                     if (isLargeMolecule) {
                         // Render immediately with fresh shadows
-                        this.render();
+                        this.render('touchend: large molecule');
                     }
 
                     // Restart animate loop after dragging ends (needed for inertia and auto-rotation)
@@ -1279,7 +1279,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.lineWidthSlider.addEventListener('input', (e) => {
                     this.lineWidth = parseFloat(e.target.value);
                     if (!this.isPlaying) {
-                        this.render();
+                        this.render('updateUIControls: lineWidthSlider');
                     }
                 });
             }
@@ -1288,7 +1288,7 @@ function initializePy2DmolViewer(containerElement) {
                 this.outlineWidthSlider.addEventListener('input', (e) => {
                     this.relativeOutlineWidth = parseFloat(e.target.value);
                     if (!this.isPlaying) {
-                        this.render();
+                        this.render('updateUIControls: outlineWidthSlider');
                     }
                 });
             }
@@ -1328,7 +1328,7 @@ function initializePy2DmolViewer(containerElement) {
                     }
 
                     if (!this.isPlaying) {
-                        this.render();
+                        this.render('orthoSlider');
                     }
                 });
             }
@@ -1337,7 +1337,7 @@ function initializePy2DmolViewer(containerElement) {
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.addEventListener('change', (e) => {
                     this.shadowEnabled = e.target.checked;
-                    this.render();
+                    this.render('shadowEnabledCheckbox');
                 });
             }
 
@@ -1354,7 +1354,7 @@ function initializePy2DmolViewer(containerElement) {
                         this.outlineMode = 'none';
                     }
                     this.updateOutlineButtonStyle();
-                    this.render();
+                    this.render('outlineModeButton');
                 });
                 // Initialize button style
                 this.updateOutlineButtonStyle();
@@ -1366,7 +1366,7 @@ function initializePy2DmolViewer(containerElement) {
             if (this.depthCheckbox) {
                 this.depthCheckbox.addEventListener('change', (e) => {
                     this.depthEnabled = e.target.checked;
-                    this.render();
+                    this.render('depthCheckbox');
                 });
             }
 
@@ -1377,7 +1377,7 @@ function initializePy2DmolViewer(containerElement) {
                     this.colorsNeedUpdate = true;
                     this.plddtColorsNeedUpdate = true;
                     // Re-render main canvas
-                    this.render();
+                    this.render('colorblindCheckbox');
                     // Dispatch event to notify sequence viewer
                     document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
                     // Re-render PAE canvas
@@ -1669,6 +1669,12 @@ function initializePy2DmolViewer(containerElement) {
             // Calculate standard deviation: sqrt(mean of squared distances)
             object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
 
+            // If this is the first frame being loaded, we need to
+            // Recalculate focal length if perspective is enabled and object size changed
+            if (object.frames.length === 1 && this.perspectiveEnabled && this.orthoSlider) {
+                this.orthoSlider.dispatchEvent(new Event('input'));
+            }
+
             // Skip setFrame during batch loading to avoid expensive renders
             // We'll render once at the end in updateViewerFromGlobalBatch
             if (!this.isPlaying && !this._batchLoading) {
@@ -1683,12 +1689,6 @@ function initializePy2DmolViewer(containerElement) {
 
             // Update PAE container visibility when frames are added
             this.updatePAEContainerVisibility();
-
-            // If this is the first frame being loaded, we need to
-            // Recalculate focal length if perspective is enabled and object size changed
-            if (object.frames.length === 1 && this.perspectiveEnabled && this.orthoSlider) {
-                this.orthoSlider.dispatchEvent(new Event('input'));
-            }
 
             // Handle autoplay
             if (this.autoplay && !this.isPlaying && this.currentObjectName) {
@@ -2253,7 +2253,7 @@ function initializePy2DmolViewer(containerElement) {
             // Apply selection mask after frame data is loaded (in case selection was restored during object switch)
             this._composeAndApplyMask(true); // skip3DRender, will render below
 
-            this.render(); // Render once
+            this.render('setFrame'); // Render once
             this.lastRenderedFrame = frameIndex;
 
             // Update PAE container visibility
@@ -3605,7 +3605,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // Trigger first render (unless skipRender is true)
             if (!skipRender) {
-                this.render();
+                this.render('_loadDataIntoRenderer');
             }
 
             // [PATCH] Apply initial mask
@@ -3791,7 +3791,7 @@ function initializePy2DmolViewer(containerElement) {
                         this.colorSelect.value = 'auto';
                     }
                     this.colorsNeedUpdate = true;
-                    this.render();
+                    this.render('_updateEntropyOptionVisibility: auto switch');
                 }
             }
         }
@@ -4257,8 +4257,20 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // RENDER (Core drawing logic)
-        render() {
+        // RENDER (Core drawing logic)
+        render(reason = 'Unknown') {
+            const label = 'Render: ' + reason;
+            console.time(label);
+            console.log('Render triggered by:', reason);
+            console.trace('Render Call Trace'); // Uncomment to debug render sources
+            if (this.currentFrame < 0) {
+                // Clear canvas if no frame is set
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                console.timeEnd(label);
+                return;
+            }
             this._renderToContext(this.ctx, this.displayWidth, this.displayHeight);
+            console.timeEnd(label);
         }
 
         // Core rendering logic - can render to any context (canvas, SVG, etc.)
@@ -4510,8 +4522,8 @@ function initializePy2DmolViewer(containerElement) {
             tints.fill(1.0);
 
             // Limit number of rendered segments for performance
-            const RENDER_CUTOFF = 50000; // Fully opaque segments
-            const FADE_RANGE = 0;    // Fading segments
+            const RENDER_CUTOFF = 1000000; // Fully opaque segments
+
 
             // [OPTIMIZATION] Allocation-free sorting
             // Sort visibleSegmentIndices in-place using zValues lookup
@@ -4526,7 +4538,7 @@ function initializePy2DmolViewer(containerElement) {
             // visibleOrder is sorted back-to-front (index 0 is furthest, index N-1 is closest)
             // We want to keep the END of the array (closest segments)
             const totalVisible = visibleOrder.length;
-            const maxRender = RENDER_CUTOFF + FADE_RANGE;
+            const maxRender = RENDER_CUTOFF;
 
             if (totalVisible > maxRender) {
                 // Keep the last maxRender segments (closest to camera)
@@ -4822,7 +4834,7 @@ function initializePy2DmolViewer(containerElement) {
             // Project extent to x-axis (screen width direction)
             // The x screen axis direction is R[0], which is a unit vector
             // For a spherical extent, the projection is just the extent itself
-            // But we need to account for the actual 3D extent distribution
+            // But we need to consider how the actual 3D extent distribution
             // Since rotation matrix rows are orthonormal, we can use the extent directly
             // but we need to consider how the 3D bounding box projects to 2D
             // Approximate by using the extent scaled by the axis alignment
@@ -4956,7 +4968,7 @@ function initializePy2DmolViewer(containerElement) {
             // [OPTIMIZATION] Phase 5: SoA Projection Loop
             // Project all visible atoms once and store in SoA arrays
             this.screenFrameId++;
-            const screenFrameId = this.screenFrameId;
+            const currentScreenFrameId = this.screenFrameId;
             const screenX = this.screenX;
             const screenY = this.screenY;
             const screenRadius = this.screenRadius;
@@ -4964,7 +4976,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // Helper to project a position if not already projected
             const projectPosition = (idx) => {
-                if (screenValid[idx] === screenFrameId) return; // Already projected
+                if (screenValid[idx] === currentScreenFrameId) return; // Already projected
 
                 const vec = rotated[idx];
                 let x, y, radius;
@@ -4999,7 +5011,7 @@ function initializePy2DmolViewer(containerElement) {
                 screenX[idx] = x;
                 screenY[idx] = y;
                 screenRadius[idx] = radius;
-                screenValid[idx] = screenFrameId;
+                screenValid[idx] = currentScreenFrameId;
             };
 
             // Iterate visible segments and project their endpoints
@@ -5060,15 +5072,6 @@ function initializePy2DmolViewer(containerElement) {
                 const distFromFront = numRendered - 1 - i;
 
                 let opacity = 1.0;
-                if (distFromFront >= RENDER_CUTOFF) {
-                    // In the fading range
-                    // distFromFront goes from RENDER_CUTOFF to RENDER_CUTOFF + FADE_RANGE
-                    // normalized fade: 0 (at cutoff) to 1 (at max range)
-                    const fadePos = (distFromFront - RENDER_CUTOFF) / FADE_RANGE;
-                    opacity = 1.0 - fadePos;
-                    // Clamp just in case
-                    opacity = Math.max(0, Math.min(1, opacity));
-                }
 
                 // --- 1. COMMON CALCULATIONS (Do these ONCE) ---
                 const segInfo = segments[idx];
@@ -5107,7 +5110,7 @@ function initializePy2DmolViewer(containerElement) {
                 const idx2 = segInfo.idx2;
 
                 // If either endpoint is invalid (behind camera), skip segment
-                if (screenValid[idx1] !== screenFrameId || screenValid[idx2] !== screenFrameId) {
+                if (screenValid[idx1] !== currentScreenFrameId || screenValid[idx2] !== currentScreenFrameId) {
                     continue;
                 }
 
@@ -5144,15 +5147,15 @@ function initializePy2DmolViewer(containerElement) {
                 const g_int = g * 255 | 0;
                 const b_int = b * 255 | 0;
 
-                // Use rgba for opacity
-                const color = `rgba(${r_int},${g_int},${b_int},${opacity.toFixed(2)})`;
+                // Use rgb for opacity
+                const color = `rgb(${r_int},${g_int},${b_int})`;
 
                 // For gap filler (outline), also apply opacity
                 // Note: Gap filler is usually darker/lighter, here we just darken
                 const gapR = r_int * 0.7 | 0;
                 const gapG = g_int * 0.7 | 0;
                 const gapB = b_int * 0.7 | 0;
-                const gapFillerColor = `rgba(${gapR},${gapG},${gapB},${opacity.toFixed(2)})`;
+                const gapFillerColor = `rgb(${gapR},${gapG},${gapB})`;
 
                 // Get pre-computed endpoint rounding flags (Uint8Array)
                 const flags = segmentEndpointFlags[idx];
@@ -5357,7 +5360,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // 4. Final render if needed
             if (needsRender) {
-                this.render();
+                this.render('animate loop');
                 if (previousFrame !== currentFrame) {
                     this.lastRenderedFrame = currentFrame;
                 }
@@ -5506,43 +5509,51 @@ function initializePy2DmolViewer(containerElement) {
     // ADDED: ResizeObserver to handle canvas resizing
     const canvasContainer = containerElement.querySelector('#canvasContainer');
     if (canvasContainer && window.ResizeObserver) {
+        let resizeTimeout;
         const resizeObserver = new ResizeObserver(entries => {
-            for (let entry of entries) {
-                // Get new dimensions from the container
-                let newWidth = entry.contentRect.width;
-                let newHeight = entry.contentRect.height;
+            // Debounce resize to avoid excessive rendering
+            if (resizeTimeout) clearTimeout(resizeTimeout);
 
-                // Ensure non-zero dimensions which can break canvas
-                newWidth = Math.max(newWidth, 1);
-                newHeight = Math.max(newHeight, 1);
+            resizeTimeout = setTimeout(() => {
+                console.time('Resize');
+                for (let entry of entries) {
+                    // Get new dimensions from the container
+                    let newWidth = entry.contentRect.width;
+                    let newHeight = entry.contentRect.height;
 
-                // Only update if display size actually changed
-                const currentDisplayWidth = parseInt(canvas.style.width) || displayWidth;
-                const currentDisplayHeight = parseInt(canvas.style.height) || displayHeight;
+                    // Ensure non-zero dimensions which can break canvas
+                    newWidth = Math.max(newWidth, 1);
+                    newHeight = Math.max(newHeight, 1);
 
-                if (Math.abs(newWidth - currentDisplayWidth) > 1 ||
-                    Math.abs(newHeight - currentDisplayHeight) > 1) {
-                    // Update canvas resolution with high-DPI scaling
-                    const internalWidth = newWidth * currentDPR;
-                    const internalHeight = newHeight * currentDPR;
+                    // Only update if display size actually changed
+                    const currentDisplayWidth = parseInt(canvas.style.width) || displayWidth;
+                    const currentDisplayHeight = parseInt(canvas.style.height) || displayHeight;
 
-                    canvas.width = internalWidth;
-                    canvas.height = internalHeight;
-                    canvas.style.width = newWidth + 'px';
-                    canvas.style.height = newHeight + 'px';
+                    if (Math.abs(newWidth - currentDisplayWidth) > 1 ||
+                        Math.abs(newHeight - currentDisplayHeight) > 1) {
+                        // Update canvas resolution with high-DPI scaling
+                        const internalWidth = newWidth * currentDPR;
+                        const internalHeight = newHeight * currentDPR;
 
-                    // Scale context to match internal resolution
-                    const ctx = canvas.getContext('2d');
-                    ctx.setTransform(1, 0, 0, 1, 0, 0);
-                    ctx.scale(currentDPR, currentDPR);
+                        canvas.width = internalWidth;
+                        canvas.height = internalHeight;
+                        canvas.style.width = newWidth + 'px';
+                        canvas.style.height = newHeight + 'px';
 
-                    // Update cached dimensions in renderer
-                    renderer._updateCanvasDimensions();
+                        // Scale context to match internal resolution
+                        const ctx = canvas.getContext('2d');
+                        ctx.setTransform(1, 0, 0, 1, 0, 0);
+                        ctx.scale(currentDPR, currentDPR);
 
-                    // Re-render the scene
-                    renderer.render();
+                        // Update cached dimensions in renderer
+                        renderer._updateCanvasDimensions();
+
+                        // Re-render the scene
+                        renderer.render('ResizeObserver');
+                    }
                 }
-            }
+                console.timeEnd('Resize');
+            }, 100); // 100ms debounce
         });
 
         // Start observing the canvas container

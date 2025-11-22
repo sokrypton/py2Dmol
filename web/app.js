@@ -48,6 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initializeApp() {
+    console.time('AppInit');
     // Initialize viewer config
     initializeViewerConfig();
 
@@ -130,6 +131,7 @@ function initializeApp() {
         paeCanvas.style.display = 'none';
     }
     setStatus("Ready. Upload a file or fetch an ID.");
+    console.timeEnd('AppInit');
 }
 
 function refreshEntropyColors() {
@@ -141,7 +143,7 @@ function refreshEntropyColors() {
     renderer._mapEntropyToStructure();
     renderer.colors = null;
     renderer.colorsNeedUpdate = true;
-    renderer.render();
+    renderer.render('app.js: refreshEntropyColors');
     document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
 
     if (typeof updateSequenceViewColors === 'function') {
@@ -625,7 +627,7 @@ function setupEventListeners() {
         depthCheckbox.addEventListener('change', (e) => {
             if (viewerApi && viewerApi.renderer) {
                 viewerApi.renderer.depthEnabled = e.target.checked;
-                viewerApi.renderer.render();
+                viewerApi.renderer.render('app.js: depthCheckbox');
             }
         });
     }
@@ -974,7 +976,8 @@ function applyBestViewRotation(animate = true) {
         }
 
         // Render once with final state
-        renderer.render();
+        // Render once with final state
+        renderer.render('app.js: applyBestViewRotation');
         return;
     }
 

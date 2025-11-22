@@ -75,7 +75,7 @@
     background: transparent;
     display: block;
     margin: 0 auto;
-    width: 948px;
+    width: 974px; /* 600 (canvas) + 26 (padding/border) + 8 (gap) + 340 (panel) */
     line-height: 1.5; 
 }
 /* [END EDIT] */
@@ -103,7 +103,9 @@
     height: 600px; 
     min-width: 200px; 
     min-height: 200px;
+    min-height: 200px;
     position: relative;
+    box-sizing: content-box; /* Ensure content width matches canvas.width (600px) */
 }
 
 .py2dmol-viewer-instance #canvasContainer.container-box {
