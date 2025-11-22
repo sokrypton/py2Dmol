@@ -172,7 +172,20 @@ if (!window.py2dmol_viewers) {
  * All logic is scoped to this container.
  * @param {HTMLElement} containerElement The root <div> element for this viewer.
  */
-function initializePy2DmolViewer(containerElement) {
+function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
+
+    // Use passed config or fall back to window.viewerConfig for backward compatibility
+    const config = passedConfig || window.viewerConfig || {};
+
+    // Use passed data or fall back to window.staticObjectData/proteinData for backward compatibility
+    let viewerData = passedData;
+    if (!viewerData) {
+        if (typeof window.staticObjectData !== 'undefined') {
+            viewerData = window.staticObjectData;
+        } else if (typeof window.proteinData !== 'undefined') {
+            viewerData = window.proteinData;
+        }
+    }
 
     // Helper function to normalize ortho value from old (50-200) or new (0-1) format
     function normalizeOrthoValue(value) {
@@ -468,8 +481,9 @@ function initializePy2DmolViewer(containerElement) {
     // PSEUDO-3D RENDERER
     // ============================================================================
     class Pseudo3DRenderer {
-        constructor(canvas) {
+        constructor(canvas, containerElement = null) {
             this.canvas = canvas;
+            this.containerElement = containerElement || canvas.closest('#mainContainer');
             this.ctx = canvas.getContext('2d');
 
             // Store screen positions of positions for fast highlight drawing
@@ -487,23 +501,27 @@ function initializePy2DmolViewer(containerElement) {
             this.displayHeight = parseInt(canvas.style.height) || canvas.height;
 
             // Get config from Python
-            // This relies on window.viewerConfig being available globally
-            const config = window.viewerConfig || {
-                size: [300, 300],
-                pae_size: 300,
-                color: "rainbow",
-                shadow: true,
-                outline: true,
-                width: 3.0,
-                rotate: false,
-                controls: true,
-                autoplay: false,
-                box: true,
-                pastel: 0.25,
-                pae: false,
-                colorblind: false,
-                depth: false
-            };
+            // Use the config parameter passed to initializePy2DmolViewer
+            // (Note: config is already defined from function parameter)
+            // If config is empty, use defaults
+            if (!config || Object.keys(config).length === 0) {
+                config = {
+                    size: [300, 300],
+                    pae_size: 300,
+                    color: "rainbow",
+                    shadow: true,
+                    outline: true,
+                    width: 3.0,
+                    rotate: false,
+                    controls: true,
+                    autoplay: false,
+                    box: true,
+                    pastel: 0.25,
+                    pae: false,
+                    colorblind: false,
+                    depth: false
+                };
+            }
 
             // Current render state
             this.coords = []; // This is now an array of Vec3 objects
@@ -1311,12 +1329,13 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider, orientButton) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.overlayButton = overlayButton;
             this.recordButton = recordButton;
             this.saveSvgButton = saveSvgButton;
+            this.orientButton = orientButton;
             this.frameSlider = frameSlider;
             this.frameCounter = frameCounter;
             this.objectSelect = objectSelect;
@@ -1360,6 +1379,20 @@ function initializePy2DmolViewer(containerElement) {
                     e.preventDefault();
                     e.stopPropagation();
                     this.saveAsSvg();
+                });
+            }
+
+            if (this.orientButton) {
+                this.orientButton.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const objectName = this.currentObjectName || (this.objectSelect?.value);
+                    if (!objectName) {
+                        console.warn("Orient: No object selected");
+                        return;
+                    }
+                    // Orient the selected object with animation
+                    this.orientToCurrentObject();
                 });
             }
 
@@ -1550,13 +1583,21 @@ function initializePy2DmolViewer(containerElement) {
 
         // Switch to a different object (handles save/restore of selection state)
         _switchToObject(newObjectName) {
-            // Save current object's selection state
+            // Save current object's selection state and view state
             if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
                 this.objectsData[this.currentObjectName].selectionState = {
                     positions: new Set(this.selectionModel.positions),
                     chains: new Set(this.selectionModel.chains),
                     paeBoxes: this.selectionModel.paeBoxes.map(box => ({ ...box })),
                     selectionMode: this.selectionModel.selectionMode
+                };
+                // Save current view state
+                const c = this.temporaryCenter;
+                this.objectsData[this.currentObjectName].viewState = {
+                    rotation: this.rotationMatrix.map(row => [...row]),
+                    zoom: this.zoom,
+                    center: c ? [c.x, c.y, c.z] : null,
+                    extent: this.temporaryExtent
                 };
             }
 
@@ -1571,7 +1612,7 @@ function initializePy2DmolViewer(containerElement) {
             // Clear renderer bonds (will be restored from object data when frames load)
             this.bonds = null;
 
-            // Ensure object has selectionState initialized
+            // Ensure object has selectionState and viewState initialized
             if (!this.objectsData[newObjectName]) {
                 this.objectsData[newObjectName] = {};
             }
@@ -1581,6 +1622,14 @@ function initializePy2DmolViewer(containerElement) {
                     chains: new Set(),
                     paeBoxes: [],
                     selectionMode: 'default'
+                };
+            }
+            if (!this.objectsData[newObjectName].viewState) {
+                this.objectsData[newObjectName].viewState = {
+                    rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                    zoom: 1.0,
+                    center: null,
+                    extent: 1.0
                 };
             }
 
@@ -1606,6 +1655,15 @@ function initializePy2DmolViewer(containerElement) {
                 for (let i = 0; i < correctCoordsLength; i++) {
                     this.selectionModel.positions.add(i);
                 }
+            }
+
+            // Restore view state (rotation, zoom, and center)
+            const vs = this.objectsData[newObjectName].viewState;
+            if (vs) {
+                this.rotationMatrix = vs.rotation.map(row => [...row]);
+                this.zoom = vs.zoom;
+                this.temporaryCenter = vs.center ? new Vec3(...vs.center) : null;
+                this.temporaryExtent = vs.extent || 1.0;
             }
 
             // Populate entropy data from MSA if available
@@ -1664,6 +1722,13 @@ function initializePy2DmolViewer(containerElement) {
                         chains: new Set(),
                         paeBoxes: [],
                         selectionMode: 'default'
+                    },
+                    // Per-object view state
+                    viewState: {
+                        rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                        zoom: 1.0,
+                        center: null,
+                        extent: 1.0
                     }
                 };
 
@@ -2340,6 +2405,46 @@ function initializePy2DmolViewer(containerElement) {
             }
         }
 
+        // Orient currently displayed object to center (called from UI button)
+        orientToCurrentObject() {
+            const objectName = this.currentObjectName;
+            if (!objectName || !this.objectsData[objectName]) {
+                console.warn("orientToCurrentObject: No object selected");
+                return;
+            }
+
+            // Call Python callback to compute optimal rotation using PCA
+            if (this.callbacks?.orient && typeof window[this.callbacks.orient] === 'function') {
+                window[this.callbacks.orient](objectName);
+            }
+        }
+
+        // Orient structure using provided rotation and translation matrices
+        // Matrices are pre-computed by Python or web interface and passed in
+        // Apply orientation from Python (centers and zooms, no animation)
+        orient(objectName, rotationMatrix, translationVector, animate = false) {
+            if (!objectName || !rotationMatrix || !translationVector) {
+                console.error("orient: Missing required parameters (objectName, rotationMatrix, translationVector)");
+                return;
+            }
+
+            if (!this.objectsData[objectName]) {
+                console.error(`orient: Object '${objectName}' not found`);
+                return;
+            }
+
+            // Apply rotation, center, and extent directly (no animation)
+            this.rotationMatrix = rotationMatrix.map(row => [...row]);
+            this.temporaryCenter = {
+                x: translationVector[0],
+                y: translationVector[1],
+                z: translationVector[2]
+            };
+            this.temporaryExtent = translationVector[3] || 1.0;
+            this.zoom = 1.0;
+            this.render('orient: applied');
+        }
+
         // Set the current frame and render it
         setFrame(frameIndex, skipRender = false) {
             frameIndex = parseInt(frameIndex);
@@ -2481,14 +2586,13 @@ function initializePy2DmolViewer(containerElement) {
         _findPAEContainer() {
             if (this.paeContainer) return this.paeContainer;
 
-            if (this.canvas && this.canvas.parentElement) {
-                const mainContainer = this.canvas.parentElement.closest('#mainContainer');
-                if (mainContainer) {
-                    this.paeContainer = mainContainer.querySelector('#paeContainer');
-                    if (this.paeContainer) return this.paeContainer;
-                }
+            // Use this.containerElement (which is the #mainContainer for this viewer)
+            if (this.containerElement) {
+                this.paeContainer = this.containerElement.querySelector('#paeContainer');
+                if (this.paeContainer) return this.paeContainer;
             }
 
+            // Fallback: search globally (for backward compatibility)
             this.paeContainer = document.querySelector('#paeContainer');
             return this.paeContainer;
         }
@@ -2597,7 +2701,7 @@ function initializePy2DmolViewer(containerElement) {
             const current = Math.max(0, this.currentFrame) + 1;
 
             // Check config.controls before showing
-            const config = window.viewerConfig || {};
+            // (config is already in scope from initializePy2DmolViewer)
             if (total <= 1 || !config.controls) {
                 this.controlsContainer.style.display = 'none';
             } else {
@@ -4093,7 +4197,10 @@ function initializePy2DmolViewer(containerElement) {
          * Show or hide the Entropy color option based on whether entropy data is available
          */
         _updateEntropyOptionVisibility() {
-            const entropyOption = document.getElementById('entropyColorOption');
+            // Use this.containerElement to find the entropy option within this specific viewer
+            const entropyOption = this.containerElement ?
+                this.containerElement.querySelector('#entropyColorOption') :
+                document.getElementById('entropyColorOption');
             if (entropyOption) {
                 // Show entropy option if we have valid entropy data
                 const hasEntropy = this.entropy && this.entropy.some(val => val !== undefined && val >= 0);
@@ -5835,22 +5942,25 @@ function initializePy2DmolViewer(containerElement) {
     // ============================================================================
 
     // 1. Get config from Python
-    // This relies on window.viewerConfig being available globally
-    const config = window.viewerConfig || {
-        size: [300, 300],
-        pae_size: 300,
-        color: "auto",
-        shadow: true,
-        outline: true,
-        width: 3.0,
-        rotate: false,
-        controls: true,
-        autoplay: false,
-        box: true,
-        pastel: 0.25,
-        pae: false,
-        colorblind: false
-    };
+    // Config is passed as parameter to initializePy2DmolViewer
+    // (already available in scope)
+    if (!config || Object.keys(config).length === 0) {
+        config = {
+            size: [300, 300],
+            pae_size: 300,
+            color: "auto",
+            shadow: true,
+            outline: true,
+            width: 3.0,
+            rotate: false,
+            controls: true,
+            autoplay: false,
+            box: true,
+            pastel: 0.25,
+            pae: false,
+            colorblind: false
+        };
+    }
 
     // 2. Setup Canvas with high-DPI scaling for crisp rendering
     const canvas = containerElement.querySelector('#canvas');
@@ -5889,7 +5999,10 @@ function initializePy2DmolViewer(containerElement) {
     // We no longer set a fixed width on viewerColumn, to allow resizing.
 
     // 3. Create renderer
-    const renderer = new Pseudo3DRenderer(canvas);
+    const renderer = new Pseudo3DRenderer(canvas, containerElement);
+
+    // Store all callbacks so renderer can use them to call Python
+    renderer.callbacks = config.callbacks || {};
 
     // ADDED: ResizeObserver to handle canvas resizing
     const canvasContainer = containerElement.querySelector('#canvasContainer');
@@ -6095,9 +6208,10 @@ function initializePy2DmolViewer(containerElement) {
     const controlsContainer = containerElement.querySelector('#controlsContainer');
     const playButton = containerElement.querySelector('#playButton');
     const overlayButton = containerElement.querySelector('#overlayButton');
-    // recordButton and saveSvgButton might be in containerElement or in document (web app vs embedded)
+    // recordButton, saveSvgButton, and orientButton might be in containerElement or in document (web app vs embedded)
     const recordButton = containerElement.querySelector('#recordButton') || document.querySelector('#recordButton');
     const saveSvgButton = containerElement.querySelector('#saveSvgButton') || document.querySelector('#saveSvgButton');
+    const orientButton = containerElement.querySelector('#orientButton') || document.querySelector('#orientButton');
     const frameSlider = containerElement.querySelector('#frameSlider');
     const frameCounter = containerElement.querySelector('#frameCounter');
     // objectSelect is now in the sequence header, query from container
@@ -6120,7 +6234,7 @@ function initializePy2DmolViewer(containerElement) {
         frameSlider, frameCounter, objectSelect,
         speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
         shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
-        depthCheckbox, colorblindCheckbox, orthoSlider
+        depthCheckbox, colorblindCheckbox, orthoSlider, orientButton
     );
 
     // Setup save state button (for Python interface only - web interface handles it in app.js)
@@ -6233,11 +6347,43 @@ function initializePy2DmolViewer(containerElement) {
         }
     };
 
+    // 10c. Add function for Python to orient structure
+    const handlePythonOrient = (objectName, rotationMatrix, translationVector, animate) => {
+        if (!objectName) {
+            console.error("handlePythonOrient: No object name provided");
+            return;
+        }
+
+        // Set the object select to this object (if available)
+        // Use containerElement.querySelector to find the correct objectSelect for this viewer
+        const objectSelect = containerElement.querySelector('#objectSelect');
+        if (objectSelect && renderer.objectsData[objectName]) {
+            objectSelect.value = objectName;
+            // Dispatch change event to update the viewer
+            objectSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // Call renderer.orient() method with matrices
+        if (renderer && typeof renderer.orient === 'function') {
+            if (rotationMatrix && translationVector) {
+                // Use provided matrices from Python computation
+                renderer.orient(objectName, rotationMatrix, translationVector, animate !== false);
+            } else {
+                // Fallback: if no matrices provided, just use object name and animate flag
+                // This shouldn't happen with the new implementation, but provides graceful degradation
+                console.warn("handlePythonOrient: No rotation/translation matrices provided from Python");
+                renderer.orient(objectName, [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, 0, 1], animate !== false);
+            }
+        } else {
+            console.error("handlePythonOrient: renderer.orient not available");
+        }
+    };
+
     // 11. Load initial data
-    if (window.staticObjectData && window.staticObjectData.length > 0) {
+    if (viewerData && viewerData.length > 0) {
         // === STATIC MODE (from show()) ===
         try {
-            for (const obj of window.staticObjectData) {
+            for (const obj of viewerData) {
                 if (obj.name && obj.frames && obj.frames.length > 0) {
 
                     const staticChains = obj.chains; // Might be undefined
@@ -6285,12 +6431,12 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             // Set view to the first frame of the first object
-            if (window.staticObjectData.length > 0) {
-                renderer.currentObjectName = window.staticObjectData[0].name;
-                renderer.objectSelect.value = window.staticObjectData[0].name;
+            if (viewerData.length > 0) {
+                renderer.currentObjectName = viewerData[0].name;
+                renderer.objectSelect.value = viewerData[0].name;
 
                 // Populate entropy data from MSA if available
-                const firstObjectName = window.staticObjectData[0].name;
+                const firstObjectName = viewerData[0].name;
                 if (renderer.objectsData[firstObjectName]?.msa?.msasBySequence &&
                     renderer.objectsData[firstObjectName]?.msa?.chainToSequence) {
                     renderer._mapEntropyToStructure(firstObjectName);
@@ -6308,11 +6454,11 @@ function initializePy2DmolViewer(containerElement) {
             renderer.setFrame(-1); // Start empty on error
         }
 
-    } else if (window.proteinData && window.proteinData.coords && window.proteinData.coords.length > 0) {
+    } else if (viewerData && viewerData.coords && viewerData.coords.length > 0) {
         // === HYBRID MODE (first frame) ===
         try {
             // Load the single, statically-injected frame into "0"
-            renderer.addFrame(window.proteinData, "0");
+            renderer.addFrame(viewerData, "0");
         } catch (error) {
             console.error("Error loading initial data:", error);
             renderer.setFrame(-1);
@@ -6352,6 +6498,7 @@ function initializePy2DmolViewer(containerElement) {
             handlePythonResetAll,
             handlePythonSetColor,
             handlePythonSetObjectColor,
+            handlePythonOrient,
             renderer // Expose the renderer instance for external access
         };
     } else {

@@ -23,13 +23,6 @@ def kabsch(a, b, return_v=False):
   else:
     return u @ vh
 
-def best_view(a):
-  a_mean = a.mean(-2, keepdims=True)
-  a_cent = a - a_mean
-  v = kabsch(a_cent, a_cent, return_v=True)
-  a_aligned = (a_cent @ v) + a_mean
-  return a_aligned
-
 def align_a_to_b(a, b):
   """Aligns coordinate set 'a' to 'b' using Kabsch algorithm."""
   a_mean = a.mean(-2, keepdims=True)
@@ -39,6 +32,134 @@ def align_a_to_b(a, b):
   R = kabsch(a_cent, b_cent)
   a_aligned = (a_cent @ R) + b_mean
   return a_aligned
+
+def _rotation_angle_between_matrices(M1, M2):
+  """Calculate angle between two rotation matrices in radians."""
+  M1_T = np.array(M1).T
+  R = M1_T @ np.array(M2)
+  tr = np.trace(R)
+  cos_theta = (tr - 1) / 2
+  cos_theta = np.clip(cos_theta, -1, 1)
+  return np.arccos(cos_theta)
+
+def _best_view_rotation(coords, current_rotation=None):
+  """
+  Compute best view rotation using the web interface algorithm.
+
+  Uses kabsch algorithm to find principal axes, then tries both possible
+  eigenvector mappings and selects the rotation that minimizes rotation
+  angle needed. This matches the web interface algorithm for consistent
+  behavior and prevents unnecessary flips.
+
+  Args:
+    coords: Numpy array of shape (N, 3) with [x, y, z] coordinates
+    current_rotation: 3x3 current rotation matrix (defaults to identity)
+
+  Returns:
+    Tuple of (rotation_matrix, center, extent) where:
+      - rotation_matrix: 3x3 optimal rotation matrix
+      - center: [x, y, z] center of structure
+      - extent: radius of structure (max distance from center)
+  """
+  coords = np.asarray(coords, dtype=np.float32)
+
+  if coords.shape[0] < 2:
+    center = coords.mean(axis=0) if coords.shape[0] > 0 else np.array([0, 0, 0])
+    return np.eye(3), center.tolist(), 1.0
+
+  # Center coordinates
+  center = coords.mean(axis=0, keepdims=True)
+  coords_centered = coords - center
+
+  # Compute principal axes using kabsch (returns eigenvectors as columns)
+  v = kabsch(coords_centered, coords_centered, return_v=True)
+
+  # Extract eigenvectors (columns of v matrix)
+  v1 = v[:, 0]  # Largest variance
+  v2 = v[:, 1]  # Second largest variance
+  v3 = v[:, 2]  # Smallest variance
+
+  # Current rotation (identity for new structures, or provided)
+  R_current = np.array(current_rotation) if current_rotation is not None else np.eye(3)
+
+  # Generate candidates with all sign combinations and both mappings
+  candidates = []
+  signs_list = [
+    [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1],
+    [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1]
+  ]
+
+  # Try both mappings to find which requires less rotation
+  # Mapping 1: largest variance on X, second on Y
+  # Mapping 2: second on X, largest on Y
+  mappings = [
+    {'r0': 'v1', 'r1': 'v2'},  # e1->X, e2->Y
+    {'r0': 'v2', 'r1': 'v1'}   # e2->X, e1->Y
+  ]
+
+  for mapping in mappings:
+    for s1, s2, s3 in signs_list:
+      # Apply signs to eigenvectors
+      e1 = v1 * s1
+      e2 = v2 * s2
+      e3 = v3 * s3
+
+      # Select rows based on mapping
+      if mapping['r0'] == 'v1':
+        r0 = e1
+        r1 = e2
+      else:
+        r0 = e2
+        r1 = e1
+
+      # Normalize
+      n0 = np.linalg.norm(r0)
+      if n0 < 1e-10:
+        continue
+      r0 = r0 / n0
+
+      n1 = np.linalg.norm(r1)
+      if n1 < 1e-10:
+        continue
+      r1 = r1 / n1
+
+      # Orthogonalize r1 with respect to r0
+      dot01 = np.dot(r0, r1)
+      if abs(dot01) > 1e-6:
+        r1 = r1 - dot01 * r0
+        n1 = np.linalg.norm(r1)
+        if n1 < 1e-10:
+          continue
+        r1 = r1 / n1
+
+      # Third row is cross product for right-handed coordinate system
+      r2 = np.cross(r0, r1)
+
+      # Construct rotation matrix
+      R = np.array([r0, r1, r2])
+
+      # Calculate rotation angle from current rotation
+      angle = _rotation_angle_between_matrices(R_current, R)
+
+      candidates.append({
+        'R': R,
+        'angle': angle,
+        'mapping': mapping['r0']
+      })
+
+  # If no valid candidates, return identity rotation
+  if not candidates:
+    rotation_matrix = np.eye(3)
+  else:
+    # Select candidate with minimum rotation angle (minimizes flips/unwanted rotations)
+    best = min(candidates, key=lambda c: c['angle'])
+    rotation_matrix = best['R']
+
+  # Calculate extent (max distance from center)
+  distances = np.linalg.norm(coords_centered, axis=1)
+  extent = float(distances.max()) if distances.size > 0 else 1.0
+
+  return rotation_matrix, center[0].tolist(), extent
 
 # --- Color System Constants ---
 
@@ -115,6 +236,10 @@ class view:
             "pae_size": pae_size,
             "overlay_frames": overlay,
             "viewer_id": str(uuid.uuid4()),
+            # Generalized callback system: maps callback names to methods
+            "callbacks": {
+                "orient": f"_py2dmol_orient_{str(uuid.uuid4())[:8]}",
+            }
         }
         
         # The viewer's mode is determined by when .show() is called.
@@ -174,7 +299,7 @@ class view:
       """
       Updates the internal state with new data. It no longer creates
       default values, simply storing what is provided.
-      
+
       Args:
           residue_numbers: PDB residue sequence numbers (resSeq), one per position.
                            For ligands, multiple positions may share the same residue number.
@@ -183,13 +308,13 @@ class view:
       # Backward compatibility: support atom_types as alias for position_types
       if atom_types is not None and position_types is None:
           position_types = atom_types
-      
+
       # --- Coordinate Alignment ---
       if self._coords is None:
-          # First frame of an object, align to best view
-          self._coords = best_view(coords) if align else coords
+          # First frame of an object, store as-is (orientation handled by JavaScript Orient button)
+          self._coords = coords
       else:
-          # Subsequent frames, align to the first frame
+          # Subsequent frames, align to the first frame if align=True
           if align and self._coords.shape == coords.shape:
               self._coords = align_a_to_b(coords, self._coords)
           else:
@@ -263,7 +388,23 @@ class view:
             overrides_json_string = json.dumps(overrides)
             overrides_js_literal = json.dumps(overrides_json_string)
             js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetOverrides({overrides_js_literal}, '{name}');"
-            
+
+        elif msg_type == "py2DmolOrient":
+            name = message_dict.get("name", "")
+            animate = message_dict.get("animate", True)
+            animate_str = "true" if animate else "false"
+            rotation_matrix = message_dict.get("rotationMatrix")
+            translation_vector = message_dict.get("translationVector")
+
+            if rotation_matrix and translation_vector:
+                # Serialize matrices as JSON literals
+                rotation_json = json.dumps(rotation_matrix)
+                translation_json = json.dumps(translation_vector)
+                js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonOrient('{name}', {rotation_json}, {translation_json}, {animate_str});"
+            else:
+                # Fallback: call without matrices
+                js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonOrient('{name}', null, null, {animate_str});"
+
         if js_code_inner:
             # Wrap in a check for safety
             js_code = f"""
@@ -433,23 +574,65 @@ class view:
             (function() {{
                 // Find the container we just rendered
                 const container = document.getElementById("{viewer_id}");
-                
+                const config = {json.dumps(self.config)};
+
+                // Gather viewer data (staticObjectData or proteinData)
+                let viewerData = null;
+                if (typeof window.staticObjectData !== 'undefined') {{
+                    viewerData = window.staticObjectData;
+                }} else if (typeof window.proteinData !== 'undefined') {{
+                    viewerData = window.proteinData;
+                }}
+
                 // Call the initialization function (which is defined *inside* final_html)
                 if (container && typeof initializePy2DmolViewer === 'function') {{
-                    initializePy2DmolViewer(container);
+                    initializePy2DmolViewer(container, config, viewerData);
                 }} else if (!container) {{
                     console.error("py2dmol: Failed to find container div #{viewer_id}.");
                 }} else {{
                     console.error("py2dmol: Failed to find initializePy2DmolViewer function.");
+                }}
+
+                // Register all callbacks defined in config.callbacks
+                // This generalized system allows for future extensions
+                if (config.callbacks && typeof config.callbacks === 'object') {{
+                    for (const [callbackType, callbackName] of Object.entries(config.callbacks)) {{
+                        window[callbackName] = (...args) => {{
+                            // Call Python with callback-specific logic
+                            if (typeof IPython !== 'undefined' && IPython.notebook) {{
+                                const argStr = args.map(arg =>
+                                    typeof arg === 'string' ? `"${{arg}}"` : JSON.stringify(arg)
+                                ).join(', ');
+                                const pythonCode = `_viewer_{viewer_id}.$${{callbackType}}(${{argStr}})`;
+                                IPython.notebook.kernel.execute(pythonCode);
+                            }} else if (typeof Jupyter !== 'undefined' && Jupyter.notebook) {{
+                                // For newer Jupyter versions
+                                const argStr = args.map(arg =>
+                                    typeof arg === 'string' ? `"${{arg}}"` : JSON.stringify(arg)
+                                ).join(', ');
+                                const pythonCode = `_viewer_{viewer_id}.$${{callbackType}}(${{argStr}})`;
+                                Jupyter.notebook.kernel.execute(pythonCode);
+                            }} else {{
+                                console.warn(`${{callbackType}}: Could not execute Python callback - IPython/Jupyter not available`);
+                            }}
+                        }};
+                    }}
                 }}
             }})();
         </script>
         """
         if not self._reuse_js:
             with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
-                js_content = f.read() 
-            container_html = f"<script>{js_content}</script>\n" + container_html
-            
+                js_content = f.read()
+            # Wrap the main JS in a check to prevent re-embedding on multiple viewers
+            container_html = f"""<script>
+            if (!window.__py2dmolJsLoaded) {{
+                window.__py2dmolJsLoaded = true;
+                {js_content}
+            }}
+            </script>
+            """ + container_html
+
             # Conditionally load PAE module if enabled
             if self.config.get("pae", False):
                 try:
@@ -466,6 +649,17 @@ class view:
         # We no longer use ipywidgets, just display directly.
         # The .show() method will now print a *new* cell.
         display(HTML(html_string))
+
+        # Store viewer reference in IPython's user namespace so JavaScript can call it back
+        try:
+            from IPython import get_ipython
+            ipython = get_ipython()
+            if ipython is not None:
+                viewer_ref_name = f"_viewer_{self.config['viewer_id']}"
+                ipython.user_ns[viewer_ref_name] = self
+        except Exception as e:
+            # Silently fail if not in IPython environment or other issues
+            pass
 
     def clear(self):
         """Clears all objects and frames from the viewer."""
@@ -747,7 +941,7 @@ class view:
         """
         
         # --- Step 1: Update Python-side alignment state ---
-        self._update(coords, plddts, chains, position_types, pae, align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types) # This handles defaults
+        self._update(coords, plddts, chains, position_types, pae, align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         # --- Step 2: Handle object creation ---
@@ -842,6 +1036,113 @@ class view:
                 "color": normalized_color
             })
 
+    def orient(self, name=None, animate=True):
+        """
+        Orient the structure to its optimal viewing angle.
+
+        Computes the best rotation matrix using PCA and sends it to the renderer.
+
+        Args:
+            name (str, optional): Object name to orient. If None, orients the current/last object.
+            animate (bool, optional): Whether to animate the rotation. Defaults to True.
+        """
+        if not self._is_live:
+            print("Error: Viewer must be displayed (call .show()) before orienting.")
+            return
+
+        # If no name provided, use the last object
+        if name is None:
+            if self.objects:
+                name = self.objects[-1]["name"]
+            else:
+                print("Error: No objects to orient.")
+                return
+
+        # Verify object exists
+        target_obj = self._find_object_by_name(name)
+        if target_obj is None:
+            print(f"Error: Object '{name}' not found.")
+            return
+
+        # Get coordinates for orientation calculation
+        try:
+            if target_obj.get("frames"):
+                # Use coordinates from first frame
+                frame = target_obj["frames"][0]
+                if frame.get("coords"):
+                    coords = np.array(frame["coords"])
+                    # Compute best view rotation using PCA
+                    rotation_matrix, center, extent = _best_view_rotation(coords)
+                    # Convert numpy arrays to lists for JSON serialization
+                    rotation_list = rotation_matrix.tolist()
+                    translation_list = center + [extent]
+
+                    # Send orient message with computed matrices (no animation for Python)
+                    self._send_message({
+                        "type": "py2DmolOrient",
+                        "name": name,
+                        "rotationMatrix": rotation_list,
+                        "translationVector": translation_list,
+                        "animate": False
+                    })
+                    return
+        except Exception as e:
+            print(f"Error computing orientation: {e}")
+
+        # Fallback: send message without matrices (will use defaults)
+        print("Warning: Could not compute orientation matrices, using default view.")
+        self._send_message({
+            "type": "py2DmolOrient",
+            "name": name,
+            "animate": False
+        })
+
+    def _auto_orient(self, name):
+        """
+        Internal: Auto-orient a newly loaded object if viewer is live.
+
+        Args:
+            name (str): Object name to orient.
+        """
+        if not self._is_live:
+            return
+
+        # Get the object and compute orientation
+        target_obj = self._find_object_by_name(name)
+        if target_obj is None:
+            return
+
+        try:
+            if target_obj.get("frames"):
+                # Use coordinates from first frame
+                frame = target_obj["frames"][0]
+                if frame.get("coords"):
+                    coords = np.array(frame["coords"])
+                    # Compute best view rotation using PCA
+                    rotation_matrix, center, extent = _best_view_rotation(coords)
+                    # Convert numpy arrays to lists for JSON serialization
+                    rotation_list = rotation_matrix.tolist()
+                    translation_list = center + [extent]
+
+                    # Send orient message with computed matrices (no animation)
+                    self._send_message({
+                        "type": "py2DmolOrient",
+                        "name": name,
+                        "rotationMatrix": rotation_list,
+                        "translationVector": translation_list,
+                        "animate": False
+                    })
+                    return
+        except Exception as e:
+            # Silently ignore errors in auto-orient
+            pass
+
+        # Fallback: send message without matrices
+        self._send_message({
+            "type": "py2DmolOrient",
+            "name": name,
+            "animate": False
+        })
 
     def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
         """
@@ -953,6 +1254,8 @@ class view:
                     residue_numbers=residue_numbers,
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
+        # Auto-orient the newly loaded object if viewer is live
+        self._auto_orient(current_obj_name)
 
     def _parse_model(self, model, chains_filter, ignore_ligands=False):
         """
@@ -1332,7 +1635,7 @@ class view:
             new_obj (bool, optional): If True, starts a new object. Defaults to True.
                                      Set to False to add as frames to the last object.
             name (str, optional): Name for the new object. If not provided, uses the PDB ID.
-            align (bool, optional): If True, aligns coordinates to best view. Defaults to False.
+            align (bool, optional): If True, aligns to best view. Defaults to False.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
@@ -1373,7 +1676,7 @@ class view:
             new_obj (bool, optional): If True, starts a new object. Defaults to True.
                                      Set to False to add as frames to the last object.
             name (str, optional): Name for the new object. If not provided, uses the UniProt ID.
-            align (bool, optional): If True, aligns coordinates to best view. Defaults to False.
+            align (bool, optional): If True, aligns to best view. Defaults to False.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
