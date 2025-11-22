@@ -576,6 +576,9 @@ function initializePy2DmolViewer(containerElement) {
             this.isOrientAnimating = false; // Track orient animation state to skip shadow recalculation
             this.lastShadowRotationMatrix = null; // Track rotation matrix for shadow caching
 
+            // Batch loading flag to suppress unnecessary renders during bulk data loading
+            this._batchLoading = false;
+
             // Width multipliers are now always based on TYPE_BASELINES (no scaling factors needed)
 
             // Cached width multipliers per type (calculated once per molecule load)
@@ -1671,7 +1674,8 @@ function initializePy2DmolViewer(containerElement) {
 
             // If this is the first frame being loaded, we need to
             // Recalculate focal length if perspective is enabled and object size changed
-            if (object.frames.length === 1 && this.perspectiveEnabled && this.orthoSlider) {
+            // Skip during batch loading to avoid unnecessary renders
+            if (object.frames.length === 1 && this.perspectiveEnabled && this.orthoSlider && !this._batchLoading) {
                 this.orthoSlider.dispatchEvent(new Event('input'));
             }
 
@@ -2206,7 +2210,7 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         // Set the current frame and render it
-        setFrame(frameIndex) {
+        setFrame(frameIndex, skipRender = false) {
             frameIndex = parseInt(frameIndex);
 
             // Handle clearing the canvas based on transparency
@@ -2251,9 +2255,11 @@ function initializePy2DmolViewer(containerElement) {
             this._loadFrameData(frameIndex, true); // Load without render
 
             // Apply selection mask after frame data is loaded (in case selection was restored during object switch)
-            this._composeAndApplyMask(true); // skip3DRender, will render below
+            this._composeAndApplyMask(skipRender); // skip3DRender if requested
 
-            this.render('setFrame'); // Render once
+            if (!skipRender) {
+                this.render('setFrame'); // Render once unless skipped
+            }
             this.lastRenderedFrame = frameIndex;
 
             // Update PAE container visibility
@@ -3602,14 +3608,9 @@ function initializePy2DmolViewer(containerElement) {
             this.plddtColors = this._calculatePlddtColors();
             this.plddtColorsNeedUpdate = false;
 
-
-            // Trigger first render (unless skipRender is true)
-            if (!skipRender) {
-                this.render('_loadDataIntoRenderer');
-            }
-
-            // [PATCH] Apply initial mask
-            this._composeAndApplyMask();
+            // [PATCH] Apply initial mask and render once
+            // Don't render before applying mask - _composeAndApplyMask will handle rendering
+            this._composeAndApplyMask(skipRender);
 
             // Dispatch event to notify sequence viewer that colors have changed (e.g., when frame changes)
             document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
@@ -5548,7 +5549,7 @@ function initializePy2DmolViewer(containerElement) {
                         // Update cached dimensions in renderer
                         renderer._updateCanvasDimensions();
 
-                        // Re-render the scene
+                        // Always render on resize - canvas setup is necessary for proper display
                         renderer.render('ResizeObserver');
                     }
                 }

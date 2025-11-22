@@ -2180,18 +2180,36 @@ function updateViewerFromGlobalBatch() {
         }
     }
 
-    if (r) r._batchLoading = false;
-
     if (batchedObjects.length > 0) {
+        // Ensure canvas dimensions are set before showing container to prevent ResizeObserver render
+        const canvasContainer = viewerContainer?.querySelector('#canvasContainer');
+        const canvas = viewerContainer?.querySelector('#canvas');
+        if (canvasContainer && canvas && r) {
+            // Set explicit dimensions to prevent ResizeObserver from detecting a size change
+            const computed = window.getComputedStyle(canvasContainer);
+            const width = parseInt(computed.width) || 600;
+            const height = parseInt(computed.height) || 600;
+            if (width > 0 && height > 0) {
+                canvas.style.width = width + 'px';
+                canvas.style.height = height + 'px';
+                const dpr = window.devicePixelRatio || 1;
+                canvas.width = width * dpr;
+                canvas.height = height * dpr;
+                const ctx = canvas.getContext('2d');
+                ctx.scale(dpr, dpr);
+                r._updateCanvasDimensions?.();
+            }
+        }
         if (viewerContainer) viewerContainer.style.display = 'flex';
         if (topPanelContainer) topPanelContainer.style.display = 'block';
     }
+
+    if (r) r._batchLoading = false;
 
     if (newNames.length > 0) {
         // Show the last new object
         const show = newNames[newNames.length - 1];
         if (r?._switchToObject) r._switchToObject(show);
-        if (r?.setFrame) r.setFrame(0);
         if (r?.objectSelect) r.objectSelect.value = show;
         if (objectSelect) objectSelect.value = show;
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
@@ -2201,7 +2219,12 @@ function updateViewerFromGlobalBatch() {
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
         if (r?.updateUIControls) r.updateUIControls();
-        if (typeof applyBestViewRotation === 'function') applyBestViewRotation(false);
+
+        // Load frame and apply best view rotation WITHOUT intermediate renders
+        if (r?.setFrame) {
+            r.setFrame(0, true); // Load frame, skip intermediate render
+        }
+        if (typeof applyBestViewRotation === 'function') applyBestViewRotation(false); // Will render once
     } else if (snapshot?.object && r?.objectsData?.[snapshot.object]) {
         // No new objects: restore the previous object/frame
         if (r?._switchToObject) r._switchToObject(snapshot.object);
