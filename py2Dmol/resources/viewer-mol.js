@@ -2647,25 +2647,21 @@ function initializePy2DmolViewer(containerElement) {
 
                 // Store pre-merge auto color for use with 'auto' color mode
                 // This is based on the first frame before merging
-                try {
-                    const firstFrame = object.frames[0];
-                    if (firstFrame) {
-                        const firstFrameChains = firstFrame.chains || [];
-                        const uniqueFirstChains = new Set(firstFrameChains);
-                        const hasFirstPAE = firstFrame.pae && firstFrame.pae.length > 0;
+                // Determine auto color mode based on first frame characteristics
+                const firstFrame = object.frames[0];
+                if (firstFrame) {
+                    const firstFrameChains = firstFrame.chains || [];
+                    const uniqueFirstChains = new Set(firstFrameChains);
+                    const hasFirstPAE = firstFrame.pae && firstFrame.pae.length > 0;
 
-                        if (hasFirstPAE) {
-                            this.overlayAutoColor = 'plddt';
-                        } else if (uniqueFirstChains.size > 1) {
-                            this.overlayAutoColor = 'chain';
-                        } else {
-                            this.overlayAutoColor = 'rainbow';
-                        }
+                    if (hasFirstPAE) {
+                        this.overlayAutoColor = 'plddt';
+                    } else if (uniqueFirstChains.size > 1) {
+                        this.overlayAutoColor = 'chain';
                     } else {
                         this.overlayAutoColor = 'rainbow';
                     }
-                } catch (e) {
-                    console.error('Error determining overlay auto color:', e);
+                } else {
                     this.overlayAutoColor = 'rainbow';
                 }
 
@@ -2741,12 +2737,6 @@ function initializePy2DmolViewer(containerElement) {
                     bonds: mergedBonds.length > 0 ? mergedBonds : null
                 };
 
-                console.log('Overlay merge complete:', {
-                    coordsCount: mergedData.coords.length,
-                    bondsCount: mergedBonds.length,
-                    framesOverlaid: endFrame - startFrame + 1,
-                    chainsCount: new Set(mergedChains).size
-                });
 
                 this._loadDataIntoRenderer(mergedData, false);
 
@@ -3176,51 +3166,24 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         _loadDataIntoRenderer(data, skipRender = false) {
-            try {
-                if (this.overlayMode) {
-                    console.log('_loadDataIntoRenderer called in overlay mode:', {
-                        hasCoords: !!data?.coords,
-                        coordsLength: data?.coords?.length,
-                        hasChains: !!data?.chains,
-                        chainsLength: data?.chains?.length,
-                        hasPositionTypes: !!data?.position_types,
-                        positionTypesLength: data?.position_types?.length
-                    });
-                }
-                if (data && data.coords && data.coords.length > 0) {
-                    const coords = data.coords.map(c => new Vec3(c[0], c[1], c[2]));
-                    if (this.overlayMode) {
-                        console.log('Creating Vec3 coords, count:', coords.length);
-                    }
-                    // Pass other data fields directly, allowing them to be undefined
-                    this.setCoords(
-                        coords,
-                        data.plddts,
-                        data.chains,
-                        data.position_types,
-                        (data.pae && data.pae.length > 0),
-                        data.position_names,
-                        data.residue_numbers,
-                        skipRender,
-                        data.bonds
-                    );
-                }
-            } catch (e) {
-                console.error("Failed to load data into renderer:", e);
+            if (data && data.coords && data.coords.length > 0) {
+                const coords = data.coords.map(c => new Vec3(c[0], c[1], c[2]));
+                // Pass other data fields directly, allowing them to be undefined
+                this.setCoords(
+                    coords,
+                    data.plddts,
+                    data.chains,
+                    data.position_types,
+                    (data.pae && data.pae.length > 0),
+                    data.position_names,
+                    data.residue_numbers,
+                    skipRender,
+                    data.bonds
+                );
             }
         }
 
         setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null) {
-            if (this.overlayMode) {
-                console.log('setCoords called in overlay mode:', {
-                    coordsLength: coords?.length,
-                    plddtsLength: plddts?.length,
-                    chainsLength: chains?.length,
-                    positionTypesLength: positionTypes?.length,
-                    bondsLength: bonds?.length,
-                    skipRender
-                });
-            }
             this.coords = coords;
 
             // Set bonds from parameter or from object's stored bonds
@@ -3759,14 +3722,6 @@ function initializePy2DmolViewer(containerElement) {
                 this.cachedSegmentIndices = this.segmentIndices.map(seg => ({ ...seg }));
                 this.cachedSegmentIndicesFrame = this.currentFrame;
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
-            }
-
-            if (this.overlayMode) {
-                console.log('Segment building complete:', {
-                    segmentCount: this.segmentIndices.length,
-                    coordsLength: this.coords.length,
-                    canUseCache
-                });
             }
 
             // [OPTIMIZATION] Ensure static adjacency list and arrays exist
@@ -4482,18 +4437,12 @@ function initializePy2DmolViewer(containerElement) {
         // RENDER (Core drawing logic)
         // RENDER (Core drawing logic)
         render(reason = 'Unknown') {
-            const label = 'Render: ' + reason;
-            console.time(label);
-            console.log('Render triggered by:', reason);
-            console.trace('Render Call Trace'); // Uncomment to debug render sources
             if (this.currentFrame < 0) {
                 // Clear canvas if no frame is set
                 this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-                console.timeEnd(label);
                 return;
             }
             this._renderToContext(this.ctx, this.displayWidth, this.displayHeight);
-            console.timeEnd(label);
         }
 
         // Core rendering logic - can render to any context (canvas, SVG, etc.)
@@ -4508,18 +4457,7 @@ function initializePy2DmolViewer(containerElement) {
 
             // Check segment length
             if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) {
-                if (this.overlayMode) {
-                    console.log('Render early exit:', {
-                        coordsLength: this.coords.length,
-                        segmentIndicesLength: this.segmentIndices.length,
-                        currentObjectName: this.currentObjectName
-                    });
-                }
                 return;
-            }
-
-            if (this.overlayMode) {
-                console.log('Render continuing - about to render segments');
             }
 
             const object = this.objectsData[this.currentObjectName];
@@ -4611,16 +4549,6 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             const numVisibleSegments = visibleSegmentIndices.length;
-
-            if (this.overlayMode) {
-                console.log('Overlay visibility check:', {
-                    totalSegments: n,
-                    visibleSegments: numVisibleSegments,
-                    hasMask: !!visibilityMask,
-                    maskSize: visibilityMask?.size,
-                    coordsLength: this.coords.length
-                });
-            }
 
             // Combine Z-value/norm and update segData
             // Only calculate z-values for visible segments to avoid unnecessary computation
@@ -5701,8 +5629,6 @@ function initializePy2DmolViewer(containerElement) {
             // Use setStatus if available (index.html), otherwise console.log (viewer.html)
             if (typeof setStatus === 'function') {
                 setStatus(`SVG exported to ${svgFilename}`);
-            } else {
-                console.log(`SVG exported to ${svgFilename}`);
             }
         }
     }
@@ -5783,7 +5709,6 @@ function initializePy2DmolViewer(containerElement) {
             if (resizeTimeout) clearTimeout(resizeTimeout);
 
             resizeTimeout = setTimeout(() => {
-                console.time('Resize');
                 for (let entry of entries) {
                     // Get new dimensions from the container
                     let newWidth = entry.contentRect.width;
@@ -5820,7 +5745,6 @@ function initializePy2DmolViewer(containerElement) {
                         renderer.render('ResizeObserver');
                     }
                 }
-                console.timeEnd('Resize');
             }, 100); // 100ms debounce
         });
 

@@ -48,7 +48,6 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initializeApp() {
-    console.time('AppInit');
     // Initialize viewer config
     initializeViewerConfig();
 
@@ -131,7 +130,6 @@ function initializeApp() {
         paeCanvas.style.display = 'none';
     }
     setStatus("Ready. Upload a file or fetch an ID.");
-    console.timeEnd('AppInit');
 }
 
 function refreshEntropyColors() {
