@@ -2639,126 +2639,93 @@ function initializePy2DmolViewer(containerElement) {
             this.overlayMode = !this.overlayMode;
 
             if (this.overlayMode) {
-                // Entering overlay mode - merge all frames
-                if (!this.currentObjectName) return;
-
-                const object = this.objectsData[this.currentObjectName];
-                if (!object || object.frames.length === 0) return;
-
-                // Store pre-merge auto color for use with 'auto' color mode
-                // This is based on the first frame before merging
-                try {
-                    const firstFrame = object.frames[0];
-                    if (firstFrame) {
-                        const firstFrameChains = firstFrame.chains || [];
-                        const uniqueFirstChains = new Set(firstFrameChains);
-                        const hasFirstPAE = firstFrame.pae && firstFrame.pae.length > 0;
-
-                        if (hasFirstPAE) {
-                            this.overlayAutoColor = 'plddt';
-                        } else if (uniqueFirstChains.size > 1) {
-                            this.overlayAutoColor = 'chain';
-                        } else {
-                            this.overlayAutoColor = 'rainbow';
-                        }
-                    } else {
-                        this.overlayAutoColor = 'rainbow';
-                    }
-                } catch (e) {
-                    console.error('Error determining overlay auto color:', e);
-                    this.overlayAutoColor = 'rainbow';
-                }
-
-                // Merge frame data with unique chain IDs per frame
-                const frameRange = this.overlayFrameRange || [0, object.frames.length - 1];
-                const startFrame = Math.max(0, frameRange[0]);
-                const endFrame = Math.min(object.frames.length - 1, frameRange[1]);
-
-                const mergedCoords = [];
-                const mergedPlddts = [];
-                const mergedChains = [];
-                const mergedPositionTypes = [];
-                const mergedPositionNames = [];
-                const mergedResidueNumbers = [];
-                const mergedBonds = [];
-                const frameIdMap = [];
-
-                // Chain IDs to use for each frame (so segment builder separates them)
-                const chainIds = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('');
-
-                for (let frameIdx = startFrame; frameIdx <= endFrame; frameIdx++) {
-                    const frame = object.frames[frameIdx];
-                    const frameCoords = frame.coords || [];
-                    const frameBonds = frame.bonds || [];
-                    const frameChains = frame.chains || Array(frameCoords.length).fill('A');
-                    const atomOffset = mergedCoords.length;
-                    const frameAtomCount = frameCoords.length;
-
-                    // Merge coords
-                    for (let i = 0; i < frameAtomCount; i++) {
-                        mergedCoords.push(frameCoords[i]);
-                        frameIdMap.push(frameIdx);
-                    }
-
-                    // Merge data fields - always create arrays with frameAtomCount elements
-                    const plddts = frame.plddts && frame.plddts.length === frameAtomCount ? frame.plddts : Array(frameAtomCount).fill(50.0);
-                    const positionTypes = frame.position_types && frame.position_types.length === frameAtomCount ? frame.position_types : Array(frameAtomCount).fill('P');
-                    const positionNames = frame.position_names && frame.position_names.length === frameAtomCount ? frame.position_names : Array(frameAtomCount).fill('UNK');
-                    const residueNumbers = frame.residue_numbers && frame.residue_numbers.length === frameAtomCount ? frame.residue_numbers : Array.from({length: frameAtomCount}, (_, i) => i + 1);
-
-                    mergedPlddts.push(...plddts);
-                    mergedPositionTypes.push(...positionTypes);
-                    mergedPositionNames.push(...positionNames);
-                    mergedResidueNumbers.push(...residueNumbers);
-
-                    // Preserve original chain IDs from this frame
-                    for (let i = 0; i < frameAtomCount; i++) {
-                        mergedChains.push(frameChains[i] || 'A');
-                    }
-
-                    // Merge bonds with adjusted indices
-                    for (let i = 0; i < frameBonds.length; i++) {
-                        const bond = frameBonds[i];
-                        mergedBonds.push([bond[0] + atomOffset, bond[1] + atomOffset]);
-                    }
-                }
-
-                // Store overlay-specific data
-                this.frameIdMap = frameIdMap;
-                this.cachedSegmentIndices = null;
-                this.cachedSegmentIndicesFrame = -1;
-                this.cachedSegmentIndicesObjectName = null;
-
-                // Load merged data
-                const mergedData = {
-                    coords: mergedCoords,
-                    plddts: mergedPlddts,
-                    chains: mergedChains,
-                    position_types: mergedPositionTypes,
-                    position_names: mergedPositionNames,
-                    residue_numbers: mergedResidueNumbers,
-                    pae: this.pae || null,
-                    bonds: mergedBonds.length > 0 ? mergedBonds : null
-                };
-
-                console.log('Overlay merge complete:', {
-                    coordsCount: mergedData.coords.length,
-                    bondsCount: mergedBonds.length,
-                    framesOverlaid: endFrame - startFrame + 1,
-                    chainsCount: new Set(mergedChains).size
-                });
-
-                this._loadDataIntoRenderer(mergedData, false);
-
+                // Entering overlay mode - load and merge all frames
+                this._loadMultiFrameData();
+                this.render('overlay mode activated');
             } else {
                 // Exiting overlay mode - return to single frame view
-                this.overlayFrames = null;
-                this.overlayAutoColor = null;
                 const currentFrame = Math.max(0, this.currentFrame);
                 this.setFrame(currentFrame);
             }
 
             this.updateUIControls();
+        }
+
+        // Load data for a specific frame
+        _loadFrameData(frameIndex) {
+            console.time(`_loadFrameData ${frameIndex}`);
+            if (frameIndex < 0 || !this.currentObjectName || frameIndex >= this.objectsData[this.currentObjectName].frames.length) return;
+
+            const frame = this.objectsData[this.currentObjectName].frames[frameIndex];
+            this.atoms = frame.atoms;
+            this.bonds = frame.bonds;
+
+            // Update PAE data if available
+            console.time(`_resolvePaeData ${frameIndex}`);
+            this._resolvePaeData(frame);
+            console.timeEnd(`_resolvePaeData ${frameIndex}`);
+
+            // Update secondary structure if available
+            if (frame.ss) {
+                this.ss = frame.ss;
+            }
+            console.timeEnd(`_loadFrameData ${frameIndex}`);
+        }
+
+        // Load and merge data from multiple frames (for overlay mode)
+        _loadMultiFrameData() {
+            if (!this.currentObjectName) return;
+
+            const object = this.objectsData[this.currentObjectName];
+            if (!object || object.frames.length === 0) return;
+
+            // Determine which frames to overlay
+            const frameRange = this.overlayFrameRange || [0, object.frames.length - 1];
+            const startFrame = Math.max(0, frameRange[0]);
+            const endFrame = Math.min(object.frames.length - 1, frameRange[1]);
+
+            // Collect all atoms and bonds from all frames
+            const mergedAtoms = [];
+            const mergedBonds = [];
+            const frameIdMap = []; // Track which frame each atom belongs to
+
+            for (let frameIdx = startFrame; frameIdx <= endFrame; frameIdx++) {
+                const frame = object.frames[frameIdx];
+                const frameAtoms = frame.atoms || [];
+                const frameBonds = frame.bonds || [];
+
+                const atomOffset = mergedAtoms.length;
+
+                // Add atoms with frame ID tracking
+                for (let i = 0; i < frameAtoms.length; i++) {
+                    mergedAtoms.push(frameAtoms[i]);
+                    frameIdMap.push(frameIdx);
+                }
+
+                // Add bonds with adjusted indices
+                for (let i = 0; i < frameBonds.length; i++) {
+                    const bond = frameBonds[i];
+                    mergedBonds.push([
+                        bond[0] + atomOffset,
+                        bond[1] + atomOffset
+                    ]);
+                }
+            }
+
+            // Set the merged data
+            this.atoms = mergedAtoms;
+            this.bonds = mergedBonds;
+            this.frameIdMap = frameIdMap; // Store for shadow isolation later
+
+            // Use PAE data from first frame (PAE doesn't make sense for overlays)
+            if (startFrame >= 0 && startFrame < object.frames.length) {
+                this._resolvePaeData(object.frames[startFrame]);
+            }
+
+            // Use secondary structure from first frame
+            if (object.frames[startFrame] && object.frames[startFrame].ss) {
+                this.ss = object.frames[startFrame].ss;
+            }
         }
 
         // Start playback
@@ -3177,21 +3144,8 @@ function initializePy2DmolViewer(containerElement) {
 
         _loadDataIntoRenderer(data, skipRender = false) {
             try {
-                if (this.overlayMode) {
-                    console.log('_loadDataIntoRenderer called in overlay mode:', {
-                        hasCoords: !!data?.coords,
-                        coordsLength: data?.coords?.length,
-                        hasChains: !!data?.chains,
-                        chainsLength: data?.chains?.length,
-                        hasPositionTypes: !!data?.position_types,
-                        positionTypesLength: data?.position_types?.length
-                    });
-                }
                 if (data && data.coords && data.coords.length > 0) {
                     const coords = data.coords.map(c => new Vec3(c[0], c[1], c[2]));
-                    if (this.overlayMode) {
-                        console.log('Creating Vec3 coords, count:', coords.length);
-                    }
                     // Pass other data fields directly, allowing them to be undefined
                     this.setCoords(
                         coords,
@@ -3211,16 +3165,6 @@ function initializePy2DmolViewer(containerElement) {
         }
 
         setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null) {
-            if (this.overlayMode) {
-                console.log('setCoords called in overlay mode:', {
-                    coordsLength: coords?.length,
-                    plddtsLength: plddts?.length,
-                    chainsLength: chains?.length,
-                    positionTypesLength: positionTypes?.length,
-                    bondsLength: bonds?.length,
-                    skipRender
-                });
-            }
             this.coords = coords;
 
             // Set bonds from parameter or from object's stored bonds
@@ -3315,18 +3259,13 @@ function initializePy2DmolViewer(containerElement) {
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
-            // In overlay mode, use pre-merge auto color based on first frame
             const uniqueChains = new Set(this.chains);
-            if (this.overlayMode && this.overlayAutoColor) {
-                this.resolvedAutoColor = this.overlayAutoColor;
+            if (hasPAE) {
+                this.resolvedAutoColor = 'plddt';
+            } else if (uniqueChains.size > 1) {
+                this.resolvedAutoColor = 'chain';
             } else {
-                if (hasPAE) {
-                    this.resolvedAutoColor = 'plddt';
-                } else if (uniqueChains.size > 1) {
-                    this.resolvedAutoColor = 'chain';
-                } else {
-                    this.resolvedAutoColor = 'rainbow';
-                }
+                this.resolvedAutoColor = 'rainbow';
             }
 
             // Sync dropdown to renderer's colorMode (if dropdown exists)
@@ -3375,24 +3314,10 @@ function initializePy2DmolViewer(containerElement) {
             // Include ligands in ligand-only chains for rainbow coloring
             this.perChainIndices = new Array(n);
             const chainIndices = {}; // Temporary tracker
-            let lastFrame = -1; // Track frame changes for overlay mode
-
             for (let i = 0; i < n; i++) {
                 const type = this.positionTypes[i];
                 const chainId = this.chains[i] || 'A';
                 const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
-
-                // In overlay mode, reset chain indices when frame changes
-                if (this.overlayMode && this.frameIdMap) {
-                    const currentFrame = this.frameIdMap[i];
-                    if (currentFrame !== lastFrame) {
-                        // Frame changed, reset all chain counters
-                        for (const key in chainIndices) {
-                            chainIndices[key] = 0;
-                        }
-                        lastFrame = currentFrame;
-                    }
-                }
 
                 if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
                     if (chainIndices[chainId] === undefined) {
@@ -3490,13 +3415,7 @@ function initializePy2DmolViewer(containerElement) {
                                 const samePolymerType = (type1 === type2) ||
                                     ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
 
-                                // In overlay mode, also check that both atoms are in the same frame
-                                let sameFrame = true;
-                                if (this.overlayMode && this.frameIdMap) {
-                                    sameFrame = this.frameIdMap[i] === this.frameIdMap[i + 1];
-                                }
-
-                                if (samePolymerType && this.chains[i] === this.chains[i + 1] && sameFrame) {
+                                if (samePolymerType && this.chains[i] === this.chains[i + 1]) {
                                     const start = this.coords[i];
                                     const end = this.coords[i + 1];
                                     const distSq = start.distanceToSq(end);
@@ -3566,15 +3485,6 @@ function initializePy2DmolViewer(containerElement) {
                         if (idx1 < 0 || idx1 >= this.coords.length ||
                             idx2 < 0 || idx2 >= this.coords.length) {
                             continue;
-                        }
-
-                        // In overlay mode, skip bonds between different frames
-                        if (this.overlayMode && this.frameIdMap) {
-                            const frame1 = this.frameIdMap[idx1];
-                            const frame2 = this.frameIdMap[idx2];
-                            if (frame1 !== frame2) {
-                                continue;
-                            }
                         }
 
                         const start = this.coords[idx1];
@@ -3759,14 +3669,6 @@ function initializePy2DmolViewer(containerElement) {
                 this.cachedSegmentIndices = this.segmentIndices.map(seg => ({ ...seg }));
                 this.cachedSegmentIndicesFrame = this.currentFrame;
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
-            }
-
-            if (this.overlayMode) {
-                console.log('Segment building complete:', {
-                    segmentCount: this.segmentIndices.length,
-                    coordsLength: this.coords.length,
-                    canUseCache
-                });
             }
 
             // [OPTIMIZATION] Ensure static adjacency list and arrays exist
@@ -4507,20 +4409,7 @@ function initializePy2DmolViewer(containerElement) {
             }
 
             // Check segment length
-            if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) {
-                if (this.overlayMode) {
-                    console.log('Render early exit:', {
-                        coordsLength: this.coords.length,
-                        segmentIndicesLength: this.segmentIndices.length,
-                        currentObjectName: this.currentObjectName
-                    });
-                }
-                return;
-            }
-
-            if (this.overlayMode) {
-                console.log('Render continuing - about to render segments');
-            }
+            if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) return;
 
             const object = this.objectsData[this.currentObjectName];
             if (!object) {
@@ -4592,10 +4481,7 @@ function initializePy2DmolViewer(containerElement) {
                 const segInfo = segments[i];
                 let isVisible = false;
 
-                // In overlay mode, show all segments regardless of visibility mask
-                if (this.overlayMode) {
-                    isVisible = true;
-                } else if (!visibilityMask) {
+                if (!visibilityMask) {
                     // No mask = all segments visible
                     isVisible = true;
                 } else if (segInfo.type === 'C' && segInfo.contactIdx1 !== undefined && segInfo.contactIdx2 !== undefined) {
@@ -4611,16 +4497,6 @@ function initializePy2DmolViewer(containerElement) {
                 }
             }
             const numVisibleSegments = visibleSegmentIndices.length;
-
-            if (this.overlayMode) {
-                console.log('Overlay visibility check:', {
-                    totalSegments: n,
-                    visibleSegments: numVisibleSegments,
-                    hasMask: !!visibilityMask,
-                    maskSize: visibilityMask?.size,
-                    coordsLength: this.coords.length
-                });
-            }
 
             // Combine Z-value/norm and update segData
             // Only calculate z-values for visible segments to avoid unnecessary computation
@@ -4849,16 +4725,6 @@ function initializePy2DmolViewer(containerElement) {
 
                             const s2 = segData[j];
                             const segInfo2 = segments[j];
-
-                            // Shadow isolation: in overlay mode, only allow shadows within same frame
-                            if (this.overlayMode && this.frameIdMap) {
-                                const frameI = this.frameIdMap[segInfoI.idx1];
-                                const frameJ = this.frameIdMap[segInfo2.idx1];
-                                if (frameI !== frameJ) {
-                                    continue; // Skip shadows between different frames
-                                }
-                            }
-
                             const isContactJ = segInfo2.type === 'C';
                             const isMoleculeJ = segInfo2.type === 'P' || segInfo2.type === 'D' || segInfo2.type === 'R';
 
@@ -5001,15 +4867,6 @@ function initializePy2DmolViewer(containerElement) {
                                         // Check this first before accessing segData (faster)
                                         if (shadowSum >= MAX_SHADOW_SUM && maxTint >= 1.0) {
                                             break;
-                                        }
-
-                                        // Shadow isolation: in overlay mode, only allow shadows within same frame
-                                        if (this.overlayMode && this.frameIdMap) {
-                                            const frameI = this.frameIdMap[segInfoI.idx1];
-                                            const frameJ = this.frameIdMap[segments[j].idx1];
-                                            if (frameI !== frameJ) {
-                                                continue; // Skip shadows between different frames
-                                            }
                                         }
 
                                         // Only visible segments are in the grid, so no visibility check needed
@@ -6175,16 +6032,6 @@ function initializePy2DmolViewer(containerElement) {
 
     // 12. Start the main animation loop
     renderer.animate();
-
-    // 12.5. If overlay_frames is enabled, activate overlay mode
-    if (config.overlay_frames && renderer) {
-        // Use a small delay to ensure renderer is ready
-        setTimeout(() => {
-            if (renderer.toggleOverlay) {
-                renderer.toggleOverlay();
-            }
-        }, 100);
-    }
 
     // 13. Expose Public API
     const viewer_id = config.viewer_id;

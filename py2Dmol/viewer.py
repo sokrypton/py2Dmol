@@ -46,7 +46,7 @@ class view:
     def __init__(self, size=(300,300), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True, depth=False,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, reuse_js=False,
+        pae=False, pae_size=300, reuse_js=False, overlay_frames=False,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -70,6 +70,7 @@ class view:
             "autoplay": autoplay,
             "pae": pae,
             "pae_size": pae_size,
+            "overlay_frames": overlay_frames,
             "viewer_id": str(uuid.uuid4()),
         }
         
