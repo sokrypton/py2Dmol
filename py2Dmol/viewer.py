@@ -40,6 +40,46 @@ def align_a_to_b(a, b):
   a_aligned = (a_cent @ R) + b_mean
   return a_aligned
 
+# --- Color Utilities ---
+
+def _normalize_color(color):
+    """
+    Normalize a color input to standard format.
+
+    Args:
+        color: Can be:
+            - None: No color specified
+            - String (mode): "chain", "plddt", "rainbow", "auto", "entropy", "deepmind"
+            - String (literal): "red", "#ff0000", etc.
+            - Dict (advanced): {
+                "object": "chain",                    # Object-level
+                "frame": "plddt",                     # Frame-level
+                "chain": {"A": "red", "B": "#ff0000"},  # Chain-level
+                "position": {0: "blue", 5: "red"}     # Position-level
+              }
+
+    Returns:
+        Normalized color dict or None:
+        - If string: {type: "mode"/"literal", value: string}
+        - If dict: {type: "advanced", value: dict}
+        - If None: None
+    """
+    if color is None:
+        return None
+
+    valid_modes = {"chain", "plddt", "rainbow", "auto", "entropy", "deepmind"}
+
+    # Handle dict (advanced) format
+    if isinstance(color, dict):
+        return {"type": "advanced", "value": color}
+
+    # Handle string format
+    color_str = str(color).lower()
+    if color_str in valid_modes:
+        return {"type": "mode", "value": color_str}
+    else:
+        return {"type": "literal", "value": color}
+
 # --- view Class ---
 
 class view:
@@ -70,7 +110,7 @@ class view:
             "autoplay": autoplay,
             "pae": pae,
             "pae_size": pae_size,
-            "overlay": overlay,
+            "overlay_frames": overlay,
             "viewer_id": str(uuid.uuid4()),
         }
         
@@ -324,7 +364,11 @@ class view:
                         if curr_bonds is not None:
                             light_frame["bonds"] = curr_bonds
                         prev_bonds = curr_bonds
-                    
+
+                    # color (always include if present)
+                    if "color" in frame and frame["color"] is not None:
+                        light_frame["color"] = frame["color"]
+
                     light_frames.append(light_frame)
 
                 # Skip objects with no valid frames
@@ -666,12 +710,12 @@ class view:
             })
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None,
-            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, overrides=None):
+            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None):
         """
         Adds a new *frame* of data to the viewer.
-        
+
         Behavior depends on when .show() is called.
-        
+
         Args:
             coords (np.array): Nx3 array of coordinates.
             plddts (np.array, optional): N-length array of pLDDT scores.
@@ -684,10 +728,12 @@ class view:
             residue_numbers (list, optional): N-length list of PDB residue sequence numbers (resSeq).
                                               One per position. For ligands, multiple positions may share the same residue number.
             atom_types (list, optional): Backward compatibility alias for position_types (deprecated).
-            atom_types (list, optional): Backward compatibility alias for position_types (deprecated).
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             bonds (list, optional): List of bonds. Each bond is [atom_idx1, atom_idx2].
-            overrides (dict, optional): Color overrides for this frame/object.
+            color: Frame-level color. Can be:
+                   - String (mode): "chain", "plddt", "rainbow", "auto", "entropy", "deepmind"
+                   - String (literal): "red", "#ff0000", etc.
+                   - Dict (advanced): {"frame": mode/color, "chain": {...}, "position": {...}}
         """
         
         # --- Step 1: Update Python-side alignment state ---
@@ -722,23 +768,11 @@ class view:
             if processed_bonds is not None and len(processed_bonds) > 0:
                 self.objects[-1]["bonds"] = processed_bonds
 
-        # --- Step 4c: Process overrides if provided ---
-        if overrides is not None:
-            # Store overrides at object level (merging logic is in JS, here we just store the latest)
-            # Ideally we should merge here too if we want save_state to be perfect,
-            # but for now we'll just store it.
-            if self.objects[-1]["overrides"] is None:
-                 self.objects[-1]["overrides"] = overrides
-            else:
-                 # Simple merge (top-level keys)
-                 for k, v in overrides.items():
-                     if isinstance(v, dict) and k in self.objects[-1]["overrides"] and isinstance(self.objects[-1]["overrides"][k], dict):
-                         self.objects[-1]["overrides"][k].update(v)
-                     else:
-                         self.objects[-1]["overrides"][k] = v
-            
-            # Also add to data_dict so it's sent in the payload for this frame add
-            data_dict["overrides"] = overrides
+        # --- Step 4c: Process color if provided ---
+        if color is not None:
+            normalized_color = _normalize_color(color)
+            if normalized_color is not None:
+                data_dict["color"] = normalized_color
 
         # --- Step 5: Send message if in "live" mode ---
         if self._is_live:
@@ -758,8 +792,53 @@ class view:
                 "payload": payload
             })
 
+    def set_color(self, name, color):
+        """
+        Set or override color for an object or its frames.
 
-    def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, overrides=None):
+        Args:
+            name (str): Object name.
+            color: Color specification. Can be:
+                   - String (mode): "chain", "plddt", "rainbow", "auto", "entropy", "deepmind"
+                   - String (literal): "red", "#ff0000", etc.
+                   - Dict (advanced): {
+                       "object": mode/color,           # Object-level override
+                       "frames": {
+                           0: mode/color,              # Frame 0 color
+                           1: mode/color,              # Frame 1 color
+                           2: {"frame": mode, "chain": {...}, "position": {...}}  # Frame 2 advanced
+                       }
+                     }
+        """
+        # Find the object
+        target_obj = None
+        for obj in self.objects:
+            if obj.get("name") == name:
+                target_obj = obj
+                break
+
+        if target_obj is None:
+            print(f"Error: Object '{name}' not found.")
+            return
+
+        # Normalize the color
+        normalized_color = _normalize_color(color)
+        if normalized_color is None:
+            return
+
+        # Store at object level
+        target_obj["color"] = normalized_color
+
+        # Send update if in live mode
+        if self._is_live:
+            self._send_message({
+                "type": "py2DmolSetColor",
+                "name": name,
+                "color": normalized_color
+            })
+
+
+    def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -782,8 +861,20 @@ class view:
         """
         
         # --- Handle new_obj logic FIRST ---
+        # If name is provided, check if an object with that name already exists
+        target_obj = None
+        if name is not None:
+            # Search for existing object with this name
+            for obj in self.objects:
+                if obj.get("name") == name:
+                    target_obj = obj
+                    break
+
+        # If found existing object with same name, add to it (don't create new_obj)
+        if target_obj is not None:
+            new_obj = False  # Add frames to existing object
         # If name is provided and different from current object, force new_obj
-        if name is not None and self.objects and self.objects[-1]["name"] != name:
+        elif name is not None and self.objects and self.objects[-1]["name"] != name:
             new_obj = True
 
         if new_obj or not self.objects:
@@ -863,7 +954,7 @@ class view:
                     align=align,
                     position_names=position_names,
                     residue_numbers=residue_numbers,
-                    overrides=overrides if i == 0 else None) # Only add overrides to first frame/model call to avoid redundancy
+                    color=color if i == 0 else None) # Only add color to first frame/model call
 
 
     def _parse_model(self, model, chains_filter, ignore_ligands=False):
@@ -1230,7 +1321,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_obj=True, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, overrides=None):
+    def from_pdb(self, pdb_id, chains=None, new_obj=True, name=None, align=False, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -1244,28 +1335,31 @@ class view:
             new_obj (bool, optional): If True, starts a new object. Defaults to True.
                                      Set to False to add as frames to the last object.
             name (str, optional): Name for the new object. If not provided, uses the PDB ID.
+            align (bool, optional): If True, aligns coordinates to best view. Defaults to False.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
+            color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
+                                  "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
         """
         filepath = self._get_filepath_from_pdb_id(pdb_id)
 
         # Auto-generate name from PDB ID if not provided
         if name is None and len(pdb_id) == 4 and pdb_id.isalnum():
             name = pdb_id.upper()
-        
+
         if filepath:
-            self.add_pdb(filepath, chains=chains, new_obj=new_obj, 
+            self.add_pdb(filepath, chains=chains, new_obj=new_obj,
                          name=name, paes=None, align=align,
                          use_biounit=use_biounit, biounit_name=biounit_name,
-                         ignore_ligands=ignore_ligands, contacts=contacts, overrides=overrides)
+                         ignore_ligands=ignore_ligands, contacts=contacts, color=color)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, new_obj=True, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False):
+    def from_afdb(self, uniprot_id, chains=None, new_obj=True, name=None, align=False, use_biounit=False, biounit_name="1", ignore_ligands=False, color=None):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and adds it to the viewer.
@@ -1282,9 +1376,12 @@ class view:
             new_obj (bool, optional): If True, starts a new object. Defaults to True.
                                      Set to False to add as frames to the last object.
             name (str, optional): Name for the new object. If not provided, uses the UniProt ID.
+            align (bool, optional): If True, aligns coordinates to best view. Defaults to False.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
+            color (str, optional): Color for this structure. Can be a literal color (e.g., "red", "#ff0000") or a color mode
+                                  (e.g., "chain", "plddt", "rainbow", "auto", "entropy", "deepmind").
         """
 
         # Auto-generate name from UniProt ID if not provided
@@ -1293,7 +1390,7 @@ class view:
 
         # --- Download structure and (maybe) PAE ---
         struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self.config["pae"])
-        
+
         if not struct_filepath:
              print(f"Could not load structure for '{uniprot_id}'.")
              return
@@ -1302,13 +1399,13 @@ class view:
         pae_matrix = None
         if pae_filepath:
             pae_matrix = self._parse_pae_json(pae_filepath)
-        
+
         # --- Add PDB (and PAE if loaded) ---
         if struct_filepath:
             self.add_pdb(struct_filepath, chains=chains, new_obj=new_obj,
                 name=name, paes=[pae_matrix] if pae_matrix is not None else None, align=align,
                 use_biounit=use_biounit, biounit_name=biounit_name,
-                ignore_ligands=ignore_ligands)
+                ignore_ligands=ignore_ligands, color=color)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         

@@ -215,6 +215,15 @@ function initializePy2DmolViewer(containerElement) {
     // ============================================================================
     const pymolColors = ["#33ff33", "#00ffff", "#ff33cc", "#ffff00", "#ff9999", "#e5e5e5", "#7f7fff", "#ff7f00", "#7fff7f", "#199999", "#ff007f", "#ffdd5e", "#8c3f99", "#b2b2b2", "#007fff", "#c4b200", "#8cb266", "#00bfbf", "#b27f7f", "#fcd1a5", "#ff7f7f", "#ffbfdd", "#7fffff", "#ffff7f", "#00ff7f", "#337fcc", "#d8337f", "#bfff3f", "#ff7fff", "#d8d8ff", "#3fffbf", "#b78c4c", "#339933", "#66b2b2", "#ba8c84", "#84bf00", "#b24c66", "#7f7f7f", "#3f3fa5", "#a5512b"];
     const colorblindSafeChainColors = ["#4e79a7", "#f28e2c", "#e15759", "#76b7b2", "#59a14f", "#edc949", "#af7aa1", "#ff9da7", "#9c755f", "#bab0ab"]; // Tableau 10
+
+    // Named color map for common color names
+    const namedColorsMap = {
+        "red": "#ff0000", "green": "#00ff00", "blue": "#0000ff", "yellow": "#ffff00", "cyan": "#00ffff", "magenta": "#ff00ff",
+        "orange": "#ffa500", "purple": "#800080", "pink": "#ffc0cb", "brown": "#8b4513", "gray": "#808080", "grey": "#808080",
+        "white": "#ffffff", "black": "#000000", "lime": "#00ff00", "navy": "#000080", "teal": "#008080",
+        "silver": "#c0c0c0", "maroon": "#800000", "olive": "#808000", "aqua": "#00ffff", "fuchsia": "#ff00ff"
+    };
+
     function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return { r: 128, g: 128, b: 128 }; } const r = parseInt(hex.slice(1, 3), 16); const g = parseInt(hex.slice(3, 5), 16); const b = parseInt(hex.slice(5, 7), 16); return { r, g, b }; }
     function hsvToRgb(h, s, v) { const c = v * s; const x = c * (1 - Math.abs((h / 60) % 2 - 1)); const m = v - c; let r, g, b; if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; } else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; } else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; } return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) }; }
 
@@ -325,6 +334,99 @@ function initializePy2DmolViewer(containerElement) {
 
     // PAE color functions moved to viewer-pae.js
     // Use window.getPAEColor and window.getPAEColor_Colorblind if available
+
+    // ============================================================================
+    // COLOR RESOLUTION (Unified Hierarchy System)
+    // ============================================================================
+
+    /**
+     * Resolves color through the hierarchy: position > chain > frame > object > global
+     * @param {Object} context - { frameIndex, posIndex, chainId, renderer }
+     * @param {Object} colorSpec - { type: "mode"|"literal"|"advanced", value: ... }
+     * @returns {Object} - {resolvedMode: "chain"|"plddt"|etc, resolvedColor: "#hex"|{r,g,b}|null}
+     */
+    function resolveColorHierarchy(context, colorSpec) {
+        const { frameIndex, posIndex, chainId, renderer } = context;
+        const objectName = renderer.currentObjectName;
+        const object = renderer.objectsData[objectName];
+
+        let resolvedMode = renderer.colorMode || 'auto';  // Global default
+        let resolvedLiteralColor = null;
+
+        // === Level 1: Object-level color ===
+        if (object && object.color) {
+            const objColor = object.color;
+            if (objColor.type === 'mode') {
+                resolvedMode = objColor.value;
+            } else if (objColor.type === 'literal') {
+                resolvedLiteralColor = objColor.value;
+            } else if (objColor.type === 'advanced') {
+                // Advanced dict at object level
+                if (objColor.value.object) {
+                    const objLevelColor = objColor.value.object;
+                    if (typeof objLevelColor === 'string' && ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'].includes(objLevelColor.toLowerCase())) {
+                        resolvedMode = objLevelColor.toLowerCase();
+                    } else {
+                        resolvedLiteralColor = objLevelColor;
+                    }
+                }
+            }
+        }
+
+        // === Level 2: Frame-level color ===
+        if (frameIndex >= 0 && object && object.frames && object.frames[frameIndex]) {
+            const frameData = object.frames[frameIndex];
+            if (frameData.color) {
+                const frameColor = frameData.color;
+                if (frameColor.type === 'mode') {
+                    resolvedMode = frameColor.value;
+                    resolvedLiteralColor = null;  // Reset literal when switching to mode
+                } else if (frameColor.type === 'literal') {
+                    resolvedLiteralColor = frameColor.value;
+                    // Keep resolvedMode for fallback, but literal takes priority
+                } else if (frameColor.type === 'advanced') {
+                    const adv = frameColor.value;
+                    // Check frame-level key first
+                    if (adv.frame) {
+                        const frameLevelColor = adv.frame;
+                        if (typeof frameLevelColor === 'string' && ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'].includes(frameLevelColor.toLowerCase())) {
+                            resolvedMode = frameLevelColor.toLowerCase();
+                            resolvedLiteralColor = null;
+                        } else {
+                            resolvedLiteralColor = frameLevelColor;
+                        }
+                    }
+
+                    // === Level 3: Chain-level color ===
+                    if (adv.chain && chainId && adv.chain[chainId]) {
+                        const chainColor = adv.chain[chainId];
+                        if (typeof chainColor === 'string' && ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'].includes(chainColor.toLowerCase())) {
+                            resolvedMode = chainColor.toLowerCase();
+                            resolvedLiteralColor = null;
+                        } else {
+                            resolvedLiteralColor = chainColor;
+                        }
+                    }
+
+                    // === Level 4: Position-level color (highest priority) ===
+                    if (adv.position && adv.position[posIndex] !== undefined) {
+                        const posColor = adv.position[posIndex];
+                        if (typeof posColor === 'string' && ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'].includes(posColor.toLowerCase())) {
+                            resolvedMode = posColor.toLowerCase();
+                            resolvedLiteralColor = null;
+                        } else {
+                            resolvedLiteralColor = posColor;
+                        }
+                    }
+                }
+            }
+        }
+
+        return {
+            resolvedMode: resolvedMode,
+            resolvedLiteralColor: resolvedLiteralColor
+        };
+    }
 
     // ============================================================================
     // RENDERING CONSTANTS
@@ -1624,6 +1726,15 @@ function initializePy2DmolViewer(containerElement) {
                 object.bonds = data.bonds;
             }
 
+            // Store frame-level color if provided in data
+            // Color is handled entirely through the hierarchy resolver in getAtomColor
+            if (data.color !== undefined && data.color !== null) {
+                // Invalidate segment cache to apply new colors
+                this.cachedSegmentIndices = null;
+                this.cachedSegmentIndicesFrame = -1;
+                this.cachedSegmentIndicesObjectName = null;
+            }
+
             // Update object-level tracking (for optimization during resolution)
             if (this._hasPlddtData(data)) {
                 object._lastPlddtFrame = newFrameIndex;
@@ -1646,6 +1757,11 @@ function initializePy2DmolViewer(containerElement) {
                 if (this.objectSelect) {
                     this.objectSelect.value = targetObjectName;
                 }
+            }
+
+            // If color was provided and we're not in batch mode, render immediately to apply new colors
+            if (data.color !== undefined && data.color !== null && !this._batchLoading) {
+                this.render('addFrame-color');
             }
 
             // Update global center sum and count (from all positions for viewing)
@@ -3994,6 +4110,21 @@ function initializePy2DmolViewer(containerElement) {
 
         _getEffectiveColorMode() {
             const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+
+            // Check for object-level color mode first
+            if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
+                const objectColorMode = this.objectsData[this.currentObjectName].colorMode;
+                if (objectColorMode && validModes.includes(objectColorMode)) {
+                    // If object color mode is 'auto', resolve to calculated mode
+                    if (objectColorMode === 'auto') {
+                        const resolved = this.resolvedAutoColor || 'rainbow';
+                        return resolved;
+                    }
+                    return objectColorMode;
+                }
+            }
+
+            // Fall back to global color mode
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 console.warn('Invalid colorMode:', this.colorMode, 'resetting to auto');
                 this.colorMode = 'auto';
@@ -4021,9 +4152,45 @@ function initializePy2DmolViewer(containerElement) {
                 return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
             }
 
-            // Use provided color mode or calculate it once
-            if (!effectiveColorMode) {
-                effectiveColorMode = this._getEffectiveColorMode();
+            // Resolve color through the unified hierarchy
+            // In overlay mode, determine which frame this atom belongs to from frameIdMap
+            let frameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
+            if (this.overlayMode && this.frameIdMap && atomIndex < this.frameIdMap.length) {
+                frameIndex = this.frameIdMap[atomIndex];
+            }
+
+
+            const chainId = this.chains[atomIndex] || 'A';
+            const context = {
+                frameIndex: frameIndex,
+                posIndex: atomIndex,
+                chainId: chainId,
+                renderer: this
+            };
+
+            const { resolvedMode, resolvedLiteralColor } = resolveColorHierarchy(context, null);
+
+            // If we have a resolved literal color, use it immediately (highest priority)
+            if (resolvedLiteralColor !== null) {
+                if (typeof resolvedLiteralColor === 'string' && resolvedLiteralColor.startsWith('#')) {
+                    return hexToRgb(resolvedLiteralColor);
+                } else if (typeof resolvedLiteralColor === 'string') {
+                    // Try to convert named color to hex
+                    const hex = namedColorsMap[resolvedLiteralColor.toLowerCase()];
+                    if (hex) return hexToRgb(hex);
+                    // Fallback if not a named color
+                    return { r: 128, g: 128, b: 128 };
+                } else if (resolvedLiteralColor && typeof resolvedLiteralColor === 'object' && (resolvedLiteralColor.r !== undefined || resolvedLiteralColor.g !== undefined || resolvedLiteralColor.b !== undefined)) {
+                    return resolvedLiteralColor; // Already RGB object
+                }
+            }
+
+            // Use resolved color mode (frame color takes priority over passed-in global mode)
+            // If resolveColorHierarchy found a specific mode, use it
+            if (resolvedMode && resolvedMode !== this.colorMode) {
+                effectiveColorMode = resolvedMode;
+            } else if (!effectiveColorMode) {
+                effectiveColorMode = resolvedMode || this._getEffectiveColorMode();
             }
             const type = (this.positionTypes && atomIndex < this.positionTypes.length) ? this.positionTypes[atomIndex] : undefined;
             let color;
@@ -4116,8 +4283,10 @@ function initializePy2DmolViewer(containerElement) {
             const m = this.segmentIndices.length;
             if (m === 0) return [];
 
-            // Cache effective color mode to avoid calling _getEffectiveColorMode() for every position
-            if (!effectiveColorMode) {
+            // In overlay mode with frame-level colors, let each atom determine its own color mode
+            // Otherwise cache the effective color mode to avoid recalculating for every position
+            let usePerAtomColorMode = this.overlayMode && this.frameIdMap;
+            if (!effectiveColorMode && !usePerAtomColorMode) {
                 effectiveColorMode = this._getEffectiveColorMode();
             }
 
@@ -4132,8 +4301,9 @@ function initializePy2DmolViewer(containerElement) {
                 }
 
                 const positionIndex = segInfo.origIndex;
-                // getAtomColor() already handles all color modes, ligands, ligand-only chains, pastel, etc.
-                return this.getAtomColor(positionIndex, effectiveColorMode);
+                // In overlay mode with per-frame colors, pass null so getAtomColor resolves per-atom
+                const colorMode = usePerAtomColorMode ? null : effectiveColorMode;
+                return this.getAtomColor(positionIndex, colorMode);
             });
         }
 
@@ -6033,6 +6203,32 @@ function initializePy2DmolViewer(containerElement) {
         }
     };
 
+    // 10b. Add function for Python to set object-level color
+    const handlePythonSetObjectColor = (colorJsonOrObject, objectName) => {
+        try {
+            const color = typeof colorJsonOrObject === 'string' ?
+                JSON.parse(colorJsonOrObject) : colorJsonOrObject;
+
+            if (!objectName) {
+                objectName = renderer.currentObjectName;
+            }
+
+            if (objectName && renderer.objectsData[objectName]) {
+                // Store color for this object
+                renderer.objectsData[objectName].color = color;
+
+                // Invalidate segment cache and force re-render
+                renderer.cachedSegmentIndices = null;
+                renderer.cachedSegmentIndicesFrame = -1;
+                renderer.cachedSegmentIndicesObjectName = null;
+
+                // Re-render with new colors
+                renderer.render('SetObjectColor');
+            }
+        } catch (e) {
+            console.error("Failed to set object color from Python:", e);
+        }
+    };
 
     // 11. Load initial data
     if (window.staticObjectData && window.staticObjectData.length > 0) {
@@ -6060,7 +6256,8 @@ function initializePy2DmolViewer(containerElement) {
                             plddts: lightFrame.plddts || undefined,  // Will use inheritance or default in setCoords
                             pae: lightFrame.pae || undefined,  // Will use inheritance or default
                             position_names: lightFrame.position_names || undefined,  // Will default in setCoords
-                            residue_numbers: lightFrame.residue_numbers || undefined  // Will default in setCoords
+                            residue_numbers: lightFrame.residue_numbers || undefined,  // Will default in setCoords
+                            color: lightFrame.color || undefined  // Frame-level color from Python
                         };
 
                         renderer.addFrame(fullFrameData, obj.name);
@@ -6074,6 +6271,13 @@ function initializePy2DmolViewer(containerElement) {
                             // Invalidate segment cache to ensure contacts are included in next render
                             renderer.cachedSegmentIndices = null;
                         }
+                    }
+
+                    // Store overrides at object level if present
+                    if (obj.overrides) {
+                        renderer.objectOverrides[obj.name] = obj.overrides;
+                        // Invalidate segment cache to ensure new colors are applied
+                        renderer.cachedSegmentIndices = null;
                     }
                 }
             }
@@ -6144,6 +6348,7 @@ function initializePy2DmolViewer(containerElement) {
             handlePythonClearAll,
             handlePythonResetAll,
             handlePythonSetColor,
+            handlePythonSetObjectColor,
             renderer // Expose the renderer instance for external access
         };
     } else {
