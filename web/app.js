@@ -1685,6 +1685,34 @@ function updateViewerFromGlobalBatch() {
         if (r?.setFrame) {
             r.setFrame(0, true); // Load frame, skip intermediate render
         }
+
+        // Calculate and set translation for new objects
+        for (const objName of newNames) {
+            if (r?.objectsData?.[objName]) {
+                const obj = r.objectsData[objName];
+                // Calculate geometric center of all atoms across all frames
+                let sumX = 0, sumY = 0, sumZ = 0;
+                let totalAtoms = 0;
+                for (const frame of obj.frames) {
+                    if (frame && frame.coords) {
+                        for (const coord of frame.coords) {
+                            sumX += coord[0];
+                            sumY += coord[1];
+                            sumZ += coord[2];
+                            totalAtoms++;
+                        }
+                    }
+                }
+                if (totalAtoms > 0) {
+                    obj.viewerState.translation = {
+                        x: sumX / totalAtoms,
+                        y: sumY / totalAtoms,
+                        z: sumZ / totalAtoms
+                    };
+                }
+            }
+        }
+
         if (r?.render) r.render('batch load complete'); // Direct render (orientToBestView purged)
     } else if (snapshot?.object && r?.objectsData?.[snapshot.object]) {
         // No new objects: restore the previous object/frame

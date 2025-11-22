@@ -1147,7 +1147,7 @@ class view:
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
         # Auto-orient the newly loaded object if viewer is live
-        self._auto_orient(current_obj_name)
+        # Purged: _auto_orient call removed
 
     def _parse_model(self, model, chains_filter, ignore_ligands=False):
         """
