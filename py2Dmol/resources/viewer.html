@@ -147,10 +147,6 @@
             margin: 0;
         }
 
-        .controlButton:not(.btn-toggle) {
-            /* Regular buttons get padding */
-        }
-
         .btn-toggle {
             /* Toggle buttons have no padding - label has it */
             padding: 0;
@@ -164,9 +160,27 @@
         }
 
         #recordButton,
+        #overlayButton,
         #playButton {
             min-width: 28px;
             padding: 0 5px;
+        }
+
+        #overlayButton {
+            font-size: 14px;
+            line-height: 1;
+        }
+
+        /* Overlay button active state (when overlay mode is on) */
+        #overlayButton.active {
+            background: #3b82f6;
+            color: white;
+            border-color: #2563eb;
+        }
+
+        #overlayButton.active:hover:not(:disabled) {
+            background: #2563eb;
+            border-color: #1d4ed8;
         }
 
         #recordButton {
@@ -487,6 +501,8 @@
                     <option value="50">2x</option>
                     <option value="25">4x</option>
                 </select>
+                <button id="overlayButton" class="controlButton" title="Overlay all frames"
+                    style="font-weight: 400;">⧉</button>
             </div>
         </div>
 

@@ -2540,44 +2540,44 @@ function initializePy2DmolViewer(containerElement) {
                 this.overlayButton.style.display = (total <= 1) ? 'none' : '';
             }
 
-            // Update play button - use symbols
+            // Unified frame control state
+            const shouldDisableFrameControls = this.overlayMode || (total <= 1);
+
+            // Update play button - checkbox style (grey when off, blue when on)
             if (this.playButton) {
                 const hasIcon = this.playButton.querySelector('i');
                 if (hasIcon) {
-                    // Web version with Font Awesome - use icons (innerHTML clears everything)
+                    // Web version with Font Awesome - use icons
                     this.playButton.innerHTML = this.isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+                    // Checkbox-style: change button class based on state
+                    if (this.isPlaying) {
+                        this.playButton.classList.remove('btn-secondary');
+                        this.playButton.classList.add('btn-primary');
+                    } else {
+                        this.playButton.classList.remove('btn-primary');
+                        this.playButton.classList.add('btn-secondary');
+                    }
                 } else {
-                    // Use symbols for play/pause - clear all content first
+                    // Use symbols for play/pause
                     this.playButton.innerHTML = '';
                     this.playButton.textContent = this.isPlaying ? '⏸' : '▶︎';
                 }
-
-                // Disable play button if in overlay mode
-                this.playButton.disabled = this.overlayMode || (total <= 1);
+                this.playButton.disabled = shouldDisableFrameControls;
             }
 
-            // Disable frame slider in overlay mode (all frames are shown)
-            if (this.frameSlider) {
-                this.frameSlider.disabled = this.overlayMode;
-                if (this.overlayMode) {
-                    this.frameSlider.style.opacity = '0.5';
-                } else {
-                    this.frameSlider.style.opacity = '';
-                }
-            }
-            // Update record button
+            // Update record button - checkbox style (grey when off, red when on)
             if (this.recordButton) {
-                const span = this.recordButton.querySelector('span');
-                if (span) {
-                    // index.html: has span with Font Awesome icons
+                const icon = this.recordButton.querySelector('i');
+                if (icon) {
+                    // index.html: has icon with Font Awesome
                     if (this.isRecording) {
-                        span.innerHTML = '<i class="fa-solid fa-stop"></i>';
-                        span.style.background = '#ef4444';
-                        span.style.color = '#fff';
+                        icon.className = 'fa-solid fa-stop';
+                        this.recordButton.classList.remove('btn-secondary');
+                        this.recordButton.classList.add('btn-danger');
                     } else {
-                        span.innerHTML = '<i class="fa-solid fa-video"></i>';
-                        span.style.background = '#e5e7eb';
-                        span.style.color = '#374151';
+                        icon.className = 'fa-solid fa-video';
+                        this.recordButton.classList.remove('btn-danger');
+                        this.recordButton.classList.add('btn-secondary');
                     }
                 } else {
                     // viewer.html: just emoji, change button background color
@@ -2586,26 +2586,32 @@ function initializePy2DmolViewer(containerElement) {
                         this.recordButton.style.color = '#fff';
                         this.recordButton.style.borderColor = '#dc2626';
                     } else {
-                        this.recordButton.style.background = '#f0f0f0';
-                        this.recordButton.style.color = '#1f2937';
-                        this.recordButton.style.borderColor = '#ccc';
+                        this.recordButton.style.background = '';
+                        this.recordButton.style.color = '';
+                        this.recordButton.style.borderColor = '';
                     }
                 }
                 const canRecord = this.currentObjectName &&
                     this.objectsData[this.currentObjectName] &&
                     this.objectsData[this.currentObjectName].frames.length >= 2;
-                this.recordButton.disabled = !canRecord;
+                // Disable if can't record OR if frame controls are disabled
+                this.recordButton.disabled = !canRecord || shouldDisableFrameControls;
 
                 // Hide record button if only 1 frame
-                // Try to find .toggle-item parent first (viewer.html structure)
                 const recordButtonParent = this.recordButton.closest('.toggle-item');
                 if (recordButtonParent) {
                     // viewer.html: hide the toggle-item container
                     recordButtonParent.style.display = (total <= 1) ? 'none' : 'flex';
                 } else {
-                    // index.html: hide the button itself (it's in a toolbar row with other buttons)
+                    // index.html: hide the button itself
                     this.recordButton.style.display = (total <= 1) ? 'none' : '';
                 }
+            }
+
+            // Update frame slider
+            if (this.frameSlider) {
+                this.frameSlider.disabled = this.overlayMode;
+                this.frameSlider.style.opacity = this.overlayMode ? '0.5' : '';
             }
         }
 
@@ -2700,7 +2706,7 @@ function initializePy2DmolViewer(containerElement) {
                     const plddts = frame.plddts && frame.plddts.length === frameAtomCount ? frame.plddts : Array(frameAtomCount).fill(50.0);
                     const positionTypes = frame.position_types && frame.position_types.length === frameAtomCount ? frame.position_types : Array(frameAtomCount).fill('P');
                     const positionNames = frame.position_names && frame.position_names.length === frameAtomCount ? frame.position_names : Array(frameAtomCount).fill('UNK');
-                    const residueNumbers = frame.residue_numbers && frame.residue_numbers.length === frameAtomCount ? frame.residue_numbers : Array.from({length: frameAtomCount}, (_, i) => i + 1);
+                    const residueNumbers = frame.residue_numbers && frame.residue_numbers.length === frameAtomCount ? frame.residue_numbers : Array.from({ length: frameAtomCount }, (_, i) => i + 1);
 
                     mergedPlddts.push(...plddts);
                     mergedPositionTypes.push(...positionTypes);
@@ -2746,6 +2752,17 @@ function initializePy2DmolViewer(containerElement) {
                 this.overlayAutoColor = null;
                 const currentFrame = Math.max(0, this.currentFrame);
                 this.setFrame(currentFrame);
+            }
+
+            // Update overlay button styling - checkbox style
+            if (this.overlayButton) {
+                if (this.overlayMode) {
+                    this.overlayButton.classList.remove('btn-secondary');
+                    this.overlayButton.classList.add('btn-primary');
+                } else {
+                    this.overlayButton.classList.remove('btn-primary');
+                    this.overlayButton.classList.add('btn-secondary');
+                }
             }
 
             this.updateUIControls();

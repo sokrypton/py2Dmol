@@ -385,6 +385,89 @@ viewer.show()
 
 ---
 
+## Color Overrides
+
+You can customize the coloring of specific parts of your structure using the hierarchical color override system. Overrides can be applied at the **Object**, **Frame**, **Chain**, or **Position** level.
+
+**Priority Order:** Position > Chain > Frame > Object > Session (Default)
+
+### Override Structure
+
+The overrides dictionary has the following structure:
+
+```python
+overrides = {
+    "object": "color_or_mode",                  # Override for the entire object
+    "frames": { 0: "color_or_mode", ... },      # Override for specific frames (by index)
+    "chains": { "A": "color_or_mode", ... },    # Override for specific chains (by ID)
+    "positions": { 10: "color_or_mode", ... }   # Override for specific positions (by index)
+}
+```
+
+**Values:**
+*   **Color String:** e.g., `"red"`, `"#ff0000"`, `"rgb(255,0,0)"`
+*   **Color Mode:** e.g., `"rainbow"`, `"chain"`, `"plddt"`
+
+### Usage Examples
+
+#### 1. Apply Overrides when Loading
+
+```python
+import py2Dmol
+
+viewer = py2Dmol.view()
+
+# Override Chain A to be Red, and Position 10 to be Blue
+overrides = {
+    "chains": {"A": "red"},
+    "positions": {10: "blue"}
+}
+
+viewer.add_pdb("protein.pdb", overrides=overrides)
+viewer.show()
+```
+
+#### 2. Apply Overrides Dynamically
+
+You can update overrides after loading the structure using `set_overrides`.
+
+```python
+import py2Dmol
+
+viewer = py2Dmol.view()
+viewer.add_pdb("protein.pdb")
+viewer.show()
+
+# Later... set the whole object to rainbow mode
+viewer.set_overrides({"object": "rainbow"})
+
+# Or highlight a specific residue
+viewer.set_overrides({"positions": {50: "green"}})
+```
+
+#### 3. Multiple Objects
+
+If you have multiple objects, you can specify which object to apply the overrides to using the `name` parameter.
+
+```python
+import py2Dmol
+
+viewer = py2Dmol.view()
+
+# Add two different proteins
+viewer.add_pdb("protein1.pdb", name="obj1")
+viewer.add_pdb("protein2.pdb", name="obj2")
+viewer.show()
+
+# Apply override to "obj1" only
+viewer.set_overrides({"object": "chain"}, name="obj1")
+
+# Apply override to "obj2" only
+viewer.set_overrides({"object": "rainbow"}, name="obj2")
+```
+
+---
+
 ## Reference
 
 ### Atom Types and Representative Atoms

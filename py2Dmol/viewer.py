@@ -46,7 +46,7 @@ class view:
     def __init__(self, size=(300,300), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True, depth=False,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, reuse_js=False, overlay_frames=False,
+        pae=False, pae_size=300, reuse_js=False, overlay=False,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -70,7 +70,7 @@ class view:
             "autoplay": autoplay,
             "pae": pae,
             "pae_size": pae_size,
-            "overlay_frames": overlay_frames,
+            "overlay": overlay,
             "viewer_id": str(uuid.uuid4()),
         }
         
@@ -206,6 +206,13 @@ class view:
         elif msg_type == "py2DmolSetColor":
             color = message_dict.get("color", "auto")
             js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetColor('{color}');"
+
+        elif msg_type == "py2DmolSetOverrides":
+            overrides = message_dict.get("overrides", {})
+            name = message_dict.get("name", "")
+            overrides_json_string = json.dumps(overrides)
+            overrides_js_literal = json.dumps(overrides_json_string)
+            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetOverrides({overrides_js_literal}, '{name}');"
             
         if js_code_inner:
             # Wrap in a check for safety
@@ -340,6 +347,10 @@ class view:
                 # Add bonds if they exist
                 if "bonds" in py_obj and py_obj["bonds"] is not None and len(py_obj["bonds"]) > 0:
                     obj_to_serialize["bonds"] = py_obj["bonds"]
+
+                # Add overrides if they exist
+                if "overrides" in py_obj and py_obj["overrides"] is not None:
+                    obj_to_serialize["overrides"] = py_obj["overrides"]
 
                 serialized_objects.append(obj_to_serialize)
 
@@ -640,7 +651,11 @@ class view:
         self.objects.append({
             "name": name,
             "frames": self._current_object_data,
-            "contacts": None  # Initialize contacts as None
+            "name": name,
+            "frames": self._current_object_data,
+            "contacts": None,  # Initialize contacts as None
+            "bonds": None,     # Initialize bonds as None
+            "overrides": None  # Initialize overrides as None
         })
         
         # Send message *only if* in dynamic/hybrid mode and already displayed
@@ -651,7 +666,7 @@ class view:
             })
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None,
-            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None):
+            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, overrides=None):
         """
         Adds a new *frame* of data to the viewer.
         
@@ -669,8 +684,10 @@ class view:
             residue_numbers (list, optional): N-length list of PDB residue sequence numbers (resSeq).
                                               One per position. For ligands, multiple positions may share the same residue number.
             atom_types (list, optional): Backward compatibility alias for position_types (deprecated).
+            atom_types (list, optional): Backward compatibility alias for position_types (deprecated).
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             bonds (list, optional): List of bonds. Each bond is [atom_idx1, atom_idx2].
+            overrides (dict, optional): Color overrides for this frame/object.
         """
         
         # --- Step 1: Update Python-side alignment state ---
@@ -705,6 +722,24 @@ class view:
             if processed_bonds is not None and len(processed_bonds) > 0:
                 self.objects[-1]["bonds"] = processed_bonds
 
+        # --- Step 4c: Process overrides if provided ---
+        if overrides is not None:
+            # Store overrides at object level (merging logic is in JS, here we just store the latest)
+            # Ideally we should merge here too if we want save_state to be perfect,
+            # but for now we'll just store it.
+            if self.objects[-1]["overrides"] is None:
+                 self.objects[-1]["overrides"] = overrides
+            else:
+                 # Simple merge (top-level keys)
+                 for k, v in overrides.items():
+                     if isinstance(v, dict) and k in self.objects[-1]["overrides"] and isinstance(self.objects[-1]["overrides"][k], dict):
+                         self.objects[-1]["overrides"][k].update(v)
+                     else:
+                         self.objects[-1]["overrides"][k] = v
+            
+            # Also add to data_dict so it's sent in the payload for this frame add
+            data_dict["overrides"] = overrides
+
         # --- Step 5: Send message if in "live" mode ---
         if self._is_live:
             # Include contacts and bonds in payload if they exist for this object and are not None/empty
@@ -724,7 +759,7 @@ class view:
             })
 
 
-    def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None):
+    def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, overrides=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -741,11 +776,16 @@ class view:
             paes (list, optional): List of PAE matrices to associate with each model.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
+```
             ignore_ligands (bool): If True, skips loading ligand atoms.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
         """
         
         # --- Handle new_obj logic FIRST ---
+        # If name is provided and different from current object, force new_obj
+        if name is not None and self.objects and self.objects[-1]["name"] != name:
+            new_obj = True
+
         if new_obj or not self.objects:
              self.new_obj(name)
         
@@ -822,7 +862,8 @@ class view:
                     name=f"model_{i+1}", # Add to the same object
                     align=align,
                     position_names=position_names,
-                    residue_numbers=residue_numbers)
+                    residue_numbers=residue_numbers,
+                    overrides=overrides if i == 0 else None) # Only add overrides to first frame/model call to avoid redundancy
 
 
     def _parse_model(self, model, chains_filter, ignore_ligands=False):
@@ -1008,6 +1049,62 @@ class view:
         # Store bonds (replace existing)
         target_obj["bonds"] = processed_bonds
 
+    def set_overrides(self, overrides, name=None):
+        """
+        Sets color overrides for an object.
+
+        Args:
+            overrides (dict): The overrides dictionary.
+                              Structure:
+                              {
+                                "object": "color_or_mode",
+                                "frames": { "frame_idx": "color_or_mode", ... },
+                                "chains": { "chain_id": "color_or_mode", ... },
+                                "positions": { "atom_idx": "color_or_mode", ... }
+                              }
+            name (str, optional): Name of the object to apply overrides to.
+                                 If None, applies to the last (most recently added) object.
+        """
+        if overrides is None:
+            return
+
+        # Find target object
+        if name is None:
+            # Add to last object
+            if not self.objects:
+                print("Error: No objects available. Add a structure first.")
+                return
+            target_obj = self.objects[-1]
+        else:
+            # Find object by name
+            target_obj = None
+            for obj in self.objects:
+                if obj.get("name") == name:
+                    target_obj = obj
+                    break
+            if target_obj is None:
+                print(f"Error: Object '{name}' not found.")
+                return
+
+        # Update Python-side state (merge)
+        if target_obj["overrides"] is None:
+             target_obj["overrides"] = overrides
+        else:
+             # Simple merge (top-level keys)
+             for k, v in overrides.items():
+                 if isinstance(v, dict) and k in target_obj["overrides"] and isinstance(target_obj["overrides"][k], dict):
+                     target_obj["overrides"][k].update(v)
+                 else:
+                     target_obj["overrides"][k] = v
+
+        # Send message if live
+        if self._is_live:
+            self._send_message({
+                "type": "py2DmolSetOverrides",
+                "overrides": overrides,
+                "name": target_obj["name"]
+            })
+
     def _get_filepath_from_pdb_id(self, pdb_id):
         """
         Checks if a PDB ID is a file. If not, and it's a 4-char code, downloads it.
@@ -1133,7 +1230,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_obj=False, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None):
+    def from_pdb(self, pdb_id, chains=None, new_obj=False, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, overrides=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and displays the viewer.
@@ -1154,7 +1251,7 @@ class view:
             self.add_pdb(filepath, chains=chains, new_obj=new_obj, 
                          name=name, paes=None, align=align,
                          use_biounit=use_biounit, biounit_name=biounit_name,
-                         ignore_ligands=ignore_ligands, contacts=contacts)
+                         ignore_ligands=ignore_ligands, contacts=contacts, overrides=overrides)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         else:
@@ -1334,6 +1431,10 @@ class view:
             if "bonds" in obj and obj["bonds"] is not None and len(obj["bonds"]) > 0:
                 obj_to_serialize["bonds"] = obj["bonds"]
 
+            # Add overrides if they exist
+            if "overrides" in obj and obj["overrides"] is not None:
+                obj_to_serialize["overrides"] = obj["overrides"]
+
             objects.append(obj_to_serialize)
         
         # Get viewer state (limited - Python doesn't have access to all JS state)
@@ -1448,6 +1549,10 @@ class view:
                 if "bonds" in obj_data and obj_data["bonds"] is not None:
                     if isinstance(obj_data["bonds"], list) and len(obj_data["bonds"]) > 0:
                         self.objects[-1]["bonds"] = obj_data["bonds"]
+
+                # Restore overrides data if present at object level
+                if "overrides" in obj_data and obj_data["overrides"] is not None:
+                    self.objects[-1]["overrides"] = obj_data["overrides"]
         
         # Restore viewer config from state (if available)
         if "viewer_state" in state_data:
