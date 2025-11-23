@@ -1914,9 +1914,13 @@ function applySelection(previewPositions = null) {
     let visibleChains = current?.chains || new Set();
     // If in default mode with no explicit chains, all chains are visible
     if (current?.selectionMode === 'default' && (!current.chains || current.chains.size === 0)) {
-        // Get all chains from renderer
-        if (viewerApi.renderer.chains) {
-            visibleChains = new Set(viewerApi.renderer.chains);
+        // Get all chains from renderer's frameState (per-object) or global fallback
+        const renderer = viewerApi.renderer;
+        const currentObjectName = renderer?.currentObjectName;
+        const chains = (currentObjectName && renderer?.objectsData?.[currentObjectName]?.frameState?.chains)
+            || renderer?.chains;
+        if (chains) {
+            visibleChains = new Set(chains);
         }
     }
 
@@ -4439,8 +4443,11 @@ function applySelectionToMSA() {
     if (selection && selection.chains && selection.chains.size > 0) {
         allowedChains = selection.chains;
     } else {
-        // All chains allowed
-        allowedChains = new Set(renderer.chains);
+        // All chains allowed - read from frameState or global fallback
+        const currentObjectName = renderer?.currentObjectName;
+        const chains = (currentObjectName && renderer?.objectsData?.[currentObjectName]?.frameState?.chains)
+            || renderer?.chains;
+        allowedChains = new Set(chains || []);
     }
 
     // Map structure positions to MSA positions for each chain
