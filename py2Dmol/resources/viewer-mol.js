@@ -3111,6 +3111,24 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null) {
             this.coords = coords;
 
+            // === FIX: Calculate maxExtent from actual coordinates for proper shadow grid ===
+            // This ensures the grid bounds are correct for both small and large proteins
+            if (coords && coords.length > 0) {
+                let maxExtent = 0;
+                for (const coord of coords) {
+                    const extent = Math.max(Math.abs(coord.x), Math.abs(coord.y), Math.abs(coord.z));
+                    if (extent > maxExtent) {
+                        maxExtent = extent;
+                    }
+                }
+                // Add small padding for safety
+                maxExtent += 1.0;
+                // Store in current object for shadow grid calculation
+                if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
+                    this.objectsData[this.currentObjectName].maxExtent = maxExtent;
+                }
+            }
+
             // Get current object reference early (used throughout method for frameState updates)
             const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
 
