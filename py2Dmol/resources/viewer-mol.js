@@ -625,9 +625,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.autoRotate = (typeof config.rotate === 'boolean') ? config.rotate : false;
             this.autoplay = (typeof config.autoplay === 'boolean') ? config.autoplay : false;
 
-            // Inertia
-            this.spinVelocityX = 0;
-            this.spinVelocityY = 0;
+            // Mouse/Touch interaction
             this.lastDragTime = 0;
             this.lastDragX = 0;
             this.lastDragY = 0;
@@ -1002,8 +1000,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 if (e.target !== this.canvas && !isHighlightOverlay) return;
 
                 this.isDragging = true;
-                this.spinVelocityX = 0;
-                this.spinVelocityY = 0;
                 this.lastDragX = e.clientX;
                 this.lastDragY = e.clientY;
                 this.lastDragTime = performance.now();
@@ -1047,35 +1043,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                         return; // No movement, skip render
                     }
 
-                    // Store velocity for inertia (disabled for large molecules based on visible segments)
-                    // Reuse object variable from above
-                    const totalSegmentCount = object && object.frames && object.frames[this.currentFrame]
-                        ? (this.segmentIndices ? this.segmentIndices.length : 0)
-                        : 0;
-                    // Count visible segments for inertia determination
-                    let visibleSegmentCount = totalSegmentCount;
-                    if (this.visibilityMask && this.segmentIndices) {
-                        visibleSegmentCount = 0;
-                        for (let i = 0; i < this.segmentIndices.length; i++) {
-                            const seg = this.segmentIndices[i];
-                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
-                                visibleSegmentCount++;
-                            }
-                        }
-                    }
-                    const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
-
-                    if (enableInertia && timeDelta > 0) {
-                        // Weighted average to smooth out jerky movements
-                        const smoothing = 0.5;
-                        this.spinVelocityX = (this.spinVelocityX * (1 - smoothing)) + ((dx / timeDelta * 20) * smoothing);
-                        this.spinVelocityY = (this.spinVelocityY * (1 - smoothing)) + ((dy / timeDelta * 20) * smoothing);
-                    } else {
-                        // Disable inertia for large objects
-                        this.spinVelocityX = 0;
-                        this.spinVelocityY = 0;
-                    }
-
                     this.lastDragX = e.clientX;
                     this.lastDragY = e.clientY;
                     this.lastDragTime = now;
@@ -1105,27 +1072,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.lastShadowRotationMatrix = null; // Force recalculation
 
                 // For large molecules, immediately recalculate shadows
-                // since inertia is disabled and rotation has stopped
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                const segmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
-                const isLargeMolecule = segmentCount > this.LARGE_MOLECULE_CUTOFF;
-
-                if (isLargeMolecule) {
-                    // Render immediately with fresh shadows
-                    this.render();
-                }
-
                 // Restart animate loop after dragging ends
                 requestAnimationFrame(() => this.animate());
-
-                const now = performance.now();
-                const timeDelta = now - this.lastDragTime;
-
-                if (timeDelta > 100) { // If drag was too slow, or just a click
-                    this.spinVelocityX = 0;
-                    this.spinVelocityY = 0;
-                }
-                // Else, the velocity from the last mousemove is used by the animate loop
             });
 
             this.canvas.addEventListener('wheel', (e) => {
@@ -1153,8 +1101,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 if (e.touches.length === 1) {
                     // Start of a drag
                     this.isDragging = true;
-                    this.spinVelocityX = 0;
-                    this.spinVelocityY = 0;
                     this.lastDragX = e.touches[0].clientX;
                     this.lastDragY = e.touches[0].clientY;
                     this.lastDragTime = performance.now();
@@ -1181,36 +1127,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const dx = touch.clientX - this.lastDragX;
                     const dy = touch.clientY - this.lastDragY;
 
-                    // Store velocity for inertia (disabled for large molecules based on visible segments)
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+
+                    // Apply rotation to current object
                     if (object && object.viewerState) {
                         if (dy !== 0) { const rot = rotationMatrixX(dy * 0.01); object.viewerState.rotation = multiplyMatrices(rot, object.viewerState.rotation); }
                         if (dx !== 0) { const rot = rotationMatrixY(dx * 0.01); object.viewerState.rotation = multiplyMatrices(rot, object.viewerState.rotation); }
-                    }
-                    const totalSegmentCount = object && object.frames && object.frames[this.currentFrame]
-                        ? (this.segmentIndices ? this.segmentIndices.length : 0)
-                        : 0;
-                    // Count visible segments for inertia determination
-                    let visibleSegmentCount = totalSegmentCount;
-                    if (this.visibilityMask && this.segmentIndices) {
-                        visibleSegmentCount = 0;
-                        for (let i = 0; i < this.segmentIndices.length; i++) {
-                            const seg = this.segmentIndices[i];
-                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
-                                visibleSegmentCount++;
-                            }
-                        }
-                    }
-                    const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
-
-                    if (enableInertia && timeDelta > 0) {
-                        const smoothing = 0.5;
-                        this.spinVelocityX = (this.spinVelocityX * (1 - smoothing)) + ((dx / timeDelta * 20) * smoothing);
-                        this.spinVelocityY = (this.spinVelocityY * (1 - smoothing)) + ((dy / timeDelta * 20) * smoothing);
-                    } else {
-                        // Disable inertia for large objects
-                        this.spinVelocityX = 0;
-                        this.spinVelocityY = 0;
                     }
 
                     this.lastDragX = touch.clientX;
@@ -1245,7 +1167,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }, { passive: false });
 
             this.canvas.addEventListener('touchend', (e) => {
-                // Handle inertia for drag
+                // Handle end of drag
                 if (e.touches.length === 0 && this.isDragging) {
                     this.isDragging = false;
 
@@ -1254,39 +1176,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     this.cachedTints = null;
                     this.lastShadowRotationMatrix = null; // Force recalculation
 
-                    // For large molecules (based on visible segments), immediately recalculate shadows
-                    // since inertia is disabled and rotation has stopped
-                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
-                    // Count visible segments
-                    let visibleSegmentCount = totalSegmentCount;
-                    if (this.visibilityMask && this.segmentIndices) {
-                        visibleSegmentCount = 0;
-                        for (let i = 0; i < this.segmentIndices.length; i++) {
-                            const seg = this.segmentIndices[i];
-                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
-                                visibleSegmentCount++;
-                            }
-                        }
-                    }
-                    const isLargeMolecule = visibleSegmentCount > this.LARGE_MOLECULE_CUTOFF;
-
-                    if (isLargeMolecule) {
-                        // Render immediately with fresh shadows
-                        this.render('touchend: large molecule');
-                    }
-
-                    // Restart animate loop after dragging ends (needed for inertia and auto-rotation)
+                    // Restart animate loop after dragging ends
                     requestAnimationFrame(() => this.animate());
-
-                    const now = performance.now();
-                    const timeDelta = now - this.lastDragTime;
-
-                    if (timeDelta > 100) { // If drag was too slow, or just a tap
-                        this.spinVelocityX = 0;
-                        this.spinVelocityY = 0;
-                    }
-                    // Else, the velocity from the last touchmove is used by the animate loop
                 }
 
                 // Handle end of pinch
@@ -1422,9 +1313,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             this.rotationCheckbox.addEventListener('change', (e) => {
                 this.autoRotate = e.target.checked;
-                // Stop inertia if user clicks auto-rotate
-                this.spinVelocityX = 0;
-                this.spinVelocityY = 0;
             });
 
             if (this.lineWidthSlider) {
@@ -1601,8 +1489,44 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
 
-            // Clear renderer bonds (will be restored from object data when frames load)
+            // Clear renderer bonds and colors (will be restored from object data when frames load)
             this.bonds = null;
+            this.segmentIndices = [];
+            this.colors = [];
+            this.plddtColors = [];
+
+            // Clear per-object coordinate caches
+            this.coords = [];
+            this.rotatedCoords = [];
+
+            // Clear per-object chain/residue/position data and their caches
+            this.chains = [];
+            this.cachedChains = null;
+            this.positionTypes = [];
+            this.cachedPositionTypes = null;
+            this.positionNames = [];
+            this.cachedPositionNames = null;
+            this.residueNumbers = [];
+            this.cachedResidueNumbers = null;
+
+            // Clear per-object segment caches
+            this.segmentOrder = null;
+            this.segmentFrame = null;
+
+            // Clear per-frame screen projection caches
+            this.screenValid = null;
+            this.screenX = null;
+            this.screenY = null;
+            this.screenRadius = null;
+
+            // Clear per-object data caches
+            this.entropy = undefined;
+            this.ligandOnlyChains = new Set();
+            this.ligandGroups = new Map();
+
+            // Clear shadow caches for new object
+            this.cachedShadows = null;
+            this.cachedTints = null;
 
             // Ensure object has selectionState initialized
             if (!this.objectsData[newObjectName]) {
@@ -2820,8 +2744,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Disable interaction during recording
             this.isDragging = false; // Stop any active drag
-            this.spinVelocityX = 0; // Stop inertia
-            this.spinVelocityY = 0; // Stop inertia
             // Temporarily disable drag by preventing mousedown
             this.canvas.style.pointerEvents = 'none'; // Disable all mouse interaction
 
@@ -3007,8 +2929,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.focalLength = 200.0;
 
             this.isDragging = false;
-            this.spinVelocityX = 0;
-            this.spinVelocityY = 0;
 
             // Reset renderer state to defaults
             this.colorsNeedUpdate = true;
@@ -5467,56 +5387,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             const now = performance.now();
             let needsRender = false;
 
-            // 1. Handle inertia/spin - disabled during recording and for large molecules
-            if (!this.isRecording) {
-                // Check if object is large (disable inertia for performance based on visible segments)
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
-                // Count visible segments for inertia determination
-                let visibleSegmentCount = totalSegmentCount;
-                if (this.visibilityMask && this.segmentIndices) {
-                    visibleSegmentCount = 0;
-                    for (let i = 0; i < this.segmentIndices.length; i++) {
-                        const seg = this.segmentIndices[i];
-                        if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
-                            visibleSegmentCount++;
-                        }
-                    }
-                }
-                const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
-
-                // Performance: only apply inertia if enabled and NOT during recording
-                const INERTIA_THRESHOLD = 0.0001;  // Restored original value
-                if (enableInertia) {
-                    // Get current object
-                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    if (object && object.viewerState) {
-                        if (Math.abs(this.spinVelocityX) > INERTIA_THRESHOLD) {
-                            const rot = rotationMatrixY(this.spinVelocityX * 0.005);
-                            object.viewerState.rotation = multiplyMatrices(rot, object.viewerState.rotation);
-                            this.spinVelocityX *= 0.95; // Damping
-                            needsRender = true;
-                        } else {
-                            this.spinVelocityX = 0;
-                        }
-                        if (Math.abs(this.spinVelocityY) > INERTIA_THRESHOLD) {
-                            const rot = rotationMatrixX(this.spinVelocityY * 0.005);
-                            object.viewerState.rotation = multiplyMatrices(rot, object.viewerState.rotation);
-                            this.spinVelocityY *= 0.95; // Damping
-                            needsRender = true;
-                        } else {
-                            this.spinVelocityY = 0;
-                        }
-                    }
-                } else {
-                    // Disable inertia for large objects
-                    this.spinVelocityX = 0;
-                    this.spinVelocityY = 0;
-                }
-            }
-
-            // 2. Handle auto-rotate
-            if (this.autoRotate && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
+            // 1. Handle auto-rotate
+            if (this.autoRotate) {
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                 if (object && object.viewerState) {
                     const angleY = 0.02; // Auto-rotate speed
@@ -5526,7 +5398,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 }
             }
 
-            // 3. Check if frame changed (decoupled frame advancement)
+            // 2. Check if frame changed (decoupled frame advancement)
             const currentFrame = this.currentFrame;
             const previousFrame = this.lastRenderedFrame;
             if (previousFrame !== currentFrame && this.currentObjectName) {
@@ -5542,7 +5414,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 }
             }
 
-            // 4. Final render if needed
+            // 3. Final render if needed
             if (needsRender) {
                 this.render('animate loop');
                 if (previousFrame !== currentFrame) {
