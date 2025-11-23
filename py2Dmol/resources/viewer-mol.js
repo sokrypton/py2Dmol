@@ -977,7 +977,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     frameState.cachedShadows = null;
                     frameState.cachedTints = null;
                     frameState.lastShadowRotationMatrix = null; // Force recalculation
-                    console.log("[VISIBILITY] Cleared shadow cache due to visibility change (selection/deselection)");
                 } else {
                     console.warn("[VISIBILITY] Could not clear shadow cache - frameState is null");
                 }
@@ -1095,7 +1094,15 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     this.lastDragY = e.clientY;
                     this.lastDragTime = now;
 
-                    this.render();
+                    // Throttle render using requestAnimationFrame - only render once per frame
+                    // This prevents multiple render calls when mousemove fires rapidly
+                    if (!this._dragRenderPending) {
+                        this._dragRenderPending = true;
+                        requestAnimationFrame(() => {
+                            this._dragRenderPending = false;
+                            this.render();
+                        });
+                    }
                 };
 
                 const handleUp = () => {
@@ -1120,21 +1127,18 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     frameState.cachedShadows = null;
                     frameState.cachedTints = null;
                     frameState.lastShadowRotationMatrix = null; // Force recalculation
-                    console.log("[DRAG] Cleared shadow cache after drag");
                 }
 
                 // For large molecules, immediately recalculate shadows with fresh render
                 // This prevents lag in shadow updates on large structures
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                 const isLargeMolecule = object && object.maxExtent > 0 && this.segmentIndices &&
-                                       this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
+                    this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
 
                 if (isLargeMolecule) {
-                    console.log("[DRAG] Large molecule detected, rendering immediately for fresh shadows");
                     // Log memory state before render
                     if (performance && performance.memory) {
                         const memBefore = (performance.memory.usedJSHeapSize / 1048576).toFixed(2);
-                        console.log(`[DRAG-MEM] Heap before render: ${memBefore}MB`);
                     }
 
                     // Render immediately with fresh shadows
@@ -1143,11 +1147,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     // Log memory state after render
                     if (performance && performance.memory) {
                         const memAfter = (performance.memory.usedJSHeapSize / 1048576).toFixed(2);
-                        console.log(`[DRAG-MEM] Heap after render: ${memAfter}MB`);
                     }
                 } else {
                     // Small molecules - use animation loop
-                    console.log("[DRAG] Small molecule, using animation loop");
                     requestAnimationFrame(() => this.animate());
                 }
             });
@@ -1259,7 +1261,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     // For large molecules, immediately recalculate shadows
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                     const isLargeMolecule = object && object.maxExtent > 0 && this.segmentIndices &&
-                                           this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
+                        this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
                     if (isLargeMolecule) {
                         console.log("[TOUCH] Large molecule detected, rendering immediately");
                         this.render('touch-drag-end-large');
@@ -1291,7 +1293,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                         // For large molecules, immediately recalculate shadows
                         const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                         const isLargeMolecule = object && object.maxExtent > 0 && this.segmentIndices &&
-                                               this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
+                            this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
                         if (isLargeMolecule) {
                             console.log("[TOUCH] Large molecule - immediate render after all touches up");
                             this.render('touch-all-up-large');
@@ -1322,7 +1324,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     // For large molecules, immediately recalculate shadows
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                     const isLargeMolecule = object && object.maxExtent > 0 && this.segmentIndices &&
-                                           this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
+                        this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
                     if (isLargeMolecule) {
                         console.log("[TOUCH] Large molecule - immediate render after cancel");
                         this.render('touch-cancel-large');
@@ -4686,7 +4688,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             const numCoords = frameState.coords.length;
             const numSegments = frameState.segmentIndices.length;
 
-            console.log(`[RENDER] Starting render: numCoords=${numCoords}, numSegments=${numSegments}, heap=${memBefore}MB`);
 
             // Check critical arrays exist and have correct size
             if (!frameState.rotatedCoords || frameState.rotatedCoords.length !== numCoords) {
@@ -4806,13 +4807,14 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
             const numVisibleSegments = visibleSegmentIndices.length;
 
-            console.log(`[RENDER-VISIBILITY] visibleSegmentIndices.length=${visibleSegmentIndices.length}, n=${n}, ratio=${(visibleSegmentIndices.length/n*100).toFixed(1)}%`);
 
             // Combine Z-value/norm and update segData
             // Only calculate z-values for visible segments to avoid unnecessary computation
-            const zValues = new Float32Array(n);
-
-            console.log(`[RENDER-ALLOC] Created zValues Float32Array of size ${n}`);
+            // Reuse pre-allocated array if available and correct size
+            if (!this._zValues || this._zValues.length !== n) {
+                this._zValues = new Float32Array(n);
+            }
+            const zValues = this._zValues;
             let zMin = Infinity;
             let zMax = -Infinity;
             // Also track min/max from actual position coordinates (for outline width calculation)
@@ -4866,13 +4868,16 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             // Collect z-values from visible segments only (for depth calculation)
-            const visibleZValues = [];
+            // Reuse pre-allocated array if available
+            if (!this._visibleZValues || this._visibleZValues.length < numVisibleSegments) {
+                this._visibleZValues = new Float32Array(Math.max(numVisibleSegments, 1000));
+            }
+            // Copy visible z-values
             for (let i = 0; i < numVisibleSegments; i++) {
                 const segIdx = visibleSegmentIndices[i];
-                visibleZValues.push(zValues[segIdx]);
+                this._visibleZValues[i] = zValues[segIdx];
             }
-
-            console.log(`[RENDER-ALLOC] Created visibleZValues array of size ${visibleZValues.length}`);
+            const visibleZValues = this._visibleZValues;
 
             // Calculate mean and std only from visible segments
             const numVisible = visibleZValues.length;
@@ -5019,7 +5024,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             const rotationChanged = !this._rotationMatricesEqual(currentRotation, frameState.lastShadowRotationMatrix);
             if (rotationChanged) {
-                console.log(`[ROTATION] Rotation changed - will recalculate shadows`);
             }
 
             // For fast mode (many visible positions), skip expensive shadow calculations during dragging, zooming, or orient animation - use cached
@@ -5036,10 +5040,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 const shadowMemBefore = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
                 const shadowStartTime = performance.now();
 
-                console.log(`[SHADOW] Starting shadow calculation: isFastMode=${isFastMode}, numVisibleSegments=${numVisibleSegments}, visibleOrder.length=${visibleOrder.length}, heap=${shadowMemBefore}MB`);
                 // Use fast mode threshold based on visible positions, not total segments
                 if (!isFastMode) {
-                    console.log(`[SHADOW] Using SLOW MODE (all pairwise comparisons)`);
                     let totalShadowCalculations = 0;
                     let totalShadowsApplied = 0;
 
@@ -5097,15 +5099,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                             totalShadowsApplied++;
                         }
                     }
-                    console.log(`[SHADOW] Slow mode complete: ${totalShadowCalculations} shadow calculations, ${totalShadowsApplied}/${visibleOrder.length} segments with shadow/tint`);
 
                     // Log shadow calculation completion for slow mode
                     const shadowEndTime = performance.now();
                     const shadowTime = (shadowEndTime - shadowStartTime).toFixed(2);
                     const shadowMemAfter = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
-                    console.log(`[SHADOW-COMPLETE] Slow mode took ${shadowTime}ms, heap ${shadowMemBefore}MB → ${shadowMemAfter}MB`);
                 } else { // Fast mode: many visible positions, use grid-based optimization
-                    console.log(`[SHADOW] Using FAST MODE (grid-based optimization for large molecules)`);
                     // Increase grid resolution for large structures to reduce segments per cell
                     // Target: ~5-10 segments per cell for better performance
                     let GRID_DIM = Math.ceil(Math.sqrt(numVisibleSegments / 5));
@@ -5114,18 +5113,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const gridSize = GRID_DIM * GRID_DIM;
                     const grid = Array.from({ length: gridSize }, () => []);
 
+
                     const gridMin = -maxExtent - 1.0;
                     const gridRange = (maxExtent + 1.0) * 2;
                     const gridCellSize = gridRange / GRID_DIM;
 
-                    console.log(`[GRID] Fast mode grid setup:
-                      - numVisibleSegments: ${numVisibleSegments}
-                      - targetSegmentsPerCell: 5-10
-                      - GRID_DIM: ${GRID_DIM}x${GRID_DIM} (${gridSize} cells)
-                      - maxExtent: ${maxExtent.toFixed(3)}Å
-                      - gridRange: ${gridRange.toFixed(3)}Å (from ${gridMin.toFixed(3)} to ${-gridMin.toFixed(3)})
-                      - gridCellSize: ${gridCellSize.toFixed(4)}Å
-                      - avgSegmentsPerCell: ${(numVisibleSegments / gridSize).toFixed(2)}`);
 
                     // Limit number of segments to check per cell for very large structures
                     // This prevents excessive shadow calculations
@@ -5206,10 +5198,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                         }
                         minSegmentsInCell = minSegmentsInCell === Infinity ? 0 : minSegmentsInCell;
 
-                        console.log(`[GRID] Grid population complete:
-                          - cellsWithSegments: ${cellsWithSegments}/${gridSize} (${(cellsWithSegments/gridSize*100).toFixed(1)}%)
-                          - segmentsPerCell: min=${minSegmentsInCell}, max=${maxSegmentsInCell}, avg=${(numVisibleSegments/cellsWithSegments).toFixed(1)}
-                          - gridUtilization: ${((cellsWithSegments/gridSize)*100).toFixed(1)}%`);
 
                         // Only process visible segments in outer loop
                         for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
@@ -5303,9 +5291,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                             shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
                             tints[i] = 1 - maxTint;
                         }
-                        console.log(`[SHADOW] Fast mode complete: grid processed for ${visibleOrder.length} segments`);
                     } else {
-                        console.log(`[SHADOW] Grid cell size too small, falling back to uniform shadows`);
                         shadows.fill(1.0);
                         tints.fill(1.0);
                     }
@@ -5314,47 +5300,38 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const shadowEndTime = performance.now();
                     const shadowTime = (shadowEndTime - shadowStartTime).toFixed(2);
                     const shadowMemAfter = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
-                    console.log(`[SHADOW-COMPLETE] Fast mode took ${shadowTime}ms, heap ${shadowMemBefore}MB → ${shadowMemAfter}MB`);
                 }
 
                 // Cache shadows/tints when rotation hasn't changed (for reuse on width/ortho changes)
                 // Store rotation matrix after calculation
                 frameState.lastShadowRotationMatrix = this._deepCopyMatrix(currentRotation);
-                console.log(`[SHADOW] Saved rotation matrix for future cache checks`);
 
                 // Cache shadows/tints for reuse
                 if (isLargeMolecule && !this.isDragging && !this.isZooming && !this.isOrientAnimating) {
                     frameState.cachedShadows = new Float32Array(shadows);
                     frameState.cachedTints = new Float32Array(tints);
-                    console.log(`[SHADOW] Cached shadows for large molecule (not dragging/zooming/animating)`);
                 } else if (!isLargeMolecule) {
                     // Small molecules: cache if rotation hasn't changed
                     if (!rotationChanged) {
                         frameState.cachedShadows = new Float32Array(shadows);
                         frameState.cachedTints = new Float32Array(tints);
-                        console.log(`[SHADOW] Cached shadows for small molecule (rotation stable)`);
                     } else {
                         // Rotation changed, clear cache
                         frameState.cachedShadows = null;
                         frameState.cachedTints = null;
-                        console.log(`[SHADOW] Rotation changed, cleared cache for recalculation next frame`);
                     }
                 } else {
-                    console.log(`[SHADOW] Not caching: large molecule and currently dragging/zooming/animating`);
                 }
             } else if (skipShadowCalc && frameState.cachedShadows && frameState.cachedShadows.length === n) {
                 // Use cached shadows (rotation hasn't changed, or dragging/zooming)
-                console.log(`[SHADOW] Using cached shadows (skipShadowCalc=${skipShadowCalc})`);
                 shadows.set(frameState.cachedShadows);
                 tints.set(frameState.cachedTints);
             } else if (!renderShadows) {
                 // Shadows disabled - use defaults (no shadows/tints)
-                console.log(`[SHADOW] Shadows disabled, using uniform 1.0`);
                 shadows.fill(1.0);
                 tints.fill(1.0);
             } else {
                 // Cache miss - shadows/tints remain initialized to 1.0 (no shadow/tint)
-                console.log(`[SHADOW] Cache miss or invalid state, using pre-initialized 1.0 values`);
             }
             // This should not happen, but if it does, they'll be filled with defaults elsewhere
 
@@ -5705,14 +5682,14 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 const b_int = b * 255 | 0;
 
                 // Use rgb for opacity
-                const color = `rgb(${r_int},${g_int},${b_int})`;
+                const color = `rgb(${r_int}, ${g_int}, ${b_int})`;
 
                 // For gap filler (outline), also apply opacity
                 // Note: Gap filler is usually darker/lighter, here we just darken
                 const gapR = r_int * 0.7 | 0;
                 const gapG = g_int * 0.7 | 0;
                 const gapB = b_int * 0.7 | 0;
-                const gapFillerColor = `rgb(${gapR},${gapG},${gapB})`;
+                const gapFillerColor = `rgb(${gapR}, ${gapG}, ${gapB})`;
 
                 // Get pre-computed endpoint rounding flags (Uint8Array)
                 const flags = segmentEndpointFlags[idx];
@@ -5803,7 +5780,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             const renderEndTime = performance.now();
             const renderTime = (renderEndTime - renderStartTime).toFixed(2);
             const memAfter = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
-            console.log(`[RENDER-COMPLETE] Render took ${renderTime}ms, heap ${memBefore}MB → ${memAfter}MB`);
         }
 
         // [OPTIMIZATION] Phase 6: Public API for highlights
@@ -5846,9 +5822,10 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
         // Main animation loop
         animate() {
-            // Skip all work if dragging (mousemove handler calls render directly)
+            // Skip render work if dragging (mousemove handler calls render directly via requestAnimationFrame)
+            // But still schedule next frame to keep the loop running
             if (this.isDragging) {
-                // Don't schedule another frame - mousemove will call render directly
+                requestAnimationFrame(() => this.animate());
                 return;
             }
 
@@ -5923,7 +5900,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this._downloadSvg(svgString, this.currentObjectName);
             } catch (e) {
                 console.error("Failed to export SVG:", e);
-                const errorMsg = `Error exporting SVG: ${e.message}`;
+                const errorMsg = `Error exporting SVG: ${e.message} `;
                 if (typeof setStatus === 'function') {
                     setStatus(errorMsg, true);
                 } else {
@@ -5960,7 +5937,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Use setStatus if available (index.html), otherwise console.log (viewer.html)
             if (typeof setStatus === 'function') {
-                setStatus(`SVG exported to ${svgFilename}`);
+                setStatus(`SVG exported to ${svgFilename} `);
             }
         }
     }
