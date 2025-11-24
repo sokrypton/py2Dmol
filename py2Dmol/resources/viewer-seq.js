@@ -924,11 +924,8 @@
                 let lastPositionType = null;
                 const ligandTokenWidth = charWidth * 2; // Ligand tokens take 2 character widths
 
-                // Get ligand groups from renderer's frameState (per-object storage)
-                // No fallback to renderer.ligandGroups - that could be from a different object!
-                const currentObjectName = renderer?.currentObjectName;
-                const ligandGroups = (currentObjectName && renderer?.objectsData?.[currentObjectName]?.frameState?.ligandGroups)
-                    || new Map();
+                // Get ligand groups from renderer (computed using shared utility)
+                const ligandGroups = renderer?.ligandGroups || new Map();
 
                 // Create reverse map: position index -> ligand group key (for quick lookup)
                 const positionToLigandGroup = new Map();

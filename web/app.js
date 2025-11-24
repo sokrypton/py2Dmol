@@ -21,7 +21,14 @@ function checkObjectHasPAE(objData) {
 }
 
 
-// Rotation animation state moved to renderer (this.orientAnimation)
+// Rotation animation state
+let rotationAnimation = {
+    active: false,
+    startMatrix: null,
+    targetMatrix: null,
+    startTime: 0,
+    duration: 1000
+};
 
 // Constants
 const FIXED_WIDTH = 600;
@@ -409,7 +416,7 @@ function setupEventListeners() {
         if (orientSpan) {
             orientSpan.addEventListener('click', (e) => {
                 e.preventDefault();
-                console.log('Orient button disabled - viewer state management purged');
+                applyBestViewRotation();
             });
         }
     }
@@ -748,7 +755,537 @@ function handleObjectChange() {
 // BEST VIEW ROTATION ANIMATION
 // ============================================================================
 
-// Best view rotation logic moved to viewer-mol.js (renderer.orientToBestView)
+function applyBestViewRotation(animate = true) {
+    if (!viewerApi || !viewerApi.renderer) return;
+    const renderer = viewerApi.renderer;
+
+    const objectSelect = document.getElementById('objectSelect');
+    const objectName = objectSelect ? objectSelect.value : null;
+    if (!objectName) return;
+
+    const object = renderer.objectsData[objectName];
+    if (!object || !object.frames || object.frames.length === 0) return;
+
+    const currentFrame = renderer.currentFrame || 0;
+    const frame = object.frames[currentFrame];
+    if (!frame || !frame.coords || frame.coords.length === 0) return;
+
+    // Ensure frame data is loaded into renderer if not already
+    if (renderer.coords.length === 0 || renderer.lastRenderedFrame !== currentFrame) {
+        renderer._loadFrameData(currentFrame, true); // Load without render
+    }
+
+    // Get current selection to determine which positions to use for orienting
+    const selection = renderer.getSelection();
+    let selectedPositionIndices = null;
+
+    // Determine which positions to use: selected positions if available, otherwise all positions
+    if (selection && selection.positions && selection.positions.size > 0) {
+        // Use only selected positions
+        selectedPositionIndices = selection.positions;
+    } else if (selection && selection.selectionMode === 'default' &&
+        (!selection.chains || selection.chains.size === 0)) {
+        // Default mode with no explicit selection: use all positions
+        selectedPositionIndices = null; // Will use all positions
+    } else if (selection && selection.chains && selection.chains.size > 0) {
+        // Chain-based selection: get all positions in selected chains
+        selectedPositionIndices = new Set();
+        for (let i = 0; i < frame.coords.length; i++) {
+            if (frame.chains && frame.chains[i] && selection.chains.has(frame.chains[i])) {
+                selectedPositionIndices.add(i);
+            }
+        }
+        // If no positions found in chains, fall back to all positions
+        if (selectedPositionIndices.size === 0) {
+            selectedPositionIndices = null;
+        }
+    } else {
+        // No selection or empty selection: use all positions
+        selectedPositionIndices = null;
+    }
+
+    // Filter coordinates to only selected positions (or use all if no selection)
+    let coordsForBestView = [];
+    if (selectedPositionIndices && selectedPositionIndices.size > 0) {
+        for (const positionIndex of selectedPositionIndices) {
+            if (positionIndex >= 0 && positionIndex < frame.coords.length) {
+                coordsForBestView.push(frame.coords[positionIndex]);
+            }
+        }
+    } else {
+        // No selection or all positions selected: use all coordinates
+        coordsForBestView = frame.coords;
+    }
+
+    if (coordsForBestView.length === 0) {
+        // No coordinates to orient to, return early
+        return;
+    }
+
+    // Calculate center and extent from selected positions only
+    let visibleCenter = null;
+    let visibleExtent = null;
+    let frameExtent = 0;
+
+    if (coordsForBestView.length > 0) {
+        // Calculate center from selected positions
+        const sum = [0, 0, 0];
+        for (const c of coordsForBestView) {
+            sum[0] += c[0];
+            sum[1] += c[1];
+            sum[2] += c[2];
+        }
+        visibleCenter = [
+            sum[0] / coordsForBestView.length,
+            sum[1] / coordsForBestView.length,
+            sum[2] / coordsForBestView.length
+        ];
+
+        // Calculate extent from selected positions
+        let maxDistSq = 0;
+        let sumDistSq = 0;
+        for (const c of coordsForBestView) {
+            const dx = c[0] - visibleCenter[0];
+            const dy = c[1] - visibleCenter[1];
+            const dz = c[2] - visibleCenter[2];
+            const distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq > maxDistSq) maxDistSq = distSq;
+            sumDistSq += distSq;
+        }
+        visibleExtent = Math.sqrt(maxDistSq);
+        frameExtent = visibleExtent;
+
+        // Calculate standard deviation for selected positions
+        const selectedPositionsStdDev = coordsForBestView.length > 0 ? Math.sqrt(sumDistSq / coordsForBestView.length) : 0;
+
+        // Store stdDev for animation
+        rotationAnimation.visibleStdDev = selectedPositionsStdDev;
+        rotationAnimation.originalStdDev = selectedPositionsStdDev;
+    } else {
+        // No coordinates, clear stdDev animation data
+        rotationAnimation.visibleStdDev = null;
+        rotationAnimation.originalStdDev = null;
+    }
+
+    const Rcur = renderer.viewerState.rotation;
+
+    // Get canvas dimensions to determine longest axis
+    const canvas = renderer.canvas;
+    const canvasWidth = canvas ? (parseInt(canvas.style.width) || canvas.width) : null;
+    const canvasHeight = canvas ? (parseInt(canvas.style.height) || canvas.height) : null;
+
+    // Use filtered coordinates (selected positions only) for best view rotation
+    const Rtarget = bestViewTargetRotation_relaxed_AUTO(coordsForBestView, Rcur, canvasWidth, canvasHeight);
+
+    const angle = rotationAngleBetweenMatrices(Rcur, Rtarget);
+    const deg = angle * 180 / Math.PI;
+    // Calculate duration based on rotation angle, with a minimum to ensure completion
+    // Use a slightly longer duration to ensure animation completes reliably
+    const baseDuration = deg * 12; // Slightly slower (12ms per degree instead of 10)
+    const duration = Math.max(400, Math.min(2500, baseDuration)); // Increased min/max for reliability
+
+    // Calculate target center and zoom based on final orientation
+    let targetCenter = null;
+    let targetExtent = null;
+    let targetZoom = renderer.viewerState.zoom;
+
+    // Get canvas dimensions for zoom calculation (already retrieved above, but keep for clarity)
+    // canvasWidth and canvasHeight are already available from above
+
+    if (visibleCenter && visibleExtent && coordsForBestView.length > 0) {
+        // Center is the same regardless of rotation (it's a 3D point)
+        // Use center and extent calculated from selected positions
+        targetCenter = visibleCenter;
+        targetExtent = visibleExtent;
+
+        // Calculate zoom adjustment based on final orientation and window dimensions
+        // The renderer now accounts for window aspect ratio, so we should set zoom to 1.0
+        // to let the renderer calculate the appropriate base scale based on selected positions extent
+        targetZoom = 1.0;
+    } else {
+        // When orienting to all positions, use the current frame's extent instead of object.maxExtent
+        // For multi-frame objects, object.maxExtent is across all frames, which can cause
+        // a mismatch with the current frame's actual extent, leading to zoom jumps
+        // We'll keep zoom the same since the extent should be consistent now
+        targetZoom = renderer.viewerState.zoom;
+
+        // Store frame-specific extent for use during animation
+        // This ensures the renderer uses the correct extent for the current frame
+        if (frameExtent > 0) {
+            // Set temporary extent to the current frame's extent
+            // This will be used by the renderer instead of object.maxExtent
+            targetExtent = frameExtent;
+        }
+    }
+
+    // Stop auto-rotation if active
+    if (renderer.autoRotate) {
+        renderer.autoRotate = false;
+        if (renderer.rotationCheckbox) {
+            renderer.rotationCheckbox.checked = false;
+            renderer.rotationCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+
+    renderer.spinVelocityX = 0;
+    renderer.spinVelocityY = 0;
+
+    // If animate is false, set values directly and render once
+    if (!animate) {
+        // Set rotation matrix directly
+        renderer.viewerState.rotation = Rtarget.map(row => [...row]);
+
+        // Set center and extent directly
+        if (targetCenter) {
+            renderer.viewerState.center = {
+                x: targetCenter[0],
+                y: targetCenter[1],
+                z: targetCenter[2]
+            };
+            renderer.viewerState.extent = targetExtent;
+        } else {
+            renderer.viewerState.center = null;
+            if (targetExtent !== null && targetExtent !== undefined) {
+                renderer.viewerState.extent = targetExtent;
+            } else {
+                renderer.viewerState.extent = null;
+            }
+        }
+
+        // Set zoom directly
+        renderer.viewerState.zoom = targetZoom;
+
+        // Update stdDev if needed
+        if (rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined) {
+            object.stdDev = rotationAnimation.visibleStdDev;
+            // Update focal length if perspective is enabled
+            if (renderer.orthoSlider && renderer.perspectiveEnabled) {
+                const STD_DEV_MULT = 2.0;
+                const PERSPECTIVE_MIN_MULT = 1.5;
+                const PERSPECTIVE_MAX_MULT = 20.0;
+                const normalizedValue = parseFloat(renderer.orthoSlider.value);
+
+                if (normalizedValue < 1.0) {
+                    const baseSize = object.stdDev * STD_DEV_MULT;
+                    const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
+                    renderer.focalLength = baseSize * multiplier;
+                }
+            }
+        }
+
+        // Render once with final state
+        // Render once with final state
+        renderer.render('app.js: applyBestViewRotation');
+        return;
+    }
+
+    // Set up animation
+    rotationAnimation.startMatrix = Rcur.map(row => [...row]);
+    rotationAnimation.targetMatrix = Rtarget.map(row => [...row]);
+    rotationAnimation.startZoom = renderer.viewerState.zoom;
+    rotationAnimation.targetZoom = targetZoom;
+    rotationAnimation.duration = duration;
+    rotationAnimation.startTime = performance.now();
+    rotationAnimation.object = object;
+
+    // Set up center and extent interpolation
+    if (targetCenter) {
+        // Calculate current center if temporaryCenter is not set
+        // This prevents jumps when orienting after PAE selection
+        let currentCenter = null;
+        if (renderer.viewerState.center) {
+            currentCenter = {
+                x: renderer.viewerState.center.x,
+                y: renderer.viewerState.center.y,
+                z: renderer.viewerState.center.z
+            };
+        } else {
+            // Calculate center from current frame coordinates (same as renderer does)
+            // This ensures smooth animation even when temporaryCenter was null
+            const currentCoords = frame.coords;
+            if (currentCoords && currentCoords.length > 0) {
+                const sum = [0, 0, 0];
+                for (const c of currentCoords) {
+                    sum[0] += c[0];
+                    sum[1] += c[1];
+                    sum[2] += c[2];
+                }
+                currentCenter = {
+                    x: sum[0] / currentCoords.length,
+                    y: sum[1] / currentCoords.length,
+                    z: sum[2] / currentCoords.length
+                };
+            }
+        }
+
+        rotationAnimation.startCenter = currentCenter;
+        rotationAnimation.targetCenter = {
+            x: targetCenter[0],
+            y: targetCenter[1],
+            z: targetCenter[2]
+        };
+        // When temporaryExtent is null, renderer uses object.maxExtent, so we should use that as startExtent
+        // This prevents jumps when transitioning from null (using maxExtent) to visibleExtent
+        rotationAnimation.startExtent = renderer.viewerState.extent !== null && renderer.viewerState.extent !== undefined
+            ? renderer.viewerState.extent
+            : (object.maxExtent || frameExtent);
+        rotationAnimation.targetExtent = targetExtent;
+    } else {
+        rotationAnimation.startCenter = renderer.viewerState.center ? {
+            x: renderer.viewerState.center.x,
+            y: renderer.viewerState.center.y,
+            z: renderer.viewerState.center.z
+        } : null;
+        rotationAnimation.targetCenter = null;
+        // When temporaryExtent is null, renderer uses object.maxExtent, so we should use that as startExtent
+        // This prevents jumps when transitioning from null (using maxExtent) to frameExtent
+        rotationAnimation.startExtent = renderer.viewerState.extent !== null && renderer.viewerState.extent !== undefined
+            ? renderer.viewerState.extent
+            : (object.maxExtent || frameExtent);
+        // For multi-frame objects, use frame-specific extent to prevent zoom jumps
+        rotationAnimation.targetExtent = targetExtent; // Will be frameExtent if set above
+    }
+
+    // Start animation
+    rotationAnimation.active = true;
+    // Set renderer flag to skip shadow/tint updates during orient animation for large systems
+    if (renderer) {
+        renderer.isOrientAnimating = true;
+    }
+    requestAnimationFrame(animateRotation);
+}
+
+function animateRotation() {
+    if (!rotationAnimation.active) {
+        // Animation ended, clear flag and cache
+        if (viewerApi && viewerApi.renderer) {
+            const renderer = viewerApi.renderer;
+            renderer.isOrientAnimating = false;
+            // Clear shadow/tint cache to force recalculation
+            renderer.cachedShadows = null;
+            renderer.cachedTints = null;
+            renderer.lastShadowRotationMatrix = null;
+        }
+        return;
+    }
+    if (!viewerApi || !viewerApi.renderer) {
+        rotationAnimation.active = false;
+        // Clear orient animation flag and cache
+        if (viewerApi && viewerApi.renderer) {
+            const renderer = viewerApi.renderer;
+            renderer.isOrientAnimating = false;
+            // Clear shadow/tint cache to force recalculation
+            renderer.cachedShadows = null;
+            renderer.cachedTints = null;
+            renderer.lastShadowRotationMatrix = null;
+        }
+        return;
+    }
+
+    const renderer = viewerApi.renderer;
+    const now = performance.now();
+    const elapsed = now - rotationAnimation.startTime;
+    let progress = elapsed / rotationAnimation.duration;
+
+    // Ensure animation completes: if we're very close to the end or past it, force completion
+    // This handles timing edge cases and ensures we always reach the target
+    if (progress >= 0.99 || elapsed >= rotationAnimation.duration) {
+        progress = 1.0; // Force to completion
+    }
+
+    if (progress >= 1.0) {
+        // Zoom is already set in the interpolation section above
+        // Set rotation matrix and other parameters
+        renderer.viewerState.rotation = rotationAnimation.targetMatrix;
+
+        if (rotationAnimation.targetCenter) {
+            // Vec3 is defined in viewer-mol.js - access via window or use object literal
+            const target = rotationAnimation.targetCenter;
+            renderer.viewerState.center = { x: target.x, y: target.y, z: target.z };
+            renderer.viewerState.extent = rotationAnimation.targetExtent;
+        } else {
+            // Clear temporary center if orienting to all positions
+            renderer.viewerState.center = null;
+            // For multi-frame objects, keep the frame-specific extent to prevent zoom jumps
+            // Only clear if we don't            renderer.viewerState.center = null;
+            if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
+                renderer.viewerState.extent = rotationAnimation.targetExtent;
+            } else {
+                renderer.viewerState.extent = null;
+            }
+        }
+
+        // Set final stdDev to visible subset's stdDev if it was modified during animation
+        if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined) {
+            rotationAnimation.object.stdDev = rotationAnimation.visibleStdDev;
+            // Update focal length directly to avoid triggering a render via ortho slider
+            // This prevents zoom recalculation during animation completion
+            if (renderer.orthoSlider && renderer.perspectiveEnabled) {
+                const STD_DEV_MULT = 2.0;
+                const PERSPECTIVE_MIN_MULT = 1.5;
+                const PERSPECTIVE_MAX_MULT = 20.0;
+                const normalizedValue = parseFloat(renderer.orthoSlider.value);
+
+                if (normalizedValue < 1.0) {
+                    const baseSize = rotationAnimation.object.stdDev * STD_DEV_MULT;
+                    const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
+                    renderer.focalLength = baseSize * multiplier;
+                }
+            }
+        }
+
+        // Clear orient animation flag before rendering
+        renderer.isOrientAnimating = false;
+        // Clear shadow/tint cache to force recalculation with new rotation
+        renderer.cachedShadows = null;
+        renderer.cachedTints = null;
+        renderer.lastShadowRotationMatrix = null;
+        // Ensure all parameters are set before rendering
+        renderer.render();
+        rotationAnimation.active = false;
+        // Clear stored values
+        rotationAnimation.startCenter = null;
+        rotationAnimation.targetCenter = null;
+        rotationAnimation.startExtent = null;
+        rotationAnimation.targetExtent = null;
+        rotationAnimation.startZoom = null;
+        rotationAnimation.targetZoom = null;
+        rotationAnimation.object = null;
+        rotationAnimation.visibleStdDev = null;
+        rotationAnimation.originalStdDev = null;
+        return;
+    }
+
+    // Cubic easing - ensure smooth interpolation
+    // Clamp progress to [0, 1] to prevent any edge cases
+    const clampedProgress = Math.max(0, Math.min(1, progress));
+    const eased = clampedProgress < 0.5 ?
+        4 * clampedProgress * clampedProgress * clampedProgress :
+        1 - Math.pow(-2 * clampedProgress + 2, 3) / 2;
+
+    // If we're at the end, use exact target matrix to avoid any interpolation errors
+    if (progress >= 1.0) {
+        renderer.viewerState.rotation = rotationAnimation.targetMatrix;
+    } else {
+        // Use camera controller's internal lerp method (we'll need to add this)
+        // For now, use the existing lerpRotationMatrix function
+        const lerped = lerpRotationMatrix(
+            rotationAnimation.startMatrix,
+            rotationAnimation.targetMatrix,
+            eased
+        );
+        renderer.viewerState.rotation = lerped;
+    }
+
+    // Interpolate zoom during animation - use same easing for consistency
+    // Ensure we reach exactly the target value to prevent jumps
+    if (rotationAnimation.targetZoom !== undefined && rotationAnimation.startZoom !== null) {
+        if (progress >= 1.0) {
+            // At completion, use exact target value
+            renderer.viewerState.zoom = rotationAnimation.targetZoom;
+        } else {
+            // During animation, interpolate smoothly
+            const t = eased; // Use same eased value for smooth zoom interpolation
+            renderer.viewerState.zoom = rotationAnimation.startZoom + (rotationAnimation.targetZoom - rotationAnimation.startZoom) * t;
+        }
+    }
+
+    // Interpolate stdDev during animation if visible subset exists
+    // This affects ortho focal length calculation, so we update it smoothly
+    if (rotationAnimation.object && rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined &&
+        rotationAnimation.originalStdDev !== null && rotationAnimation.originalStdDev !== undefined) {
+        const t = eased;
+        // Interpolate stdDev from original to visible subset's stdDev
+        rotationAnimation.object.stdDev = rotationAnimation.originalStdDev +
+            (rotationAnimation.visibleStdDev - rotationAnimation.originalStdDev) * t;
+
+        // Update focal length smoothly during animation to coordinate with stdDev changes
+        // This ensures ortho/perspective settings stay in sync with the structure size
+        if (renderer.orthoSlider && renderer.perspectiveEnabled) {
+            const STD_DEV_MULT = 2.0;
+            const PERSPECTIVE_MIN_MULT = 1.5;
+            const PERSPECTIVE_MAX_MULT = 20.0;
+            const normalizedValue = parseFloat(renderer.orthoSlider.value);
+
+            if (normalizedValue < 1.0) {
+                const baseSize = rotationAnimation.object.stdDev * STD_DEV_MULT;
+                const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
+                renderer.focalLength = baseSize * multiplier;
+            }
+        }
+
+        // Trigger ortho slider update to recalculate focal length with new stdDev
+        // This ensures the slider's internal state is updated
+        const orthoSlider = document.getElementById('orthoSlider');
+        if (orthoSlider) {
+            orthoSlider.dispatchEvent(new Event('input'));
+        }
+    }
+
+    // Interpolate center and extent during animation - use same easing for consistency
+    if (rotationAnimation.targetCenter && rotationAnimation.startCenter) {
+        // If at completion, use exact target values to avoid any rounding errors
+        if (progress >= 1.0) {
+            renderer.viewerState.center = {
+                x: rotationAnimation.targetCenter.x,
+                y: rotationAnimation.targetCenter.y,
+                z: rotationAnimation.targetCenter.z
+            };
+            if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
+                renderer.viewerState.extent = rotationAnimation.targetExtent;
+            }
+        } else {
+            const t = eased; // Use same eased value for smooth interpolation
+            // Smoothly interpolate from start center to target center
+            renderer.viewerState.center = {
+                x: rotationAnimation.startCenter.x + (rotationAnimation.targetCenter.x - rotationAnimation.startCenter.x) * t,
+                y: rotationAnimation.startCenter.y + (rotationAnimation.targetCenter.y - rotationAnimation.startCenter.y) * t,
+                z: rotationAnimation.startCenter.z + (rotationAnimation.targetCenter.z - rotationAnimation.startCenter.z) * t
+            };
+            // Interpolate extent as well for smooth zoom animation
+            if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
+                renderer.viewerState.extent = rotationAnimation.startExtent + (rotationAnimation.targetExtent - rotationAnimation.startExtent) * t;
+            } else {
+                renderer.viewerState.extent = rotationAnimation.startExtent;
+            }
+        }
+    } else {
+        // Interpolate extent even when clearing center (for smooth transition back to all positions)
+        // For multi-frame objects, we keep the frame-specific extent to prevent zoom jumps
+        if (rotationAnimation.targetExtent !== null && rotationAnimation.targetExtent !== undefined) {
+            // We have a frame-specific extent, interpolate to it and keep it
+            const t = eased;
+            // Always use startExtent as the starting point, not renderer.temporaryExtent
+            // This prevents jumps when camera.extent is null or different
+            const startExtent = rotationAnimation.startExtent !== null && rotationAnimation.startExtent !== undefined
+                ? rotationAnimation.startExtent
+                : (rotationAnimation.object && rotationAnimation.object.maxExtent) || 30.0;
+            renderer.viewerState.extent = startExtent + (rotationAnimation.targetExtent - startExtent) * t;
+        } else {
+            // No frame-specific extent, use object.maxExtent
+            const t = eased;
+            // Always use startExtent as the starting point, not renderer.temporaryExtent
+            const startExtent = rotationAnimation.startExtent !== null && rotationAnimation.startExtent !== undefined
+                ? rotationAnimation.startExtent
+                : (rotationAnimation.object && rotationAnimation.object.maxExtent) || 30.0;
+            const targetExtent = (rotationAnimation.object && rotationAnimation.object.maxExtent) || 30.0;
+            renderer.viewerState.extent = startExtent + (targetExtent - startExtent) * t;
+        }
+        // Clear temporary center if orienting to all positions
+        if (progress >= 0.99) { // Only clear at the very end
+            renderer.viewerState.center = null;
+            // For multi-frame objects, keep the frame-specific extent to prevent zoom jumps
+            // Only clear if we don't have a frame-specific extent
+            if (rotationAnimation.targetExtent === null || rotationAnimation.targetExtent === undefined) {
+                renderer.viewerState.extent = null;
+            }
+            // Otherwise, keep extent set to the frame-specific extent
+        }
+    }
+
+    renderer.render();
+    requestAnimationFrame(animateRotation);
+}
 
 // ============================================================================
 // STRUCTURE PROCESSING
@@ -1685,35 +2222,7 @@ function updateViewerFromGlobalBatch() {
         if (r?.setFrame) {
             r.setFrame(0, true); // Load frame, skip intermediate render
         }
-
-        // Calculate and set translation for new objects
-        for (const objName of newNames) {
-            if (r?.objectsData?.[objName]) {
-                const obj = r.objectsData[objName];
-                // Calculate geometric center of all atoms across all frames
-                let sumX = 0, sumY = 0, sumZ = 0;
-                let totalAtoms = 0;
-                for (const frame of obj.frames) {
-                    if (frame && frame.coords) {
-                        for (const coord of frame.coords) {
-                            sumX += coord[0];
-                            sumY += coord[1];
-                            sumZ += coord[2];
-                            totalAtoms++;
-                        }
-                    }
-                }
-                if (totalAtoms > 0) {
-                    obj.viewerState.translation = {
-                        x: sumX / totalAtoms,
-                        y: sumY / totalAtoms,
-                        z: sumZ / totalAtoms
-                    };
-                }
-            }
-        }
-
-        if (r?.render) r.render('batch load complete'); // Direct render (orientToBestView purged)
+        if (typeof applyBestViewRotation === 'function') applyBestViewRotation(false); // Will render once
     } else if (snapshot?.object && r?.objectsData?.[snapshot.object]) {
         // No new objects: restore the previous object/frame
         if (r?._switchToObject) r._switchToObject(snapshot.object);
@@ -1914,13 +2423,9 @@ function applySelection(previewPositions = null) {
     let visibleChains = current?.chains || new Set();
     // If in default mode with no explicit chains, all chains are visible
     if (current?.selectionMode === 'default' && (!current.chains || current.chains.size === 0)) {
-        // Get all chains from renderer's frameState (per-object) or global fallback
-        const renderer = viewerApi.renderer;
-        const currentObjectName = renderer?.currentObjectName;
-        const chains = (currentObjectName && renderer?.objectsData?.[currentObjectName]?.frameState?.chains)
-            || renderer?.chains;
-        if (chains) {
-            visibleChains = new Set(chains);
+        // Get all chains from renderer
+        if (viewerApi.renderer.chains) {
+            visibleChains = new Set(viewerApi.renderer.chains);
         }
     }
 
@@ -4443,11 +4948,8 @@ function applySelectionToMSA() {
     if (selection && selection.chains && selection.chains.size > 0) {
         allowedChains = selection.chains;
     } else {
-        // All chains allowed - read from frameState or global fallback
-        const currentObjectName = renderer?.currentObjectName;
-        const chains = (currentObjectName && renderer?.objectsData?.[currentObjectName]?.frameState?.chains)
-            || renderer?.chains;
-        allowedChains = new Set(chains || []);
+        // All chains allowed
+        allowedChains = new Set(renderer.chains);
     }
 
     // Map structure positions to MSA positions for each chain
@@ -5408,6 +5910,28 @@ function saveViewerState() {
                 objToSave.contacts = objectData.contacts;
             }
 
+            // Add color overrides if they exist
+            if (objectData.color) {
+                objToSave.color = objectData.color;
+            }
+
+            // Add per-object viewerState if it exists
+            if (objectData.viewerState) {
+                // If this is the current object, use the live viewerState to ensure it's up-to-date
+                // (The one in objectsData is only updated when switching AWAY from the object)
+                const sourceState = (objectName === renderer.currentObjectName) ? renderer.viewerState : objectData.viewerState;
+
+                objToSave.viewerState = {
+                    rotation: sourceState.rotation,
+                    zoom: sourceState.zoom,
+                    perspectiveEnabled: sourceState.perspectiveEnabled,
+                    focalLength: sourceState.focalLength,
+                    center: sourceState.center,
+                    extent: sourceState.extent,
+                    currentFrame: sourceState.currentFrame
+                };
+            }
+
             objects.push(objToSave);
         }
 
@@ -5417,7 +5941,13 @@ function saveViewerState() {
 
         const viewerState = {
             current_object_name: renderer.currentObjectName,
-            current_frame: renderer.currentFrame,
+            current_frame: renderer.viewerState.currentFrame,  // From viewerState, not global
+            rotation_matrix: renderer.viewerState.rotation,
+            zoom: renderer.viewerState.zoom,
+            perspective_enabled: renderer.viewerState.perspectiveEnabled,  // From viewerState
+            focal_length: renderer.viewerState.focalLength,  // NEW
+            center: renderer.viewerState.center,  // NEW - for orient to selection
+            extent: renderer.viewerState.extent,  // NEW - for orient to selection
             color_mode: renderer.colorMode || 'auto',
             line_width: renderer.lineWidth || 3.0,
             shadow_enabled: renderer.shadowEnabled !== false,
@@ -5425,8 +5955,7 @@ function saveViewerState() {
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
             pastel_level: renderer.pastelLevel || 0.25,
-            perspective_enabled: renderer.perspectiveEnabled || false,
-            ortho_slider_value: orthoSliderValue,
+            ortho_slider_value: orthoSliderValue, // Save the normalized slider value (0.0-1.0)
             animation_speed: renderer.animationSpeed || 100
         };
 
@@ -5615,6 +6144,30 @@ async function loadViewerState(stateData) {
                     // Invalidate segment cache so contacts will be regenerated when object is displayed
                     renderer.cachedSegmentIndices = null;
                 }
+
+                // Restore color overrides if present
+                if (objData.color) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    renderer.objectsData[objData.name].color = objData.color;
+                }
+
+                // Restore per-object viewerState if present
+                if (objData.viewerState) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    renderer.objectsData[objData.name].viewerState = {
+                        rotation: objData.viewerState.rotation,
+                        zoom: objData.viewerState.zoom,
+                        perspectiveEnabled: objData.viewerState.perspectiveEnabled,
+                        focalLength: objData.viewerState.focalLength,
+                        center: objData.viewerState.center,
+                        extent: objData.viewerState.extent,
+                        currentFrame: objData.viewerState.currentFrame
+                    };
+                }
             }
         } else {
             setStatus("Error: No valid objects found in state file.", true);
@@ -5640,7 +6193,41 @@ async function loadViewerState(stateData) {
                 }
             }
 
+            // Restore rotation
+            if (vs.rotation_matrix && Array.isArray(vs.rotation_matrix)) {
+                renderer.viewerState.rotation = vs.rotation_matrix;
+            }
 
+            // Restore zoom
+            if (typeof vs.zoom === 'number') {
+                renderer.viewerState.zoom = vs.zoom;
+            }
+
+            // Restore currentFrame to viewerState (and keep global in sync)
+            if (typeof vs.current_frame === 'number') {
+                renderer.viewerState.currentFrame = vs.current_frame;
+                renderer.currentFrame = vs.current_frame;
+            }
+
+            // Restore perspective enabled (will be overridden by ortho slider if present)
+            if (typeof vs.perspective_enabled === 'boolean') {
+                renderer.viewerState.perspectiveEnabled = vs.perspective_enabled;
+            }
+
+            // Restore focal length (will be overridden by ortho slider if present)
+            if (typeof vs.focal_length === 'number') {
+                renderer.viewerState.focalLength = vs.focal_length;
+            }
+
+            // Restore center (from orient to selection)
+            if (vs.center !== undefined && vs.center !== null) {
+                renderer.viewerState.center = vs.center;
+            }
+
+            // Restore extent (from orient to selection)
+            if (typeof vs.extent === 'number') {
+                renderer.viewerState.extent = vs.extent;
+            }
 
             // Restore color mode
             if (vs.color_mode) {

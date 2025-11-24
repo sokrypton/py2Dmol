@@ -1,7 +1,7 @@
 import json
 import numpy as np
 import re
-from IPython.display import display, HTML, Javascript
+from IPython.display import display, HTML, Javascript, update_display
     
 import importlib.resources
 from . import resources as py2dmol_resources
@@ -23,6 +23,13 @@ def kabsch(a, b, return_v=False):
   else:
     return u @ vh
 
+def best_view(a):
+  a_mean = a.mean(-2, keepdims=True)
+  a_cent = a - a_mean
+  v = kabsch(a_cent, a_cent, return_v=True)
+  a_aligned = (a_cent @ v) + a_mean
+  return a_aligned
+
 def align_a_to_b(a, b):
   """Aligns coordinate set 'a' to 'b' using Kabsch algorithm."""
   a_mean = a.mean(-2, keepdims=True)
@@ -32,134 +39,6 @@ def align_a_to_b(a, b):
   R = kabsch(a_cent, b_cent)
   a_aligned = (a_cent @ R) + b_mean
   return a_aligned
-
-def _rotation_angle_between_matrices(M1, M2):
-  """Calculate angle between two rotation matrices in radians."""
-  M1_T = np.array(M1).T
-  R = M1_T @ np.array(M2)
-  tr = np.trace(R)
-  cos_theta = (tr - 1) / 2
-  cos_theta = np.clip(cos_theta, -1, 1)
-  return np.arccos(cos_theta)
-
-def _best_view_rotation(coords, current_rotation=None):
-  """
-  Compute best view rotation using the web interface algorithm.
-
-  Uses kabsch algorithm to find principal axes, then tries both possible
-  eigenvector mappings and selects the rotation that minimizes rotation
-  angle needed. This matches the web interface algorithm for consistent
-  behavior and prevents unnecessary flips.
-
-  Args:
-    coords: Numpy array of shape (N, 3) with [x, y, z] coordinates
-    current_rotation: 3x3 current rotation matrix (defaults to identity)
-
-  Returns:
-    Tuple of (rotation_matrix, center, extent) where:
-      - rotation_matrix: 3x3 optimal rotation matrix
-      - center: [x, y, z] center of structure
-      - extent: radius of structure (max distance from center)
-  """
-  coords = np.asarray(coords, dtype=np.float32)
-
-  if coords.shape[0] < 2:
-    center = coords.mean(axis=0) if coords.shape[0] > 0 else np.array([0, 0, 0])
-    return np.eye(3), center.tolist(), 1.0
-
-  # Center coordinates
-  center = coords.mean(axis=0, keepdims=True)
-  coords_centered = coords - center
-
-  # Compute principal axes using kabsch (returns eigenvectors as columns)
-  v = kabsch(coords_centered, coords_centered, return_v=True)
-
-  # Extract eigenvectors (columns of v matrix)
-  v1 = v[:, 0]  # Largest variance
-  v2 = v[:, 1]  # Second largest variance
-  v3 = v[:, 2]  # Smallest variance
-
-  # Current rotation (identity for new structures, or provided)
-  R_current = np.array(current_rotation) if current_rotation is not None else np.eye(3)
-
-  # Generate candidates with all sign combinations and both mappings
-  candidates = []
-  signs_list = [
-    [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1],
-    [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1]
-  ]
-
-  # Try both mappings to find which requires less rotation
-  # Mapping 1: largest variance on X, second on Y
-  # Mapping 2: second on X, largest on Y
-  mappings = [
-    {'r0': 'v1', 'r1': 'v2'},  # e1->X, e2->Y
-    {'r0': 'v2', 'r1': 'v1'}   # e2->X, e1->Y
-  ]
-
-  for mapping in mappings:
-    for s1, s2, s3 in signs_list:
-      # Apply signs to eigenvectors
-      e1 = v1 * s1
-      e2 = v2 * s2
-      e3 = v3 * s3
-
-      # Select rows based on mapping
-      if mapping['r0'] == 'v1':
-        r0 = e1
-        r1 = e2
-      else:
-        r0 = e2
-        r1 = e1
-
-      # Normalize
-      n0 = np.linalg.norm(r0)
-      if n0 < 1e-10:
-        continue
-      r0 = r0 / n0
-
-      n1 = np.linalg.norm(r1)
-      if n1 < 1e-10:
-        continue
-      r1 = r1 / n1
-
-      # Orthogonalize r1 with respect to r0
-      dot01 = np.dot(r0, r1)
-      if abs(dot01) > 1e-6:
-        r1 = r1 - dot01 * r0
-        n1 = np.linalg.norm(r1)
-        if n1 < 1e-10:
-          continue
-        r1 = r1 / n1
-
-      # Third row is cross product for right-handed coordinate system
-      r2 = np.cross(r0, r1)
-
-      # Construct rotation matrix
-      R = np.array([r0, r1, r2])
-
-      # Calculate rotation angle from current rotation
-      angle = _rotation_angle_between_matrices(R_current, R)
-
-      candidates.append({
-        'R': R,
-        'angle': angle,
-        'mapping': mapping['r0']
-      })
-
-  # If no valid candidates, return identity rotation
-  if not candidates:
-    rotation_matrix = np.eye(3)
-  else:
-    # Select candidate with minimum rotation angle (minimizes flips/unwanted rotations)
-    best = min(candidates, key=lambda c: c['angle'])
-    rotation_matrix = best['R']
-
-  # Calculate extent (max distance from center)
-  distances = np.linalg.norm(coords_centered, axis=1)
-  extent = float(distances.max()) if distances.size > 0 else 1.0
-
-  return rotation_matrix, center[0].tolist(), extent
 
 # --- Color System Constants ---
 
@@ -178,10 +57,10 @@ def _normalize_color(color):
             - String (mode): "chain", "plddt", "rainbow", "auto", "entropy", "deepmind"
             - String (literal): "red", "#ff0000", etc.
             - Dict (advanced): {
-                "object": "chain",                    # Object-level
-                "frame": "plddt",                     # Frame-level
-                "chain": {"A": "red", "B": "#ff0000"},  # Chain-level
-                "position": {0: "blue", 5: "red"}     # Position-level
+                "chain": {"A": "red", "B": "#ff0000"},  # Chain-level (simplest)
+                "position": {0: "blue", 5: "red"},     # Position-level
+                "frame": "plddt",                      # Frame-level
+                "object": "chain"                      # Object-level
               }
 
     Returns:
@@ -193,8 +72,17 @@ def _normalize_color(color):
     if color is None:
         return None
 
-    # Handle dict (advanced) format
     if isinstance(color, dict):
+        # Check if already normalized (has "type" and "value" keys)
+        if "type" in color and "value" in color:
+            return color
+
+        # Check if it's an advanced format dict (has chain/position/frame/object keys)
+        advanced_keys = {"chain", "position", "frame", "object"}
+        if any(key in color for key in advanced_keys):
+            return {"type": "advanced", "value": color}
+
+        # Otherwise, treat as advanced format anyway
         return {"type": "advanced", "value": color}
 
     # Handle string format
@@ -236,10 +124,6 @@ class view:
             "pae_size": pae_size,
             "overlay_frames": overlay,
             "viewer_id": str(uuid.uuid4()),
-            # Generalized callback system: maps callback names to methods
-            "callbacks": {
-                "orient": f"_py2dmol_orient_{str(uuid.uuid4())[:8]}",
-            }
         }
         
         # The viewer's mode is determined by when .show() is called.
@@ -247,7 +131,8 @@ class view:
         self._current_object_data = None  # List to hold frames for current object
         self._is_live = False             # True if .show() was called *before* .add()
         self._reuse_js = reuse_js
-        
+        self._data_display_id = None      # For updating data cell only (not viewer)
+
         # --- Alignment/Dynamic State ---
         self._coords = None
         self._plddts = None
@@ -299,7 +184,7 @@ class view:
       """
       Updates the internal state with new data. It no longer creates
       default values, simply storing what is provided.
-
+      
       Args:
           residue_numbers: PDB residue sequence numbers (resSeq), one per position.
                            For ligands, multiple positions may share the same residue number.
@@ -308,13 +193,13 @@ class view:
       # Backward compatibility: support atom_types as alias for position_types
       if atom_types is not None and position_types is None:
           position_types = atom_types
-
+      
       # --- Coordinate Alignment ---
       if self._coords is None:
-          # First frame of an object, store as-is (orientation handled by JavaScript Orient button)
-          self._coords = coords
+          # First frame of an object, align to best view
+          self._coords = best_view(coords) if align else coords
       else:
-          # Subsequent frames, align to the first frame if align=True
+          # Subsequent frames, align to the first frame
           if align and self._coords.shape == coords.shape:
               self._coords = align_a_to_b(coords, self._coords)
           else:
@@ -355,91 +240,193 @@ class view:
         return None
 
     def _send_message(self, message_dict):
-        """Generates JS to directly call the viewer's API."""
+        """Sends a message to the viewer (direct JavaScript execution)."""
         viewer_id = self.config["viewer_id"]
         msg_type = message_dict.get("type")
-        
         js_code_inner = "" # The specific call
-        
+
         if msg_type == "py2DmolUpdate":
             payload = message_dict.get("payload")
             # Create a Python string containing JSON
-            payload_json_string = json.dumps(payload) 
+            payload_json_string = json.dumps(payload)
             # Create a JavaScript string literal *from* that JSON string
-            payload_js_literal = json.dumps(payload_json_string) 
-            
+            payload_js_literal = json.dumps(payload_json_string)
+
             name = message_dict.get("name", "")
             js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonUpdate({payload_js_literal}, '{name}');"
-        
+
         elif msg_type == "py2DmolNewObject":
             name = message_dict.get("name", "")
             js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonNewObject('{name}');"
-        
+
         elif msg_type == "py2DmolClearAll":
             js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonClearAll();"
-            
+
         elif msg_type == "py2DmolSetColor":
             color = message_dict.get("color", "auto")
             js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetColor('{color}');"
 
-        elif msg_type == "py2DmolSetOverrides":
-            overrides = message_dict.get("overrides", {})
+        elif msg_type == "py2DmolSetObjectColor":
+            color = message_dict.get("color", {})
             name = message_dict.get("name", "")
-            overrides_json_string = json.dumps(overrides)
-            overrides_js_literal = json.dumps(overrides_json_string)
-            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetOverrides({overrides_js_literal}, '{name}');"
-
-        elif msg_type == "py2DmolOrient":
-            name = message_dict.get("name", "")
-            animate = message_dict.get("animate", True)
-            animate_str = "true" if animate else "false"
-            rotation_matrix = message_dict.get("rotationMatrix")
-            translation_vector = message_dict.get("translationVector")
-
-            if rotation_matrix and translation_vector:
-                # Serialize matrices as JSON literals
-                rotation_json = json.dumps(rotation_matrix)
-                translation_json = json.dumps(translation_vector)
-                js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonOrient('{name}', {rotation_json}, {translation_json}, {animate_str});"
-            else:
-                # Fallback: call without matrices
-                js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonOrient('{name}', null, null, {animate_str});"
+            color_json_string = json.dumps(color)
+            color_js_literal = json.dumps(color_json_string)
+            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetObjectColor({color_js_literal}, '{name}');"
 
         if js_code_inner:
-            # Wrap in a check for safety
-            js_code = f"""
-            (function() {{
-                if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
-                    {js_code_inner}
-                }} else {{
-                    console.error("py2dmol: Viewer '{viewer_id}' not found.");
-                }}
-            }})();
-            """
-            display(Javascript(js_code))
+            # Only handle frame updates via data display
+            # Other messages are sent directly
+            if msg_type == "py2DmolUpdate":
+                # For frame updates in live mode, send all objects with smart frame loading
+                # This handles multi-object scenarios by syncing all objects at once
+                if self.objects:
+                    # Create or update the data display cell with ALL objects
+                    if self._data_display_id is None:
+                        self._data_display_id = f"py2dmol_data_{viewer_id}"
+                        display(HTML(""), display_id=self._data_display_id)
+
+                    # Build a dict of all objects with their frames and metadata
+                    all_objects_data = {}
+                    all_objects_metadata = {}
+                    for obj in self.objects:
+                        obj_name = obj.get("name", "")
+                        frames = obj.get("frames", [])
+                        # Include all objects, even with no frames (they may get frames later)
+                        if obj_name:
+                            all_objects_data[obj_name] = frames
+
+                            # Collect object-level metadata for persistence on refresh
+                            metadata = {}
+                            if obj.get("color") is not None:
+                                metadata["color"] = obj["color"]
+                            if obj.get("contacts") is not None:
+                                metadata["contacts"] = obj["contacts"]
+                            if obj.get("bonds") is not None:
+                                metadata["bonds"] = obj["bonds"]
+                            if metadata:
+                                all_objects_metadata[obj_name] = metadata
+
+                    if all_objects_data:
+                        # Update data cell with comprehensive multi-object frame loading
+                        # JavaScript iterates through all objects and only adds missing frames to each
+                        all_frames_js = f"""
+                        (function() {{
+                            if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
+                                const viewer = window.py2dmol_viewers['{viewer_id}'];
+                                const allObjectsData = {json.dumps(all_objects_data)};
+                                const allObjectsMetadata = {json.dumps(all_objects_metadata)};
+
+                                // First pass: ensure all objects exist
+                                for (const objectName of Object.keys(allObjectsData)) {{
+                                    if (!viewer.renderer.objectsData[objectName]) {{
+                                        viewer.handlePythonNewObject(objectName);
+                                    }}
+                                }}
+
+                                // Second pass: add frames to each object
+                                for (const [objectName, frames] of Object.entries(allObjectsData)) {{
+                                    if (!frames || frames.length === 0) {{
+                                        continue;
+                                    }}
+
+                                    const obj = viewer.renderer.objectsData[objectName];
+                                    const currentFrameCount = obj ? obj.frames.length : 0;
+
+                                    // Only add frames beyond what already exists
+                                    for (let i = currentFrameCount; i < frames.length; i++) {{
+                                        try {{
+                                            viewer.handlePythonUpdate(JSON.stringify(frames[i]), objectName);
+                                        }} catch (e) {{
+                                            console.error(`Error adding frame to '${{objectName}}'`, e);
+                                        }}
+                                    }}
+                                }}
+
+                                // Third pass: apply object-level metadata (colors, contacts, bonds)
+                                let metadataApplied = false;
+                                for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {{
+                                    const obj = viewer.renderer.objectsData[objectName];
+                                    if (obj) {{
+                                        if (metadata.color) {{
+                                            obj.color = metadata.color;
+                                            metadataApplied = true;
+                                        }}
+                                        if (metadata.contacts) {{
+                                            obj.contacts = metadata.contacts;
+                                            metadataApplied = true;
+                                        }}
+                                        if (metadata.bonds) {{
+                                            obj.bonds = metadata.bonds;
+                                            metadataApplied = true;
+                                        }}
+                                    }}
+                                }}
+
+                                // Re-render if metadata was applied
+                                if (metadataApplied) {{
+                                    viewer.renderer.cachedSegmentIndices = null;
+                                    viewer.renderer.cachedSegmentIndicesFrame = -1;
+                                    viewer.renderer.cachedSegmentIndicesObjectName = null;
+                                    // Call setFrame to regenerate segments with new metadata (contacts, bonds, colors)
+                                    viewer.renderer.setFrame(viewer.renderer.currentFrame);
+                                }}
+                            }}
+                        }})();
+                        """
+                        update_display(HTML(f'<script>{all_frames_js}</script>'), display_id=self._data_display_id)
+            else:
+                # For non-frame messages, execute directly
+                js_code = f"""
+                (function() {{
+                    if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
+                        {js_code_inner}
+                    }} else {{
+                        console.error("py2dmol: Viewer '{viewer_id}' not found.");
+                    }}
+                }})();
+                """
+                display(HTML(f'<script>{js_code}</script>'))
 
     def _display_viewer(self, static_data=None):
         """
         Internal: Renders the viewer's HTML directly into a div.
-        
+
         Args:
             static_data (list, optional):
                 - A list of objects (for static 'show()' or hybrid modes).
-                
+
         Returns:
             str: The complete HTML string to be displayed.
         """
         with importlib.resources.open_text(py2dmol_resources, 'viewer.html') as f:
             html_template = f.read()
 
+        viewer_id = self.config["viewer_id"]
+
+        # Load JavaScript files once for all modes
+        js_content = ""
+        if not self._reuse_js:
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
+                js_content = f.read()
+
+            # Conditionally load PAE module if enabled
+            if self.config.get("pae", False):
+                try:
+                    with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
+                        pae_js_content = f.read()
+                    js_content = f"<script>{pae_js_content}</script>\n" + js_content
+                except FileNotFoundError:
+                    pass
+
+        # Setup viewer config
         config_script = f"""
-        <script id="viewer-config">
+        <script id="viewer-config-{viewer_id}">
           window.viewerConfig = {json.dumps(self.config)};
         </script>
         """
-        
+
         data_script = ""
-        
+
         if static_data and isinstance(static_data, list):
             serialized_objects = []
             for py_obj in static_data:
@@ -454,54 +441,54 @@ class view:
                 prev_position_names = None
                 prev_residue_numbers = None
                 prev_bonds = None
-                
+
                 for frame_idx, frame in enumerate(py_obj["frames"]):
                     # Skip frames without coords (they're invalid)
                     if "coords" not in frame or not frame["coords"]:
                         continue
-                    
+
                     light_frame = {}
                     if "name" in frame and frame["name"] is not None:
                         light_frame["name"] = frame["name"]
-                    
+
                     # Coords are required - we already checked above
                     light_frame["coords"] = frame["coords"]
-                    
+
                     # Only include other fields if they differ from previous frame
                     # Always include for frame 0
-                    
+
                     # plddts
                     curr_plddts = frame.get("plddts")
                     if frame_idx == 0 or curr_plddts != prev_plddts:
                         if curr_plddts is not None:
                             light_frame["plddts"] = curr_plddts
                         prev_plddts = curr_plddts
-                    
+
                     # pae (always include if present, usually only in frame 0)
                     if "pae" in frame and frame["pae"] is not None:
                         light_frame["pae"] = frame["pae"]
-                    
+
                     # position_names
                     curr_position_names = frame.get("position_names")
                     if frame_idx == 0 or curr_position_names != prev_position_names:
                         if curr_position_names is not None:
                             light_frame["position_names"] = curr_position_names
                         prev_position_names = curr_position_names
-                    
+
                     # residue_numbers
                     curr_residue_numbers = frame.get("residue_numbers")
                     if frame_idx == 0 or curr_residue_numbers != prev_residue_numbers:
                         if curr_residue_numbers is not None:
                             light_frame["residue_numbers"] = curr_residue_numbers
                         prev_residue_numbers = curr_residue_numbers
-                    
+
                     # position_types
                     curr_position_types = frame.get("position_types")
                     if frame_idx == 0 or curr_position_types != prev_position_types:
                         if curr_position_types is not None:
                             light_frame["position_types"] = curr_position_types
                         prev_position_types = curr_position_types
-                    
+
                     # chains
                     curr_chains = frame.get("chains")
                     if frame_idx == 0 or curr_chains != prev_chains:
@@ -543,29 +530,33 @@ class view:
                 if "bonds" in py_obj and py_obj["bonds"] is not None and len(py_obj["bonds"]) > 0:
                     obj_to_serialize["bonds"] = py_obj["bonds"]
 
-                # Add overrides if they exist
-                if "overrides" in py_obj and py_obj["overrides"] is not None:
-                    obj_to_serialize["overrides"] = py_obj["overrides"]
+                # Add color overrides if they exist
+                if "color" in py_obj and py_obj["color"] is not None:
+                    obj_to_serialize["color"] = py_obj["color"]
 
                 serialized_objects.append(obj_to_serialize)
 
             data_json = json.dumps(serialized_objects)
-            
-            data_script = f'<script id="static-data">window.staticObjectData = {data_json};</script>'
+
+            # Use viewer_id-specific namespace to avoid conflicts
+            data_script = f'''<script id="static-data-{viewer_id}">
+          window.py2dmol_staticData = window.py2dmol_staticData || {{}};
+          window.py2dmol_staticData['{viewer_id}'] = {data_json};
+        </script>'''
         else:
             # Pure Dynamic mode: inject empty data, will be populated by messages
-            data_script = '<script id="protein-data">window.proteinData = {{ "coords": [], "plddts": [], "chains": [], "position_types": [], "pae": null }};</script>'
-        
+            data_script = f'''<script id="protein-data-{viewer_id}">
+          window.py2dmol_proteinData = window.py2dmol_proteinData || {{}};
+          window.py2dmol_proteinData['{viewer_id}'] = {{ "coords": [], "plddts": [], "chains": [], "position_types": [], "pae": null }};
+        </script>'''
+
+        # Build injection scripts for config and data
         injection_scripts = config_script + "\n" + data_script
-        
+
         # Inject config and data into the raw HTML template
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
-            
-        viewer_id = self.config["viewer_id"]
-        
-        # NEW: Create a container div and a script to initialize the viewer
-        # We add style="position: relative;" to help with any potential
-        # absolute positioning inside the component, and inline-block to fit content.
+
+        # Standard div approach
         container_html = f"""
         <div id="{viewer_id}" style="position: relative; display: inline-block; line-height: 0;">
             {final_html}
@@ -574,64 +565,24 @@ class view:
             (function() {{
                 // Find the container we just rendered
                 const container = document.getElementById("{viewer_id}");
-                const config = {json.dumps(self.config)};
 
-                // Gather viewer data (staticObjectData or proteinData)
-                let viewerData = null;
-                if (typeof window.staticObjectData !== 'undefined') {{
-                    viewerData = window.staticObjectData;
-                }} else if (typeof window.proteinData !== 'undefined') {{
-                    viewerData = window.proteinData;
-                }}
-
-                // Call the initialization function (which is defined *inside* final_html)
+                // Call the initialization function with viewer_id for proper namespace isolation
                 if (container && typeof initializePy2DmolViewer === 'function') {{
-                    initializePy2DmolViewer(container, config, viewerData);
+                    initializePy2DmolViewer(container, '{viewer_id}');
                 }} else if (!container) {{
                     console.error("py2dmol: Failed to find container div #{viewer_id}.");
                 }} else {{
                     console.error("py2dmol: Failed to find initializePy2DmolViewer function.");
                 }}
-
-                // Register all callbacks defined in config.callbacks
-                // This generalized system allows for future extensions
-                if (config.callbacks && typeof config.callbacks === 'object') {{
-                    for (const [callbackType, callbackName] of Object.entries(config.callbacks)) {{
-                        window[callbackName] = (...args) => {{
-                            // Call Python with callback-specific logic
-                            if (typeof IPython !== 'undefined' && IPython.notebook) {{
-                                const argStr = args.map(arg =>
-                                    typeof arg === 'string' ? `"${{arg}}"` : JSON.stringify(arg)
-                                ).join(', ');
-                                const pythonCode = `_viewer_{viewer_id}.$${{callbackType}}(${{argStr}})`;
-                                IPython.notebook.kernel.execute(pythonCode);
-                            }} else if (typeof Jupyter !== 'undefined' && Jupyter.notebook) {{
-                                // For newer Jupyter versions
-                                const argStr = args.map(arg =>
-                                    typeof arg === 'string' ? `"${{arg}}"` : JSON.stringify(arg)
-                                ).join(', ');
-                                const pythonCode = `_viewer_{viewer_id}.$${{callbackType}}(${{argStr}})`;
-                                Jupyter.notebook.kernel.execute(pythonCode);
-                            }} else {{
-                                console.warn(`${{callbackType}}: Could not execute Python callback - IPython/Jupyter not available`);
-                            }}
-                        }};
-                    }}
-                }}
             }})();
         </script>
         """
+        # Load JS in parent page context if not reusing from previous viewer
         if not self._reuse_js:
+            # Load JS for div mode (parent page context)
             with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
-                js_content = f.read()
-            # Wrap the main JS in a check to prevent re-embedding on multiple viewers
-            container_html = f"""<script>
-            if (!window.__py2dmolJsLoaded) {{
-                window.__py2dmolJsLoaded = true;
-                {js_content}
-            }}
-            </script>
-            """ + container_html
+                js_content_parent = f.read()
+            container_html = f"<script>{js_content_parent}</script>\n" + container_html
 
             # Conditionally load PAE module if enabled
             if self.config.get("pae", False):
@@ -640,7 +591,7 @@ class view:
                         pae_js_content = f.read()
                     container_html = f"<script>{pae_js_content}</script>\n" + container_html
                 except FileNotFoundError:
-                    print("Warning: viewer-pae.js not found. PAE functionality will not be available.")
+                    pass
 
         return container_html
 
@@ -649,17 +600,6 @@ class view:
         # We no longer use ipywidgets, just display directly.
         # The .show() method will now print a *new* cell.
         display(HTML(html_string))
-
-        # Store viewer reference in IPython's user namespace so JavaScript can call it back
-        try:
-            from IPython import get_ipython
-            ipython = get_ipython()
-            if ipython is not None:
-                viewer_ref_name = f"_viewer_{self.config['viewer_id']}"
-                ipython.user_ns[viewer_ref_name] = self
-        except Exception as e:
-            # Silently fail if not in IPython environment or other issues
-            pass
 
     def clear(self):
         """Clears all objects and frames from the viewer."""
@@ -903,7 +843,7 @@ class view:
             "frames": self._current_object_data,
             "contacts": None,  # Initialize contacts as None
             "bonds": None,     # Initialize bonds as None
-            "overrides": None  # Initialize overrides as None
+            "color": None      # Initialize color overrides as None
         })
         
         # Send message *only if* in dynamic/hybrid mode and already displayed
@@ -914,7 +854,7 @@ class view:
             })
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None,
-            new_obj=False, name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None):
+            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None):
         """
         Adds a new *frame* of data to the viewer.
 
@@ -926,8 +866,7 @@ class view:
             chains (list, optional): N-length list of chain identifiers.
             position_types (list, optional): N-length list of position types ('P', 'D', 'R', 'L').
             pae (np.array, optional): LxL PAE matrix.
-            new_obj (bool, optional): If True, starts a new object. Defaults to False.
-            name (str, optional): Name for the new object or frame.
+            name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
             position_names (list, optional): N-length list of position names.
             residue_numbers (list, optional): N-length list of PDB residue sequence numbers (resSeq).
                                               One per position. For ligands, multiple positions may share the same residue number.
@@ -941,54 +880,63 @@ class view:
         """
         
         # --- Step 1: Update Python-side alignment state ---
-        self._update(coords, plddts, chains, position_types, pae, align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types)
+        self._update(coords, plddts, chains, position_types, pae, align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types) # This handles defaults
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         # --- Step 2: Handle object creation ---
-        object_name = name if new_obj else None
-        frame_name = name if not new_obj else None
+        # If a name is provided, treat it as an object name and check if we need a new object
+        create_new_object = False
+        if name is not None:
+            target_obj = self._find_object_by_name(name)
+            if target_obj is not None:
+                # Object with this name already exists, add to it
+                self._current_object_data = target_obj["frames"]
+            elif self.objects and self.objects[-1]["name"] != name:
+                # Different name and no matching object exists, create new object
+                create_new_object = True
+        elif not self.objects:
+            # No name provided and no objects exist, create first object
+            create_new_object = True
 
-        if new_obj or not self.objects:
-            self.new_obj(object_name)
-        
-        # Safeguard: ensure _current_object_data exists
-        if self._current_object_data is None:
-            self.new_obj(object_name)
+        if create_new_object or not self.objects:
+            self.new_obj(name)
 
-        data_dict["name"] = frame_name
-            
-        # --- Step 3: Always save data to Python list ---
+        data_dict["name"] = None  # Don't set frame-level name; use object name instead
+
+        # --- Step 3: Save data to Python list ---
         self._current_object_data.append(data_dict)
 
         # --- Step 4: Process contacts if provided ---
         if contacts is not None:
             processed_contacts = self._process_contacts(contacts)
-            if processed_contacts is not None:
+            if processed_contacts:
                 self.objects[-1]["contacts"] = processed_contacts
 
         # --- Step 4b: Process bonds if provided ---
         if bonds is not None:
             processed_bonds = self._process_bonds(bonds)
-            if processed_bonds is not None and len(processed_bonds) > 0:
+            if processed_bonds:
                 self.objects[-1]["bonds"] = processed_bonds
 
         # --- Step 4c: Process color if provided ---
         if color is not None:
-            normalized_color = _normalize_color(color)
-            if normalized_color is not None:
-                data_dict["color"] = normalized_color
+            # Check if color is already normalized (has "type" and "value" keys)
+            if isinstance(color, dict) and "type" in color and "value" in color:
+                # Already normalized (e.g., from load_state)
+                data_dict["color"] = color
+            else:
+                # Needs normalization (e.g., from user input)
+                normalized_color = _normalize_color(color)
+                if normalized_color:
+                    data_dict["color"] = normalized_color
 
         # --- Step 5: Send message if in "live" mode ---
         if self._is_live:
-            # Include contacts and bonds in payload if they exist for this object and are not None/empty
             payload = data_dict.copy()
-            obj_contacts = self.objects[-1].get("contacts")
-            if obj_contacts is not None and len(obj_contacts) > 0:
-                payload["contacts"] = obj_contacts
-
-            obj_ligand_bonds = self.objects[-1].get("bonds")
-            if obj_ligand_bonds is not None and len(obj_ligand_bonds) > 0:
-                payload["bonds"] = obj_ligand_bonds
+            if "contacts" in self.objects[-1]:
+                payload["contacts"] = self.objects[-1]["contacts"]
+            if "bonds" in self.objects[-1]:
+                payload["bonds"] = self.objects[-1]["bonds"]
 
             self._send_message({
                 "type": "py2DmolUpdate",
@@ -996,12 +944,11 @@ class view:
                 "payload": payload
             })
 
-    def set_color(self, name, color):
+    def set_color(self, color, name=None):
         """
         Set or override color for an object or its frames.
 
         Args:
-            name (str): Object name.
             color: Color specification. Can be:
                    - String (mode): "chain", "plddt", "rainbow", "auto", "entropy", "deepmind"
                    - String (literal): "red", "#ff0000", etc.
@@ -1013,43 +960,71 @@ class view:
                            2: {"frame": mode, "chain": {...}, "position": {...}}  # Frame 2 advanced
                        }
                      }
+            name (str, optional): Name of the object to color.
+                                 If None, colors the last (most recently added) object.
+
+        Examples:
+            viewer.set_color("red")                    # Color last object red
+            viewer.set_color("blue", name="protein1")  # Color specific object blue
+            viewer.set_color({"frames": {0: "red"}})   # Frame-level colors
         """
         # Find the object
-        target_obj = self._find_object_by_name(name)
-        if target_obj is None:
-            print(f"Error: Object '{name}' not found.")
-            return
+        if name is None:
+            # Use last object
+            if not self.objects:
+                print("Error: No objects exist to color.")
+                return
+            target_obj = self.objects[-1]
+            name = target_obj.get("name", "")
+        else:
+            target_obj = self._find_object_by_name(name)
+            if target_obj is None:
+                print(f"Error: Object '{name}' not found.")
+                return
 
         # Normalize the color
         normalized_color = _normalize_color(color)
         if normalized_color is None:
             return
 
-        # Store at object level
+        # Handle frame-level colors if specified
+        if normalized_color.get("type") == "advanced" and normalized_color.get("value", {}).get("frames"):
+            frames_spec = normalized_color["value"]["frames"]
+            frames = target_obj.get("frames", [])
+
+            # Apply frame-level colors to each frame
+            for frame_idx, frame_color_spec in frames_spec.items():
+                if isinstance(frame_idx, int) and frame_idx < len(frames):
+                    # Normalize the frame color
+                    frame_color = _normalize_color(frame_color_spec)
+                    if frame_color:
+                        frames[frame_idx]["color"] = frame_color
+
+        # Store at object level (for non-frame colors)
         target_obj["color"] = normalized_color
 
         # Send update if in live mode
         if self._is_live:
             self._send_message({
-                "type": "py2DmolSetColor",
+                "type": "py2DmolSetObjectColor",
                 "name": name,
                 "color": normalized_color
             })
 
-    def add_pdb(self, filepath, chains=None, new_obj=False, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
+
+    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
-        
+
         This method does *not* call .show().
-        
+
         Multi-model files are added as a single object.
-        
+
         Args:
             filepath (str): Path to the PDB or CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
-            new_obj (bool, optional): If True, starts a new object. Defaults to False.
-            name (str, optional): Name for the new object.
+            name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
             paes (list, optional): List of PAE matrices to associate with each model.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
@@ -1058,16 +1033,22 @@ class view:
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
         """
         
-        # --- Handle new_obj logic FIRST ---
+        # --- Handle object naming logic FIRST ---
         # If name is provided, check if an object with that name already exists
+        create_new_object = False
         if name is not None:
             target_obj = self._find_object_by_name(name)
             if target_obj is not None:
-                new_obj = False  # Add frames to existing object
+                # Add frames to existing object
+                self._current_object_data = target_obj["frames"]
             elif self.objects and self.objects[-1]["name"] != name:
-                new_obj = True  # Different object name, create new
+                # Different object name, create new
+                create_new_object = True
+        elif not self.objects:
+            # No name provided and no objects exist, create first object
+            create_new_object = True
 
-        if new_obj or not self.objects:
+        if create_new_object or not self.objects:
              self.new_obj(name)
         
         current_obj_name = self.objects[-1]["name"]
@@ -1137,17 +1118,16 @@ class view:
                 pae_to_add = paes[i] if paes and i < len(paes) else None
 
                 # Call add() - this will handle batch vs. live
+                # Only pass name on first model to ensure all models go to same object
+                model_name = name if i == 0 else None
                 self.add(coords_np, plddts_np, position_chains, position_types,
                     pae=pae_to_add,
-                    new_obj=False, # We already handled new_obj
-                    name=f"model_{i+1}", # Add to the same object
+                    name=model_name,
                     align=align,
                     position_names=position_names,
                     residue_numbers=residue_numbers,
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
-        # Auto-orient the newly loaded object if viewer is live
-        # Purged: _auto_orient call removed
 
     def _parse_model(self, model, chains_filter, ignore_ligands=False):
         """
@@ -1269,6 +1249,14 @@ class view:
         # Store contacts (replace existing)
         target_obj["contacts"] = processed_contacts
 
+        # Send update if in live mode
+        if self._is_live:
+            self._send_message({
+                "type": "py2DmolUpdate",
+                "name": target_obj.get("name", ""),
+                "payload": {}  # Empty payload, just triggers metadata update
+            })
+
     def add_bonds(self, bonds, name=None):
         """
         Define explicit bonds between atoms.
@@ -1332,60 +1320,12 @@ class view:
         # Store bonds (replace existing)
         target_obj["bonds"] = processed_bonds
 
-    def set_overrides(self, overrides, name=None):
-        """
-        Sets color overrides for an object.
-
-        Args:
-            overrides (dict): The overrides dictionary.
-                              Structure:
-                              {
-                                "object": "color_or_mode",
-                                "frames": { "frame_idx": "color_or_mode", ... },
-                                "chains": { "chain_id": "color_or_mode", ... },
-                                "positions": { "atom_idx": "color_or_mode", ... }
-                              }
-            name (str, optional): Name of the object to apply overrides to.
-                                 If None, applies to the last (most recently added) object.
-        """
-        if overrides is None:
-            return
-
-        # Find target object
-        if name is None:
-            # Add to last object
-            if not self.objects:
-                print("Error: No objects available. Add a structure first.")
-                return
-            target_obj = self.objects[-1]
-        else:
-            # Find object by name
-            target_obj = None
-            for obj in self.objects:
-                if obj.get("name") == name:
-                    target_obj = obj
-                    break
-            if target_obj is None:
-                print(f"Error: Object '{name}' not found.")
-                return
-
-        # Update Python-side state (merge)
-        if target_obj["overrides"] is None:
-             target_obj["overrides"] = overrides
-        else:
-             # Simple merge (top-level keys)
-             for k, v in overrides.items():
-                 if isinstance(v, dict) and k in target_obj["overrides"] and isinstance(target_obj["overrides"][k], dict):
-                     target_obj["overrides"][k].update(v)
-                 else:
-                     target_obj["overrides"][k] = v
-
-        # Send message if live
+        # Send update if in live mode
         if self._is_live:
             self._send_message({
-                "type": "py2DmolSetOverrides",
-                "overrides": overrides,
-                "name": target_obj["name"]
+                "type": "py2DmolUpdate",
+                "name": target_obj.get("name", ""),
+                "payload": {}  # Empty payload, just triggers metadata update
             })
 
     def _get_filepath_from_pdb_id(self, pdb_id):
@@ -1513,7 +1453,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, new_obj=True, name=None, align=False, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=False, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -1524,10 +1464,9 @@ class view:
         Args:
             pdb_id (str): 4-character PDB code or a path to a local PDB/CIF file.
             chains (list, optional): Specific chains to load. Defaults to all.
-            new_obj (bool, optional): If True, starts a new object. Defaults to True.
-                                     Set to False to add as frames to the last object.
-            name (str, optional): Name for the new object. If not provided, uses the PDB ID.
-            align (bool, optional): If True, aligns to best view. Defaults to False.
+            name (str, optional): Name for the object. If not provided, uses the PDB ID.
+                                  A different name will automatically create a new object.
+            align (bool, optional): If True, aligns coordinates to best view. Defaults to False.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
@@ -1542,7 +1481,7 @@ class view:
             name = pdb_id.upper()
 
         if filepath:
-            self.add_pdb(filepath, chains=chains, new_obj=new_obj,
+            self.add_pdb(filepath, chains=chains,
                          name=name, paes=None, align=align,
                          use_biounit=use_biounit, biounit_name=biounit_name,
                          ignore_ligands=ignore_ligands, contacts=contacts, color=color)
@@ -1551,7 +1490,7 @@ class view:
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, new_obj=True, name=None, align=False, use_biounit=False, biounit_name="1", ignore_ligands=False, color=None):
+    def from_afdb(self, uniprot_id, chains=None, name=None, align=False, use_biounit=False, biounit_name="1", ignore_ligands=False, color=None):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and adds it to the viewer.
@@ -1565,10 +1504,9 @@ class view:
         Args:
             uniprot_id (str): UniProt accession code (e.g., "P0A8I3").
             chains (list, optional): Specific chains to load. Defaults to all.
-            new_obj (bool, optional): If True, starts a new object. Defaults to True.
-                                     Set to False to add as frames to the last object.
-            name (str, optional): Name for the new object. If not provided, uses the UniProt ID.
-            align (bool, optional): If True, aligns to best view. Defaults to False.
+            name (str, optional): Name for the object. If not provided, uses the UniProt ID.
+                                  A different name will automatically create a new object.
+            align (bool, optional): If True, aligns coordinates to best view. Defaults to False.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
@@ -1594,7 +1532,7 @@ class view:
 
         # --- Add PDB (and PAE if loaded) ---
         if struct_filepath:
-            self.add_pdb(struct_filepath, chains=chains, new_obj=new_obj,
+            self.add_pdb(struct_filepath, chains=chains,
                 name=name, paes=[pae_matrix] if pae_matrix is not None else None, align=align,
                 use_biounit=use_biounit, biounit_name=biounit_name,
                 ignore_ligands=ignore_ligands, color=color)
@@ -1631,6 +1569,9 @@ class view:
             html_to_display = self._display_viewer(static_data=self.objects)
             self._display_html(html_to_display)
             self._is_live = True
+
+        # Reset data display ID for new viewer
+        self._data_display_id = None
 
     def _detect_redundant_fields(self, frames):
         """
@@ -1685,34 +1626,21 @@ class view:
         objects = []
         for obj in self.objects:
             frames = []
-            for frame in obj.get("frames", []):
+            for frame in obj["frames"]:
                 frame_data = {}
-                
+
                 # Round coordinates to 2 decimal places
-                if "coords" in frame:
-                    frame_data["coords"] = [[round(c, 2) for c in coord] for coord in frame["coords"]]
-                
+                frame_data["coords"] = [[round(c, 2) for c in coord] for coord in frame["coords"]]
+
                 # Round pLDDT to integers
                 if "plddts" in frame:
                     frame_data["plddts"] = [round(p) for p in frame["plddts"]]
-                
+
                 # Copy other fields
-                for key in ["chains", "position_types", "position_names", "residue_numbers", "bonds"]:
+                for key in ["chains", "position_types", "position_names", "residue_numbers", "bonds", "color", "pae"]:
                     if key in frame:
                         frame_data[key] = frame[key]
-                
-                # Handle PAE data
-                if "pae" in frame and frame["pae"] is not None:
-                    pae_data = frame["pae"]
-                    # Check if it's a flattened list (new format) or 2D list (legacy)
-                    if isinstance(pae_data, list) and len(pae_data) > 0:
-                        if isinstance(pae_data[0], list):
-                            # Legacy 2D list - round to 1 decimal place
-                            frame_data["pae"] = [[round(val, 1) for val in row] for row in pae_data]
-                        else:
-                            # Flattened list (already scaled 0-255) - save as is
-                            frame_data["pae"] = pae_data
-                
+
                 frames.append(frame_data)
             
             # Detect redundant fields (same across all frames)
@@ -1726,24 +1654,19 @@ class view:
             
             # Create object with redundant fields at object level
             obj_to_serialize = {
-                "name": obj.get("name", "unknown"),
-                "frames": frames,
-                "hasPAE": any(f.get("pae") is not None for f in frames)
+                "name": obj["name"],
+                "frames": frames
             }
             # Add redundant fields to object level (only if detected)
             obj_to_serialize.update(redundant_fields)
-            
-            # Add contacts if they exist
-            if "contacts" in obj and obj["contacts"] is not None and len(obj["contacts"]) > 0:
+
+            # Add object-level data if present
+            if "contacts" in obj and obj["contacts"]:
                 obj_to_serialize["contacts"] = obj["contacts"]
-
-            # Add bonds if they exist
-            if "bonds" in obj and obj["bonds"] is not None and len(obj["bonds"]) > 0:
+            if "bonds" in obj and obj["bonds"]:
                 obj_to_serialize["bonds"] = obj["bonds"]
-
-            # Add overrides if they exist
-            if "overrides" in obj and obj["overrides"] is not None:
-                obj_to_serialize["overrides"] = obj["overrides"]
+            if "color" in obj and obj["color"]:
+                obj_to_serialize["color"] = obj["color"]
 
             objects.append(obj_to_serialize)
         
@@ -1807,33 +1730,27 @@ class view:
                 
                 # Get object-level defaults (may be None)
                 obj_chains = obj_data.get("chains")
-                # Backward compatibility: support atom_types as alias for position_types
-                obj_position_types = obj_data.get("position_types") or obj_data.get("atom_types")
+                obj_position_types = obj_data.get("position_types")
                 
                 self.new_obj(obj_data["name"])
                 
                 for frame_data in obj_data["frames"]:
                     # Convert frame data to numpy arrays
                     coords = np.array(frame_data.get("coords", []))
-                    
+
                     if len(coords) == 0:
                         print(f"Warning: Skipping frame with no coordinates")
                         continue
-                    
-                    # Robust resolution: frame-level > object-level > None (will use defaults in add())
+
+                    # Frame-level data takes precedence over object-level
                     chains = frame_data.get("chains") if "chains" in frame_data else obj_chains
-                    # Backward compatibility: support atom_types as alias for position_types
-                    if "position_types" in frame_data:
-                        position_types = frame_data.get("position_types")
-                    elif "atom_types" in frame_data:
-                        position_types = frame_data.get("atom_types")
-                    else:
-                        position_types = obj_position_types
-                    plddts = np.array(frame_data.get("plddts", [])) if frame_data.get("plddts") else None
+                    position_types = frame_data.get("position_types") if "position_types" in frame_data else obj_position_types
+                    plddts = np.array(frame_data["plddts"]) if "plddts" in frame_data else None
                     position_names = frame_data.get("position_names")
                     residue_numbers = frame_data.get("residue_numbers")
-                    pae = np.array(frame_data.get("pae")) if frame_data.get("pae") else None
+                    pae = np.array(frame_data["pae"]) if "pae" in frame_data else None
                     bonds = frame_data.get("bonds")
+                    color = frame_data.get("color")  # Extract frame-level color if present
 
                     # add() will apply defaults for None values
                     self.add(
@@ -1842,34 +1759,28 @@ class view:
                         chains,
                         position_types,
                         pae=pae,
-                        new_obj=False,
                         name=None,
                         align=False,  # Don't re-align loaded data
                         position_names=position_names,
                         residue_numbers=residue_numbers,
-                        bonds=bonds
+                        bonds=bonds,
+                        color=color  # Pass frame-level color to add()
                     )
                 
-                # Restore contacts data if present
-                if "contacts" in obj_data and obj_data["contacts"] is not None:
-                    if isinstance(obj_data["contacts"], list) and len(obj_data["contacts"]) > 0:
-                        self.objects[-1]["contacts"] = obj_data["contacts"]
-
-                # Restore bonds data if present at object level
-                if "bonds" in obj_data and obj_data["bonds"] is not None:
-                    if isinstance(obj_data["bonds"], list) and len(obj_data["bonds"]) > 0:
-                        self.objects[-1]["bonds"] = obj_data["bonds"]
-
-                # Restore overrides data if present at object level
-                if "overrides" in obj_data and obj_data["overrides"] is not None:
-                    self.objects[-1]["overrides"] = obj_data["overrides"]
+                # Restore object-level data
+                if "contacts" in obj_data:
+                    self.objects[-1]["contacts"] = obj_data["contacts"]
+                if "bonds" in obj_data:
+                    self.objects[-1]["bonds"] = obj_data["bonds"]
+                if "color" in obj_data:
+                    self.objects[-1]["color"] = obj_data["color"]
         
         # Restore viewer config from state (if available)
         if "viewer_state" in state_data:
             vs = state_data["viewer_state"]
-            if vs.get("color_mode"):
+            if "color_mode" in vs:
                 self.config["color"] = vs["color_mode"]
-            if vs.get("line_width"):
+            if "line_width" in vs:
                 self.config["width"] = vs["line_width"]
             if "shadow_enabled" in vs:
                 self.config["shadow"] = vs["shadow_enabled"]
@@ -1877,15 +1788,12 @@ class view:
                 self.config["depth"] = vs["depth_enabled"]
             if "outline_mode" in vs:
                 self.config["outline"] = vs["outline_mode"]
-            elif "outline_enabled" in vs:
-                # Legacy boolean support
-                self.config["outline"] = "full" if vs["outline_enabled"] else "none"
             if "colorblind_mode" in vs:
                 self.config["colorblind"] = vs["colorblind_mode"]
-            if vs.get("pastel_level"):
+            if "pastel_level" in vs:
                 self.config["pastel"] = vs["pastel_level"]
-            if vs.get("focal_length"):
-                self.config["ortho"] = vs["focal_length"]
+            if "ortho_slider_value" in vs:
+                self.config["ortho"] = vs["ortho_slider_value"]
         
         # State loaded - user must call show() to display
         if not self.objects:

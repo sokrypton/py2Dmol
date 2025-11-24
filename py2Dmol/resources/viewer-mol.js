@@ -20,7 +20,7 @@ if (!window.py2dmol_viewers) {
         this.height = height;
         this.strokeStyle = '#000000';
         this.fillStyle = '#000000';
-        this.viewerState.lineWidth = 1;
+        this.lineWidth = 1;
         this.lineCap = 'butt';
         this.currentPath = null;
         this.operations = [];
@@ -62,7 +62,7 @@ if (!window.py2dmol_viewers) {
             type: 'stroke',
             pathData: pathData.trim(),
             strokeStyle: this.strokeStyle,
-            lineWidth: this.viewerState.lineWidth,
+            lineWidth: this.lineWidth,
             lineCap: this.lineCap
         });
         this.currentPath = null;
@@ -172,20 +172,7 @@ if (!window.py2dmol_viewers) {
  * All logic is scoped to this container.
  * @param {HTMLElement} containerElement The root <div> element for this viewer.
  */
-function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
-
-    // Use passed config or fall back to window.viewerConfig for backward compatibility
-    const config = passedConfig || window.viewerConfig || {};
-
-    // Use passed data or fall back to window.staticObjectData/proteinData for backward compatibility
-    let viewerData = passedData;
-    if (!viewerData) {
-        if (typeof window.staticObjectData !== 'undefined') {
-            viewerData = window.staticObjectData;
-        } else if (typeof window.proteinData !== 'undefined') {
-            viewerData = window.proteinData;
-        }
-    }
+function initializePy2DmolViewer(containerElement, viewerId) {
 
     // Helper function to normalize ortho value from old (50-200) or new (0-1) format
     function normalizeOrthoValue(value) {
@@ -478,55 +465,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
     const MAX_SHADOW_SUM = 12;              // Maximum accumulated shadow sum (saturating accumulation)
 
     // ============================================================================
-    // LIGAND GROUPING UTILITY
-    // ============================================================================
-    /**
-     * Groups ligand atoms by chain, residue number, and position name
-     * Used to create logical groups of atoms that belong to the same molecule
-     * @param {Array<string>} chains - Chain IDs for each position
-     * @param {Array<string>} positionTypes - Position types ('P'/'D'/'R'/'L')
-     * @param {Array<number>} residueNumbers - Residue numbers for each position
-     * @param {Array<string>} positionNames - Residue names for each position
-     * @returns {Map<string, Array<number>>} Map of group key -> position indices
-     */
-    function groupLigandAtoms(chains, positionTypes, residueNumbers, positionNames) {
-        if (!chains || !positionTypes || chains.length === 0) {
-            return new Map();
-        }
-
-        const ligandGroups = new Map();
-        const n = positionTypes.length;
-
-        // Group ligands by chain + residue number + position name
-        for (let i = 0; i < n; i++) {
-            // Only group ligand positions (type === 'L')
-            if (positionTypes[i] === 'L') {
-                const chain = chains[i] || 'A';
-                const resNum = (residueNumbers && residueNumbers[i] !== undefined) ? residueNumbers[i] : i;
-                const resName = (positionNames && positionNames[i]) ? positionNames[i] : 'UNK';
-
-                // Create unique key for this ligand group
-                // Format: "chainId:resNum:resName" (e.g., "A:501:LIG")
-                const groupKey = `${chain}:${resNum}:${resName}`;
-
-                // Add position to its group
-                if (!ligandGroups.has(groupKey)) {
-                    ligandGroups.set(groupKey, []);
-                }
-                ligandGroups.get(groupKey).push(i);
-            }
-        }
-
-        return ligandGroups;
-    }
-
-    // ============================================================================
     // PSEUDO-3D RENDERER
     // ============================================================================
     class Pseudo3DRenderer {
-        constructor(canvas, containerElement = null) {
+        constructor(canvas) {
             this.canvas = canvas;
-            this.containerElement = containerElement || canvas.closest('#mainContainer');
             this.ctx = canvas.getContext('2d');
 
             // Store screen positions of positions for fast highlight drawing
@@ -543,28 +486,23 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.displayWidth = parseInt(canvas.style.width) || canvas.width;
             this.displayHeight = parseInt(canvas.style.height) || canvas.height;
 
-            // Get config from Python
-            // Use the config parameter passed to initializePy2DmolViewer
-            // (Note: config is already defined from function parameter)
-            // If config is empty, use defaults
-            if (!config || Object.keys(config).length === 0) {
-                config = {
-                    size: [300, 300],
-                    pae_size: 300,
-                    color: "rainbow",
-                    shadow: true,
-                    outline: true,
-                    width: 3.0,
-                    rotate: false,
-                    controls: true,
-                    autoplay: false,
-                    box: true,
-                    pastel: 0.25,
-                    pae: false,
-                    colorblind: false,
-                    depth: false
-                };
-            }
+            // Get config from window.viewerConfig
+            const config = window.viewerConfig || {
+                size: [300, 300],
+                pae_size: 300,
+                color: "rainbow",
+                shadow: true,
+                outline: true,
+                width: 3.0,
+                rotate: false,
+                controls: true,
+                autoplay: false,
+                box: true,
+                pastel: 0.25,
+                pae: false,
+                colorblind: false,
+                depth: false
+            };
 
             // Current render state
             this.coords = []; // This is now an array of Vec3 objects
@@ -573,43 +511,50 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.positionTypes = [];
             this.entropy = undefined; // Entropy vector mapped to structure positions
 
-            // Valid color modes
+            // Viewer state - Color mode: auto, chain, rainbow, plddt, DeepMind, or entropy
             const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+            this.colorMode = (config.color && validModes.includes(config.color)) ? config.color : 'auto';
+            // Ensure it's always valid
+            if (!this.colorMode || !validModes.includes(this.colorMode)) {
+                this.colorMode = 'auto';
+            }
 
             // What 'auto' resolves to (calculated when data loads)
             this.resolvedAutoColor = 'rainbow';
 
-            // ============================================================================
-            // GLOBAL VIEWER STATE (per-object working copy)
-            // ============================================================================
-            // Each object stores a copy of this state that is restored when switching
+            // Unified viewer state (rotation, zoom, perspective, center/extent, frame)
             this.viewerState = {
-                // Geometric state (viewer position/rotation/zoom)
-                center: { x: 0, y: 0, z: 0 },        // Rotation center
-                rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],  // Rotation matrix
-                zoom: 1.0,                           // Zoom level
-
-                // Rendering state (visual preferences)
-                colorMode: (config.color && validModes.includes(config.color)) ? config.color : 'auto',
-                lineWidth: (typeof config.width === 'number') ? config.width : 3.0,
-                relativeOutlineWidth: 3.0,           // Outline width relative to line width
-                shadowIntensity: 0.95,
-                shadowEnabled: (typeof config.shadow === 'boolean') ? config.shadow : true,
-                depthEnabled: (typeof config.depth === 'boolean') ? config.depth : false,
-                outlineMode: (() => {
-                    if (typeof config.outline === 'string' && ['none', 'partial', 'full'].includes(config.outline)) {
-                        return config.outline;
-                    } else if (typeof config.outline === 'boolean') {
-                        return config.outline ? 'full' : 'none';
-                    }
-                    return 'full';
-                })(),
-                perspectiveEnabled: false,           // false = orthographic, true = perspective
-                focalLength: 200.0,                  // Focal length for perspective mode
-                pastelLevel: (typeof config.pastel === 'number') ? config.pastel : 0.25,
-                colorblindMode: (typeof config.colorblind === 'boolean') ? config.colorblind : false,
-                isTransparent: false                 // Default to white background
+                rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                zoom: 1.0,
+                perspectiveEnabled: false,
+                focalLength: 200.0,
+                center: null,
+                extent: null,
+                currentFrame: -1
             };
+
+            this.lineWidth = (typeof config.width === 'number') ? config.width : 3.0;
+            this.relativeOutlineWidth = 3.0; // Default outline width relative to line width
+            this.shadowIntensity = 0.95;
+
+            // Set defaults from config, with fallback
+            this.shadowEnabled = (typeof config.shadow === 'boolean') ? config.shadow : true;
+            this.depthEnabled = (typeof config.depth === 'boolean') ? config.depth : false;
+            // Outline mode: 'none', 'partial', or 'full'
+            if (typeof config.outline === 'string' && ['none', 'partial', 'full'].includes(config.outline)) {
+                this.outlineMode = config.outline;
+            } else if (typeof config.outline === 'boolean') {
+                // Legacy boolean support: true -> 'full', false -> 'none'
+                this.outlineMode = config.outline ? 'full' : 'none';
+            } else {
+                this.outlineMode = 'full'; // Default to full
+            }
+            this.pastelLevel = (typeof config.pastel === 'number') ? config.pastel : 0.25;
+            this.colorblindMode = (typeof config.colorblind === 'boolean') ? config.colorblind : false;
+
+            // Width multipliers are now always based on TYPE_BASELINES (no robust scaling)
+
+            this.isTransparent = false; // Default to white background
 
             // Performance
             this.chainRainbowScales = {};
@@ -659,20 +604,28 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.recordingFrameSequence = null; // Timeout ID for sequential recording
 
             // Overlay mode (for merging multiple frames in same view)
-            this.overlayMode = false;
-            this.overlayFrameRange = null; // null = all frames, or [start, end]
+            // UNIFIED overlay state object (Commit 1 refactor)
+            this.overlayState = {
+                enabled: false,              // Is overlay mode currently active?
+                shouldAutoEnable: (typeof config.overlay_frames === 'boolean') ? config.overlay_frames : false,
+                frameIdMap: null,            // Maps atom index → frame index (null if not merged)
+                autoColor: null              // Auto color determination (rainbow/chain/plddt)
+            };
+
+            // Debug properties
+            this.lastOperationMode = 'unknown'; // Track mode: 'single-frame', 'merged', 'overlay-toggle', etc.
 
             // Interaction state
             this.isDragging = false; // Used for selection preview
             this.autoRotate = (typeof config.rotate === 'boolean') ? config.rotate : false;
             this.autoplay = (typeof config.autoplay === 'boolean') ? config.autoplay : false;
 
-            // Mouse/Touch interaction
+            // Inertia
+            this.spinVelocityX = 0;
+            this.spinVelocityY = 0;
             this.lastDragTime = 0;
             this.lastDragX = 0;
             this.lastDragY = 0;
-            this.spinVelocityX = 0;
-            this.spinVelocityY = 0;
             this.zoomTimeout = null; // Timeout for clearing zoom flag
 
             // Touch
@@ -736,9 +689,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.recordingStream = null;
             this.recordingEndFrame = 0;
 
-            // Interaction state tracking (for shadow caching optimization)
+            // Cache shadow/tint arrays during dragging for performance
+            this.cachedShadows = null;
+            this.cachedTints = null;
             this.isZooming = false; // Track zoom state to skip shadow recalculation
             this.isOrientAnimating = false; // Track orient animation state to skip shadow recalculation
+            this.lastShadowRotationMatrix = null; // Track rotation matrix for shadow caching
 
             // Batch loading flag to suppress unnecessary renders during bulk data loading
             this._batchLoading = false;
@@ -753,31 +709,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.setupInteraction();
         }
 
-        // ============================================================================
-        // VIEWER STATE MANAGEMENT
-        // ============================================================================
-
-        // Save geometric state (center, rotation, zoom) to object
-        saveViewerState(objectName) {
-            const obj = this.objectsData[objectName];
-            obj.viewerState = {
-                center: { ...this.viewerState.center },
-                rotation: this.viewerState.rotation.map(r => [...r]),
-                zoom: this.viewerState.zoom
-            };
-        }
-
-        // Restore geometric state from object to global
-        restoreViewerState(objectName) {
-            const obj = this.objectsData[objectName];
-            const vs = obj.viewerState || { center: { x: 0, y: 0, z: 0 }, rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], zoom: 1.0 };
-            this.viewerState.center = { ...vs.center };
-            this.viewerState.rotation = vs.rotation.map(r => [...r]);
-            this.viewerState.zoom = vs.zoom;
-        }
-
         setClearColor(isTransparent) {
-            this.viewerState.isTransparent = isTransparent;
+            this.isTransparent = isTransparent;
             this.render('setClearColor'); // Re-render with new clear color
         }
 
@@ -994,16 +927,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     oldVisibilityMask.size !== this.visibilityMask.size)
             );
             if (visibilityChanged && !skip3DRender) {
-                // Clear object's shadow caches when visibility changes (shadow recalculation needed)
-                // Visibility changes affect which segments are visible, so shadows need recalculation
-                const frameState = this._getFrameState();
-                if (frameState) {
-                    frameState.cachedShadows = null;
-                    frameState.cachedTints = null;
-                    frameState.lastShadowRotationMatrix = null; // Force recalculation
-                } else {
-                    console.warn("[VISIBILITY] Could not clear shadow cache - frameState is null");
-                }
+                this.cachedShadows = null;
+                this.cachedTints = null;
+                this.lastShadowRotationMatrix = null; // Force recalculation
             }
 
             // Only render 3D viewer if not skipping (e.g., during PAE drag)
@@ -1050,11 +976,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         // [END PATCH]
 
         _applyPastel(rgb) {
-            if (this.viewerState.pastelLevel <= 0) {
+            if (this.pastelLevel <= 0) {
                 return rgb;
             }
             // Apply pastel transformation (mix with white)
-            const mix = this.viewerState.pastelLevel;
+            const mix = this.pastelLevel;
             return {
                 r: Math.round(rgb.r * (1 - mix) + 255 * mix),
                 g: Math.round(rgb.g * (1 - mix) + 255 * mix),
@@ -1073,9 +999,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.isDragging = true;
                 this.spinVelocityX = 0;
                 this.spinVelocityY = 0;
-
-                // CRITICAL: Ensure inertia is completely stopped
-                // The animate loop will see isDragging=true and skip inertia
                 this.lastDragX = e.clientX;
                 this.lastDragY = e.clientY;
                 this.lastDragTime = performance.now();
@@ -1103,30 +1026,26 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const dx = e.clientX - this.lastDragX;
                     const dy = e.clientY - this.lastDragY;
 
-                    // Only update rotation if there's actual movement (>1px dead zone)
-                    if (Math.abs(dy) > 1 || Math.abs(dx) > 1) {
-                        const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                        if (object && object.viewerState) {
-                            if (dy !== 0) {
-                                const rot = rotationMatrixX(dy * 0.01);
-                                this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
-                            }
-                            if (dx !== 0) {
-                                const rot = rotationMatrixY(dx * 0.01);
-                                this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
-                            }
-                        } else {
-                            return; // No object, skip render
+                    // Only update rotation if there's actual movement
+                    if (dy !== 0 || dx !== 0) {
+                        if (dy !== 0) {
+                            const rot = rotationMatrixX(dy * 0.01);
+                            this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
+                        }
+                        if (dx !== 0) {
+                            const rot = rotationMatrixY(dx * 0.01);
+                            this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
                         }
                     } else {
                         return; // No movement, skip render
                     }
 
-                    // Determine if inertia should be enabled based on visible segment count
+                    // Store velocity for inertia (disabled for large molecules based on visible segments)
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                     const totalSegmentCount = object && object.frames && object.frames[this.currentFrame]
                         ? (this.segmentIndices ? this.segmentIndices.length : 0)
                         : 0;
+                    // Count visible segments for inertia determination
                     let visibleSegmentCount = totalSegmentCount;
                     if (this.visibilityMask && this.segmentIndices) {
                         visibleSegmentCount = 0;
@@ -1160,13 +1079,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 const handleUp = () => {
                     if (!this.isDragging) return;
                     this.isDragging = false;
-
-                    // CRITICAL: Remove listeners immediately
                     window.removeEventListener('mousemove', handleMove);
                     window.removeEventListener('mouseup', handleUp);
-
-                    // Don't clear velocity here - let it carry into inertia phase
-                    // The canvas mouseup handler will apply the decay logic
                 };
 
                 window.addEventListener('mousemove', handleMove);
@@ -1178,48 +1092,40 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 if (!this.isDragging) return;
                 this.isDragging = false;
 
-                // Clear object's shadow cache when dragging ends (shadows need recalculation)
-                const frameState = this._getFrameState();
-                if (frameState) {
-                    frameState.cachedShadows = null;
-                    frameState.cachedTints = null;
-                    frameState.lastShadowRotationMatrix = null; // Force recalculation
-                }
+                // Clear shadow cache when dragging ends (shadows need recalculation)
+                this.cachedShadows = null;
+                this.cachedTints = null;
+                this.lastShadowRotationMatrix = null; // Force recalculation
 
-                // For large molecules, immediately recalculate shadows with fresh render
-                // This prevents lag in shadow updates on large structures
+                // For large molecules, immediately recalculate shadows
+                // since inertia is disabled and rotation has stopped
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                 const segmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
                 const isLargeMolecule = segmentCount > this.LARGE_MOLECULE_CUTOFF;
 
                 if (isLargeMolecule) {
                     // Render immediately with fresh shadows
-                    this.render('drag-end-large');
+                    this.render();
                 }
 
-                // Restart animate loop after dragging ends (needed for inertia and auto-rotation)
+                // Restart animate loop after dragging ends
                 requestAnimationFrame(() => this.animate());
 
                 const now = performance.now();
                 const timeDelta = now - this.lastDragTime;
 
                 if (timeDelta > 100) { // If drag was too slow, or just a click
-                    console.log(`[MOUSEUP] Slow drag (${timeDelta.toFixed(0)}ms > 100ms), clearing velocity`);
-                    this.velocityX = 0;
-                    this.velocityY = 0;
-                } else {
-                    console.log(`[MOUSEUP] Fast drag (${timeDelta.toFixed(0)}ms) - RELEASING velocity: X=${(this.velocityX || 0).toFixed(4)}, Y=${(this.velocityY || 0).toFixed(4)}`);
+                    this.spinVelocityX = 0;
+                    this.spinVelocityY = 0;
                 }
+                // Else, the velocity from the last mousemove is used by the animate loop
             });
 
             this.canvas.addEventListener('wheel', (e) => {
                 e.preventDefault();
                 this.isZooming = true;
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                if (object && object.viewerState) {
-                    this.viewerState.zoom *= (1 - e.deltaY * 0.001);
-                    this.viewerState.zoom = Math.max(0.1, Math.min(5, this.viewerState.zoom));
-                }
+                this.viewerState.zoom *= (1 - e.deltaY * 0.001);
+                this.viewerState.zoom = Math.max(0.1, Math.min(5, this.viewerState.zoom));
                 this.render();
                 // Clear zoom flag after a short delay to allow render to complete
                 clearTimeout(this.zoomTimeout);
@@ -1265,31 +1171,15 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const dx = touch.clientX - this.lastDragX;
                     const dy = touch.clientY - this.lastDragY;
 
-                    // Only update rotation if there's actual movement (>1px dead zone)
-                    if (Math.abs(dy) <= 1 && Math.abs(dx) <= 1) {
-                        return; // Too small, skip
-                    }
+                    if (dy !== 0) { const rot = rotationMatrixX(dy * 0.01); this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation); }
+                    if (dx !== 0) { const rot = rotationMatrixY(dx * 0.01); this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation); }
 
+                    // Store velocity for inertia (disabled for large molecules based on visible segments)
                     const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-
-                    // Apply rotation to current object
-                    if (object && object.viewerState) {
-                        if (dy !== 0) {
-                            const rot = rotationMatrixX(dy * 0.01);
-                            this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
-                        }
-                        if (dx !== 0) {
-                            const rot = rotationMatrixY(dx * 0.01);
-                            this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
-                        }
-                    } else {
-                        return; // No object, skip
-                    }
-
-                    // Determine if inertia should be enabled based on visible segment count
                     const totalSegmentCount = object && object.frames && object.frames[this.currentFrame]
                         ? (this.segmentIndices ? this.segmentIndices.length : 0)
                         : 0;
+                    // Count visible segments for inertia determination
                     let visibleSegmentCount = totalSegmentCount;
                     if (this.visibilityMask && this.segmentIndices) {
                         visibleSegmentCount = 0;
@@ -1303,7 +1193,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
 
                     if (enableInertia && timeDelta > 0) {
-                        // Weighted average to smooth out jerky movements
                         const smoothing = 0.5;
                         this.spinVelocityX = (this.spinVelocityX * (1 - smoothing)) + ((dx / timeDelta * 20) * smoothing);
                         this.spinVelocityY = (this.spinVelocityY * (1 - smoothing)) + ((dy / timeDelta * 20) * smoothing);
@@ -1326,11 +1215,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const currentPinchDistance = this.getTouchDistance(e.touches[0], e.touches[1]);
                     const scale = currentPinchDistance / this.initialPinchDistance;
 
-                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    if (object && object.viewerState) {
-                        this.viewerState.zoom *= scale;
-                        this.viewerState.zoom = Math.max(0.1, Math.min(5, this.viewerState.zoom));
-                    }
+                    this.viewerState.zoom *= scale;
+                    this.viewerState.zoom = Math.max(0.1, Math.min(5, this.viewerState.zoom));
                     this.render();
 
                     // Reset for next move event
@@ -1350,12 +1236,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     this.isDragging = false;
 
                     // Clear shadow cache when dragging ends (shadows need recalculation)
-                    const frameState = this._getFrameState();
-                    if (frameState) {
-                        frameState.cachedShadows = null;
-                        frameState.cachedTints = null;
-                        frameState.lastShadowRotationMatrix = null; // Force recalculation
-                    }
+                    this.cachedShadows = null;
+                    this.cachedTints = null;
+                    this.lastShadowRotationMatrix = null; // Force recalculation
 
                     // For large molecules (based on visible segments), immediately recalculate shadows
                     // since inertia is disabled and rotation has stopped
@@ -1386,8 +1269,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const timeDelta = now - this.lastDragTime;
 
                     if (timeDelta > 100) { // If drag was too slow, or just a tap
-                        this.velocityX = 0;
-                        this.velocityY = 0;
+                        this.spinVelocityX = 0;
+                        this.spinVelocityY = 0;
                     }
                     // Else, the velocity from the last touchmove is used by the animate loop
                 }
@@ -1404,12 +1287,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
                     // Clear shadow cache when dragging ends (shadows need recalculation)
                     if (wasDragging) {
-                        const frameState = this._getFrameState();
-                        if (frameState) {
-                            frameState.cachedShadows = null;
-                            frameState.cachedTints = null;
-                            frameState.lastShadowRotationMatrix = null; // Force recalculation
-                        }
+                        this.cachedShadows = null;
+                        this.cachedTints = null;
+                        this.lastShadowRotationMatrix = null; // Force recalculation
                     }
 
                     // Restart animation loop if it was stopped
@@ -1422,25 +1302,13 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 if (this.isDragging) {
                     this.isDragging = false;
 
-                    // Clear object's shadow cache when dragging ends (shadows need recalculation)
-                    const frameState = this._getFrameState();
-                    if (frameState) {
-                        frameState.cachedShadows = null;
-                        frameState.cachedTints = null;
-                        frameState.lastShadowRotationMatrix = null; // Force recalculation
-                        console.log("[TOUCH] Cleared shadow cache after touch cancel");
-                    }
+                    // Clear shadow cache when dragging ends (shadows need recalculation)
+                    this.cachedShadows = null;
+                    this.cachedTints = null;
+                    this.lastShadowRotationMatrix = null; // Force recalculation
 
-                    // For large molecules, immediately recalculate shadows
-                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const isLargeMolecule = object && object.maxExtent > 0 && this.segmentIndices &&
-                        this.segmentIndices.length > this.LARGE_MOLECULE_CUTOFF;
-                    if (isLargeMolecule) {
-                        console.log("[TOUCH] Large molecule - immediate render after cancel");
-                        this.render('touch-cancel-large');
-                    } else {
-                        requestAnimationFrame(() => this.animate());
-                    }
+                    // Restart animation loop
+                    requestAnimationFrame(() => this.animate());
                 }
                 this.initialPinchDistance = 0;
             });
@@ -1453,13 +1321,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider, orientButton) {
+        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.overlayButton = overlayButton;
             this.recordButton = recordButton;
             this.saveSvgButton = saveSvgButton;
-            this.orientButton = orientButton;
             this.frameSlider = frameSlider;
             this.frameCounter = frameCounter;
             this.objectSelect = objectSelect;
@@ -1473,8 +1340,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.depthCheckbox = depthCheckbox;
             this.colorblindCheckbox = colorblindCheckbox;
             this.orthoSlider = orthoSlider;
-            this.viewerState.lineWidth = this.lineWidthSlider ? parseFloat(this.lineWidthSlider.value) : (this.viewerState.lineWidth || 3.0); // Read default from slider or use existing/default
-            this.viewerState.relativeOutlineWidth = this.outlineWidthSlider ? parseFloat(this.outlineWidthSlider.value) : (this.viewerState.relativeOutlineWidth || 3.0); // Read default from slider or use existing/default
+            this.lineWidth = this.lineWidthSlider ? parseFloat(this.lineWidthSlider.value) : (this.lineWidth || 3.0); // Read default from slider or use existing/default
+            this.relativeOutlineWidth = this.outlineWidthSlider ? parseFloat(this.outlineWidthSlider.value) : (this.relativeOutlineWidth || 3.0); // Read default from slider or use existing/default
             this.autoRotate = this.rotationCheckbox ? this.rotationCheckbox.checked : false; // Read default from checkbox
 
             // Bind all event listeners
@@ -1506,13 +1373,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 });
             }
 
-            if (this.orientButton) {
-                this.orientButton.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    console.log('Orient button disabled - viewer state management purged');
-                });
-            }
-
             if (this.objectSelect) {
                 this.objectSelect.addEventListener('change', () => {
                     this.stopAnimation();
@@ -1540,11 +1400,14 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             this.rotationCheckbox.addEventListener('change', (e) => {
                 this.autoRotate = e.target.checked;
+                // Stop inertia if user clicks auto-rotate
+                this.spinVelocityX = 0;
+                this.spinVelocityY = 0;
             });
 
             if (this.lineWidthSlider) {
                 this.lineWidthSlider.addEventListener('input', (e) => {
-                    this.viewerState.lineWidth = parseFloat(e.target.value);
+                    this.lineWidth = parseFloat(e.target.value);
                     if (!this.isPlaying) {
                         this.render('updateUIControls: lineWidthSlider');
                     }
@@ -1553,7 +1416,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             if (this.outlineWidthSlider) {
                 this.outlineWidthSlider.addEventListener('input', (e) => {
-                    this.viewerState.relativeOutlineWidth = parseFloat(e.target.value);
+                    this.relativeOutlineWidth = parseFloat(e.target.value);
                     if (!this.isPlaying) {
                         this.render('updateUIControls: outlineWidthSlider');
                     }
@@ -1603,7 +1466,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.addEventListener('change', (e) => {
-                    this.viewerState.shadowEnabled = e.target.checked;
+                    this.shadowEnabled = e.target.checked;
                     this.render('shadowEnabledCheckbox');
                 });
             }
@@ -1613,12 +1476,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.outlineModeButton.addEventListener('click', (e) => {
                     e.preventDefault();
                     // Cycle through modes: none -> partial -> full -> none
-                    if (this.viewerState.outlineMode === 'none') {
-                        this.viewerState.outlineMode = 'partial';
-                    } else if (this.viewerState.outlineMode === 'partial') {
-                        this.viewerState.outlineMode = 'full';
+                    if (this.outlineMode === 'none') {
+                        this.outlineMode = 'partial';
+                    } else if (this.outlineMode === 'partial') {
+                        this.outlineMode = 'full';
                     } else { // full
-                        this.viewerState.outlineMode = 'none';
+                        this.outlineMode = 'none';
                     }
                     this.updateOutlineButtonStyle();
                     this.render('outlineModeButton');
@@ -1627,19 +1490,19 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.updateOutlineButtonStyle();
             } else if (this.outlineModeSelect) {
                 // Dropdown mode (viewer.html) - already handled in initialization
-                this.outlineModeSelect.value = this.viewerState.outlineMode || 'full';
+                this.outlineModeSelect.value = this.outlineMode || 'full';
             }
 
             if (this.depthCheckbox) {
                 this.depthCheckbox.addEventListener('change', (e) => {
-                    this.viewerState.depthEnabled = e.target.checked;
+                    this.depthEnabled = e.target.checked;
                     this.render('depthCheckbox');
                 });
             }
 
             if (this.colorblindCheckbox) {
                 this.colorblindCheckbox.addEventListener('change', (e) => {
-                    this.viewerState.colorblindMode = e.target.checked;
+                    this.colorblindMode = e.target.checked;
                     // Mark colors as needing update - will be recalculated on next render
                     this.colorsNeedUpdate = true;
                     this.plddtColorsNeedUpdate = true;
@@ -1699,39 +1562,39 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         _switchToObject(newObjectName) {
             // Save current object's selection state and viewer state
             if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
-                // Save selection state
-                this.objectsData[this.currentObjectName].selectionState = {
+                const obj = this.objectsData[this.currentObjectName];
+                obj.selectionState = {
                     positions: new Set(this.selectionModel.positions),
                     chains: new Set(this.selectionModel.chains),
                     paeBoxes: this.selectionModel.paeBoxes.map(box => ({ ...box })),
                     selectionMode: this.selectionModel.selectionMode
                 };
-                // Save viewer state (rotation, zoom, center, rendering preferences)
-                this.saveViewerState(this.currentObjectName);
+                obj.viewerState = {
+                    rotation: this._deepCopyMatrix(this.viewerState.rotation),
+                    zoom: this.viewerState.zoom,
+                    perspectiveEnabled: this.viewerState.perspectiveEnabled,
+                    focalLength: this.viewerState.focalLength,
+                    center: this.viewerState.center ? { ...this.viewerState.center } : null,
+                    extent: this.viewerState.extent,
+                    currentFrame: this.currentFrame
+                };
             }
 
             // Switch to new object
             this.currentObjectName = newObjectName;
 
-            // Ensure object has proper structure and frameState
-            if (!this.objectsData[newObjectName]) {
-                this.objectsData[newObjectName] = {
-                    frames: [],
-                    frameState: this._createEmptyFrameState(),
-                    selectionState: {
-                        positions: new Set(),
-                        chains: new Set(),
-                        paeBoxes: [],
-                        selectionMode: 'default'
-                    }
-                };
-            } else {
-                // CRITICAL FIX: Always create fresh frameState when switching objects
-                // This ensures old data from previous loads doesn't contaminate new object
-                // Especially important when switching between proteins of different sizes
-                this.objectsData[newObjectName].frameState = this._createEmptyFrameState();
-            }
+            // Invalidate segment cache to ensure contacts and other object-specific data are regenerated
+            this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesFrame = -1;
+            this.cachedSegmentIndicesObjectName = null;
 
+            // Clear renderer bonds (will be restored from object data when frames load)
+            this.bonds = null;
+
+            // Ensure object has selectionState initialized
+            if (!this.objectsData[newObjectName]) {
+                this.objectsData[newObjectName] = {};
+            }
             if (!this.objectsData[newObjectName].selectionState) {
                 this.objectsData[newObjectName].selectionState = {
                     positions: new Set(),
@@ -1740,7 +1603,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     selectionMode: 'default'
                 };
             }
-
 
             // Get the correct coords length from the new object's first frame for normalization
             // This ensures normalization uses the correct size, not the previous object's coords
@@ -1757,9 +1619,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.selectionModel.paeBoxes = savedState.paeBoxes.map(box => ({ ...box }));
             this.selectionModel.selectionMode = savedState.selectionMode;
 
-            // Restore viewer state (rotation, zoom, center, rendering preferences)
-            this.restoreViewerState(newObjectName);
-
             // Only normalize if in default mode with empty positions, using correct coords length
             if (this.selectionModel.selectionMode === 'default' &&
                 (!this.selectionModel.positions || this.selectionModel.positions.size === 0)) {
@@ -1769,12 +1628,10 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 }
             }
 
-
-
             // Populate entropy data from MSA if available
             if (this.objectsData[newObjectName]?.msa?.msasBySequence && this.objectsData[newObjectName]?.msa?.chainToSequence) {
                 this._mapEntropyToStructure(newObjectName);
-            } else if (this.viewerState.colorMode === 'entropy') {
+            } else if (this.colorMode === 'entropy') {
                 // If entropy mode is active but no MSA, try to map it anyway
                 this._mapEntropyToStructure();
             } else {
@@ -1792,6 +1649,22 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 };
             }
 
+            // Restore viewer state from new object
+            const obj = this.objectsData[newObjectName];
+            const saved = obj.viewerState;
+            this.viewerState = {
+                rotation: this._deepCopyMatrix(saved.rotation),
+                zoom: saved.zoom,
+                perspectiveEnabled: saved.perspectiveEnabled,
+                focalLength: saved.focalLength,
+                center: saved.center ? { ...saved.center } : null,
+                extent: saved.extent,
+                currentFrame: saved.currentFrame
+            };
+
+            // Restore currentFrame from viewerState
+            this.currentFrame = this.viewerState.currentFrame;
+
             // Note: _composeAndApplyMask will be called by setFrame after the frame data is loaded
         }
 
@@ -1799,26 +1672,25 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         addObject(name) {
             this.stopAnimation();
 
-            // If object with same name already exists, clear it instead of creating duplicate
+            // If object with same name already exists, only clear if it has no frames
+            // (preserves loaded frames during data refresh)
             const objectExists = this.objectsData[name] !== undefined;
             if (objectExists) {
-                this.objectsData[name].frames = [];
-                this.objectsData[name].maxExtent = 0;
-                this.objectsData[name].stdDev = 0;
-                this.objectsData[name].globalCenterSum = new Vec3(0, 0, 0);
-                this.objectsData[name].totalPositions = 0;
-                this.objectsData[name]._lastPlddtFrame = -1;
-                this.objectsData[name]._lastPaeFrame = -1;
-                // Reset frameState for new data
-                this.objectsData[name].frameState = this._createEmptyFrameState();
-                // Don't clear selectionState - preserve it
-                // Ensure viewerState is preserved (or recreated if missing)
-                if (!this.objectsData[name].viewerState) {
-                    this.objectsData[name].viewerState = {
-                        center: { x: 0, y: 0, z: 0 },
-                        rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                        zoom: 1.0
-                    };
+                const hasFrames = this.objectsData[name].frames && this.objectsData[name].frames.length > 0;
+
+                if (hasFrames) {
+                    // Object already has frames (from data load), don't clear it
+                    return;
+                } else {
+                    // Object exists but is empty, clear it for reuse
+                    this.objectsData[name].frames = [];
+                    this.objectsData[name].maxExtent = 0;
+                    this.objectsData[name].stdDev = 0;
+                    this.objectsData[name].globalCenterSum = new Vec3(0, 0, 0);
+                    this.objectsData[name].totalPositions = 0;
+                    this.objectsData[name]._lastPlddtFrame = -1;
+                    this.objectsData[name]._lastPaeFrame = -1;
+                    // Don't clear selectionState - preserve it
                 }
             } else {
                 // Create new object
@@ -1839,12 +1711,14 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                         selectionMode: 'default'
                     },
                     viewerState: {
-                        center: { x: 0, y: 0, z: 0 },
                         rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                        zoom: 1.0
-                    },
-                    // Per-object frame state (coordinates, structure, rendering data)
-                    frameState: this._createEmptyFrameState()
+                        zoom: 1.0,
+                        perspectiveEnabled: false,
+                        focalLength: 200.0,
+                        center: null,
+                        extent: null,
+                        currentFrame: -1
+                    }
                 };
 
                 // Add to dropdown
@@ -1891,8 +1765,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             if (!this.objectsData[targetObjectName]) {
-                console.error(`addFrame: Object '${targetObjectName}' does not exist.`);
-                console.warn(`addFrame: Object '${targetObjectName}' not found.Creating it.`);
+                console.error(`addFrame: Object '${targetObjectName}' does not exist. Creating it.`);
                 this.addObject(targetObjectName);
             }
 
@@ -1910,8 +1783,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             // Store frame-level color if provided in data
-            // If color was provided and we're not in batch mode, render immediately to apply new colors
-            if (data.color !== undefined && data.color !== null && !this._batchLoading) {
+            // Color is handled entirely through the hierarchy resolver in getAtomColor
+            if (data.color !== undefined && data.color !== null) {
+                // Invalidate segment cache to apply new colors
                 this.cachedSegmentIndices = null;
                 this.cachedSegmentIndicesFrame = -1;
                 this.cachedSegmentIndicesObjectName = null;
@@ -1931,6 +1805,16 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
             object.frames.push(data);
 
+            // If this is the first frame and overlay should be auto-enabled, enable it now
+            // Commit 6: Use _enterOverlayMode instead of toggleOverlay for atomic state management
+            let justAutoEnabledOverlay = false;
+            if (this.overlayState.shouldAutoEnable && object.frames.length === 1 && !this.overlayState.enabled) {
+                // Use atomic entry to overlay mode
+                this._enterOverlayMode(object, false);
+                this.overlayState.shouldAutoEnable = false;  // Only auto-enable once
+                justAutoEnabledOverlay = true;  // Flag to skip re-merge on this frame
+            }
+
             // Set view to this object
             if (this.currentObjectName !== targetObjectName) {
                 this.stopAnimation(); // Stop if playing on another obj
@@ -1941,11 +1825,46 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 }
             }
 
-
             // If color was provided and we're not in batch mode, render immediately to apply new colors
             if (data.color !== undefined && data.color !== null && !this._batchLoading) {
                 this.render('addFrame-color');
             }
+
+            // Update global center sum and count (from all positions for viewing)
+            let frameSum = new Vec3(0, 0, 0);
+            let frameAtoms = 0;
+            if (data && data.coords) {
+                frameAtoms = data.coords.length;
+                for (let i = 0; i < data.coords.length; i++) {
+                    const c = data.coords[i];
+                    frameSum = frameSum.add(new Vec3(c[0], c[1], c[2]));
+                }
+                object.globalCenterSum = object.globalCenterSum.add(frameSum);
+                object.totalPositions += frameAtoms;
+            }
+
+            const globalCenter = (object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0, 0, 0);
+
+            // Recalculate maxExtent and standard deviation for all frames using the new global center
+            let maxDistSq = 0;
+            let sumDistSq = 0;
+            let positionCount = 0;
+            for (const frame of object.frames) {
+                if (frame && frame.coords) {
+                    for (let i = 0; i < frame.coords.length; i++) {
+                        const c = frame.coords[i];
+                        const coordVec = new Vec3(c[0], c[1], c[2]);
+                        const centeredCoord = coordVec.sub(globalCenter);
+                        const distSq = centeredCoord.dot(centeredCoord);
+                        if (distSq > maxDistSq) maxDistSq = distSq;
+                        sumDistSq += distSq;
+                        positionCount++;
+                    }
+                }
+            }
+            object.maxExtent = Math.sqrt(maxDistSq);
+            // Calculate standard deviation: sqrt(mean of squared distances)
+            object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
 
             // If this is the first frame being loaded, we need to
             // Recalculate focal length if perspective is enabled and object size changed
@@ -1954,13 +1873,47 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.orthoSlider.dispatchEvent(new Event('input'));
             }
 
+            // If in overlay mode, re-merge to include the new frame
+            // Skip re-merge if we just auto-enabled overlay on this frame (toggleOverlay already did it)
+            if (this.overlayState.enabled && !this._batchLoading && !justAutoEnabledOverlay) {
+                // Re-merge all frames when new frame added in overlay mode (Commit 2)
+                const merged = this._mergeFrameRange(object, 0, object.frames.length - 1);
+
+                if (merged) {
+                    // Store overlay-specific data from merge result
+                    this.overlayState.frameIdMap = merged.frameIdMap;
+                    this.overlayState.autoColor = merged.autoColor;
+
+                    // Invalidate segment cache
+                    this.cachedSegmentIndices = null;
+                    this.cachedSegmentIndicesFrame = -1;
+                    this.cachedSegmentIndicesObjectName = null;
+
+                    // Load re-merged data
+                    this._loadDataIntoRenderer(merged, false);
+                }
+            }
+
             // Skip setFrame during batch loading to avoid expensive renders
             // We'll render once at the end in updateViewerFromGlobalBatch
+            // In overlay mode, DON'T call setFrame - it would load individual frame data instead of merged
             if (!this.isPlaying && !this._batchLoading) {
-                this.setFrame(object.frames.length - 1);
+                if (!this.overlayState.enabled) {
+                    // Non-overlay: load the new frame normally
+                    this.setFrame(object.frames.length - 1);
+                } else {
+                    // Overlay mode: just set currentFrame without loading individual frame data
+                    this.currentFrame = 0;
+                    this.render('addFrame-overlay');
+                }
             } else if (!this.isPlaying) {
                 // During batch loading, just update the frame index without rendering
-                this.currentFrame = object.frames.length - 1;
+                if (!this.overlayState.enabled) {
+                    this.currentFrame = object.frames.length - 1;
+                } else {
+                    // Overlay mode: keep frame 0 which has merged data
+                    this.currentFrame = 0;
+                }
                 this.lastRenderedFrame = -1; // Mark as needing render
             }
 
@@ -1981,7 +1934,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
         // Extract current selection to a new object
         extractSelection() {
-            console.log("=== START extractSelection ===");
             // Check if we have a current object and frame
             if (!this.currentObjectName) {
                 console.warn("No object loaded. Cannot extract selection.");
@@ -1989,13 +1941,10 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             const object = this.objectsData[this.currentObjectName];
-            console.log("Current object:", this.currentObjectName);
             if (!object || !object.frames || object.frames.length === 0) {
                 console.warn("No frames available. Cannot extract selection.");
                 return;
             }
-
-            console.log(`Object has ${object.frames.length} frames`);
 
             // Use first frame to determine selection (selection is frame-independent)
             const firstFrame = object.frames[0];
@@ -2003,8 +1952,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 console.warn("First frame has no coordinates. Cannot extract selection.");
                 return;
             }
-
-            console.log("First frame PAE data:", firstFrame.pae ? `exists, length=${firstFrame.pae.length}` : "null");
 
             // Get selected positions (selection is frame-independent, so use first frame to determine indices)
             let selectedPositions = new Set();
@@ -2107,9 +2054,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // Extract all frames, not just the current one
             for (let frameIndex = 0; frameIndex < object.frames.length; frameIndex++) {
                 const frame = object.frames[frameIndex];
-                console.log(`\n--- Processing frame ${frameIndex} ---`);
                 if (!frame || !frame.coords) {
-                    console.log(`Frame ${frameIndex} skipped: invalid`);
                     continue; // Skip invalid frames
                 }
 
@@ -2117,14 +2062,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
                 const resolvedPae = this._resolvePaeData(object, frameIndex);
 
-                console.log(`Frame ${frameIndex} - resolvedPae:`, resolvedPae ? `exists, length=${resolvedPae.length}` : "null");
-                console.log(`Frame ${frameIndex} - frame.pae:`, frame.pae ? `exists, length=${frame.pae.length}` : "null");
-
                 // Use resolved data if available, otherwise use frame's own data
                 const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
                 const sourcePae = resolvedPae !== null ? resolvedPae : frame.pae;
-
-                console.log(`Frame ${frameIndex} - sourcePae:`, sourcePae ? `exists, length=${sourcePae.length}` : "null");
 
                 // Extract frame data for selected positions
                 const extractedFrame = {
@@ -2162,38 +2102,39 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 }
 
                 // Filter PAE matrix if present (use resolved PAE data)
-                if (sourcePae && sourcePae.length > 0) {
-                    console.log(`Frame ${frameIndex} - PAE is ${sourcePae instanceof Uint8Array ? 'Uint8Array' : 'Array'}`);
+                // PAE can be Uint8Array (flattened, scaled x8) or 2D array (legacy)
+                if (sourcePae) {
+                    const isUint8 = sourcePae instanceof Uint8Array;
+                    const is2DArray = Array.isArray(sourcePae) && sourcePae.length > 0 && Array.isArray(sourcePae[0]);
+                    const isFlatArray = Array.isArray(sourcePae) && sourcePae.length > 0 && !Array.isArray(sourcePae[0]);
 
-                    // Calculate original matrix size
-                    const origN = Math.round(Math.sqrt(sourcePae.length));
-                    console.log(`Frame ${frameIndex} - Original PAE matrix size: ${origN}x${origN}`);
-                    console.log(`Frame ${frameIndex} - Creating new PAE for ${selectedIndices.length}x${selectedIndices.length}`);
-
-                    // Check if source PAE is flat (Uint8Array or flat Array)
-                    const isFlat = sourcePae instanceof Uint8Array || (Array.isArray(sourcePae) && !Array.isArray(sourcePae[0]));
-
-                    if (isFlat) {
-                        // Handle flat array format (Uint8Array)
+                    if (isUint8 || isFlatArray) {
+                        // Uint8Array or flat array format: flattened N x N matrix
+                        // Calculate N from the original PAE size
+                        const originalN = Math.round(Math.sqrt(sourcePae.length));
                         const newN = selectedIndices.length;
+
+                        // Create new flattened PAE array for extracted selection
                         const newPAE = new Uint8Array(newN * newN);
 
-                        for (let i = 0; i < selectedIndices.length; i++) {
-                            for (let j = 0; j < selectedIndices.length; j++) {
+                        for (let i = 0; i < newN; i++) {
+                            for (let j = 0; j < newN; j++) {
                                 const originalI = selectedIndices[i];
                                 const originalJ = selectedIndices[j];
-                                if (originalI < origN && originalJ < origN) {
-                                    const value = sourcePae[originalI * origN + originalJ];
-                                    newPAE[i * newN + j] = value;
+
+                                // Bounds check
+                                if (originalI < originalN && originalJ < originalN) {
+                                    const originalIdx = originalI * originalN + originalJ;
+                                    newPAE[i * newN + j] = sourcePae[originalIdx];
                                 } else {
-                                    newPAE[i * newN + j] = 0; // Default value if out of bounds
+                                    newPAE[i * newN + j] = 0; // Default value
                                 }
                             }
                         }
+
                         extractedFrame.pae = newPAE;
-                        console.log(`Frame ${frameIndex} - Extracted PAE (flat) set, new size: ${newN}x${newN} (${newPAE.length} elements)`);
-                    } else {
-                        // Handle 2D array format (legacy)
+                    } else if (is2DArray) {
+                        // Legacy 2D array format
                         const newPAE = [];
                         for (let i = 0; i < selectedIndices.length; i++) {
                             const row = [];
@@ -2209,10 +2150,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                             newPAE.push(row);
                         }
                         extractedFrame.pae = newPAE;
-                        console.log(`Frame ${frameIndex} - Extracted PAE (2D array) set, new PAE size: ${newPAE.length}x${newPAE[0] ? newPAE[0].length : 0}`);
                     }
-                } else {
-                    console.log(`Frame ${frameIndex} - No sourcePae available, skipping PAE extraction`);
                 }
 
                 // Filter bonds if present
@@ -2239,16 +2177,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 }
 
                 // Add extracted frame to new object
-                console.log(`Frame ${frameIndex} - Adding extracted frame to '${extractName}'`);
-                console.log(`Frame ${frameIndex} - Extracted frame PAE:`, extractedFrame.pae ? `exists, size=${extractedFrame.pae.length}x${extractedFrame.pae[0] ? extractedFrame.pae[0].length : 0}` : "null");
                 this.addFrame(extractedFrame, extractName);
-            }
-
-            console.log(`=== Finished extracting all frames to '${extractName}' ===`);
-            const extractedObject = this.objectsData[extractName];
-            console.log(`Extracted object frames:`, extractedObject.frames.length);
-            for (let i = 0; i < extractedObject.frames.length; i++) {
-                console.log(`  Frame ${i} PAE:`, extractedObject.frames[i].pae ? `exists, size=${extractedObject.frames[i].pae.length}` : "null");
             }
 
             // Extract MSA data for selected positions if MSA exists
@@ -2292,6 +2221,253 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
         }
 
+        /**
+         * Extract MSA data for selected positions
+         * Maps structure positions to MSA positions and extracts only selected MSA regions
+         * @param {Object} sourceObject - Original object with MSA data
+         * @param {Object} extractedObject - New extracted object
+         * @param {Object} frame - Frame data for mapping
+         * @param {Array} selectedIndices - Array of selected position indices
+         */
+        _extractMSADataForSelection(sourceObject, extractedObject, frame, selectedIndices) {
+            if (!sourceObject.msa || !sourceObject.msa.msasBySequence || !sourceObject.msa.chainToSequence) {
+                return;
+            }
+
+            const selectedPositionsSet = new Set(selectedIndices);
+            const extractedFrame = extractedObject.frames[0];
+            if (!extractedFrame || !extractedFrame.chains) {
+                return;
+            }
+
+            // Initialize MSA structure for extracted object
+            extractedObject.msa = {
+                msasBySequence: {},
+                chainToSequence: {},
+                availableChains: [],
+                defaultChain: null,
+                msaToChains: {}
+            };
+
+            // Check if extractChainSequences is available (from app.js)
+            const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function'
+                ? window.extractChainSequences
+                : null;
+
+            if (!extractChainSequences) {
+                console.warn("extractChainSequences not available, cannot extract MSA data");
+                return;
+            }
+
+            // Extract chain sequences from extracted frame
+            const extractedChainSequences = extractChainSequences(extractedFrame);
+
+            // For each chain in the original MSA
+            for (const [chainId, querySeq] of Object.entries(sourceObject.msa.chainToSequence)) {
+                const msaEntry = sourceObject.msa.msasBySequence[querySeq];
+                if (!msaEntry) continue;
+
+                // Use msaData directly - it is now always the canonical unfiltered source
+                // (We no longer mutate msaEntry.msaData with filtered data)
+                const originalMSAData = msaEntry.msaData;
+                if (!originalMSAData) continue;
+
+                const originalQuerySequence = originalMSAData.querySequence; // Query sequence has no gaps (removed during parsing)
+
+                // Extract chain sequence from original frame
+                const originalChainSequences = extractChainSequences(frame);
+                const originalChainSequence = originalChainSequences[chainId];
+                if (!originalChainSequence) continue;
+
+                // Find representative positions for this chain in original frame (position_types === 'P')
+                const chainPositions = [];
+                const positionCount = frame.chains.length;
+
+                for (let i = 0; i < positionCount; i++) {
+                    if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
+                        chainPositions.push(i);
+                    }
+                }
+
+                if (chainPositions.length === 0) continue;
+
+                // Sort positions by residue number to match sequence order
+                chainPositions.sort((a, b) => {
+                    const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                    const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                    return residueNumA - residueNumB;
+                });
+
+                // Map MSA positions to structure positions and find which MSA positions are selected
+                // Query sequence has no gaps, so mapping is straightforward
+                const msaQueryUpper = originalQuerySequence.toUpperCase();
+                const chainSeqUpper = originalChainSequence.toUpperCase();
+                const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length);
+                const selectedMSAPositions = new Set(); // MSA position indices that correspond to selected structure positions
+
+                for (let i = 0; i < minLength; i++) {
+                    // Check if this MSA position matches the chain sequence position
+                    if (msaQueryUpper[i] === chainSeqUpper[i]) {
+                        // Match found - check if this structure position is selected
+                        const positionIndex = chainPositions[i];
+                        if (selectedPositionsSet.has(positionIndex)) {
+                            selectedMSAPositions.add(i); // Store MSA position index
+                        }
+                    }
+                }
+
+                if (selectedMSAPositions.size === 0) continue;
+
+                // Extract selected MSA positions from ALL sequences (not filtered by coverage/identity)
+                // Use sequencesOriginal to include all sequences, even those hidden by coverage/identity filters
+                const allSequences = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+                const extractedSequences = [];
+                const extractedQuerySequence = [];
+
+                // Extract from query sequence (only selected positions/columns)
+                for (let i = 0; i < originalQuerySequence.length; i++) {
+                    if (selectedMSAPositions.has(i)) {
+                        extractedQuerySequence.push(originalQuerySequence[i]);
+                    }
+                }
+
+                // Extract from ALL sequences (including those hidden by coverage/identity filters)
+                // But only extract the selected MSA positions (columns)
+                for (const seq of allSequences) {
+                    const extractedSeq = {
+                        name: seq.name || 'Unknown',
+                        sequence: ''
+                    };
+
+                    // Copy any other properties from the original sequence
+                    if (seq.id !== undefined) extractedSeq.id = seq.id;
+                    if (seq.description !== undefined) extractedSeq.description = seq.description;
+
+                    // Handle both string and array sequence formats
+                    const seqStr = Array.isArray(seq.sequence) ? seq.sequence.join('') : seq.sequence;
+
+                    // Extract only the selected MSA positions (columns) from this sequence
+                    for (let i = 0; i < seqStr.length; i++) {
+                        if (selectedMSAPositions.has(i)) {
+                            extractedSeq.sequence += seqStr[i];
+                        }
+                    }
+
+                    extractedSequences.push(extractedSeq);
+                }
+
+                // Create new MSA data with extracted sequences (selected positions only, but all sequences)
+                const extractedQuerySeq = extractedQuerySequence.join('');
+                const extractedQuerySeqNoGaps = extractedQuerySeq.replace(/-/g, '').toUpperCase();
+
+                if (extractedQuerySeqNoGaps.length === 0) continue;
+
+                // Find query sequence in original MSA and extract its name
+                // Use sequencesOriginal to find query in all sequences
+                let queryName = '>query';
+                const originalQueryIndex = originalMSAData.queryIndex !== undefined ? originalMSAData.queryIndex : 0;
+                if (allSequences && allSequences[originalQueryIndex]) {
+                    queryName = allSequences[originalQueryIndex].name || '>query';
+                }
+
+                // Ensure query sequence is first and has proper name
+                const querySeqIndex = extractedSequences.findIndex(s =>
+                    s.name && s.name.toLowerCase().includes('query')
+                );
+                if (querySeqIndex === -1 && extractedSequences.length > 0) {
+                    // No query found, make first sequence the query
+                    extractedSequences[0].name = queryName;
+                } else if (querySeqIndex > 0) {
+                    // Query found but not first, move it to first position
+                    const querySeq = extractedSequences.splice(querySeqIndex, 1)[0];
+                    extractedSequences.unshift(querySeq);
+                }
+
+                // Build residue_numbers mapping for extracted MSA
+                // Map extracted MSA positions to extracted structure residue_numbers values
+                const extractedResidueNumbers = new Array(extractedQuerySeq.length).fill(null);
+
+                // Get sorted selected indices for THIS CHAIN ONLY to match sequence order
+                const selectedIndicesForChain = chainPositions.filter(posIdx => selectedPositionsSet.has(posIdx));
+                const sortedSelectedIndicesForChain = selectedIndicesForChain.sort((a, b) => {
+                    const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                    const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                    return residueNumA - residueNumB;
+                });
+
+                let extractedSeqIdx = 0; // Position in extracted sequence (no gaps, sorted by residue_numbers)
+
+                // Map extracted MSA positions to extracted structure residue numbers
+                for (let i = 0; i < extractedQuerySeq.length; i++) {
+                    const msaChar = extractedQuerySeq[i];
+                    if (msaChar === '-') {
+                        // Gap - leave as null
+                        continue;
+                    }
+                    // Find corresponding position in extracted frame (for this chain only)
+                    if (extractedSeqIdx < sortedSelectedIndicesForChain.length) {
+                        const originalPositionIdx = sortedSelectedIndicesForChain[extractedSeqIdx];
+                        // Get residue_numbers from original frame
+                        if (frame.residue_numbers && originalPositionIdx < frame.residue_numbers.length) {
+                            extractedResidueNumbers[i] = frame.residue_numbers[originalPositionIdx];
+                        }
+                        extractedSeqIdx++;
+                    }
+                }
+
+                const extractedMSAData = {
+                    sequences: extractedSequences,
+                    querySequence: extractedQuerySeq,
+                    queryLength: extractedQuerySeqNoGaps.length,
+                    sequencesOriginal: extractedSequences, // All sequences included (not filtered by cov/qid)
+                    queryIndex: 0, // Query is always first after extraction
+                    residueNumbers: extractedResidueNumbers // Map to structure residue_numbers
+                };
+
+                // Compute MSA properties (frequencies, logOdds) for extracted sequences
+                // This must be done because the extracted sequences are different from the original
+                if (typeof window !== 'undefined' && typeof window.computeMSAProperties === 'function') {
+                    window.computeMSAProperties(extractedMSAData);
+                }
+
+                // Check if extracted chain sequence matches the extracted query sequence (no gaps)
+                const extractedChainSeq = extractedChainSequences[chainId];
+                if (extractedChainSeq && extractedChainSeq.toUpperCase() === extractedQuerySeqNoGaps) {
+                    // Store MSA in extracted object
+                    if (!extractedObject.msa.msasBySequence[extractedQuerySeqNoGaps]) {
+                        extractedObject.msa.msasBySequence[extractedQuerySeqNoGaps] = {
+                            msaData: extractedMSAData,
+                            chains: [chainId]
+                        };
+                    }
+
+                    extractedObject.msa.chainToSequence[chainId] = extractedQuerySeqNoGaps;
+
+                    if (!extractedObject.msa.availableChains.includes(chainId)) {
+                        extractedObject.msa.availableChains.push(chainId);
+                    }
+
+                    if (!extractedObject.msa.defaultChain) {
+                        extractedObject.msa.defaultChain = chainId;
+                    }
+                }
+            }
+
+            // Update MSA container visibility and chain selector after extraction
+            if (typeof window !== 'undefined') {
+                // Trigger MSA viewer update if available
+                if (window.updateMSAContainerVisibility) {
+                    setTimeout(() => {
+                        window.updateMSAContainerVisibility();
+                    }, 100);
+                }
+                if (window.updateMSAChainSelectorIndex) {
+                    setTimeout(() => {
+                        window.updateMSAChainSelectorIndex();
+                    }, 100);
+                }
+            }
+        }
 
         // Set the current frame and render it
         setFrame(frameIndex, skipRender = false) {
@@ -2302,7 +2478,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 // Use cached display dimensions
                 const displayWidth = this.displayWidth;
                 const displayHeight = this.displayHeight;
-                if (this.viewerState.isTransparent) {
+                if (this.isTransparent) {
                     this.ctx.clearRect(0, 0, displayWidth, displayHeight);
                 } else {
                     this.ctx.fillStyle = '#ffffff';
@@ -2325,6 +2501,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             const object = this.objectsData[this.currentObjectName];
             if (!object || frameIndex < 0 || frameIndex >= object.frames.length) {
                 this.currentFrame = -1;
+                this.viewerState.currentFrame = -1;
                 this.coords = [];
                 clearCanvas();
                 if (this.paeRenderer) { this.paeRenderer.setData(null); }
@@ -2334,16 +2511,30 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             this.currentFrame = frameIndex;
+            this.viewerState.currentFrame = frameIndex;
 
-            // Load frame data and render immediately for manual frame changes (e.g., slider)
-            this._loadFrameData(frameIndex, true); // Load without render
+            // Commit 4: Make setFrame overlay-aware
+            // In overlay mode, DON'T reload frame data (would destroy merged data)
+            // Just update display and render
+            if (this.overlayState.enabled) {
+                // Overlay mode: keep merged data, just update display focus
+                this._composeAndApplyMask(skipRender);
 
-            // Apply selection mask after frame data is loaded (in case selection was restored during object switch)
-            this._composeAndApplyMask(skipRender); // skip3DRender if requested
+                if (!skipRender) {
+                    this.render('setFrame-overlay');
+                }
+            } else {
+                // Normal mode: load individual frame data
+                this._loadFrameData(frameIndex, true); // Load without render
 
-            if (!skipRender) {
-                this.render('setFrame'); // Render once unless skipped
+                // Apply selection mask after frame data is loaded
+                this._composeAndApplyMask(skipRender);
+
+                if (!skipRender) {
+                    this.render('setFrame'); // Render once unless skipped
+                }
             }
+
             this.lastRenderedFrame = frameIndex;
 
             // Update PAE container visibility
@@ -2430,82 +2621,18 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             return null;
         }
 
-        // Create an empty frameState object for a new object
-        // This holds all per-object, per-frame data
-        _createEmptyFrameState() {
-            return {
-                // Coordinate data (loaded from frame data)
-                coords: [],
-                rotatedCoords: [],
-                plddts: [],
-
-                // Structure metadata (per-object)
-                chains: [],
-                positionTypes: [],
-                residueNumbers: [],
-                positionNames: [],
-
-                // Color infrastructure (recalculated per frame)
-                chainIndexMap: new Map(),
-                chainRainbowScales: {},
-                perChainIndices: [],
-                ligandOnlyChains: new Set(),
-                ligandGroups: new Map(),
-
-                // Segment & bond data
-                segmentIndices: [],
-                bonds: null,
-                segData: [],
-
-                // Rendering caches (per-object allocation)
-                screenX: null,
-                screenY: null,
-                screenRadius: null,
-                screenValid: null,
-                adjList: null,
-                segmentOrder: null,
-                segmentFrame: null,
-                segmentEndpointFlags: null,
-
-                // Data inheritance caches (within object multi-frame support)
-                cachedPlddts: null,
-                cachedChains: null,
-                cachedPositionTypes: null,
-                cachedPositionNames: null,
-                cachedResidueNumbers: null,
-
-                // Entropy & overlay mode
-                entropy: undefined,
-                frameIdMap: null,
-                overlayAutoColor: null,
-
-                // Shadow caching
-                cachedShadows: null,
-                cachedTints: null,
-                lastShadowRotationMatrix: null
-            };
-        }
-
-        // Get frameState for the current object
-        // Returns the per-object state storage, or null if not available
-        _getFrameState() {
-            if (!this.currentObjectName || !this.objectsData[this.currentObjectName]) {
-                return null;
-            }
-            return this.objectsData[this.currentObjectName].frameState || null;
-        }
-
         // Find PAE container with fallback logic
         _findPAEContainer() {
             if (this.paeContainer) return this.paeContainer;
 
-            // Use this.containerElement (which is the #mainContainer for this viewer)
-            if (this.containerElement) {
-                this.paeContainer = this.containerElement.querySelector('#paeContainer');
-                if (this.paeContainer) return this.paeContainer;
+            if (this.canvas && this.canvas.parentElement) {
+                const mainContainer = this.canvas.parentElement.closest('#mainContainer');
+                if (mainContainer) {
+                    this.paeContainer = mainContainer.querySelector('#paeContainer');
+                    if (this.paeContainer) return this.paeContainer;
+                }
             }
 
-            // Fallback: search globally (for backward compatibility)
             this.paeContainer = document.querySelector('#paeContainer');
             return this.paeContainer;
         }
@@ -2520,16 +2647,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Check if any frame has valid PAE data (directly or via inheritance)
             // If first frame has PAE, all frames can inherit; otherwise check if any frame has it
-            if (object.frames.length > 0) {
-                // Check first frame - if it has PAE, all can inherit
-                if (this._hasPaeData(object.frames[0])) {
-                    return true;
-                }
-                // Otherwise, check if any frame has PAE
-                return object.frames.some(frame => this._hasPaeData(frame));
+            if (this._hasPaeData(object.frames[0])) {
+                return true;
             }
-
-            return false;
+            // Otherwise, check if any frame has PAE
+            return object.frames.some(frame => this._hasPaeData(frame));
         }
 
         // Update PAE container visibility based on current object's PAE data
@@ -2566,13 +2688,13 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Apply appropriate class and style based on mode
             // All modes use grey background, only border style differs
-            if (this.viewerState.outlineMode === 'none') {
+            if (this.outlineMode === 'none') {
                 this.outlineModeButton.classList.add('outline-none');
                 spanElement.style.backgroundColor = '#e5e7eb'; // light grey background
                 spanElement.style.border = '3px solid #e5e7eb'; // match background color to make border invisible
                 spanElement.style.color = '#000000';
                 spanElement.style.fontWeight = '500';
-            } else if (this.viewerState.outlineMode === 'partial') {
+            } else if (this.outlineMode === 'partial') {
                 this.outlineModeButton.classList.add('outline-partial');
                 spanElement.style.backgroundColor = '#e5e7eb'; // grey background
                 spanElement.style.border = '3px dashed #000000';
@@ -2614,7 +2736,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             const current = Math.max(0, this.currentFrame) + 1;
 
             // Check config.controls before showing
-            // (config is already in scope from initializePy2DmolViewer)
+            const config = window.viewerConfig || {};
             if (total <= 1 || !config.controls) {
                 this.controlsContainer.style.display = 'none';
             } else {
@@ -2671,7 +2793,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             // Unified frame control state
-            const shouldDisableFrameControls = this.overlayMode || (total <= 1);
+            const shouldDisableFrameControls = this.overlayState.enabled || (total <= 1);
 
             // Update play button - checkbox style (grey when off, blue when on)
             if (this.playButton) {
@@ -2690,7 +2812,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 } else {
                     // Use symbols for play/pause
                     this.playButton.innerHTML = '';
-                    this.playButton.textContent = this.isPlaying ? '⏸' : '▶︎';
+                    this.playButton.textContent = this.isPlaying ? '❚❚' : '▶︎';
                 }
                 this.playButton.disabled = shouldDisableFrameControls;
             }
@@ -2740,8 +2862,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Update frame slider
             if (this.frameSlider) {
-                this.frameSlider.disabled = this.overlayMode;
-                this.frameSlider.style.opacity = this.overlayMode ? '0.5' : '';
+                this.frameSlider.disabled = this.overlayState.enabled;
+                this.frameSlider.style.opacity = this.overlayState.enabled ? '0.5' : '';
             }
         }
 
@@ -2756,12 +2878,189 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     return;
                 }
                 // Ensure we're not in overlay mode
-                if (this.overlayMode) {
+                if (this.overlayState.enabled) {
                     console.warn("Cannot start playback while in overlay mode");
                     return;
                 }
                 this.startAnimation();
             }
+        }
+
+        /**
+         * Merge a range of frames into a single coordinate/property set with frameIdMap tracking.
+         * This is the SINGLE SOURCE OF TRUTH for frame merging logic (Commit 2 refactor).
+         * Used by both toggleOverlay() and addFrame() to ensure consistent behavior.
+         *
+         * @param {Object} object - The object containing frames to merge
+         * @param {number} startFrame - Starting frame index (0-based)
+         * @param {number} endFrame - Ending frame index (inclusive)
+         * @returns {Object} Merged data object with coords, plddts, chains, frameIdMap, autoColor, etc.
+         */
+        _mergeFrameRange(object, startFrame, endFrame) {
+            if (!object || object.frames.length === 0) {
+                return null;
+            }
+
+            // Validate frame range
+            startFrame = Math.max(0, startFrame);
+            endFrame = Math.min(object.frames.length - 1, endFrame);
+
+            if (startFrame > endFrame) {
+                return null;
+            }
+
+            // Determine auto color mode based on first frame characteristics
+            let autoColor = 'rainbow';  // Default
+            const firstFrame = object.frames[0];
+            if (firstFrame) {
+                const firstFrameChains = firstFrame.chains || [];
+                const uniqueFirstChains = new Set(firstFrameChains);
+                const hasFirstPAE = firstFrame.pae && firstFrame.pae.length > 0;
+
+                if (hasFirstPAE) {
+                    autoColor = 'plddt';
+                } else if (uniqueFirstChains.size > 1) {
+                    autoColor = 'chain';
+                } else {
+                    autoColor = 'rainbow';
+                }
+            }
+
+            // Initialize merge arrays
+            const mergedCoords = [];
+            const mergedPlddts = [];
+            const mergedChains = [];
+            const mergedPositionTypes = [];
+            const mergedPositionNames = [];
+            const mergedResidueNumbers = [];
+            const mergedBonds = [];
+            const frameIdMap = [];
+
+            // Merge all frames in the range
+            for (let frameIdx = startFrame; frameIdx <= endFrame; frameIdx++) {
+                const frame = object.frames[frameIdx];
+                if (!frame) continue;
+
+                const frameCoords = frame.coords || [];
+                const frameBonds = frame.bonds || [];
+                const frameChains = frame.chains || Array(frameCoords.length).fill('A');
+                const atomOffset = mergedCoords.length;
+                const frameAtomCount = frameCoords.length;
+
+                // Merge coords and build frameIdMap
+                for (let i = 0; i < frameAtomCount; i++) {
+                    mergedCoords.push(frameCoords[i]);
+                    frameIdMap.push(frameIdx);
+                }
+
+                // Merge data fields - always create arrays with frameAtomCount elements
+                const plddts = frame.plddts && frame.plddts.length === frameAtomCount ?
+                    frame.plddts : Array(frameAtomCount).fill(50.0);
+                const positionTypes = frame.position_types && frame.position_types.length === frameAtomCount ?
+                    frame.position_types : Array(frameAtomCount).fill('P');
+                const positionNames = frame.position_names && frame.position_names.length === frameAtomCount ?
+                    frame.position_names : Array(frameAtomCount).fill('UNK');
+                const residueNumbers = frame.residue_numbers && frame.residue_numbers.length === frameAtomCount ?
+                    frame.residue_numbers : Array.from({ length: frameAtomCount }, (_, i) => i + 1);
+
+                mergedPlddts.push(...plddts);
+                mergedPositionTypes.push(...positionTypes);
+                mergedPositionNames.push(...positionNames);
+                mergedResidueNumbers.push(...residueNumbers);
+
+                // Preserve original chain IDs from this frame
+                for (let i = 0; i < frameAtomCount; i++) {
+                    mergedChains.push(frameChains[i] || 'A');
+                }
+
+                // Merge bonds with adjusted indices
+                for (let i = 0; i < frameBonds.length; i++) {
+                    const bond = frameBonds[i];
+                    mergedBonds.push([bond[0] + atomOffset, bond[1] + atomOffset]);
+                }
+            }
+
+            // Return merged data object
+            return {
+                coords: mergedCoords,
+                plddts: mergedPlddts,
+                chains: mergedChains,
+                position_types: mergedPositionTypes,
+                position_names: mergedPositionNames,
+                residue_numbers: mergedResidueNumbers,
+                pae: this.pae || null,
+                bonds: mergedBonds.length > 0 ? mergedBonds : null,
+                frameIdMap: frameIdMap,
+                autoColor: autoColor,
+                startFrame: startFrame,
+                endFrame: endFrame
+            };
+        }
+
+        /**
+         * Atomically enter overlay mode for the current object.
+         * Merges all frames and loads the merged data.
+         * This is the SINGLE PATH to enter overlay mode (Commit 3 refactor).
+         */
+        _enterOverlayMode(object, skipRender = false) {
+            if (!object || object.frames.length === 0) {
+                return false;
+            }
+
+            // Merge all frames
+            const merged = this._mergeFrameRange(object, 0, object.frames.length - 1);
+            if (!merged) {
+                return false;
+            }
+
+            // Atomically set all overlay state
+            this.overlayState.enabled = true;
+            this.overlayState.frameIdMap = merged.frameIdMap;
+            this.overlayState.autoColor = merged.autoColor;
+            this.lastOperationMode = 'overlay-enter';
+
+            // Invalidate segment cache
+            this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesFrame = -1;
+            this.cachedSegmentIndicesObjectName = null;
+
+            // Set current frame to 0 for merged view
+            this.currentFrame = 0;
+
+            // Load merged data
+            this._loadDataIntoRenderer(merged, skipRender);
+
+            return true;
+        }
+
+        /**
+         * Atomically exit overlay mode and return to single frame view.
+         * Clears all overlay state and loads the target frame.
+         * This is the SINGLE PATH to exit overlay mode (Commit 3 refactor).
+         */
+        _exitOverlayMode(object, targetFrame = 0, skipRender = false) {
+            if (!object || object.frames.length === 0) {
+                return false;
+            }
+
+            // Validate target frame
+            targetFrame = Math.max(0, Math.min(targetFrame, object.frames.length - 1));
+
+            // Atomically clear all overlay state
+            this.overlayState.enabled = false;
+            this.overlayState.frameIdMap = null;
+            this.overlayState.autoColor = null;
+            this.lastOperationMode = 'overlay-exit';
+
+            // Invalidate segment cache (critical after exiting overlay)
+            this.cachedSegmentIndices = null;
+            this.cachedSegmentIndicesFrame = -1;
+            this.cachedSegmentIndicesObjectName = null;
+
+            // Load the target single frame (NOT merged)
+            this._loadFrameData(targetFrame, skipRender);
+
+            return true;
         }
 
         // Toggle overlay mode (merge all frames in same view)
@@ -2771,129 +3070,24 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.stopAnimation();
             }
 
-            // Toggle overlay mode
-            this.overlayMode = !this.overlayMode;
+            if (!this.currentObjectName) return;
 
-            if (this.overlayMode) {
-                // Entering overlay mode - merge all frames
-                if (!this.currentObjectName) return;
+            const object = this.objectsData[this.currentObjectName];
+            if (!object || object.frames.length === 0) return;
 
-                const object = this.objectsData[this.currentObjectName];
-                if (!object || object.frames.length === 0) return;
-
-                // Store pre-merge auto color for use with 'auto' color mode
-                // This is based on the first frame before merging
-                // Determine auto color mode based on first frame characteristics
-                const firstFrame = object.frames[0];
-                if (firstFrame) {
-                    const firstFrameChains = firstFrame.chains || [];
-                    const uniqueFirstChains = new Set(firstFrameChains);
-                    const hasFirstPAE = firstFrame.pae && firstFrame.pae.length > 0;
-
-                    if (hasFirstPAE) {
-                        this.overlayAutoColor = 'plddt';
-                    } else if (uniqueFirstChains.size > 1) {
-                        this.overlayAutoColor = 'chain';
-                    } else {
-                        this.overlayAutoColor = 'rainbow';
-                    }
-                } else {
-                    this.overlayAutoColor = 'rainbow';
-                }
-
-                // Merge frame data with unique chain IDs per frame
-                const frameRange = this.overlayFrameRange || [0, object.frames.length - 1];
-                const startFrame = Math.max(0, frameRange[0]);
-                const endFrame = Math.min(object.frames.length - 1, frameRange[1]);
-
-                const mergedCoords = [];
-                const mergedPlddts = [];
-                const mergedChains = [];
-                const mergedPositionTypes = [];
-                const mergedPositionNames = [];
-                const mergedResidueNumbers = [];
-                const mergedBonds = [];
-                const frameIdMap = [];
-
-                // Chain IDs to use for each frame (so segment builder separates them)
-                const chainIds = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('');
-
-                for (let frameIdx = startFrame; frameIdx <= endFrame; frameIdx++) {
-                    const frame = object.frames[frameIdx];
-                    const frameCoords = frame.coords || [];
-                    const frameBonds = frame.bonds || [];
-                    const frameChains = frame.chains || Array(frameCoords.length).fill('A');
-                    const atomOffset = mergedCoords.length;
-                    const frameAtomCount = frameCoords.length;
-
-                    // Merge coords
-                    for (let i = 0; i < frameAtomCount; i++) {
-                        mergedCoords.push(frameCoords[i]);
-                        frameIdMap.push(frameIdx);
-                    }
-
-                    // Merge data fields - always create arrays with frameAtomCount elements
-                    const plddts = frame.plddts && frame.plddts.length === frameAtomCount ? frame.plddts : Array(frameAtomCount).fill(50.0);
-                    const positionTypes = frame.position_types && frame.position_types.length === frameAtomCount ? frame.position_types : Array(frameAtomCount).fill('P');
-                    const positionNames = frame.position_names && frame.position_names.length === frameAtomCount ? frame.position_names : Array(frameAtomCount).fill('UNK');
-                    const residueNumbers = frame.residue_numbers && frame.residue_numbers.length === frameAtomCount ? frame.residue_numbers : Array.from({ length: frameAtomCount }, (_, i) => i + 1);
-
-                    mergedPlddts.push(...plddts);
-                    mergedPositionTypes.push(...positionTypes);
-                    mergedPositionNames.push(...positionNames);
-                    mergedResidueNumbers.push(...residueNumbers);
-
-                    // Preserve original chain IDs from this frame
-                    for (let i = 0; i < frameAtomCount; i++) {
-                        mergedChains.push(frameChains[i] || 'A');
-                    }
-
-                    // Merge bonds with adjusted indices
-                    for (let i = 0; i < frameBonds.length; i++) {
-                        const bond = frameBonds[i];
-                        mergedBonds.push([bond[0] + atomOffset, bond[1] + atomOffset]);
-                    }
-                }
-
-                // Store overlay-specific data
-                this.frameIdMap = frameIdMap;
-                this.cachedSegmentIndices = null;
-                this.cachedSegmentIndicesFrame = -1;
-                this.cachedSegmentIndicesObjectName = null;
-
-                // Load merged data
-                const mergedData = {
-                    coords: mergedCoords,
-                    plddts: mergedPlddts,
-                    chains: mergedChains,
-                    position_types: mergedPositionTypes,
-                    position_names: mergedPositionNames,
-                    residue_numbers: mergedResidueNumbers,
-                    pae: this.pae || null,
-                    bonds: mergedBonds.length > 0 ? mergedBonds : null
-                };
-
-
-                this._loadDataIntoRenderer(mergedData, false);
-
+            // Use atomic state transition methods (Commit 3)
+            if (!this.overlayState.enabled) {
+                // Enter overlay mode using unified method
+                this._enterOverlayMode(object, false);
             } else {
-                // Exiting overlay mode - return to single frame view
-                this.overlayFrames = null;
-                this.overlayAutoColor = null;
-                this.frameIdMap = null;
-
-                // Invalidate segment cache to force rebuild from single-frame data
-                this.cachedSegmentIndices = null;
-                this.cachedSegmentIndicesFrame = -1;
-                this.cachedSegmentIndicesObjectName = null;
-
-                const currentFrame = Math.max(0, this.currentFrame);
-                this.setFrame(currentFrame);
+                // Exit overlay mode using unified method
+                const targetFrame = Math.max(0, this.currentFrame);
+                this._exitOverlayMode(object, targetFrame, false);
             }
 
             // Update overlay button styling - checkbox style
             if (this.overlayButton) {
-                if (this.overlayMode) {
+                if (this.overlayState.enabled) {
                     this.overlayButton.classList.remove('btn-secondary');
                     this.overlayButton.classList.add('btn-primary');
                 } else {
@@ -2915,7 +3109,10 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // If we're at the last frame and not recording, reset to first frame for looping
             if (!this.isRecording && this.currentFrame >= object.frames.length - 1) {
                 this.currentFrame = 0;
-                this._loadFrameData(0, true); // Load without render
+                // In overlay mode, don't reload frame data (would destroy merged data)
+                if (!this.overlayState.enabled) {
+                    this._loadFrameData(0, true); // Load without render
+                }
             }
 
             this.isPlaying = true;
@@ -2943,7 +3140,10 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
                         // Update the frame index - render loop will pick it up
                         this.currentFrame = nextFrame;
-                        this._loadFrameData(nextFrame, true); // Load without render
+                        // In overlay mode, don't reload frame data (would destroy merged data)
+                        if (!this.overlayState.enabled) {
+                            this._loadFrameData(nextFrame, true); // Load without render
+                        }
                         this.updateUIControls(); // Update slider
                     } else {
                         this.stopAnimation();
@@ -2992,7 +3192,10 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             // Load and render current frame
-            this._loadFrameData(currentFrame, true); // Load without render
+            // In overlay mode, don't reload frame data (would destroy merged data)
+            if (!this.overlayState.enabled) {
+                this._loadFrameData(currentFrame, true); // Load without render
+            }
             this.render();
             this.lastRenderedFrame = currentFrame;
             this.updateUIControls();
@@ -3064,6 +3267,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Disable interaction during recording
             this.isDragging = false; // Stop any active drag
+            this.spinVelocityX = 0; // Stop inertia
+            this.spinVelocityY = 0; // Stop inertia
             // Temporarily disable drag by preventing mousedown
             this.canvas.style.pointerEvents = 'none'; // Disable all mouse interaction
 
@@ -3177,24 +3382,27 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 }
                 // Ensure animation is stopped and state is clean
                 this.stopAnimation();
+                // Reset currentFrame to last valid frame before updating UI
+                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+                if (object && object.frames.length > 0) {
+                    this.currentFrame = Math.max(0, object.frames.length - 1);
+                }
                 this.updateUIControls();
                 return;
             }
 
             // Create blob from recorded chunks
             const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+            const filename = `py2dmol_animation_${this.currentObjectName || 'recording'}_${Date.now()}.webm`;
 
-            // Create download link
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `py2dmol_animation_${this.currentObjectName || 'recording'}_${Date.now()}.webm`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-
-            // Clean up
-            URL.revokeObjectURL(url);
+            // Check if we're in an iframe
+            if (window.self !== window.top) {
+                // In iframe: send video to parent for download
+                this._downloadVideoViaParent(blob, filename);
+            } else {
+                // Not in iframe: download directly
+                this._downloadVideo(blob, filename);
+            }
 
             // Clean up all recording state
             this.recordedChunks = [];
@@ -3204,6 +3412,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Ensure animation is fully stopped and state is clean
             this.stopAnimation();
+
+            // Reset currentFrame to last valid frame before updating UI
+            const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
+            if (object && object.frames.length > 0) {
+                this.currentFrame = Math.max(0, object.frames.length - 1);
+            }
 
             this.updateUIControls();
         }
@@ -3244,20 +3458,27 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.clearAllObjects();
 
             // Reset camera to initial state
-            // Note: rotation and zoom are now per-object in viewerState, reset when objects are added
-            this.viewerState.perspectiveEnabled = false;
-            this.viewerState.focalLength = 200.0;
-
+            this.viewerState = {
+                rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                zoom: 1.0,
+                perspectiveEnabled: false,
+                focalLength: 200.0,
+                center: null,
+                extent: null,
+                currentFrame: -1
+            };
             this.isDragging = false;
+            this.spinVelocityX = 0;
+            this.spinVelocityY = 0;
 
             // Reset renderer state to defaults
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
-            this.viewerState.shadowEnabled = true;
-            this.viewerState.outlineMode = 'full';
+            this.shadowEnabled = true;
+            this.outlineMode = 'full';
             this.autoRotate = false;
-            this.viewerState.colorblindMode = false;
-            this.viewerState.lineWidth = 3.0;
+            this.colorblindMode = false;
+            this.lineWidth = 3.0;
             this.animationSpeed = 100;
             this.currentFrame = -1;
             this.lastRenderedFrame = -1;
@@ -3268,10 +3489,10 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.depthCheckbox.checked = true;
             }
             if (this.outlineModeButton) {
-                this.viewerState.outlineMode = 'full';
+                this.outlineMode = 'full';
                 this.updateOutlineButtonStyle();
             } else if (this.outlineModeSelect) {
-                this.viewerState.outlineMode = 'full';
+                this.outlineMode = 'full';
                 this.outlineModeSelect.value = 'full';
             }
             if (this.rotationCheckbox) {
@@ -3328,59 +3549,13 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     skipRender,
                     data.bonds
                 );
+            } else {
+                console.warn(`[_loadDataIntoRenderer] No data to load: coords=${data?.coords?.length}`);
             }
         }
 
         setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null) {
             this.coords = coords;
-
-            // === CRITICAL FIX: Calculate maxExtent from centroid-based distance ===
-            // This ensures the grid bounds are correct - use the same metric as the reference implementation
-            // maxExtent = maximum distance from centroid to any atom
-            if (coords && coords.length > 0) {
-                // First, calculate centroid (center of mass)
-                let sumX = 0, sumY = 0, sumZ = 0;
-                for (const coord of coords) {
-                    sumX += coord.x;
-                    sumY += coord.y;
-                    sumZ += coord.z;
-                }
-                const centroidX = sumX / coords.length;
-                const centroidY = sumY / coords.length;
-                const centroidZ = sumZ / coords.length;
-
-                // Now calculate max distance from centroid
-                let maxDistSq = 0;
-                for (const coord of coords) {
-                    const dx = coord.x - centroidX;
-                    const dy = coord.y - centroidY;
-                    const dz = coord.z - centroidZ;
-                    const distSq = dx * dx + dy * dy + dz * dz;
-                    if (distSq > maxDistSq) {
-                        maxDistSq = distSq;
-                    }
-                }
-
-                // maxExtent is the radius from centroid to furthest atom
-                const maxExtent = Math.sqrt(maxDistSq);
-
-                console.log(`[MAXEXTENT] Calculated from ${coords.length} coords: centroid=(${centroidX.toFixed(2)}, ${centroidY.toFixed(2)}, ${centroidZ.toFixed(2)}), maxExtent=${maxExtent.toFixed(2)}`);
-
-                // Store in current object for shadow grid calculation
-                if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                    this.objectsData[this.currentObjectName].maxExtent = maxExtent;
-                    // Also store centroid for potential future use
-                    if (!this.objectsData[this.currentObjectName].centroid) {
-                        this.objectsData[this.currentObjectName].centroid = {};
-                    }
-                    this.objectsData[this.currentObjectName].centroid.x = centroidX;
-                    this.objectsData[this.currentObjectName].centroid.y = centroidY;
-                    this.objectsData[this.currentObjectName].centroid.z = centroidZ;
-                }
-            }
-
-            // Get current object reference early (used throughout method for frameState updates)
-            const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
 
             // Set bonds from parameter or from object's stored bonds
             if (bonds !== null && bonds !== undefined) {
@@ -3402,12 +3577,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Ensure colorMode is valid
             const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
-            if (!this.viewerState.colorMode || !validModes.includes(this.viewerState.colorMode)) {
-                this.viewerState.colorMode = 'auto';
+            if (!this.colorMode || !validModes.includes(this.colorMode)) {
+                this.colorMode = 'auto';
             }
 
             // Map entropy to structure if entropy mode is active
-            if (this.viewerState.colorMode === 'entropy') {
+            if (this.colorMode === 'entropy') {
                 this._mapEntropyToStructure();
             } else {
                 // Clear entropy when not in entropy mode
@@ -3476,8 +3651,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
             // In overlay mode, use pre-merge auto color based on first frame
             const uniqueChains = new Set(this.chains);
-            if (this.overlayMode && this.overlayAutoColor) {
-                this.resolvedAutoColor = this.overlayAutoColor;
+            if (this.overlayState.enabled && this.overlayState.autoColor) {
+                this.resolvedAutoColor = this.overlayState.autoColor;
             } else {
                 if (hasPAE) {
                     this.resolvedAutoColor = 'plddt';
@@ -3489,9 +3664,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             // Sync dropdown to renderer's colorMode (if dropdown exists)
-            if (this.colorSelect && this.viewerState.colorMode) {
-                if (this.colorSelect.value !== this.viewerState.colorMode) {
-                    this.colorSelect.value = this.viewerState.colorMode;
+            if (this.colorSelect && this.colorMode) {
+                if (this.colorSelect.value !== this.colorMode) {
+                    this.colorSelect.value = this.colorMode;
                 }
             }
 
@@ -3542,8 +3717,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
                 // In overlay mode, reset chain indices when frame changes
-                if (this.overlayMode && this.frameIdMap) {
-                    const currentFrame = this.frameIdMap[i];
+                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
+                    const currentFrame = this.overlayState.frameIdMap[i];
                     if (currentFrame !== lastFrame) {
                         // Frame changed, reset all chain counters
                         for (const key in chainIndices) {
@@ -3608,6 +3783,13 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.cachedSegmentIndicesObjectName === this.currentObjectName &&
                 this.cachedSegmentIndices.length > 0;
 
+            // Expand rotatedCoords to match coords array BEFORE any segment operations
+            // This must happen whether using cache or generating new segments
+            const currentCoordsLength = this.coords.length;
+            while (this.rotatedCoords.length < currentCoordsLength) {
+                this.rotatedCoords.push(new Vec3(0, 0, 0));
+            }
+
             if (canUseCache) {
                 // Reuse cached segment indices (deep copy to avoid mutation)
                 this.segmentIndices = this.cachedSegmentIndices.map(seg => ({ ...seg }));
@@ -3623,6 +3805,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
                 let firstPolymerIndex = -1;
                 let lastPolymerIndex = -1;
+                const ligandIndicesByChain = new Map(); // Group ligands by chain
 
                 // Helper function to check if position type is polymer (for rendering only)
                 const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
@@ -3650,8 +3833,8 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
                                 // In overlay mode, also check that both atoms are in the same frame
                                 let sameFrame = true;
-                                if (this.overlayMode && this.frameIdMap) {
-                                    sameFrame = this.frameIdMap[i] === this.frameIdMap[i + 1];
+                                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
+                                    sameFrame = this.overlayState.frameIdMap[i] === this.overlayState.frameIdMap[i + 1];
                                 }
 
                                 if (samePolymerType && this.chains[i] === this.chains[i + 1] && sameFrame) {
@@ -3674,6 +3857,13 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                                 }
                             }
                         }
+                    } else if (this.positionTypes[i] === 'L') {
+                        // Group ligand indices by chain
+                        const chainId = this.chains[i] || 'A';
+                        if (!ligandIndicesByChain.has(chainId)) {
+                            ligandIndicesByChain.set(chainId, []);
+                        }
+                        ligandIndicesByChain.get(chainId).push(i);
                     }
                 }
 
@@ -3720,9 +3910,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                         }
 
                         // In overlay mode, skip bonds between different frames
-                        if (this.overlayMode && this.frameIdMap) {
-                            const frame1 = this.frameIdMap[idx1];
-                            const frame2 = this.frameIdMap[idx2];
+                        if (this.overlayState.enabled && this.overlayState.frameIdMap) {
+                            const frame1 = this.overlayState.frameIdMap[idx1];
+                            const frame2 = this.overlayState.frameIdMap[idx2];
                             if (frame1 !== frame2) {
                                 continue;
                             }
@@ -3776,6 +3966,33 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                                         colorIndex: 0,
                                         origIndex: idx1,
                                         chainId: chainId,
+                                        type: 'L',
+                                        len: Math.sqrt(distSq)
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback: iterate over each chain's ligands separately (old behavior)
+                    for (const [chainId, ligandIndices] of ligandIndicesByChain.entries()) {
+                        for (let i = 0; i < ligandIndices.length; i++) {
+                            for (let j = i + 1; j < ligandIndices.length; j++) {
+                                const idx1 = ligandIndices[i];
+                                const idx2 = ligandIndices[j];
+
+                                // All positions here are guaranteed to be in the same chain (chainId)
+
+                                const start = this.coords[idx1];
+                                const end = this.coords[idx2];
+                                const distSq = start.distanceToSq(end);
+                                if (distSq < ligandBondCutoffSq) {
+                                    this.segmentIndices.push({
+                                        idx1: idx1,
+                                        idx2: idx2,
+                                        colorIndex: 0,
+                                        origIndex: idx1,
+                                        chainId: chainId, // Use the chainId from the map key
                                         type: 'L',
                                         len: Math.sqrt(distSq)
                                     });
@@ -3846,12 +4063,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     }
                 }
 
-                // Expand rotatedCoords to match coords array
-                const currentCoordsLength = this.coords.length;
-                while (this.rotatedCoords.length < currentCoordsLength) {
-                    this.rotatedCoords.push(new Vec3(0, 0, 0));
-                }
-                // But we need to make sure they're all the same length
+                // Make sure all data arrays are the same length
                 const finalN = this.coords.length;
                 while (this.plddts.length < finalN) {
                     this.plddts.push(50.0);
@@ -3906,41 +4118,19 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 this.adjList = new Array(numPositions);
                 for (let i = 0; i < numPositions; i++) this.adjList[i] = [];
 
-                // Allocate arrays if needed (global + frameState)
-                // CRITICAL FIX: Use !== to reallocate if size doesn't match (not just if too small)
-                // This prevents stale data when switching between proteins of different sizes
-                if (!this.segmentOrder || this.segmentOrder.length !== numSegments) {
+                // Allocate arrays if needed
+                if (!this.segmentOrder || this.segmentOrder.length < numSegments) {
                     this.segmentOrder = new Int32Array(numSegments);
                     this.segmentFrame = new Int32Array(numSegments);
                     this.segmentEndpointFlags = new Uint8Array(numSegments);
                 }
 
-                // Also allocate in frameState for per-object isolation
-                if (object && object.frameState) {
-                    if (!object.frameState.segmentOrder || object.frameState.segmentOrder.length !== numSegments) {
-                        object.frameState.segmentOrder = new Int32Array(numSegments);
-                        object.frameState.segmentFrame = new Int32Array(numSegments);
-                        object.frameState.segmentEndpointFlags = new Uint8Array(numSegments);
-                    }
-                }
-
                 // Allocate screen coordinate arrays
-                // CRITICAL FIX: Use !== to reallocate if size doesn't match
-                if (!this.screenX || this.screenX.length !== numPositions) {
+                if (!this.screenX || this.screenX.length < numPositions) {
                     this.screenX = new Float32Array(numPositions);
                     this.screenY = new Float32Array(numPositions);
                     this.screenRadius = new Float32Array(numPositions);
                     this.screenValid = new Int32Array(numPositions);
-                }
-
-                // Also allocate screen arrays in frameState
-                if (object && object.frameState) {
-                    if (!object.frameState.screenX || object.frameState.screenX.length !== numPositions) {
-                        object.frameState.screenX = new Float32Array(numPositions);
-                        object.frameState.screenY = new Float32Array(numPositions);
-                        object.frameState.screenRadius = new Float32Array(numPositions);
-                        object.frameState.screenValid = new Int32Array(numPositions);
-                    }
                 }
 
                 // Populate adjacency list
@@ -3968,59 +4158,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.plddtColors = this._calculatePlddtColors();
             this.plddtColorsNeedUpdate = false;
 
-            // Update frameState (per-object storage) with all loaded/calculated data
-            // This must happen AFTER all allocations and color calculations are complete
-            if (object && object.frameState) {
-                // Copy all per-object coordinate and structure data to frameState
-                object.frameState.coords = this.coords;
-                object.frameState.rotatedCoords = this.rotatedCoords;
-                object.frameState.plddts = this.plddts;
-                object.frameState.chains = this.chains;
-                object.frameState.positionTypes = this.positionTypes;
-                object.frameState.residueNumbers = this.residueNumbers;
-                object.frameState.positionNames = this.positionNames;
-
-                // Copy metadata caches (for data inheritance)
-                object.frameState.cachedPlddts = this.cachedPlddts;
-                object.frameState.cachedChains = this.cachedChains;
-                object.frameState.cachedPositionTypes = this.cachedPositionTypes;
-                object.frameState.cachedPositionNames = this.cachedPositionNames;
-                object.frameState.cachedResidueNumbers = this.cachedResidueNumbers;
-
-                // Copy color infrastructure
-                object.frameState.chainIndexMap = new Map(this.chainIndexMap);
-                object.frameState.chainRainbowScales = { ...this.chainRainbowScales };
-                object.frameState.perChainIndices = this.perChainIndices.slice();
-                object.frameState.ligandOnlyChains = new Set(this.ligandOnlyChains);
-                // Deep copy ligandGroups Map to prevent cross-object contamination
-                object.frameState.ligandGroups = new Map(this.ligandGroups);
-
-                // Copy segment and bond data
-                object.frameState.segmentIndices = this.segmentIndices;
-                object.frameState.bonds = this.bonds;
-                object.frameState.segData = this.segData;
-
-                // Copy pre-calculated colors
-                object.frameState.colors = this.colors;
-                object.frameState.plddtColors = this.plddtColors;
-
-                // frameIdMap is set separately when overlay mode is enabled
-                // (not populated here, will be set by overlay-related methods)
-            }
-
             // [PATCH] Apply initial mask and render once
             // Don't render before applying mask - _composeAndApplyMask will handle rendering
             this._composeAndApplyMask(skipRender);
 
             // Dispatch event to notify sequence viewer that colors have changed (e.g., when frame changes)
             document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
-
-            // Rebuild sequence viewer after ligandGroups is populated
-            // This ensures ligands are displayed with their correct names (HEM, PO4, etc)
-            // instead of as X characters. buildSequenceView needs frameState.ligandGroups.
-            if (typeof window !== 'undefined' && window.SequenceViewer && window.SequenceViewer.buildSequenceView) {
-                window.SequenceViewer.buildSequenceView();
-            }
         }
 
         // Load frame data without rendering (for decoupled animation)
@@ -4075,7 +4218,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             this.updateUIControls();
 
             // Map entropy to structure if entropy mode is active
-            if (this.viewerState.colorMode === 'entropy') {
+            if (this.colorMode === 'entropy') {
                 this._mapEntropyToStructure();
             }
         }
@@ -4178,11 +4321,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             this.entropy = entropyVector;
 
-            // Also store entropy in frameState for per-object isolation
-            if (object && object.frameState) {
-                object.frameState.entropy = entropyVector;
-            }
-
             // Update entropy option visibility in color dropdown
             this._updateEntropyOptionVisibility();
         }
@@ -4191,18 +4329,15 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
          * Show or hide the Entropy color option based on whether entropy data is available
          */
         _updateEntropyOptionVisibility() {
-            // Use this.containerElement to find the entropy option within this specific viewer
-            const entropyOption = this.containerElement ?
-                this.containerElement.querySelector('#entropyColorOption') :
-                document.getElementById('entropyColorOption');
+            const entropyOption = document.getElementById('entropyColorOption');
             if (entropyOption) {
                 // Show entropy option if we have valid entropy data
                 const hasEntropy = this.entropy && this.entropy.some(val => val !== undefined && val >= 0);
                 entropyOption.hidden = !hasEntropy;
 
                 // If entropy option is hidden and currently selected, switch to auto
-                if (!hasEntropy && this.viewerState.colorMode === 'entropy') {
-                    this.viewerState.colorMode = 'auto';
+                if (!hasEntropy && this.colorMode === 'entropy') {
+                    this.colorMode = 'auto';
                     if (this.colorSelect) {
                         this.colorSelect.value = 'auto';
                     }
@@ -4229,18 +4364,18 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             // Fall back to global color mode
-            if (!this.viewerState.colorMode || !validModes.includes(this.viewerState.colorMode)) {
-                console.warn('Invalid colorMode:', this.viewerState.colorMode, 'resetting to auto');
-                this.viewerState.colorMode = 'auto';
+            if (!this.colorMode || !validModes.includes(this.colorMode)) {
+                console.warn('Invalid colorMode:', this.colorMode, 'resetting to auto');
+                this.colorMode = 'auto';
             }
 
             // If 'auto', resolve to the calculated mode
-            if (this.viewerState.colorMode === 'auto') {
+            if (this.colorMode === 'auto') {
                 const resolved = this.resolvedAutoColor || 'rainbow';
                 return resolved;
             }
 
-            return this.viewerState.colorMode;
+            return this.colorMode;
         }
 
         /**
@@ -4251,32 +4386,20 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
          *                             For ligands, one position = one heavy atom.
          * @returns {{r: number, g: number, b: number}} RGB color object
          */
-        getAtomColor(atomIndex, effectiveColorMode = null, frameState = null) {
-            // Use frameState if provided, otherwise fall back to globals
-            const coords = frameState ? frameState.coords : this.coords;
-            const chains = frameState ? frameState.chains : this.chains;
-            const frameIdMap = frameState ? frameState.frameIdMap : this.frameIdMap;
-            const positionTypes = frameState ? frameState.positionTypes : this.positionTypes;
-            const plddts = frameState ? frameState.plddts : this.plddts;
-            const entropy = frameState ? frameState.entropy : this.entropy;
-            const ligandOnlyChains = frameState ? frameState.ligandOnlyChains : this.ligandOnlyChains;
-            const chainIndexMap = frameState ? frameState.chainIndexMap : this.chainIndexMap;
-            const chainRainbowScales = frameState ? frameState.chainRainbowScales : this.chainRainbowScales;
-            const perChainIndices = frameState ? frameState.perChainIndices : this.perChainIndices;
-
-            if (atomIndex < 0 || atomIndex >= coords.length) {
+        getAtomColor(atomIndex, effectiveColorMode = null) {
+            if (atomIndex < 0 || atomIndex >= this.coords.length) {
                 return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
             }
 
             // Resolve color through the unified hierarchy
             // In overlay mode, determine which frame this atom belongs to from frameIdMap
             let frameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
-            if (this.overlayMode && frameIdMap && atomIndex < frameIdMap.length) {
-                frameIndex = frameIdMap[atomIndex];
+            if (this.overlayState.enabled && this.overlayState.frameIdMap && atomIndex < this.overlayState.frameIdMap.length) {
+                frameIndex = this.overlayState.frameIdMap[atomIndex];
             }
 
+            const chainId = this.chains[atomIndex] || 'A';
 
-            const chainId = chains[atomIndex] || 'A';
             const context = {
                 frameIndex: frameIndex,
                 posIndex: atomIndex,
@@ -4303,53 +4426,53 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Use resolved color mode (frame color takes priority over passed-in global mode)
             // If resolveColorHierarchy found a specific mode, use it
-            if (resolvedMode && resolvedMode !== this.viewerState.colorMode) {
+            if (resolvedMode && resolvedMode !== this.colorMode) {
                 effectiveColorMode = resolvedMode;
             } else if (!effectiveColorMode) {
                 effectiveColorMode = resolvedMode || this._getEffectiveColorMode();
             }
-            const type = (positionTypes && atomIndex < positionTypes.length) ? positionTypes[atomIndex] : undefined;
+            const type = (this.positionTypes && atomIndex < this.positionTypes.length) ? this.positionTypes[atomIndex] : undefined;
             let color;
 
             // Ligands should always be grey in chain and rainbow modes (not plddt)
             const isLigand = type === 'L';
 
             if (effectiveColorMode === 'plddt') {
-                const plddtFunc = this.viewerState.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
-                const plddt = (plddts[atomIndex] !== null && plddts[atomIndex] !== undefined) ? plddts[atomIndex] : 50;
+                const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
+                const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtFunc(plddt);
             } else if (effectiveColorMode === 'deepmind') {
                 // DeepMind colors don't use colorblind mode - always use standard colors
                 const plddtAfFunc = getPlddtAFColor;
-                const plddt = (plddts[atomIndex] !== null && plddts[atomIndex] !== undefined) ? plddts[atomIndex] : 50;
+                const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
                 color = plddtAfFunc(plddt);
             } else if (effectiveColorMode === 'entropy') {
-                const entropyFunc = this.viewerState.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
+                const entropyFunc = this.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
                 // Get entropy value from mapped entropy vector
-                const entropyVal = (entropy && atomIndex < entropy.length && entropy[atomIndex] !== undefined && entropy[atomIndex] >= 0)
-                    ? entropy[atomIndex]
+                const entropy = (this.entropy && atomIndex < this.entropy.length && this.entropy[atomIndex] !== undefined && this.entropy[atomIndex] >= 0)
+                    ? this.entropy[atomIndex]
                     : undefined;
-                if (entropyVal !== undefined) {
-                    color = entropyFunc(entropyVal);
+                if (entropy !== undefined) {
+                    color = entropyFunc(entropy);
                 } else {
                     // No entropy data for this position (ligand, RNA/DNA, or unmapped) - use default grey
                     color = { r: 128, g: 128, b: 128 };
                 }
             } else if (effectiveColorMode === 'chain') {
-                const chainId = chains[atomIndex] || 'A';
-                if (isLigand && !ligandOnlyChains.has(chainId)) {
+                const chainId = this.chains[atomIndex] || 'A';
+                if (isLigand && !this.ligandOnlyChains.has(chainId)) {
                     // Ligands in chains with P/D/R positions are grey
                     color = { r: 128, g: 128, b: 128 };
                 } else {
                     // Regular positions, or ligands in ligand-only chains, get chain color
-                    if (chainIndexMap && chainIndexMap.has(chainId)) {
-                        const chainIndex = chainIndexMap.get(chainId);
-                        const colorArray = this.viewerState.colorblindMode ? colorblindSafeChainColors : pymolColors;
+                    if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
+                        const chainIndex = this.chainIndexMap.get(chainId);
+                        const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
                         const hex = colorArray[chainIndex % colorArray.length];
                         color = hexToRgb(hex);
                     } else {
                         // Fallback: use a default color if chainIndexMap is not initialized
-                        const colorArray = this.viewerState.colorblindMode ? colorblindSafeChainColors : pymolColors;
+                        const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
                         const hex = colorArray[0]; // Use first color as default
                         color = hexToRgb(hex);
                     }
@@ -4360,15 +4483,15 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     color = { r: 128, g: 128, b: 128 };
                 } else {
                     // Regular positions get rainbow color
-                    const chainId = chains[atomIndex] || 'A';
-                    const scale = chainRainbowScales && chainRainbowScales[chainId];
-                    const rainbowFunc = this.viewerState.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
+                    const chainId = this.chains[atomIndex] || 'A';
+                    const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
+                    const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
                     if (scale && scale.min !== Infinity && scale.max !== -Infinity) {
-                        const colorIndex = perChainIndices && atomIndex < perChainIndices.length ? perChainIndices[atomIndex] : 0;
+                        const colorIndex = this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0;
                         color = rainbowFunc(colorIndex, scale.min, scale.max);
                     } else {
                         // Fallback: if scale not found, use a default rainbow based on colorIndex
-                        const colorIndex = (perChainIndices && atomIndex < perChainIndices.length ? perChainIndices[atomIndex] : 0) || 0;
+                        const colorIndex = (this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0) || 0;
                         color = rainbowFunc(colorIndex, 0, Math.max(1, colorIndex));
                     }
                 }
@@ -4388,31 +4511,26 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 return { r: 128, g: 128, b: 128 }; // Default gray
             }
             const chainIndex = this.chainIndexMap.get(chainId) || 0;
-            const colorArray = this.viewerState.colorblindMode ? colorblindSafeChainColors : pymolColors;
+            const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
             const hex = colorArray[chainIndex % colorArray.length];
             return hexToRgb(hex);
         }
 
         // Calculate segment colors (chain or rainbow)
         // Uses getAtomColor() as single source of truth for all color logic
-        _calculateSegmentColors(effectiveColorMode = null, frameState = null) {
-            // Use frameState if provided, otherwise fall back to globals
-            const segmentIndices = frameState ? frameState.segmentIndices : this.segmentIndices;
-            const overlayMode = frameState ? frameState.frameIdMap !== null : this.overlayMode;
-            const frameIdMap = frameState ? frameState.frameIdMap : this.frameIdMap;
-
-            const m = segmentIndices.length;
+        _calculateSegmentColors(effectiveColorMode = null) {
+            const m = this.segmentIndices.length;
             if (m === 0) return [];
 
             // In overlay mode with frame-level colors, let each atom determine its own color mode
             // Otherwise cache the effective color mode to avoid recalculating for every position
-            let usePerAtomColorMode = overlayMode && frameIdMap;
+            let usePerAtomColorMode = this.overlayState.enabled && this.overlayState.frameIdMap;
             if (!effectiveColorMode && !usePerAtomColorMode) {
                 effectiveColorMode = this._getEffectiveColorMode();
             }
 
             // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
-            return segmentIndices.map(segInfo => {
+            return this.segmentIndices.map(segInfo => {
                 // Contacts use custom color if provided, otherwise yellow (no pastel applied)
                 if (segInfo.type === 'C') {
                     if (segInfo.contactColor) {
@@ -4424,18 +4542,13 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 const positionIndex = segInfo.origIndex;
                 // In overlay mode with per-frame colors, pass null so getAtomColor resolves per-atom
                 const colorMode = usePerAtomColorMode ? null : effectiveColorMode;
-                return this.getAtomColor(positionIndex, colorMode, frameState);
+                return this.getAtomColor(positionIndex, colorMode);
             });
         }
 
         // Calculate pLDDT colors
-        _calculatePlddtColors(frameState = null) {
-            // Use frameState if provided, otherwise fall back to globals
-            const segmentIndices = frameState ? frameState.segmentIndices : this.segmentIndices;
-            const plddts = frameState ? frameState.plddts : this.plddts;
-            const coords = frameState ? frameState.coords : this.coords;
-
-            const m = segmentIndices.length;
+        _calculatePlddtColors() {
+            const m = this.segmentIndices.length;
             if (m === 0) return [];
 
             const colors = new Array(m);
@@ -4447,11 +4560,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 // DeepMind colors don't use colorblind mode - always use standard colors
                 plddtFunc = getPlddtAFColor;
             } else {
-                plddtFunc = this.viewerState.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
+                plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
             }
 
             for (let i = 0; i < m; i++) {
-                const segInfo = segmentIndices[i];
+                const segInfo = this.segmentIndices[i];
 
                 // Contacts use custom color if provided, otherwise yellow (no pastel applied)
                 if (segInfo.type === 'C') {
@@ -4468,12 +4581,12 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 let color;
 
                 if (type === 'L') {
-                    const plddt1 = (plddts[positionIndex] !== null && plddts[positionIndex] !== undefined) ? plddts[positionIndex] : 50;
+                    const plddt1 = (this.plddts[positionIndex] !== null && this.plddts[positionIndex] !== undefined) ? this.plddts[positionIndex] : 50;
                     color = plddtFunc(plddt1); // Use selected plddt function
                 } else {
-                    const plddt1 = (plddts[positionIndex] !== null && plddts[positionIndex] !== undefined) ? plddts[positionIndex] : 50;
-                    const plddt2_idx = (segInfo.idx2 < coords.length) ? segInfo.idx2 : segInfo.idx1;
-                    const plddt2 = (plddts[plddt2_idx] !== null && plddts[plddt2_idx] !== undefined) ? plddts[plddt2_idx] : 50;
+                    const plddt1 = (this.plddts[positionIndex] !== null && this.plddts[positionIndex] !== undefined) ? this.plddts[positionIndex] : 50;
+                    const plddt2_idx = (segInfo.idx2 < this.coords.length) ? segInfo.idx2 : segInfo.idx1;
+                    const plddt2 = (this.plddts[plddt2_idx] !== null && this.plddts[plddt2_idx] !== undefined) ? this.plddts[plddt2_idx] : 50;
                     color = plddtFunc((plddt1 + plddt2) / 2); // Use selected plddt function
                 }
                 // Don't apply pastel to DeepMind mode - preserve saturated AF confidence colors
@@ -4749,7 +4862,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         }
 
         // RENDER (Core drawing logic)
-        // RENDER (Core drawing logic)
         render(reason = 'Unknown') {
             if (this.currentFrame < 0) {
                 // Clear canvas if no frame is set
@@ -4761,53 +4873,17 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
         // Core rendering logic - can render to any context (canvas, SVG, etc.)
         _renderToContext(ctx, displayWidth, displayHeight) {
-            const renderStartTime = performance.now();
-            const memBefore = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
-
             // Use clearRect or fillRect based on transparency
-            if (this.viewerState.isTransparent) {
+            if (this.isTransparent) {
                 ctx.clearRect(0, 0, displayWidth, displayHeight);
             } else {
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, displayWidth, displayHeight);
             }
 
-            // Get per-object frame state
-            const frameState = this._getFrameState();
-            if (!frameState) {
-                return; // No object loaded, early exit
-            }
-
-            // CRITICAL FIX: Comprehensive frameState validation
-            // Prevents rendering with corrupted/stale data when switching between proteins
-            if (frameState.coords.length === 0 || frameState.segmentIndices.length === 0) {
-                console.warn("[RENDER] Frame state has no coords or segments!");
+            // Check segment length
+            if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) {
                 return;
-            }
-
-            // Validate that frameState arrays are properly sized
-            // This catches cases where old frameState data wasn't properly cleared
-            const numCoords = frameState.coords.length;
-            const numSegments = frameState.segmentIndices.length;
-
-
-            // Check critical arrays exist and have correct size
-            if (!frameState.rotatedCoords || frameState.rotatedCoords.length !== numCoords) {
-                // rotatedCoords should match coords size
-                return;
-            }
-
-            if (!frameState.segmentOrder || frameState.segmentOrder.length !== numSegments ||
-                !frameState.segmentFrame || frameState.segmentFrame.length !== numSegments ||
-                !frameState.segmentEndpointFlags || frameState.segmentEndpointFlags.length !== numSegments) {
-                // Segment tracking arrays don't match segment count - data is stale
-                return;
-            }
-
-            // Validate ligandGroups is a Map (non-critical for rendering)
-            if (frameState.ligandGroups && !(frameState.ligandGroups instanceof Map)) {
-                console.warn("frameState.ligandGroups is not a Map - will continue with pre-computed segment indices");
-                // Don't abort - ligandGroups is only used for bond computation, not rendering
             }
 
             const object = this.objectsData[this.currentObjectName];
@@ -4816,58 +4892,58 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 return;
             }
 
-
-            // Get center and rotation from global viewerState
-            const center = this.viewerState.center;
-            const rotation = this.viewerState.rotation;
-
-            // Update pre-allocated rotatedCoords (translate then rotate)
-            const m = rotation;  // Use global rotation
-            for (let i = 0; i < frameState.coords.length; i++) {
-                const v = frameState.coords[i];
-                const out = frameState.rotatedCoords[i];
-                // Translate first (subtract center to move object to origin)
-                const tx = v.x - center.x;
-                const ty = v.y - center.y;
-                const tz = v.z - center.z;
-                // Then rotate
-                out.x = m[0][0] * tx + m[0][1] * ty + m[0][2] * tz;
-                out.y = m[1][0] * tx + m[1][1] * ty + m[1][2] * tz;
-                out.z = m[2][0] * tx + m[2][1] * ty + m[2][2] * tz;
+            // Ensure rotatedCoords array is expanded to match coords
+            while (this.rotatedCoords.length < this.coords.length) {
+                this.rotatedCoords.push(new Vec3(0, 0, 0));
             }
-            const rotated = frameState.rotatedCoords;
+
+            // Use temporary center if set (for orienting to visible positions), otherwise use global center
+            const globalCenter = (object && object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0, 0, 0);
+            const c = this.viewerState.center || globalCenter;
+
+            // Update pre-allocated rotatedCoords
+            const m = this.viewerState.rotation;
+            for (let i = 0; i < this.coords.length; i++) {
+                const v = this.coords[i];
+                const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
+                const out = this.rotatedCoords[i];
+                out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
+                out.y = m[1][0] * subX + m[1][1] * subY + m[1][2] * subZ;
+                out.z = m[2][0] * subX + m[2][1] * subY + m[2][2] * subZ;
+            }
+            const rotated = this.rotatedCoords;
 
             // Segment generation is now just data lookup
-            const n = frameState.segmentIndices.length;
-            const segments = frameState.segmentIndices; // Use the pre-calculated segment definitions
+            const n = this.segmentIndices.length;
+            const segments = this.segmentIndices; // Use the pre-calculated segment definitions
 
             const effectiveColorMode = this._getEffectiveColorMode();
 
-            // Select pre-calculated color array (from frameState)
+            // Select pre-calculated color array
             let colors;
             if (effectiveColorMode === 'plddt' || effectiveColorMode === 'deepmind') {
-                if (!frameState.plddtColors || frameState.plddtColors.length !== n || this.plddtColorsNeedUpdate) {
-                    frameState.plddtColors = this._calculatePlddtColors(frameState);
+                if (!this.plddtColors || this.plddtColors.length !== n || this.plddtColorsNeedUpdate) {
+                    this.plddtColors = this._calculatePlddtColors();
                     this.plddtColorsNeedUpdate = false;
                 }
-                colors = frameState.plddtColors;
+                colors = this.plddtColors;
             } else {
-                if (!frameState.colors || frameState.colors.length !== n || this.colorsNeedUpdate) {
-                    // Pass frameState and effectiveColorMode to color calculation
-                    frameState.colors = this._calculateSegmentColors(effectiveColorMode, frameState);
+                if (!this.colors || this.colors.length !== n || this.colorsNeedUpdate) {
+                    // Pass effectiveColorMode to avoid redundant _getEffectiveColorMode() calls
+                    this.colors = this._calculateSegmentColors(effectiveColorMode);
                     this.colorsNeedUpdate = false;
                 }
-                colors = frameState.colors;
+                colors = this.colors;
             }
 
             // Safety check: ensure color arrays match segment count
             if (!colors || colors.length !== n) {
                 console.warn("Color array mismatch, recalculating.");
-                frameState.colors = this._calculateSegmentColors(effectiveColorMode, frameState);
-                frameState.plddtColors = this._calculatePlddtColors(frameState);
+                this.colors = this._calculateSegmentColors(effectiveColorMode);
+                this.plddtColors = this._calculatePlddtColors();
                 this.colorsNeedUpdate = false;
                 this.plddtColorsNeedUpdate = false;
-                colors = (effectiveColorMode === 'plddt' || effectiveColorMode === 'deepmind') ? frameState.plddtColors : frameState.colors;
+                colors = (effectiveColorMode === 'plddt' || effectiveColorMode === 'deepmind') ? this.plddtColors : this.colors;
                 if (colors.length !== n) {
                     console.error("Color array mismatch even after recalculation. Aborting render.");
                     return; // Still bad, abort render
@@ -4886,7 +4962,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 let isVisible = false;
 
                 // In overlay mode, show all segments regardless of visibility mask
-                if (this.overlayMode) {
+                if (this.overlayState.enabled) {
                     isVisible = true;
                 } else if (!visibilityMask) {
                     // No mask = all segments visible
@@ -4905,14 +4981,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
             const numVisibleSegments = visibleSegmentIndices.length;
 
-
             // Combine Z-value/norm and update segData
             // Only calculate z-values for visible segments to avoid unnecessary computation
-            // Reuse pre-allocated array if available and correct size
-            if (!this._zValues || this._zValues.length !== n) {
-                this._zValues = new Float32Array(n);
-            }
-            const zValues = this._zValues;
+            const zValues = new Float32Array(n);
             let zMin = Infinity;
             let zMax = -Infinity;
             // Also track min/max from actual position coordinates (for outline width calculation)
@@ -4966,16 +5037,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
 
             // Collect z-values from visible segments only (for depth calculation)
-            // Reuse pre-allocated array if available
-            if (!this._visibleZValues || this._visibleZValues.length < numVisibleSegments) {
-                this._visibleZValues = new Float32Array(Math.max(numVisibleSegments, 1000));
-            }
-            // Copy visible z-values
+            const visibleZValues = [];
             for (let i = 0; i < numVisibleSegments; i++) {
                 const segIdx = visibleSegmentIndices[i];
-                this._visibleZValues[i] = zValues[segIdx];
+                visibleZValues.push(zValues[segIdx]);
             }
-            const visibleZValues = this._visibleZValues;
 
             // Calculate mean and std only from visible segments
             const numVisible = visibleZValues.length;
@@ -5052,7 +5118,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 }
             }
 
-            const renderShadows = this.viewerState.shadowEnabled;
+            const renderShadows = this.shadowEnabled;
             const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
 
             const shadows = new Float32Array(n);
@@ -5106,14 +5172,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
             // Check if rotation changed (shadows depend on 3D positions, not width/ortho)
             // Shadows only need recalculation when rotation changes, not when width/ortho changes
-            // Check if rotation changed (for shadow caching) - use object's rotation
-
-            // Get current rotation from global viewerState
-            let currentRotation = this.viewerState.rotation;
-
-            const rotationChanged = !this._rotationMatricesEqual(currentRotation, frameState.lastShadowRotationMatrix);
-            if (rotationChanged) {
-            }
+            const rotationChanged = !this._rotationMatricesEqual(this.viewerState.rotation, this.lastShadowRotationMatrix);
 
             // For fast mode (many visible positions), skip expensive shadow calculations during dragging, zooming, or orient animation - use cached
             // During zoom, shadows don't change, so reuse cached values
@@ -5121,21 +5180,14 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // During orient animation, use cached for performance, but recalculate after animation completes
             // Also skip if rotation hasn't changed (width/ortho changes don't affect shadows)
             const skipShadowCalc = (
-                (isFastMode && (this.isDragging || this.isZooming || this.isOrientAnimating) && frameState.cachedShadows && frameState.cachedShadows.length === n) ||
-                (!rotationChanged && frameState.cachedShadows && frameState.cachedShadows.length === n)
+                (isFastMode && (this.isDragging || this.isZooming || this.isOrientAnimating) && this.cachedShadows && this.cachedShadows.length === n) ||
+                (!rotationChanged && this.cachedShadows && this.cachedShadows.length === n)
             );
 
             if (renderShadows && !skipShadowCalc) {
-                const shadowMemBefore = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
-                const shadowStartTime = performance.now();
-
                 // Use fast mode threshold based on visible positions, not total segments
                 if (!isFastMode) {
-                    let totalShadowCalculations = 0;
-                    let totalShadowsApplied = 0;
-
                     // Only process visible segments in outer loop
-                    // visibleOrder is sorted back-to-front: index 0 is furthest, index n-1 is closest
                     for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
                         const i = visibleOrder[i_idx];
                         let shadowSum = 0;
@@ -5146,12 +5198,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                         const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
 
                         // Only check visible segments (already filtered)
-                        // j_idx > i_idx means j is closer to camera (in front) - can cast shadow on i
                         for (let j_idx = i_idx + 1; j_idx < visibleOrder.length; j_idx++) {
                             const j = visibleOrder[j_idx];
 
-                            // Early exit: if shadow is already saturated, skip remaining segments
-                            if (shadowSum >= MAX_SHADOW_SUM) {
+                            // Early exit: if shadow is already saturated or tint is maxed
+                            if (shadowSum >= MAX_SHADOW_SUM || (maxTint >= 1.0 && shadowSum >= MAX_SHADOW_SUM)) {
                                 break; // Shadow sum is saturated, skip remaining segments
                             }
 
@@ -5159,9 +5210,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                             const segInfo2 = segments[j];
 
                             // Shadow isolation: in overlay mode, only allow shadows within same frame
-                            if (frameState.frameIdMap) {
-                                const frameI = frameState.frameIdMap[segInfoI.idx1];
-                                const frameJ = frameState.frameIdMap[segInfo2.idx1];
+                            if (this.overlayState.enabled && this.overlayState.frameIdMap) {
+                                const frameI = this.overlayState.frameIdMap[segInfoI.idx1];
+                                const frameJ = this.overlayState.frameIdMap[segInfo2.idx1];
                                 if (frameI !== frameJ) {
                                     continue; // Skip shadows between different frames
                                 }
@@ -5177,22 +5228,13 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
                             // Call helper function with segment info for width weighting
                             const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
-                            totalShadowCalculations++;
                             // Saturating accumulation: naturally caps at MAX_SHADOW_SUM
                             shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
                             maxTint = Math.max(maxTint, tint);
                         }
-                        shadows[i] = Math.pow(this.viewerState.shadowIntensity, shadowSum);
+                        shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
                         tints[i] = 1 - maxTint;
-                        if (shadowSum > 0 || maxTint > 0) {
-                            totalShadowsApplied++;
-                        }
                     }
-
-                    // Log shadow calculation completion for slow mode
-                    const shadowEndTime = performance.now();
-                    const shadowTime = (shadowEndTime - shadowStartTime).toFixed(2);
-                    const shadowMemAfter = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
                 } else { // Fast mode: many visible positions, use grid-based optimization
                     // Increase grid resolution for large structures to reduce segments per cell
                     // Target: ~5-10 segments per cell for better performance
@@ -5202,11 +5244,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const gridSize = GRID_DIM * GRID_DIM;
                     const grid = Array.from({ length: gridSize }, () => []);
 
-
                     const gridMin = -maxExtent - 1.0;
                     const gridRange = (maxExtent + 1.0) * 2;
                     const gridCellSize = gridRange / GRID_DIM;
-
 
                     // Limit number of segments to check per cell for very large structures
                     // This prevents excessive shadow calculations
@@ -5274,20 +5314,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                             }
                         }
 
-                        // Calculate grid statistics for diagnostics
-                        let cellsWithSegments = 0;
-                        let minSegmentsInCell = Infinity;
-                        let maxSegmentsInCell = 0;
-                        for (const cell of grid) {
-                            if (cell.length > 0) {
-                                cellsWithSegments++;
-                                minSegmentsInCell = Math.min(minSegmentsInCell, cell.length);
-                                maxSegmentsInCell = Math.max(maxSegmentsInCell, cell.length);
-                            }
-                        }
-                        minSegmentsInCell = minSegmentsInCell === Infinity ? 0 : minSegmentsInCell;
-
-
                         // Only process visible segments in outer loop
                         for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
                             const i = visibleOrder[i_idx];
@@ -5337,9 +5363,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                                         }
 
                                         // Shadow isolation: in overlay mode, only allow shadows within same frame
-                                        if (frameState.frameIdMap) {
-                                            const frameI = frameState.frameIdMap[segInfoI.idx1];
-                                            const frameJ = frameState.frameIdMap[segments[j].idx1];
+                                        if (this.overlayState.enabled && this.overlayState.frameIdMap) {
+                                            const frameI = this.overlayState.frameIdMap[segInfoI.idx1];
+                                            const frameJ = this.overlayState.frameIdMap[segments[j].idx1];
                                             if (frameI !== frameJ) {
                                                 continue; // Skip shadows between different frames
                                             }
@@ -5377,56 +5403,49 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                                 }
                             }
 
-                            shadows[i] = Math.pow(this.viewerState.shadowIntensity, shadowSum);
+                            shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
                             tints[i] = 1 - maxTint;
                         }
                     } else {
                         shadows.fill(1.0);
                         tints.fill(1.0);
                     }
-
-                    // Log shadow calculation completion for fast mode
-                    const shadowEndTime = performance.now();
-                    const shadowTime = (shadowEndTime - shadowStartTime).toFixed(2);
-                    const shadowMemAfter = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
                 }
 
                 // Cache shadows/tints when rotation hasn't changed (for reuse on width/ortho changes)
                 // Store rotation matrix after calculation
-                frameState.lastShadowRotationMatrix = this._deepCopyMatrix(currentRotation);
+                this.lastShadowRotationMatrix = this._deepCopyMatrix(this.viewerState.rotation);
 
                 // Cache shadows/tints for reuse
                 if (isLargeMolecule && !this.isDragging && !this.isZooming && !this.isOrientAnimating) {
-                    frameState.cachedShadows = new Float32Array(shadows);
-                    frameState.cachedTints = new Float32Array(tints);
+                    this.cachedShadows = new Float32Array(shadows);
+                    this.cachedTints = new Float32Array(tints);
                 } else if (!isLargeMolecule) {
                     // Small molecules: cache if rotation hasn't changed
                     if (!rotationChanged) {
-                        frameState.cachedShadows = new Float32Array(shadows);
-                        frameState.cachedTints = new Float32Array(tints);
+                        this.cachedShadows = new Float32Array(shadows);
+                        this.cachedTints = new Float32Array(tints);
                     } else {
                         // Rotation changed, clear cache
-                        frameState.cachedShadows = null;
-                        frameState.cachedTints = null;
+                        this.cachedShadows = null;
+                        this.cachedTints = null;
                     }
-                } else {
                 }
-            } else if (skipShadowCalc && frameState.cachedShadows && frameState.cachedShadows.length === n) {
+            } else if (skipShadowCalc && this.cachedShadows && this.cachedShadows.length === n) {
                 // Use cached shadows (rotation hasn't changed, or dragging/zooming)
-                shadows.set(frameState.cachedShadows);
-                tints.set(frameState.cachedTints);
+                shadows.set(this.cachedShadows);
+                tints.set(this.cachedTints);
             } else if (!renderShadows) {
                 // Shadows disabled - use defaults (no shadows/tints)
                 shadows.fill(1.0);
                 tints.fill(1.0);
-            } else {
-                // Cache miss - shadows/tints remain initialized to 1.0 (no shadow/tint)
             }
+            // If skipShadowCalc is true but cache is invalid, shadows/tints remain uninitialized
             // This should not happen, but if it does, they'll be filled with defaults elsewhere
 
             // dataRange is just the molecule's extent in Angstroms
-            // Use view extent if set (for orienting to visible positions), otherwise use object's maxExtent
-            const effectiveExtent = maxExtent;
+            // Use temporary extent if set (for orienting to visible positions), otherwise use object's maxExtent
+            const effectiveExtent = this.viewerState.extent || maxExtent;
             const dataRange = (effectiveExtent * 2) || 1.0; // fallback to 1.0 to avoid div by zero
 
             // Calculate scale based on window dimensions and aspect ratio
@@ -5465,12 +5484,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // This accounts for window aspect ratio
             const baseScale = Math.min(scaleX, scaleY);
 
-            // Apply zoom multiplier from global viewerState
-            const zoomValue = this.viewerState.zoom;
-            const scale = baseScale * zoomValue;
+            // Apply zoom multiplier
+            const scale = baseScale * this.viewerState.zoom;
 
-            // baseLineWidth is this.viewerState.lineWidth (in Angstroms) converted to pixels
-            const baseLineWidthPixels = this.viewerState.lineWidth * scale;
+            // baseLineWidth is this.lineWidth (in Angstroms) converted to pixels
+            const baseLineWidthPixels = this.lineWidth * scale;
 
             const centerX = displayWidth / 2;
             const centerY = displayHeight / 2;
@@ -5482,24 +5500,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // [OPTIMIZATION] Phase 4: Allocation-free endpoint detection
             // Use pre-computed adjList and frame-based tracking to avoid Map/Set creation
 
-            // Ensure rendering arrays are allocated (safety check)
-            if (!frameState.segmentOrder || frameState.segmentOrder.length < n) {
-                frameState.segmentOrder = new Int32Array(n);
-                frameState.segmentFrame = new Int32Array(n);
-                frameState.segmentEndpointFlags = new Uint8Array(n);
-            }
-            if (!frameState.screenX || frameState.screenX.length < rotated.length) {
-                frameState.screenX = new Float32Array(rotated.length);
-                frameState.screenY = new Float32Array(rotated.length);
-                frameState.screenRadius = new Float32Array(rotated.length);
-                frameState.screenValid = new Int32Array(rotated.length);
-            }
-
             // 1. Mark visible segments in the frame tracking array
             this.renderFrameId++;
             const currentFrameId = this.renderFrameId;
-            const segmentOrder = frameState.segmentOrder;
-            const segmentFrame = frameState.segmentFrame;
+            const segmentOrder = this.segmentOrder;
+            const segmentFrame = this.segmentFrame;
 
             for (let i = 0; i < numRendered; i++) {
                 const segIdx = visibleOrder[i];
@@ -5510,7 +5515,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // 2. Pre-compute which endpoints should be rounded
             // Iterate over visible segments and check their endpoints using adjList
             // [OPTIMIZATION] Use Uint8Array for flags instead of Map
-            const segmentEndpointFlags = frameState.segmentEndpointFlags;
+            const segmentEndpointFlags = this.segmentEndpointFlags;
 
             for (let i = 0; i < numRendered; i++) {
                 const segIdx = visibleOrder[i];
@@ -5591,10 +5596,10 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // Project all visible atoms once and store in SoA arrays
             this.screenFrameId++;
             const currentScreenFrameId = this.screenFrameId;
-            const screenX = frameState.screenX;
-            const screenY = frameState.screenY;
-            const screenRadius = frameState.screenRadius;
-            const screenValid = frameState.screenValid;
+            const screenX = this.screenX;
+            const screenY = this.screenY;
+            const screenRadius = this.screenRadius;
+            const screenValid = this.screenValid;
 
             // Helper to project a position if not already projected
             const projectPosition = (idx) => {
@@ -5605,18 +5610,18 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
                 // Calculate width multiplier (simplified for positions)
                 let widthMultiplier = 0.5;
-                const positionTypes = frameState.positionTypes;
-                if (positionTypes && idx < positionTypes.length) {
+                if (this.positionTypes && idx < this.positionTypes.length) {
                     // Reuse logic: simplified width calculation for atoms
-                    const type = positionTypes[idx];
+                    const type = this.positionTypes[idx];
                     widthMultiplier = (this.typeWidthMultipliers && this.typeWidthMultipliers[type]) || 0.5;
                 }
                 let atomLineWidth = baseLineWidthPixels * widthMultiplier;
 
                 if (this.viewerState.perspectiveEnabled) {
                     const z = this.viewerState.focalLength - vec.z;
-                    if (z < 0.01) {
-                        // Invalid (behind camera)
+                    // Clamp z to prevent division by zero or negative values
+                    // If z is too small, atom is too close to camera
+                    if (z <= 0.1) {
                         screenValid[idx] = 0; // Mark invalid
                         return;
                     }
@@ -5709,18 +5714,18 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const zNormVal = zNorm[idx];
 
                     if (renderShadows) {
-                        const tintFactor = this.viewerState.depthEnabled
+                        const tintFactor = this.depthEnabled
                             ? (0.50 * zNormVal + 0.50 * tints[idx]) / 3
                             : (0.50 * tints[idx]) / 3;
                         r = r + (1 - r) * tintFactor;
                         g = g + (1 - g) * tintFactor;
                         b = b + (1 - b) * tintFactor;
-                        const shadowFactor = this.viewerState.depthEnabled
+                        const shadowFactor = this.depthEnabled
                             ? (0.20 + 0.25 * zNormVal + 0.55 * shadows[idx])
                             : (0.20 + 0.80 * shadows[idx]);
                         r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
                     } else {
-                        if (this.viewerState.depthEnabled) {
+                        if (this.depthEnabled) {
                             const depthFactor = 0.70 + 0.30 * zNormVal;
                             r *= depthFactor; g *= depthFactor; b *= depthFactor;
                         }
@@ -5755,6 +5760,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     const vec2 = rotated[idx2];
                     const z1 = this.viewerState.focalLength - vec1.z;
                     const z2 = this.viewerState.focalLength - vec2.z;
+                    if (z1 <= 0.1 || z2 <= 0.1) continue;
 
                     // Average perspective scale for the segment
                     const avgPerspectiveScale = (this.viewerState.focalLength / z1 + this.viewerState.focalLength / z2) / 2;
@@ -5771,30 +5777,30 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 const b_int = b * 255 | 0;
 
                 // Use rgb for opacity
-                const color = `rgb(${r_int}, ${g_int}, ${b_int})`;
+                const color = `rgb(${r_int},${g_int},${b_int})`;
 
                 // For gap filler (outline), also apply opacity
                 // Note: Gap filler is usually darker/lighter, here we just darken
                 const gapR = r_int * 0.7 | 0;
                 const gapG = g_int * 0.7 | 0;
                 const gapB = b_int * 0.7 | 0;
-                const gapFillerColor = `rgb(${gapR}, ${gapG}, ${gapB})`;
+                const gapFillerColor = `rgb(${gapR},${gapG},${gapB})`;
 
                 // Get pre-computed endpoint rounding flags (Uint8Array)
                 const flags = segmentEndpointFlags[idx];
                 const hasOuterStart = (flags & 1) !== 0;
                 const hasOuterEnd = (flags & 2) !== 0;
 
-                if (this.viewerState.outlineMode === 'none') {
+                if (this.outlineMode === 'none') {
                     // --- 1-STEP DRAW (No Outline) ---
                     ctx.beginPath();
                     ctx.moveTo(x1, y1);
                     ctx.lineTo(x2, y2);
                     setCanvasProps(color, currentLineWidth, 'round');
                     ctx.stroke();
-                } else if (this.viewerState.outlineMode === 'partial') {
+                } else if (this.outlineMode === 'partial') {
                     // --- 2-STEP DRAW (Partial Outline) - Background segment with butt caps only (no rounded caps) ---
-                    const totalOutlineWidth = currentLineWidth + this.viewerState.relativeOutlineWidth;
+                    const totalOutlineWidth = currentLineWidth + this.relativeOutlineWidth;
 
                     // Pass 1: Gap filler outline (3px larger than main line) with butt caps only
                     ctx.beginPath();
@@ -5811,9 +5817,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                     ctx.lineTo(x2, y2);
                     setCanvasProps(color, currentLineWidth, 'round');
                     ctx.stroke();
-                } else { // this.viewerState.outlineMode === 'full'
+                } else { // this.outlineMode === 'full'
                     // --- 2-STEP DRAW (Full Outline) - Background segment with rounded caps at outer endpoints ---
-                    const totalOutlineWidth = currentLineWidth + this.viewerState.relativeOutlineWidth;
+                    const totalOutlineWidth = currentLineWidth + this.relativeOutlineWidth;
 
                     // Pass 1: Gap filler outline (3px larger than main line)
                     // Draw line with butt caps, then add rounded caps manually at outer endpoints
@@ -5864,11 +5870,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             if (!this.isDragging && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
                 window.SequenceViewer.drawHighlights();
             }
-
-            // Log render completion
-            const renderEndTime = performance.now();
-            const renderTime = (renderEndTime - renderStartTime).toFixed(2);
-            const memAfter = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(2) : 'N/A';
         }
 
         // [OPTIMIZATION] Phase 6: Public API for highlights
@@ -5876,20 +5877,18 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         // Decouples external viewers from internal SoA arrays
         getHighlightCoordinates() {
             const coords = [];
-            const frameState = this._getFrameState();
-
-            // Ensure frameState and arrays exist
-            if (!frameState || !frameState.screenValid || !frameState.screenX || !frameState.screenY || !frameState.screenRadius) {
+            // Ensure arrays exist
+            if (!this.screenValid || !this.screenX || !this.screenY || !this.screenRadius) {
                 return coords;
             }
 
             const addCoord = (idx) => {
                 // Check if projected in current frame
-                if (idx >= 0 && idx < frameState.screenValid.length && frameState.screenValid[idx] === this.screenFrameId) {
+                if (idx >= 0 && idx < this.screenValid.length && this.screenValid[idx] === this.screenFrameId) {
                     coords.push({
-                        x: frameState.screenX[idx],
-                        y: frameState.screenY[idx],
-                        radius: frameState.screenRadius[idx]
+                        x: this.screenX[idx],
+                        y: this.screenY[idx],
+                        radius: this.screenRadius[idx]
                     });
                 }
             };
@@ -5911,53 +5910,68 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
         // Main animation loop
         animate() {
-            // Skip render work if dragging (mousemove handler calls render directly via requestAnimationFrame)
-            // But still schedule next frame to keep the loop running
+            // Skip all work if dragging (mousemove handler calls render directly)
             if (this.isDragging) {
-                requestAnimationFrame(() => this.animate());
+                // Don't schedule another frame - mousemove will call render directly
                 return;
-            }
-
-            if (this.orientAnimation && this.orientAnimation.active) {
-                this._updateOrientAnimation();
             }
 
             const now = performance.now();
             let needsRender = false;
 
-            // 1. Handle auto-rotate
-            if (this.autoRotate) {
+            // 1. Handle inertia/spin - disabled during recording and for large molecules
+            if (!this.isRecording) {
+                // Check if object is large (disable inertia for performance based on visible segments)
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                if (object && object.viewerState) {
-                    const angleY = 0.02; // Auto-rotate speed
-                    const rotY = rotationMatrixY(angleY);
-                    this.viewerState.rotation = multiplyMatrices(rotY, this.viewerState.rotation);
-                    needsRender = true;
+                const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
+                // Count visible segments for inertia determination
+                let visibleSegmentCount = totalSegmentCount;
+                if (this.visibilityMask && this.segmentIndices) {
+                    visibleSegmentCount = 0;
+                    for (let i = 0; i < this.segmentIndices.length; i++) {
+                        const seg = this.segmentIndices[i];
+                        if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                            visibleSegmentCount++;
+                        }
+                    }
+                }
+                const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
+
+                if (enableInertia) {
+                    const INERTIA_THRESHOLD = 0.0001; // Stop when velocity is below this
+
+                    if (Math.abs(this.spinVelocityX) > INERTIA_THRESHOLD) {
+                        const rot = rotationMatrixY(this.spinVelocityX * 0.005);
+                        this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
+                        this.spinVelocityX *= 0.95; // Damping
+                        needsRender = true;
+                    } else {
+                        this.spinVelocityX = 0;
+                    }
+
+                    if (Math.abs(this.spinVelocityY) > INERTIA_THRESHOLD) {
+                        const rot = rotationMatrixX(this.spinVelocityY * 0.005);
+                        this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
+                        this.spinVelocityY *= 0.95; // Damping
+                        needsRender = true;
+                    } else {
+                        this.spinVelocityY = 0;
+                    }
+                } else {
+                    // Disable inertia for large objects
+                    this.spinVelocityX = 0;
+                    this.spinVelocityY = 0;
                 }
             }
 
-            // 1.5. Handle inertia/spin
-            const INERTIA_THRESHOLD = 0.0001;
-
-            if (Math.abs(this.spinVelocityX) > INERTIA_THRESHOLD) {
-                const rot = rotationMatrixY(this.spinVelocityX * 0.005);
+            // 2. Handle auto-rotate
+            if (this.autoRotate && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
+                const rot = rotationMatrixY(0.005); // Constant rotation speed
                 this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
-                this.spinVelocityX *= 0.95; // Damping
                 needsRender = true;
-            } else {
-                this.spinVelocityX = 0;
             }
 
-            if (Math.abs(this.spinVelocityY) > INERTIA_THRESHOLD) {
-                const rot = rotationMatrixX(this.spinVelocityY * 0.005);
-                this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
-                this.spinVelocityY *= 0.95; // Damping
-                needsRender = true;
-            } else {
-                this.spinVelocityY = 0;
-            }
-
-            // 2. Check if frame changed (decoupled frame advancement)
+            // 3. Check if frame changed (decoupled frame advancement)
             const currentFrame = this.currentFrame;
             const previousFrame = this.lastRenderedFrame;
             if (previousFrame !== currentFrame && this.currentObjectName) {
@@ -5966,14 +5980,16 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 if (object && object.frames[currentFrame]) {
                     // Data should already be loaded by _loadFrameData in timer
                     // But ensure it's loaded if somehow it wasn't
-                    if (this.coords.length === 0 || this.lastRenderedFrame === -1) {
+                    // CRITICAL FIX: In overlay mode, DON'T call _loadFrameData - it would destroy merged data!
+                    // In overlay mode, merged data is already loaded, so just render it
+                    if (!this.overlayState.enabled && (this.coords.length === 0 || this.lastRenderedFrame === -1)) {
                         this._loadFrameData(currentFrame, true); // Load without render
                     }
                     needsRender = true;
                 }
             }
 
-            // 3. Final render if needed
+            // 4. Final render if needed
             if (needsRender) {
                 this.render('animate loop');
                 if (previousFrame !== currentFrame) {
@@ -6007,10 +6023,18 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
 
                 // Get SVG string and download
                 const svgString = svgCtx.getSerializedSvg();
-                this._downloadSvg(svgString, this.currentObjectName);
+
+                // Check if we're in an iframe
+                if (window.self !== window.top) {
+                    // In iframe: send SVG to parent for download
+                    this._downloadSvgViaParent(svgString, this.currentObjectName);
+                } else {
+                    // Not in iframe: download directly
+                    this._downloadSvg(svgString, this.currentObjectName);
+                }
             } catch (e) {
                 console.error("Failed to export SVG:", e);
-                const errorMsg = `Error exporting SVG: ${e.message} `;
+                const errorMsg = `Error exporting SVG: ${e.message}`;
                 if (typeof setStatus === 'function') {
                     setStatus(errorMsg, true);
                 } else {
@@ -6019,36 +6043,63 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             }
         }
 
-        // Helper method to download SVG file
-        _downloadSvg(svgString, objectName) {
-            // Create filename with object name and timestamp
+        // Generate filename from object name and current timestamp
+        _generateFilename(objectName, extension) {
             const now = new Date();
             const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
-
-            // Sanitize object name for filename
             let name = objectName || 'viewer';
-            name = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-            if (name.length > 50) {
-                name = name.substring(0, 50);
-            }
+            name = name.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+            return `py2dmol_${name}_${timestamp}.${extension}`;
+        }
 
-            const svgFilename = `py2dmol_${name}_${timestamp}.svg`;
+        // Send SVG to parent for download (iframe mode)
+        _downloadSvgViaParent(svgString, objectName) {
+            const filename = this._generateFilename(objectName, 'svg');
+            window.parent.postMessage({
+                type: 'py2dmol_download_svg',
+                svgData: svgString,
+                filename: filename
+            }, '*');
+        }
 
-            // Download the SVG file
+        // Send video to parent for download (iframe mode)
+        _downloadVideoViaParent(blob, filename) {
+            const reader = new FileReader();
+            reader.onload = () => {
+                window.parent.postMessage({
+                    type: 'py2dmol_download_video',
+                    videoData: reader.result,
+                    filename: filename
+                }, '*');
+            };
+            reader.readAsDataURL(blob);
+        }
+
+        // Download video directly (non-iframe mode)
+        _downloadVideo(blob, filename) {
+            this._triggerDownload(blob, filename);
+        }
+
+        // Download SVG directly (non-iframe mode)
+        _downloadSvg(svgString, objectName) {
+            const filename = this._generateFilename(objectName, 'svg');
             const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+            this._triggerDownload(blob, filename);
+            if (typeof setStatus === 'function') {
+                setStatus(`SVG exported to ${filename}`);
+            }
+        }
+
+        // Helper to trigger browser download
+        _triggerDownload(blob, filename) {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = svgFilename;
+            a.download = filename;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-
-            // Use setStatus if available (index.html), otherwise console.log (viewer.html)
-            if (typeof setStatus === 'function') {
-                setStatus(`SVG exported to ${svgFilename} `);
-            }
         }
     }
 
@@ -6062,26 +6113,22 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
     // MAIN APP & COLAB COMMUNICATION
     // ============================================================================
 
-    // 1. Get config from Python
-    // Config is passed as parameter to initializePy2DmolViewer
-    // (already available in scope)
-    if (!config || Object.keys(config).length === 0) {
-        config = {
-            size: [300, 300],
-            pae_size: 300,
-            color: "auto",
-            shadow: true,
-            outline: true,
-            width: 3.0,
-            rotate: false,
-            controls: true,
-            autoplay: false,
-            box: true,
-            pastel: 0.25,
-            pae: false,
-            colorblind: false
-        };
-    }
+    // 1. Get config from window.viewerConfig
+    const config = window.viewerConfig || {
+        size: [300, 300],
+        pae_size: 300,
+        color: "auto",
+        shadow: true,
+        outline: true,
+        width: 3.0,
+        rotate: false,
+        controls: true,
+        autoplay: false,
+        box: true,
+        pastel: 0.25,
+        pae: false,
+        colorblind: false
+    };
 
     // 2. Setup Canvas with high-DPI scaling for crisp rendering
     const canvas = containerElement.querySelector('#canvas');
@@ -6120,10 +6167,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
     // We no longer set a fixed width on viewerColumn, to allow resizing.
 
     // 3. Create renderer
-    const renderer = new Pseudo3DRenderer(canvas, containerElement);
-
-    // Store all callbacks so renderer can use them to call Python
-    renderer.callbacks = config.callbacks || {};
+    const renderer = new Pseudo3DRenderer(canvas);
 
     // ADDED: ResizeObserver to handle canvas resizing
     const canvasContainer = containerElement.querySelector('#canvasContainer');
@@ -6329,10 +6373,9 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
     const controlsContainer = containerElement.querySelector('#controlsContainer');
     const playButton = containerElement.querySelector('#playButton');
     const overlayButton = containerElement.querySelector('#overlayButton');
-    // recordButton, saveSvgButton, and orientButton might be in containerElement or in document (web app vs embedded)
-    const recordButton = containerElement.querySelector('#recordButton') || document.querySelector('#recordButton');
-    const saveSvgButton = containerElement.querySelector('#saveSvgButton') || document.querySelector('#saveSvgButton');
-    const orientButton = containerElement.querySelector('#orientButton') || document.querySelector('#orientButton');
+    // All buttons are within containerElement in both div and iframe modes
+    const recordButton = containerElement.querySelector('#recordButton');
+    const saveSvgButton = containerElement.querySelector('#saveSvgButton');
     const frameSlider = containerElement.querySelector('#frameSlider');
     const frameCounter = containerElement.querySelector('#frameCounter');
     // objectSelect is now in the sequence header, query from container
@@ -6355,7 +6398,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         frameSlider, frameCounter, objectSelect,
         speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
         shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
-        depthCheckbox, colorblindCheckbox, orthoSlider, orientButton
+        depthCheckbox, colorblindCheckbox, orthoSlider
     );
 
     // Setup save state button (for Python interface only - web interface handles it in app.js)
@@ -6413,7 +6456,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             // Pass name to addFrame
             renderer.addFrame(data, objectName);
         } catch (e) {
-            console.error("Failed to parse JSON from Python:", e);
+            console.error("Error adding frame:", e);
         }
     };
 
@@ -6455,10 +6498,14 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                 // Store color for this object
                 renderer.objectsData[objectName].color = color;
 
-                // Invalidate segment cache and force re-render
+                // Invalidate all caches to force recalculation with new color
                 renderer.cachedSegmentIndices = null;
                 renderer.cachedSegmentIndicesFrame = -1;
                 renderer.cachedSegmentIndicesObjectName = null;
+                renderer.colors = null;  // Invalidate color cache
+                renderer.plddtColors = null;  // Invalidate plddt color cache
+                renderer.colorsNeedUpdate = true;  // Force color recalculation
+                renderer.plddtColorsNeedUpdate = true;  // Force plddt color recalculation
 
                 // Re-render with new colors
                 renderer.render('SetObjectColor');
@@ -6468,22 +6515,17 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
         }
     };
 
-
-    // 10c. Add function for Python to orient structure - PURGED
-    const handlePythonOrient = (objectName, rotationMatrix, translationVector, animate) => {
-        console.log('handlePythonOrient: disabled - viewer state management purged');
-    };
-
     // 11. Load initial data
-    if (viewerData && viewerData.length > 0) {
+    if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (window.py2dmol_staticData[viewerId]).length > 0) {
         // === STATIC MODE (from show()) ===
         try {
-            for (const obj of viewerData) {
+            for (const obj of (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])) {
                 if (obj.name && obj.frames && obj.frames.length > 0) {
 
                     const staticChains = obj.chains; // Might be undefined
                     const staticPositionTypes = obj.position_types; // Might be undefined
                     const staticContacts = obj.contacts; // Might be undefined
+                    const staticBonds = obj.bonds; // Might be undefined
 
                     for (let i = 0; i < obj.frames.length; i++) {
                         const lightFrame = obj.frames[i];
@@ -6501,6 +6543,7 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                             pae: lightFrame.pae || undefined,  // Will use inheritance or default
                             position_names: lightFrame.position_names || undefined,  // Will default in setCoords
                             residue_numbers: lightFrame.residue_numbers || undefined,  // Will default in setCoords
+                            bonds: lightFrame.bonds || staticBonds || undefined,  // Bonds for connectivity
                             color: lightFrame.color || undefined  // Frame-level color from Python
                         };
 
@@ -6517,27 +6560,36 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
                         }
                     }
 
-                    // Store overrides at object level if present
-                    if (obj.overrides) {
-                        renderer.objectOverrides[obj.name] = obj.overrides;
-                        // Invalidate segment cache to ensure new colors are applied
-                        renderer.cachedSegmentIndices = null;
+                    // Store color overrides at object level if present
+                    if (obj.color) {
+                        if (renderer.objectsData[obj.name]) {
+                            renderer.objectsData[obj.name].color = obj.color;
+                            // Invalidate segment cache to ensure new colors are applied
+                            renderer.cachedSegmentIndices = null;
+                        }
                     }
                 }
             }
             // Set view to the first frame of the first object
-            if (viewerData.length > 0) {
-                renderer.currentObjectName = viewerData[0].name;
-                renderer.objectSelect.value = viewerData[0].name;
+            if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && window.py2dmol_staticData[viewerId].length > 0) {
+                renderer.currentObjectName = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
+                renderer.objectSelect.value = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
 
                 // Populate entropy data from MSA if available
-                const firstObjectName = viewerData[0].name;
+                const firstObjectName = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
                 if (renderer.objectsData[firstObjectName]?.msa?.msasBySequence &&
                     renderer.objectsData[firstObjectName]?.msa?.chainToSequence) {
                     renderer._mapEntropyToStructure(firstObjectName);
                 }
 
-                renderer.setFrame(0);
+                // Commit 7: In overlay mode, DON'T call setFrame - it would load individual frame data
+                // Instead, just render the merged data that's already been loaded via auto-enable
+                if (renderer.overlayState.enabled) {
+                    renderer.currentFrame = 0;
+                    renderer.render('staticLoad-overlay');
+                } else {
+                    renderer.setFrame(0);
+                }
                 // Update PAE container visibility after initial load
                 // Use requestAnimationFrame to ensure PAE renderer is initialized
                 requestAnimationFrame(() => {
@@ -6549,11 +6601,11 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             renderer.setFrame(-1); // Start empty on error
         }
 
-    } else if (viewerData && viewerData.coords && viewerData.coords.length > 0) {
+    } else if ((window.py2dmol_proteinData && window.py2dmol_proteinData[viewerId]) && (window.py2dmol_proteinData[viewerId]).coords && (window.py2dmol_proteinData[viewerId]).coords.length > 0) {
         // === HYBRID MODE (first frame) ===
         try {
             // Load the single, statically-injected frame into "0"
-            renderer.addFrame(viewerData, "0");
+            renderer.addFrame((window.py2dmol_proteinData && window.py2dmol_proteinData[viewerId]), "0");
         } catch (error) {
             console.error("Error loading initial data:", error);
             renderer.setFrame(-1);
@@ -6573,16 +6625,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
     // 12. Start the main animation loop
     renderer.animate();
 
-    // 12.5. If overlay_frames is enabled, activate overlay mode
-    if (config.overlay_frames && renderer) {
-        // Use a small delay to ensure renderer is ready
-        setTimeout(() => {
-            if (renderer.toggleOverlay) {
-                renderer.toggleOverlay();
-            }
-        }, 100);
-    }
-
     // 13. Expose Public API
     const viewer_id = config.viewer_id;
     if (viewer_id) {
@@ -6593,7 +6635,6 @@ function initializePy2DmolViewer(containerElement, passedConfig, passedData) {
             handlePythonResetAll,
             handlePythonSetColor,
             handlePythonSetObjectColor,
-            handlePythonOrient,
             renderer // Expose the renderer instance for external access
         };
     } else {

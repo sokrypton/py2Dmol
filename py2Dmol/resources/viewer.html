@@ -511,7 +511,7 @@
             <!-- Animation Controls -->
             <div id="controlsContainer">
                 <button id="playButton" class="controlButton">▶</button>
-                <button id="recordButton" class="controlButton" title="Record animation to video file">⏺</button>
+                <button id="recordButton" class="controlButton" title="Record animation to video file">●</button>
                 <input type="range" id="frameSlider" min="0" max="0" value="0">
                 <span id="frameCounter">0 / 0</span>
                 <select id="speedSelect">
@@ -590,10 +590,7 @@
                         <input type="checkbox" id="rotationCheckbox">
                         <span class="btn-label">Rotate</span>
                     </label>
-                    <button id="orientButton" class="controlButton" title="Orient to best view">Orient</button>
-                </div>
-                <div class="btn-row" style="margin-top: 3px;">
-                    <button id="saveSvgButton" class="controlButton" style="width: 100%;" title="Save as SVG">Save SVG</button>
+                    <button id="saveSvgButton" class="controlButton" title="Save as SVG">Save SVG</button>
                 </div>
 
             </div>
@@ -601,6 +598,40 @@
 
     </div>
     <!-- DATA_INJECTION_POINT -->
+
+    <!-- Infrastructure for py2dmol parent communication (iframe mode) -->
+    <script>
+        // Initialize queuing infrastructure once when page loads
+        if (!window.py2dmol_queue) {
+            window.py2dmol_queue = {};
+        }
+        if (!window.py2dmol_ready_flags) {
+            window.py2dmol_ready_flags = {};
+        }
+
+        // Function to send a message from parent to iframe
+        // Called by parent page via kernel execution
+        window.py2dmol_sendMessage = function(viewerId, messageJson) {
+            // Initialize queue for this viewer if needed
+            if (!window.py2dmol_queue[viewerId]) {
+                window.py2dmol_queue[viewerId] = [];
+            }
+
+            // Check if iframe is ready
+            if (window.py2dmol_ready_flags[viewerId]) {
+                // iframe is ready, send message immediately
+                const iframe = document.querySelector(`iframe[data-viewer-id="${viewerId}"]`);
+                if (iframe && iframe.contentWindow) {
+                    iframe.contentWindow.postMessage(messageJson, '*');
+                } else {
+                    console.error("py2dmol: iframe with viewer_id '" + viewerId + "' not found");
+                }
+            } else {
+                // iframe not ready yet, queue the message
+                window.py2dmol_queue[viewerId].push(messageJson);
+            }
+        };
+    </script>
 </body>
 
 </html>
