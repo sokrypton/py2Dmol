@@ -4902,9 +4902,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const c = this.viewerState.center || globalCenter;
 
             // Update pre-allocated rotatedCoords
+            // Apply object's rotation_matrix first (best_view), then user's rotation
             const m = this.viewerState.rotation;
+            const objectRotation = (object && object.rotation_matrix && object.center) ? object.rotation_matrix : null;
+            const objectCenter = (object && object.center) ? object.center : null;
+
             for (let i = 0; i < this.coords.length; i++) {
-                const v = this.coords[i];
+                let v = this.coords[i];
+
+                // Step 1: Apply object-level rotation (best_view) if present
+                if (objectRotation && objectCenter) {
+                    const cx = v.x - objectCenter[0];
+                    const cy = v.y - objectCenter[1];
+                    const cz = v.z - objectCenter[2];
+                    const rotX = objectRotation[0][0] * cx + objectRotation[0][1] * cy + objectRotation[0][2] * cz;
+                    const rotY = objectRotation[1][0] * cx + objectRotation[1][1] * cy + objectRotation[1][2] * cz;
+                    const rotZ = objectRotation[2][0] * cx + objectRotation[2][1] * cy + objectRotation[2][2] * cz;
+                    v = new Vec3(rotX + objectCenter[0], rotY + objectCenter[1], rotZ + objectCenter[2]);
+                }
+
+                // Step 2: Apply user rotation
                 const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
                 const out = this.rotatedCoords[i];
                 out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
@@ -6515,6 +6532,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     };
 
+    // 10c. Add function for Python to set view transform (rotation + center)
+    const handlePythonSetViewTransform = (rotationJsonString, centerJsonString, objectName) => {
+        try {
+            // Parse the double-encoded JSON strings from Python
+            const rotation = JSON.parse(rotationJsonString);
+            const center = JSON.parse(centerJsonString);
+
+            if (!objectName) {
+                objectName = renderer.currentObjectName;
+            }
+
+            if (objectName && renderer.objectsData[objectName]) {
+                // Store rotation matrix and center for this object
+                renderer.objectsData[objectName].rotation_matrix = rotation;
+                renderer.objectsData[objectName].center = center;
+
+                // Invalidate shadow cache since rotation affects shadows
+                renderer.cachedShadows = null;
+                renderer.lastShadowRotationMatrix = null;
+
+                // Re-render with new transform applied
+                renderer.render('SetViewTransform');
+            }
+        } catch (e) {
+            console.error("Failed to set view transform from Python:", e);
+        }
+    };
+
     // 11. Load initial data
     if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (window.py2dmol_staticData[viewerId]).length > 0) {
         // === STATIC MODE (from show()) ===
@@ -6566,6 +6611,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             renderer.objectsData[obj.name].color = obj.color;
                             // Invalidate segment cache to ensure new colors are applied
                             renderer.cachedSegmentIndices = null;
+                        }
+                    }
+
+                    // Store rotation matrix and center for view transform if present
+                    if (obj.rotation_matrix && obj.center) {
+                        if (renderer.objectsData[obj.name]) {
+                            renderer.objectsData[obj.name].rotation_matrix = obj.rotation_matrix;
+                            renderer.objectsData[obj.name].center = obj.center;
+
+                            // Invalidate shadow cache since rotation affects shadows
+                            renderer.cachedShadows = null;
+                            renderer.lastShadowRotationMatrix = null;
                         }
                     }
                 }
@@ -6635,6 +6692,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             handlePythonResetAll,
             handlePythonSetColor,
             handlePythonSetObjectColor,
+            handlePythonSetViewTransform,
             renderer // Expose the renderer instance for external access
         };
     } else {

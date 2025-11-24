@@ -23,12 +23,87 @@ def kabsch(a, b, return_v=False):
   else:
     return u @ vh
 
-def best_view(a):
-  a_mean = a.mean(-2, keepdims=True)
-  a_cent = a - a_mean
-  v = kabsch(a_cent, a_cent, return_v=True)
-  a_aligned = (a_cent @ v) + a_mean
-  return a_aligned
+def best_view(coords):
+  """Compute optimal viewing rotation matrix and center.
+
+  Matches web interface behavior: computes principal axes and tries different
+  orientations to maximize screen usage (assumes square/landscape display).
+
+  Returns:
+      (rotation_matrix, center):
+        - rotation_matrix: 3x3 numpy array
+        - center: [x, y, z] mean of coordinates
+  """
+  center = coords.mean(axis=0)
+  centered = coords - center
+
+  # Compute covariance matrix
+  H = centered.T @ centered
+
+  # SVD to get eigenvectors
+  U, S, Vh = np.linalg.svd(H)
+
+  # Extract eigenvectors (columns of U)
+  # U[:,0] = largest variance, U[:,1] = second, U[:,2] = smallest
+  v1 = U[:, 0]  # Largest variance
+  v2 = U[:, 1]  # Second largest
+  v3 = U[:, 2]  # Smallest
+
+  # Try different orientations and pick the best one
+  # We try 8 sign combinations × 2 mappings = 16 candidates
+  # Select based on projected variance in screen space
+
+  best_variance_ratio = -1
+  best_rotation = np.eye(3)
+
+  # Try both mappings: (e1->x, e2->y) and (e2->x, e1->y)
+  for mapping in ['e1_x', 'e2_x']:
+    # Try all 8 sign combinations
+    for s1 in [1, -1]:
+      for s2 in [1, -1]:
+        for s3 in [1, -1]:
+          # Apply signs
+          e1 = v1 * s1
+          e2 = v2 * s2
+          e3 = v3 * s3
+
+          # Apply mapping
+          if mapping == 'e1_x':
+            r0 = e1  # X-axis
+            r1 = e2  # Y-axis
+          else:
+            r0 = e2  # X-axis
+            r1 = e1  # Y-axis
+
+          # Normalize
+          r0 = r0 / np.linalg.norm(r0)
+          r1 = r1 / np.linalg.norm(r1)
+
+          # Orthogonalize r1 with respect to r0
+          r1 = r1 - np.dot(r1, r0) * r0
+          r1_norm = np.linalg.norm(r1)
+          if r1_norm < 1e-10:
+            continue
+          r1 = r1 / r1_norm
+
+          # Z-axis from cross product (right-handed)
+          r2 = np.cross(r0, r1)
+
+          # Construct rotation matrix
+          R = np.array([r0, r1, r2])
+
+          # Calculate projected variance in screen space
+          rotated = centered @ R.T
+          var_x = np.var(rotated[:, 0])
+          var_y = np.var(rotated[:, 1])
+          var_ratio = max(var_x, var_y) / (min(var_x, var_y) + 1e-10)
+
+          # Prefer orientations that use screen space well
+          if var_ratio > best_variance_ratio:
+            best_variance_ratio = var_ratio
+            best_rotation = R
+
+  return best_rotation, center
 
 def align_a_to_b(a, b):
   """Aligns coordinate set 'a' to 'b' using Kabsch algorithm."""
@@ -182,24 +257,34 @@ class view:
 
     def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, align=True, position_names=None, residue_numbers=None, atom_types=None):
       """
-      Updates the internal state with new data. It no longer creates
-      default values, simply storing what is provided.
-      
+      Updates the internal state with new data. Coordinates are kept in original space.
+      Rotation matrix is ALWAYS computed for first frame (best_view).
+      The 'align' parameter controls whether subsequent frames are aligned to the first frame.
+
       Args:
           residue_numbers: PDB residue sequence numbers (resSeq), one per position.
                            For ligands, multiple positions may share the same residue number.
           atom_types: Backward compatibility alias for position_types (deprecated).
+          align: If True, subsequent frames are aligned to the first frame.
+                 Best view is ALWAYS computed for first frame regardless of this parameter.
+
+      Returns:
+          (rotation_matrix, center) if first frame, else (None, None)
       """
       # Backward compatibility: support atom_types as alias for position_types
       if atom_types is not None and position_types is None:
           position_types = atom_types
-      
+
+      rotation_matrix = None
+      center = None
+
       # --- Coordinate Alignment ---
       if self._coords is None:
-          # First frame of an object, align to best view
-          self._coords = best_view(coords) if align else coords
+          # First frame of an object - ALWAYS compute best_view for optimal viewing angle
+          rotation_matrix, center = best_view(coords)
+          self._coords = coords
       else:
-          # Subsequent frames, align to the first frame
+          # Subsequent frames, align to the first frame if align=True
           if align and self._coords.shape == coords.shape:
               self._coords = align_a_to_b(coords, self._coords)
           else:
@@ -231,6 +316,8 @@ class view:
       if self._position_residue_numbers is not None and len(self._position_residue_numbers) != n_positions:
           print(f"Warning: Residue numbers length mismatch. Ignoring residue numbers for this frame.")
           self._position_residue_numbers = None
+
+      return rotation_matrix, center
 
     def _find_object_by_name(self, name):
         """Find and return object by name, or None if not found."""
@@ -272,6 +359,16 @@ class view:
             color_json_string = json.dumps(color)
             color_js_literal = json.dumps(color_json_string)
             js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetObjectColor({color_js_literal}, '{name}');"
+
+        elif msg_type == "py2DmolSetViewTransform":
+            rotation = message_dict.get("rotation", [])
+            center = message_dict.get("center", [])
+            name = message_dict.get("name", "")
+            rotation_json_string = json.dumps(rotation)
+            rotation_js_literal = json.dumps(rotation_json_string)
+            center_json_string = json.dumps(center)
+            center_js_literal = json.dumps(center_json_string)
+            js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetViewTransform({rotation_js_literal}, {center_js_literal}, '{name}');"
 
         if js_code_inner:
             # Only handle frame updates via data display
@@ -521,7 +618,13 @@ class view:
                     obj_to_serialize["chains"] = first_frame["chains"]
                 if "position_types" in first_frame and first_frame["position_types"] is not None:
                     obj_to_serialize["position_types"] = first_frame["position_types"]
-                
+
+                # Add rotation_matrix and center if they exist (for viewing orientation)
+                if "rotation_matrix" in py_obj and py_obj["rotation_matrix"] is not None:
+                    obj_to_serialize["rotation_matrix"] = py_obj["rotation_matrix"]
+                if "center" in py_obj and py_obj["center"] is not None:
+                    obj_to_serialize["center"] = py_obj["center"]
+
                 # Add contacts if they exist
                 if "contacts" in py_obj and py_obj["contacts"] is not None and len(py_obj["contacts"]) > 0:
                     obj_to_serialize["contacts"] = py_obj["contacts"]
@@ -867,6 +970,8 @@ class view:
             position_types (list, optional): N-length list of position types ('P', 'D', 'R', 'L').
             pae (np.array, optional): LxL PAE matrix.
             name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
+            align (bool, optional): If True, aligns subsequent frames to the first frame.
+                                   Best-view rotation is ALWAYS computed for first frame. Defaults to True.
             position_names (list, optional): N-length list of position names.
             residue_numbers (list, optional): N-length list of PDB residue sequence numbers (resSeq).
                                               One per position. For ligands, multiple positions may share the same residue number.
@@ -880,7 +985,7 @@ class view:
         """
         
         # --- Step 1: Update Python-side alignment state ---
-        self._update(coords, plddts, chains, position_types, pae, align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types) # This handles defaults
+        rotation_matrix, center = self._update(coords, plddts, chains, position_types, pae, align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         # --- Step 2: Handle object creation ---
@@ -898,27 +1003,35 @@ class view:
             # No name provided and no objects exist, create first object
             create_new_object = True
 
+        is_first_frame = len(self._current_object_data) == 0 if self._current_object_data is not None else False
+
         if create_new_object or not self.objects:
             self.new_obj(name)
+            is_first_frame = True
 
         data_dict["name"] = None  # Don't set frame-level name; use object name instead
 
-        # --- Step 3: Save data to Python list ---
+        # --- Step 3: Store rotation matrix and center on first frame ---
+        if is_first_frame and rotation_matrix is not None and center is not None:
+            self.objects[-1]["rotation_matrix"] = rotation_matrix.tolist()
+            self.objects[-1]["center"] = center.tolist()
+
+        # --- Step 4: Save data to Python list ---
         self._current_object_data.append(data_dict)
 
-        # --- Step 4: Process contacts if provided ---
+        # --- Step 6: Process contacts if provided ---
         if contacts is not None:
             processed_contacts = self._process_contacts(contacts)
             if processed_contacts:
                 self.objects[-1]["contacts"] = processed_contacts
 
-        # --- Step 4b: Process bonds if provided ---
+        # --- Step 7: Process bonds if provided ---
         if bonds is not None:
             processed_bonds = self._process_bonds(bonds)
             if processed_bonds:
                 self.objects[-1]["bonds"] = processed_bonds
 
-        # --- Step 4c: Process color if provided ---
+        # --- Step 8: Process color if provided ---
         if color is not None:
             # Check if color is already normalized (has "type" and "value" keys)
             if isinstance(color, dict) and "type" in color and "value" in color:
@@ -930,7 +1043,7 @@ class view:
                 if normalized_color:
                     data_dict["color"] = normalized_color
 
-        # --- Step 5: Send message if in "live" mode ---
+        # --- Step 9: Send message if in "live" mode ---
         if self._is_live:
             payload = data_dict.copy()
             if "contacts" in self.objects[-1]:
@@ -943,6 +1056,15 @@ class view:
                 "name": self.objects[-1]["name"],
                 "payload": payload
             })
+
+            # Send rotation/center for first frame
+            if is_first_frame and rotation_matrix is not None and center is not None:
+                self._send_message({
+                    "type": "py2DmolSetViewTransform",
+                    "name": self.objects[-1]["name"],
+                    "rotation": rotation_matrix.tolist(),
+                    "center": center.tolist()
+                })
 
     def set_color(self, color, name=None):
         """
@@ -1026,11 +1148,14 @@ class view:
             chains (list, optional): Specific chains to load. Defaults to all.
             name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
             paes (list, optional): List of PAE matrices to associate with each model.
+            align (bool, optional): If True, aligns subsequent frames to the first frame.
+                                   Best-view rotation is ALWAYS computed for first frame. Defaults to True.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
-```
             ignore_ligands (bool): If True, skips loading ligand atoms.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
+            color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
+                                  "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
         """
         
         # --- Handle object naming logic FIRST ---
@@ -1453,7 +1578,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, name=None, align=False, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -1466,7 +1591,7 @@ class view:
             chains (list, optional): Specific chains to load. Defaults to all.
             name (str, optional): Name for the object. If not provided, uses the PDB ID.
                                   A different name will automatically create a new object.
-            align (bool, optional): If True, aligns coordinates to best view. Defaults to False.
+            align (bool, optional): If True, aligns coordinates to best view. Defaults to True.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
@@ -1490,7 +1615,7 @@ class view:
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, name=None, align=False, use_biounit=False, biounit_name="1", ignore_ligands=False, color=None):
+    def from_afdb(self, uniprot_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, color=None):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and adds it to the viewer.
@@ -1506,7 +1631,7 @@ class view:
             chains (list, optional): Specific chains to load. Defaults to all.
             name (str, optional): Name for the object. If not provided, uses the UniProt ID.
                                   A different name will automatically create a new object.
-            align (bool, optional): If True, aligns coordinates to best view. Defaults to False.
+            align (bool, optional): If True, aligns coordinates to best view. Defaults to True.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             ignore_ligands (bool): If True, skips loading ligand atoms.
