@@ -932,7 +932,8 @@
                 const ligandTokenWidth = charWidth * 2; // Ligand tokens take 2 character widths
 
                 // Get ligand groups from renderer (computed using shared utility)
-                const ligandGroups = renderer?.ligandGroups || new Map();
+                const currentObject = renderer?.objectsData?.[renderer.currentObjectName];
+                const ligandGroups = currentObject?.ligandGroups || new Map();
 
                 // Create reverse map: position index -> ligand group key (for quick lookup)
                 const positionToLigandGroup = new Map();

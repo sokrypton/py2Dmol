@@ -234,46 +234,60 @@ function initializeViewerConfig() {
     const biounitEl = document.getElementById('biounitCheckbox');
     const loadLigandsEl = document.getElementById('loadLigandsCheckbox');
 
-    // Initialize global viewer config
+    // Initialize global viewer config (nested structure matching Python)
     window.viewerConfig = {
-        size: [FIXED_WIDTH, FIXED_HEIGHT],
-        pae_size: [PAE_PLOT_SIZE, PAE_PLOT_SIZE],
-        color: "auto",
-        shadow: true,
-        outline: true,
-        width: 3.0,
-        ortho: 1.0, // Normalized 0-1 range (1.0 = full orthographic)
-        rotate: false,
-        controls: true,
-        autoplay: false,
-        box: true,
-        pastel: 0.25,
-        pae: true,
-        colorblind: false,
-        depth: false,
-        viewer_id: "standalone-viewer-1",
-        biounit: true,
-        ignoreLigands: false // Default: load ligands (reversed from checkbox)
+        display: {
+            size: [FIXED_WIDTH, FIXED_HEIGHT],
+            rotate: false,
+            autoplay: false,
+            controls: true,
+            box: true
+        },
+        rendering: {
+            shadow: true,
+            depth: false,
+            outline: "full",  // "none", "partial", or "full"
+            width: 3.0,
+            ortho: 1.0,  // Normalized 0-1 range (1.0 = full orthographic)
+            pastel: 0.25
+        },
+        color: {
+            mode: "auto",
+            colorblind: false
+        },
+        pae: {
+            enabled: true,
+            size: PAE_PLOT_SIZE
+        },
+        overlay: {
+            enabled: false
+        },
+        // Web app specific settings (not part of Python config)
+        ui: {
+            biounit: true,
+            ignoreLigands: false
+        },
+        viewer_id: "standalone-viewer-1"
     };
 
     // Sync UI with config
     if (biounitEl) {
-        biounitEl.checked = window.viewerConfig.biounit;
+        biounitEl.checked = window.viewerConfig.ui.biounit;
     }
     if (loadLigandsEl) {
         // Reversed logic: checkbox checked = load ligands = ignoreLigands false
-        loadLigandsEl.checked = !window.viewerConfig.ignoreLigands;
+        loadLigandsEl.checked = !window.viewerConfig.ui.ignoreLigands;
     } // Wire change listeners
     if (biounitEl) {
         biounitEl.addEventListener('change', () => {
-            window.viewerConfig.biounit = biounitEl.checked;
+            window.viewerConfig.ui.biounit = biounitEl.checked;
         });
     }
 
     if (loadLigandsEl) {
         loadLigandsEl.addEventListener('change', () => {
             // Reversed logic: checkbox checked = load ligands = ignoreLigands false
-            window.viewerConfig.ignoreLigands = !loadLigandsEl.checked;
+            window.viewerConfig.ui.ignoreLigands = !loadLigandsEl.checked;
         });
     }
 }
@@ -1554,7 +1568,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
     let chemCompBondMap = null;
 
     try {
-        const wantBU = !!(window.viewerConfig && window.viewerConfig.biounit);
+        const wantBU = !!(window.viewerConfig && window.viewerConfig.ui?.biounit);
         const isCIF = /^\s*data_/m.test(text) || /_atom_site\./.test(text);
 
 
@@ -1643,7 +1657,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
         models.length > 1);
 
     function maybeFilterLigands(atoms) {
-        const ignore = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
+        const ignore = !!(window.viewerConfig && window.viewerConfig.ui?.ignoreLigands);
         if (!ignore) return atoms;
 
         // Use modresMap and chemCompMap from parent scope (from parse results)
@@ -1810,7 +1824,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
 
         // Store PAE data
         if (paeData) {
-            const ignoreLigands = !!(window.viewerConfig && window.viewerConfig.ignoreLigands);
+            const ignoreLigands = !!(window.viewerConfig && window.viewerConfig.ui?.ignoreLigands);
             if (ignoreLigands && originalIsLigandPosition.length > 0) {
                 // PAE matrix indices map directly to position indices in originalFrameData
                 // We need to filter out ligand positions from the PAE matrix
@@ -3608,7 +3622,7 @@ async function handleFetch() {
         name = `${fetchId}.cif`;
         structUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-model_v6.cif`;
         paeUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-predicted_aligned_error_v6.json`;
-        paeEnabled = window.viewerConfig.pae && loadPAE;
+        paeEnabled = window.viewerConfig.pae?.enabled && loadPAE;
     } else {
         name = `${fetchId}.cif`;
         structUrl = `https://files.rcsb.org/download/${fetchId}.cif`;

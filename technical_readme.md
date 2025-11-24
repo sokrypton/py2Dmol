@@ -150,7 +150,7 @@ def __init__(self,
 ):
 ```
 
-**Note**: Parameter is `overlay`, NOT `overlay_frames` (config stores it as `overlay_frames` internally).
+
 
 #### Key State Variables
 
@@ -656,42 +656,48 @@ function resolveColor(position, chain, frame, object, global) {
 
 ### Config Structure
 
-**Python** (`self.config`):
+**Python** (`viewer.py` - inline DEFAULT_CONFIG):
 ```python
-{
-    "size": [600, 600],
-    "color": "auto",
-    "shadow": True,
-    "outline": "full",
-    "width": 3.0,
-    "ortho": 1.0,
-    "rotate": False,
-    "autoplay": False,
-    "pae": False,
-    "pae_size": 300,
-    "overlay": False,              # Note: stored as 'overlay_frames' internally
-    "viewer_id": "uuid-string"
+DEFAULT_CONFIG = {
+    "display": {
+        "size": [300, 300],
+        "rotate": False,
+        "autoplay": False,
+        "controls": True,
+        "box": True
+    },
+    "rendering": {
+        "shadow": True,
+        "depth": False,
+        "outline": "full",
+        "width": 3.0,
+        "ortho": 1.0,
+        "pastel": 0.25
+    },
+    "color": {
+        "mode": "auto",
+        "colorblind": False
+    },
+    "pae": {
+        "enabled": False,
+        "size": 300
+    },
+    "overlay": {
+        "enabled": False
+    }
 }
 ```
 
-**JavaScript** (`window.viewerConfig`):
+**JavaScript** (`viewer-mol.js` or `window.viewerConfig` from Python):
 ```javascript
+// Config is sent from Python as nested structure
+// JavaScript receives it via window.viewerConfig
 {
-    size: [600, 600],
-    color: "auto",
-    shadow: true,
-    outline: true,                 // Note: boolean in JS, overridden by renderer
-    width: 3.0,
-    ortho: 1.0,
-    rotate: false,
-    controls: true,
-    autoplay: false,
-    box: true,
-    pastel: 0.25,
-    pae: true,
-    colorblind: false,
-    depth: false,
-    viewer_id: "standalone-viewer-1"
+    display: { size, rotate, autoplay, controls, box },
+    rendering: { shadow, depth, outline, width, ortho, pastel },
+    color: { mode, colorblind },
+    pae: { enabled, size },
+    overlay: { enabled }
 }
 ```
 

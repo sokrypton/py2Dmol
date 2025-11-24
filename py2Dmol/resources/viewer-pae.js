@@ -174,8 +174,11 @@
         // Uses shared utility function for consistent grouping with sequence viewer
         expandLigandPositions(positionIndices) {
             // Use shared utility function if available, otherwise return original selection
-            if (typeof expandLigandSelection === 'function' && this.mainRenderer.ligandGroups) {
-                return expandLigandSelection(positionIndices, this.mainRenderer.ligandGroups);
+            if (typeof expandLigandSelection === 'function') {
+                const currentObject = this.mainRenderer.objectsData[this.mainRenderer.currentObjectName];
+                if (currentObject?.ligandGroups) {
+                    return expandLigandSelection(positionIndices, currentObject.ligandGroups);
+                }
             }
 
             // Fallback: return original selection if utility function not available

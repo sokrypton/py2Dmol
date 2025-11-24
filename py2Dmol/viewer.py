@@ -13,6 +13,72 @@ import numpy as np
 import re
 from IPython.display import display, HTML, Javascript, update_display
     
+# ============================================================================
+# CONFIG DEFAULTS - Single source of truth
+# ============================================================================
+
+DEFAULT_CONFIG = {
+    "display": {
+        "size": [300, 300],
+        "rotate": False,
+        "autoplay": False,
+        "controls": True,
+        "box": True
+    },
+    "rendering": {
+        "shadow": True,
+        "depth": False,
+        "outline": "full",
+        "width": 3.0,
+        "ortho": 1.0,
+        "pastel": 0.25
+    },
+    "color": {
+        "mode": "auto",
+        "colorblind": False
+    },
+    "pae": {
+        "enabled": False,
+        "size": 300
+    },
+    "overlay": {
+        "enabled": False
+    }
+}
+
+
+def _nest_config(**flat):
+    """Convert flat kwargs to nested config."""
+    config = json.loads(json.dumps(DEFAULT_CONFIG))  # Deep copy
+    
+    # Display
+    if "size" in flat: config["display"]["size"] = flat["size"]
+    if "rotate" in flat: config["display"]["rotate"] = flat["rotate"]
+    if "autoplay" in flat: config["display"]["autoplay"] = flat["autoplay"]
+    if "controls" in flat: config["display"]["controls"] = flat["controls"]
+    if "box" in flat: config["display"]["box"] = flat["box"]
+    
+    # Rendering
+    if "shadow" in flat: config["rendering"]["shadow"] = flat["shadow"]
+    if "depth" in flat: config["rendering"]["depth"] = flat["depth"]
+    if "outline" in flat: config["rendering"]["outline"] = flat["outline"]
+    if "width" in flat: config["rendering"]["width"] = flat["width"]
+    if "ortho" in flat: config["rendering"]["ortho"] = flat["ortho"]
+    if "pastel" in flat: config["rendering"]["pastel"] = flat["pastel"]
+    
+    # Color
+    if "color" in flat: config["color"]["mode"] = flat["color"]
+    if "colorblind" in flat: config["color"]["colorblind"] = flat["colorblind"]
+    
+    # PAE
+    if "pae" in flat: config["pae"]["enabled"] = flat["pae"]
+    if "pae_size" in flat: config["pae"]["size"] = flat["pae_size"]
+    
+    # Overlay
+    if "overlay" in flat: config["overlay"]["enabled"] = flat["overlay"]
+    
+    return config
+    
 import importlib.resources
 from . import resources as py2dmol_resources
 import gemmi
@@ -191,25 +257,30 @@ class view:
         else:
             pae_size = int(pae_size)
         
-        self.config = {
-            "size": size,
-            "controls": controls,
-            "box": box,
-            "color": color,
-            "colorblind": colorblind,
-            "pastel": pastel,
-            "shadow": shadow,
-            "depth": depth,
-            "outline": outline,
-            "width": width,
-            "ortho": ortho,
-            "rotate": rotate,
-            "autoplay": autoplay,
-            "pae": pae,
-            "pae_size": pae_size,
-            "overlay_frames": overlay,
-            "viewer_id": str(uuid.uuid4()),
-        }
+        
+        # Create nested config (accepts flat kwargs for backward compat)
+        self.config = _nest_config(
+            size=size,
+            controls=controls,
+            box=box,
+            color=color,
+            colorblind=colorblind,
+            pastel=pastel,
+            shadow=shadow,
+            depth=depth,
+            outline=outline,
+            width=width,
+            ortho=ortho,
+            rotate=rotate,
+            autoplay=autoplay,
+            pae=pae,
+            pae_size=pae_size,
+            overlay=overlay
+        )
+        
+        # Add viewer_id to root level
+        import uuid
+        self.config["viewer_id"] = str(uuid.uuid4())
         
         # The viewer's mode is determined by when .show() is called.
         self.objects = []                 # Store all data
@@ -517,7 +588,7 @@ class view:
                 js_content = f.read()
 
             # Conditionally load PAE module if enabled
-            if self.config.get("pae", False):
+            if self.config["pae"]["enabled"]:
                 try:
                     with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
                         pae_js_content = f.read()
@@ -526,11 +597,8 @@ class view:
                     pass
 
         # Setup viewer config
-        config_script = f"""
-        <script id="viewer-config-{viewer_id}">
-          window.viewerConfig = {json.dumps(self.config)};
-        </script>
-        """
+        # Inject viewer configuration (nested structure)
+        config_script = f"window.viewerConfig = {json.dumps(self.config)};"
 
         data_script = ""
 
@@ -698,7 +766,7 @@ class view:
             container_html = f"<script>{js_content_parent}</script>\n" + container_html
 
             # Conditionally load PAE module if enabled
-            if self.config.get("pae", False):
+            if self.config["pae"]["enabled"]:
                 try:
                     with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
                         pae_js_content = f.read()
@@ -1654,7 +1722,7 @@ class view:
             name = uniprot_id.upper()
 
         # --- Download structure and (maybe) PAE ---
-        struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self.config["pae"])
+        struct_filepath, pae_filepath = self._get_filepath_from_afdb_id(uniprot_id, download_pae=self.config["pae"]["enabled"])
 
         if not struct_filepath:
              print(f"Could not load structure for '{uniprot_id}'.")
@@ -1799,34 +1867,14 @@ class view:
             if "contacts" in obj and obj["contacts"]:
                 obj_to_serialize["contacts"] = obj["contacts"]
             if "bonds" in obj and obj["bonds"]:
-                obj_to_serialize["bonds"] = obj["bonds"]
-            if "color" in obj and obj["color"]:
-                obj_to_serialize["color"] = obj["color"]
-
             objects.append(obj_to_serialize)
         
-        # Get viewer state (limited - Python doesn't have access to all JS state)
-        viewer_state = {
-            "current_object_name": self.objects[-1]["name"] if self.objects else None,
-            "current_frame": 0,  # Python doesn't track current frame
-            "rotation_matrix": [[1,0,0],[0,1,0],[0,0,1]],  # Default, JS will override
-            "zoom": 1.0,  # Default, JS will override
-            "color_mode": self.config.get("color", "auto"),
-            "line_width": self.config.get("width", 3.0),
-            "shadow_enabled": self.config.get("shadow", True),
-            "depth_enabled": self.config.get("depth", True),
-            "outline_mode": self.config.get("outline", "full"),  # "none", "partial", or "full"
-            "colorblind_mode": self.config.get("colorblind", False),
-            "pastel_level": self.config.get("pastel", 0.25),
-            "perspective_enabled": False,
-            "ortho_slider_value": self.config.get("ortho", 1.0), # Normalized 0-1 range
-            "animation_speed": 100
-        }
-        
-        # Create state object
+        # Create state object with nested config
         state_data = {
+            "version": "2.0",  # Version for nested config format
+            "config": self.config,  # Save nested config directly
             "objects": objects,
-            "viewer_state": viewer_state
+            "current_object": self.objects[-1]["name"] if self.objects else None
         }
         
         # Write to file
@@ -1903,33 +1951,17 @@ class view:
                     )
                 
                 # Restore object-level data
-                if "contacts" in obj_data:
-                    self.objects[-1]["contacts"] = obj_data["contacts"]
-                if "bonds" in obj_data:
-                    self.objects[-1]["bonds"] = obj_data["bonds"]
-                if "color" in obj_data:
-                    self.objects[-1]["color"] = obj_data["color"]
-        
-        # Restore viewer config from state (if available)
-        if "viewer_state" in state_data:
-            vs = state_data["viewer_state"]
-            if "color_mode" in vs:
-                self.config["color"] = vs["color_mode"]
-            if "line_width" in vs:
-                self.config["width"] = vs["line_width"]
-            if "shadow_enabled" in vs:
-                self.config["shadow"] = vs["shadow_enabled"]
-            if "depth_enabled" in vs:
-                self.config["depth"] = vs["depth_enabled"]
-            if "outline_mode" in vs:
-                self.config["outline"] = vs["outline_mode"]
-            if "colorblind_mode" in vs:
-                self.config["colorblind"] = vs["colorblind_mode"]
-            if "pastel_level" in vs:
-                self.config["pastel"] = vs["pastel_level"]
-            if "ortho_slider_value" in vs:
-                self.config["ortho"] = vs["ortho_slider_value"]
-        
-        # State loaded - user must call show() to display
-        if not self.objects:
-            print("Warning: No objects loaded from state file.")
+            if "contacts" in obj_data:
+                self.objects[-1]["contacts"] = obj_data["contacts"]
+            if "bonds" in obj_data:
+                self.objects[-1]["bonds"] = obj_data["bonds"]
+            if "color" in obj_data:
+                self.objects[-1]["color"] = obj_data["color"]
+    
+    # Restore config (v2.0 nested format only)
+    if "config" in state_data:
+        self.config = state_data["config"]
+    
+    # State loaded - user must call show() to display
+    if not self.objects:
+        print("Warning: No objects loaded from state file.")
