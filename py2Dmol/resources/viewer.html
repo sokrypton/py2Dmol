@@ -35,7 +35,7 @@
             display: inline-block;
             border: 1px solid #ddd;
             border-radius: 12px;
-            overflow: auto;
+            overflow: hidden;
             background: #ffffff;
             resize: both;
             min-width: 150px;
@@ -611,7 +611,7 @@
 
         // Function to send a message from parent to iframe
         // Called by parent page via kernel execution
-        window.py2dmol_sendMessage = function(viewerId, messageJson) {
+        window.py2dmol_sendMessage = function (viewerId, messageJson) {
             // Initialize queue for this viewer if needed
             if (!window.py2dmol_queue[viewerId]) {
                 window.py2dmol_queue[viewerId] = [];
