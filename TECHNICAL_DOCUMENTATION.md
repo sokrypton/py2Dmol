@@ -138,8 +138,7 @@ self._pae = None                 # LxL PAE matrix
 window.viewerApi          // Reference to renderer API
 window.viewerConfig       // Configuration object (mirrored from Python)
 window.py2dmol_viewers    // All instantiated viewer instances
-window.staticObjectData   // Data injected from Python (static mode)
-window.proteinData        // Current frame data (dynamic mode)
+window.py2dmol_staticData // Keyed by viewer_id, data injected from Python (static mode)
 ```
 
 ---
@@ -285,7 +284,7 @@ def add(self,
 
 ---
 
-#### Function: `add_pdb(filepath, chains, new_obj, ...)`
+#### Function: `add_pdb(filepath, chains, name, ...)`
 
 **Signature**:
 ```python
@@ -565,7 +564,7 @@ def _display_viewer(self, static_data=None):
 1. Load `viewer.html` template
 2. Inject configuration script (viewer settings)
 3. Inject data script:
-   - **Static mode**: Serialize objects to JSON, embed in window.staticObjectData
+   - **Static mode**: Serialize objects to JSON, embed in window.py2dmol_staticData[viewer_id]
    - **Live mode**: Inject empty data skeleton
 4. Load JavaScript modules:
    - viewer-mol.js (always)
@@ -1024,16 +1023,8 @@ Handles Multiple Sequence Alignment (MSA) visualization.
 let viewerApi = null;                    // Reference to renderer API
 let batchedObjects = [];                 // Temporary storage during loading
 
-window.viewerConfig = {                  // Configuration (mirrored from Python)
-    size: [600, 600],
-    color: "auto",
-    shadow: true,
-    pae: true,
-    // ... other settings
-};
-
+window.py2dmol_staticData = {};          // Keyed by viewer_id
 window.py2dmol_viewers = {};             // All viewer instances by ID
-window.staticObjectData = [...];         // Data injected from Python
 ```
 
 #### Constants
@@ -1614,13 +1605,13 @@ viewer.show() ─→ _display_viewer()
                       │
                       ├─→ JSON.stringify(objects)
                       │
-                      ├─→ Embed in window.staticObjectData
+                      ├─→ Embed in window.py2dmol_staticData[viewer_id]
                       │
                       └─→ Inject into HTML template
                                │
                                └─→ Browser receives complete HTML
                                     │
-                                    ├─→ Parse staticObjectData
+                                     ├─→ Parse py2dmol_staticData[viewer_id]
                                     │
                                     └─→ initializePy2DmolViewer()
                                          │
@@ -2030,7 +2021,7 @@ config = {
     "autoplay": False,               # Auto-play animation
     "pae": False,                    # Show PAE matrix
     "pae_size": 300,                 # PAE plot size
-    "overlay_frames": False,         # Overlay all frames
+    "overlay": False,         # Overlay all frames
     "viewer_id": "uuid-string"       # Unique ID
 }
 ```
