@@ -42,19 +42,19 @@ viewer.show()
 
 ### Example: Comparing Multiple Trajectories
 
-You can add multiple PDB files as separate, switchable trajectories.
+You can add multiple PDB files as separate, switchable trajectories. When you provide a different name, a new object is automatically created:
 
 ```python
 import py2Dmol
 
 viewer = py2Dmol.view()
 # Load first trajectory
-viewer.add_pdb('simulation1.pdb')
+viewer.add_pdb('simulation1.pdb', name="sim1")
 
-# Start a new trajectory
-viewer.add_pdb('simulation2.pdb', new_obj=True)
+# Start a new trajectory (automatic new object via different name)
+viewer.add_pdb('simulation2.pdb', name="sim2")
 
-# Use the dropdown to switch between "0" and "1"
+# Use the dropdown to switch between "sim1" and "sim2"
 viewer.show()
 ```
 
@@ -380,6 +380,136 @@ viewer_old.save_state('tmp.json')
 # Session 2: Load and continue
 viewer = py2Dmol.view()
 viewer.load_state('tmp.json')
+viewer.show()
+```
+
+---
+
+## Colors
+
+Colors are resolved through a **5-level hierarchy**. Higher levels override lower levels:
+
+### Color Hierarchy (Priority Order)
+
+| Level | How to Set | Scope | Specificity |
+|-------|-----------|-------|-------------|
+| 1️⃣ **Global** | `view(color="...")` | All objects | Lowest |
+| 2️⃣ **Object** | `set_color("...")` or `set_color("...", name="obj")` | Single object | — |
+| 3️⃣ **Frame** | `add(..., color="...")` | Single frame | — |
+| 4️⃣ **Chain** | Advanced dict key `"chain"` | Single chain | — |
+| 5️⃣ **Position** | Advanced dict key `"position"` | Single atom | Highest |
+
+### Supported Color Values
+
+**Color modes** (semantic): `"auto"`, `"chain"`, `"plddt"`, `"rainbow"`, `"entropy"`, `"deepmind"`
+
+**Literal colors**:
+- Named: `"red"`, `"blue"`, `"green"`, etc.
+- Hex: `"#ff0000"`, `"#00ff00"`
+- RGB: `{"r": 255, "g": 0, "b": 0}`
+
+---
+
+### Usage Examples (Simplest to Most Complex)
+
+#### Level 1️⃣: Global Color (Simplest)
+```python
+# Single line: applies to everything unless overridden
+viewer = py2Dmol.view(color="plddt")
+viewer.add_pdb("protein.pdb")
+viewer.show()
+```
+
+#### Level 2️⃣: Object Color Override
+```python
+viewer = py2Dmol.view(color="plddt")
+viewer.add_pdb("protein1.pdb")
+viewer.add_pdb("protein2.pdb", name="obj2")
+# Override just protein2
+viewer.set_color("chain", name="obj2")
+viewer.show()
+```
+
+Or color the last added object without specifying name:
+```python
+viewer = py2Dmol.view(color="plddt")
+viewer.add_pdb("protein1.pdb")
+viewer.add_pdb("protein2.pdb", name="obj2")
+viewer.set_color("chain")  # Colors obj2 (last added)
+viewer.show()
+```
+
+#### Level 3️⃣: Frame Color (Multiple Models)
+```python
+viewer = py2Dmol.view()
+viewer.add_pdb("simulation.pdb", color="plddt")  # Frame 1: plddt coloring
+# .pdb with multiple models loads each as a separate frame
+# Each frame can have its own color in live mode
+viewer.show()
+```
+
+#### Level 4️⃣: Chain Color (Highlight One Chain)
+```python
+# Simplest way to color individual chains
+viewer = py2Dmol.view()
+viewer.add_pdb("protein.pdb")
+# Just highlight chain A in red (last object)
+viewer.set_color({"chain": {"A": "red"}})
+viewer.show()
+```
+
+#### Level 4️⃣: Multiple Chains
+```python
+viewer = py2Dmol.view()
+viewer.add_pdb("protein.pdb", color="auto")
+# Color multiple chains differently
+viewer.set_color({
+    "chain": {
+        "A": "red",
+        "B": "blue",
+        "C": "#ffff00"
+    }
+})
+viewer.show()
+```
+
+#### Level 5️⃣: Advanced (Chain + Position + Frame Levels)
+```python
+# Maximum control: mix frame/chain/position rules
+viewer = py2Dmol.view()
+viewer.add(coords, plddts, chains, types, color={
+    "frame": "plddt",                      # Default for this frame
+    "chain": {
+        "A": "red",                        # Chain A overrides frame default
+        "B": "#0000ff"
+    },
+    "position": {
+        0: "yellow",                       # Position 0 overrides chain color
+        5: "lime",
+        10: "magenta"
+    }
+})
+viewer.show()
+```
+
+#### Combining Levels
+```python
+# Global default is "plddt"
+viewer = py2Dmol.view(color="plddt")
+
+# Add object with frame-level override
+viewer.add_pdb("protein1.pdb", color="chain")  # Frame overrides global
+
+# Add another object with object-level override
+viewer.add_pdb("protein2.pdb", name="obj2")
+viewer.set_color("rainbow", name="obj2")  # Object overrides frame
+
+# Add object with chain-level override
+viewer.add_pdb("protein3.pdb", name="obj3", color="auto")
+viewer.set_color({
+    "chain": {"A": "red", "B": "blue"}  # Chain overrides object
+}, name="obj3")
+
 viewer.show()
 ```
 
