@@ -12,8 +12,8 @@
 - `web/`
   - `app.js`: **Web App Logic**. Handles UI events, file loading, and global state.
   - `utils.js`: **Utilities**. Parsing (PDB/CIF), alignment (Kabsch), and geometry functions.
-  - `index.html`: Main 3D viewer entry point.
-  - `msa.html`: Standalone MSA viewer entry point.
+- `index.html`: Main 3D viewer entry point (root directory).
+- `msa.html`: Standalone MSA viewer entry point (root directory).
 
 ## 🔌 Interfaces
 
@@ -21,8 +21,8 @@
 - **Entry Point**: `py2Dmol.view()`
 - **Mechanism**: Generates HTML that embeds `viewer-mol.js`. Injects into notebook cell.
 - **Data Flow**:
-  - **Static**: Data embedded directly into HTML `window.py2dmol_staticData` at render time.
-  - **Live**: Updates sent via `google.colab.output` or `Jupyter.notebook.kernel.execute` to `window.py2dmol_viewers`.
+  - **Static**: Data embedded directly into HTML as `window.py2dmol_staticData[viewer_id]` at render time.
+  - **Live**: Updates sent via `display(Javascript(...))` to `window.py2dmol_viewers`.
 - **Key Class**: `view` (manages `self.objects` list, each containing `frames`).
 
 ### 2. Standalone Web App

@@ -47,9 +47,9 @@ py2Dmol consists of two distinct but related components:
 │  │  viewer.html         │       │  py2Dmol Resources         │  │
 │  │  (Container)         │       │                            │  │
 │  │                      │ uses  │ • viewer-mol.js (Renderer) │  │
-│  │ ┌──────────────────┐ │ ────► │ • viewer-mol.js (Renderer) │  │
-│  │ │ Canvas (Pseudo-3D)│ │       │ • viewer-pae.js (PAE)      │  │
-│  │ └──────────────────┘ │       │ • viewer-seq.js (Seq)      │  │
+│  │ ┌──────────────────┐ │ ────► │ • viewer-pae.js (PAE)      │  │
+│  │ │ Canvas (Pseudo-3D)│ │       │ • viewer-seq.js (Seq)      │  │
+│  │ └──────────────────┘ │       │ • viewer-msa.js (MSA)      │  │
 │  └──────────────────────┘                                       │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -115,11 +115,9 @@ self._plddts = None              # N-length array (pLDDT scores)
 self._chains = None              # List of chain IDs
 self._position_types = None      # List of position types (P/D/R/L)
 self._pae = None                 # LxL PAE matrix
-self.rotation_matrix = None      # 3x3 array (per-object rotation state)
 ```
 
-**Per-Object Rotation**:
-Each object maintains its own `rotation_matrix` in its state. This allows independent rotation of aligned objects if needed, though typically they share the view rotation.
+
 
 ### JavaScript Design (app.js + utils.js)
 
@@ -218,14 +216,14 @@ def __init__(self,
     pae=False,                # Show PAE matrix
     pae_size=300,             # PAE heatmap size
     reuse_js=False,           # Reuse JS from previous viewer (optimization)
-    overlay_frames=False      # Overlay all frames (merge into single view)
+    overlay=False             # Overlay all frames (merge into single view)
 ):
 ```
 
 **Purpose**: Initializes a new viewer instance with configuration.
 
 **New Features**:
-- **Overlay Mode** (`overlay_frames=True`): Renders all frames of an object simultaneously. Useful for visualizing ensembles or trajectories in a single static view.
+- **Overlay Mode** (`overlay=True`): Renders all frames of an object simultaneously. Useful for visualizing ensembles or trajectories in a single static view.
 
 **Implementation Details**:
 - Creates unique `viewer_id` using `uuid.uuid4()`
@@ -247,8 +245,7 @@ def add(self,
     chains=None,              # N-length list of chain identifiers
     position_types=None,      # N-length list of types: P/D/R/L
     pae=None,                 # LxL PAE matrix
-    new_obj=False,            # Start new object?
-    name=None,                # Frame or object name
+    name=None,                # Object name (creates new object if name differs from current)
     align=True,               # Auto-align to previous frame?
     position_names=None,      # N-length list of residue names (ALA, GLY, etc.)
     residue_numbers=None,     # N-length list of PDB sequence numbers
@@ -295,8 +292,7 @@ def add(self,
 def add_pdb(self,
     filepath,                 # Path to .pdb or .cif file
     chains=None,              # List of chain IDs to load (None = all)
-    new_obj=False,            # Create new object?
-    name=None,                # Object name
+    name=None,                # Object name (creates new object if name differs from current)
     paes=None,                # List of PAE matrices (one per model)
     align=True,               # Auto-align?
     use_biounit=False,        # Load biological assembly?
@@ -380,10 +376,9 @@ For each chain in model:
 def from_pdb(self,
     pdb_id,                   # 4-char PDB code or filepath
     chains=None,
-    new_obj=True,             # Each call = new object
     name=None,                # Auto-generated from pdb_id if None
-    align=False,              # Default: no alignment across PDB structures
-    # ... other parameters
+    align=True,               # Auto-align to best view (default: True)
+    # ... other parameters (use_biounit, biounit_name, ignore_ligands, contacts, color)
 ):
 ```
 
@@ -1582,7 +1577,7 @@ function parsePDB(text)
 - Parses CONECT records for explicit bonds.
 - Parses MODRES for modified residues.
 
-**Called By**: `app.js` (file loading), `app-esmfold.js`
+**Called By**: `app.js` (file loading)
 
 ---
 
