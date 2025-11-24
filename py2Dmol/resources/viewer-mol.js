@@ -1,4 +1,14 @@
 // ============================================================================
+// py2Dmol/resources/viewer-mol.js
+// -------------------------------
+// AI Context: CORE RENDERER (Pseudo3DRenderer)
+// - This is the heart of the visualization.
+// - Implements `Pseudo3DRenderer` class.
+// - Handles 3D projection, depth sorting, and canvas drawing.
+// - Manages the scene graph (objects, frames, atoms).
+// - Handles user interaction (rotation, zoom, selection).
+// - Shared by both the Python widget and the standalone Web App.
+// ============================================================================
 // GLOBAL REGISTRY
 // ============================================================================
 // Global registry for all viewer instances

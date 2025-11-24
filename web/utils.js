@@ -1,4 +1,11 @@
 // ============================================================================
+// web/utils.js
+// ------------
+// AI Context: UTILITY FUNCTIONS
+// - Contains pure utility functions for geometry and parsing.
+// - Key features: Kabsch alignment, Best View rotation logic, PDB/CIF parsing.
+// - Shared logic that doesn't depend on DOM or global state.
+// ============================================================================
 // UTILS.JS - Pure utility functions (parsing, alignment, best-view)
 // ============================================================================
 

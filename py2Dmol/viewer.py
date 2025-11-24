@@ -1,3 +1,13 @@
+"""
+py2Dmol/viewer.py
+-----------------
+AI Context: MAIN PYTHON INTERFACE
+- Defines the `view` class, the primary entry point for Python users.
+- Manages the internal list of objects and frames.
+- Handles serialization of data to JSON for the frontend.
+- Generates HTML/JS for embedding in Jupyter/Colab.
+- Implements the "Live Mode" communication bridge (Python -> JS).
+"""
 import json
 import numpy as np
 import re

@@ -1,4 +1,11 @@
 // ============================================================================
+// py2Dmol/resources/viewer-pae.js
+// -------------------------------
+// AI Context: PAE MATRIX VISUALIZATION
+// - Renders the Predicted Aligned Error (PAE) heatmap.
+// - Handles interactive cross-referencing with the 3D viewer.
+// - Manages PAE-specific color schemes (DeepMind, etc.).
+// ============================================================================
 // PAE (Predicted Aligned Error) RENDERER MODULE
 // ============================================================================
 // This module provides PAE visualization functionality for py2Dmol.

@@ -22,44 +22,44 @@
 
 ### Purpose
 
-py2Dmol is a dual-interface molecular structure visualization system:
+py2Dmol consists of two distinct but related components:
 
-- **Python interface** (viewer.py): Data preparation, structure loading, and state management
-- **JavaScript interface** (app.js, utils.js, index.html): Interactive 3D visualization and UI controls
+1.  **Python Package** (`py2Dmol`): A Jupyter-compatible library for visualizing molecular structures. It generates a self-contained HTML/JS widget that uses `viewer-mol.js` for rendering.
+2.  **Standalone Web App** (`web/`): A full-featured web application (hosted at `index.html`) that wraps the rendering engine with a file upload interface, MSA viewer, and other web-specific features.
 
 ### Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Jupyter Notebook / Web Browser              │
-├─────────────────────────────────────────────────────────────────┤
+│                     Jupyter Notebook / Python                   │
+│  ┌──────────────┐                                               │
+│  │  view class  │  (viewer.py)                                  │
+│  │              │                                               │
+│  │ • add()      │                                               │
+│  │ • show()     │ ──── Generates HTML/JS Widget ──────────┐     │
+│  └──────────────┘                                         │     │
+└───────────────────────────────────────────────────────────│─────┘
+                                                            │
+┌───────────────────────────────────────────────────────────▼─────┐
+│                     Browser / Widget Output                     │
 │                                                                 │
-│  PYTHON LAYER (viewer.py)          WEB LAYER (HTML/JS)         │
-│  ────────────────────────────────  ─────────────────────────   │
+│  ┌──────────────────────┐       ┌────────────────────────────┐  │
+│  │  viewer.html         │       │  py2Dmol Resources         │  │
+│  │  (Container)         │       │                            │  │
+│  │                      │ uses  │ • viewer-mol.js (Renderer) │  │
+│  │ ┌──────────────────┐ │ ────► │ • viewer-mol.js (Renderer) │  │
+│  │ │ Canvas (Pseudo-3D)│ │       │ • viewer-pae.js (PAE)      │  │
+│  │ └──────────────────┘ │       │ • viewer-seq.js (Seq)      │  │
+│  └──────────────────────┘                                       │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                     Standalone Web App (index.html)             │
 │                                                                 │
-│  ┌──────────────┐                 ┌──────────────────────┐    │
-│  │  view class  │  ─────JSON──→   │  index.html (DOM)    │    │
-│  │              │  ←─Messages──    │  + app.js (logic)    │    │
-│  │ • add()      │                 │  + utils.js (math)   │    │
-│  │ • add_pdb()  │                 │                      │    │
-│  │ • from_pdb() │                 │ ┌────────────────┐  │    │
-│  │ • from_afdb()│                 │ │ WebGL Canvas   │  │    │
-│  │ • show()     │                 │ │ (3D Renderer)  │  │    │
-│  │ • save_state │                 │ └────────────────┘  │    │
-│  │              │                 │                      │    │
-│  └──────────────┘                 │ ┌────────────────┐  │    │
-│                                   │ │ viewer-mol.js  │  │    │
-│  Libraries:                       │ │ viewer-pae.js  │  │    │
-│  • gemmi (PDB parsing)            │ │ viewer-seq.js  │  │    │
-│  • numpy (math/arrays)            │ │ viewer-msa.js  │  │    │
-│  • IPython.display                │ └────────────────┘  │    │
-│                                   │                      │    │
-│                                   │ External Libraries:  │    │
-│                                   │ • numeric.js (math) │    │
-│                                   │ • jszip (file I/O)  │    │
-│                                   │ • Tailwind (CSS)    │    │
-│                                   └──────────────────────┘    │
-│                                                                 │
+│  ┌──────────────────────┐       ┌────────────────────────────┐  │
+│  │  web/app.js          │ uses  │  py2Dmol Resources         │  │
+│  │  (App Logic)         │ ────► │  (Shared Renderers)        │  │
+│  └──────────────────────┘       └────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -115,7 +115,11 @@ self._plddts = None              # N-length array (pLDDT scores)
 self._chains = None              # List of chain IDs
 self._position_types = None      # List of position types (P/D/R/L)
 self._pae = None                 # LxL PAE matrix
+self.rotation_matrix = None      # 3x3 array (per-object rotation state)
 ```
+
+**Per-Object Rotation**:
+Each object maintains its own `rotation_matrix` in its state. This allows independent rotation of aligned objects if needed, though typically they share the view rotation.
 
 ### JavaScript Design (app.js + utils.js)
 
@@ -150,45 +154,39 @@ window.proteinData        // Current frame data (dynamic mode)
 py2Dmol-gamma/
 ├── py2Dmol/
 │   ├── viewer.py                 # Main Python interface (1,700 lines)
-│   └── resources/
-│       ├── viewer.html           # HTML template
-│       ├── viewer-mol.js         # 3D rendering engine
+│   └── resources/                # CORE RUNTIME RESOURCES (Used by both Widget and Web App)
+│       ├── viewer.html           # HTML template for widget
+│       ├── viewer-mol.js         # 3D rendering engine (Pseudo3DRenderer)
 │       ├── viewer-pae.js         # PAE visualization
 │       ├── viewer-seq.js         # Sequence display
 │       └── viewer-msa.js         # MSA alignment viewer
-├── web/
-│   ├── app.js                    # Application logic (6,488 lines)
-│   ├── utils.js                  # Math utilities (2,790 lines)
-│   ├── app-esmfold.js            # ESMFold integration
-│   └── style.css
-├── index.html                    # Main web interface
+├── web/                          # STANDALONE WEB APP
+│   ├── app.js                    # Application logic (UI, File I/O)
+│   ├── utils.js                  # Math utilities
+│   └── style.css                 # Web app styling
+├── index.html                    # Main web interface entry point
 ├── msa.html                      # MSA-focused interface
-└── setup.py
+└── setup.py                      # Python package setup
 ```
 
 ### Module Dependencies
 
 ```
 ┌─────────────────────┐
-│  index.html (DOM)   │
+│  viewer-mol.js      │ ◄── Core Renderer
+└──────────▲──────────┘
+           │
+           ├─ Used by: py2Dmol Widget (viewer.html)
+           │
+           └─ Used by: Web App (index.html + app.js)
+
+┌─────────────────────┐
+│  web/app.js         │ ◄── Web App Logic
 └──────────┬──────────┘
            │
-           ├─ web/utils.js (math utilities)
+           ├─ Manages UI (buttons, sliders, file upload)
            │
-           ├─ web/app.js (main logic)
-           │  ├─ event listeners (user input)
-           │  ├─ file loading & parsing
-           │  └─ MSA/sequence integration
-           │
-           ├─ py2Dmol/resources/viewer-mol.js (3D rendering)
-           │  └─ uses: numeric.js (linear algebra)
-           │
-           ├─ py2Dmol/resources/viewer-pae.js (PAE heatmap)
-           │
-           ├─ py2Dmol/resources/viewer-seq.js (sequence display)
-           │
-           └─ py2Dmol/resources/viewer-msa.js (MSA alignment)
-               └─ calls: computeMSAProperties, matchMSAsToChains
+           └─ Calls viewer-mol.js for rendering
 ```
 
 ---
@@ -220,11 +218,14 @@ def __init__(self,
     pae=False,                # Show PAE matrix
     pae_size=300,             # PAE heatmap size
     reuse_js=False,           # Reuse JS from previous viewer (optimization)
-    overlay=False             # Overlay all frames
+    overlay_frames=False      # Overlay all frames (merge into single view)
 ):
 ```
 
 **Purpose**: Initializes a new viewer instance with configuration.
+
+**New Features**:
+- **Overlay Mode** (`overlay_frames=True`): Renders all frames of an object simultaneously. Useful for visualizing ensembles or trajectories in a single static view.
 
 **Implementation Details**:
 - Creates unique `viewer_id` using `uuid.uuid4()`
@@ -253,10 +254,13 @@ def add(self,
     residue_numbers=None,     # N-length list of PDB sequence numbers
     atom_types=None,          # (Deprecated) alias for position_types
     contacts=None,            # Contact restraints (.cst file or list)
-    bonds=None,               # Bond definitions [[idx1, idx2], ...]
+    bonds=None,               # Explicit bond definitions [[idx1, idx2], ...]
     color=None                # Color override
 ):
 ```
+
+**New Features**:
+- **Explicit Bonds** (`bonds`): Allows defining custom connectivity. If provided, the renderer uses these bonds instead of distance-based heuristics. Format: List of integer pairs `[[atom_idx_1, atom_idx_2], ...]`.
 
 **Purpose**: Adds a frame of coordinate data to the current object.
 
@@ -603,6 +607,7 @@ def _send_message(self, message_dict):
 | `py2DmolClearAll` | (none) | Clear all objects |
 | `py2DmolSetColor` | `{"color": ..., "name": ...}` | Change colors |
 | `py2DmolSetObjectColor` | `{"color": {...}, "name": ...}` | Object color |
+| `py2DmolSetViewTransform` | `{"rotation": [...], "center": [...], "name": ...}` | Set rotation/center |
 
 **Implementation**:
 ```javascript
@@ -837,7 +842,7 @@ def save_state(self, filepath):
     # filepath: where to save JSON file
 ```
 
-**Purpose**: Save viewer state (objects, frames, settings) to JSON.
+**Purpose**: Save viewer state (objects, frames, settings) to JSON. Coordinates are rounded to 2 decimal places to reduce file size.
 
 **Output Format**:
 ```json
@@ -901,7 +906,120 @@ def load_state(self, filepath):
 
 ---
 
-## JavaScript Interface - app.js & utils.js
+## Project Structure
+
+The project is organized into several key directories:
+
+### `py2dmol/` (Python Package)
+- `__init__.py`: Package initialization.
+- `viewer.py`: Main Python API for creating and manipulating the 3D viewer.
+- `_widget.py`: Jupyter widget integration.
+- `_frontend.py`: Frontend build system integration.
+- `_version.py`: Package version information.
+
+### `resources/` (Frontend Assets)
+- `viewer-mol.js`: Core 3D rendering engine (shared by Python widget and web app).
+- `viewer-pae.js`: PAE plot visualization module.
+- `viewer-seq.js`: Sequence viewer module.
+- `viewer-msa.js`: Multiple Sequence Alignment (MSA) viewer module.
+- `py2dmol.css`: Core CSS styles for the viewer.
+
+### `web/`
+  - `app.js`: Main application logic for the standalone web interface.
+  - `utils.js`: Pure utility functions (parsing, alignment, geometry) shared by the web app.
+  - `index.html`: Entry point for the main 3D viewer application.
+  - `msa.html`: Entry point for the standalone MSA viewer.
+  - `style.css`: Global styles.
+
+### Module Dependencies
+
+- `viewer.py` depends on `resources/viewer-mol.js` (embedded).
+- `web/app.js` depends on `resources/viewer-mol.js` and `web/utils.js`.
+- `resources/viewer-mol.js` is the core dependency for both interfaces.
+
+---
+
+## Core Renderer - viewer-mol.js
+
+The `viewer-mol.js` file contains the core rendering engine and is used by both the Python widget and the Web App.
+
+### Initialization
+
+#### Function: `initializePy2DmolViewer(container, viewerId)`
+
+**Signature**:
+```javascript
+function initializePy2DmolViewer(container, viewerId)
+```
+
+**Purpose**: Initializes a self-contained viewer instance within the given DOM container.
+
+**Key Responsibilities**:
+1.  Creates a `canvas` element (if not present).
+2.  Instantiates `Pseudo3DRenderer`.
+3.  Sets up `ResizeObserver` for responsive canvas.
+4.  Exposes API via `window.py2dmol_viewers[viewerId]`.
+
+### Class: `Pseudo3DRenderer`
+
+**Purpose**: Handles the 2D projection and rendering of 3D molecular data.
+
+**Key Properties**:
+- `this.coords`: Array of `Vec3` (atomic coordinates).
+- `this.viewerState`: Stores rotation, zoom, and camera state.
+- `this.objectsData`: Dictionary of all loaded objects and their frames.
+
+**Key Methods**:
+- `render()`: Main render loop. Clears canvas, projects points, draws segments/shadows.
+- `setFrame(frameIndex)`: Updates internal state to a specific frame.
+- `setRotationMatrix(matrix)`: Updates camera rotation.
+- `addObject(name)`: Creates a new object container in `this.objectsData`.
+- `addFrame(data, objectName)`: Parses raw JSON data and appends a frame to the specified object.
+- `setUIControls(controlsContainer, ...)`: Binds DOM elements (sliders, buttons) to renderer actions.
+- `extractSelection()`: Creates a new object from the currently selected atoms.
+
+---
+
+## Visualization Modules
+
+### PAE Renderer - viewer-pae.js
+
+Handles the visualization of Predicted Aligned Error (PAE) matrices.
+
+**Class**: `PAERenderer`
+
+**Key Methods**:
+- `setData(paeData)`: Loads PAE matrix data.
+- `render()`: Draws the PAE heatmap on the canvas.
+- `setupInteraction()`: Handles mouse/touch events for cross-referencing with the structure.
+
+### Sequence Viewer - viewer-seq.js
+
+Manages the protein sequence display and interaction.
+
+**Key Functions**:
+- `buildSequenceView()`: Constructs the sequence visualization based on current object data.
+- `renderSequenceCanvas()`: Renders the sequence and selection highlights.
+- `setupCanvasSequenceEvents()`: Handles selection and navigation on the sequence track.
+
+### MSA Viewer - viewer-msa.js
+
+Handles Multiple Sequence Alignment (MSA) visualization.
+
+**Key Features**:
+- **Canvas Rendering**: Uses a custom `SimpleCanvas2SVG` for performance.
+- **Modes**:
+  - **MSA**: Direct visualization of alignment.
+  - **PSSM**: Position-Specific Scoring Matrix.
+  - **Logo**: Sequence logo visualization.
+  - **Coverage**: Sequence coverage plot.
+- **Filtering Pipeline**:
+  - `sourceMSA` (Immutable) → `buildSelectionMask` → `filterByCoverage` → `filterByIdentity` → `sortByIdentity` → `displayedMSA`.
+- **Update Triggers**: Re-runs pipeline on selection, coverage/identity slider changes, or sort toggle.
+
+---
+
+## Standalone Web App - web/app.js
 
 ### Global State & Initialization
 
@@ -1070,6 +1188,7 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
    - Chain identifiers
    - Position types (P/D/R/L)
    - Residue names & numbers
+   - Explicit bonds (CONECT records)
 
 3. Build frame object:
    {
@@ -1426,6 +1545,61 @@ function align_a_to_b(fullCoordsA, alignCoordsA, alignCoordsB)
 **Called By**: Multi-frame animation playback
 
 ---
+
+#### Function: `bestViewTargetRotation_relaxed_AUTO(coords, currentRotation, canvasWidth, canvasHeight)`
+
+**Signature**:
+```javascript
+function bestViewTargetRotation_relaxed_AUTO(coords, currentRotation, canvasWidth, canvasHeight)
+// coords: Array<[x, y, z]>
+// currentRotation: 3x3 matrix
+// Returns: 3x3 target rotation matrix
+```
+
+**Purpose**: Calculate optimal rotation to maximize visible variance (PCA-based).
+
+**Algorithm**:
+1. Compute covariance matrix of coordinates.
+2. Perform SVD to find principal axes (eigenvectors).
+3. Map largest variance axis to longest canvas dimension (X or Y).
+4. Select sign combinations to minimize rotation from current state.
+
+**Called By**: `viewer-mol.js` (auto-rotate/best-view)
+
+---
+
+#### Function: `parsePDB(text)`
+
+**Signature**:
+```javascript
+function parsePDB(text)
+// text: String (PDB file content)
+// Returns: { models, modresMap, conectMap }
+```
+
+**Purpose**: Parse PDB format into internal structure.
+- Extracts ATOM/HETATM records.
+- Parses CONECT records for explicit bonds.
+- Parses MODRES for modified residues.
+
+**Called By**: `app.js` (file loading), `app-esmfold.js`
+
+---
+
+#### Function: `parseCIF(text)`
+
+**Signature**:
+```javascript
+function parseCIF(text)
+// text: String (mmCIF file content)
+// Returns: Array of models
+```
+
+**Purpose**: Parse mmCIF format into internal structure.
+- Handles `_atom_site` loop.
+- Parses `_struct_conn` and `_chem_comp_bond` for explicit bonds.
+
+**Called By**: `app.js` (file loading)
 
 ---
 

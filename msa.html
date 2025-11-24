@@ -1,11 +1,21 @@
+<!--
+msa.html
+--------
+AI Context: STANDALONE MSA VIEWER
+- A dedicated page for the Multiple Sequence Alignment (MSA) viewer.
+- Loads `web/app.js` and `py2Dmol/resources/viewer-msa.js`.
+- Provides UI for fetching/uploading MSAs and controlling visualization modes.
+-->
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MSA Viewer - py2Dmol (Resizable)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+        crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link rel="stylesheet" href="web/style.css">
     <style>
         /* MSA-specific drag overlay styles */
@@ -23,7 +33,7 @@
             justify-content: center;
             pointer-events: none;
         }
-        
+
         .drag-overlay-content {
             background: white;
             padding: 24px 48px;
@@ -34,7 +44,7 @@
             color: #1e40af;
             font-weight: 600;
         }
-        
+
         /* Match fetch input styling from index.html */
         #fetch-uniprot-id {
             flex-grow: 1;
@@ -46,48 +56,52 @@
             transition: all 0.2s;
             background: #ffffff;
         }
-        
+
         #fetch-uniprot-id:hover {
             border-color: #9ca3af;
         }
-        
+
         #fetch-uniprot-id:focus {
             border-color: #3b82f6;
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
             outline: none;
         }
-        
+
         #fetch-uniprot-id::placeholder {
             color: #9ca3af;
         }
-        
+
         #fetch-input-container {
             display: flex;
             gap: 8px;
             align-items: center;
         }
-        
+
         #fetch-input-container input {
             flex-grow: 1;
             height: 42px;
         }
     </style>
 </head>
+
 <body class="bg-gray-50 text-gray-800 font-sans p-8">
     <!-- Total width (600 + 8 + 340 = 948px) -->
     <div class="mx-auto" style="width: 948px; position: relative;">
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">MSA Viewer</h1>
-        <p class="text-gray-500 mb-4">Fetch from AlphaFold DB (UniProt ID) or upload A3M, FASTA, or STO file to visualize multiple sequence alignment</p>
-        
+        <p class="text-gray-500 mb-4">Fetch from AlphaFold DB (UniProt ID) or upload A3M, FASTA, or STO file to
+            visualize multiple sequence alignment</p>
+
         <!-- Fetch and Upload Section -->
         <div class="container-box" style="width: 948px; margin-bottom: 10px;">
             <!-- Fetch Section -->
-            <label for="fetch-uniprot-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Fetch from AlphaFold DB (PDB or UniProt ID)</label>
+            <label for="fetch-uniprot-id"
+                style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Fetch
+                from AlphaFold DB (PDB or UniProt ID)</label>
             <div id="fetch-input-container" style="margin-bottom: 8px;">
                 <input type="text" id="fetch-uniprot-id" placeholder="e.g., 4HHB or P0A8I3">
                 <button id="fetch-btn" class="btn btn-primary">Fetch</button>
             </div>
-            
+
             <!-- Upload Section -->
             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">
                 Upload MSA File
@@ -101,10 +115,11 @@
                 <span id="file-name" style="color: #6b7280; font-size: 14px;"></span>
             </div>
             <div id="status-message" style="display: none; margin-top: 12px;"></div>
-            
+
             <!-- Example buttons -->
             <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
-                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
+                <label
+                    style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
                 <div style="display: flex; gap: 8px;">
                     <button class="btn btn-success" data-example-value="Q5VSL9">
                         <span>Q5VSL9</span>
@@ -115,84 +130,102 @@
                 </div>
             </div>
         </div>
-        
+
         <!-- Drag overlay (shown when dragging files over the page) -->
         <div id="drag-overlay" class="drag-overlay">
             <div class="drag-overlay-content">
                 📁 Drop your A3M file here
             </div>
         </div>
-        
+
         <!-- MSA Viewer Container -->
         <div id="msa-buttons" class="container-box sequence-section-container" style="display: none;">
             <div id="msaHeader" class="sequence-header">
                 <!-- Left side: Mode dropdown, Sort checkbox, and Bit-score checkbox -->
                 <div style="display: flex; align-items: center; gap: 8px;">
-                    <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
+                    <select id="msaModeSelect" class="btn btn-grey btn-small"
+                        style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
                         <option value="msa" selected>MSA</option>
                         <option value="pssm">PSSM</option>
                         <option value="logo">Logo</option>
                         <option value="coverage">Coverage</option>
                     </select>
                     <div id="msaSortContainer" style="display: flex; align-items: center; gap: 4px;">
-                        <label for="msaSortCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                        <label for="msaSortCheckbox"
+                            style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
                             <input type="checkbox" id="msaSortCheckbox" checked style="cursor: pointer;">
                             <span>Sort</span>
                         </label>
                     </div>
                     <div id="logoBitScoreContainer" style="display: none; align-items: center; gap: 4px;">
-                        <label for="logoBitScoreCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                        <label for="logoBitScoreCheckbox"
+                            style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
                             <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
                             <span>Bit-score</span>
                         </label>
                     </div>
                     <div id="msaSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                        <button id="msaSaveFastaButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save Fasta</button>
+                        <button id="msaSaveFastaButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            Fasta</button>
                     </div>
                     <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                        <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
+                        <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            SVG</button>
                     </div>
                     <div id="pssmSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                        <button id="pssmSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
-                        <button id="pssmSaveCsvButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save CSV</button>
+                        <button id="pssmSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            SVG</button>
+                        <button id="pssmSaveCsvButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            CSV</button>
                     </div>
                 </div>
-                
+
                 <!-- Right: Filters box -->
-                <div style="display: flex; align-items: center; gap: 10px; margin-left: auto; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
+                <div
+                    style="display: flex; align-items: center; gap: 10px; margin-left: auto; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
                     <span style="font-size: 12px; color: #666; font-weight: 500;">Filters:</span>
                     <div style="display: flex; align-items: center; gap: 4px;">
-                        <label for="coverageSlider" style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
-                        <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5" style="width: 100px;">
-                        <span id="coverageValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">75%</span>
+                        <label for="coverageSlider"
+                            style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
+                        <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5"
+                            style="width: 100px;">
+                        <span id="coverageValue"
+                            style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">75%</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 4px;">
-                        <label for="identitySlider" style="font-size: 11px; color: #666; white-space: nowrap;">qid:</label>
-                        <input type="range" id="identitySlider" min="0" max="100" value="15" step="5" style="width: 100px;">
-                        <span id="identityValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">15%</span>
+                        <label for="identitySlider"
+                            style="font-size: 11px; color: #666; white-space: nowrap;">qid:</label>
+                        <input type="range" id="identitySlider" min="0" max="100" value="15" step="5"
+                            style="width: 100px;">
+                        <span id="identityValue"
+                            style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">15%</span>
                     </div>
-                    <span id="msaSequenceCount" style="font-size: 11px; color: #666; white-space: nowrap; min-width: 80px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
+                    <span id="msaSequenceCount"
+                        style="font-size: 11px; color: #666; white-space: nowrap; min-width: 80px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
                 </div>
             </div>
         </div>
-        </div>
     </div>
-    
+    </div>
+
     <!-- Footer -->
     <footer style="margin-top: var(--container-gap); padding: 0; color: #6b7280; font-size: 13px;">
-        <div style="width: 948px; margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
+        <div
+            style="width: 948px; margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
             <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px;">
-                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: none;">
+                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer"
+                    style="color: #3b82f6; text-decoration: none;">
                     <i class="fab fa-github" style="margin-right: 6px;"></i>View on GitHub
                 </a>
             </div>
             <div style="flex: 0 0 auto; font-size: 12px;">
                 <i class="fa-solid fa-shield-halved" style="margin-right: 6px; color: #10b981;"></i>
-                <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a server.
+                <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a
+                server.
             </div>
         </div>
     </footer>
-    
+
     <!-- Load MSA viewer script -->
     <script src="py2Dmol/resources/viewer-msa.js"></script>
     <!-- Load app.js for unified MSA functionality -->

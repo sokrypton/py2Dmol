@@ -1,4 +1,13 @@
 // ============================================================================
+// web/app.js
+// ----------
+// AI Context: STANDALONE WEB APP LOGIC
+// - Entry point for the standalone website version (index.html).
+// - Handles file uploads (PDB, CIF, JSON) and URL fetching.
+// - Manages global UI state (sidebar, modals, settings).
+// - Parses raw file data before sending it to `viewer-mol.js`.
+// - NOT used in the Python/Jupyter environment.
+// ============================================================================
 // APP.JS - Application logic, UI handlers, and initialization
 // ============================================================================
 
@@ -4015,7 +4024,6 @@ const RESIDUE_TO_AA = {
 };
 
 // ============================================================================
-// ESMFold API support has been moved to app-esmfold.js for future use
 
 // ============================================================================
 // MSA UTILITY FUNCTIONS

@@ -1,4 +1,11 @@
 // ============================================================================
+// py2Dmol/resources/viewer-msa.js
+// -------------------------------
+// AI Context: MSA VIEWER
+// - Visualizes Multiple Sequence Alignments.
+// - Supports multiple modes: MSA, PSSM, Logo, Coverage.
+// - Implements client-side filtering and sorting of sequences.
+// ============================================================================
 // MSA VIEWER MODULE
 // ============================================================================
 /**

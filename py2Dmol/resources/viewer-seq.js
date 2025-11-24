@@ -1,4 +1,11 @@
 // ============================================================================
+// py2Dmol/resources/viewer-seq.js
+// -------------------------------
+// AI Context: SEQUENCE VIEWER
+// - Renders the protein/nucleotide sequence.
+// - Handles sequence-structure interaction (hover, click).
+// - Supports virtual scrolling for large sequences.
+// ============================================================================
 // SEQUENCE VIEWER MODULE
 // ============================================================================
 // This module provides sequence viewer functionality for py2Dmol.
