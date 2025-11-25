@@ -180,6 +180,12 @@
     width: 340px;
 }
 
+.py2dmol-viewer-instance #binding-results-container {
+    display: flex;
+    flex-direction: column;
+    width: 340px;
+}
+
 .py2dmol-viewer-instance #rightPanelContainer.container-box {
     /* Inherits all container-box styles from .container-box */
     /* Intentionally empty - styles inherited from .container-box */

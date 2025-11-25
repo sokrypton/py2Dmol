@@ -16,6 +16,33 @@ if (!window.py2dmol_viewers) {
     window.py2dmol_viewers = {};
 }
 
+// Registry for custom color modes (e.g., "binding", "conservation", etc.)
+if (!window.py2dmol_customColors) {
+    window.py2dmol_customColors = {};
+}
+
+/**
+ * Register a custom color mode that can be used in color dropdowns
+ * @param {string} modeName - Name of the color mode (e.g., "binding", "conservation")
+ * @param {function} colorFunc - Function(atomIndex, renderer) -> {r, g, b} color object
+ */
+function registerCustomColorMode(modeName, colorFunc) {
+    if (!window.py2dmol_customColors) {
+        window.py2dmol_customColors = {};
+    }
+    window.py2dmol_customColors[modeName] = colorFunc;
+    console.log(`✓ Custom color mode registered: "${modeName}"`);
+}
+
+/**
+ * Get all valid color modes (including custom ones)
+ */
+function getAllValidColorModes() {
+    const builtinModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+    const customModes = window.py2dmol_customColors ? Object.keys(window.py2dmol_customColors) : [];
+    return builtinModes.concat(customModes);
+}
+
 // ============================================================================
 // SIMPLE CANVAS2SVG FOR PY2DMOL
 // ============================================================================
@@ -521,8 +548,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.positionTypes = [];
             this.entropy = undefined; // Entropy vector mapped to structure positions
 
-            // Viewer state - Color mode: auto, chain, rainbow, plddt, DeepMind, or entropy
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+            // Viewer state - Color mode: auto, chain, rainbow, plddt, DeepMind, entropy, or custom
+            const validModes = getAllValidColorModes();
             this.colorMode = (config.color?.mode && validModes.includes(config.color.mode)) ? config.color.mode : 'auto';
             // Ensure it's always valid
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
@@ -3605,7 +3632,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const n = this.coords.length;
 
             // Ensure colorMode is valid
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+            const validModes = getAllValidColorModes();
             if (!this.colorMode || !validModes.includes(this.colorMode)) {
                 this.colorMode = 'auto';
             }
@@ -4321,7 +4348,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         _getEffectiveColorMode() {
-            const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+            const validModes = getAllValidColorModes();
 
             // Check for object-level color mode first
             if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
@@ -4449,6 +4476,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         const hex = colorArray[0]; // Use first color as default
                         color = hexToRgb(hex);
                     }
+                }
+            } else if (window.py2dmol_customColors && window.py2dmol_customColors[effectiveColorMode]) {
+                // Custom color mode registered by external code
+                const customColorFunc = window.py2dmol_customColors[effectiveColorMode];
+                try {
+                    color = customColorFunc(atomIndex, this);
+                    if (!color) {
+                        color = { r: 128, g: 128, b: 128 }; // Fallback grey if function returns null
+                    }
+                } catch (e) {
+                    console.error(`Error in custom color function for mode "${effectiveColorMode}":`, e);
+                    color = { r: 128, g: 128, b: 128 };
                 }
             } else { // rainbow
                 if (isLigand) {
@@ -5818,6 +5857,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 setCanvasProps(color, currentLineWidth, 'round');
                 ctx.stroke();
             }
+
             // ====================================================================
             // END OF REFACTORED LOOP
             // ====================================================================
@@ -6269,7 +6309,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const colorSelect = containerElement.querySelector('#colorSelect');
 
     // Initialize color mode
-    const validModes = ['auto', 'chain', 'rainbow', 'plddt'];
+    let validModes = getAllValidColorModes();
     if (!renderer.colorMode || !validModes.includes(renderer.colorMode)) {
         renderer.colorMode = (config.color?.mode && validModes.includes(config.color.mode)) ? config.color.mode : 'auto';
     }
@@ -6280,7 +6320,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     colorSelect.addEventListener('change', (e) => {
         const selectedMode = e.target.value;
-        const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+        const validModes = getAllValidColorModes();
 
         if (validModes.includes(selectedMode)) {
             renderer.colorMode = selectedMode;
