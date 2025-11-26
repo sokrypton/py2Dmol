@@ -251,7 +251,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // COLOR UTILITIES
     // ============================================================================
     const pymolColors = ["#33ff33", "#00ffff", "#ff33cc", "#ffff00", "#ff9999", "#e5e5e5", "#7f7fff", "#ff7f00", "#7fff7f", "#199999", "#ff007f", "#ffdd5e", "#8c3f99", "#b2b2b2", "#007fff", "#c4b200", "#8cb266", "#00bfbf", "#b27f7f", "#fcd1a5", "#ff7f7f", "#ffbfdd", "#7fffff", "#ffff7f", "#00ff7f", "#337fcc", "#d8337f", "#bfff3f", "#ff7fff", "#d8d8ff", "#3fffbf", "#b78c4c", "#339933", "#66b2b2", "#ba8c84", "#84bf00", "#b24c66", "#7f7f7f", "#3f3fa5", "#a5512b"];
-    const colorblindSafeChainColors = ["#4e79a7", "#f28e2c", "#e15759", "#76b7b2", "#59a14f", "#edc949", "#af7aa1", "#ff9da7", "#9c755f", "#bab0ab"]; // Tableau 10
+    const colorblindSafeChainColors = [
+          "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
+          "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
+          "#AEC7E8", "#FFBB78", "#98DF8A", "#FF9896", "#C5B0D5",
+          "#C49C94", "#F7B6D2", "#C7C7C7", "#DBDB8D", "#9EDAE5",
+          "#393B79", "#637939", "#8C6D31", "#843C39", "#7B4173",
+          "#5254A3", "#8CA252", "#BD9E39", "#AD494A", "#A55194"    ];
 
     // Named color map for common color names
     const namedColorsMap = {
@@ -264,106 +270,76 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return { r: 128, g: 128, b: 128 }; } const r = parseInt(hex.slice(1, 3), 16); const g = parseInt(hex.slice(3, 5), 16); const b = parseInt(hex.slice(5, 7), 16); return { r, g, b }; }
     function hsvToRgb(h, s, v) { const c = v * s; const x = c * (1 - Math.abs((h / 60) % 2 - 1)); const m = v - c; let r, g, b; if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; } else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; } else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; } return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) }; }
 
-    // N-term (blue) to C-term (red)
-    function getRainbowColor(value, min, max) {
+    /**
+     * Apply pastel effect to any color
+     * @param {{r, g, b}} color - RGB color object
+     * @param {number} level - Mixing level (0=none, 1=full white)
+     * @returns {{r, g, b}} Pastelized color
+     */
+    function applyPastelToColor(color, level) {
+        if (level <= 0) return color;
+        return {
+            r: Math.round(color.r * (1 - level) + 255 * level),
+            g: Math.round(color.g * (1 - level) + 255 * level),
+            b: Math.round(color.b * (1 - level) + 255 * level)
+        };
+    }
+
+    // N-term (blue) to C-term (red/yellow)
+    function getRainbowColor(value, min, max, colorblind = false) {
         if (max - min < 1e-6) return hsvToRgb(240, 1.0, 1.0); // Default to blue
         let normalized = (value - min) / (max - min);
         normalized = Math.max(0, Math.min(1, normalized));
-        const hue = 240 * (1 - normalized); // 0 -> 240 (blue), 1 -> 0 (red)
+        const hue = colorblind
+            ? 240 - normalized * 180  // Blue (240°) → Yellow (60°)
+            : 240 * (1 - normalized);  // Blue (240°) → Red (0°)
         return hsvToRgb(hue, 1.0, 1.0);
     }
 
-    // 50 (red) to 90 (blue)
-    function getPlddtRainbowColor(value, min, max) {
-        if (max - min < 1e-6) return hsvToRgb(0, 1.0, 1.0); // Default to red
+    // pLDDT rainbow: 50 (red/yellow) to 90 (blue)
+    function getPlddtRainbowColor(value, min, max, colorblind = false) {
+        if (max - min < 1e-6) {
+            return hsvToRgb(colorblind ? 60 : 0, 1.0, 1.0); // Default to yellow or red
+        }
         let normalized = (value - min) / (max - min);
         normalized = Math.max(0, Math.min(1, normalized));
-        const hue = 240 * normalized; // 0 -> 0 (red), 1 -> 240 (blue)
+        const hue = colorblind
+            ? 60 + normalized * 180   // Yellow (60°) → Blue (240°)
+            : normalized * 240;        // Red (0°) → Blue (240°)
         return hsvToRgb(hue, 1.0, 1.0);
     }
 
-    // Cividis-like: N-term (blue) to C-term (yellow)
-    function getRainbowColor_Colorblind(value, min, max) {
-        if (max - min < 1e-6) return hsvToRgb(240, 1.0, 1.0); // Default to blue
-        let normalized = (value - min) / (max - min);
-        normalized = Math.max(0, Math.min(1, normalized));
-        // Interpolate hue from 240 (Blue) down to 60 (Yellow)
-        const hue = 240 - normalized * 180;
-        return hsvToRgb(hue, 1.0, 1.0);
+    function getPlddtColor(plddt, colorblind = false) {
+        return getPlddtRainbowColor(plddt, 50, 90, colorblind);
     }
 
-    // Cividis-like: 50 (yellow) to 90 (blue)
-    function getPlddtRainbowColor_Colorblind(value, min, max) {
-        if (max - min < 1e-6) return hsvToRgb(60, 1.0, 1.0); // Default to yellow
-        let normalized = (value - min) / (max - min);
-        normalized = Math.max(0, Math.min(1, normalized));
-        // Interpolate hue from 60 (Yellow) to 240 (Blue)
-        const hue = 60 + normalized * 180;
-        return hsvToRgb(hue, 1.0, 1.0);
-    }
-
-    function getPlddtColor(plddt) { return getPlddtRainbowColor(plddt, 50, 90); }
-    function getPlddtColor_Colorblind(plddt) { return getPlddtRainbowColor_Colorblind(plddt, 50, 90); }
-
-    // Entropy color: low entropy (conserved, blue) to high entropy (variable, red)
+    // Entropy color: low entropy (conserved, blue) to high entropy (variable, red/yellow)
     // Entropy values are normalized 0-1, where 0 = conserved, 1 = variable
-    function getEntropyColor(entropy) {
+    function getEntropyColor(entropy, colorblind = false) {
         // Clamp entropy to 0-1 range
         const normalized = Math.max(0, Math.min(1, entropy || 0));
-        // Low entropy (conserved) -> blue (240), high entropy (variable) -> red (0)
-        const hue = 240 * (1 - normalized); // 0 -> 240 (blue), 1 -> 0 (red)
-        return hsvToRgb(hue, 1.0, 1.0);
-    }
-
-    // Entropy colorblind: low entropy (conserved, blue) to high entropy (yellow)
-    function getEntropyColor_Colorblind(entropy) {
-        // Clamp entropy to 0-1 range
-        const normalized = Math.max(0, Math.min(1, entropy || 0));
-        // Low entropy (conserved) -> blue (240), high entropy (variable) -> yellow (60)
-        const hue = 240 - normalized * 180; // 240 -> 60 (blue to yellow)
+        // Low entropy (conserved) -> blue (240), high entropy (variable) -> red (0) or yellow (60)
+        const hue = colorblind
+            ? 240 - normalized * 180  // Blue (240°) → Yellow (60°)
+            : 240 * (1 - normalized);  // Blue (240°) → Red (0°)
         return hsvToRgb(hue, 1.0, 1.0);
     }
 
     // AlphaFold pLDDT color scheme (4 categories based on confidence)
     // Based on PyMOL AlphaFold plugin colors
-    function getPlddtAFColor(plddt) {
-        // DeepMind uses 4 color categories:
-        // >= 100: n0 - Very high confidence (blue) [not used, max is typically 100]
-        // >= 90:  n1 - High confidence (cyan)
-        // >= 70:  n2 - Confident (yellow)
-        // >= 50:  n3 - Low confidence (orange)
-        // < 50:   n3 - Very low confidence (red) [actually orange-red]
-
-        if (plddt >= 90) {
-            // Cyan: [0.416, 0.796, 0.945]
-            return { r: Math.round(0.416 * 255), g: Math.round(0.796 * 255), b: Math.round(0.945 * 255) };
-        } else if (plddt >= 70) {
-            // Yellow: [0.996, 0.851, 0.212]
-            return { r: Math.round(0.996 * 255), g: Math.round(0.851 * 255), b: Math.round(0.212 * 255) };
-        } else if (plddt >= 50) {
-            // Orange: [0.992, 0.490, 0.302]
-            return { r: Math.round(0.992 * 255), g: Math.round(0.490 * 255), b: Math.round(0.302 * 255) };
+    function getPlddtAFColor(plddt, colorblind = false) {
+        if (colorblind) {
+            // Colorblind-safe: Blue → Green → Yellow → Red
+            if (plddt >= 90) return { r: 0, g: 100, b: 255 };      // Blue
+            else if (plddt >= 70) return { r: 0, g: 200, b: 100 }; // Green
+            else if (plddt >= 50) return { r: 255, g: 255, b: 0 }; // Yellow
+            else return { r: 255, g: 0, b: 0 };                    // Red
         } else {
-            // Red-orange (slightly more red): [1.0, 0.4, 0.2]
-            return { r: 255, g: 102, b: 51 };
-        }
-    }
-
-    // AlphaFold pLDDT color scheme for colorblind mode (uses different colors)
-    function getPlddtAFColor_Colorblind(plddt) {
-        // Use blue, green, yellow, red for better colorblind accessibility
-        if (plddt >= 90) {
-            // Blue
-            return { r: 0, g: 100, b: 255 };
-        } else if (plddt >= 70) {
-            // Green
-            return { r: 0, g: 200, b: 100 };
-        } else if (plddt >= 50) {
-            // Yellow
-            return { r: 255, g: 255, b: 0 };
-        } else {
-            // Red
-            return { r: 255, g: 0, b: 0 };
+            // Official AlphaFold: Dark Blue → Cyan → Yellow → Orange
+            if (plddt >= 90) return { r: 13, g: 87, b: 211 };      // Dark Blue
+            else if (plddt >= 70) return { r: 106, g: 203, b: 241 }; // Cyan
+            else if (plddt >= 50) return { r: 254, g: 217, b: 54 }; // Yellow
+            else return { r: 253, g: 125, b: 77 };                 // Orange
         }
     }
 
@@ -4388,7 +4364,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         getAtomColor(atomIndex, effectiveColorMode = null) {
             if (atomIndex < 0 || atomIndex >= this.coords.length) {
-                return this._applyPastel({ r: 128, g: 128, b: 128 }); // Default grey
+                return applyPastelToColor({ r: 128, g: 128, b: 128 }, this.pastelLevel);
             }
 
             // Resolve color through the unified hierarchy
@@ -4410,17 +4386,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const { resolvedMode, resolvedLiteralColor } = resolveColorHierarchy(context, null);
 
             // If we have a resolved literal color, use it immediately (highest priority)
+            // Now applies pastel uniformly to literals as well
             if (resolvedLiteralColor !== null) {
+                let literalColor;
                 if (typeof resolvedLiteralColor === 'string' && resolvedLiteralColor.startsWith('#')) {
-                    return hexToRgb(resolvedLiteralColor);
+                    literalColor = hexToRgb(resolvedLiteralColor);
                 } else if (typeof resolvedLiteralColor === 'string') {
                     // Try to convert named color to hex
                     const hex = namedColorsMap[resolvedLiteralColor.toLowerCase()];
-                    if (hex) return hexToRgb(hex);
-                    // Fallback if not a named color
-                    return { r: 128, g: 128, b: 128 };
+                    literalColor = hex ? hexToRgb(hex) : { r: 128, g: 128, b: 128 };
                 } else if (resolvedLiteralColor && typeof resolvedLiteralColor === 'object' && (resolvedLiteralColor.r !== undefined || resolvedLiteralColor.g !== undefined || resolvedLiteralColor.b !== undefined)) {
-                    return resolvedLiteralColor; // Already RGB object
+                    literalColor = resolvedLiteralColor; // Already RGB object
+                }
+                if (literalColor) {
+                    return applyPastelToColor(literalColor, this.pastelLevel);
                 }
             }
 
@@ -4438,22 +4417,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const isLigand = type === 'L';
 
             if (effectiveColorMode === 'plddt') {
-                const plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
-                color = plddtFunc(plddt);
+                color = getPlddtColor(plddt, this.colorblindMode);
             } else if (effectiveColorMode === 'deepmind') {
-                // DeepMind colors don't use colorblind mode - always use standard colors
-                const plddtAfFunc = getPlddtAFColor;
                 const plddt = (this.plddts[atomIndex] !== null && this.plddts[atomIndex] !== undefined) ? this.plddts[atomIndex] : 50;
-                color = plddtAfFunc(plddt);
+                color = getPlddtAFColor(plddt, this.colorblindMode);
             } else if (effectiveColorMode === 'entropy') {
-                const entropyFunc = this.colorblindMode ? getEntropyColor_Colorblind : getEntropyColor;
                 // Get entropy value from mapped entropy vector
                 const entropy = (this.entropy && atomIndex < this.entropy.length && this.entropy[atomIndex] !== undefined && this.entropy[atomIndex] >= 0)
                     ? this.entropy[atomIndex]
                     : undefined;
                 if (entropy !== undefined) {
-                    color = entropyFunc(entropy);
+                    color = getEntropyColor(entropy, this.colorblindMode);
                 } else {
                     // No entropy data for this position (ligand, RNA/DNA, or unmapped) - use default grey
                     color = { r: 128, g: 128, b: 128 };
@@ -4497,24 +4472,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // Regular positions get rainbow color
                     const chainId = this.chains[atomIndex] || 'A';
                     const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
-                    const rainbowFunc = this.colorblindMode ? getRainbowColor_Colorblind : getRainbowColor;
                     if (scale && scale.min !== Infinity && scale.max !== -Infinity) {
                         const colorIndex = this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0;
-                        color = rainbowFunc(colorIndex, scale.min, scale.max);
+                        color = getRainbowColor(colorIndex, scale.min, scale.max, this.colorblindMode);
                     } else {
                         // Fallback: if scale not found, use a default rainbow based on colorIndex
                         const colorIndex = (this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0) || 0;
-                        color = rainbowFunc(colorIndex, 0, Math.max(1, colorIndex));
+                        color = getRainbowColor(colorIndex, 0, Math.max(1, colorIndex), this.colorblindMode);
                     }
                 }
             }
 
-            // Don't apply pastel to DeepMind mode - preserve saturated AF confidence colors
-            if (effectiveColorMode === 'deepmind') {
-                return color;
-            }
-
-            return this._applyPastel(color);
+            // UNIFORM PASTEL APPLICATION - no special cases
+            return applyPastelToColor(color, this.pastelLevel);
         }
 
         // Get chain color for a given chain ID (for UI elements like sequence viewer)
@@ -4564,27 +4534,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (m === 0) return [];
 
             const colors = new Array(m);
+            const effectiveMode = this._getEffectiveColorMode();
 
             // Select the appropriate plddt color function based on effective color mode
-            const effectiveMode = this._getEffectiveColorMode();
-            let plddtFunc;
-            if (effectiveMode === 'deepmind') {
-                // DeepMind colors don't use colorblind mode - always use standard colors
-                plddtFunc = getPlddtAFColor;
-            } else {
-                plddtFunc = this.colorblindMode ? getPlddtColor_Colorblind : getPlddtColor;
-            }
+            const plddtFunc = (effectiveMode === 'deepmind') ? getPlddtAFColor : getPlddtColor;
 
             for (let i = 0; i < m; i++) {
                 const segInfo = this.segmentIndices[i];
 
-                // Contacts use custom color if provided, otherwise yellow (no pastel applied)
+                // Contacts: use custom color if provided, otherwise yellow
+                // Now pastel is applied uniformly to contacts as well
                 if (segInfo.type === 'C') {
-                    if (segInfo.contactColor) {
-                        colors[i] = segInfo.contactColor; // Use custom color from contact file
-                    } else {
-                        colors[i] = { r: 255, g: 255, b: 0 }; // Default yellow
-                    }
+                    const contactColor = segInfo.contactColor || { r: 255, g: 255, b: 0 };
+                    colors[i] = applyPastelToColor(contactColor, this.pastelLevel);
                     continue;
                 }
 
@@ -4594,16 +4556,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 if (type === 'L') {
                     const plddt1 = (this.plddts[positionIndex] !== null && this.plddts[positionIndex] !== undefined) ? this.plddts[positionIndex] : 50;
-                    color = plddtFunc(plddt1); // Use selected plddt function
+                    color = plddtFunc(plddt1, this.colorblindMode);
                 } else {
                     const plddts = this.plddts;
                     const plddt1 = (plddts[positionIndex] !== null && plddts[positionIndex] !== undefined) ? plddts[positionIndex] : 50;
                     const plddt2_idx = (segInfo.idx2 < this.coords.length) ? segInfo.idx2 : segInfo.idx1;
                     const plddt2 = (plddts[plddt2_idx] !== null && plddts[plddt2_idx] !== undefined) ? plddts[plddt2_idx] : 50;
-                    color = plddtFunc((plddt1 + plddt2) / 2); // Use selected plddt function
+                    color = plddtFunc((plddt1 + plddt2) / 2, this.colorblindMode);
                 }
-                // Don't apply pastel to DeepMind mode - preserve saturated AF confidence colors
-                colors[i] = effectiveMode === 'deepmind' ? color : this._applyPastel(color);
+
+                // Apply pastel uniformly to all pLDDT colors
+                colors[i] = applyPastelToColor(color, this.pastelLevel);
             }
             return colors;
         }

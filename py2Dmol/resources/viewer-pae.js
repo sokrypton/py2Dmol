@@ -44,8 +44,8 @@
     }
 
     // PAE color functions
-    function getPAEColor(value) {
-        // 0 (blue) to 15 (white) to 30 (red)
+    function getPAEColor(value, colorblind = false) {
+        // 0 (blue) to 15 (white) to 30 (red/orange)
         const v = Math.max(0, Math.min(30, (value || 0)));
 
         if (v <= 15.0) {
@@ -56,39 +56,17 @@
             const saturation = 1.0 - norm_blue;
             return hsvToRgb(240, saturation, 1.0);
         } else {
-            // 15 (white) -> 30 (red)
-            // Hue is 0 (red)
-            // Saturation goes from 0.0 up to 1.0
+            // 15 (white) -> 30 (red or orange for colorblind)
             const norm_red = (v - 15.0) / 15.0; // 0 to 1
             const saturation = norm_red;
-            return hsvToRgb(0, saturation, 1.0);
-        }
-    }
-
-    function getPAEColor_Colorblind(value) {
-        // 0 (blue) to 15 (white) to 30 (orange)
-        const v = Math.max(0, Math.min(30, (value || 0)));
-
-        if (v <= 15.0) {
-            // 0 (blue) -> 15 (white)
-            // Hue is 240 (blue)
-            // Saturation goes from 1.0 down to 0.0
-            const norm_blue = v / 15.0; // 0 to 1
-            const saturation = 1.0 - norm_blue;
-            return hsvToRgb(240, saturation, 1.0);
-        } else {
-            // 15 (white) -> 30 (orange)
-            // Hue is 30 (orange)
-            // Saturation goes from 0.0 up to 1.0
-            const norm_red = (v - 15.0) / 15.0; // 0 to 1
-            const saturation = norm_red;
-            return hsvToRgb(30, saturation, 1.0); // Use 30 for Orange
+            const hue = colorblind ? 30 : 0; // Orange for colorblind, red for normal
+            return hsvToRgb(hue, saturation, 1.0);
         }
     }
 
     function getPAEColor_DeepMind(value) {
         // DeepMind green gradient: 0 (dark green) to 30 (very light green)
-        // Green gradient: rgb(5, 113, 47) -> rgb(225, 243, 220)
+        // Green gradient is already colorblind-safe, no variant needed
         const v = Math.max(0, Math.min(30, (value || 0)));
         const t = v / 30.0; // 0 to 1
 
@@ -98,11 +76,6 @@
         const b = Math.round(47 + (220 - 47) * t);
 
         return { r, g, b };
-    }
-
-    function getPAEColor_DeepMind_Colorblind(value) {
-        // Same green gradient for colorblind mode (green is perceptually distinct)
-        return getPAEColor_DeepMind(value);
     }
 
     // ============================================================================
@@ -673,20 +646,17 @@
             const data32 = new Uint32Array(imageData.data.buffer);
 
             // Select PAE color function
-            let paeFunc;
             const mainColorMode = this.mainRenderer && this.mainRenderer._getEffectiveColorMode ? this.mainRenderer._getEffectiveColorMode() : 'auto';
-            if (mainColorMode === 'deepmind') {
-                paeFunc = getPAEColor_DeepMind;
-            } else {
-                paeFunc = (this.mainRenderer && this.mainRenderer.colorblindMode) ? getPAEColor_Colorblind : getPAEColor;
-            }
+            const colorblind = this.mainRenderer?.colorblindMode || false;
 
             // Pre-calculate color map for 0-255 values to avoid repeated function calls
             // paeData is scaled x8, so 0-31.875 maps to 0-255
             const colorMap = new Uint32Array(256);
             for (let i = 0; i < 256; i++) {
                 const value = i / 8.0;
-                const { r, g, b } = paeFunc(value);
+                const { r, g, b } = (mainColorMode === 'deepmind')
+                    ? getPAEColor_DeepMind(value)
+                    : getPAEColor(value, colorblind);
                 // Little-endian: AABBGGRR
                 colorMap[i] = (255 << 24) | (b << 16) | (g << 8) | r;
             }
@@ -927,12 +897,10 @@
         }
     }
 
-    // Export PAERenderer to global scope
+    // Export PAERenderer and color functions to global scope
     window.PAERenderer = PAERenderer;
     window.getPAEColor = getPAEColor;
-    window.getPAEColor_Colorblind = getPAEColor_Colorblind;
     window.getPAEColor_DeepMind = getPAEColor_DeepMind;
-    window.getPAEColor_DeepMind_Colorblind = getPAEColor_DeepMind_Colorblind;
 
 })();
 
