@@ -210,7 +210,7 @@ def add_pdb(self,
     align=True,               # Auto-align
     use_biounit=False,        # Load biological assembly
     biounit_name="1",         # Assembly name
-    ignore_ligands=False,     # Skip ligands
+    load_ligands=True,        # Load ligands
     contacts=None,            # Contact restraints
     color=None                # Color override
 ):
@@ -230,7 +230,7 @@ def from_pdb(self,
     align=True,               # Default: True (not False)
     use_biounit=False,
     biounit_name="1",
-    ignore_ligands=False,
+    load_ligands=True,
     contacts=None,
     color=None
 ):

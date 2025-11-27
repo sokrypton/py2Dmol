@@ -264,7 +264,7 @@ function initializeViewerConfig() {
         // Web app specific settings (not part of Python config)
         ui: {
             biounit: true,
-            ignoreLigands: false
+            loadLigands: true
         },
         viewer_id: "standalone-viewer-1"
     };
@@ -274,8 +274,7 @@ function initializeViewerConfig() {
         biounitEl.checked = window.viewerConfig.ui.biounit;
     }
     if (loadLigandsEl) {
-        // Reversed logic: checkbox checked = load ligands = ignoreLigands false
-        loadLigandsEl.checked = !window.viewerConfig.ui.ignoreLigands;
+        loadLigandsEl.checked = window.viewerConfig.ui.loadLigands;
     } // Wire change listeners
     if (biounitEl) {
         biounitEl.addEventListener('change', () => {
@@ -285,8 +284,7 @@ function initializeViewerConfig() {
 
     if (loadLigandsEl) {
         loadLigandsEl.addEventListener('change', () => {
-            // Reversed logic: checkbox checked = load ligands = ignoreLigands false
-            window.viewerConfig.ui.ignoreLigands = !loadLigandsEl.checked;
+            window.viewerConfig.ui.loadLigands = loadLigandsEl.checked;
         });
     }
 }

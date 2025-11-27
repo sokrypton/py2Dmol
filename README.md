@@ -73,13 +73,13 @@ viewer = py2Dmol.view(
     shadow=True,         # show shadow
     outline='full',      # outline mode: ["none","partial","full"]
     width=3.0,           # line width
-    ortho=1.0,          # orthographic projection (0.0=perspective, 1.0=orthographic)
+    ortho=1.0,           # orthographic projection (0.0=perspective, 1.0=orthographic)
     rotate=False,        # auto-rotation
     autoplay=False,      # auto-play (if trajectory or multiple models)
-    box=True,           # show box around molecule
-    controls=True,      # show controls
-    pae=False,          # show pae
-    pae_size=300,       # set pae canvas size (single integer for square canvas)
+    box=True,            # show box around molecule
+    controls=True,       # show controls
+    pae=False,           # show pae
+    pae_size=300,        # set pae canvas size (single integer for square canvas)
 )
 
 viewer.add_pdb("my_complex.cif")
@@ -100,7 +100,7 @@ py2Dmol.view(autoplay=True).from_pdb('1YNE')
 ### Example: Load biounit from PDB
 ```python
 import py2Dmol
-py2Dmol.view(rotate=True).from_pdb('1BJP', use_biounit=True, ignore_ligands=True)
+py2Dmol.view(rotate=True).from_pdb('1BJP', use_biounit=True, load_ligands=False)
 ```
 
 ### Example: Load structure from PDB w/ multiple chains + DNA

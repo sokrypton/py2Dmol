@@ -1209,7 +1209,7 @@ class view:
             })
 
 
-    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
+    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -1227,7 +1227,7 @@ class view:
                                    Best-view rotation is ALWAYS computed for first frame. Defaults to True.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
-            ignore_ligands (bool): If True, skips loading ligand atoms.
+            load_ligands (bool): If True, loads ligand atoms. Defaults to True.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
@@ -1304,7 +1304,7 @@ class view:
              # This can happen if biounit fails but structure had no models
              
         for i, model in enumerate(models_to_process):
-            coords, plddts, position_chains, position_types, position_names, residue_numbers = self._parse_model(model, chains, ignore_ligands=ignore_ligands)
+            coords, plddts, position_chains, position_types, position_names, residue_numbers = self._parse_model(model, chains, load_ligands=load_ligands)
 
             if coords:
                 coords_np = np.array(coords)
@@ -1329,7 +1329,7 @@ class view:
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
 
-    def _parse_model(self, model, chains_filter, ignore_ligands=False):
+    def _parse_model(self, model, chains_filter, load_ligands=True):
         """
         Helper function to parse a gemmi.Model object.
 
@@ -1390,7 +1390,7 @@ class view:
                                 
                     else:
                         # Ligand: use all heavy atoms
-                        if not ignore_ligands:
+                        if load_ligands:
                             for atom in residue:
                                 if atom.element.name != 'H':
                                     coords.append(atom.pos.tolist())
@@ -1653,7 +1653,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, contacts=None, color=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -1669,7 +1669,7 @@ class view:
             align (bool, optional): If True, aligns coordinates to best view. Defaults to True.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
-            ignore_ligands (bool): If True, skips loading ligand atoms.
+            load_ligands (bool): If True, loads ligand atoms. Defaults to True.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
@@ -1684,13 +1684,13 @@ class view:
             self.add_pdb(filepath, chains=chains,
                          name=name, paes=None, align=align,
                          use_biounit=use_biounit, biounit_name=biounit_name,
-                         ignore_ligands=ignore_ligands, contacts=contacts, color=color)
+                         load_ligands=load_ligands, contacts=contacts, color=color)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", ignore_ligands=False, color=None):
+    def from_afdb(self, uniprot_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, color=None):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and adds it to the viewer.
@@ -1709,7 +1709,7 @@ class view:
             align (bool, optional): If True, aligns coordinates to best view. Defaults to True.
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
-            ignore_ligands (bool): If True, skips loading ligand atoms.
+            load_ligands (bool): If True, loads ligand atoms. Defaults to True.
             color (str, optional): Color for this structure. Can be a literal color (e.g., "red", "#ff0000") or a color mode
                                   (e.g., "chain", "plddt", "rainbow", "auto", "entropy", "deepmind").
         """
@@ -1735,7 +1735,7 @@ class view:
             self.add_pdb(struct_filepath, chains=chains,
                 name=name, paes=[pae_matrix] if pae_matrix is not None else None, align=align,
                 use_biounit=use_biounit, biounit_name=biounit_name,
-                ignore_ligands=ignore_ligands, color=color)
+                load_ligands=load_ligands, color=color)
             if not self._is_live: # Only call show() if it hasn't been called
                 self.show()
         
