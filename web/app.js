@@ -245,7 +245,6 @@ function initializeViewerConfig() {
         },
         rendering: {
             shadow: true,
-            depth: false,
             outline: "full",  // "none", "partial", or "full"
             width: 3.0,
             ortho: 1.0,  // Normalized 0-1 range (1.0 = full orthographic)
@@ -641,17 +640,6 @@ function setupEventListeners() {
 
     // Update navigation button states
     updateObjectNavigationButtons();
-
-    // Depth toggle
-    const depthCheckbox = document.getElementById('depthCheckbox');
-    if (depthCheckbox) {
-        depthCheckbox.addEventListener('change', (e) => {
-            if (viewerApi && viewerApi.renderer) {
-                viewerApi.renderer.depthEnabled = e.target.checked;
-                viewerApi.renderer.render('app.js: depthCheckbox');
-            }
-        });
-    }
 }
 
 // ============================================================================
@@ -5973,7 +5961,6 @@ function saveViewerState() {
             color_mode: renderer.colorMode || 'auto',
             line_width: renderer.lineWidth || 3.0,
             shadow_enabled: renderer.shadowEnabled !== false,
-            depth_enabled: renderer.depthEnabled !== false,
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
             pastel_level: renderer.pastelLevel || 0.25,
@@ -6283,16 +6270,6 @@ async function loadViewerState(stateData) {
                 if (shadowCheckbox) {
                     shadowCheckbox.checked = vs.shadow_enabled;
                     shadowCheckbox.dispatchEvent(new Event('change'));
-                }
-            }
-
-            // Restore depth
-            if (typeof vs.depth_enabled === 'boolean') {
-                renderer.depthEnabled = vs.depth_enabled;
-                const depthCheckbox = document.getElementById('depthCheckbox');
-                if (depthCheckbox) {
-                    depthCheckbox.checked = vs.depth_enabled;
-                    depthCheckbox.dispatchEvent(new Event('change'));
                 }
             }
 

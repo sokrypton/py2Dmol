@@ -489,7 +489,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         },
         rendering: {
             shadow: true,
-            depth: false,
             outline: "full",
             width: 3.0,
             ortho: 1.0,
@@ -526,7 +525,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             },
             rendering: {
                 shadow: cfg.rendering?.shadow ?? cfg.shadow ?? DEFAULT_CONFIG.rendering.shadow,
-                depth: cfg.rendering?.depth ?? cfg.depth ?? DEFAULT_CONFIG.rendering.depth,
                 outline: cfg.rendering?.outline ?? cfg.outline ?? DEFAULT_CONFIG.rendering.outline,
                 width: cfg.rendering?.width ?? cfg.width ?? DEFAULT_CONFIG.rendering.width,
                 ortho: cfg.rendering?.ortho ?? cfg.ortho ?? DEFAULT_CONFIG.rendering.ortho,
@@ -546,7 +544,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         };
 
         // Carry over any additional top-level keys not explicitly normalized
-        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "depth", "outline", "width", "ortho", "pastel", "colorblind", "pae_size"]);
+        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "pastel", "colorblind", "pae_size"]);
         for (const [key, value] of Object.entries(cfg)) {
             if (!knownKeys.has(key)) {
                 normalized[key] = value;
@@ -623,7 +621,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Set defaults from config, with fallback
             this.shadowEnabled = (typeof config.rendering?.shadow === 'boolean') ? config.rendering.shadow : true;
-            this.depthEnabled = (typeof config.rendering?.depth === 'boolean') ? config.rendering.depth : false;
             // Outline mode: 'none', 'partial', or 'full'
             if (typeof config.rendering?.outline === 'string' && ['none', 'partial', 'full'].includes(config.rendering.outline)) {
                 this.outlineMode = config.rendering.outline;
@@ -767,7 +764,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.shadowEnabledCheckbox = null;
             this.outlineModeButton = null; // Button that cycles through outline modes (index.html)
             this.outlineModeSelect = null; // Dropdown for outline modes (viewer.html)
-            this.depthCheckbox = null;
             this.colorblindCheckbox = null;
             this.orthoSlider = null;
 
@@ -945,13 +941,61 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if ((this.selectionModel.positions && this.selectionModel.positions.size > 0) ||
                 (this.selectionModel.chains && this.selectionModel.chains.size > 0)) {
                 seqPositions = new Set();
-                for (let i = 0; i < n; i++) {
-                    const ch = this.chains[i];
-                    if (!allowedChains.has(ch)) continue;
-                    // If positions are explicitly selected, check if this position is in the set
-                    // If no positions selected but chains are, include all positions in allowed chains
-                    if (this.selectionModel.positions.size === 0 || this.selectionModel.positions.has(i)) {
-                        seqPositions.add(i);
+
+                // In overlay mode, selections are based on frame[0] indices but need to be expanded
+                // to include corresponding positions from all frames in the merged array
+                if (this.overlayState.enabled && this.overlayState.frameIdMap && this.selectionModel.positions.size > 0) {
+                    // Build frame offset map: frameIdx -> starting index in merged array
+                    const frameOffsets = new Map();
+                    const frameSizes = new Map();
+                    let currentFrame = -1;
+                    let frameStart = 0;
+
+                    for (let i = 0; i < this.overlayState.frameIdMap.length; i++) {
+                        const frameIdx = this.overlayState.frameIdMap[i];
+                        if (frameIdx !== currentFrame) {
+                            if (currentFrame >= 0) {
+                                frameSizes.set(currentFrame, i - frameStart);
+                            }
+                            frameOffsets.set(frameIdx, i);
+                            frameStart = i;
+                            currentFrame = frameIdx;
+                        }
+                    }
+                    if (currentFrame >= 0) {
+                        frameSizes.set(currentFrame, this.overlayState.frameIdMap.length - frameStart);
+                    }
+
+                    // Expand selections: for each selected position (based on frame 0),
+                    // find corresponding positions in all frames
+                    const frame0Size = frameSizes.get(0) || 0;
+                    for (const selectedPos of this.selectionModel.positions) {
+                        // Only process positions that exist in frame 0
+                        if (selectedPos >= frame0Size) continue;
+
+                        // Add this position from all frames
+                        for (const [frameIdx, offset] of frameOffsets.entries()) {
+                            const frameSize = frameSizes.get(frameIdx) || 0;
+                            // Only add if this position exists in this frame
+                            if (selectedPos < frameSize) {
+                                const mergedIdx = offset + selectedPos;
+                                const ch = this.chains[mergedIdx];
+                                if (allowedChains.has(ch)) {
+                                    seqPositions.add(mergedIdx);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Normal mode or overlay with no position selection
+                    for (let i = 0; i < n; i++) {
+                        const ch = this.chains[i];
+                        if (!allowedChains.has(ch)) continue;
+                        // If positions are explicitly selected, check if this position is in the set
+                        // If no positions selected but chains are, include all positions in allowed chains
+                        if (this.selectionModel.positions.size === 0 || this.selectionModel.positions.has(i)) {
+                            seqPositions.add(i);
+                        }
                     }
                 }
             }
@@ -965,17 +1009,70 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             let paePositions = null;
             if (this.selectionModel.paeBoxes && this.selectionModel.paeBoxes.length > 0) {
                 paePositions = new Set();
-                for (const box of this.selectionModel.paeBoxes) {
-                    const i0 = Math.max(0, Math.min(n - 1, Math.min(box.i_start, box.i_end)));
-                    const i1 = Math.max(0, Math.min(n - 1, Math.max(box.i_start, box.i_end)));
-                    const j0 = Math.max(0, Math.min(n - 1, Math.min(box.j_start, box.j_end)));
-                    const j1 = Math.max(0, Math.min(n - 1, Math.max(box.j_start, box.j_end)));
-                    // PAE positions map directly to position indices (one position per entry in frame data)
-                    for (let r = i0; r <= i1; r++) {
-                        if (r < n) paePositions.add(r);
+
+                // In overlay mode, PAE selections should expand across all frames
+                // (same logic as sequence selections)
+                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
+                    // Build frame offset map
+                    const frameOffsets = new Map();
+                    const frameSizes = new Map();
+                    let currentFrame = -1;
+                    let frameStart = 0;
+
+                    for (let i = 0; i < this.overlayState.frameIdMap.length; i++) {
+                        const frameIdx = this.overlayState.frameIdMap[i];
+                        if (frameIdx !== currentFrame) {
+                            if (currentFrame >= 0) {
+                                frameSizes.set(currentFrame, i - frameStart);
+                            }
+                            frameOffsets.set(frameIdx, i);
+                            frameStart = i;
+                            currentFrame = frameIdx;
+                        }
                     }
-                    for (let r = j0; r <= j1; r++) {
-                        if (r < n) paePositions.add(r);
+                    if (currentFrame >= 0) {
+                        frameSizes.set(currentFrame, this.overlayState.frameIdMap.length - frameStart);
+                    }
+
+                    const frame0Size = frameSizes.get(0) || 0;
+                    for (const box of this.selectionModel.paeBoxes) {
+                        const i0 = Math.max(0, Math.min(frame0Size - 1, Math.min(box.i_start, box.i_end)));
+                        const i1 = Math.max(0, Math.min(frame0Size - 1, Math.max(box.i_start, box.i_end)));
+                        const j0 = Math.max(0, Math.min(frame0Size - 1, Math.min(box.j_start, box.j_end)));
+                        const j1 = Math.max(0, Math.min(frame0Size - 1, Math.max(box.j_start, box.j_end)));
+
+                        // Expand i and j ranges across all frames
+                        for (let r = i0; r <= i1; r++) {
+                            for (const [frameIdx, offset] of frameOffsets.entries()) {
+                                const frameSize = frameSizes.get(frameIdx) || 0;
+                                if (r < frameSize) {
+                                    paePositions.add(offset + r);
+                                }
+                            }
+                        }
+                        for (let r = j0; r <= j1; r++) {
+                            for (const [frameIdx, offset] of frameOffsets.entries()) {
+                                const frameSize = frameSizes.get(frameIdx) || 0;
+                                if (r < frameSize) {
+                                    paePositions.add(offset + r);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Normal mode
+                    for (const box of this.selectionModel.paeBoxes) {
+                        const i0 = Math.max(0, Math.min(n - 1, Math.min(box.i_start, box.i_end)));
+                        const i1 = Math.max(0, Math.min(n - 1, Math.max(box.i_start, box.i_end)));
+                        const j0 = Math.max(0, Math.min(n - 1, Math.min(box.j_start, box.j_end)));
+                        const j1 = Math.max(0, Math.min(n - 1, Math.max(box.j_start, box.j_end)));
+                        // PAE positions map directly to position indices (one position per entry in frame data)
+                        for (let r = i0; r <= i1; r++) {
+                            if (r < n) paePositions.add(r);
+                        }
+                        for (let r = j0; r <= j1; r++) {
+                            if (r < n) paePositions.add(r);
+                        }
                     }
                 }
             }
@@ -1421,7 +1518,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.overlayButton = overlayButton;
@@ -1437,7 +1534,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.shadowEnabledCheckbox = shadowEnabledCheckbox;
             this.outlineModeButton = outlineModeButton;
             this.outlineModeSelect = outlineModeSelect;
-            this.depthCheckbox = depthCheckbox;
             this.colorblindCheckbox = colorblindCheckbox;
             this.orthoSlider = orthoSlider;
             this.lineWidth = this.lineWidthSlider ? parseFloat(this.lineWidthSlider.value) : (this.lineWidth || 3.0); // Read default from slider or use existing/default
@@ -1589,13 +1685,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } else if (this.outlineModeSelect) {
                 // Dropdown mode (viewer.html) - already handled in initialization
                 this.outlineModeSelect.value = this.outlineMode || 'full';
-            }
-
-            if (this.depthCheckbox) {
-                this.depthCheckbox.addEventListener('change', (e) => {
-                    this.depthEnabled = e.target.checked;
-                    this.render('depthCheckbox');
-                });
             }
 
             if (this.colorblindCheckbox) {
@@ -2846,7 +2935,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
             if (this.outlineModeButton) this.outlineModeButton.disabled = !enabled;
             if (this.outlineModeSelect) this.outlineModeSelect.disabled = !enabled;
-            if (this.depthCheckbox) this.depthCheckbox.disabled = !enabled;
             if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled;
             if (this.orthoSlider) this.orthoSlider.disabled = !enabled;
             this.canvas.style.cursor = enabled ? 'grab' : 'wait';
@@ -3622,9 +3710,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.lastRenderedFrame = -1;
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.checked = true;
-            }
-            if (this.depthCheckbox) {
-                this.depthCheckbox.checked = true;
             }
             if (this.outlineModeButton) {
                 this.outlineMode = 'full';
@@ -5060,17 +5145,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const segInfo = segments[i];
                 let isVisible = false;
 
-                // In overlay mode, show all segments regardless of visibility mask
-                if (this.overlayState.enabled) {
-                    isVisible = true;
-                } else if (!visibilityMask) {
-                    // No mask = all segments visible
+                if (!visibilityMask) {
+                    // No mask = all segments visible (including overlay mode with no selection)
                     isVisible = true;
                 } else if (segInfo.type === 'C' && segInfo.contactIdx1 !== undefined && segInfo.contactIdx2 !== undefined) {
                     // For contact segments, check visibility based on original contact endpoints
                     isVisible = visibilityMask.has(segInfo.contactIdx1) && visibilityMask.has(segInfo.contactIdx2);
                 } else {
                     // For regular segments, check visibility based on segment endpoints
+                    // In overlay mode, the visibility mask has been expanded to include all corresponding positions
                     isVisible = visibilityMask.has(segInfo.idx1) && visibilityMask.has(segInfo.idx2);
                 }
 
@@ -5812,22 +5895,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const zNormVal = zNorm[idx];
 
                     if (renderShadows) {
-                        const tintFactor = this.depthEnabled
-                            ? (0.50 * zNormVal + 0.50 * tints[idx]) / 3
-                            : (0.50 * tints[idx]) / 3;
+                        const tintFactor = (0.50 * tints[idx]) / 3;
                         r = r + (1 - r) * tintFactor;
                         g = g + (1 - g) * tintFactor;
                         b = b + (1 - b) * tintFactor;
-                        const shadowFactor = this.depthEnabled
-                            ? (0.20 + 0.25 * zNormVal + 0.55 * shadows[idx])
-                            : (0.20 + 0.80 * shadows[idx]);
+                        const shadowFactor = (0.20 + 0.80 * shadows[idx]);
                         r *= shadowFactor; g *= shadowFactor; b *= shadowFactor;
-                    } else {
-                        if (this.depthEnabled) {
-                            const depthFactor = 0.70 + 0.30 * zNormVal;
-                            r *= depthFactor; g *= depthFactor; b *= depthFactor;
-                        }
-                        // If depth coloring disabled, keep original colors unchanged
                     }
                 }
 
@@ -6397,12 +6470,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         });
     }
 
-    // Setup depthCheckbox
-    const depthCheckbox = containerElement.querySelector('#depthCheckbox');
-    if (depthCheckbox) {
-        depthCheckbox.checked = renderer.depthEnabled; // Set default from renderer
-    }
-
     // Setup colorblindCheckbox
     const colorblindCheckbox = containerElement.querySelector('#colorblindCheckbox');
     colorblindCheckbox.checked = renderer.colorblindMode; // Set default from renderer
@@ -6435,7 +6502,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         frameSlider, frameCounter, objectSelect,
         speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
         shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
-        depthCheckbox, colorblindCheckbox, orthoSlider
+        colorblindCheckbox, orthoSlider
     );
 
     // Setup save state button (for Python interface only - web interface handles it in app.js)

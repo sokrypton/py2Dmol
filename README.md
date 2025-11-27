@@ -334,7 +334,7 @@ Save the current viewer state to a JSON file:
 import py2Dmol
 
 # Create and configure viewer
-viewer = py2Dmol.view(size=(600, 600), shadow=True, depth=True)
+viewer = py2Dmol.view(size=(600, 600), shadow=True)
 viewer.add_pdb('protein.pdb')
 viewer.show()
 

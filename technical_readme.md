@@ -105,7 +105,7 @@ Every major file has an AI-friendly header:
 // AI Context: CORE RENDERER (Pseudo3DRenderer)
 // - This is the heart of the visualization.
 // - Implements `Pseudo3DRenderer` class.
-// - Handles 3D projection, depth sorting, and canvas drawing.
+// - Handles 3D projection, Z-sorting, and canvas drawing.
 // ============================================================================
 ```
 
@@ -136,9 +136,8 @@ def __init__(self,
     color="auto",             # Color mode
     colorblind=False,         # Colorblind-safe palette
     pastel=0.25,              # Pastel saturation (0.0-1.0)
-    shadow=True,              # Enable shadows
-    depth=False,              # Depth-based coloring
-    outline="full",           # Outline: "none"/"partial"/"full"
+    shadow=True,              # Enable/disable shadows
+    outline="full",           # Outline mode: "full", "partial", "none"
     width=3.0,                # Line width (2.0-4.7)
     ortho=1.0,                # Ortho projection (0=perspective, 1=ortho)
     rotate=False,             # Auto-rotate
@@ -530,7 +529,7 @@ projected_y = -rotated.y * scale + centerY  // Flip Y for canvas
 depth = rotated.z
 ```
 
-### Depth Sorting
+### Z-Sorting
 
 Segments sorted by **average Z** after rotation (painter's algorithm).
 
@@ -668,7 +667,6 @@ DEFAULT_CONFIG = {
     },
     "rendering": {
         "shadow": True,
-        "depth": False,
         "outline": "full",
         "width": 3.0,
         "ortho": 1.0,
@@ -694,7 +692,7 @@ DEFAULT_CONFIG = {
 // JavaScript receives it via window.viewerConfig
 {
     display: { size, rotate, autoplay, controls, box },
-    rendering: { shadow, depth, outline, width, ortho, pastel },
+    rendering: { shadow, outline, width, ortho, pastel },
     color: { mode, colorblind },
     pae: { enabled, size },
     overlay: { enabled }
