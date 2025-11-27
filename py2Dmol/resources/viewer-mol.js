@@ -252,12 +252,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // ============================================================================
     const pymolColors = ["#33ff33", "#00ffff", "#ff33cc", "#ffff00", "#ff9999", "#e5e5e5", "#7f7fff", "#ff7f00", "#7fff7f", "#199999", "#ff007f", "#ffdd5e", "#8c3f99", "#b2b2b2", "#007fff", "#c4b200", "#8cb266", "#00bfbf", "#b27f7f", "#fcd1a5", "#ff7f7f", "#ffbfdd", "#7fffff", "#ffff7f", "#00ff7f", "#337fcc", "#d8337f", "#bfff3f", "#ff7fff", "#d8d8ff", "#3fffbf", "#b78c4c", "#339933", "#66b2b2", "#ba8c84", "#84bf00", "#b24c66", "#7f7f7f", "#3f3fa5", "#a5512b"];
     const colorblindSafeChainColors = [
-          "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
-          "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
-          "#AEC7E8", "#FFBB78", "#98DF8A", "#FF9896", "#C5B0D5",
-          "#C49C94", "#F7B6D2", "#C7C7C7", "#DBDB8D", "#9EDAE5",
-          "#393B79", "#637939", "#8C6D31", "#843C39", "#7B4173",
-          "#5254A3", "#8CA252", "#BD9E39", "#AD494A", "#A55194"    ];
+        "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
+        "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
+        "#AEC7E8", "#FFBB78", "#98DF8A", "#FF9896", "#C5B0D5",
+        "#C49C94", "#F7B6D2", "#C7C7C7", "#DBDB8D", "#9EDAE5",
+        "#393B79", "#637939", "#8C6D31", "#843C39", "#7B4173",
+        "#5254A3", "#8CA252", "#BD9E39", "#AD494A", "#A55194"];
 
     // Named color map for common color names
     const namedColorsMap = {
@@ -477,6 +477,90 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const WIDTH_RATIO_CLAMP_MAX = 10.0;     // Maximum width ratio for shadow/tint
     const MAX_SHADOW_SUM = 12;              // Maximum accumulated shadow sum (saturating accumulation)
 
+    // Default nested config used by both Python and standalone HTML
+    const DEFAULT_CONFIG = {
+        viewer_id: null,
+        display: {
+            size: [300, 300],
+            rotate: false,
+            autoplay: false,
+            controls: true,
+            box: true
+        },
+        rendering: {
+            shadow: true,
+            depth: false,
+            outline: "full",
+            width: 3.0,
+            ortho: 1.0,
+            pastel: 0.25
+        },
+        color: {
+            mode: "auto",
+            colorblind: false
+        },
+        pae: {
+            enabled: false,
+            size: 300
+        },
+        overlay: {
+            enabled: false
+        }
+    };
+
+    // Normalize legacy flat configs into the nested structure expected by the renderer
+    function normalizeConfig(rawConfig = {}) {
+        const cfg = rawConfig || {};
+
+        // Support legacy flat color config: { color: "auto", colorblind: false }
+        const colorMode = typeof cfg.color === 'string' ? cfg.color : cfg.color?.mode;
+
+        const normalized = {
+            viewer_id: cfg.viewer_id ?? DEFAULT_CONFIG.viewer_id,
+            display: {
+                size: cfg.display?.size || cfg.size || DEFAULT_CONFIG.display.size,
+                rotate: cfg.display?.rotate ?? cfg.rotate ?? DEFAULT_CONFIG.display.rotate,
+                autoplay: cfg.display?.autoplay ?? cfg.autoplay ?? DEFAULT_CONFIG.display.autoplay,
+                controls: cfg.display?.controls ?? cfg.controls ?? DEFAULT_CONFIG.display.controls,
+                box: cfg.display?.box ?? cfg.box ?? DEFAULT_CONFIG.display.box
+            },
+            rendering: {
+                shadow: cfg.rendering?.shadow ?? cfg.shadow ?? DEFAULT_CONFIG.rendering.shadow,
+                depth: cfg.rendering?.depth ?? cfg.depth ?? DEFAULT_CONFIG.rendering.depth,
+                outline: cfg.rendering?.outline ?? cfg.outline ?? DEFAULT_CONFIG.rendering.outline,
+                width: cfg.rendering?.width ?? cfg.width ?? DEFAULT_CONFIG.rendering.width,
+                ortho: cfg.rendering?.ortho ?? cfg.ortho ?? DEFAULT_CONFIG.rendering.ortho,
+                pastel: cfg.rendering?.pastel ?? cfg.pastel ?? DEFAULT_CONFIG.rendering.pastel
+            },
+            color: {
+                mode: colorMode || DEFAULT_CONFIG.color.mode,
+                colorblind: cfg.color?.colorblind ?? cfg.colorblind ?? DEFAULT_CONFIG.color.colorblind
+            },
+            pae: {
+                enabled: cfg.pae?.enabled ?? cfg.pae ?? DEFAULT_CONFIG.pae.enabled,
+                size: cfg.pae?.size || cfg.pae_size || DEFAULT_CONFIG.pae.size
+            },
+            overlay: {
+                enabled: cfg.overlay?.enabled ?? cfg.overlay ?? DEFAULT_CONFIG.overlay.enabled
+            }
+        };
+
+        // Carry over any additional top-level keys not explicitly normalized
+        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "depth", "outline", "width", "ortho", "pastel", "colorblind", "pae_size"]);
+        for (const [key, value] of Object.entries(cfg)) {
+            if (!knownKeys.has(key)) {
+                normalized[key] = value;
+            }
+        }
+
+        // Preserve legacy pae_size if present as an alias
+        if (cfg.pae_size && !cfg.pae?.size) {
+            normalized.pae.size = cfg.pae_size;
+        }
+
+        return normalized;
+    }
+
     // ============================================================================
     // PSEUDO-3D RENDERER
     // ============================================================================
@@ -500,22 +584,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.displayHeight = parseInt(canvas.style.height) || canvas.height;
 
             // Get config from window.viewerConfig
-            const config = window.viewerConfig || {
-                size: [300, 300],
-                pae_size: 300,
-                color: "rainbow",
-                shadow: true,
-                outline: true,
-                width: 3.0,
-                rotate: false,
-                controls: true,
-                autoplay: false,
-                box: true,
-                pastel: 0.25,
-                pae: false,
-                colorblind: false,
-                depth: false
-            };
+            const config = normalizeConfig(window.viewerConfig);
+            // Ensure downstream code sees normalized structure
+            window.viewerConfig = config;
 
             // Current render state
             this.coords = []; // This is now an array of Vec3 objects
@@ -612,6 +683,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Playback
             this.isPlaying = false;
             this.animationSpeed = 100; // ms per frame
+            this.speedOptions = [100, 50, 25]; // ms per frame: 1x, 2x, 4x
+            this.speedIndex = this.speedOptions.indexOf(this.animationSpeed);
+            if (this.speedIndex === -1) {
+                this.speedIndex = 0;
+                this.animationSpeed = this.speedOptions[this.speedIndex];
+            }
             this.frameAdvanceTimer = null; // Independent timer for frame advancement
             this.lastRenderedFrame = -1; // Track what frame was last rendered
             this.recordingFrameSequence = null; // Timeout ID for sequential recording
@@ -683,7 +760,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.frameCounter = null;
             this.objectSelect = null;
             this.controlsContainer = null;
-            this.speedSelect = null;
+            this.speedButton = null;
             this.rotationCheckbox = null;
             this.lineWidthSlider = null;
             this.outlineWidthSlider = null;
@@ -1326,8 +1403,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return Math.sqrt(dx * dx + dy * dy);
         }
 
+        _updateSpeedButtonLabel() {
+            if (!this.speedButton) return;
+            const label = `${Math.round(100 / this.animationSpeed)}x`;
+            this.speedButton.textContent = label;
+        }
+
+        _cycleSpeed() {
+            const wasPlaying = this.isPlaying;
+            this.speedIndex = (this.speedIndex + 1) % this.speedOptions.length;
+            this.animationSpeed = this.speedOptions[this.speedIndex];
+            this._updateSpeedButtonLabel();
+            if (wasPlaying) {
+                this.stopAnimation();
+                this.startAnimation();
+            }
+        }
+
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, depthCheckbox, colorblindCheckbox, orthoSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.overlayButton = overlayButton;
@@ -1336,7 +1430,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.frameSlider = frameSlider;
             this.frameCounter = frameCounter;
             this.objectSelect = objectSelect;
-            this.speedSelect = speedSelect;
+            this.speedButton = speedButton;
             this.rotationCheckbox = rotationCheckbox;
             this.lineWidthSlider = lineWidthSlider;
             this.outlineWidthSlider = outlineWidthSlider;
@@ -1393,16 +1487,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 });
             }
 
-            this.speedSelect.addEventListener('change', (e) => {
-                const wasPlaying = this.isPlaying;
-                this.animationSpeed = parseInt(e.target.value);
-
-                // If animation is playing, restart timer with new speed
-                if (wasPlaying) {
-                    this.stopAnimation();
-                    this.startAnimation();
-                }
-            });
+            if (this.speedButton) {
+                this._updateSpeedButtonLabel();
+                this.speedButton.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this._cycleSpeed();
+                });
+            }
 
             this.rotationCheckbox.addEventListener('change', (e) => {
                 this.autoRotate = e.target.checked;
@@ -1550,7 +1642,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.frameSlider.addEventListener('change', handleSliderChange);
 
             // Also prevent canvas drag when interacting with other controls
-            const allControls = [this.playButton, this.objectSelect, this.speedSelect,
+            const allControls = [this.playButton, this.objectSelect, this.speedButton,
             this.rotationCheckbox, this.lineWidthSlider,
             this.shadowEnabledCheckbox, this.outlineModeButton, this.outlineModeSelect,
             this.colorblindCheckbox, this.orthoSlider];
@@ -2748,7 +2840,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.playButton.disabled = !enabled;
             this.frameSlider.disabled = !enabled;
             if (this.objectSelect) this.objectSelect.disabled = !enabled;
-            this.speedSelect.disabled = !enabled;
+            if (this.speedButton) this.speedButton.disabled = !enabled;
             this.rotationCheckbox.disabled = !enabled;
             this.lineWidthSlider.disabled = !enabled;
             if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
@@ -2772,11 +2864,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Check config.display.controls before showing
             // Unified check for all object/frame totals
             const config = window.viewerConfig || {};
-            if (total <= 1 || !config.display?.controls) {
-                this.controlsContainer.style.display = 'none';
-            } else {
-                this.controlsContainer.style.display = 'flex';
-            }
+            const controlsEnabled = config.display?.controls !== false;
+            this.controlsContainer.style.display = controlsEnabled ? 'flex' : 'none';
 
             // Get container element from canvas (for finding parent containers)
             const containerElement = this.canvas ? this.canvas.closest('.py2dmol-container') ||
@@ -2817,6 +2906,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             this.frameCounter.textContent = `${total > 0 ? current : 0} / ${total}`;
+
+            // Hide frame/play controls when only one frame (or none)
+            const hasMultipleFrames = total > 1;
+            const frameControls = [
+                this.playButton,
+                this.frameSlider,
+                this.frameCounter,
+                this.speedButton
+            ];
+            frameControls.forEach((el) => {
+                if (el) {
+                    el.style.display = hasMultipleFrames && controlsEnabled ? '' : 'none';
+                }
+            });
+
+            // Hide the entire controls container if there are no frames or only one frame
+            if (this.controlsContainer) {
+                const showControls = (hasMultipleFrames && controlsEnabled);
+                this.controlsContainer.style.display = showControls ? 'flex' : 'none';
+            }
+
+            this._updateSpeedButtonLabel();
 
             // Update overlay button
             if (this.overlayButton) {
@@ -6083,21 +6194,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // ============================================================================
 
     // 1. Get config from window.viewerConfig
-    const config = window.viewerConfig || {
-        size: [300, 300],
-        pae_size: 300,
-        color: "auto",
-        shadow: true,
-        outline: true,
-        width: 3.0,
-        rotate: false,
-        controls: true,
-        autoplay: false,
-        box: true,
-        pastel: 0.25,
-        pae: false,
-        colorblind: false
-    };
+    const config = normalizeConfig(window.viewerConfig);
+    // Persist normalized config for any downstream consumers
+    window.viewerConfig = config;
 
     // 2. Setup Canvas with high-DPI scaling for crisp rendering
     const canvas = containerElement.querySelector('#canvas');
@@ -6140,57 +6239,59 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     // ADDED: ResizeObserver to handle canvas resizing
     const canvasContainer = containerElement.querySelector('#canvasContainer');
+    const viewerWrapper = containerElement.querySelector('#viewerWrapper');
+    const controlsContainer = containerElement.querySelector('#controlsContainer');
 
     // Set initial container dimensions to match canvas size
     // This prevents the container from shrinking when the window is closed/reopened
     if (canvasContainer) {
         canvasContainer.style.width = displayWidth + 'px';
         canvasContainer.style.height = displayHeight + 'px';
+        if (viewerWrapper) {
+            viewerWrapper.style.width = displayWidth + 'px';
+        }
     }
     if (canvasContainer && window.ResizeObserver) {
-        let resizeTimeout;
         const resizeObserver = new ResizeObserver(entries => {
-            // Debounce resize to avoid excessive rendering
-            if (resizeTimeout) clearTimeout(resizeTimeout);
+            for (let entry of entries) {
+                // Get new dimensions from the container
+                let newWidth = entry.contentRect.width;
+                let newHeight = entry.contentRect.height;
 
-            resizeTimeout = setTimeout(() => {
-                for (let entry of entries) {
-                    // Get new dimensions from the container
-                    let newWidth = entry.contentRect.width;
-                    let newHeight = entry.contentRect.height;
+                // Ensure non-zero dimensions which can break canvas
+                newWidth = Math.max(newWidth, 1);
+                newHeight = Math.max(newHeight, 1);
 
-                    // Ensure non-zero dimensions which can break canvas
-                    newWidth = Math.max(newWidth, 1);
-                    newHeight = Math.max(newHeight, 1);
+                // Only update if display size actually changed
+                const currentDisplayWidth = parseInt(canvas.style.width) || displayWidth;
+                const currentDisplayHeight = parseInt(canvas.style.height) || displayHeight;
 
-                    // Only update if display size actually changed
-                    const currentDisplayWidth = parseInt(canvas.style.width) || displayWidth;
-                    const currentDisplayHeight = parseInt(canvas.style.height) || displayHeight;
+                if (Math.abs(newWidth - currentDisplayWidth) > 0.5 ||
+                    Math.abs(newHeight - currentDisplayHeight) > 0.5) {
+                    // Update canvas resolution with high-DPI scaling
+                    const internalWidth = newWidth * currentDPR;
+                    const internalHeight = newHeight * currentDPR;
 
-                    if (Math.abs(newWidth - currentDisplayWidth) > 1 ||
-                        Math.abs(newHeight - currentDisplayHeight) > 1) {
-                        // Update canvas resolution with high-DPI scaling
-                        const internalWidth = newWidth * currentDPR;
-                        const internalHeight = newHeight * currentDPR;
-
-                        canvas.width = internalWidth;
-                        canvas.height = internalHeight;
-                        canvas.style.width = newWidth + 'px';
-                        canvas.style.height = newHeight + 'px';
-
-                        // Scale context to match internal resolution
-                        const ctx = canvas.getContext('2d');
-                        ctx.setTransform(1, 0, 0, 1, 0, 0);
-                        ctx.scale(currentDPR, currentDPR);
-
-                        // Update cached dimensions in renderer
-                        renderer._updateCanvasDimensions();
-
-                        // Always render on resize - canvas setup is necessary for proper display
-                        renderer.render('ResizeObserver');
+                    canvas.width = internalWidth;
+                    canvas.height = internalHeight;
+                    canvas.style.width = newWidth + 'px';
+                    canvas.style.height = newHeight + 'px';
+                    if (viewerWrapper) {
+                        viewerWrapper.style.width = newWidth + 'px';
                     }
+
+                    // Scale context to match internal resolution
+                    const ctx = canvas.getContext('2d');
+                    ctx.setTransform(1, 0, 0, 1, 0, 0);
+                    ctx.scale(currentDPR, currentDPR);
+
+                    // Update cached dimensions in renderer
+                    renderer._updateCanvasDimensions();
+
+                    // Always render on resize - canvas setup is necessary for proper display
+                    renderer.render('ResizeObserver');
                 }
-            }, 100); // 100ms debounce
+            }
         });
 
         // Start observing the canvas container
@@ -6339,7 +6440,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     colorblindCheckbox.checked = renderer.colorblindMode; // Set default from renderer
 
     // 6. Setup animation and object controls
-    const controlsContainer = containerElement.querySelector('#controlsContainer');
     const playButton = containerElement.querySelector('#playButton');
     const overlayButton = containerElement.querySelector('#overlayButton');
     // All buttons are within containerElement in both div and iframe modes
@@ -6349,7 +6449,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const frameCounter = containerElement.querySelector('#frameCounter');
     // objectSelect is now in the sequence header, query from container
     const objectSelect = containerElement.querySelector('#objectSelect');
-    const speedSelect = containerElement.querySelector('#speedSelect');
+    const speedButton = containerElement.querySelector('#speedButton');
     const rotationCheckbox = containerElement.querySelector('#rotationCheckbox');
     const lineWidthSlider = containerElement.querySelector('#lineWidthSlider');
     const outlineWidthSlider = containerElement.querySelector('#outlineWidthSlider');
@@ -6365,7 +6465,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     renderer.setUIControls(
         controlsContainer, playButton, overlayButton, recordButton, saveSvgButton,
         frameSlider, frameCounter, objectSelect,
-        speedSelect, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
+        speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
         shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
         depthCheckbox, colorblindCheckbox, orthoSlider
     );
@@ -6385,6 +6485,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         orthoSlider.value = normalizeOrthoValue(config.rendering.ortho);
         // The slider's input event will be triggered after data loads to set the correct focalLength
     }
+
+
 
 
 

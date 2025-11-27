@@ -199,7 +199,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <div class="resize-handle"></div>
                     </div>
                     <div id="controlsContainer" class="container-box">
-                        <button id="playButton" class="btn btn-secondary btn-min-width-sm"><i
+                        <button id="playButton" class="btn btn-secondary btn-icon-only"><i
                                 class="fa-solid fa-play"></i></button>
                         <button id="recordButton" class="btn btn-secondary btn-icon-only"
                             title="Record animation to video file">
@@ -207,11 +207,8 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         </button>
                         <input type="range" id="frameSlider" min="0" max="0" value="0">
                         <span id="frameCounter">0 / 0</span>
-                        <select id="speedSelect">
-                            <option value="100">1x</option>
-                            <option value="50">2x</option>
-                            <option value="25">4x</option>
-                        </select>
+                        <button id="speedButton" class="btn btn-grey btn-icon-only"
+                            title="Cycle playback speed">1x</button>
                         <button id="overlayButton" class="btn btn-secondary" title="Overlay all frames"
                             style="font-weight: 400;">⧉</button>
                     </div>

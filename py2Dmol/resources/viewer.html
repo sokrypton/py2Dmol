@@ -25,10 +25,14 @@
             background: transparent;
         }
 
-        #viewerColumn {
+        #viewerWrapper {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 8px;
+            align-items: flex-start;
+            width: fit-content;
+            max-width: 100%;
+            min-width: 320px;
         }
 
         #canvasContainer {
@@ -284,18 +288,30 @@
             align-items: center;
             padding: 0 5px;
             width: 100%;
+            max-width: 100%;
             gap: 3px;
-            flex-wrap: nowrap;
+            flex-wrap: nowrap !important;
+            align-self: flex-start;
+            white-space: nowrap;
+            overflow-x: auto;
+            min-width: 0;
+            min-width: 320px;
+        }
+
+        /* Prevent play controls from widening the viewer column; slider is allowed to shrink */
+        #controlsContainer>* {
+            flex-shrink: 0;
         }
 
         #frameSlider {
-            flex-grow: 1;
+            flex: 1 1 140px;
             width: auto;
-            min-width: 100px;
+            min-width: 120px;
             margin: 0;
             border: none !important;
             outline: none !important;
             box-shadow: none !important;
+            flex-shrink: 1;
         }
 
         #frameCounter {
@@ -305,8 +321,9 @@
             flex-shrink: 0;
         }
 
-        #speedSelect {
-            min-width: 60px;
+        #speedButton {
+            min-width: 28px;
+            padding: 0 5px;
         }
 
         #rightPanelContainer {
@@ -499,28 +516,19 @@
 <body>
     <div id="mainContainer">
 
-        <!-- Left Column -->
-        <div id="viewerColumn">
-            <!-- Canvas -->
+        <!-- Viewer + Play Controls -->
+        <div id="viewerWrapper">
             <div id="canvasContainer">
                 <canvas id="canvas"></canvas>
-                <!-- Resize handle -->
                 <div class="resize-handle"></div>
             </div>
-
-            <!-- Animation Controls -->
             <div id="controlsContainer">
                 <button id="playButton" class="controlButton">▶</button>
                 <button id="recordButton" class="controlButton" title="Record animation to video file">●</button>
                 <input type="range" id="frameSlider" min="0" max="0" value="0">
                 <span id="frameCounter">0 / 0</span>
-                <select id="speedSelect">
-                    <option value="100">1x</option>
-                    <option value="50">2x</option>
-                    <option value="25">4x</option>
-                </select>
-                <button id="overlayButton" class="controlButton btn btn-secondary" title="Overlay all frames"
-                    style="font-weight: 400;">⧉</button>
+                <button id="speedButton" class="controlButton" title="Cycle playback speed">1x</button>
+                <button id="overlayButton" class="controlButton btn btn-secondary" title="Overlay all frames" style="font-weight: 400;">⧉</button>
             </div>
         </div>
 
@@ -533,14 +541,11 @@
         <div id="rightPanelContainer">
             <div class="control-group">
 
-                <!-- Object Selection -->
                 <div class="toggle-item">
                     <select id="objectSelect" style="flex-grow: 1; width: 100%;">
-                        <!-- Populated by JS -->
                     </select>
                 </div>
 
-                <!-- Appearance & Rendering -->
                 <div class="toggle-item">
                     <label for="colorSelect">Color:</label>
                     <select id="colorSelect">
@@ -561,7 +566,6 @@
                     </select>
                 </div>
 
-                <!-- Visual Effects -->
                 <div class="btn-row">
                     <label class="controlButton btn-toggle" title="Toggle shadow">
                         <input type="checkbox" id="shadowEnabledCheckbox">
@@ -573,7 +577,6 @@
                     </label>
                 </div>
 
-                <!-- Sliders -->
                 <div class="toggle-item" style="margin-top: 3px;">
                     <label for="lineWidthSlider">Width:</label>
                     <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
@@ -584,7 +587,6 @@
                     <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
                 </div>
 
-                <!-- Actions -->
                 <div class="btn-row" style="margin-top: 6px;">
                     <label class="controlButton btn-toggle" title="Toggle auto-rotation">
                         <input type="checkbox" id="rotationCheckbox">
@@ -599,39 +601,24 @@
     </div>
     <!-- DATA_INJECTION_POINT -->
 
-    <!-- Infrastructure for py2dmol parent communication (iframe mode) -->
     <script>
-        // Initialize queuing infrastructure once when page loads
-        if (!window.py2dmol_queue) {
-            window.py2dmol_queue = {};
-        }
-        if (!window.py2dmol_ready_flags) {
-            window.py2dmol_ready_flags = {};
-        }
-
-        // Function to send a message from parent to iframe
-        // Called by parent page via kernel execution
+        if (!window.py2dmol_queue) window.py2dmol_queue = {};
+        if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {};
         window.py2dmol_sendMessage = function (viewerId, messageJson) {
-            // Initialize queue for this viewer if needed
             if (!window.py2dmol_queue[viewerId]) {
                 window.py2dmol_queue[viewerId] = [];
             }
-
-            // Check if iframe is ready
             if (window.py2dmol_ready_flags[viewerId]) {
-                // iframe is ready, send message immediately
-                const iframe = document.querySelector(`iframe[data-viewer-id="${viewerId}"]`);
+                const iframe = document.querySelector(`iframe[data-viewer-id=\"${viewerId}\"]`);
                 if (iframe && iframe.contentWindow) {
                     iframe.contentWindow.postMessage(messageJson, '*');
                 } else {
-                    console.error("py2dmol: iframe with viewer_id '" + viewerId + "' not found");
+                    console.error(\"py2dmol: iframe with viewer_id '\" + viewerId + \"' not found\");
                 }
             } else {
-                // iframe not ready yet, queue the message
                 window.py2dmol_queue[viewerId].push(messageJson);
             }
         };
     </script>
 </body>
-
 </html>

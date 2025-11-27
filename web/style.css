@@ -118,6 +118,7 @@
     /* Prevent empty ruleset warning */
 }
 
+
 /* Hide default resize handle for canvasContainer */
 .py2dmol-viewer-instance #canvasContainer::-webkit-resizer {
     display: none;
@@ -347,8 +348,8 @@
 
 .btn-icon-only {
     min-width: 40px;
-    /* Fixed width to prevent resizing when icon changes */
     width: 40px;
+    /* Height inherits from btn/btn-small; width stays fixed for icons */
 }
 
 .btn-min-width-sm {
@@ -816,18 +817,20 @@
    CONTROL GROUPS & CONTAINERS
    ============================================================================ */
 .py2dmol-viewer-instance #controlsContainer {
-    display: flex;
-    flex-wrap: nowrap;
+    display: inline-flex;
     align-items: center;
-    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: fit-content;
+    min-width: 626px;
+    box-sizing: border-box;
     font-family: 'Inter', sans-serif;
     font-size: 14px;
-}
-
-.py2dmol-viewer-instance #controlsContainer.container-box {
-    /* Inherits all container-box styles, padding can be overridden if needed */
+    background: #fff;
+    border: 1px solid var(--color-gray-200);
+    border-radius: var(--radius-lg);
     padding: var(--container-padding) 16px;
-    /* Slightly more horizontal padding for controls */
+    box-shadow: var(--shadow-md);
 }
 
 .py2dmol-viewer-instance #navigationControls.toolbar {

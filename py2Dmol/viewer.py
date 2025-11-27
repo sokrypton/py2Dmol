@@ -19,7 +19,7 @@ from IPython.display import display, HTML, Javascript, update_display
 
 DEFAULT_CONFIG = {
     "display": {
-        "size": [300, 300],
+        "size": [400, 400],
         "rotate": False,
         "autoplay": False,
         "controls": True,
@@ -246,7 +246,7 @@ def _normalize_color(color):
 # --- view Class ---
 
 class view:
-    def __init__(self, size=(300,300), controls=True, box=True,
+    def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True, depth=False,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
         pae=False, pae_size=300, reuse_js=False, overlay=False,
@@ -598,7 +598,7 @@ class view:
 
         # Setup viewer config
         # Inject viewer configuration (nested structure)
-        config_script = f"window.viewerConfig = {json.dumps(self.config)};"
+        config_script = f"<script>window.viewerConfig = {json.dumps(self.config)};</script>"
 
         data_script = ""
 
@@ -1867,6 +1867,7 @@ class view:
             if "contacts" in obj and obj["contacts"]:
                 obj_to_serialize["contacts"] = obj["contacts"]
             if "bonds" in obj and obj["bonds"]:
+                obj_to_serialize["bonds"] = obj["bonds"]
             objects.append(obj_to_serialize)
         
         # Create state object with nested config
@@ -1951,17 +1952,17 @@ class view:
                     )
                 
                 # Restore object-level data
-            if "contacts" in obj_data:
-                self.objects[-1]["contacts"] = obj_data["contacts"]
-            if "bonds" in obj_data:
-                self.objects[-1]["bonds"] = obj_data["bonds"]
-            if "color" in obj_data:
-                self.objects[-1]["color"] = obj_data["color"]
-    
-    # Restore config (v2.0 nested format only)
-    if "config" in state_data:
-        self.config = state_data["config"]
-    
-    # State loaded - user must call show() to display
-    if not self.objects:
-        print("Warning: No objects loaded from state file.")
+                if "contacts" in obj_data:
+                    self.objects[-1]["contacts"] = obj_data["contacts"]
+                if "bonds" in obj_data:
+                    self.objects[-1]["bonds"] = obj_data["bonds"]
+                if "color" in obj_data:
+                    self.objects[-1]["color"] = obj_data["color"]
+        
+        # Restore config (v2.0 nested format only)
+        if "config" in state_data:
+            self.config = state_data["config"]
+        
+        # State loaded - user must call show() to display
+        if not self.objects:
+            print("Warning: No objects loaded from state file.")
