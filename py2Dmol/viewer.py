@@ -1653,7 +1653,7 @@ class view:
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None, ignore_ligands=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -1673,12 +1673,18 @@ class view:
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
             color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
+            ignore_ligands (bool, optional): Deprecated. If provided, overrides load_ligands.
+                                            If True, skips loading ligand atoms (load_ligands=False).
         """
         filepath = self._get_filepath_from_pdb_id(pdb_id)
 
         # Auto-generate name from PDB ID if not provided
         if name is None and len(pdb_id) == 4 and pdb_id.isalnum():
             name = pdb_id.upper()
+
+        # Backward compatibility for ignore_ligands
+        if ignore_ligands is not None:
+            load_ligands = not ignore_ligands
 
         if filepath:
             self.add_pdb(filepath, chains=chains,
