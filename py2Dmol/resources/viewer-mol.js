@@ -3538,14 +3538,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
             const filename = `py2dmol_animation_${this.currentObjectName || 'recording'}_${Date.now()}.webm`;
 
-            // Check if we're in an iframe
-            if (window.self !== window.top) {
-                // In iframe: send video to parent for download
-                this._downloadVideoViaParent(blob, filename);
-            } else {
-                // Not in iframe: download directly
-                this._downloadVideo(blob, filename);
-            }
+            // Download video directly
+            this._downloadVideo(blob, filename);
+
 
             // Clean up all recording state
             this.recordedChunks = [];
@@ -6104,14 +6099,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Get SVG string and download
                 const svgString = svgCtx.getSerializedSvg();
 
-                // Check if we're in an iframe
-                if (window.self !== window.top) {
-                    // In iframe: send SVG to parent for download
-                    this._downloadSvgViaParent(svgString, this.currentObjectName);
-                } else {
-                    // Not in iframe: download directly
-                    this._downloadSvg(svgString, this.currentObjectName);
-                }
+                // Download SVG directly
+                this._downloadSvg(svgString, this.currentObjectName);
+
             } catch (e) {
                 console.error("Failed to export SVG:", e);
                 const errorMsg = `Error exporting SVG: ${e.message}`;
@@ -6132,35 +6122,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return `py2dmol_${name}_${timestamp}.${extension}`;
         }
 
-        // Send SVG to parent for download (iframe mode)
-        _downloadSvgViaParent(svgString, objectName) {
-            const filename = this._generateFilename(objectName, 'svg');
-            window.parent.postMessage({
-                type: 'py2dmol_download_svg',
-                svgData: svgString,
-                filename: filename
-            }, '*');
-        }
-
-        // Send video to parent for download (iframe mode)
-        _downloadVideoViaParent(blob, filename) {
-            const reader = new FileReader();
-            reader.onload = () => {
-                window.parent.postMessage({
-                    type: 'py2dmol_download_video',
-                    videoData: reader.result,
-                    filename: filename
-                }, '*');
-            };
-            reader.readAsDataURL(blob);
-        }
-
-        // Download video directly (non-iframe mode)
+        // Download video directly
         _downloadVideo(blob, filename) {
             this._triggerDownload(blob, filename);
         }
 
-        // Download SVG directly (non-iframe mode)
+        // Download SVG directly
+
         _downloadSvg(svgString, objectName) {
             const filename = this._generateFilename(objectName, 'svg');
             const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });

@@ -528,7 +528,8 @@
                 <input type="range" id="frameSlider" min="0" max="0" value="0">
                 <span id="frameCounter">0 / 0</span>
                 <button id="speedButton" class="controlButton" title="Cycle playback speed">1x</button>
-                <button id="overlayButton" class="controlButton btn btn-secondary" title="Overlay all frames" style="font-weight: 400;">⧉</button>
+                <button id="overlayButton" class="controlButton btn btn-secondary" title="Overlay all frames"
+                    style="font-weight: 400;">⧉</button>
             </div>
         </div>
 
@@ -601,24 +602,6 @@
     </div>
     <!-- DATA_INJECTION_POINT -->
 
-    <script>
-        if (!window.py2dmol_queue) window.py2dmol_queue = {};
-        if (!window.py2dmol_ready_flags) window.py2dmol_ready_flags = {};
-        window.py2dmol_sendMessage = function (viewerId, messageJson) {
-            if (!window.py2dmol_queue[viewerId]) {
-                window.py2dmol_queue[viewerId] = [];
-            }
-            if (window.py2dmol_ready_flags[viewerId]) {
-                const iframe = document.querySelector(`iframe[data-viewer-id=\"${viewerId}\"]`);
-                if (iframe && iframe.contentWindow) {
-                    iframe.contentWindow.postMessage(messageJson, '*');
-                } else {
-                    console.error(\"py2dmol: iframe with viewer_id '\" + viewerId + \"' not found\");
-                }
-            } else {
-                window.py2dmol_queue[viewerId].push(messageJson);
-            }
-        };
-    </script>
 </body>
+
 </html>
