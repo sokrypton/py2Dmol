@@ -2,7 +2,7 @@
 
 **Purpose**: Complete technical documentation for AI systems and developers working with py2Dmol codebase.
 
-**Last Updated**: 2025-11-24
+**Last Updated**: 2025-11-28
 
 ---
 
@@ -76,21 +76,21 @@ graph TB
 ```
 py2Dmol/
 ├── py2Dmol/                     # Python Package
-│   ├── viewer.py                # Main Python interface (1,934 lines)
+│   ├── viewer.py                # Main Python interface (1,971 lines)
 │   └── resources/
-│       ├── viewer.html          # Jupyter widget template (636 lines)
-│       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (6,711 lines)
-│       ├── viewer-pae.js        # PAE matrix visualization (935 lines)
-│       ├── viewer-seq.js        # Sequence viewer (2,256 lines)
+│       ├── viewer.html          # Jupyter widget template (606 lines)
+│       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (6,791 lines)
+│       ├── viewer-pae.js        # PAE matrix visualization (906 lines)
+│       ├── viewer-seq.js        # Sequence viewer (2,257 lines)
 │       └── viewer-msa.js        # MSA viewer (4,702 lines)
 │
 ├── web/                         # Web Application
-│   ├── app.js                   # Web app logic (6,496 lines)
+│   ├── app.js                   # Web app logic (6,485 lines)
 │   ├── utils.js                 # Utilities: parsing, alignment (2,797 lines)
 │   └── style.css                # Global styles
 │
-├── index.html                   # Main web app entry (457 lines)
-├── msa.html                     # Standalone MSA viewer (232 lines)
+├── index.html                   # Main web app entry (450 lines)
+├── msa.html                     # Standalone MSA viewer (231 lines)
 └── README.md                    # User documentation
 ```
 
@@ -130,7 +130,7 @@ Every major file has an AI-friendly header:
 
 ```python
 def __init__(self,
-    size=(300,300),           # Canvas size (width, height)
+    size=(400,400),           # Canvas size (width, height)
     controls=True,            # Show control UI
     box=True,                 # Show bounding box
     color="auto",             # Color mode
@@ -232,7 +232,8 @@ def from_pdb(self,
     biounit_name="1",
     load_ligands=True,
     contacts=None,
-    color=None
+    color=None,
+    ignore_ligands=None       # Deprecated parameter (backward compat)
 ):
 ```
 
@@ -293,47 +294,72 @@ window.viewerApi = null;              // Reference to main renderer API
 
 #### Pseudo3DRenderer Class
 
-**Core Methods**:
-- `constructor(canvas, config)` - Initialize renderer
-- `addObject(name, frames, metadata)` - Add object with frames
-- `setFrame(frameIndex)` - Switch frame
-- `setColorMode(mode)` - Change color scheme
-- `render()` - Main render loop
-- `handlePythonUpdate(payload, objectName)` - Process live updates
-- `handlePythonNewObject(name)` - Create empty object
-- `handlePythonSetObjectColor(colorData, name)` - Update object color
+**Class Methods**:
+- `constructor(canvas)` - Initialize renderer (reads config from `window.viewerConfig`)
+- `addObject(name)` - Create empty object
+- `addFrame(data, objectName)` - Add frame to object
+- `setFrame(frameIndex, skipRender)` - Switch frame
+- `render(reason)` - Main render loop
+
+**Public API** (exposed via `window.py2dmol_viewers[viewer_id]`):
+
+The viewer exposes an API object containing:
+- `handlePythonUpdate` - Process live frame updates from Python
+- `handlePythonNewObject` - Handle new object creation from Python
+- `handlePythonSetObjectColor` - Update object color from Python
+- `handlePythonSetColor` - Update global color mode from Python
+- `handlePythonSetViewTransform` - Update rotation/center from Python
+- `handlePythonClearAll` - Clear all objects from Python
+- `handlePythonResetAll` - Reset viewer state from Python
+- `renderer` - Reference to the Pseudo3DRenderer instance
 
 **Per-Object State** (stored in `this.objectsData[name].viewerState`):
 ```javascript
 {
-    rotationMatrix: [[...], [...], [...]],  // 3x3 rotation matrix
-    center: [x, y, z],                      // Rotation center
-    zoom: 1.0,                              // Zoom level
-    currentFrame: 0                         // Active frame index
+    rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],  // 3x3 rotation matrix
+    zoom: 1.0,                                     // Zoom level
+    perspectiveEnabled: false,                     // Enable/disable perspective projection
+    focalLength: 200.0,                            // Focal length for perspective
+    center: null,                                  // Rotation center (computed)
+    extent: null,                                  // Object extent (computed)
+    currentFrame: -1                               // Active frame index (-1 = none)
 }
 ```
 
 #### Rendering Pipeline
 
+The `render()` method (viewer-mol.js:5032) follows this high-level flow:
+
 ```javascript
-// 1. Project 3D → 2D
-for (atom in atoms) {
-    screenPos = projectPosition(atom.coords, rotationMatrix, zoom, ortho)
-}
+// 1. Apply rotation matrix to all coordinates
+rotatedCoords = coords.map(c => applyRotation(c, viewerState.rotation))
 
-// 2. Build segments (bonds)
-segments = buildSegments(atoms, bonds, colors)
+// 2. Project 3D coordinates to 2D screen space
+//    Uses inline projectPosition function with orthographic/perspective blend
+for each position:
+    screen[i] = project(rotatedCoords[i], zoom, ortho, focalLength)
 
-// 3. Depth sort
+// 3. Build segment array from bonds/contacts
+//    Each segment stores: idx1, idx2, depth, color, type
+for each bond:
+    segment = {idx1, idx2, depth: avgZ, color, positionType}
+    segments.push(segment)
+
+// 4. Depth sort (painter's algorithm)
 segments.sort((a, b) => a.depth - b.depth)
 
-// 4. Cull (grid-based, keep top segments per cell)
-visibleSegments = cullSegments(segments, gridSize)
+// 5. Grid-based culling (optional, for large molecules)
+//    Keeps top N segments per 2D grid cell for performance
+if (positions > LARGE_MOLECULE_CUTOFF):
+    segments = cullByGrid(segments)
 
-// 5. Draw to canvas
-for (seg of visibleSegments) {
-    drawSegment(ctx, seg, shadow, outline, width)
-}
+// 6. Draw in two passes: outline then main
+for each segment:
+    if (outline): drawLine(ctx, thicker, darker)
+    drawLine(ctx, thinner, color)
+
+// 7. Apply shadows (grid-based shadow map)
+//    Darkens segments below the max Z in their grid cell
 ```
 
 ### Web App: `app.js`
@@ -603,15 +629,27 @@ function resolveColor(position, chain, frame, object, global) {
 
 ### JavaScript: `viewer-mol.js`
 
+**Pseudo3DRenderer Class Methods:**
+
 | Method | Purpose | Parameters |
 |--------|---------|------------|
-| `Pseudo3DRenderer(canvas, config)` | Constructor | Canvas element, config object |
-| `addObject(name, frames, metadata)` | Add object | Name, frame array, metadata |
-| `setFrame(index)` | Switch frame | Frame index |
-| `setColorMode(mode)` | Change colors | Color mode string |
-| `render()` | Main render | None |
-| `handlePythonUpdate(payload, name)` | Process update | Payload JSON, object name |
-| `projectPosition(coords, rotation, zoom, ortho)` | 3D → 2D | Coords, matrices, zoom |
+| `constructor(canvas)` | Initialize renderer | Canvas element (reads config from window.viewerConfig) |
+| `addObject(name)` | Create empty object | Object name |
+| `addFrame(data, objectName)` | Add frame to object | Frame data, object name |
+| `setFrame(index, skipRender)` | Switch frame | Frame index, skip render flag |
+| `render(reason)` | Main render loop | Reason string (for debugging) |
+
+**Exposed API Functions** (via `window.py2dmol_viewers[viewer_id]`):
+
+| Function | Purpose | Parameters |
+|----------|---------|------------|
+| `handlePythonUpdate(payload, name)` | Process live update from Python | Payload JSON, object name |
+| `handlePythonNewObject(name)` | Create new object from Python | Object name |
+| `handlePythonSetObjectColor(colorData, name)` | Update object color | Color data, object name |
+| `handlePythonSetColor(colorMode)` | Update global color mode | Color mode string |
+| `handlePythonSetViewTransform(data)` | Update rotation/center | Transform data |
+| `handlePythonClearAll()` | Clear all objects | None |
+| `handlePythonResetAll()` | Reset viewer state | None |
 
 ### JavaScript: `utils.js`
 
@@ -659,7 +697,7 @@ function resolveColor(position, chain, frame, object, global) {
 ```python
 DEFAULT_CONFIG = {
     "display": {
-        "size": [300, 300],
+        "size": [400, 400],
         "rotate": False,
         "autoplay": False,
         "controls": True,
@@ -703,16 +741,15 @@ DEFAULT_CONFIG = {
 
 ## Constants & Thresholds
 
-### Distance Thresholds (for auto-bonding)
+### Distance Thresholds (for chain break detection)
 
-```python
-BOND_CUTOFFS = {
-    'PP': 5.0,    # Protein CA-CA
-    'DD': 7.5,    # DNA C4'-C4'
-    'RR': 7.5,    # RNA C4'-C4'
-    'LL': 2.0     # Ligand all-atom
-}
+**JavaScript** (`web/utils.js`):
+```javascript
+const PROTEIN_CHAINBREAK = 5.0;   // CA-CA distance threshold
+const NUCLEIC_CHAINBREAK = 7.5;   // C4'-C4' distance threshold
 ```
+
+**Python**: Default distance-based bonding uses 2.0 Å cutoff (mentioned in `viewer.py:1464`)
 
 ### Position Types
 
@@ -725,15 +762,25 @@ BOND_CUTOFFS = {
 
 ### Color Palettes
 
-**Chain Colors** (default):
+**Chain Colors** (`viewer-mol.js:253` - PyMOL palette):
 ```javascript
-const CHAIN_COLORS = [
-    [0,   158, 115],  // Teal
-    [230, 159, 0  ],  // Orange
-    [86,  180, 233],  // Sky blue
-    [240, 228, 66 ],  // Yellow
-    // ... more colors
-]
+const pymolColors = [
+    "#33ff33",  // Green
+    "#00ffff",  // Cyan
+    "#ff33cc",  // Magenta
+    "#ffff00",  // Yellow
+    "#ff9999",  // Light red
+    // ... 35 more colors
+];
+```
+
+**Colorblind-Safe Palette** (`viewer-mol.js:254`):
+```javascript
+const colorblindSafeChainColors = [
+    "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
+    "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
+    // ... 20 more colors
+];
 ```
 
 **pLDDT Color Scale**:
@@ -845,9 +892,22 @@ const CHAIN_COLORS = [
 
 ## Version History
 
-**Current**: Latest development version (2025-11-24)
+**Current**: Latest development version (2025-11-28)
 
-### Recent Changes
+### Recent Changes (2025-11-28)
+
+- ✅ Updated all file line counts to match current codebase
+- ✅ Fixed default canvas size from (300,300) to (400,400)
+- ✅ Corrected Pseudo3DRenderer constructor signature (only takes canvas)
+- ✅ Clarified API structure: class methods vs exposed API functions
+- ✅ Fixed viewerState structure (rotation not rotationMatrix, added missing fields)
+- ✅ Updated BOND_CUTOFFS to actual implementation (PROTEIN_CHAINBREAK, NUCLEIC_CHAINBREAK)
+- ✅ Fixed chain color constants (pymolColors hex strings, not RGB tuples)
+- ✅ Added missing `ignore_ligands` parameter to `from_pdb` documentation
+- ✅ Improved rendering pipeline code example for accuracy
+- ✅ Added complete API function reference with all exposed methods
+
+### Previous Changes (2025-11-24)
 
 - ✅ Fixed overlay parameter name inconsistency
 - ✅ Removed `new_obj` parameter (auto-creation via `name`)
