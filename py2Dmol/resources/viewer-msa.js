@@ -561,7 +561,7 @@
     // CONSTANTS
     // ============================================================================
 
-    const MIN_CANVAS_WIDTH = 948;
+    const MIN_CANVAS_WIDTH = 974;
     const DEFAULT_COVERAGE_HEIGHT = 420;
 
     // ============================================================================
@@ -1125,13 +1125,13 @@
         if (canvasContainer) {
             const cr = canvasContainer.getBoundingClientRect();
             const padding = 12; // var(--container-padding)
-            const width = Math.max(1, Math.floor(cr.width - (padding * 2)) || 948);
+            const width = Math.max(1, Math.floor(cr.width - (padding * 2)) || MIN_CANVAS_WIDTH);
             const height = Math.max(1, Math.floor(cr.height - (padding * 2)) || 420);
             return { width, height };
         }
 
         // Fallback: default dimensions
-        return { width: 948, height: 420 };
+        return { width: MIN_CANVAS_WIDTH, height: 420 };
     }
 
     // Helper specifically for coverage mode: measure available width next to header
@@ -2911,7 +2911,7 @@
         let { canvasWidth, canvasHeight } = dimensions;
         if (canvasWidth <= 0 || canvasHeight <= 0) {
             const fb = fallback || getContainerDimensions();
-            canvasWidth = Math.max(1, fb.width || 948);
+            canvasWidth = Math.max(1, fb.width || MIN_CANVAS_WIDTH);
             canvasHeight = Math.max(1, fb.height || 450);
             dimensions.canvasWidth = canvasWidth;
             dimensions.canvasHeight = canvasHeight;
@@ -3069,8 +3069,8 @@
             }
         });
 
-        // Create canvas container - ensure minimum width of 948px (default from CSS)
-        const minWidth = 948;
+        // Create canvas container - ensure minimum width of 974px (default from CSS)
+        const minWidth = MIN_CANVAS_WIDTH;
         const finalWidth = clampMin(canvasWidth > 0 ? canvasWidth : minWidth, minWidth);
         const container = createCanvasContainer(finalWidth, canvasHeight);
         if (mode) {
@@ -3136,6 +3136,16 @@
                                 const numSequences = canvasData.numSequences || canvasData.sequencesWithIdentity.length;
                                 const availableHeatmapHeight = height - COVERAGE_LINE_HEIGHT - TICK_ROW_HEIGHT_COVERAGE;
                                 canvasData.sequenceRowHeight = Math.max(0.5, availableHeatmapHeight / numSequences);
+                            }
+
+                            // Invalidate cached scroll extents and clamp to new bounds
+                            if (activeInteractionManager) {
+                                activeInteractionManager._invalidateCache();
+                            }
+                            const charWidth = getCharWidthForMode(mode);
+                            if (mode !== 'coverage') {
+                                clampScrollLeft(width, charWidth);
+                                clampScrollTop(height);
                             }
 
                             // Re-render the canvas

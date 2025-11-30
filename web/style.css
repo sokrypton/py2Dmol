@@ -1317,8 +1317,8 @@ table.layout-table td {
     overflow: hidden;
     min-width: 200px;
     min-height: 200px;
-    width: 948px;
-    /* Default starting width */
+    width: 974px;
+    /* Default starting width (match main layout width) */
     margin-top: var(--container-gap);
     background: #ffffff;
     border: 1px solid var(--color-gray-200);
