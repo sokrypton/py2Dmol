@@ -12,6 +12,7 @@ import json
 import numpy as np
 import re
 from IPython.display import display, HTML, Javascript, update_display
+from IPython import get_ipython
     
 # ============================================================================
 # CONFIG DEFAULTS - Single source of truth
@@ -83,6 +84,11 @@ import gemmi
 import uuid
 import os
 import urllib.request
+
+# Track JS injection per cell (execution count) to avoid duplicate script blobs in the same output
+_JS_INJECTED_CELLS = {}
+def _get_cell_id():
+    return getattr(get_ipython(), "execution_count")
 
 def kabsch(a, b, return_v=False):
   """Computes the optimal rotation matrix for aligning a to b."""
@@ -247,7 +253,7 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, reuse_js=False, overlay=False,
+        pae=False, pae_size=300, overlay=False, reuse_js=False,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -283,7 +289,6 @@ class view:
         self.objects = []                 # Store all data
         self._current_object_data = None  # List to hold frames for current object
         self._is_live = False             # True if .show() was called *before* .add()
-        self._reuse_js = reuse_js
         self._data_display_id = None      # For updating data cell only (not viewer)
 
         # --- Alignment/Dynamic State ---
@@ -578,21 +583,6 @@ class view:
 
         viewer_id = self.config["viewer_id"]
 
-        # Load JavaScript files once for all modes
-        js_content = ""
-        if not self._reuse_js:
-            with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
-                js_content = f.read()
-
-            # Conditionally load PAE module if enabled
-            if self.config["pae"]["enabled"]:
-                try:
-                    with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
-                        pae_js_content = f.read()
-                    js_content = f"<script>{pae_js_content}</script>\n" + js_content
-                except FileNotFoundError:
-                    pass
-
         # Setup viewer config
         # Inject viewer configuration (nested structure)
         config_script = f"<script>window.viewerConfig = {json.dumps(self.config)};</script>"
@@ -755,21 +745,22 @@ class view:
             }})();
         </script>
         """
-        # Load JS in parent page context if not reusing from previous viewer
-        if not self._reuse_js:
-            # Load JS for div mode (parent page context)
-            with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
-                js_content_parent = f.read()
-            container_html = f"<script>{js_content_parent}</script>\n" + container_html
+        # Decide whether to inject JS based on cell_id (avoid duplicate blobs in the same cell)
+        cell_id = _get_cell_id()        
+        if cell_id not in _JS_INJECTED_CELLS:
+            _JS_INJECTED_CELLS[cell_id] = {"mol":False, "pae":False}
 
-            # Conditionally load PAE module if enabled
-            if self.config["pae"]["enabled"]:
-                try:
-                    with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
-                        pae_js_content = f.read()
-                    container_html = f"<script>{pae_js_content}</script>\n" + container_html
-                except FileNotFoundError:
-                    pass
+        if not _JS_INJECTED_CELLS[cell_id]["mol"]:
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
+                js_content = f.read()
+            container_html = f"<script>{js_content}</script>\n" + container_html
+            _JS_INJECTED_CELLS[cell_id]["mol"] = True
+
+        if self.config["pae"]["enabled"] and not _JS_INJECTED_CELLS[cell_id]["pae"]:
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
+                js_content = f.read()
+            container_html = f"<script>{js_content}</script>\n" + container_html
+            _JS_INJECTED_CELLS[cell_id]["pae"] = True
 
         return container_html
 
