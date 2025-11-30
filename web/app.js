@@ -16,7 +16,7 @@
 // ============================================================================
 
 let viewerApi = null;
-let batchedObjects = [];
+let pendingObjects = [];
 
 // Helper function to check if PAE data is valid
 function isValidPAE(pae) {
@@ -717,13 +717,13 @@ function handleObjectChange() {
     // Each object maintains its own selection state that is saved/restored automatically
     // No need to reset here - the renderer handles it
 
-    // Sync MSA data from batchedObjects to renderer's objectsData if needed
+    // Sync MSA data from pendingObjects to renderer's objectsData if needed
     // This ensures MSA data is available even if it was added after initial load
     if (viewerApi?.renderer) {
-        const batchedObj = batchedObjects.find(obj => obj.name === selectedObject);
+        const pendingObj = pendingObjects.find(obj => obj.name === selectedObject);
         const rendererObj = viewerApi.renderer.objectsData[selectedObject];
-        if (batchedObj && batchedObj.msa && rendererObj && !rendererObj.msa) {
-            rendererObj.msa = batchedObj.msa;
+        if (pendingObj && pendingObj.msa && rendererObj && !rendererObj.msa) {
+            rendererObj.msa = pendingObj.msa;
         }
     }
 
@@ -1544,7 +1544,7 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
     return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
 }
 
-function processStructureToTempBatch(text, name, paeData, targetObjectName, tempBatch) {
+function buildPendingObject(text, name, paeData, targetObjectName, tempBatch) {
     let models;
     let modresMap = null;
     let chemCompMap = null;
@@ -1613,30 +1613,20 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
     const isLoadAsFrames = loadAsFramesCheckbox ? loadAsFramesCheckbox.checked : false;
     const shouldAlign = alignFramesCheckbox ? alignFramesCheckbox.checked : false;
 
-    // Check if object with same name already exists in tempBatch or batchedObjects
-    // If it exists, replace it instead of creating a duplicate
-
-    let targetObject = tempBatch.find(obj => obj.name === targetObjectName) || null;
-    if (!targetObject) {
-        // Also check in existing batchedObjects
-        const existingIndex = batchedObjects.findIndex(obj => obj.name === targetObjectName);
-        if (existingIndex >= 0) {
-            // If loading as frames, we want to add to existing object, not replace
-            // If not loading as frames, remove existing object to replace with new data
-            if (!isLoadAsFrames) {
-                batchedObjects.splice(existingIndex, 1);
-            }
-        }
-        targetObject = { name: targetObjectName, frames: [] };
-        tempBatch.push(targetObject);
-    } else {
-        // Object already exists in tempBatch
-        // Only clear frames if we're NOT loading as frames (i.e., replacing, not adding)
-        if (!isLoadAsFrames) {
-            targetObject.frames = [];
-        }
-        // If loading as frames, keep existing frames and append new ones
+    // Check if object with same name already exists in tempBatch or pendingObjects
+    // Always replace the old one to avoid mixing data across uploads
+    const existingTempIndex = tempBatch.findIndex(obj => obj.name === targetObjectName);
+    if (existingTempIndex >= 0) {
+        tempBatch.splice(existingTempIndex, 1);
     }
+
+    const existingGlobalIndex = pendingObjects.findIndex(obj => obj.name === targetObjectName);
+    if (existingGlobalIndex >= 0) {
+        pendingObjects.splice(existingGlobalIndex, 1);
+    }
+
+    let targetObject = { name: targetObjectName, frames: [] };
+    tempBatch.push(targetObject);
 
     const isTrajectory = (loadAsFramesCheckbox.checked ||
         targetObject.frames.length > 0 ||
@@ -2095,13 +2085,13 @@ function processStructureToTempBatch(text, name, paeData, targetObjectName, temp
     return framesAdded;
 }
 
-function updateViewerFromGlobalBatch() {
+function applyPendingObjects() {
     const viewerContainer = document.getElementById('viewer-container');
     const topPanelContainer = document.getElementById('sequence-viewer-container');
     const objectSelect = document.getElementById('objectSelect');
     const r = viewerApi?.renderer;
 
-    if (!viewerApi || batchedObjects.length === 0) {
+    if (!viewerApi || pendingObjects.length === 0) {
         if (viewerContainer) viewerContainer.style.display = 'none';
         setStatus("Ready. Upload a file or fetch an ID.");
         return;
@@ -2117,56 +2107,30 @@ function updateViewerFromGlobalBatch() {
 
     if (r) r._batchLoading = true;
 
-    for (const obj of batchedObjects) {
+    for (const obj of pendingObjects) {
         if (!obj || !obj.frames || obj.frames.length === 0) continue;
 
-        if (!existing.has(obj.name)) {
-            // New object: create and feed frames
-            viewerApi.handlePythonNewObject(obj.name);
-            newNames.push(obj.name);
-            for (const frame of obj.frames) {
-                viewerApi.handlePythonUpdate(frame, obj.name);
+        // Always replace objects with the same name to avoid mixing data
+        if (existing.has(obj.name)) {
+            if (r.objectSelect) {
+                const option = r.objectSelect.querySelector(`option[value="${obj.name}"]`);
+                if (option) option.remove();
             }
-        } else {
-            // Existing object: determine if we're replacing or appending
-            const have = r.objectsData[obj.name]?.frames?.length || 0;
-            const want = obj.frames.length;
-
-            // If we're adding frames beyond what exists, append them
-            // Otherwise, replace the entire object (e.g., when fetching same PDB)
-            if (want > have) {
-                // Appending frames to existing object
-                for (let i = have; i < want; i++) {
-                    viewerApi.handlePythonUpdate(obj.frames[i], obj.name);
-                }
-            } else {
-                // Replacing existing object: clear everything and recreate
-                // This handles the case when fetching a PDB with the same name
-                // Remove from dropdown first
-                if (r.objectSelect) {
-                    const option = r.objectSelect.querySelector(`option[value="${obj.name}"]`);
-                    if (option) option.remove();
-                }
-                if (objectSelect) {
-                    const option = objectSelect.querySelector(`option[value="${obj.name}"]`);
-                    if (option) option.remove();
-                }
-
-                // Delete the object completely (this clears frames, selection, MSA, sequence, etc.)
-                if (r.objectsData[obj.name]) {
-                    delete r.objectsData[obj.name];
-                }
-
-                // Remove from existing set so it's treated as new
-                existing.delete(obj.name);
-
-                // Recreate as new object
-                viewerApi.handlePythonNewObject(obj.name);
-                newNames.push(obj.name);
-                for (const frame of obj.frames) {
-                    viewerApi.handlePythonUpdate(frame, obj.name);
-                }
+            if (objectSelect) {
+                const option = objectSelect.querySelector(`option[value="${obj.name}"]`);
+                if (option) option.remove();
             }
+            if (r.objectsData[obj.name]) {
+                delete r.objectsData[obj.name];
+            }
+            existing.delete(obj.name);
+        }
+
+        // Create and feed frames (new or replaced)
+        viewerApi.handlePythonNewObject(obj.name);
+        newNames.push(obj.name);
+        for (const frame of obj.frames) {
+            viewerApi.handlePythonUpdate(frame, obj.name);
         }
 
         // Set MSA data (replacing any existing MSA)
@@ -2187,7 +2151,7 @@ function updateViewerFromGlobalBatch() {
         }
     }
 
-    if (batchedObjects.length > 0) {
+    if (pendingObjects.length > 0) {
         // Ensure canvas dimensions are set before showing container to prevent ResizeObserver render
         const canvasContainer = viewerContainer?.querySelector('#canvasContainer');
         const canvas = viewerContainer?.querySelector('#canvas');
@@ -2500,7 +2464,7 @@ function hideAllResidues() {
 
 function clearAllObjects() {
     // Clear all batched objects
-    batchedObjects = [];
+    pendingObjects = [];
 
     // Clear PAE tracking
 
@@ -3638,7 +3602,7 @@ async function handleFetch() {
             }
         }
 
-        const framesAdded = processStructureToTempBatch(
+        const framesAdded = buildPendingObject(
             structText,
             name,
             paeData,
@@ -3646,8 +3610,8 @@ async function handleFetch() {
             tempBatch
         );
 
-        batchedObjects.push(...tempBatch);
-        updateViewerFromGlobalBatch();
+        pendingObjects.push(...tempBatch);
+        applyPendingObjects();
 
         // Auto-download MSA for PDB structures (only if Load MSA is enabled)
         if (isPDB && window.MSAViewer && loadMSA) {
@@ -3785,10 +3749,10 @@ async function handleFetch() {
                                             const { msaData: matchedMSA } = msaObj.msasBySequence[defaultChainSeq];
                                             const firstMatchedChain = msaObj.defaultChain;
 
-                                            // Also add MSA to batchedObjects for consistency and persistence
-                                            const batchedObj = batchedObjects.find(obj => obj.name === objectName);
-                                            if (batchedObj) {
-                                                batchedObj.msa = {
+                                            // Also add MSA to pendingObjects for consistency and persistence
+                                            const pendingObj = pendingObjects.find(obj => obj.name === objectName);
+                                            if (pendingObj) {
+                                                pendingObj.msa = {
                                                     msasBySequence: msaObj.msasBySequence,
                                                     chainToSequence: msaObj.chainToSequence,
                                                     availableChains: msaObj.availableChains,
@@ -3903,10 +3867,10 @@ async function handleFetch() {
 
                                                 // MSA properties (frequencies, logOdds) are computed when MSA is loaded
 
-                                                // Also add MSA to batchedObjects for consistency and persistence
-                                                const batchedObj = batchedObjects.find(obj => obj.name === objectName);
-                                                if (batchedObj) {
-                                                    batchedObj.msa = {
+                                                // Also add MSA to pendingObjects for consistency and persistence
+                                                const pendingObj = pendingObjects.find(obj => obj.name === objectName);
+                                                if (pendingObj) {
+                                                    pendingObj.msa = {
                                                         msasBySequence: msaObj.msasBySequence,
                                                         chainToSequence: msaObj.chainToSequence,
                                                         availableChains: msaObj.availableChains,
@@ -5267,7 +5231,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 (groupName || cleanObjectName(structureFiles[0].name)) :
                 baseName;
 
-            const framesAdded = processStructureToTempBatch(
+            const framesAdded = buildPendingObject(
                 text,
                 file.name,
                 paeData,
@@ -5311,7 +5275,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                         lastObject.contacts = contacts;
                     }
 
-                    // Note: Cache will be invalidated when updateViewerFromGlobalBatch() processes the object
+                    // Note: Cache will be invalidated when applyPendingObjects() processes the object
                 }
             } catch (e) {
                 setStatus(`Error processing contacts file ${contactFile.name}: ${e.message}`, true);
@@ -5319,8 +5283,8 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         }
     }
 
-    if (tempBatch.length > 0) batchedObjects.push(...tempBatch);
-    updateViewerFromGlobalBatch();
+    if (tempBatch.length > 0) pendingObjects.push(...tempBatch);
+    applyPendingObjects();
 
     // Process MSA files AFTER structures are loaded (only if Load MSA is enabled)
     if (msaFilesToProcess.length > 0 && loadMSA) {
@@ -6482,4 +6446,3 @@ async function loadViewerState(stateData) {
 
 // Expose saveViewerState globally for Python interface compatibility
 window.saveViewerState = saveViewerState;
-
