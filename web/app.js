@@ -3461,6 +3461,8 @@ function initializeMSAViewerIndex() {
 
         if (hasMSA && msaToLoad && window.MSAViewer) {
             // Show container and view
+            // Clear any existing MSA viewer state/DOM to avoid stale canvases or modes
+            clearMSAViewerState();
             msaContainer.style.display = 'block';
 
             // Force a layout recalculation to ensure container dimensions are available
