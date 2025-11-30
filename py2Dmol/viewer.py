@@ -247,7 +247,7 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, overlay=False,
+        pae=False, pae_size=300, reuse_js=False, overlay=False,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -283,6 +283,7 @@ class view:
         self.objects = []                 # Store all data
         self._current_object_data = None  # List to hold frames for current object
         self._is_live = False             # True if .show() was called *before* .add()
+        self._reuse_js = reuse_js
         self._data_display_id = None      # For updating data cell only (not viewer)
 
         # --- Alignment/Dynamic State ---
@@ -448,115 +449,118 @@ class view:
             js_code_inner = f"window.py2dmol_viewers['{viewer_id}'].handlePythonSetViewTransform({rotation_js_literal}, {center_js_literal}, '{name}');"
 
         if js_code_inner:
-            # Always update the data cell with full state plus the current message.
-            if self._data_display_id is None:
-                self._data_display_id = f"py2dmol_data_{viewer_id}"
-                display(HTML(""), display_id=self._data_display_id)
+            # Only handle frame updates via data display
+            # Other messages are sent directly
+            if msg_type == "py2DmolUpdate":
+                # For frame updates in live mode, send all objects with smart frame loading
+                # This handles multi-object scenarios by syncing all objects at once
+                if self.objects:
+                    # Create or update the data display cell with ALL objects
+                    if self._data_display_id is None:
+                        self._data_display_id = f"py2dmol_data_{viewer_id}"
+                        display(HTML(""), display_id=self._data_display_id)
 
-            all_objects_data = {}
-            all_objects_metadata = {}
-            for obj in self.objects:
-                obj_name = obj.get("name", "")
-                frames = obj.get("frames", [])
-                if obj_name:
-                    all_objects_data[obj_name] = frames
-                    metadata = {}
-                    if obj.get("color") is not None:
-                        metadata["color"] = obj["color"]
-                    if obj.get("contacts") is not None:
-                        metadata["contacts"] = obj["contacts"]
-                    if obj.get("bonds") is not None:
-                        metadata["bonds"] = obj["bonds"]
-                    if metadata:
-                        all_objects_metadata[obj_name] = metadata
+                    # Build a dict of all objects with their frames and metadata
+                    all_objects_data = {}
+                    all_objects_metadata = {}
+                    for obj in self.objects:
+                        obj_name = obj.get("name", "")
+                        frames = obj.get("frames", [])
+                        # Include all objects, even with no frames (they may get frames later)
+                        if obj_name:
+                            all_objects_data[obj_name] = frames
 
-            full_state_js = f"""
-            (function() {{
-                window.py2dmolIframeId = window.py2dmolIframeId || Math.random().toString(36).slice(2);
-                const viewerId = "{viewer_id}";
-                const msg = {json.dumps(message_dict)};
-                msg._sender = window.py2dmolIframeId;
-                const allObjectsData = {json.dumps(all_objects_data)};
-                const allObjectsMetadata = {json.dumps(all_objects_metadata)};
-                if (window.py2dmol_viewers && window.py2dmol_viewers[viewerId]) {{
-                    const viewer = window.py2dmol_viewers[viewerId];
+                            # Collect object-level metadata for persistence on refresh
+                            metadata = {}
+                            if obj.get("color") is not None:
+                                metadata["color"] = obj["color"]
+                            if obj.get("contacts") is not None:
+                                metadata["contacts"] = obj["contacts"]
+                            if obj.get("bonds") is not None:
+                                metadata["bonds"] = obj["bonds"]
+                            if metadata:
+                                all_objects_metadata[obj_name] = metadata
 
-                    // Ensure all objects exist
-                    for (const objectName of Object.keys(allObjectsData)) {{
-                        if (!viewer.renderer.objectsData[objectName]) {{
-                            viewer.handlePythonNewObject(objectName);
-                        }}
-                    }}
+                    if all_objects_data:
+                        # Update data cell with comprehensive multi-object frame loading
+                        # JavaScript iterates through all objects and only adds missing frames to each
+                        all_frames_js = f"""
+                        (function() {{
+                            if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
+                                const viewer = window.py2dmol_viewers['{viewer_id}'];
+                                const allObjectsData = {json.dumps(all_objects_data)};
+                                const allObjectsMetadata = {json.dumps(all_objects_metadata)};
 
-                    // Add any missing frames per object
-                    for (const [objectName, frames] of Object.entries(allObjectsData)) {{
-                        if (!frames || frames.length === 0) {{
-                            continue;
-                        }}
-                        const obj = viewer.renderer.objectsData[objectName];
-                        const currentFrameCount = obj ? obj.frames.length : 0;
-                        for (let i = currentFrameCount; i < frames.length; i++) {{
-                            try {{
-                                viewer.handlePythonUpdate(JSON.stringify(frames[i]), objectName);
-                            }} catch (e) {{
-                                console.error(`Error adding frame to '${{objectName}}'`, e);
+                                // First pass: ensure all objects exist
+                                for (const objectName of Object.keys(allObjectsData)) {{
+                                    if (!viewer.renderer.objectsData[objectName]) {{
+                                        viewer.handlePythonNewObject(objectName);
+                                    }}
+                                }}
+
+                                // Second pass: add frames to each object
+                                for (const [objectName, frames] of Object.entries(allObjectsData)) {{
+                                    if (!frames || frames.length === 0) {{
+                                        continue;
+                                    }}
+
+                                    const obj = viewer.renderer.objectsData[objectName];
+                                    const currentFrameCount = obj ? obj.frames.length : 0;
+
+                                    // Only add frames beyond what already exists
+                                    for (let i = currentFrameCount; i < frames.length; i++) {{
+                                        try {{
+                                            viewer.handlePythonUpdate(JSON.stringify(frames[i]), objectName);
+                                        }} catch (e) {{
+                                            console.error(`Error adding frame to '${{objectName}}'`, e);
+                                        }}
+                                    }}
+                                }}
+
+                                // Third pass: apply object-level metadata (colors, contacts, bonds)
+                                let metadataApplied = false;
+                                for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {{
+                                    const obj = viewer.renderer.objectsData[objectName];
+                                    if (obj) {{
+                                        if (metadata.color) {{
+                                            obj.color = metadata.color;
+                                            metadataApplied = true;
+                                        }}
+                                        if (metadata.contacts) {{
+                                            obj.contacts = metadata.contacts;
+                                            metadataApplied = true;
+                                        }}
+                                        if (metadata.bonds) {{
+                                            obj.bonds = metadata.bonds;
+                                            metadataApplied = true;
+                                        }}
+                                    }}
+                                }}
+
+                                // Re-render if metadata was applied
+                                if (metadataApplied) {{
+                                    viewer.renderer.cachedSegmentIndices = null;
+                                    viewer.renderer.cachedSegmentIndicesFrame = -1;
+                                    viewer.renderer.cachedSegmentIndicesObjectName = null;
+                                    // Call setFrame to regenerate segments with new metadata (contacts, bonds, colors)
+                                    viewer.renderer.setFrame(viewer.renderer.currentFrame);
+                                }}
                             }}
-                        }}
+                        }})();
+                        """
+                        update_display(HTML(f'<script>{all_frames_js}</script>'), display_id=self._data_display_id)
+            else:
+                # For non-frame messages, execute directly
+                js_code = f"""
+                (function() {{
+                    if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
+                        {js_code_inner}
+                    }} else {{
+                        console.error("py2dmol: Viewer '{viewer_id}' not found.");
                     }}
-
-                    // Apply object-level metadata (colors, contacts, bonds)
-                    let metadataApplied = false;
-                    for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {{
-                        const obj = viewer.renderer.objectsData[objectName];
-                        if (obj) {{
-                            if (metadata.color) {{
-                                obj.color = metadata.color;
-                                metadataApplied = true;
-                            }}
-                            if (metadata.contacts) {{
-                                obj.contacts = metadata.contacts;
-                                metadataApplied = true;
-                            }}
-                            if (metadata.bonds) {{
-                                obj.bonds = metadata.bonds;
-                                metadataApplied = true;
-                            }}
-                        }}
-                    }}
-                    if (metadataApplied) {{
-                        viewer.renderer.cachedSegmentIndices = null;
-                        viewer.renderer.cachedSegmentIndicesFrame = -1;
-                        viewer.renderer.cachedSegmentIndicesObjectName = null;
-                        viewer.renderer.setFrame(viewer.renderer.currentFrame);
-                    }}
-
-                    // Apply non-frame messages
-                    if (msg.type === "py2DmolSetColor") {{
-                        viewer.handlePythonSetColor(msg.color || "auto");
-                    }} else if (msg.type === "py2DmolSetObjectColor") {{
-                        viewer.handlePythonSetObjectColor(JSON.stringify(msg.color || {{}}), msg.name || "");
-                    }} else if (msg.type === "py2DmolSetViewTransform") {{
-                        viewer.handlePythonSetViewTransform(JSON.stringify(msg.rotation || []), JSON.stringify(msg.center || []), msg.name || "");
-                    }} else if (msg.type === "py2DmolNewObject") {{
-                        viewer.handlePythonNewObject(msg.name || "");
-                    }} else if (msg.type === "py2DmolClearAll") {{
-                        viewer.handlePythonClearAll();
-                    }}
-                }}
-
-                // Broadcast to other iframes (e.g., Colab cross-cell)
-                const channelName = "py2dmol-{viewer_id}";
-                if (typeof BroadcastChannel !== "undefined") {{
-                    try {{
-                        const bc = new BroadcastChannel(channelName);
-                        bc.postMessage(msg);
-                    }} catch (e) {{
-                        console.warn("py2dmol: BroadcastChannel send failed", e);
-                    }}
-                }}
-            }})();
-            """
-            update_display(HTML(f'<script>{full_state_js}</script>'), display_id=self._data_display_id)
+                }})();
+                """
+                display(HTML(f'<script>{js_code}</script>'))
 
     def _display_viewer(self, static_data=None):
         """
@@ -573,6 +577,21 @@ class view:
             html_template = f.read()
 
         viewer_id = self.config["viewer_id"]
+
+        # Load JavaScript files once for all modes
+        js_content = ""
+        if not self._reuse_js:
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
+                js_content = f.read()
+
+            # Conditionally load PAE module if enabled
+            if self.config["pae"]["enabled"]:
+                try:
+                    with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
+                        pae_js_content = f.read()
+                    js_content = f"<script>{pae_js_content}</script>\n" + js_content
+                except FileNotFoundError:
+                    pass
 
         # Setup viewer config
         # Inject viewer configuration (nested structure)
@@ -736,68 +755,21 @@ class view:
             }})();
         </script>
         """
-        # Always load JS in parent page context
-        with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
-            js_content_parent = f.read()
-        container_html = f"<script>{js_content_parent}</script>\n" + container_html
+        # Load JS in parent page context if not reusing from previous viewer
+        if not self._reuse_js:
+            # Load JS for div mode (parent page context)
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.js') as f:
+                js_content_parent = f.read()
+            container_html = f"<script>{js_content_parent}</script>\n" + container_html
 
-        # Conditionally load PAE module if enabled
-        if self.config["pae"]["enabled"]:
-            try:
-                with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
-                    pae_js_content = f.read()
-                container_html = f"<script>{pae_js_content}</script>\n" + container_html
-            except FileNotFoundError:
-                pass
-
-        # Setup BroadcastChannel listener (for Colab cross-cell updates) and direct message handler
-        message_bridge = """
-        <script>
-        (function() {
-            window.py2dmolIframeId = window.py2dmolIframeId || Math.random().toString(36).slice(2);
-            const viewerId = "__VIEWER_ID__";
-            function processPy2DmolMessage(msg) {
-                if (!msg || (msg.viewer_id && msg.viewer_id !== viewerId)) return;
-                if (msg._sender && msg._sender === window.py2dmolIframeId) return; // ignore self-originated broadcasts
-                if (!window.py2dmol_viewers || !window.py2dmol_viewers[viewerId]) return;
-                const viewer = window.py2dmol_viewers[viewerId];
-                const type = msg.type;
-                if (type === "py2DmolUpdate") {
-                    const name = msg.name || "";
-                    if (name && !viewer.renderer.objectsData[name]) {
-                        viewer.handlePythonNewObject(name);
-                    }
-                    try {
-                        viewer.handlePythonUpdate(JSON.stringify(msg.payload || {}), name);
-                    } catch (e) {
-                        console.error("py2dmol broadcast update error", e);
-                    }
-                } else if (type === "py2DmolNewObject") {
-                    viewer.handlePythonNewObject(msg.name || "");
-                } else if (type === "py2DmolClearAll") {
-                    viewer.handlePythonClearAll();
-                } else if (type === "py2DmolSetColor") {
-                    viewer.handlePythonSetColor(msg.color || "auto");
-                } else if (type === "py2DmolSetObjectColor") {
-                    viewer.handlePythonSetObjectColor(JSON.stringify(msg.color || {}), msg.name || "");
-                } else if (type === "py2DmolSetViewTransform") {
-                    viewer.handlePythonSetViewTransform(JSON.stringify(msg.rotation || []), JSON.stringify(msg.center || []), msg.name || "");
-                }
-            }
-            window.py2dmol_processMessage = window.py2dmol_processMessage || {};
-            window.py2dmol_processMessage[viewerId] = processPy2DmolMessage;
-            if (typeof BroadcastChannel !== "undefined") {
-                try {
-                    const channel = new BroadcastChannel("py2dmol-" + viewerId);
-                    channel.onmessage = (event) => processPy2DmolMessage(event.data);
-                } catch (e) {
-                    console.warn("py2dmol: BroadcastChannel unavailable", e);
-                }
-            }
-        })();
-        </script>
-        """.replace("__VIEWER_ID__", viewer_id)
-        container_html = container_html + "\n" + message_bridge
+            # Conditionally load PAE module if enabled
+            if self.config["pae"]["enabled"]:
+                try:
+                    with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.js') as f:
+                        pae_js_content = f.read()
+                    container_html = f"<script>{pae_js_content}</script>\n" + container_html
+                except FileNotFoundError:
+                    pass
 
         return container_html
 
