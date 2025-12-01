@@ -42,6 +42,9 @@ DEFAULT_CONFIG = {
     },
     "overlay": {
         "enabled": False
+    },
+    "broadcast": {
+        "enabled": False
     }
 }
 
@@ -74,6 +77,9 @@ def _nest_config(**flat):
     
     # Overlay
     if "overlay" in flat: config["overlay"]["enabled"] = flat["overlay"]
+
+    # Broadcast
+    if "broadcast" in flat: config["broadcast"] = {"enabled": flat["broadcast"]}
     
     return config
     
@@ -247,7 +253,7 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, overlay=False, offline=False,
+        pae=False, pae_size=300, overlay=False, offline=True, broadcast=False,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -272,7 +278,8 @@ class view:
             autoplay=autoplay,
             pae=pae,
             pae_size=pae_size,
-            overlay=overlay
+            overlay=overlay,
+            broadcast=broadcast
         )
         
         # Add viewer_id to root level
