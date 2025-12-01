@@ -417,6 +417,91 @@ class view:
         msg_type = message_dict.get("type")
         js_code_inner = "" # The specific call
 
+        # If broadcast is enabled, send via BroadcastChannel so other cell iframes can receive.
+        # Also call the local viewer if it exists in this frame for immediate updates.
+        if self.config.get("broadcast", {}).get("enabled", False):
+            channel_name = f"py2dmol_{viewer_id}"
+
+            # Build a compact data payload per message type
+            broadcast_payload = {"type": msg_type, "sourceViewerId": f"python_{viewer_id}", "data": {}}
+            if msg_type == "py2DmolUpdate":
+                broadcast_payload["data"] = {
+                    "payload": message_dict.get("payload", {}),
+                    "name": message_dict.get("name", "")
+                }
+            elif msg_type == "py2DmolNewObject":
+                broadcast_payload["data"] = {"name": message_dict.get("name", "")}
+            elif msg_type == "py2DmolClearAll":
+                broadcast_payload["data"] = {}
+            elif msg_type == "py2DmolResetAll":
+                broadcast_payload["data"] = {}
+            elif msg_type == "py2DmolSetColor":
+                broadcast_payload["data"] = {"color": message_dict.get("color", "auto")}
+            elif msg_type == "py2DmolSetObjectColor":
+                broadcast_payload["data"] = {
+                    "color": message_dict.get("color", {}),
+                    "name": message_dict.get("name", "")
+                }
+            elif msg_type == "py2DmolSetViewTransform":
+                broadcast_payload["data"] = {
+                    "rotation": message_dict.get("rotation", []),
+                    "center": message_dict.get("center", []),
+                    "name": message_dict.get("name", "")
+                }
+
+            js_code_inner = f"""
+            (function() {{
+                const message = {json.dumps(broadcast_payload)};
+                const viewerId = '{viewer_id}';
+                const maybeViewer = (window.py2dmol_viewers && window.py2dmol_viewers[viewerId]) ? window.py2dmol_viewers[viewerId] : null;
+
+                // If the viewer exists in this frame, apply immediately (prevents waiting for broadcast loop)
+                if (maybeViewer) {{
+                    try {{
+                        switch (message.type) {{
+                            case 'py2DmolUpdate':
+                                maybeViewer.handlePythonUpdate(JSON.stringify(message.data.payload), message.data.name, {{ fromBroadcast: true }});
+                                break;
+                            case 'py2DmolNewObject':
+                                maybeViewer.handlePythonNewObject(message.data.name, {{ fromBroadcast: true }});
+                                break;
+                            case 'py2DmolClearAll':
+                                maybeViewer.handlePythonClearAll({{ fromBroadcast: true }});
+                                break;
+                            case 'py2DmolResetAll':
+                                maybeViewer.handlePythonResetAll({{ fromBroadcast: true }});
+                                break;
+                            case 'py2DmolSetColor':
+                                maybeViewer.handlePythonSetColor(message.data.color, {{ fromBroadcast: true }});
+                                break;
+                            case 'py2DmolSetObjectColor':
+                                maybeViewer.handlePythonSetObjectColor(message.data.color, message.data.name, {{ fromBroadcast: true }});
+                                break;
+                            case 'py2DmolSetViewTransform':
+                                maybeViewer.handlePythonSetViewTransform(message.data.rotation, message.data.center, message.data.name, {{ fromBroadcast: true }});
+                                break;
+                            default:
+                                break;
+                        }}
+                    }} catch (e) {{
+                        console.error('py2dmol local apply failed:', e);
+                    }}
+                }}
+
+                // Broadcast to all other cells/iframes
+                if (typeof BroadcastChannel !== 'undefined') {{
+                    try {{
+                        const bc = new BroadcastChannel('{channel_name}');
+                        bc.postMessage(message);
+                    }} catch (e) {{
+                        console.error('py2dmol broadcast send failed:', e);
+                    }}
+                }}
+            }})();
+            """
+            display(HTML(f"<script>{js_code_inner}</script>"))
+            return
+
         if msg_type == "py2DmolUpdate":
             payload = message_dict.get("payload")
             # Create a Python string containing JSON
