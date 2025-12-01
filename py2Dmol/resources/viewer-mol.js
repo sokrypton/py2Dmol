@@ -504,9 +504,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         },
         overlay: {
             enabled: false
-        },
-        broadcast: {
-            enabled: false
         }
     };
 
@@ -543,14 +540,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             },
             overlay: {
                 enabled: cfg.overlay?.enabled ?? cfg.overlay ?? DEFAULT_CONFIG.overlay.enabled
-            },
-            broadcast: {
-                enabled: cfg.broadcast?.enabled ?? cfg.broadcast ?? DEFAULT_CONFIG.broadcast.enabled
             }
         };
 
         // Carry over any additional top-level keys not explicitly normalized
-        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "overlay", "broadcast", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "pastel", "colorblind", "pae_size"]);
+        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "pastel", "colorblind", "pae_size"]);
         for (const [key, value] of Object.entries(cfg)) {
             if (!knownKeys.has(key)) {
                 normalized[key] = value;
@@ -6245,35 +6239,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // Persist normalized config for any downstream consumers
     window.viewerConfig = config;
 
-    // Broadcast setup (for cross-cell updates in notebooks)
-    const broadcastEnabled = !!(config.broadcast?.enabled);
-    const broadcastSupported = typeof BroadcastChannel !== 'undefined';
-    const broadcastChannelName = (broadcastEnabled && config.viewer_id) ? `py2dmol_${config.viewer_id}` : null;
-    const broadcastSourceId = `${config.viewer_id || 'py2dmol'}_${Math.random().toString(36).slice(2, 10)}`;
-    let broadcastChannel = null;
-
-    if (broadcastChannelName && broadcastSupported) {
-        try {
-            broadcastChannel = new BroadcastChannel(broadcastChannelName);
-        } catch (err) {
-            console.error("py2dmol: Failed to initialize BroadcastChannel", err);
-            broadcastChannel = null;
-        }
-    }
-
-    const safeLocalStorage = (() => {
-        if (!broadcastEnabled || typeof localStorage === 'undefined') return false;
-        try {
-            const testKey = '__py2dmol_broadcast_test';
-            localStorage.setItem(testKey, '1');
-            localStorage.removeItem(testKey);
-            return true;
-        } catch (err) {
-            return false;
-        }
-    })();
-    const persistenceKey = (broadcastEnabled && config.viewer_id) ? `py2dmol_broadcast_${config.viewer_id}` : null;
-
     // 2. Setup Canvas with high-DPI scaling for crisp rendering
     const canvas = containerElement.querySelector('#canvas');
     if (!canvas) {
@@ -6312,87 +6277,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     // 3. Create renderer
     const renderer = new Pseudo3DRenderer(canvas);
-
-    const postBroadcastMessage = (type, data) => {
-        if (!broadcastChannel) return;
-        try {
-            broadcastChannel.postMessage({
-                type,
-                sourceViewerId: broadcastSourceId,
-                data
-            });
-        } catch (err) {
-            console.error("py2dmol: Failed to broadcast message", err);
-        }
-    };
-
-    const saveBroadcastState = () => {
-        if (!safeLocalStorage || !persistenceKey) return;
-        try {
-            const state = {
-                timestamp: Date.now(),
-                objects: {}
-            };
-
-            for (const [name, obj] of Object.entries(renderer.objectsData)) {
-                state.objects[name] = {
-                    frames: obj.frames,
-                    color: obj.color,
-                    contacts: obj.contacts,
-                    bonds: obj.bonds,
-                    rotation_matrix: obj.rotation_matrix,
-                    center: obj.center
-                };
-            }
-
-            localStorage.setItem(persistenceKey, JSON.stringify(state));
-        } catch (err) {
-            console.error("py2dmol: Failed to save broadcast state", err);
-        }
-    };
-
-    const restoreBroadcastState = () => {
-        if (!safeLocalStorage || !persistenceKey) return false;
-        try {
-            const stored = localStorage.getItem(persistenceKey);
-            if (!stored) return false;
-
-            const state = JSON.parse(stored);
-            if (!state?.objects) return false;
-
-            let restored = false;
-            for (const [name, obj] of Object.entries(state.objects)) {
-                if (!renderer.objectsData[name]) {
-                    renderer.addObject(name);
-                }
-
-                const target = renderer.objectsData[name];
-                const existingFrames = target?.frames?.length || 0;
-
-                if (Array.isArray(obj.frames)) {
-                    for (let i = existingFrames; i < obj.frames.length; i++) {
-                        renderer.addFrame(obj.frames[i], name);
-                        restored = true;
-                    }
-                }
-
-                if (target) {
-                    if (obj.color !== undefined) target.color = obj.color;
-                    if (obj.contacts !== undefined) target.contacts = obj.contacts;
-                    if (obj.bonds !== undefined) target.bonds = obj.bonds;
-                    if (obj.rotation_matrix && obj.center) {
-                        target.rotation_matrix = obj.rotation_matrix;
-                        target.center = obj.center;
-                    }
-                }
-            }
-
-            return restored;
-        } catch (err) {
-            console.error("py2dmol: Failed to restore broadcast state", err);
-            return false;
-        }
-    };
 
     // ADDED: ResizeObserver to handle canvas resizing
     const canvasContainer = containerElement.querySelector('#canvasContainer');
@@ -6671,93 +6555,43 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     // 7. Add function for Python to call (for new frames)
     // These are now locally scoped consts, not on window
-    const processPythonUpdate = (jsonDataOrObject, objectName, { fromBroadcast = false, expectedFrameIndex = null } = {}) => {
+    const handlePythonUpdate = (jsonDataOrObject, objectName) => {
         try {
             // Accept either JSON string or raw object to avoid Uint8Array serialization issues
             const data = typeof jsonDataOrObject === 'string' ? JSON.parse(jsonDataOrObject) : jsonDataOrObject;
-
-            const targetObject = objectName ? renderer.objectsData[objectName] : renderer.objectsData[renderer.currentObjectName];
-            const frameIndexBeforeAdd = targetObject?.frames?.length ?? 0;
-
-            // Deduplicate when receiving a broadcast: if we already have this frame index, skip
-            if (fromBroadcast && expectedFrameIndex !== null && frameIndexBeforeAdd > expectedFrameIndex) {
-                return;
-            }
-
             // Pass name to addFrame
             renderer.addFrame(data, objectName);
-
-            if (broadcastChannel && !fromBroadcast) {
-                postBroadcastMessage('py2DmolUpdate', { payload: data, name: objectName, frameIndex: frameIndexBeforeAdd });
-                saveBroadcastState();
-            } else if (fromBroadcast && safeLocalStorage) {
-                saveBroadcastState();
-            }
         } catch (e) {
             console.error("Error adding frame:", e);
         }
     };
 
-    const handlePythonUpdate = (jsonDataOrObject, objectName, options = {}) => {
-        processPythonUpdate(jsonDataOrObject, objectName, options);
-    };
-
     // 8. Add function for Python to start a new object
-    const handlePythonNewObject = (name, options = {}) => {
-        const fromBroadcast = options.fromBroadcast === true;
+    const handlePythonNewObject = (name) => {
         renderer.addObject(name);
-        if (broadcastChannel && !fromBroadcast) {
-            postBroadcastMessage('py2DmolNewObject', { name });
-            saveBroadcastState();
-        } else if (fromBroadcast && safeLocalStorage) {
-            saveBroadcastState();
-        }
     };
 
     // 9. Add function for Python to clear everything
-    const handlePythonClearAll = (options = {}) => {
-        const fromBroadcast = options.fromBroadcast === true;
+    const handlePythonClearAll = () => {
         renderer.clearAllObjects();
-        if (broadcastChannel && !fromBroadcast) {
-            postBroadcastMessage('py2DmolClearAll', {});
-            saveBroadcastState();
-        } else if (fromBroadcast && safeLocalStorage) {
-            saveBroadcastState();
-        }
     };
 
     // 9b. Add function to reset all controls and state
-    const handlePythonResetAll = (options = {}) => {
-        const fromBroadcast = options.fromBroadcast === true;
+    const handlePythonResetAll = () => {
         renderer.resetAll();
-        if (broadcastChannel && !fromBroadcast) {
-            postBroadcastMessage('py2DmolResetAll', {});
-            saveBroadcastState();
-        } else if (fromBroadcast && safeLocalStorage) {
-            saveBroadcastState();
-        }
     };
 
     // 10. Add function for Python to set color mode (e.g., for from_afdb)
-    const handlePythonSetColor = (colorMode, options = {}) => {
-        const fromBroadcast = options.fromBroadcast === true;
+    const handlePythonSetColor = (colorMode) => {
         if (colorSelect) {
             colorSelect.value = colorMode;
             // Manually trigger the change event
             colorSelect.dispatchEvent(new Event('change'));
         }
-
-        if (broadcastChannel && !fromBroadcast) {
-            postBroadcastMessage('py2DmolSetColor', { color: colorMode });
-            saveBroadcastState();
-        } else if (fromBroadcast && safeLocalStorage) {
-            saveBroadcastState();
-        }
     };
 
     // 10b. Add function for Python to set object-level color
-    const handlePythonSetObjectColor = (colorJsonOrObject, objectName, options = {}) => {
-        const fromBroadcast = options.fromBroadcast === true;
+    const handlePythonSetObjectColor = (colorJsonOrObject, objectName) => {
         try {
             const color = typeof colorJsonOrObject === 'string' ?
                 JSON.parse(colorJsonOrObject) : colorJsonOrObject;
@@ -6781,13 +6615,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Re-render with new colors
                 renderer.render('SetObjectColor');
-
-                if (broadcastChannel && !fromBroadcast) {
-                    postBroadcastMessage('py2DmolSetObjectColor', { color, name: objectName });
-                    saveBroadcastState();
-                } else if (fromBroadcast && safeLocalStorage) {
-                    saveBroadcastState();
-                }
             }
         } catch (e) {
             console.error("Failed to set object color from Python:", e);
@@ -6795,12 +6622,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     };
 
     // 10c. Add function for Python to set view transform (rotation + center)
-    const handlePythonSetViewTransform = (rotationJsonString, centerJsonString, objectName, options = {}) => {
-        const fromBroadcast = options.fromBroadcast === true;
+    const handlePythonSetViewTransform = (rotationJsonString, centerJsonString, objectName) => {
         try {
             // Parse the double-encoded JSON strings from Python
-            const rotation = typeof rotationJsonString === 'string' ? JSON.parse(rotationJsonString) : rotationJsonString;
-            const center = typeof centerJsonString === 'string' ? JSON.parse(centerJsonString) : centerJsonString;
+            const rotation = JSON.parse(rotationJsonString);
+            const center = JSON.parse(centerJsonString);
 
             if (!objectName) {
                 objectName = renderer.currentObjectName;
@@ -6817,57 +6643,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Re-render with new transform applied
                 renderer.render('SetViewTransform');
-
-                if (broadcastChannel && !fromBroadcast) {
-                    postBroadcastMessage('py2DmolSetViewTransform', { rotation, center, name: objectName });
-                    saveBroadcastState();
-                } else if (fromBroadcast && safeLocalStorage) {
-                    saveBroadcastState();
-                }
             }
         } catch (e) {
             console.error("Failed to set view transform from Python:", e);
         }
     };
-
-    // BroadcastChannel receiver
-    if (broadcastChannel) {
-        broadcastChannel.onmessage = (event) => {
-            const message = event?.data;
-            if (!message || message.sourceViewerId === broadcastSourceId) {
-                return;
-            }
-
-            switch (message.type) {
-                case 'py2DmolUpdate':
-                    processPythonUpdate(message.data?.payload, message.data?.name, {
-                        fromBroadcast: true,
-                        expectedFrameIndex: message.data?.frameIndex ?? null
-                    });
-                    break;
-                case 'py2DmolNewObject':
-                    handlePythonNewObject(message.data?.name, { fromBroadcast: true });
-                    break;
-                case 'py2DmolSetObjectColor':
-                    handlePythonSetObjectColor(message.data?.color, message.data?.name, { fromBroadcast: true });
-                    break;
-                case 'py2DmolSetColor':
-                    handlePythonSetColor(message.data?.color, { fromBroadcast: true });
-                    break;
-                case 'py2DmolSetViewTransform':
-                    handlePythonSetViewTransform(message.data?.rotation, message.data?.center, message.data?.name, { fromBroadcast: true });
-                    break;
-                case 'py2DmolClearAll':
-                    handlePythonClearAll({ fromBroadcast: true });
-                    break;
-                case 'py2DmolResetAll':
-                    handlePythonResetAll({ fromBroadcast: true });
-                    break;
-                default:
-                    break;
-            }
-        };
-    }
 
     // 11. Load initial data
     if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (window.py2dmol_staticData[viewerId]).length > 0) {
@@ -6980,19 +6760,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // === EMPTY DYNAMIC MODE ===
         // No initial data, start with an empty canvas.
         renderer.setFrame(-1);
-    }
-
-    // Restore broadcast state persisted in localStorage (for notebook output refresh/collapse)
-    if (broadcastEnabled) {
-        const restored = restoreBroadcastState();
-        if (restored && renderer.currentFrame < 0 && renderer.currentObjectName) {
-            renderer.setFrame(0);
-        }
-    }
-
-    // Persist initial state so subsequent broadcasts can restore reliably
-    if (broadcastEnabled && safeLocalStorage) {
-        saveBroadcastState();
     }
 
     // After data load, trigger ortho slider to set correct initial focal length
