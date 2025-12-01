@@ -6058,17 +6058,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Main animation loop
         animate() {
-            // Skip all work if dragging (mousemove handler calls render directly)
-            if (this.isDragging) {
-                // Don't schedule another frame - mousemove will call render directly
-                return;
-            }
-
-            const now = performance.now();
             let needsRender = false;
 
-            // 1. Handle inertia/spin - disabled during recording and for large molecules
-            if (!this.isRecording) {
+            // 1. Handle inertia/spin - disabled during recording, large molecules, or active drag
+            if (!this.isRecording && !this.isDragging) {
                 // Check if object is large (disable inertia for performance based on visible segments)
                 const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
                 const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
@@ -6112,8 +6105,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // 2. Handle auto-rotate
-            if (this.autoRotate && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
+            // 2. Handle auto-rotate (skip while actively dragging)
+            if (!this.isDragging && this.autoRotate && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
                 const rot = rotationMatrixY(0.005); // Constant rotation speed
                 this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
                 needsRender = true;
@@ -6145,7 +6138,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // 5. Loop
+            // 5. Loop - keep animation alive even when dragging so playback continues
             requestAnimationFrame(() => this.animate());
         }
 
