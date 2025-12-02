@@ -671,6 +671,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.currentObjectName = null;
             this.previousObjectName = null; // Track previous object to detect changes
             this.currentFrame = -1;
+            this.animationFrameId = null; // Track active requestAnimationFrame loop to avoid duplicates
 
             // Cache segment indices per frame (bonds don't change within a frame)
             this.cachedSegmentIndices = null;
@@ -1292,7 +1293,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
 
                 // Restart animate loop after dragging ends
-                requestAnimationFrame(() => this.animate());
+                this.ensureAnimationLoop();
 
                 const now = performance.now();
                 const timeDelta = now - this.lastDragTime;
@@ -1445,7 +1446,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
 
                     // Restart animate loop after dragging ends (needed for inertia and auto-rotation)
-                    requestAnimationFrame(() => this.animate());
+                    this.ensureAnimationLoop();
 
                     const now = performance.now();
                     const timeDelta = now - this.lastDragTime;
@@ -1474,7 +1475,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
 
                     // Restart animation loop if it was stopped
-                    requestAnimationFrame(() => this.animate());
+                    this.ensureAnimationLoop();
                 }
             });
 
@@ -1488,7 +1489,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.lastShadowRotationMatrix = null; // Force recalculation
 
                     // Restart animation loop
-                    requestAnimationFrame(() => this.animate());
+                    this.ensureAnimationLoop();
                 }
                 this.initialPinchDistance = 0;
             });
@@ -6056,6 +6057,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return coords;
         }
 
+        // Ensure the animation loop is running (without creating duplicates)
+        ensureAnimationLoop() {
+            if (this.animationFrameId !== null) return;
+            this.animationFrameId = requestAnimationFrame(() => this.animate());
+        }
+
         // Main animation loop
         animate() {
             let needsRender = false;
@@ -6139,7 +6146,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // 5. Loop - keep animation alive even when dragging so playback continues
-            requestAnimationFrame(() => this.animate());
+            this.animationFrameId = requestAnimationFrame(() => this.animate());
         }
 
         // Save as SVG
