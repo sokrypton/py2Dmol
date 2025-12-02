@@ -84,18 +84,6 @@ import uuid
 import os
 import urllib.request
 
-def kabsch(a, b, return_v=False):
-  """Computes the optimal rotation matrix for aligning a to b."""
-  ab = a.swapaxes(-1, -2) @ b
-  u, s, vh = np.linalg.svd(ab, full_matrices=False)
-  flip = np.linalg.det(u @ vh) < 0
-  flip_b = flip[..., None]
-  u_last_col_flipped = np.where(flip_b, -u[..., -1], u[..., -1])
-  u[..., -1] = u_last_col_flipped
-  if return_v:
-    return u
-  else:
-    return u @ vh
 
 def best_view(coords):
   """Compute optimal viewing rotation matrix and center.
@@ -179,15 +167,24 @@ def best_view(coords):
 
   return best_rotation, center
 
+def kabsch(a, b):
+    """Calculates the optimal rotation matrix for aligning a to b."""
+    ab = a.T @ b
+    u, s, vh = np.linalg.svd(ab, full_matrices=False)
+    flip = np.linalg.det(u @ vh) < 0
+    if flip.any():
+        u[..., -1] = np.where(flip[..., None], -u[..., -1], u[..., -1])
+    return u @ vh  # Return the full rotation matrix
+
 def align_a_to_b(a, b):
-  """Aligns coordinate set 'a' to 'b' using Kabsch algorithm."""
-  a_mean = a.mean(-2, keepdims=True)
-  a_cent = a - a_mean
-  b_mean = b.mean(-2, keepdims=True)
-  b_cent = b - b_mean
-  R = kabsch(a_cent, b_cent)
-  a_aligned = (a_cent @ R) + b_mean
-  return a_aligned
+    """Aligns coordinate set 'a' to 'b' using Kabsch algorithm."""
+    a_mean = a.mean(axis=-2, keepdims=True)
+    a_cent = a - a_mean
+    b_mean = b.mean(axis=-2, keepdims=True)
+    b_cent = b - b_mean
+    R = kabsch(a_cent, b_cent)
+    a_aligned = (a_cent @ R) + b_mean
+    return a_aligned
 
 # --- Color System Constants ---
 
@@ -288,6 +285,8 @@ class view:
 
         # --- Alignment/Dynamic State ---
         self._coords = None
+        self._rotation_matrix = None
+        self._center = None
         self._plddts = None
         self._chains = None
         self._position_types = None
@@ -346,20 +345,15 @@ class view:
           align: If True, subsequent frames are aligned to the first frame.
                  Best view is ALWAYS computed for first frame regardless of this parameter.
 
-      Returns:
-          (rotation_matrix, center) if first frame, else (None, None)
       """
       # Backward compatibility: support atom_types as alias for position_types
       if atom_types is not None and position_types is None:
           position_types = atom_types
 
-      rotation_matrix = None
-      center = None
-
       # --- Coordinate Alignment ---
       if self._coords is None:
           # First frame of an object - ALWAYS compute best_view for optimal viewing angle
-          rotation_matrix, center = best_view(coords)
+          self._rotation_matrix, self._center = best_view(coords)
           self._coords = coords
       else:
           # Subsequent frames, align to the first frame if align=True
@@ -394,8 +388,6 @@ class view:
       if self._position_residue_numbers is not None and len(self._position_residue_numbers) != n_positions:
           print(f"Warning: Residue numbers length mismatch. Ignoring residue numbers for this frame.")
           self._position_residue_numbers = None
-
-      return rotation_matrix, center
 
     def _find_object_by_name(self, name):
         """Find and return object by name, or None if not found."""
@@ -780,6 +772,8 @@ class view:
 
         # Reset python state
         self._coords = None
+        self._rotation_matrix = None
+        self._center = None
         self._plddts = None
         self._chains = None
         self._position_types = None
@@ -989,6 +983,8 @@ class view:
 
         # This is a new object, reset the alignment reference
         self._coords = None
+        self._rotation_matrix = None
+        self._center = None
         self._plddts = None
         self._chains = None
         self._position_types = None
@@ -1046,11 +1042,9 @@ class view:
                    - Dict (advanced): {"frame": mode/color, "chain": {...}, "position": {...}}
         """
         
-        # --- Step 1: Update Python-side alignment state ---
-        rotation_matrix, center = self._update(coords, plddts, chains, position_types, pae, align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types)
-        data_dict = self._get_data_dict() # This reads the full, correct data
-
-        # --- Step 2: Handle object creation ---
+        # --- Step 1: Handle object creation BEFORE touching alignment state ---
+        # Doing this first avoids wiping the freshly computed best_view rotation
+        # when new_obj() resets internal alignment variables.
         # If a name is provided, treat it as an object name and check if we need a new object
         create_new_object = False
         if name is not None:
@@ -1065,18 +1059,22 @@ class view:
             # No name provided and no objects exist, create first object
             create_new_object = True
 
-        is_first_frame = len(self._current_object_data) == 0 if self._current_object_data is not None else False
-
         if create_new_object or not self.objects:
             self.new_obj(name)
-            is_first_frame = True
+        
+        is_first_frame = len(self._current_object_data) == 0 if self._current_object_data is not None else False
+
+        # --- Step 2: Update Python-side alignment state ---
+        self._update(coords, plddts, chains, position_types, pae,
+            align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types)
+        data_dict = self._get_data_dict() # This reads the full, correct data
 
         data_dict["name"] = None  # Don't set frame-level name; use object name instead
 
         # --- Step 3: Store rotation matrix and center on first frame ---
-        if is_first_frame and rotation_matrix is not None and center is not None:
-            self.objects[-1]["rotation_matrix"] = rotation_matrix.tolist()
-            self.objects[-1]["center"] = center.tolist()
+        if is_first_frame:
+            self.objects[-1]["rotation_matrix"] = self._rotation_matrix.tolist()
+            self.objects[-1]["center"] = self._center.tolist()
 
         # --- Step 4: Save data to Python list ---
         self._current_object_data.append(data_dict)
@@ -1120,12 +1118,12 @@ class view:
             })
 
             # Send rotation/center for first frame
-            if is_first_frame and rotation_matrix is not None and center is not None:
+            if is_first_frame:
                 self._send_message({
                     "type": "py2DmolSetViewTransform",
                     "name": self.objects[-1]["name"],
-                    "rotation": rotation_matrix.tolist(),
-                    "center": center.tolist()
+                    "rotation": self._rotation_matrix.tolist(),
+                    "center": self._center.tolist()
                 })
 
     def set_color(self, color, name=None):
