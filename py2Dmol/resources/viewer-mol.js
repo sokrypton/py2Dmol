@@ -6343,8 +6343,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         console.warn("py2dmol: ResizeObserver not supported. Canvas resizing will not work.");
     }
 
-    // 4. Setup PAE Renderer (if enabled and PAE module is loaded)
-    if (config.pae?.enabled && window.PAERenderer) {
+    // 4. Setup PAE Renderer (if enabled)
+    if (config.pae?.enabled) {
         try {
             const paeContainer = containerElement.querySelector('#paeContainer');
             const paeCanvas = containerElement.querySelector('#paeCanvas');
@@ -6384,8 +6384,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Set initial size (will be updated when container is visible)
                 updatePAECanvasSize();
 
-                // Update size when container becomes visible (in case it was hidden)
-                requestAnimationFrame(() => {
+                // Function to initialize PAE renderer
+                const initializePAERenderer = () => {
+                    if (!window.PAERenderer) {
+                        return;
+                    }
+
                     updatePAECanvasSize();
 
                     const paeRenderer = new window.PAERenderer(paeCanvas, renderer);
@@ -6403,13 +6407,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         }
                     }
                     renderer.updatePAEContainerVisibility();
+                };
+
+                // Try to initialize immediately (offline mode) or wait for PAE script load event
+                requestAnimationFrame(() => {
+                    if (window.PAERenderer) {
+                        initializePAERenderer();
+                    } else {
+                        // Wait for PAE script to load (online mode)
+                        window.addEventListener('py2dmol_pae_loaded', initializePAERenderer, { once: true });
+                    }
                 });
             }
         } catch (e) {
             console.error("Failed to initialize PAE renderer:", e);
         }
-    } else if (config.pae?.enabled && !window.PAERenderer) {
-        console.warn("PAE is enabled but viewer-pae.js is not loaded. PAE functionality will not be available.");
     }
 
     // 5. Setup general controls

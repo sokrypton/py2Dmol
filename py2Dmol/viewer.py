@@ -740,7 +740,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
             if self.config["pae"]["enabled"]:
                 pae_url = "https://cdn.jsdelivr.net/gh/sokrypton/py2Dmol@beta/py2Dmol/resources/viewer-pae.min.js"
-                container_html = f'<script src="{pae_url}"></script>\n' + container_html
+                container_html = f'<script src="{pae_url}" onload="window.dispatchEvent(new CustomEvent(\'py2dmol_pae_loaded\'));"></script>\n' + container_html
 
         return container_html
 
