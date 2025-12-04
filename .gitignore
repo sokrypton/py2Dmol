@@ -15,3 +15,4 @@ implementation_plan.md
 *.cif
 /.ipynb_checkpoints
 *.json
+node_modules/

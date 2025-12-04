@@ -442,11 +442,26 @@ class view:
         # JavaScript iterates through all objects and only adds missing frames to each
         all_frames_js = f"""
         (function() {{
+            const allObjectsData = {json.dumps(all_objects_data)};
+            const allObjectsMetadata = {json.dumps(all_objects_metadata)};
+
+            // STEP 1: Broadcast immediately (works cross-iframe in Colab)
+            try {{
+                const channel = new BroadcastChannel('py2dmol_{viewer_id}');
+                channel.postMessage({{
+                    operation: 'fullStateUpdate',
+                    args: [allObjectsData, allObjectsMetadata],
+                    sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
+                }});
+                channel.close();
+            }} catch (e) {{
+                // BroadcastChannel not supported, continue anyway
+            }}
+
+            // STEP 2: Apply locally if viewer exists (works same-window in JupyterLab)
             function execute() {{
                 if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
                     const viewer = window.py2dmol_viewers['{viewer_id}'];
-                    const allObjectsData = {json.dumps(all_objects_data)};
-                    const allObjectsMetadata = {json.dumps(all_objects_metadata)};
 
                     // If data is empty, clear the viewer
                     if (Object.keys(allObjectsData).length === 0) {{

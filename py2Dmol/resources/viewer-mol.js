@@ -6787,6 +6787,80 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             renderer // Expose the renderer instance for external access
         };
 
+        // Set up BroadcastChannel for cross-iframe communication (Colab support)
+        try {
+            const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
+            const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
+
+            channel.onmessage = (event) => {
+                const { operation, args, sourceInstanceId } = event.data;
+
+                // Skip own broadcasts
+                if (sourceInstanceId === thisInstanceId) return;
+
+                // Handle fullStateUpdate from data cell
+                if (operation === 'fullStateUpdate') {
+                    const [allObjectsData, allObjectsMetadata] = args;
+
+                    // Clear if data is empty
+                    if (Object.keys(allObjectsData).length === 0) {
+                        handlePythonClearAll();
+                        return;
+                    }
+
+                    // Create missing objects
+                    const newlyCreatedObjects = new Set();
+                    for (const objectName of Object.keys(allObjectsData)) {
+                        if (!renderer.objectsData[objectName]) {
+                            handlePythonNewObject(objectName);
+                            newlyCreatedObjects.add(objectName);
+                        }
+                    }
+
+                    // Add missing frames
+                    for (const [objectName, frames] of Object.entries(allObjectsData)) {
+                        if (!frames || frames.length === 0) continue;
+
+                        const obj = renderer.objectsData[objectName];
+                        const currentFrameCount = obj ? obj.frames.length : 0;
+
+                        for (let i = currentFrameCount; i < frames.length; i++) {
+                            handlePythonUpdate(JSON.stringify(frames[i]), objectName);
+                        }
+                    }
+
+                    // Apply metadata
+                    for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {
+                        const obj = renderer.objectsData[objectName];
+                        if (obj) {
+                            if (metadata.color) obj.color = metadata.color;
+                            if (metadata.contacts) obj.contacts = metadata.contacts;
+                            if (metadata.bonds) obj.bonds = metadata.bonds;
+
+                            // Only apply rotation/center to newly created objects
+                            if (newlyCreatedObjects.has(objectName)) {
+                                if (metadata.rotation_matrix && obj.viewerState) {
+                                    obj.viewerState.rotation = metadata.rotation_matrix;
+                                }
+                                if (metadata.center && obj.viewerState) {
+                                    obj.viewerState.center = metadata.center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Re-render
+                    renderer.cachedSegmentIndices = null;
+                    renderer.cachedSegmentIndicesFrame = -1;
+                    renderer.cachedSegmentIndicesObjectName = null;
+                    renderer.setFrame(renderer.currentFrame);
+                    renderer.render('broadcast update');
+                }
+            };
+        } catch (e) {
+            // BroadcastChannel not supported, continue without it
+        }
+
         // Dispatch ready event after viewer is fully registered
         window.dispatchEvent(new CustomEvent(`py2dmol_ready_${viewerId}`));
     } else {
