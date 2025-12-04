@@ -6234,10 +6234,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // MAIN APP & COLAB COMMUNICATION
     // ============================================================================
 
-    // 1. Get config from window.viewerConfig
-    const config = normalizeConfig(window.viewerConfig);
+    // 1. Get config - check viewer-specific config first (Python), then global (web app)
+    const config = normalizeConfig(window.py2dmol_configs?.[viewerId] || window.viewerConfig);
     // Persist normalized config for any downstream consumers
     window.viewerConfig = config;
+    // Override viewer_id from config with the parameter to ensure correct ID
+    config.viewer_id = viewerId;
 
     // 2. Setup Canvas with high-DPI scaling for crisp rendering
     const canvas = containerElement.querySelector('#canvas');
@@ -6772,9 +6774,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     renderer.animate();
 
     // 13. Expose Public API
-    const viewer_id = config.viewer_id;
-    if (viewer_id) {
-        window.py2dmol_viewers[viewer_id] = {
+    // Use viewerId parameter passed to function
+    if (viewerId) {
+        window.py2dmol_viewers[viewerId] = {
             handlePythonUpdate,
             handlePythonNewObject,
             handlePythonClearAll,
@@ -6784,6 +6786,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             handlePythonSetViewTransform,
             renderer // Expose the renderer instance for external access
         };
+
+        // Dispatch ready event after viewer is fully registered
+        window.dispatchEvent(new CustomEvent(`py2dmol_ready_${viewerId}`));
     } else {
         console.error("py2dmol: viewer_id not found in config. Cannot register API.");
     }

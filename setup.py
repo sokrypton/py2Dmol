@@ -14,9 +14,8 @@ setup(
     package_data={
         'py2Dmol': [
             'resources/viewer.html',
-            'resources/viewer-mol.js',
-            'resources/viewer-pae.js',
-            'resources/viewer-seq.js'
+            'resources/viewer-mol.min.js',
+            'resources/viewer-pae.min.js',
         ],
     },
     license='BEER-WARE',
