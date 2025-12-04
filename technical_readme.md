@@ -2,7 +2,7 @@
 
 **Purpose**: Complete technical documentation for AI systems and developers working with py2Dmol codebase.
 
-**Last Updated**: 2025-11-28
+**Last Updated**: 2025-12-04
 
 ---
 
@@ -13,6 +13,7 @@
 - [Python Interface](#python-interface)
 - [JavaScript Interface](#javascript-interface)
 - [Data Flow](#data-flow)
+  - [Cross-Cell Communication (BroadcastChannel)](#cross-cell-communication-broadcastchannel)
 - [Rendering System](#rendering-system)
 - [Function Reference](#function-reference)
 
@@ -478,6 +479,146 @@ viewer.add() ─────→ _send_message()
                                     └─→ Immediate re-render
 ```
 
+### Cross-Cell Communication (BroadcastChannel)
+
+**Purpose**: Enable viewers in different notebook cells to stay synchronized, especially in Google Colab where each cell output runs in a separate iframe.
+
+**Architecture**:
+
+```mermaid
+graph TB
+    subgraph "Cell 1 - Viewer Display"
+        A[viewer.show<>] --> B[Viewer Instance]
+        B --> C[BroadcastChannel Listener]
+    end
+
+    subgraph "Cell 2 - Data Update"
+        D[viewer.add<>] --> E[_update_live_data_cell<>]
+        E --> F[Data Cell Script]
+    end
+
+    subgraph "BroadcastChannel API"
+        F -->|1. Broadcast| G[py2dmol_viewerId]
+        G -->|2. Deliver| C
+    end
+
+    C -->|3. Apply Update| H[Renderer]
+
+    style G fill:#3b82f6,color:#fff
+    style C fill:#10b981,color:#fff
+    style F fill:#f59e0b,color:#fff
+```
+
+**Flow**:
+
+1. **Cell 1**: User calls `viewer.show()` → Creates viewer with BroadcastChannel listener
+2. **Cell 2**: User calls `viewer.from_pdb("1UBQ")` → Triggers `_update_live_data_cell()`
+3. **Data Cell** (Cell 2): Broadcasts state via BroadcastChannel
+4. **Viewer** (Cell 1): Receives broadcast, applies update, re-renders
+
+**Key Components**:
+
+#### Python: `_update_live_data_cell()` (viewer.py:399)
+
+```python
+def _update_live_data_cell(self):
+    """
+    Updates the persistent data cell and broadcasts state to all viewer instances.
+    Enables cross-cell communication (Google Colab) and state persistence on refresh.
+    """
+    # Serialize all objects and metadata
+    all_objects_data = {...}
+    all_objects_metadata = {...}
+
+    # JavaScript that runs in data cell
+    all_frames_js = f"""
+        // Step 1: Broadcast immediately (cross-iframe)
+        const channel = new BroadcastChannel('py2dmol_{viewer_id}');
+        channel.postMessage({{
+            operation: 'fullStateUpdate',
+            args: [allObjectsData, allObjectsMetadata],
+            sourceInstanceId: 'datacell_...'
+        }});
+        channel.close();
+
+        // Step 2: Fallback for viewers not ready yet
+        window.addEventListener('py2dmol_ready_{viewer_id}', execute);
+    """
+    update_display(HTML(f'<script>{all_frames_js}</script>'))
+```
+
+#### JavaScript: BroadcastChannel Listener (viewer-mol.js:6790)
+
+```javascript
+// Set up listener when viewer initializes
+const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
+const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
+
+channel.onmessage = (event) => {
+    const { operation, args, sourceInstanceId } = event.data;
+    if (sourceInstanceId === thisInstanceId) return;  // Skip own broadcasts
+
+    if (operation === 'fullStateUpdate') {
+        const [allObjectsData, allObjectsMetadata] = args;
+
+        // Create missing objects
+        for (const objectName of Object.keys(allObjectsData)) {
+            if (!renderer.objectsData[objectName]) {
+                handlePythonNewObject(objectName);
+            }
+        }
+
+        // Add missing frames
+        // Apply metadata (color, contacts, bonds, rotation, center)
+        // Re-render
+    }
+};
+```
+
+**Broadcast Message Format**:
+
+```javascript
+{
+    operation: 'fullStateUpdate',
+    args: [
+        // allObjectsData: object name → frames array
+        {
+            "protein1": [
+                { coords: [...], plddts: [...], chains: [...] }
+            ]
+        },
+        // allObjectsMetadata: object name → metadata
+        {
+            "protein1": {
+                color: { type: "mode", value: "plddt" },
+                contacts: [...],
+                bonds: [...],
+                rotation_matrix: [[...], [...], [...]],
+                center: [x, y, z]
+            }
+        }
+    ],
+    sourceInstanceId: 'datacell_xxx' or 'viewer_yyy'
+}
+```
+
+**Compatibility**:
+
+| Environment | Mechanism | Status |
+|-------------|-----------|--------|
+| **Google Colab** | BroadcastChannel cross-iframe | ✅ Works |
+| **JupyterLab** | BroadcastChannel same-window | ✅ Works |
+| **VSCode Notebooks** | BroadcastChannel same-window | ✅ Works |
+| **Older Browsers** | Fallback to ready event listener | ✅ Graceful degradation |
+
+**Benefits**:
+
+1. **Cross-iframe support** - Works in Google Colab where cells are isolated
+2. **Same-window optimization** - Also works in JupyterLab/VSCode
+3. **State persistence** - Data cell preserves state on page refresh
+4. **No polling** - Event-driven, efficient
+5. **Automatic cleanup** - Browser manages channel lifecycle
+
 ### Message Protocol
 
 #### `py2DmolUpdate`
@@ -892,9 +1033,20 @@ const colorblindSafeChainColors = [
 
 ## Version History
 
-**Current**: Latest development version (2025-11-28)
+**Current**: Latest development version (2025-12-04)
 
-### Recent Changes (2025-11-28)
+### Recent Changes (2025-12-04)
+
+- ✅ **Added BroadcastChannel-based cross-cell communication**
+  - Enables synchronized viewers across notebook cells (Google Colab support)
+  - Works cross-iframe and same-window
+  - Event-driven state broadcasting via `_update_live_data_cell()`
+  - Graceful fallback for browsers without BroadcastChannel support
+- ✅ Updated `_update_live_data_cell()` docstring to reflect broadcasting
+- ✅ Refactored data cell JavaScript for cleaner broadcast flow
+- ✅ Added comprehensive BroadcastChannel documentation section
+
+### Previous Changes (2025-11-28)
 
 - ✅ Updated all file line counts to match current codebase
 - ✅ Fixed default canvas size from (300,300) to (400,400)

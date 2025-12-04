@@ -398,9 +398,8 @@ class view:
 
     def _update_live_data_cell(self):
         """
-        Updates the persistent data cell with current state of all objects.
-        This ensures state persists on page refresh in live mode.
-        Should be called after any state modification (add, set_color, clear, etc.)
+        Updates the persistent data cell and broadcasts state to all viewer instances.
+        Enables cross-cell communication (Google Colab) and state persistence on refresh.
         """
         if not self._is_live:
             return
@@ -437,15 +436,12 @@ class view:
                 if metadata:
                     all_objects_metadata[obj_name] = metadata
 
-        # Always update data cell, even if empty (for clear() operation)
-        # Update data cell with comprehensive multi-object frame loading
-        # JavaScript iterates through all objects and only adds missing frames to each
         all_frames_js = f"""
         (function() {{
             const allObjectsData = {json.dumps(all_objects_data)};
             const allObjectsMetadata = {json.dumps(all_objects_metadata)};
 
-            // STEP 1: Broadcast immediately (works cross-iframe in Colab)
+            // Broadcast state update (works cross-iframe and same-window)
             try {{
                 const channel = new BroadcastChannel('py2dmol_{viewer_id}');
                 channel.postMessage({{
@@ -454,22 +450,18 @@ class view:
                     sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
                 }});
                 channel.close();
-            }} catch (e) {{
-                // BroadcastChannel not supported, continue anyway
-            }}
+            }} catch (e) {{}}
 
-            // STEP 2: Apply locally if viewer exists (works same-window in JupyterLab)
+            // Fallback: apply locally if BroadcastChannel not supported
             function execute() {{
                 if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
                     const viewer = window.py2dmol_viewers['{viewer_id}'];
 
-                    // If data is empty, clear the viewer
                     if (Object.keys(allObjectsData).length === 0) {{
                         viewer.handlePythonClearAll();
                         return;
                     }}
 
-                    // First pass: ensure all objects exist, track newly created ones
                     const newlyCreatedObjects = new Set();
                     for (const objectName of Object.keys(allObjectsData)) {{
                         if (!viewer.renderer.objectsData[objectName]) {{
@@ -478,16 +470,12 @@ class view:
                         }}
                     }}
 
-                    // Second pass: add frames to each object
                     for (const [objectName, frames] of Object.entries(allObjectsData)) {{
-                        if (!frames || frames.length === 0) {{
-                            continue;
-                        }}
+                        if (!frames || frames.length === 0) continue;
 
                         const obj = viewer.renderer.objectsData[objectName];
                         const currentFrameCount = obj ? obj.frames.length : 0;
 
-                        // Only add frames beyond what already exists
                         for (let i = currentFrameCount; i < frames.length; i++) {{
                             try {{
                                 viewer.handlePythonUpdate(JSON.stringify(frames[i]), objectName);
@@ -497,8 +485,6 @@ class view:
                         }}
                     }}
 
-                    // Third pass: apply object-level metadata (colors, contacts, bonds)
-                    // Note: rotation/center only applied to newly created objects
                     let metadataApplied = false;
                     for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {{
                         const obj = viewer.renderer.objectsData[objectName];
@@ -515,8 +501,6 @@ class view:
                                 obj.bonds = metadata.bonds;
                                 metadataApplied = true;
                             }}
-                            // Only apply rotation/center to newly created objects (e.g., on page refresh)
-                            // Don't re-apply to existing objects during live updates
                             if (newlyCreatedObjects.has(objectName)) {{
                                 if (metadata.rotation_matrix && obj.viewerState) {{
                                     obj.viewerState.rotation = metadata.rotation_matrix;
@@ -530,22 +514,17 @@ class view:
                         }}
                     }}
 
-                    // Re-render if metadata was applied
                     if (metadataApplied) {{
                         viewer.renderer.cachedSegmentIndices = null;
                         viewer.renderer.cachedSegmentIndicesFrame = -1;
                         viewer.renderer.cachedSegmentIndicesObjectName = null;
-                        // Call setFrame to regenerate segments with new metadata (contacts, bonds, colors)
                         viewer.renderer.setFrame(viewer.renderer.currentFrame);
                     }}
                 }}
             }}
 
-            if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
-                execute();
-            }} else {{
-                window.addEventListener('py2dmol_ready_{viewer_id}', execute, {{ once: true }});
-            }}
+            // Fallback for viewers not ready yet (won't receive broadcast)
+            window.addEventListener('py2dmol_ready_{viewer_id}', execute, {{ once: true }});
         }})();
         """
         update_display(HTML(f'<script>{all_frames_js}</script>'), display_id=self._data_display_id)
@@ -555,10 +534,6 @@ class view:
         Sends a message to the viewer by updating the persistent data cell.
         All state changes (add, set_color, clear, etc.) go through the single data cell.
         """
-        # All messages now use the same mechanism:
-        # Update the single persistent data cell which contains complete state.
-        # The data cell JavaScript applies changes immediately if viewer exists,
-        # or waits for ready event if viewer is still initializing.
         self._update_live_data_cell()
 
     def _display_viewer(self, static_data=None):
