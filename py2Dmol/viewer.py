@@ -1630,13 +1630,13 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None, ignore_ligands=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None, ignore_ligands=None, show=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
 
         Each call creates a new object (separate structure), but all structures appear
-        in the same viewer window. The viewer is displayed on the first call.
+        in the same viewer window. The viewer is displayed on the first call (unless show=False).
 
         Args:
             pdb_id (str): 4-character PDB code or a path to a local PDB/CIF file.
@@ -1652,6 +1652,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
             ignore_ligands (bool, optional): Deprecated. If provided, overrides load_ligands.
                                             If True, skips loading ligand atoms (load_ligands=False).
+            show (bool, optional): If True, automatically displays the viewer after loading (default behavior).
+                                  If False, suppresses auto-display (useful when viewer is managed by Grid).
+                                  If None (default), auto-shows unless viewer is in live mode.
         """
         filepath = self._get_filepath_from_pdb_id(pdb_id)
 
@@ -1668,18 +1671,25 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                          name=name, paes=None, align=align,
                          use_biounit=use_biounit, biounit_name=biounit_name,
                          load_ligands=load_ligands, contacts=contacts, color=color)
-            if not self._is_live: # Only call show() if it hasn't been called
+
+            # Determine whether to auto-show
+            # show=True: always show
+            # show=False: never show
+            # show=None (default): show if not in live mode
+            if show is True:
+                self.show()
+            elif show is None and not self._is_live:
                 self.show()
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, color=None):
+    def from_afdb(self, uniprot_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, color=None, show=None):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and adds it to the viewer.
 
         Each call creates a new object (separate structure), but all structures appear
-        in the same viewer window. The viewer is displayed on the first call.
+        in the same viewer window. The viewer is displayed on the first call (unless show=False).
 
         If `pae=True` was set in the `view()` constructor, this will also
         download and display the PAE matrix.
@@ -1695,6 +1705,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
             color (str, optional): Color for this structure. Can be a literal color (e.g., "red", "#ff0000") or a color mode
                                   (e.g., "chain", "plddt", "rainbow", "auto", "entropy", "deepmind").
+            show (bool, optional): If True, automatically displays the viewer after loading (default behavior).
+                                  If False, suppresses auto-display (useful when viewer is managed by Grid).
+                                  If None (default), auto-shows unless viewer is in live mode.
         """
 
         # Auto-generate name from UniProt ID if not provided
@@ -1719,7 +1732,14 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 name=name, paes=[pae_matrix] if pae_matrix is not None else None, align=align,
                 use_biounit=use_biounit, biounit_name=biounit_name,
                 load_ligands=load_ligands, color=color)
-            if not self._is_live: # Only call show() if it hasn't been called
+
+            # Determine whether to auto-show
+            # show=True: always show
+            # show=False: never show
+            # show=None (default): show if not in live mode
+            if show is True:
+                self.show()
+            elif show is None and not self._is_live:
                 self.show()
         
 

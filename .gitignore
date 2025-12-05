@@ -16,3 +16,4 @@ implementation_plan.md
 /.ipynb_checkpoints
 *.json
 node_modules/
+*.egg-info/

@@ -2,7 +2,7 @@
 
 **Purpose**: Complete technical documentation for AI systems and developers working with py2Dmol codebase.
 
-**Last Updated**: 2025-12-04
+**Last Updated**: 2025-12-05
 
 ---
 
@@ -11,6 +11,7 @@
 - [Architecture Overview](#architecture-overview)
 - [File Structure](#file-structure)
 - [Python Interface](#python-interface)
+- [Grid Layout System](#grid-layout-system)
 - [JavaScript Interface](#javascript-interface)
 - [Data Flow](#data-flow)
   - [Cross-Cell Communication (BroadcastChannel)](#cross-cell-communication-broadcastchannel)
@@ -273,6 +274,175 @@ graph LR
 **Live Mode**: `show()` → `add()`
 - Updates sent via `display(Javascript(...))`
 - Messages handled by `window.py2dmol_viewers[viewer_id]`
+
+---
+
+## Grid Layout System
+
+### Overview
+
+The Grid system allows displaying multiple py2Dmol viewers in a responsive grid layout. Introduced to support gallery-style visualizations in Jupyter notebooks.
+
+**Path**: `py2Dmol/grid.py`
+**Class**: `Grid`
+**Lines**: 306
+
+### Three Usage Patterns
+
+#### 1. Context Manager (Recommended)
+
+```python
+with py2Dmol.grid(cols=2) as g:
+    g.view().from_pdb('1YNE')
+    g.view(rotate=True).from_pdb('1BJP')
+# Grid displays automatically on exit
+```
+
+**Behavior**: `__exit__()` automatically calls `show()`
+
+#### 2. Explicit Builder
+
+```python
+grid = py2Dmol.Grid(cols=2, size=(300, 300))
+grid.view().from_pdb('1YNE')
+grid.view(rotate=True).from_pdb('1BJP')
+grid.show()  # Manual display
+```
+
+**Use case**: When you need control over display timing
+
+#### 3. Function-Based
+
+```python
+v1 = py2Dmol.view()
+v1.from_pdb('1YNE', show=False)
+
+v2 = py2Dmol.view(rotate=True)
+v2.from_pdb('1BJP', show=False)
+
+py2Dmol.show_grid([v1, v2], cols=2)
+```
+
+**Use case**: Displaying pre-created viewers. **Important**: Must pass `show=False` to prevent auto-showing.
+
+### Grid Configuration
+
+#### Constructor: `Grid.__init__()`
+
+```python
+def __init__(self,
+    cols=2,                # Number of columns
+    rows=None,             # Number of rows (auto-calculated if None)
+    gap=5,                 # Gap between viewers in pixels
+    size=None,             # Default size for each viewer (width, height)
+    controls=False,        # Default controls setting
+    box=False              # Default box setting
+):
+```
+
+**Key behaviors**:
+- `rows` auto-calculated as `ceil(num_viewers / cols)` if None
+- `size` defaults to `(400, 400)` if not specified
+- `controls=False` and `box=False` create clean gallery layouts
+
+### Grid.view() Method
+
+**Critical feature** (grid.py:69-113): Creates viewers with grid-specific behavior.
+
+**Key behaviors**:
+1. Applies grid defaults (size, controls, box) if not explicitly specified in kwargs
+2. Sets `viewer._is_live = True` to prevent auto-showing
+3. Appends viewer to grid's viewer list
+
+**Why `_is_live = True`?** Without this flag, calling `g.view().from_pdb('1YNE')` would immediately display the viewer individually before the grid collects it. This flag tells the viewer it's managed externally.
+
+### Display Flow
+
+**Key steps** (grid.py:131-206):
+1. Calculate rows if not specified
+2. Generate HTML for each viewer using `viewer._display_viewer(static_data)`
+3. Strip JS loading from subsequent viewers (only first viewer loads viewer-mol.js/viewer-pae.js)
+4. Build grid container with CSS overrides
+5. Display using `IPython.display.HTML()`
+
+### CSS Override System
+
+Individual viewers have built-in spacing (mainContainer padding: 8px + gap: 15px, viewerWrapper gap: 8px) appropriate for standalone use but problematic in grids.
+
+Grid injects CSS selectors with higher specificity (grid.py:184-192):
+- `.py2dmol-grid-item #mainContainer` sets padding: 0, gap: 0, margin: 0
+- `.py2dmol-grid-item #viewerWrapper` sets gap: 0, margin: 0
+
+**CSS Specificity**: Class + ID `(0,1,1)` beats ID alone `(0,1,0)`, so grid CSS should override template styles.
+
+### Sizing System
+
+**Flow**: Grid size → viewer config → JavaScript reads config → sets canvas/container sizes
+
+Grid defaults (e.g., size=(200,200)) are applied to viewers, serialized in config, and JavaScript (viewer-mol.js:6291-6294) applies them to DOM elements. Previous approach using inline style injection was removed to avoid forced sizing.
+
+### Debugging
+
+**CSS Override Issues**: If grid spacing appears inconsistent, use browser DevTools to inspect computed styles on `#mainContainer` and `#viewerWrapper`. Check if grid CSS overrides (padding: 0, gap: 0) are being applied or crossed out due to specificity conflicts.
+
+**Empty Grid**: "Warning: No viewers to display in grid" means `show()` was called before any viewers were added. Ensure at least one viewer is added via `grid.view()` or `grid.add_viewer()`.
+
+### Performance Considerations
+
+#### Memory
+
+- Each viewer maintains independent state (rotation, zoom, center)
+- JavaScript libraries loaded once, shared across all viewers
+- Static data embedded in HTML (no server requests)
+
+#### Rendering
+
+- Each viewer renders independently on its own canvas
+- No shared WebGL context (uses 2D Canvas API)
+- Grid layout handled by CSS Grid (browser-optimized)
+
+#### Typical limits
+
+| Grid Size | Performance | Notes |
+|-----------|-------------|-------|
+| 2×2 (4 viewers) | ✅ Excellent | Recommended for most use cases |
+| 3×3 (9 viewers) | ✅ Good | Smooth on modern hardware |
+| 4×4 (16 viewers) | ⚠️ Moderate | May slow down on older machines |
+| 5×5+ (25+ viewers) | ❌ Slow | Consider pagination or lazy loading |
+
+### Example Use Cases
+
+#### Protein Gallery
+
+```python
+with py2Dmol.grid(cols=4, gap=5, size=(200, 200)) as g:
+    for pdb_id in ['1YNE', '1BJP', '9D2J', '2BEG']:
+        g.view().from_pdb(pdb_id)
+```
+
+**Result**: Clean 4-column gallery with no controls/boxes.
+
+#### Comparison View
+
+```python
+grid = py2Dmol.Grid(cols=2, size=(400, 400), controls=True, box=True)
+grid.view().from_pdb('1YNE')
+grid.view(color='chain').from_pdb('1BJP')
+grid.show()
+```
+
+**Result**: Side-by-side comparison with full controls.
+
+#### Mixed Configuration
+
+```python
+with py2Dmol.grid(cols=3) as g:
+    g.view().from_pdb('1YNE')                    # No controls (grid default)
+    g.view(controls=True).from_pdb('1BJP')       # Override: with controls
+    g.view().from_pdb('9D2J')                    # No controls (grid default)
+```
+
+**Result**: Middle viewer has controls, others don't.
 
 ---
 
@@ -1033,9 +1203,25 @@ const colorblindSafeChainColors = [
 
 ## Version History
 
-**Current**: Latest development version (2025-12-04)
+**Current**: Latest development version (2025-12-05)
 
-### Recent Changes (2025-12-04)
+### Recent Changes (2025-12-05)
+
+- ✅ **Added comprehensive Grid Layout System documentation**
+  - Three usage patterns (context manager, explicit builder, function-based)
+  - Grid configuration and defaults system
+  - CSS override system with specificity details
+  - JavaScript library loading optimization
+  - Sizing flow (Python → JavaScript)
+  - Known issues and debugging guide
+  - Performance considerations and limits
+  - Example use cases (gallery, comparison, mixed configs)
+- ✅ **Removed forced sizing and !important hacks**
+  - Cleaned up inline style injection in viewer.py
+  - Removed !important from grid CSS overrides
+  - Now relies on CSS specificity and JavaScript config
+
+### Previous Changes (2025-12-04)
 
 - ✅ **Added BroadcastChannel-based cross-cell communication**
   - Enables synchronized viewers across notebook cells (Google Colab support)

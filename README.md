@@ -87,6 +87,20 @@ viewer.add_pdb("my_complex.cif")
 viewer.show()
 ```
 
+### Example: Grid Layout
+
+Display multiple structures in a grid layout for easy comparison:
+
+```python
+import py2Dmol
+
+# Simple 2x2 gallery
+with py2Dmol.grid(cols=2, size=(300, 300)) as g:
+    g.view().from_pdb('1YNE')
+    g.view().from_pdb('1BJP')
+    g.view().from_pdb('9D2J')
+    g.view().from_pdb('2BEG')
+```
 
 ---
 
