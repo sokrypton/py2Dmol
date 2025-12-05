@@ -272,7 +272,7 @@ def grid(cols=2, rows=None, gap=5, size=None, controls=False, box=False):
     return Grid(cols=cols, rows=rows, gap=gap, size=size, controls=controls, box=box)
 
 
-def show_grid(viewers, cols=2, gap=10):
+def show_grid(viewers, cols=2, gap=5):
     """
     Display a list of viewers in a grid layout.
 
