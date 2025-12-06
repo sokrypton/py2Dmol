@@ -449,15 +449,30 @@ class view:
             console.log('[py2Dmol] Frame counts:', Object.entries(allObjectsData).map(([k,v]) => `${{k}}=${{v.length}}`));
 
             // Broadcast state update (works cross-iframe and same-window)
+            // Use a persistent channel to handle viewer ready events
+            let dataChannel = null;
             try {{
-                const channel = new BroadcastChannel('py2dmol_{viewer_id}');
-                console.log('[py2Dmol] Broadcasting to channel: py2dmol_{viewer_id}');
-                channel.postMessage({{
+                dataChannel = new BroadcastChannel('py2dmol_{viewer_id}');
+                console.log('[py2Dmol] Broadcasting initial state to channel: py2dmol_{viewer_id}');
+
+                // Broadcast immediately in case viewer is already listening
+                dataChannel.postMessage({{
                     operation: 'fullStateUpdate',
                     args: [allObjectsData, allObjectsMetadata],
                     sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
                 }});
-                channel.close();
+
+                // Listen for viewer ready signal and re-broadcast
+                dataChannel.onmessage = (event) => {{
+                    if (event.data.operation === 'viewerReady') {{
+                        console.log('[py2Dmol] Viewer ready signal received, re-broadcasting data...');
+                        dataChannel.postMessage({{
+                            operation: 'fullStateUpdate',
+                            args: [allObjectsData, allObjectsMetadata],
+                            sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
+                        }});
+                    }}
+                }};
             }} catch (e) {{
                 console.log('[py2Dmol] BroadcastChannel failed:', e);
             }}
@@ -541,17 +556,9 @@ class view:
                 }}
             }}
 
-            // CRITICAL: Set up event listener FIRST to avoid race condition
-            // If we call execute() first, the viewer might initialize between
-            // execute() and addEventListener(), causing us to miss the event!
-            console.log('[py2Dmol] Setting up event listener for py2dmol_ready_{viewer_id}');
-            window.addEventListener('py2dmol_ready_{viewer_id}', function() {{
-                console.log('[py2Dmol] py2dmol_ready_{viewer_id} event fired!');
-                execute();
-            }}, {{ once: true }});
-
-            // Now try executing immediately in case viewer already exists
-            console.log('[py2Dmol] Trying immediate execute...');
+            // Fallback: try immediate execution for same-window scenarios
+            // (BroadcastChannel handshake handles cross-iframe cases)
+            console.log('[py2Dmol] Trying immediate execute (same-window fallback)...');
             execute();
         }})();
         """

@@ -6805,6 +6805,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
             console.log(`[py2Dmol] Viewer ${viewerId} listening on channel py2dmol_${viewerId}`);
 
+            // Send viewerReady signal to trigger data re-broadcast from persistent data cell
+            console.log(`[py2Dmol] Sending viewerReady signal on py2dmol_${viewerId}`);
+            channel.postMessage({
+                operation: 'viewerReady',
+                sourceInstanceId: thisInstanceId
+            });
+
             channel.onmessage = (event) => {
                 console.log(`[py2Dmol] Viewer ${viewerId} received broadcast message:`, event.data);
                 const { operation, args, sourceInstanceId } = event.data;
@@ -6868,9 +6875,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
         } catch (e) {}
 
-        // Dispatch ready event after viewer is fully registered
-        console.log(`[py2Dmol] Viewer ${viewerId} initialized, dispatching py2dmol_ready event`);
-        window.dispatchEvent(new CustomEvent(`py2dmol_ready_${viewerId}`));
+        // Viewer fully initialized
+        // BroadcastChannel handshake handles data synchronization automatically
+        console.log(`[py2Dmol] Viewer ${viewerId} fully initialized`);
     } else {
         console.error("py2dmol: viewer_id not found in config. Cannot register API.");
     }
