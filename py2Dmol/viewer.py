@@ -731,24 +731,38 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         </div>
         <script>
             (function() {{
+                console.log('[py2Dmol] Viewer init script running for {viewer_id}');
+
                 // Find the container we just rendered
                 const container = document.getElementById("{viewer_id}");
-                
+                console.log('[py2Dmol] Container found:', !!container);
+                console.log('[py2Dmol] initializePy2DmolViewer defined:', typeof initializePy2DmolViewer);
+
                 // Initialization logic
                 function init() {{
+                    console.log('[py2Dmol] init() called for {viewer_id}');
                     if (container && typeof initializePy2DmolViewer === 'function') {{
+                        console.log('[py2Dmol] Calling initializePy2DmolViewer for {viewer_id}');
                         initializePy2DmolViewer(container, '{viewer_id}');
                     }} else {{
                         console.error("py2dmol: Failed to initialize viewer (container or function missing).");
+                        console.error("  container:", !!container);
+                        console.error("  initializePy2DmolViewer:", typeof initializePy2DmolViewer);
                     }}
                 }}
 
                 // Check if library is already loaded
+                console.log('[py2Dmol] Checking if library loaded...');
                 if (typeof initializePy2DmolViewer === 'function') {{
+                    console.log('[py2Dmol] Library already loaded, initializing immediately');
                     init();
                 }} else {{
+                    console.log('[py2Dmol] Library not loaded, waiting for py2dmol_lib_loaded event');
                     // Wait for the library to load
-                    window.addEventListener('py2dmol_lib_loaded', init, {{ once: true }});
+                    window.addEventListener('py2dmol_lib_loaded', function() {{
+                        console.log('[py2Dmol] py2dmol_lib_loaded event fired!');
+                        init();
+                    }}, {{ once: true }});
                 }}
             }})();
         </script>
