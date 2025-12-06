@@ -1834,6 +1834,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Invalidate segment cache to ensure contacts and other object-specific data are regenerated
             this._invalidateSegmentCache();
 
+            // Invalidate shadow cache since shadows depend on object geometry, not just rotation
+            // Different objects have different geometries, so shadows must be recalculated
+            this._invalidateShadowCache();
+            this.lastShadowRotationMatrix = null;
+
             // Clear renderer bonds (will be restored from object data when frames load)
             this.bonds = null;
 
