@@ -1820,6 +1820,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Switch to new object
             this.currentObjectName = newObjectName;
 
+            // Get new object reference
+            let newObject = this.objectsData[newObjectName];
+
+            // Exit overlay mode if switching to single-frame object
+            if (this.overlayState.enabled && newObject && newObject.frames) {
+                if (newObject.frames.length <= 1) {
+                    // Exit overlay mode for single-frame objects
+                    this._exitOverlayMode(newObject, 0);
+                }
+            }
+
             // Invalidate segment cache to ensure contacts and other object-specific data are regenerated
             this._invalidateSegmentCache();
 
@@ -1841,7 +1852,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Get the correct coords length from the new object's first frame for normalization
             // This ensures normalization uses the correct size, not the previous object's coords
-            const newObject = this.objectsData[newObjectName];
+            newObject = this.objectsData[newObjectName];
             const firstFrame = newObject?.frames?.[0];
             const correctCoordsLength = firstFrame?.coords?.length || 0;
 
@@ -6297,11 +6308,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // ============================================================================
 
     // 1. Get config - check viewer-specific config first (Python), then global (web app)
-    const config = normalizeConfig(window.py2dmol_configs?.[viewerId] || window.viewerConfig);
+    const baseConfig = window.viewerConfig || {};
+    const initialViewerId = viewerId || baseConfig.viewer_id || containerElement?.id || null;
+    const registryConfig = initialViewerId && window.py2dmol_configs ? window.py2dmol_configs[initialViewerId] : null;
+    const config = normalizeConfig(registryConfig || baseConfig);
+
+    // Resolve viewerId even when caller omits the second argument (standalone web app)
+    const resolvedViewerId = viewerId
+        || config.viewer_id
+        || containerElement?.id
+        || `py2dmol_${Math.random().toString(36).slice(2, 10)}`;
+    config.viewer_id = resolvedViewerId;
+    viewerId = resolvedViewerId;
+
     // Persist normalized config for any downstream consumers
     window.viewerConfig = config;
-    // Override viewer_id from config with the parameter to ensure correct ID
-    config.viewer_id = viewerId;
 
     // 2. Setup Canvas with high-DPI scaling for crisp rendering
     const canvas = containerElement.querySelector('#canvas');
