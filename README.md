@@ -80,7 +80,6 @@ viewer = py2Dmol.view(
     controls=True,       # show controls
     pae=False,           # show pae
     pae_size=300,        # set pae canvas size (single integer for square canvas)
-    offline=False,       # embed javascript directly into notebook
 )
 
 viewer.add_pdb("my_complex.cif")

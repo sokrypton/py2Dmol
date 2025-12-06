@@ -146,8 +146,8 @@ def __init__(self,
     autoplay=False,           # Auto-play animation
     pae=False,                # Show PAE matrix
     pae_size=300,             # PAE canvas size
-    reuse_js=False,           # Reuse JS (optimization)
-    overlay=False             # Overlay all frames
+    overlay=False,            # Overlay all frames
+    id=None                   # Explicit viewer ID (auto-generated if None)
 ):
 ```
 
@@ -360,10 +360,12 @@ def __init__(self,
 
 **Key steps** (grid.py:131-206):
 1. Calculate rows if not specified
-2. Generate HTML for each viewer using `viewer._display_viewer(static_data)`
-3. Strip JS loading from subsequent viewers (only first viewer loads viewer-mol.js/viewer-pae.js)
+2. Generate HTML for each viewer using `viewer._display_viewer(static_data, include_libs=...)`
+3. Only first viewer includes library scripts (`include_libs=True`), subsequent viewers reuse them (`include_libs=False`)
 4. Build grid container with CSS overrides
 5. Display using `IPython.display.HTML()`
+
+**Library Loading Optimization**: Instead of regex stripping, the grid passes `include_libs=False` to subsequent viewers, preventing duplicate ~95KB script injection entirely.
 
 ### CSS Override System
 
@@ -392,8 +394,9 @@ Grid defaults (e.g., size=(200,200)) are applied to viewers, serialized in confi
 #### Memory
 
 - Each viewer maintains independent state (rotation, zoom, center)
-- JavaScript libraries loaded once, shared across all viewers
+- JavaScript libraries loaded once (inline ~95KB), shared across all viewers
 - Static data embedded in HTML (no server requests)
+- Grid optimization: Only first viewer includes library scripts
 
 #### Rendering
 
@@ -660,35 +663,42 @@ graph TB
     subgraph "Cell 1 - Viewer Display"
         A[viewer.show<>] --> B[Viewer Instance]
         B --> C[BroadcastChannel Listener]
+        C -->|Sends| D[viewerReady Signal]
     end
 
     subgraph "Cell 2 - Data Update"
-        D[viewer.add<>] --> E[_update_live_data_cell<>]
-        E --> F[Data Cell Script]
+        E[viewer.add<>] --> F[_update_live_data_cell<>]
+        F --> G[Data Cell Script]
+        G -->|Listens for| D
     end
 
     subgraph "BroadcastChannel API"
-        F -->|1. Broadcast| G[py2dmol_viewerId]
-        G -->|2. Deliver| C
+        D -->|1. Ready| H[py2dmol_viewerId]
+        H -->|2. Trigger| G
+        G -->|3. Broadcast| H
+        H -->|4. Deliver| C
     end
 
-    C -->|3. Apply Update| H[Renderer]
+    C -->|5. Apply Update| I[Renderer]
 
-    style G fill:#3b82f6,color:#fff
+    style H fill:#3b82f6,color:#fff
     style C fill:#10b981,color:#fff
-    style F fill:#f59e0b,color:#fff
+    style G fill:#f59e0b,color:#fff
 ```
 
-**Flow**:
+**Flow (with Handshake)**:
 
 1. **Cell 1**: User calls `viewer.show()` → Creates viewer with BroadcastChannel listener
-2. **Cell 2**: User calls `viewer.from_pdb("1UBQ")` → Triggers `_update_live_data_cell()`
-3. **Data Cell** (Cell 2): Broadcasts state via BroadcastChannel
-4. **Viewer** (Cell 1): Receives broadcast, applies update, re-renders
+2. **Viewer**: Sends `viewerReady` signal on BroadcastChannel
+3. **Cell 2**: User calls `viewer.from_pdb("1UBQ")` → Triggers `_update_live_data_cell()`
+4. **Data Cell** (Cell 2): Listens for `viewerReady` signal and re-broadcasts state when received
+5. **Viewer** (Cell 1): Receives broadcast, applies update, re-renders
+
+**Handshake Mechanism**: Solves race condition where data cell might broadcast before viewer is ready to listen (especially with CDN-loaded scripts). Viewer signals readiness, triggering data cell to re-broadcast.
 
 **Key Components**:
 
-#### Python: `_update_live_data_cell()` (viewer.py:399)
+#### Python: `_update_live_data_cell()` (viewer.py:402)
 
 ```python
 def _update_live_data_cell(self):
@@ -702,27 +712,46 @@ def _update_live_data_cell(self):
 
     # JavaScript that runs in data cell
     all_frames_js = f"""
-        // Step 1: Broadcast immediately (cross-iframe)
+        // BroadcastChannel with handshake
         const channel = new BroadcastChannel('py2dmol_{viewer_id}');
+
+        // Broadcast immediately in case viewer is already listening
         channel.postMessage({{
             operation: 'fullStateUpdate',
             args: [allObjectsData, allObjectsMetadata],
             sourceInstanceId: 'datacell_...'
         }});
-        channel.close();
 
-        // Step 2: Fallback for viewers not ready yet
-        window.addEventListener('py2dmol_ready_{viewer_id}', execute);
+        // Listen for viewerReady signal and re-broadcast
+        channel.onmessage = (event) => {{
+            if (event.data.operation === 'viewerReady') {{
+                channel.postMessage({{
+                    operation: 'fullStateUpdate',
+                    args: [allObjectsData, allObjectsMetadata],
+                    sourceInstanceId: 'datacell_...'
+                }});
+            }}
+        }};
+
+        // Fallback: same-window scenarios
+        function execute() {{ /* apply directly if viewer exists */ }}
+        execute();
     """
     update_display(HTML(f'<script>{all_frames_js}</script>'))
 ```
 
-#### JavaScript: BroadcastChannel Listener (viewer-mol.js:6790)
+#### JavaScript: BroadcastChannel Listener (viewer-mol.js:6802)
 
 ```javascript
 // Set up listener when viewer initializes
 const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
 const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
+
+// Send viewerReady signal to trigger data re-broadcast
+channel.postMessage({
+    operation: 'viewerReady',
+    sourceInstanceId: thisInstanceId
+});
 
 channel.onmessage = (event) => {
     const { operation, args, sourceInstanceId } = event.data;
@@ -1203,9 +1232,30 @@ const colorblindSafeChainColors = [
 
 ## Version History
 
-**Current**: Latest development version (2025-12-05)
+**Current**: Latest development version (2025-12-06)
 
-### Recent Changes (2025-12-05)
+### Recent Changes (2025-12-06)
+
+- ✅ **Removed CDN/offline parameter**
+  - Removed `offline` parameter from `view()` constructor
+  - Now always uses inline/local JavaScript (no CDN dependencies)
+  - Eliminates CDN caching issues and simplifies deployment
+- ✅ **Improved Grid efficiency**
+  - Added `include_libs` parameter to `_display_viewer()`
+  - Grid now passes `include_libs=False` to subsequent viewers
+  - Prevents duplicate ~95KB script injection (was using regex stripping)
+  - Cleaner, more efficient implementation
+- ✅ **Removed debug console logs**
+  - Cleaned up all `console.log` debug statements
+  - Kept `console.error` for actual error reporting
+  - Reduced minified file size to 95KB
+- ✅ **Enhanced BroadcastChannel handshake**
+  - Viewer sends `viewerReady` signal on initialization
+  - Data cell re-broadcasts when receiving `viewerReady`
+  - Solves race condition with CDN-loaded scripts
+  - Improves reliability across Google Colab/JupyterLab
+
+### Previous Changes (2025-12-05)
 
 - ✅ **Added comprehensive Grid Layout System documentation**
   - Three usage patterns (context manager, explicit builder, function-based)
