@@ -156,11 +156,9 @@ class Grid:
             # Get viewer HTML with static data
             # This bypasses the normal show() method to avoid individual display
             static_data = viewer.objects if viewer.objects else None
-            html = viewer._display_viewer(static_data=static_data)
 
-            # For subsequent viewers, strip JS loading (already loaded by first viewer)
-            if not first_viewer:
-                html = self._strip_js_loading(html)
+            # Only first viewer includes library scripts, subsequent ones reuse via global scope
+            html = viewer._display_viewer(static_data=static_data, include_libs=first_viewer)
 
             first_viewer = False
             viewer_htmls.append(html)
@@ -202,36 +200,6 @@ class Grid:
 
         # Display using IPython
         display(HTML(grid_html))
-
-    def _strip_js_loading(self, html):
-        """
-        Remove external JS loading from viewer HTML.
-
-        The first viewer loads the JS libraries, subsequent viewers
-        reuse them via browser caching and the global initialization.
-
-        Args:
-            html (str): Viewer HTML string
-
-        Returns:
-            str: HTML with JS loading tags removed
-        """
-        # Remove external script tags for viewer libraries
-        # Keep inline scripts (contain initialization logic)
-        html = re.sub(
-            r'<script[^>]+src=["\'][^"\']*viewer-mol[^"\']*["\'][^>]*>.*?</script>\s*',
-            '',
-            html,
-            flags=re.DOTALL
-        )
-        html = re.sub(
-            r'<script[^>]+src=["\'][^"\']*viewer-pae[^"\']*["\'][^>]*>.*?</script>\s*',
-            '',
-            html,
-            flags=re.DOTALL
-        )
-
-        return html
 
 
 def grid(cols=2, rows=None, gap=5, size=None, controls=False, box=False):

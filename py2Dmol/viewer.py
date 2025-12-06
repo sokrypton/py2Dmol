@@ -244,7 +244,7 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, overlay=False, offline=False, id=None,
+        pae=False, pae_size=300, overlay=False, id=None,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -284,7 +284,6 @@ class view:
         self._current_object_data = None  # List to hold frames for current object
         self._is_live = False             # True if .show() was called *before* .add()
         self._data_display_id = None      # For updating data cell only (not viewer)
-        self._offline = offline
 
         # --- Alignment/Dynamic State ---
         self._coords = None
@@ -571,13 +570,16 @@ class view:
         """
         self._update_live_data_cell()
 
-    def _display_viewer(self, static_data=None):
+    def _display_viewer(self, static_data=None, include_libs=True):
         """
         Internal: Renders the viewer's HTML directly into a div.
 
         Args:
             static_data (list, optional):
                 - A list of objects (for static 'show()' or hybrid modes).
+            include_libs (bool, optional):
+                - If True, includes the viewer library scripts (default).
+                - If False, skips library injection (for grid cells that reuse libraries).
 
         Returns:
             str: The complete HTML string to be displayed.
@@ -773,23 +775,17 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 }}
             }})();
         </script>
-        """ # Inject JS: use external CDN unless offline=True, then inline package scripts
-        if self._offline:
+        """ # Inject JS: always use inline package scripts (offline mode)
+        # Only include library scripts if requested (grid optimization)
+        if include_libs:
             with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.min.js') as f:
                 js_content_parent = f.read()
-            container_html = f"<script>{js_content_parent}</script>\n" + container_html
+            container_html = f'<script>{js_content_parent}</script>\n' + container_html
 
             if self.config["pae"]["enabled"]:
                 with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.min.js') as f:
                     pae_js_content = f.read()
-                container_html = f"<script>{pae_js_content}</script>\n" + container_html
-        else:
-            mol_url = "https://cdn.jsdelivr.net/gh/sokrypton/py2Dmol@beta/py2Dmol/resources/viewer-mol.min.js"
-            container_html = f'<script src="{mol_url}" onload="window.dispatchEvent(new CustomEvent(\'py2dmol_lib_loaded\'));"></script>\n' + container_html
-
-            if self.config["pae"]["enabled"]:
-                pae_url = "https://cdn.jsdelivr.net/gh/sokrypton/py2Dmol@beta/py2Dmol/resources/viewer-pae.min.js"
-                container_html = f'<script src="{pae_url}" onload="window.dispatchEvent(new CustomEvent(\'py2dmol_pae_loaded\'));"></script>\n' + container_html
+                container_html = f'<script>{pae_js_content}</script>\n' + container_html
 
         return container_html
 
