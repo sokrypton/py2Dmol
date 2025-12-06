@@ -934,12 +934,28 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # Filepath - parse it
             return self._parse_contacts_file(contacts)
         elif isinstance(contacts, list):
-            # List of contacts - validate and return
-            # Basic validation: check that each contact is a list
+            # List of contacts - validate and parse colors
             validated = []
             for contact in contacts:
                 if isinstance(contact, list) and len(contact) >= 3:
-                    validated.append(contact)
+                    # Parse color if it's a string (4th element)
+                    if len(contact) >= 4:
+                        color_elem = contact[3]
+                        # If color is a string, parse it to RGB dict
+                        if isinstance(color_elem, str):
+                            parsed_color = self._parse_contact_color(color_elem)
+                            if parsed_color:
+                                # Replace string with parsed RGB dict
+                                validated.append([contact[0], contact[1], contact[2], parsed_color])
+                            else:
+                                # Invalid color string, skip color
+                                validated.append([contact[0], contact[1], contact[2]])
+                        else:
+                            # Color is already a dict or other format, keep as-is
+                            validated.append(contact)
+                    else:
+                        # No color specified
+                        validated.append(contact)
                 else:
                     print(f"Warning: Skipping invalid contact: {contact}")
             return validated if validated else None
@@ -1079,6 +1095,23 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         if is_first_frame:
             self.objects[-1]["rotation_matrix"] = self._rotation_matrix.tolist()
             self.objects[-1]["center"] = self._center.tolist()
+        else:
+            # In overlay mode, update center to encompass all frames
+            if self.config["overlay"]["enabled"]:
+                # Get all frames' coordinates and calculate combined center
+                all_coords = []
+                for frame in self._current_object_data:
+                    all_coords.append(np.array(frame["coords"]))
+                # Add current frame
+                all_coords.append(self._coords)
+
+                # Calculate center from all frames combined
+                combined_coords = np.vstack(all_coords)
+                updated_center = combined_coords.mean(axis=0)
+
+                # Update stored center
+                self._center = updated_center
+                self.objects[-1]["center"] = updated_center.tolist()
 
         # --- Step 4: Save data to Python list ---
         self._current_object_data.append(data_dict)
@@ -1130,29 +1163,58 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     "center": self._center.tolist()
                 })
 
-    def set_color(self, color, name=None):
+    def set_color(self, color, name=None, chain=None, position=None, frame=None):
         """
-        Set or override color for an object or its frames.
+        Set or override color for an object, chain, position, or frame.
 
         Args:
             color: Color specification. Can be:
                    - String (mode): "chain", "plddt", "rainbow", "auto", "entropy", "deepmind"
                    - String (literal): "red", "#ff0000", etc.
-                   - Dict (advanced): {
-                       "object": mode/color,           # Object-level override
-                       "frames": {
-                           0: mode/color,              # Frame 0 color
-                           1: mode/color,              # Frame 1 color
-                           2: {"frame": mode, "chain": {...}, "position": {...}}  # Frame 2 advanced
-                       }
-                     }
+                   - Dict: {"A": "red", "B": "blue"} when chain=True or position=True
+                   - Dict (advanced): {"object": mode, "frames": {...}} (legacy format)
             name (str, optional): Name of the object to color.
                                  If None, colors the last (most recently added) object.
+            chain (str or bool, optional):
+                   - str: Single chain ID to color (e.g., "A")
+                   - True: Color is a dict mapping chains to colors
+                   - None: No chain-specific coloring
+            position (int, list, tuple, range, or bool, optional):
+                   - int: Single position index to color
+                   - list: List of position indices [5, 10, 15, 20]
+                   - tuple: Range of positions (start, end) - e.g., (5, 15) colors 5-14
+                   - range: Range object - e.g., range(5, 15) colors 5-14
+                   - True: Color is a dict mapping positions to colors
+                   - None: No position-specific coloring
+            frame (int, optional): Specific frame index to color (0-based)
 
         Examples:
-            viewer.set_color("red")                    # Color last object red
-            viewer.set_color("blue", name="protein1")  # Color specific object blue
-            viewer.set_color({"frames": {0: "red"}})   # Frame-level colors
+            # Simple: Color entire object
+            viewer.set_color("red")
+            viewer.set_color("plddt")
+
+            # Chain-specific (SIMPLE!)
+            viewer.set_color("red", chain="B")                    # Color chain B red
+            viewer.set_color({"A": "red", "B": "blue"}, chain=True)  # Multiple chains
+
+            # Position-specific (SIMPLE!)
+            viewer.set_color("yellow", position=5)                # Color position 5 yellow
+            viewer.set_color("red", position=[5, 10, 15])         # Color multiple positions
+            viewer.set_color("blue", position=(10, 20))           # Color range 10-19
+            viewer.set_color("green", position=range(0, 10))      # Color range 0-9
+            viewer.set_color({0: "red", 10: "blue"}, position=True)  # Dict mapping
+
+            # Frame-specific
+            viewer.set_color("green", frame=0)                    # Color frame 0 green
+
+            # Combined - the powerful stuff!
+            viewer.set_color("red", chain="A", frame=0)           # Color chain A in frame 0
+            viewer.set_color("blue", chain="B", position=10)      # Color chain B AND position 10
+            viewer.set_color("green", position=(5, 15), frame=1)  # Color positions 5-14 in frame 1
+            viewer.set_color("yellow", chain="A", position=[0, 5, 10], name="protein1")  # Full control
+
+            # Legacy format still works
+            viewer.set_color({"frames": {0: "red"}})
         """
         # Find the object
         if name is None:
@@ -1168,34 +1230,152 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 print(f"Error: Object '{name}' not found.")
                 return
 
-        # Normalize the color
-        normalized_color = _normalize_color(color)
-        if normalized_color is None:
-            return
+        # Handle intuitive chain/position/frame parameters
+        if chain is not None or position is not None:
+            # Build advanced color dict from simple parameters
+            advanced_color = {}
 
-        # Handle frame-level colors if specified
-        if normalized_color.get("type") == "advanced" and normalized_color.get("value", {}).get("frames"):
-            frames_spec = normalized_color["value"]["frames"]
-            frames = target_obj.get("frames", [])
+            # Handle chain coloring
+            if chain is not None:
+                if chain is True:
+                    # Color is a dict: {"A": "red", "B": "blue"}
+                    if isinstance(color, dict):
+                        advanced_color["chain"] = color
+                    else:
+                        print("Error: When chain=True, color must be a dict like {'A': 'red', 'B': 'blue'}")
+                        return
+                else:
+                    # chain is a string like "A"
+                    advanced_color["chain"] = {str(chain): color}
 
-            # Apply frame-level colors to each frame
-            for frame_idx, frame_color_spec in frames_spec.items():
-                if isinstance(frame_idx, int) and frame_idx < len(frames):
-                    # Normalize the frame color
-                    frame_color = _normalize_color(frame_color_spec)
-                    if frame_color:
-                        frames[frame_idx]["color"] = frame_color
+            # Handle position coloring
+            if position is not None:
+                if position is True:
+                    # Color is a dict: {0: "red", 5: "blue"}
+                    if isinstance(color, dict):
+                        advanced_color["position"] = color
+                    else:
+                        print("Error: When position=True, color must be a dict like {0: 'red', 5: 'blue'}")
+                        return
+                elif isinstance(position, int):
+                    # Single position: position=5
+                    advanced_color["position"] = {int(position): color}
+                elif isinstance(position, (list, tuple, range)):
+                    # Multiple positions or range
+                    position_dict = {}
 
-        # Store at object level (for non-frame colors)
-        target_obj["color"] = normalized_color
+                    # Handle tuple as range (start, end)
+                    if isinstance(position, tuple) and len(position) == 2:
+                        position = range(position[0], position[1])
+
+                    # Convert to list if range
+                    if isinstance(position, range):
+                        position = list(position)
+
+                    # Build position dict
+                    for pos in position:
+                        position_dict[int(pos)] = color
+
+                    advanced_color["position"] = position_dict
+                else:
+                    print(f"Error: position must be int, list, tuple, range, or True, got {type(position)}")
+                    return
+
+            # If frame is specified, apply to that frame only
+            if frame is not None:
+                frames = target_obj.get("frames", [])
+                if isinstance(frame, int) and frame < len(frames):
+                    # Get or create frame color dict
+                    frame_color = frames[frame].get("color", {})
+                    if isinstance(frame_color, dict) and frame_color.get("type") == "advanced":
+                        # Merge with existing advanced color
+                        existing = frame_color.get("value", {})
+                        existing.update(advanced_color)
+                        advanced_color = existing
+
+                    # Normalize and store
+                    normalized_color = _normalize_color(advanced_color)
+                    if normalized_color:
+                        frames[frame]["color"] = normalized_color
+                else:
+                    print(f"Error: Frame {frame} does not exist (object has {len(frames)} frames)")
+                    return
+            else:
+                # Apply to object level - MERGE with existing advanced color
+                normalized_color = _normalize_color(advanced_color)
+                if normalized_color:
+                    # Check if there's already an advanced color and merge
+                    existing_color = target_obj.get("color")
+                    if existing_color and existing_color.get("type") == "advanced":
+                        # Merge the advanced dicts
+                        existing_value = existing_color.get("value", {})
+                        new_value = normalized_color.get("value", {})
+
+                        # Merge chain dicts
+                        if "chain" in new_value:
+                            if "chain" not in existing_value:
+                                existing_value["chain"] = {}
+                            existing_value["chain"].update(new_value["chain"])
+
+                        # Merge position dicts
+                        if "position" in new_value:
+                            if "position" not in existing_value:
+                                existing_value["position"] = {}
+                            existing_value["position"].update(new_value["position"])
+
+                        # Update other keys
+                        for key in ["object", "frame"]:
+                            if key in new_value:
+                                existing_value[key] = new_value[key]
+
+                        target_obj["color"] = {"type": "advanced", "value": existing_value}
+                    else:
+                        target_obj["color"] = normalized_color
+        else:
+            # Standard color normalization (backward compatible)
+            normalized_color = _normalize_color(color)
+            if normalized_color is None:
+                return
+
+            # Handle frame-level colors if specified in legacy format
+            if normalized_color.get("type") == "advanced" and normalized_color.get("value", {}).get("frames"):
+                frames_spec = normalized_color["value"]["frames"]
+                frames = target_obj.get("frames", [])
+
+                # Apply frame-level colors to each frame
+                for frame_idx, frame_color_spec in frames_spec.items():
+                    if isinstance(frame_idx, int) and frame_idx < len(frames):
+                        # Normalize the frame color
+                        frame_color = _normalize_color(frame_color_spec)
+                        if frame_color:
+                            frames[frame_idx]["color"] = frame_color
+
+            # Handle specific frame parameter
+            if frame is not None:
+                frames = target_obj.get("frames", [])
+                if isinstance(frame, int) and frame < len(frames):
+                    frames[frame]["color"] = normalized_color
+                else:
+                    print(f"Error: Frame {frame} does not exist (object has {len(frames)} frames)")
+                    return
+            else:
+                # Store at object level
+                target_obj["color"] = normalized_color
 
         # Send update if in live mode
         if self._is_live:
-            self._send_message({
-                "type": "py2DmolSetObjectColor",
-                "name": name,
-                "color": normalized_color
-            })
+            # Get the final color to send
+            if frame is not None and frame < len(target_obj.get("frames", [])):
+                final_color = target_obj["frames"][frame].get("color")
+            else:
+                final_color = target_obj.get("color")
+
+            if final_color:
+                self._send_message({
+                    "type": "py2DmolSetObjectColor",
+                    "name": name,
+                    "color": final_color
+                })
 
 
     def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None):

@@ -374,12 +374,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 resolvedLiteralColor = objColor.value;
             } else if (objColor.type === 'advanced') {
                 // Advanced dict at object level
-                if (objColor.value.object) {
-                    const objLevelColor = objColor.value.object;
+                const adv = objColor.value;
+
+                // Check object-level key first
+                if (adv.object) {
+                    const objLevelColor = adv.object;
                     if (typeof objLevelColor === 'string' && VALID_COLOR_MODES.includes(objLevelColor.toLowerCase())) {
                         resolvedMode = objLevelColor.toLowerCase();
                     } else {
                         resolvedLiteralColor = objLevelColor;
+                    }
+                }
+
+                // Check chain-level at object scope
+                if (adv.chain && chainId && adv.chain[chainId]) {
+                    const chainColor = adv.chain[chainId];
+                    if (typeof chainColor === 'string' && VALID_COLOR_MODES.includes(chainColor.toLowerCase())) {
+                        resolvedMode = chainColor.toLowerCase();
+                        resolvedLiteralColor = null;
+                    } else {
+                        resolvedLiteralColor = chainColor;
+                    }
+                }
+
+                // Check position-level at object scope (highest priority)
+                if (adv.position && adv.position[posIndex] !== undefined) {
+                    const posColor = adv.position[posIndex];
+                    if (typeof posColor === 'string' && VALID_COLOR_MODES.includes(posColor.toLowerCase())) {
+                        resolvedMode = posColor.toLowerCase();
+                        resolvedLiteralColor = null;
+                    } else {
+                        resolvedLiteralColor = posColor;
                     }
                 }
             }
@@ -3917,21 +3942,50 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Pre-calculate rainbow scales
-            // Include ligands in ligand-only chains for rainbow coloring
-            this.chainRainbowScales = {};
-            for (let i = 0; i < this.positionTypes.length; i++) {
-                const type = this.positionTypes[i];
-                const chainId = this.chains[i] || 'A';
-                const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
+            // In overlay mode: per-frame scales (each frame gets own 0-100% gradient)
+            // In normal mode: global scales
+            if (this.overlayState.enabled && this.overlayState.frameIdMap) {
+                // Per-frame rainbow scales
+                this.frameRainbowScales = {};
+                for (let i = 0; i < this.positionTypes.length; i++) {
+                    const type = this.positionTypes[i];
+                    const chainId = this.chains[i] || 'A';
+                    const frameIdx = this.overlayState.frameIdMap[i];
+                    const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
-                if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
-                    if (!this.chainRainbowScales[chainId]) {
-                        this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity };
+                    if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
+                        // Initialize frame scale if needed
+                        if (!this.frameRainbowScales[frameIdx]) {
+                            this.frameRainbowScales[frameIdx] = {};
+                        }
+                        if (!this.frameRainbowScales[frameIdx][chainId]) {
+                            this.frameRainbowScales[frameIdx][chainId] = { min: Infinity, max: -Infinity };
+                        }
+                        const colorIndex = this.perChainIndices[i];
+                        const scale = this.frameRainbowScales[frameIdx][chainId];
+                        scale.min = Math.min(scale.min, colorIndex);
+                        scale.max = Math.max(scale.max, colorIndex);
                     }
-                    const colorIndex = this.perChainIndices[i];
-                    const scale = this.chainRainbowScales[chainId];
-                    scale.min = Math.min(scale.min, colorIndex);
-                    scale.max = Math.max(scale.max, colorIndex);
+                }
+                // Keep chainRainbowScales as null in overlay mode to avoid confusion
+                this.chainRainbowScales = null;
+            } else {
+                // Global rainbow scales (normal mode)
+                this.chainRainbowScales = {};
+                for (let i = 0; i < this.positionTypes.length; i++) {
+                    const type = this.positionTypes[i];
+                    const chainId = this.chains[i] || 'A';
+                    const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
+
+                    if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
+                        if (!this.chainRainbowScales[chainId]) {
+                            this.chainRainbowScales[chainId] = { min: Infinity, max: -Infinity };
+                        }
+                        const colorIndex = this.perChainIndices[i];
+                        const scale = this.chainRainbowScales[chainId];
+                        scale.min = Math.min(scale.min, colorIndex);
+                        scale.max = Math.max(scale.max, colorIndex);
+                    }
                 }
             }
 
@@ -4662,7 +4716,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 } else {
                     // Regular positions get rainbow color
                     const chainId = this.chains[atomIndex] || 'A';
-                    const scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
+
+                    // In overlay mode, use per-frame scales; otherwise use global scales
+                    let scale = null;
+                    if (this.overlayState.enabled && this.overlayState.frameIdMap && this.frameRainbowScales) {
+                        const frameIdx = this.overlayState.frameIdMap[atomIndex];
+                        scale = this.frameRainbowScales[frameIdx] && this.frameRainbowScales[frameIdx][chainId];
+                    } else {
+                        scale = this.chainRainbowScales && this.chainRainbowScales[chainId];
+                    }
+
                     if (scale && scale.min !== Infinity && scale.max !== -Infinity) {
                         const colorIndex = this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0;
                         color = getRainbowColor(colorIndex, scale.min, scale.max, this.colorblindMode);
