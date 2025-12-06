@@ -1614,19 +1614,25 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch) {
     const shouldAlign = alignFramesCheckbox ? alignFramesCheckbox.checked : false;
 
     // Check if object with same name already exists in tempBatch or pendingObjects
-    // Always replace the old one to avoid mixing data across uploads
+    // If it exists in tempBatch (current upload batch), reuse it to accumulate frames
+    // If it exists in pendingObjects (from previous upload), replace it
     const existingTempIndex = tempBatch.findIndex(obj => obj.name === targetObjectName);
+    let targetObject;
+
     if (existingTempIndex >= 0) {
-        tempBatch.splice(existingTempIndex, 1);
-    }
+        // Reuse existing object from current batch to accumulate frames
+        targetObject = tempBatch[existingTempIndex];
+    } else {
+        // Check if object exists in pendingObjects (from previous upload) and remove it
+        const existingGlobalIndex = pendingObjects.findIndex(obj => obj.name === targetObjectName);
+        if (existingGlobalIndex >= 0) {
+            pendingObjects.splice(existingGlobalIndex, 1);
+        }
 
-    const existingGlobalIndex = pendingObjects.findIndex(obj => obj.name === targetObjectName);
-    if (existingGlobalIndex >= 0) {
-        pendingObjects.splice(existingGlobalIndex, 1);
+        // Create new object and add to tempBatch
+        targetObject = { name: targetObjectName, frames: [] };
+        tempBatch.push(targetObject);
     }
-
-    let targetObject = { name: targetObjectName, frames: [] };
-    tempBatch.push(targetObject);
 
     const isTrajectory = (loadAsFramesCheckbox.checked ||
         targetObject.frames.length > 0 ||
