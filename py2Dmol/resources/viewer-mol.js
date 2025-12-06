@@ -31,7 +31,6 @@ function registerCustomColorMode(modeName, colorFunc) {
         window.py2dmol_customColors = {};
     }
     window.py2dmol_customColors[modeName] = colorFunc;
-    console.log(`✓ Custom color mode registered: "${modeName}"`);
 }
 
 /**
@@ -6803,25 +6802,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         try {
             const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
             const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
-            console.log(`[py2Dmol] Viewer ${viewerId} listening on channel py2dmol_${viewerId}`);
 
             // Send viewerReady signal to trigger data re-broadcast from persistent data cell
-            console.log(`[py2Dmol] Sending viewerReady signal on py2dmol_${viewerId}`);
             channel.postMessage({
                 operation: 'viewerReady',
                 sourceInstanceId: thisInstanceId
             });
 
             channel.onmessage = (event) => {
-                console.log(`[py2Dmol] Viewer ${viewerId} received broadcast message:`, event.data);
                 const { operation, args, sourceInstanceId } = event.data;
                 if (sourceInstanceId === thisInstanceId) {
-                    console.log(`[py2Dmol] Ignoring own broadcast`);
                     return;
                 }
 
                 if (operation === 'fullStateUpdate') {
-                    console.log(`[py2Dmol] Processing fullStateUpdate`);
                     const [allObjectsData, allObjectsMetadata] = args;
 
                     if (Object.keys(allObjectsData).length === 0) {
@@ -6875,9 +6869,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
         } catch (e) {}
 
-        // Viewer fully initialized
-        // BroadcastChannel handshake handles data synchronization automatically
-        console.log(`[py2Dmol] Viewer ${viewerId} fully initialized`);
     } else {
         console.error("py2dmol: viewer_id not found in config. Cannot register API.");
     }

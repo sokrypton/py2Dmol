@@ -443,16 +443,11 @@ class view:
             const allObjectsData = {json.dumps(all_objects_data)};
             const allObjectsMetadata = {json.dumps(all_objects_metadata)};
 
-            console.log('[py2Dmol] Persistent data cell executing for viewer_id: {viewer_id}');
-            console.log('[py2Dmol] Objects:', Object.keys(allObjectsData));
-            console.log('[py2Dmol] Frame counts:', Object.entries(allObjectsData).map(([k,v]) => `${{k}}=${{v.length}}`));
-
             // Broadcast state update (works cross-iframe and same-window)
             // Use a persistent channel to handle viewer ready events
             let dataChannel = null;
             try {{
                 dataChannel = new BroadcastChannel('py2dmol_{viewer_id}');
-                console.log('[py2Dmol] Broadcasting initial state to channel: py2dmol_{viewer_id}');
 
                 // Broadcast immediately in case viewer is already listening
                 dataChannel.postMessage({{
@@ -464,7 +459,6 @@ class view:
                 // Listen for viewer ready signal and re-broadcast
                 dataChannel.onmessage = (event) => {{
                     if (event.data.operation === 'viewerReady') {{
-                        console.log('[py2Dmol] Viewer ready signal received, re-broadcasting data...');
                         dataChannel.postMessage({{
                             operation: 'fullStateUpdate',
                             args: [allObjectsData, allObjectsMetadata],
@@ -473,17 +467,12 @@ class view:
                     }}
                 }};
             }} catch (e) {{
-                console.log('[py2Dmol] BroadcastChannel failed:', e);
+                // BroadcastChannel not supported, will use fallback
             }}
 
             // Fallback: apply locally if BroadcastChannel not supported
             function execute() {{
-                console.log('[py2Dmol] execute() called for viewer_id: {viewer_id}');
-                console.log('[py2Dmol] window.py2dmol_viewers exists:', !!window.py2dmol_viewers);
-                console.log('[py2Dmol] Viewer exists:', !!(window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']));
-
                 if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
-                    console.log('[py2Dmol] Found viewer, applying state...');
                     const viewer = window.py2dmol_viewers['{viewer_id}'];
 
                     if (Object.keys(allObjectsData).length === 0) {{
@@ -549,15 +538,11 @@ class view:
                         viewer.renderer.cachedSegmentIndicesObjectName = null;
                         viewer.renderer.setFrame(viewer.renderer.currentFrame);
                     }}
-                    console.log('[py2Dmol] State applied successfully');
-                }} else {{
-                    console.log('[py2Dmol] Viewer not found, will wait for py2dmol_ready event');
                 }}
             }}
 
             // Fallback: try immediate execution for same-window scenarios
             // (BroadcastChannel handshake handles cross-iframe cases)
-            console.log('[py2Dmol] Trying immediate execute (same-window fallback)...');
             execute();
         }})();
         """
@@ -740,38 +725,20 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         </div>
         <script>
             (function() {{
-                console.log('[py2Dmol] Viewer init script running for {viewer_id}');
-
-                // Find the container we just rendered
                 const container = document.getElementById("{viewer_id}");
-                console.log('[py2Dmol] Container found:', !!container);
-                console.log('[py2Dmol] initializePy2DmolViewer defined:', typeof initializePy2DmolViewer);
 
-                // Initialization logic
                 function init() {{
-                    console.log('[py2Dmol] init() called for {viewer_id}');
                     if (container && typeof initializePy2DmolViewer === 'function') {{
-                        console.log('[py2Dmol] Calling initializePy2DmolViewer for {viewer_id}');
                         initializePy2DmolViewer(container, '{viewer_id}');
                     }} else {{
                         console.error("py2dmol: Failed to initialize viewer (container or function missing).");
-                        console.error("  container:", !!container);
-                        console.error("  initializePy2DmolViewer:", typeof initializePy2DmolViewer);
                     }}
                 }}
 
-                // Check if library is already loaded
-                console.log('[py2Dmol] Checking if library loaded...');
                 if (typeof initializePy2DmolViewer === 'function') {{
-                    console.log('[py2Dmol] Library already loaded, initializing immediately');
                     init();
                 }} else {{
-                    console.log('[py2Dmol] Library not loaded, waiting for py2dmol_lib_loaded event');
-                    // Wait for the library to load
-                    window.addEventListener('py2dmol_lib_loaded', function() {{
-                        console.log('[py2Dmol] py2dmol_lib_loaded event fired!');
-                        init();
-                    }}, {{ once: true }});
+                    window.addEventListener('py2dmol_lib_loaded', init, {{ once: true }});
                 }}
             }})();
         </script>
