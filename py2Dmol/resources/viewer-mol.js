@@ -6803,12 +6803,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         try {
             const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
             const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
+            console.log(`[py2Dmol] Viewer ${viewerId} listening on channel py2dmol_${viewerId}`);
 
             channel.onmessage = (event) => {
+                console.log(`[py2Dmol] Viewer ${viewerId} received broadcast message:`, event.data);
                 const { operation, args, sourceInstanceId } = event.data;
-                if (sourceInstanceId === thisInstanceId) return;
+                if (sourceInstanceId === thisInstanceId) {
+                    console.log(`[py2Dmol] Ignoring own broadcast`);
+                    return;
+                }
 
                 if (operation === 'fullStateUpdate') {
+                    console.log(`[py2Dmol] Processing fullStateUpdate`);
                     const [allObjectsData, allObjectsMetadata] = args;
 
                     if (Object.keys(allObjectsData).length === 0) {
@@ -6863,6 +6869,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         } catch (e) {}
 
         // Dispatch ready event after viewer is fully registered
+        console.log(`[py2Dmol] Viewer ${viewerId} initialized, dispatching py2dmol_ready event`);
         window.dispatchEvent(new CustomEvent(`py2dmol_ready_${viewerId}`));
     } else {
         console.error("py2dmol: viewer_id not found in config. Cannot register API.");

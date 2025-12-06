@@ -244,7 +244,7 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, overlay=False, offline=False,
+        pae=False, pae_size=300, overlay=False, offline=False, id=None,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -274,7 +274,10 @@ class view:
         
         # Add viewer_id to root level
         import uuid
-        self.config["viewer_id"] = str(uuid.uuid4())
+        if id is not None:
+            self.config["viewer_id"] = str(id)
+        else:
+            self.config["viewer_id"] = str(uuid.uuid4())
         
         # The viewer's mode is determined by when .show() is called.
         self.objects = []                 # Store all data
@@ -441,20 +444,32 @@ class view:
             const allObjectsData = {json.dumps(all_objects_data)};
             const allObjectsMetadata = {json.dumps(all_objects_metadata)};
 
+            console.log('[py2Dmol] Persistent data cell executing for viewer_id: {viewer_id}');
+            console.log('[py2Dmol] Objects:', Object.keys(allObjectsData));
+            console.log('[py2Dmol] Frame counts:', Object.entries(allObjectsData).map(([k,v]) => `${{k}}=${{v.length}}`));
+
             // Broadcast state update (works cross-iframe and same-window)
             try {{
                 const channel = new BroadcastChannel('py2dmol_{viewer_id}');
+                console.log('[py2Dmol] Broadcasting to channel: py2dmol_{viewer_id}');
                 channel.postMessage({{
                     operation: 'fullStateUpdate',
                     args: [allObjectsData, allObjectsMetadata],
                     sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
                 }});
                 channel.close();
-            }} catch (e) {{}}
+            }} catch (e) {{
+                console.log('[py2Dmol] BroadcastChannel failed:', e);
+            }}
 
             // Fallback: apply locally if BroadcastChannel not supported
             function execute() {{
+                console.log('[py2Dmol] execute() called for viewer_id: {viewer_id}');
+                console.log('[py2Dmol] window.py2dmol_viewers exists:', !!window.py2dmol_viewers);
+                console.log('[py2Dmol] Viewer exists:', !!(window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']));
+
                 if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
+                    console.log('[py2Dmol] Found viewer, applying state...');
                     const viewer = window.py2dmol_viewers['{viewer_id}'];
 
                     if (Object.keys(allObjectsData).length === 0) {{
@@ -520,11 +535,24 @@ class view:
                         viewer.renderer.cachedSegmentIndicesObjectName = null;
                         viewer.renderer.setFrame(viewer.renderer.currentFrame);
                     }}
+                    console.log('[py2Dmol] State applied successfully');
+                }} else {{
+                    console.log('[py2Dmol] Viewer not found, will wait for py2dmol_ready event');
                 }}
             }}
 
-            // Fallback for viewers not ready yet (won't receive broadcast)
-            window.addEventListener('py2dmol_ready_{viewer_id}', execute, {{ once: true }});
+            // CRITICAL: Set up event listener FIRST to avoid race condition
+            // If we call execute() first, the viewer might initialize between
+            // execute() and addEventListener(), causing us to miss the event!
+            console.log('[py2Dmol] Setting up event listener for py2dmol_ready_{viewer_id}');
+            window.addEventListener('py2dmol_ready_{viewer_id}', function() {{
+                console.log('[py2Dmol] py2dmol_ready_{viewer_id} event fired!');
+                execute();
+            }}, {{ once: true }});
+
+            // Now try executing immediately in case viewer already exists
+            console.log('[py2Dmol] Trying immediate execute...');
+            execute();
         }})();
         """
         update_display(HTML(f'<script>{all_frames_js}</script>'), display_id=self._data_display_id)
