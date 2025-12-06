@@ -4343,12 +4343,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Rebuild if:
             // 1. adjList is missing or wrong size (coords changed)
             // 2. segmentOrder is missing or too small (segments increased)
-            // 3. We just generated new segments (canUseCache was false) - though if cache was false, we likely need to rebuild anyway
+            // 3. We just generated new segments (canUseCache was false)
 
             const needBuild = !this.adjList ||
                 this.adjList.length !== numPositions ||
                 !this.segmentOrder ||
-                this.segmentOrder.length < numSegments;
+                this.segmentOrder.length < numSegments ||
+                !canUseCache;
 
             if (needBuild) {
                 // Build adjacency list

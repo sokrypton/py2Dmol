@@ -1639,8 +1639,8 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch) {
         models.length > 1);
 
     function maybeFilterLigands(atoms) {
-        const ignore = !!(window.viewerConfig && window.viewerConfig.ui?.ignoreLigands);
-        if (!ignore) return atoms;
+        const shouldLoadLigands = window.viewerConfig?.ui?.loadLigands ?? true;
+        if (shouldLoadLigands) return atoms;
 
         // Use modresMap and chemCompMap from parent scope (from parse results)
         // Group positions by residue to check for structural characteristics
