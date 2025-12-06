@@ -2828,9 +2828,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _resolvePlddtData(object, frameIndex) {
             if (frameIndex < 0 || frameIndex >= object.frames.length) return null;
 
+            const currentFrame = object.frames[frameIndex];
+
+            // If frame explicitly has plddts (even if null), don't inherit
+            if ('plddts' in currentFrame) {
+                return currentFrame.plddts;
+            }
+
             // Check current frame first
-            if (this._hasPlddtData(object.frames[frameIndex])) {
-                return object.frames[frameIndex].plddts;
+            if (this._hasPlddtData(currentFrame)) {
+                return currentFrame.plddts;
             }
 
             // Use object-level tracking for optimization (if available and valid)

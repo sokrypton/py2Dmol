@@ -616,8 +616,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     # plddts
                     curr_plddts = frame.get("plddts")
                     if frame_idx == 0 or curr_plddts != prev_plddts:
-                        if curr_plddts is not None:
-                            light_frame["plddts"] = curr_plddts
+                        # Send the value even if None to explicitly signal "no plddt" vs inheriting
+                        light_frame["plddts"] = curr_plddts
                         prev_plddts = curr_plddts
 
                     # pae (always include if present, usually only in frame 0)
