@@ -4992,11 +4992,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @returns {number} Width multiplier
          */
         _calculateSegmentWidthMultiplier(segData, segInfo) {
-            // Handle zero-length segments (positions)
-            if (segInfo.idx1 === segInfo.idx2) {
-                return this.typeWidthMultipliers?.atom ?? ATOM_WIDTH_MULTIPLIER;
-            }
-
             // Use cached width multiplier for this type (O(1) lookup)
             const type = segInfo.type;
             const baseMultiplier = this.typeWidthMultipliers?.[type] ?? this._calculateTypeWidthMultiplier(type);
@@ -5093,9 +5088,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 tint = tint_cutoff_sq / (tint_cutoff_sq + dist2D_sq * alpha);
             }
 
-            // Skip width calculation for performance (use constant ratio)
-            const widthRatio = 1.0; // Assume equal widths for speed
-            return { shadow: shadow * widthRatio, tint: tint * widthRatio };
+            // Adjust shadow strength based on segment type
+            // Zero-length segments (single atoms) cast 1/2 strength shadows compared to regular segments (2 atoms)
+            let strengthMultiplier = 1.0;
+            if (isPosition2) {
+                // Casting segment is a single atom -> half strength
+                strengthMultiplier *= 0.5;
+            }
+
+            return { shadow: shadow * strengthMultiplier, tint: tint * strengthMultiplier };
         }
 
 
@@ -6056,38 +6057,56 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // --- 2-STEP DRAW (Outline) ---
                     const totalOutlineWidth = currentLineWidth + this.relativeOutlineWidth;
 
-                    // Pass 1: Gap filler outline (butt caps)
-                    ctx.beginPath();
-                    ctx.moveTo(x1, y1);
-                    ctx.lineTo(x2, y2);
-                    setCanvasProps(gapFillerColor, totalOutlineWidth, 'butt');
-                    ctx.stroke();
-
-                    // Add rounded caps at outer endpoints if full outline mode
-                    if (this.outlineMode === 'full') {
+                    // For zero-length segments, draw single outline circle
+                    if (segInfo.idx1 === segInfo.idx2) {
                         const outlineRadius = totalOutlineWidth / 2;
-                        if (hasOuterStart) {
-                            ctx.beginPath();
-                            ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
-                            ctx.fillStyle = gapFillerColor;
-                            ctx.fill();
-                        }
-                        if (hasOuterEnd) {
-                            ctx.beginPath();
-                            ctx.arc(x2, y2, outlineRadius, 0, Math.PI * 2);
-                            ctx.fillStyle = gapFillerColor;
-                            ctx.fill();
+                        ctx.beginPath();
+                        ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
+                        ctx.fillStyle = gapFillerColor;
+                        ctx.fill();
+                    } else {
+                        // Pass 1: Gap filler outline (butt caps)
+                        ctx.beginPath();
+                        ctx.moveTo(x1, y1);
+                        ctx.lineTo(x2, y2);
+                        setCanvasProps(gapFillerColor, totalOutlineWidth, 'butt');
+                        ctx.stroke();
+
+                        // Add rounded caps at outer endpoints if full outline mode
+                        if (this.outlineMode === 'full') {
+                            const outlineRadius = totalOutlineWidth / 2;
+                            if (hasOuterStart) {
+                                ctx.beginPath();
+                                ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
+                                ctx.fillStyle = gapFillerColor;
+                                ctx.fill();
+                            }
+                            if (hasOuterEnd) {
+                                ctx.beginPath();
+                                ctx.arc(x2, y2, outlineRadius, 0, Math.PI * 2);
+                                ctx.fillStyle = gapFillerColor;
+                                ctx.fill();
+                            }
                         }
                     }
                 }
 
                 // --- MAIN DRAW (Always) ---
                 // Pass 2: Main colored line (always round caps)
-                ctx.beginPath();
-                ctx.moveTo(x1, y1);
-                ctx.lineTo(x2, y2);
-                setCanvasProps(color, currentLineWidth, 'round');
-                ctx.stroke();
+                // For zero-length segments, draw explicit circle instead of relying on stroke caps
+                if (segInfo.idx1 === segInfo.idx2) {
+                    const radius = currentLineWidth / 2;
+                    ctx.beginPath();
+                    ctx.arc(x1, y1, radius, 0, Math.PI * 2);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                } else {
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
+                    setCanvasProps(color, currentLineWidth, 'round');
+                    ctx.stroke();
+                }
             }
 
             // ====================================================================
