@@ -1775,6 +1775,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (value && value.length === n) {
                 this[fieldName] = value;
                 this[cacheFieldName] = value;
+            } else if (value === null) {
+                // Explicit null: use defaults, don't cache
+                this[fieldName] = defaultFn(n);
             } else if (this[cacheFieldName] && this[cacheFieldName].length === n) {
                 this[fieldName] = this[cacheFieldName];
             } else {
@@ -4431,7 +4434,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Create resolved data object (use resolved values if frame doesn't have its own)
             const resolvedData = {
                 ...data,
-                plddts: resolvedPlddt !== null ? resolvedPlddt : data.plddts,
+                plddts: resolvedPlddt ?? data.plddts ?? null,
                 pae: resolvedPae !== null ? resolvedPae : data.pae,
                 bonds: resolvedBonds
             };
