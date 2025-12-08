@@ -2809,6 +2809,64 @@ function initializeMSAViewerCommon() {
 // Standalone MSA viewer initialization removed - now uses unified code path with index.html
 
 /**
+ * Load standalone MSA file (for msa.html when no structure is loaded)
+ * @param {File} file - MSA file to load
+ */
+async function loadStandaloneMSA(file) {
+    const fileName = file.name.toLowerCase();
+    const isA3M = fileName.endsWith('.a3m');
+    const isFasta = fileName.endsWith('.fasta') || fileName.endsWith('.fa') || fileName.endsWith('.fas');
+    const isSTO = fileName.endsWith('.sto');
+
+    if (!isA3M && !isFasta && !isSTO) {
+        setStatus('Please upload an A3M (.a3m), FASTA (.fasta, .fa, .fas), or STO (.sto) file', true);
+        return;
+    }
+
+    try {
+        // Use readAsync method from file wrapper
+        const msaText = await file.readAsync('text');
+
+        let msaData = null;
+        if (isA3M && window.MSAViewer && window.MSAViewer.parseA3M) {
+            msaData = window.MSAViewer.parseA3M(msaText);
+        } else if (isFasta && window.MSAViewer && window.MSAViewer.parseFasta) {
+            msaData = window.MSAViewer.parseFasta(msaText);
+        } else if (isSTO && window.MSAViewer && window.MSAViewer.parseSTO) {
+            msaData = window.MSAViewer.parseSTO(msaText);
+        }
+
+        if (msaData && msaData.querySequence) {
+            window.MSAViewer.setMSAData(msaData, null);
+            setStatus(`Loaded MSA: ${msaData.sequences.length} sequences, length ${msaData.queryLength}`);
+
+            // Update sequence count
+            const sequenceCountEl = document.getElementById('msaSequenceCount');
+            if (sequenceCountEl && window.MSAViewer && window.MSAViewer.getSequenceCounts) {
+                const counts = window.MSAViewer.getSequenceCounts();
+                if (counts) {
+                    sequenceCountEl.textContent = `${counts.filtered} / ${counts.total}`;
+                }
+            }
+
+            // Show MSA viewer container
+            const msaContainer = document.getElementById('msa-buttons');
+            if (msaContainer) {
+                msaContainer.style.display = 'block';
+            }
+            showMSACanvasContainers();
+        } else {
+            setStatus('Failed to parse MSA file', true);
+            throw new Error('Failed to parse MSA file');
+        }
+    } catch (error) {
+        console.error('Error loading MSA:', error);
+        setStatus('Error loading MSA file: ' + error.message, true);
+        throw error;
+    }
+}
+
+/**
  * Resolve PDB ID to UniProt ID using PDBe API
  * @param {string} pdbId - 4-character PDB ID
  * @returns {Promise<string>} - UniProt ID
@@ -4727,12 +4785,16 @@ async function processFiles(files, loadAsFrames, groupName = null) {
 
     // Handle metadata-only uploads (no structure files) - check BEFORE MSA-only
     if (structureFiles.length === 0) {
+        // Check if we're on msa.html (viewer hidden) - if so, skip metadata-to-existing check
+        const viewerContainer = document.getElementById('viewer-container');
+        const isViewerHidden = viewerContainer && window.getComputedStyle(viewerContainer).display === 'none';
+
         const hasMetadata = (loadMSA && msaFiles.length > 0) ||
             (loadPAE && jsonFiles.length > 0) ||
             contactFiles.length > 0;
 
-        if (hasMetadata) {
-            // Add metadata to existing object
+        if (hasMetadata && !isViewerHidden) {
+            // Add metadata to existing object (only on index.html where structures exist)
             const result = await addMetadataToExistingObject({
                 msaFiles: loadMSA ? msaFiles : [],
                 jsonFiles: loadPAE ? jsonFiles : [],
@@ -4746,6 +4808,23 @@ async function processFiles(files, loadAsFrames, groupName = null) {
 
     // Handle MSA-only input (no structure files)
     if (structureFiles.length === 0 && msaFilesToProcess.length > 0) {
+        // Check if viewer is hidden (msa.html) - if so, allow MSA-only uploads
+        const viewerContainer = document.getElementById('viewer-container');
+        const isViewerHidden = viewerContainer && window.getComputedStyle(viewerContainer).display === 'none';
+
+        if (isViewerHidden && msaFilesToProcess.length === 1) {
+            // Load MSA-only for msa.html
+            const msaFile = msaFilesToProcess[0];
+            await loadStandaloneMSA(msaFile);
+            return {
+                objectsLoaded: 0,
+                framesAdded: 0,
+                structureCount: 0,
+                paePairedCount: 0,
+                isTrajectory: false
+            };
+        }
+
         setStatus('MSA-only uploads are not supported on this page. Please use msa.html for standalone MSAs.', true);
         return {
             objectsLoaded: 0,
@@ -5133,7 +5212,6 @@ async function handleZipUpload(file, loadAsFrames) {
 
                 // Skip MSA loading if checkbox is disabled
                 if (!loadMSA) {
-                    console.log(`Skipping ${allMSAFiles.length} MSA file(s) from ZIP (Load MSA checkbox is disabled)`);
                     // Continue to next section without loading MSAs
                 } else {
 
