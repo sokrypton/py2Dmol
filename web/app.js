@@ -560,17 +560,29 @@ function setupEventListeners() {
         const totalPositions = frame.coords.length;
         const selection = renderer.getSelection();
 
-        // Get selected positions
+        // In overlay mode, visibilityMask contains MERGED indices from all frames
+        // but totalPositions is from frame[0] only, causing a mismatch
+        // Use selectionModel.positions (original indices) in overlay mode instead
         let selectedPositions = new Set();
-        if (selection && selection.positions && selection.positions.size > 0) {
-            selectedPositions = new Set(selection.positions);
-        } else if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
-            selectedPositions = new Set(renderer.visibilityMask);
+        if (renderer.overlayState && renderer.overlayState.enabled) {
+            // OVERLAY MODE: Use selectionModel.positions (original frame indices)
+            if (selection && selection.positions && selection.positions.size > 0) {
+                selectedPositions = new Set(selection.positions);
+            } else {
+                // No selection = all positions visible
+                for (let i = 0; i < totalPositions; i++) {
+                    selectedPositions.add(i);
+                }
+            }
         } else {
-            // No selection or all positions visible (default mode)
-            selectedPositions = new Set();
-            for (let i = 0; i < totalPositions; i++) {
-                selectedPositions.add(i);
+            // NORMAL MODE: Use visibilityMask (actual rendered positions)
+            if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
+                selectedPositions = new Set(renderer.visibilityMask);
+            } else {
+                // No mask = all positions visible
+                for (let i = 0; i < totalPositions; i++) {
+                    selectedPositions.add(i);
+                }
             }
         }
 

@@ -2448,6 +2448,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // Switch to the extracted object (synchronously)
+            // This properly sets currentObjectName, exits overlay mode if needed, and invalidates caches
+            this._switchToObject(extractName);
+
+            // Load the first frame to populate coords and render the molecule
+            this.setFrame(0);
+
+            // CRITICAL: Update PAE renderer with the new object's PAE data
+            // The PAE renderer stores its own copy of paeData, so we must call setData()
+            // with the extracted object's PAE before calling render()
+            const extractedObj = this.objectsData[extractName];
+            if (this.paeRenderer && extractedObj?.frames?.[0]?.pae) {
+                this.paeRenderer.setData(extractedObj.frames[0].pae);
+            }
+
+            // Update PAE visibility and render
+            this.updatePAEContainerVisibility();
+            if (this.paeRenderer && this.paeRenderer.render) {
+                this.paeRenderer.render();
+            }
+
+            // Update object dropdown to reflect the change
+            if (this.objectSelect) {
+                this.objectSelect.value = extractName;
+            }
+
             // Reset selection to show all positions in extracted object
             this.setSelection({
                 positions: new Set(),
@@ -2459,9 +2485,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Update UI controls to reflect new object
             this.updateUIControls();
 
-            // Update PAE container visibility
-            this.updatePAEContainerVisibility();
-
             // Force sequence viewer to rebuild for the new object
             if (typeof window !== 'undefined' && window.SequenceViewer && window.SequenceViewer.buildSequenceView) {
                 // Clear sequence viewer cache to force rebuild
@@ -2471,12 +2494,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Rebuild sequence view for the new extracted object
                 window.SequenceViewer.buildSequenceView();
             }
-
-            // Trigger object change event to ensure all UI updates
-            if (this.objectSelect) {
-                this.objectSelect.dispatchEvent(new Event('change'));
-            }
-
 
         }
 
@@ -2906,17 +2923,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // Check if an object has PAE data (can be called with object name or uses current object)
         objectHasPAE(objectName = null) {
             const name = objectName || this.currentObjectName;
-            if (!name || !this.objectsData[name]) return false;
+            if (!name || !this.objectsData[name]) {
+                return false;
+            }
 
             const object = this.objectsData[name];
-            if (!object.frames || object.frames.length === 0) return false;
+            if (!object.frames || object.frames.length === 0) {
+                return false;
+            }
 
             // Check if any frame has valid PAE data (directly or via inheritance)
-            // If first frame has PAE, all frames can inherit; otherwise check if any frame has it
             if (this._hasPaeData(object.frames[0])) {
                 return true;
             }
-            // Otherwise, check if any frame has PAE
             return object.frames.some(frame => this._hasPaeData(frame));
         }
 
