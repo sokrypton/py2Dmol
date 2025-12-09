@@ -30,7 +30,8 @@ DEFAULT_CONFIG = {
         "outline": "full",
         "width": 3.0,
         "ortho": 1.0,
-        "pastel": 0.25
+        "pastel": 0.25,
+        "detect_cyclic": True
     },
     "color": {
         "mode": "auto",
@@ -63,7 +64,8 @@ def _nest_config(**flat):
     if "width" in flat: config["rendering"]["width"] = flat["width"]
     if "ortho" in flat: config["rendering"]["ortho"] = flat["ortho"]
     if "pastel" in flat: config["rendering"]["pastel"] = flat["pastel"]
-    
+    if "detect_cyclic" in flat: config["rendering"]["detect_cyclic"] = flat["detect_cyclic"]
+
     # Color
     if "color" in flat: config["color"]["mode"] = flat["color"]
     if "colorblind" in flat: config["color"]["colorblind"] = flat["colorblind"]
@@ -244,7 +246,7 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, overlay=False, id=None,
+        pae=False, pae_size=300, overlay=False, detect_cyclic=True, id=None,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -269,7 +271,8 @@ class view:
             autoplay=autoplay,
             pae=pae,
             pae_size=pae_size,
-            overlay=overlay
+            overlay=overlay,
+            detect_cyclic=detect_cyclic
         )
         
         # Add viewer_id to root level

@@ -4110,7 +4110,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
 
-                if (firstPolymerIndex !== -1 && lastPolymerIndex !== -1 && firstPolymerIndex !== lastPolymerIndex) {
+                // Check for cyclic peptides (first-to-last bond) if enabled
+                const detectCyclic = (typeof config.rendering?.detect_cyclic === 'boolean') ? config.rendering.detect_cyclic : true;
+                if (detectCyclic && firstPolymerIndex !== -1 && lastPolymerIndex !== -1 && firstPolymerIndex !== lastPolymerIndex) {
                     const firstChainId = this.chains[firstPolymerIndex] || 'A';
                     const lastChainId = this.chains[lastPolymerIndex] || 'A';
 

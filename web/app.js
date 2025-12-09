@@ -5600,6 +5600,11 @@ function saveViewerState() {
         const orthoSlider = document.getElementById('orthoSlider');
         const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 1.0;
 
+        // Get detect_cyclic from config
+        const detectCyclic = (window.viewerConfig && typeof window.viewerConfig.rendering?.detect_cyclic === 'boolean')
+            ? window.viewerConfig.rendering.detect_cyclic
+            : true;
+
         const viewerState = {
             current_object_name: renderer.currentObjectName,
             current_frame: renderer.viewerState.currentFrame,  // From viewerState, not global
@@ -5615,6 +5620,7 @@ function saveViewerState() {
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
             pastel_level: renderer.pastelLevel || 0.25,
+            detect_cyclic: detectCyclic,
             ortho_slider_value: orthoSliderValue, // Save the normalized slider value (0.0-1.0)
             animation_speed: renderer.animationSpeed || 100
         };
@@ -5948,6 +5954,25 @@ async function loadViewerState(stateData) {
             if (typeof vs.pastel_level === 'number') {
                 renderer.pastelLevel = vs.pastel_level;
             }
+
+            // Restore detect_cyclic - check both Python config format and web viewer_state format
+            let detectCyclicValue = true; // default
+            if (stateData.config && typeof stateData.config.rendering?.detect_cyclic === 'boolean') {
+                // Python format: config.rendering.detect_cyclic
+                detectCyclicValue = stateData.config.rendering.detect_cyclic;
+            } else if (typeof vs.detect_cyclic === 'boolean') {
+                // Web format: viewer_state.detect_cyclic
+                detectCyclicValue = vs.detect_cyclic;
+            }
+            // Update global config so it's used when rendering
+            if (window.viewerConfig) {
+                if (!window.viewerConfig.rendering) {
+                    window.viewerConfig.rendering = {};
+                }
+                window.viewerConfig.rendering.detect_cyclic = detectCyclicValue;
+            }
+            // Invalidate segment cache to trigger rebuild with new setting
+            renderer.cachedSegmentIndices = null;
 
             // Restore ortho slider value (this will set perspective_enabled and focal_length correctly)
             if (typeof vs.ortho_slider_value === 'number') {
