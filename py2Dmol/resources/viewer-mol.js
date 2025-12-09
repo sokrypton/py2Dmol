@@ -5101,6 +5101,183 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return { shadow: shadow * strengthMultiplier, tint: tint * strengthMultiplier };
         }
 
+        // Dispatcher method: selects fast/slow shadow calculation based on position count
+        _calculateFrameShadows(segmentList, numPositions, segments, segData, maxExtent, shadows, tints) {
+            const useFastMode = numPositions > this.LARGE_MOLECULE_CUTOFF;
+
+            if (useFastMode) {
+                this._calculateShadowsWithGrid(segmentList, segments, segData, maxExtent, shadows, tints);
+            } else {
+                this._calculateShadowsExhaustive(segmentList, segments, segData, shadows, tints);
+            }
+        }
+
+        // Slow mode: exhaustive O(n²) shadow calculation for small frames
+        _calculateShadowsExhaustive(segmentList, segments, segData, shadows, tints) {
+            // Process segments back-to-front (already sorted by z-depth)
+            for (let i_idx = segmentList.length - 1; i_idx >= 0; i_idx--) {
+                const i = segmentList[i_idx];
+                let shadowSum = 0;
+                let maxTint = 0;
+                const s1 = segData[i];
+                const segInfoI = segments[i];
+                const isContactI = segInfoI.type === 'C';
+                const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
+
+                // Check against all segments in front
+                for (let j_idx = i_idx + 1; j_idx < segmentList.length; j_idx++) {
+                    const j = segmentList[j_idx];
+                    if (shadowSum >= MAX_SHADOW_SUM) break;
+
+                    const s2 = segData[j];
+                    const segInfo2 = segments[j];
+                    const isContactJ = segInfo2.type === 'C';
+                    const isMoleculeJ = segInfo2.type === 'P' || segInfo2.type === 'D' || segInfo2.type === 'R';
+
+                    if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
+                        continue;
+                    }
+
+                    const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
+                    shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
+                    maxTint = Math.max(maxTint, tint);
+                }
+
+                shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
+                tints[i] = 1 - maxTint;
+            }
+        }
+
+        // Fast mode: grid-based spatial optimization for large frames
+        _calculateShadowsWithGrid(segmentList, segments, segData, maxExtent, shadows, tints) {
+            const numVisibleSegments = segmentList.length;
+
+            // Grid setup
+            let GRID_DIM = Math.ceil(Math.sqrt(numVisibleSegments / 5));
+            GRID_DIM = Math.max(20, Math.min(150, GRID_DIM));
+            const gridSize = GRID_DIM * GRID_DIM;
+            const grid = Array.from({ length: gridSize }, () => []);
+
+            const gridMin = -maxExtent - 1.0;
+            const gridRange = (maxExtent + 1.0) * 2;
+            const gridCellSize = gridRange / GRID_DIM;
+            const MAX_SEGMENTS_PER_CELL = numVisibleSegments > 15000 ? 30 :
+                                          (numVisibleSegments > 10000 ? 50 : Infinity);
+
+            if (gridCellSize <= 1e-6) {
+                shadows.fill(1.0);
+                tints.fill(1.0);
+                return;
+            }
+
+            const invCellSize = 1.0 / gridCellSize;
+
+            // Assign grid coordinates
+            for (let i = 0; i < segmentList.length; i++) {
+                const segIdx = segmentList[i];
+                const s = segData[segIdx];
+                const gx = Math.floor((s.x - gridMin) * invCellSize);
+                const gy = Math.floor((s.y - gridMin) * invCellSize);
+
+                if (gx >= 0 && gx < GRID_DIM && gy >= 0 && gy < GRID_DIM) {
+                    s.gx = gx;
+                    s.gy = gy;
+                } else {
+                    s.gx = -1;
+                    s.gy = -1;
+                }
+            }
+
+            // Populate grid
+            for (let i = 0; i < segmentList.length; i++) {
+                const segIdx = segmentList[i];
+                const s = segData[segIdx];
+                if (s.gx >= 0 && s.gy >= 0) {
+                    const gridIndex = s.gx + s.gy * GRID_DIM;
+                    grid[gridIndex].push(segIdx);
+                }
+            }
+
+            // Sort cells by z-depth
+            for (let cellIdx = 0; cellIdx < gridSize; cellIdx++) {
+                const cell = grid[cellIdx];
+                if (cell.length > 1) {
+                    if (cell.length > MAX_SEGMENTS_PER_CELL) {
+                        cell.length = MAX_SEGMENTS_PER_CELL;
+                    }
+                    if (cell.length > 2) {
+                        cell.sort((a, b) => segData[b].z - segData[a].z);
+                    } else if (cell.length === 2) {
+                        if (segData[cell[0]].z < segData[cell[1]].z) {
+                            const temp = cell[0];
+                            cell[0] = cell[1];
+                            cell[1] = temp;
+                        }
+                    }
+                }
+            }
+
+            // Calculate shadows using 3x3 grid neighborhood
+            for (let i_idx = segmentList.length - 1; i_idx >= 0; i_idx--) {
+                const i = segmentList[i_idx];
+                let shadowSum = 0;
+                let maxTint = 0;
+                const s1 = segData[i];
+                const gx1 = s1.gx;
+                const gy1 = s1.gy;
+                const segInfoI = segments[i];
+                const isContactI = segInfoI.type === 'C';
+                const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
+
+                if (gx1 < 0) {
+                    shadows[i] = 1.0;
+                    tints[i] = 1.0;
+                    continue;
+                }
+
+                // Check 3x3 neighborhood
+                for (let dy = -1; dy <= 1; dy++) {
+                    const gy2 = gy1 + dy;
+                    if (gy2 < 0 || gy2 >= GRID_DIM) continue;
+                    const rowOffset = gy2 * GRID_DIM;
+
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const gx2 = gx1 + dx;
+                        if (gx2 < 0 || gx2 >= GRID_DIM) continue;
+                        if (shadowSum >= MAX_SHADOW_SUM) break;
+
+                        const gridIndex = gx2 + rowOffset;
+                        const cell = grid[gridIndex];
+                        const cellLen = cell.length;
+
+                        for (let k = 0; k < cellLen; k++) {
+                            const j = cell[k];
+                            if (shadowSum >= MAX_SHADOW_SUM && maxTint >= 1.0) break;
+
+                            const s2 = segData[j];
+                            const segInfoJ = segments[j];
+                            const isContactJ = segInfoJ.type === 'C';
+                            const isMoleculeJ = segInfoJ.type === 'P' || segInfoJ.type === 'D' || segInfoJ.type === 'R';
+
+                            if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
+                                continue;
+                            }
+
+                            if (s2.z <= s1.z) break;
+                            if (shadowSum >= MAX_SHADOW_SUM) break;
+
+                            const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfoJ);
+                            shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
+                            maxTint = Math.max(maxTint, tint);
+                        }
+                    }
+                }
+
+                shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
+                tints[i] = 1 - maxTint;
+            }
+        }
+
 
         // Helper method to stop recording tracks
         _stopRecordingTracks() {
@@ -5463,8 +5640,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // OVERLAY MODE: Calculate shadows per-frame independently
                 if (this.overlayState.enabled && this.overlayState.frameIdMap) {
                     // Group segments by frame
-                    const segmentsByFrame = new Map(); // frameIdx -> [segmentIndices]
-                    const frameNumPositions = new Map(); // frameIdx -> position count
+                    const segmentsByFrame = new Map();
+                    const frameNumPositions = new Map();
 
                     for (let i = 0; i < visibleOrder.length; i++) {
                         const segIdx = visibleOrder[i];
@@ -5485,248 +5662,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // Calculate shadows for each frame independently
                     for (const [frameIdx, frameSegments] of segmentsByFrame) {
                         const framePositions = frameNumPositions.get(frameIdx);
-                        const isFrameFastMode = framePositions > this.LARGE_MOLECULE_CUTOFF;
-
-                        // Use slow mode for this frame (we'll add fast mode support later)
-                        for (let i_idx = frameSegments.length - 1; i_idx >= 0; i_idx--) {
-                            const i = frameSegments[i_idx];
-                            let shadowSum = 0;
-                            let maxTint = 0;
-                            const s1 = segData[i];
-                            const segInfoI = segments[i];
-                            const isContactI = segInfoI.type === 'C';
-                            const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
-
-                            // Check against all other segments in the same frame
-                            for (let j_idx = i_idx + 1; j_idx < frameSegments.length; j_idx++) {
-                                const j = frameSegments[j_idx];
-
-                                if (shadowSum >= MAX_SHADOW_SUM) break;
-
-                                const s2 = segData[j];
-                                const segInfo2 = segments[j];
-                                const isContactJ = segInfo2.type === 'C';
-                                const isMoleculeJ = segInfo2.type === 'P' || segInfo2.type === 'D' || segInfo2.type === 'R';
-
-                                if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
-                                    continue;
-                                }
-
-                                const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
-                                shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
-                                maxTint = Math.max(maxTint, tint);
-                            }
-                            shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
-                            tints[i] = 1 - maxTint;
-                        }
-                    }
-                } else if (!isFastMode) {
-                    // NORMAL MODE (SLOW): All segments check all other segments
-                    // Only process visible segments in outer loop
-                    for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
-                        const i = visibleOrder[i_idx];
-                        let shadowSum = 0;
-                        let maxTint = 0;
-                        const s1 = segData[i];
-                        const segInfoI = segments[i]; // Cache segment info
-                        const isContactI = segInfoI.type === 'C';
-                        const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
-
-                        // Only check visible segments (already filtered)
-                        for (let j_idx = i_idx + 1; j_idx < visibleOrder.length; j_idx++) {
-                            const j = visibleOrder[j_idx];
-
-                            // Early exit: if shadow is already saturated or tint is maxed
-                            if (shadowSum >= MAX_SHADOW_SUM || (maxTint >= 1.0 && shadowSum >= MAX_SHADOW_SUM)) {
-                                break; // Shadow sum is saturated, skip remaining segments
-                            }
-
-                            const s2 = segData[j];
-                            const segInfo2 = segments[j];
-                            const isContactJ = segInfo2.type === 'C';
-                            const isMoleculeJ = segInfo2.type === 'P' || segInfo2.type === 'D' || segInfo2.type === 'R';
-
-                            // Skip if one is contact and one is molecule - contacts don't influence molecule shadows/tints
-                            if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
-                                continue;
-                            }
-
-                            // Call helper function with segment info for width weighting
-                            const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
-                            // Saturating accumulation: naturally caps at MAX_SHADOW_SUM
-                            shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
-                            maxTint = Math.max(maxTint, tint);
-                        }
-                        shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
-                        tints[i] = 1 - maxTint;
-                    }
-                } else { // Fast mode: many visible positions, use grid-based optimization
-                    // Increase grid resolution for large structures to reduce segments per cell
-                    // Target: ~5-10 segments per cell for better performance
-                    let GRID_DIM = Math.ceil(Math.sqrt(numVisibleSegments / 5));
-                    GRID_DIM = Math.max(20, Math.min(150, GRID_DIM)); // Increased max from 100 to 150
-
-                    const gridSize = GRID_DIM * GRID_DIM;
-                    const grid = Array.from({ length: gridSize }, () => []);
-
-                    const gridMin = -maxExtent - 1.0;
-                    const gridRange = (maxExtent + 1.0) * 2;
-                    const gridCellSize = gridRange / GRID_DIM;
-
-                    // Limit number of segments to check per cell for very large structures
-                    // This prevents excessive shadow calculations
-                    // More aggressive limit for very large structures
-                    const MAX_SEGMENTS_PER_CELL = numVisibleSegments > 15000 ? 30 : (numVisibleSegments > 10000 ? 50 : Infinity);
-
-                    if (gridCellSize > 1e-6) {
-                        const invCellSize = 1.0 / gridCellSize;
-
-                        // Only calculate grid positions for visible segments
-                        // [OPTIMIZATION] Use visibleOrder (culled list) instead of visibleSegmentIndices
-                        for (let i = 0; i < numRendered; i++) {
-                            const segIdx = visibleOrder[i];
-                            const s = segData[segIdx];
-                            const gx = Math.floor((s.x - gridMin) * invCellSize);
-                            const gy = Math.floor((s.y - gridMin) * invCellSize);
-
-                            if (gx >= 0 && gx < GRID_DIM && gy >= 0 && gy < GRID_DIM) {
-                                s.gx = gx;
-                                s.gy = gy;
-                            } else {
-                                s.gx = -1; // Mark as outside grid
-                                s.gy = -1;
-                            }
-                        }
-
-                        // Populate grid with all visible segments BEFORE calculating shadows
-                        // Sort segments within each cell by z-depth (front to back) for early exit optimization
-                        // [OPTIMIZATION] Use visibleOrder (culled list)
-                        for (let i = 0; i < numRendered; i++) {
-                            const segIdx = visibleOrder[i];
-                            const s = segData[segIdx];
-                            if (s.gx >= 0 && s.gy >= 0) {
-                                const gridIndex = s.gx + s.gy * GRID_DIM;
-                                grid[gridIndex].push(segIdx);
-                            }
-                        }
-
-                        // Sort each grid cell by z-depth (front to back) for early exit
-                        // Only sort cells that have multiple segments (optimization)
-                        for (let cellIdx = 0; cellIdx < gridSize; cellIdx++) {
-                            const cell = grid[cellIdx];
-                            if (cell.length > 1) {
-                                // Limit cell size first (faster than sorting large arrays)
-                                if (cell.length > MAX_SEGMENTS_PER_CELL) {
-                                    // For very large cells, just take the first MAX_SEGMENTS_PER_CELL
-                                    // This is faster than sorting and then truncating
-                                    cell.length = MAX_SEGMENTS_PER_CELL;
-                                }
-                                // Sort by z-depth descending (front to back) for early exit
-                                // Simple sorting, no post-processing
-                                // Only sort if cell has more than 2 segments (sorting 2 items is unnecessary)
-                                if (cell.length > 2) {
-                                    cell.sort((a, b) => {
-                                        return segData[b].z - segData[a].z;
-                                    });
-                                } else if (cell.length === 2) {
-                                    // For 2-item case, swap if needed for z-depth
-                                    if (segData[cell[0]].z < segData[cell[1]].z) {
-                                        const temp = cell[0];
-                                        cell[0] = cell[1];
-                                        cell[1] = temp;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Only process visible segments in outer loop
-                        for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
-                            const i = visibleOrder[i_idx];
-                            let shadowSum = 0;
-                            let maxTint = 0;
-                            const s1 = segData[i];
-                            const gx1 = s1.gx;
-                            const gy1 = s1.gy;
-                            const segInfoI = segments[i];
-                            const isContactI = segInfoI.type === 'C';
-                            const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
-
-                            if (gx1 < 0) {
-                                shadows[i] = 1.0;
-                                tints[i] = 1.0;
-                                continue;
-                            }
-
-                            // Process grid cells to accumulate shadows
-                            for (let dy = -1; dy <= 1; dy++) {
-                                const gy2 = gy1 + dy;
-                                if (gy2 < 0 || gy2 >= GRID_DIM) continue;
-                                const rowOffset = gy2 * GRID_DIM;
-
-                                for (let dx = -1; dx <= 1; dx++) {
-                                    const gx2 = gx1 + dx;
-                                    if (gx2 < 0 || gx2 >= GRID_DIM) continue;
-
-                                    // Early exit: if shadow is already saturated, skip remaining cells
-                                    if (shadowSum >= MAX_SHADOW_SUM) {
-                                        break;
-                                    }
-
-                                    const gridIndex = gx2 + rowOffset;
-                                    const cell = grid[gridIndex];
-                                    const cellLen = cell.length;
-
-                                    // Process segments in cell (already sorted by z-depth, front to back)
-                                    // Since cells are sorted front-to-back, we can break early when we hit segments behind
-                                    for (let k = 0; k < cellLen; k++) {
-                                        const j = cell[k];
-
-                                        // Early exit: if shadow is already saturated or tint is maxed
-                                        // Check this first before accessing segData (faster)
-                                        if (shadowSum >= MAX_SHADOW_SUM && maxTint >= 1.0) {
-                                            break;
-                                        }
-
-                                        // Only visible segments are in the grid, so no visibility check needed
-                                        const s2 = segData[j];
-                                        const segInfoJ = segments[j];
-                                        const isContactJ = segInfoJ.type === 'C';
-                                        const isMoleculeJ = segInfoJ.type === 'P' || segInfoJ.type === 'D' || segInfoJ.type === 'R';
-
-                                        // Skip if one is contact and one is molecule - contacts don't influence molecule shadows/tints
-                                        if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
-                                            continue;
-                                        }
-
-                                        // CRITICAL: Only check segments that are in FRONT of i (closer to camera)
-                                        // Segment j casts shadow on i only if j.z > i.z (j is in front)
-                                        // Since cells are sorted front-to-back, if we hit a segment behind, we can break
-                                        if (s2.z <= s1.z) {
-                                            break; // All remaining segments in this cell are behind, skip them
-                                        }
-
-                                        // Early exit: if shadow is already saturated, skip remaining segments
-                                        if (shadowSum >= MAX_SHADOW_SUM) {
-                                            break;
-                                        }
-
-                                        // Call helper function with segment info for width weighting
-                                        const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfoJ);
-                                        // Saturating accumulation: naturally caps at MAX_SHADOW_SUM
-                                        shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
-                                        maxTint = Math.max(maxTint, tint);
-                                    }
-                                }
-                            }
-
-                            shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
-                            tints[i] = 1 - maxTint;
-                        }
-                    } else {
-                        shadows.fill(1.0);
-                        tints.fill(1.0);
+                        this._calculateFrameShadows(frameSegments, framePositions, segments, segData, maxExtent, shadows, tints);
                     }
                 }
+                // NORMAL MODE: Calculate shadows for all visible segments
+                else {
+                    this._calculateFrameShadows(visibleOrder, numVisiblePositions, segments, segData, maxExtent, shadows, tints);
+                }
+
                 // Cache shadows/tints when rotation hasn't changed (for reuse on width/ortho changes)
                 // Store rotation matrix after calculation
                 this.lastShadowRotationMatrix = this._deepCopyMatrix(this.viewerState.rotation);
