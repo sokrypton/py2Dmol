@@ -5458,8 +5458,68 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             );
 
             if (renderShadows && !skipShadowCalc) {
-                // Use fast mode threshold based on visible positions, not total segments
-                if (!isFastMode) {
+                // OVERLAY MODE: Calculate shadows per-frame independently
+                if (this.overlayState.enabled && this.overlayState.frameIdMap) {
+                    // Group segments by frame
+                    const segmentsByFrame = new Map(); // frameIdx -> [segmentIndices]
+                    const frameNumPositions = new Map(); // frameIdx -> position count
+
+                    for (let i = 0; i < visibleOrder.length; i++) {
+                        const segIdx = visibleOrder[i];
+                        const frameIdx = this.overlayState.frameIdMap[segments[segIdx].idx1];
+                        if (!segmentsByFrame.has(frameIdx)) {
+                            segmentsByFrame.set(frameIdx, []);
+                            frameNumPositions.set(frameIdx, 0);
+                        }
+                        segmentsByFrame.get(frameIdx).push(segIdx);
+                    }
+
+                    // Count positions per frame
+                    for (let i = 0; i < this.coords.length; i++) {
+                        const frameIdx = this.overlayState.frameIdMap[i];
+                        frameNumPositions.set(frameIdx, (frameNumPositions.get(frameIdx) || 0) + 1);
+                    }
+
+                    // Calculate shadows for each frame independently
+                    for (const [frameIdx, frameSegments] of segmentsByFrame) {
+                        const framePositions = frameNumPositions.get(frameIdx);
+                        const isFrameFastMode = framePositions > this.LARGE_MOLECULE_CUTOFF;
+
+                        // Use slow mode for this frame (we'll add fast mode support later)
+                        for (let i_idx = frameSegments.length - 1; i_idx >= 0; i_idx--) {
+                            const i = frameSegments[i_idx];
+                            let shadowSum = 0;
+                            let maxTint = 0;
+                            const s1 = segData[i];
+                            const segInfoI = segments[i];
+                            const isContactI = segInfoI.type === 'C';
+                            const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
+
+                            // Check against all other segments in the same frame
+                            for (let j_idx = i_idx + 1; j_idx < frameSegments.length; j_idx++) {
+                                const j = frameSegments[j_idx];
+
+                                if (shadowSum >= MAX_SHADOW_SUM) break;
+
+                                const s2 = segData[j];
+                                const segInfo2 = segments[j];
+                                const isContactJ = segInfo2.type === 'C';
+                                const isMoleculeJ = segInfo2.type === 'P' || segInfo2.type === 'D' || segInfo2.type === 'R';
+
+                                if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
+                                    continue;
+                                }
+
+                                const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
+                                shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
+                                maxTint = Math.max(maxTint, tint);
+                            }
+                            shadows[i] = Math.pow(this.shadowIntensity, shadowSum);
+                            tints[i] = 1 - maxTint;
+                        }
+                    }
+                } else if (!isFastMode) {
+                    // NORMAL MODE (SLOW): All segments check all other segments
                     // Only process visible segments in outer loop
                     for (let i_idx = visibleOrder.length - 1; i_idx >= 0; i_idx--) {
                         const i = visibleOrder[i_idx];
@@ -5481,16 +5541,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                             const s2 = segData[j];
                             const segInfo2 = segments[j];
-
-                            // Shadow isolation: in overlay mode, only allow shadows within same frame
-                            if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                                const frameI = this.overlayState.frameIdMap[segInfoI.idx1];
-                                const frameJ = this.overlayState.frameIdMap[segInfo2.idx1];
-                                if (frameI !== frameJ) {
-                                    continue; // Skip shadows between different frames
-                                }
-                            }
-
                             const isContactJ = segInfo2.type === 'C';
                             const isMoleculeJ = segInfo2.type === 'P' || segInfo2.type === 'D' || segInfo2.type === 'R';
 
@@ -5633,15 +5683,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                         // Check this first before accessing segData (faster)
                                         if (shadowSum >= MAX_SHADOW_SUM && maxTint >= 1.0) {
                                             break;
-                                        }
-
-                                        // Shadow isolation: in overlay mode, only allow shadows within same frame
-                                        if (this.overlayState.enabled && this.overlayState.frameIdMap) {
-                                            const frameI = this.overlayState.frameIdMap[segInfoI.idx1];
-                                            const frameJ = this.overlayState.frameIdMap[segments[j].idx1];
-                                            if (frameI !== frameJ) {
-                                                continue; // Skip shadows between different frames
-                                            }
                                         }
 
                                         // Only visible segments are in the grid, so no visibility check needed
