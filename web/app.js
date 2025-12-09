@@ -264,7 +264,7 @@ function initializeViewerConfig() {
         // Web app specific settings (not part of Python config)
         ui: {
             biounit: true,
-            loadLigands: true
+            loadLigands: false
         },
         viewer_id: "standalone-viewer-1"
     };
@@ -1639,7 +1639,7 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch) {
         models.length > 1);
 
     function maybeFilterLigands(atoms) {
-        const shouldLoadLigands = window.viewerConfig?.ui?.loadLigands ?? true;
+        const shouldLoadLigands = window.viewerConfig?.ui?.loadLigands ?? false;
         if (shouldLoadLigands) return atoms;
 
         // Use modresMap and chemCompMap from parent scope (from parse results)
