@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
     },
     "rendering": {
         "shadow": True,
+        "shadow_strength": 0.5,
         "outline": "full",
         "width": 3.0,
         "ortho": 1.0,
@@ -60,6 +61,7 @@ def _nest_config(**flat):
     
     # Rendering
     if "shadow" in flat: config["rendering"]["shadow"] = flat["shadow"]
+    if "shadow_strength" in flat: config["rendering"]["shadow_strength"] = flat["shadow_strength"]
     if "outline" in flat: config["rendering"]["outline"] = flat["outline"]
     if "width" in flat: config["rendering"]["width"] = flat["width"]
     if "ortho" in flat: config["rendering"]["ortho"] = flat["ortho"]
@@ -244,7 +246,7 @@ def _normalize_color(color):
 
 class view:
     def __init__(self, size=(400,400), controls=True, box=True,
-        color="auto", colorblind=False, pastel=0.25, shadow=True,
+        color="auto", colorblind=False, pastel=0.25, shadow=True, shadow_strength=0.5,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
         pae=False, pae_size=300, overlay=False, detect_cyclic=True, id=None,
     ):
@@ -264,6 +266,7 @@ class view:
             colorblind=colorblind,
             pastel=pastel,
             shadow=shadow,
+            shadow_strength=shadow_strength,
             outline=outline,
             width=width,
             ortho=ortho,

@@ -645,6 +645,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Set defaults from config, with fallback
             this.shadowEnabled = (typeof config.rendering?.shadow === 'boolean') ? config.rendering.shadow : true;
+            this.shadowStrength = (typeof config.rendering?.shadow_strength === 'number') ? config.rendering.shadow_strength : 0.5;
             // Outline mode: 'none', 'partial', or 'full'
             if (typeof config.rendering?.outline === 'string' && ['none', 'partial', 'full'].includes(config.rendering.outline)) {
                 this.outlineMode = config.rendering.outline;
@@ -791,6 +792,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.outlineModeSelect = null; // Dropdown for outline modes (viewer.html)
             this.colorblindCheckbox = null;
             this.orthoSlider = null;
+            this.shadowSlider = null;
 
             // Recording state
             this.isRecording = false;
@@ -1543,7 +1545,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider) {
+        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider, shadowSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.overlayButton = overlayButton;
@@ -1561,9 +1563,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.outlineModeSelect = outlineModeSelect;
             this.colorblindCheckbox = colorblindCheckbox;
             this.orthoSlider = orthoSlider;
+            this.shadowSlider = shadowSlider;
             this.lineWidth = this.lineWidthSlider ? parseFloat(this.lineWidthSlider.value) : (this.lineWidth || 3.0); // Read default from slider or use existing/default
             this.relativeOutlineWidth = this.outlineWidthSlider ? parseFloat(this.outlineWidthSlider.value) : (this.relativeOutlineWidth || 3.0); // Read default from slider or use existing/default
             this.autoRotate = this.rotationCheckbox ? this.rotationCheckbox.checked : false; // Read default from checkbox
+            this.shadowStrength = this.shadowSlider ? parseFloat(this.shadowSlider.value) : 0.5; // Read default from slider or use 0.5
 
             // Bind all event listeners
             this.playButton.addEventListener('click', () => {
@@ -1682,6 +1686,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 });
             }
 
+            if (this.shadowSlider) {
+                this.shadowSlider.addEventListener('input', (e) => {
+                    this.shadowStrength = parseFloat(e.target.value);
+                    // Invalidate shadow cache to force recalculation with new strength
+                    this._invalidateShadowCache();
+                    if (!this.isPlaying) {
+                        this.render('shadowSlider');
+                    }
+                });
+            }
 
             if (this.shadowEnabledCheckbox) {
                 this.shadowEnabledCheckbox.addEventListener('change', (e) => {
@@ -5179,8 +5193,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 strengthMultiplier *= 0.5;
             }
 
-            // Final scaling to reduce overall shadow intensity
-            strengthMultiplier *= 0.5;
+            // Final scaling by user-controlled shadow strength
+            strengthMultiplier *= this.shadowStrength;
 
             return { shadow: shadow * strengthMultiplier, tint: tint * strengthMultiplier };
         }
@@ -6691,11 +6705,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const lineWidthSlider = containerElement.querySelector('#lineWidthSlider');
     const outlineWidthSlider = containerElement.querySelector('#outlineWidthSlider');
     const orthoSlider = containerElement.querySelector('#orthoSlider');
+    const shadowSlider = containerElement.querySelector('#shadowSlider');
 
 
     // Set defaults for width, rotate, and pastel
     if (lineWidthSlider) lineWidthSlider.value = renderer.lineWidth;
     if (outlineWidthSlider) outlineWidthSlider.value = renderer.relativeOutlineWidth || 3.0;
+    if (shadowSlider) shadowSlider.value = renderer.shadowStrength || 0.5;
     rotationCheckbox.checked = renderer.autoRotate;
 
     // Pass ALL controls to the renderer
@@ -6704,7 +6720,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         frameSlider, frameCounter, objectSelect,
         speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
         shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
-        colorblindCheckbox, orthoSlider
+        colorblindCheckbox, orthoSlider, shadowSlider
     );
 
     // Setup save state button (for Python interface only - web interface handles it in app.js)
