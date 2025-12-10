@@ -2024,6 +2024,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const object = this.objectsData[targetObjectName];
             const newFrameIndex = object.frames.length; // Index of frame we're about to add
 
+            // CRITICAL: Trim PAE matrix if it doesn't match coords size
+            // This happens when ligands are filtered out but PAE isn't trimmed
+            if (data.pae && data.coords && data.coords.length > 0) {
+                const coordsLength = data.coords.length;
+                const expectedPaeLength = coordsLength * coordsLength;
+                const actualPaeLength = data.pae.length;
+
+                if (actualPaeLength !== expectedPaeLength && actualPaeLength > expectedPaeLength) {
+                    // PAE is larger than it should be - need to trim it
+                    // Assume the first coordsLength positions in the original structure
+                    // correspond to the filtered coords (ligands removed from end)
+                    const trimmedPae = new Uint8Array(expectedPaeLength);
+                    const originalN = Math.round(Math.sqrt(actualPaeLength));
+
+                    for (let i = 0; i < coordsLength; i++) {
+                        for (let j = 0; j < coordsLength; j++) {
+                            const originalIdx = i * originalN + j;
+                            const newIdx = i * coordsLength + j;
+                            trimmedPae[newIdx] = data.pae[originalIdx];
+                        }
+                    }
+                    data.pae = trimmedPae;
+                }
+            }
+
             // Add frame to object
             this.objectsData[targetObjectName].frames.push(data);
 
