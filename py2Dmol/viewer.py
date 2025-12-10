@@ -406,18 +406,14 @@ class view:
 
     def _update_live_data_cell(self):
         """
-        Updates the persistent data cell and broadcasts state to all viewer instances.
-        Enables cross-cell communication (Google Colab) and state persistence on refresh.
+        Sends incremental state update to viewer.
+        Uses display() instead of update_display() to avoid memory accumulation.
+        Heavy processing moved to viewer-mol.js (handleIncrementalStateUpdate) for minimal code size.
         """
         if not self._is_live:
             return
 
         viewer_id = self.config["viewer_id"]
-
-        # Create data display cell if it doesn't exist
-        if self._data_display_id is None:
-            self._data_display_id = f"py2dmol_data_{viewer_id}"
-            display(HTML(""), display_id=self._data_display_id)
 
         # Build a dict of all objects with their frames and metadata
         all_objects_data = {}
@@ -425,11 +421,10 @@ class view:
         for obj in self.objects:
             obj_name = obj.get("name", "")
             frames = obj.get("frames", [])
-            # Include all objects, even with no frames (they may get frames later)
             if obj_name:
                 all_objects_data[obj_name] = frames
 
-                # Collect object-level metadata for persistence on refresh
+                # Collect object-level metadata
                 metadata = {}
                 if obj.get("color") is not None:
                     metadata["color"] = obj["color"]
@@ -444,107 +439,28 @@ class view:
                 if metadata:
                     all_objects_metadata[obj_name] = metadata
 
-        all_frames_js = f"""
-        (function() {{
-            const allObjectsData = {json.dumps(all_objects_data)};
-            const allObjectsMetadata = {json.dumps(all_objects_metadata)};
+        # MINIMAL JavaScript - all logic is in viewer-mol.js
+        incremental_update_js = f"""
+(function() {{
+    const d = {json.dumps(all_objects_data)};
+    const m = {json.dumps(all_objects_metadata)};
+    const v = '{viewer_id}';
+    const id = 'py_' + Date.now();
 
-            // DISABLED: BroadcastChannel (testing memory leak)
-            // let dataChannel = null;
-            // try {{
-            //     dataChannel = new BroadcastChannel('py2dmol_{viewer_id}');
-            //     dataChannel.postMessage({{
-            //         operation: 'fullStateUpdate',
-            //         args: [allObjectsData, allObjectsMetadata],
-            //         sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
-            //     }});
-            //     dataChannel.onmessage = (event) => {{
-            //         if (event.data.operation === 'viewerReady') {{
-            //             dataChannel.postMessage({{
-            //                 operation: 'fullStateUpdate',
-            //                 args: [allObjectsData, allObjectsMetadata],
-            //                 sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
-            //             }});
-            //         }}
-            //     }};
-            // }} catch (e) {{}}
+    // BroadcastChannel for cross-iframe (Colab)
+    try {{
+        const c = new BroadcastChannel('py2dmol_' + v);
+        c.postMessage({{ operation: 'incrementalStateUpdate', args: [d, m], sourceInstanceId: id }});
+    }} catch(e) {{}}
 
-            // Direct execution (no BroadcastChannel)
-            function execute() {{
-                if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
-                    const viewer = window.py2dmol_viewers['{viewer_id}'];
-
-                    if (Object.keys(allObjectsData).length === 0) {{
-                        viewer.handlePythonClearAll();
-                        return;
-                    }}
-
-                    const newlyCreatedObjects = new Set();
-                    for (const objectName of Object.keys(allObjectsData)) {{
-                        if (!viewer.renderer.objectsData[objectName]) {{
-                            viewer.handlePythonNewObject(objectName);
-                            newlyCreatedObjects.add(objectName);
-                        }}
-                    }}
-
-                    for (const [objectName, frames] of Object.entries(allObjectsData)) {{
-                        if (!frames || frames.length === 0) continue;
-
-                        const obj = viewer.renderer.objectsData[objectName];
-                        const currentFrameCount = obj ? obj.frames.length : 0;
-
-                        for (let i = currentFrameCount; i < frames.length; i++) {{
-                            try {{
-                                viewer.handlePythonUpdate(JSON.stringify(frames[i]), objectName);
-                            }} catch (e) {{
-                                console.error(`Error adding frame to '${{objectName}}'`, e);
-                            }}
-                        }}
-                    }}
-
-                    let metadataApplied = false;
-                    for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {{
-                        const obj = viewer.renderer.objectsData[objectName];
-                        if (obj) {{
-                            if (metadata.color) {{
-                                obj.color = metadata.color;
-                                metadataApplied = true;
-                            }}
-                            if (metadata.contacts) {{
-                                obj.contacts = metadata.contacts;
-                                metadataApplied = true;
-                            }}
-                            if (metadata.bonds) {{
-                                obj.bonds = metadata.bonds;
-                                metadataApplied = true;
-                            }}
-                            if (newlyCreatedObjects.has(objectName)) {{
-                                if (metadata.rotation_matrix && obj.viewerState) {{
-                                    obj.viewerState.rotation = metadata.rotation_matrix;
-                                    metadataApplied = true;
-                                }}
-                                if (metadata.center && obj.viewerState) {{
-                                    obj.viewerState.center = metadata.center;
-                                    metadataApplied = true;
-                                }}
-                            }}
-                        }}
-                    }}
-
-                    if (metadataApplied) {{
-                        viewer.renderer.cachedSegmentIndices = null;
-                        viewer.renderer.cachedSegmentIndicesFrame = -1;
-                        viewer.renderer.cachedSegmentIndicesObjectName = null;
-                        viewer.renderer.setFrame(viewer.renderer.currentFrame);
-                    }}
-                }}
-            }}
-
-            // Execute directly (BroadcastChannel disabled for testing)
-            execute();
-        }})();
-        """
-        update_display(HTML(f'<script>{all_frames_js}</script>'), display_id=self._data_display_id)
+    // Direct call for same-window (JupyterLab, VSCode)
+    if (window.py2dmol_viewers && window.py2dmol_viewers[v]) {{
+        window.py2dmol_viewers[v].handleIncrementalStateUpdate(d, m);
+    }}
+}})();
+"""
+        # Use display() NOT update_display() - creates ephemeral script
+        display(Javascript(incremental_update_js))
 
     def _send_message(self, message_dict):
         """

@@ -6989,6 +6989,83 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // 12. Start the main animation loop
     renderer.animate();
 
+    // 12b. Add function to handle incremental state updates (memory-efficient)
+    const handleIncrementalStateUpdate = (allObjectsData, allObjectsMetadata) => {
+        // This function processes state updates with ALL logic in JavaScript
+        // Python sends minimal data, we do the heavy lifting here
+
+        if (!allObjectsData || Object.keys(allObjectsData).length === 0) {
+            handlePythonClearAll();
+            return;
+        }
+
+        const newlyCreatedObjects = new Set();
+
+        // Create missing objects
+        for (const objectName of Object.keys(allObjectsData)) {
+            if (!renderer.objectsData[objectName]) {
+                handlePythonNewObject(objectName);
+                newlyCreatedObjects.add(objectName);
+            }
+        }
+
+        // Add missing frames (incremental diff)
+        for (const [objectName, frames] of Object.entries(allObjectsData)) {
+            if (!frames || frames.length === 0) continue;
+
+            const obj = renderer.objectsData[objectName];
+            const currentFrameCount = obj ? obj.frames.length : 0;
+
+            // Only add NEW frames
+            for (let i = currentFrameCount; i < frames.length; i++) {
+                try {
+                    handlePythonUpdate(frames[i], objectName);
+                } catch (e) {
+                    console.error(`Error adding frame to '${objectName}':`, e);
+                }
+            }
+        }
+
+        // Apply metadata
+        if (allObjectsMetadata) {
+            let metadataApplied = false;
+            for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {
+                const obj = renderer.objectsData[objectName];
+                if (obj) {
+                    if (metadata.color) {
+                        obj.color = metadata.color;
+                        metadataApplied = true;
+                    }
+                    if (metadata.contacts) {
+                        obj.contacts = metadata.contacts;
+                        metadataApplied = true;
+                    }
+                    if (metadata.bonds) {
+                        obj.bonds = metadata.bonds;
+                        metadataApplied = true;
+                    }
+                    if (newlyCreatedObjects.has(objectName)) {
+                        if (metadata.rotation_matrix && obj.viewerState) {
+                            obj.viewerState.rotation = metadata.rotation_matrix;
+                            metadataApplied = true;
+                        }
+                        if (metadata.center && obj.viewerState) {
+                            obj.viewerState.center = metadata.center;
+                            metadataApplied = true;
+                        }
+                    }
+                }
+            }
+
+            if (metadataApplied) {
+                renderer.cachedSegmentIndices = null;
+                renderer.cachedSegmentIndicesFrame = -1;
+                renderer.cachedSegmentIndicesObjectName = null;
+                renderer.setFrame(renderer.currentFrame);
+            }
+        }
+    };
+
     // 13. Expose Public API
     // Use viewerId parameter passed to function
     if (viewerId) {
@@ -7000,25 +7077,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             handlePythonSetColor,
             handlePythonSetObjectColor,
             handlePythonSetViewTransform,
+            handleIncrementalStateUpdate, // NEW: Memory-efficient state updates
             renderer // Expose the renderer instance for external access
         };
 
-        // DISABLED: BroadcastChannel (testing memory leak)
-        // try {
-        //     const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
-        //     const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
-        //     channel.postMessage({
-        //         operation: 'viewerReady',
-        //         sourceInstanceId: thisInstanceId
-        //     });
-        //     channel.onmessage = (event) => {
-        //         const { operation, args, sourceInstanceId } = event.data;
-        //         if (sourceInstanceId === thisInstanceId) return;
-        //         if (operation === 'fullStateUpdate') {
-        //             // ... handler code ...
-        //         }
-        //     };
-        // } catch (e) {}
+        // BroadcastChannel for cross-iframe communication
+        try {
+            const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
+            const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
+
+            // Send viewerReady signal
+            channel.postMessage({
+                operation: 'viewerReady',
+                sourceInstanceId: thisInstanceId
+            });
+
+            channel.onmessage = (event) => {
+                const { operation, args, sourceInstanceId } = event.data;
+                if (sourceInstanceId === thisInstanceId) return;
+
+                if (operation === 'incrementalStateUpdate') {
+                    // NEW: Use the efficient handler defined above
+                    const [allObjectsData, allObjectsMetadata] = args;
+                    handleIncrementalStateUpdate(allObjectsData, allObjectsMetadata);
+                }
+            };
+        } catch (e) {
+            // BroadcastChannel not supported
+        }
 
     } else {
         console.error("py2dmol: viewer_id not found in config. Cannot register API.");
