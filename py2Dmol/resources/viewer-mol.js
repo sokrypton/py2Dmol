@@ -4078,9 +4078,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const nucleicChainbreakSq = nucleicChainbreak * nucleicChainbreak;
                 const ligandBondCutoffSq = ligandBondCutoff * ligandBondCutoff;
 
-                let firstPolymerIndex = -1;
-                let lastPolymerIndex = -1;
                 const ligandIndicesByChain = new Map(); // Group ligands by chain
+                const chainPolymerBounds = new Map(); // Track first/last polymer per chain
 
                 // Helper function to check if position type is polymer (for rendering only)
                 const isPolymer = (type) => (type === 'P' || type === 'D' || type === 'R');
@@ -4096,8 +4095,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (let i = 0; i < n; i++) {
                     if (isPolymerArr[i]) {
                         const type = this.positionTypes[i];
-                        if (firstPolymerIndex === -1) { firstPolymerIndex = i; }
-                        lastPolymerIndex = i;
+                        const chainId = this.chains[i] || 'A';
+
+                        // Track first and last polymer index per chain
+                        if (!chainPolymerBounds.has(chainId)) {
+                            chainPolymerBounds.set(chainId, { first: i, last: i });
+                        } else {
+                            chainPolymerBounds.get(chainId).last = i;
+                        }
 
                         if (i < n - 1) {
                             if (isPolymerArr[i + 1]) {
@@ -4142,34 +4147,40 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
 
-                // Check for cyclic peptides (first-to-last bond) if enabled
+                // Check for cyclic peptides (first-to-last bond) per chain
                 const detectCyclic = (typeof config.rendering?.detect_cyclic === 'boolean') ? config.rendering.detect_cyclic : true;
-                if (detectCyclic && firstPolymerIndex !== -1 && lastPolymerIndex !== -1 && firstPolymerIndex !== lastPolymerIndex) {
-                    const firstChainId = this.chains[firstPolymerIndex] || 'A';
-                    const lastChainId = this.chains[lastPolymerIndex] || 'A';
+                if (detectCyclic) {
+                    for (const [chainId, bounds] of chainPolymerBounds.entries()) {
+                        const firstIdx = bounds.first;
+                        const lastIdx = bounds.last;
 
-                    if (firstChainId === lastChainId && isPolymerArr[firstPolymerIndex] && isPolymerArr[lastPolymerIndex]) {
-                        const type1 = this.positionTypes[firstPolymerIndex];
-                        const type2 = this.positionTypes[lastPolymerIndex];
-                        const samePolymerType = (type1 === type2) ||
-                            ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
+                        // Skip if only one position in chain or same position
+                        if (firstIdx === lastIdx) continue;
 
-                        if (samePolymerType) {
-                            const start = this.coords[firstPolymerIndex];
-                            const end = this.coords[lastPolymerIndex];
-                            const distSq = start.distanceToSq(end);
-                            const chainbreakDistSq = getChainbreakDistSq(type1, type2);
+                        // Check if both are polymer positions of compatible type
+                        if (isPolymerArr[firstIdx] && isPolymerArr[lastIdx]) {
+                            const type1 = this.positionTypes[firstIdx];
+                            const type2 = this.positionTypes[lastIdx];
+                            const samePolymerType = (type1 === type2) ||
+                                ((type1 === 'D' || type1 === 'R') && (type2 === 'D' || type2 === 'R'));
 
-                            if (distSq < chainbreakDistSq) {
-                                this.segmentIndices.push({
-                                    idx1: firstPolymerIndex,
-                                    idx2: lastPolymerIndex,
-                                    colorIndex: this.perChainIndices[firstPolymerIndex],
-                                    origIndex: firstPolymerIndex,
-                                    chainId: firstChainId,
-                                    type: type1,
-                                    len: Math.sqrt(distSq)
-                                });
+                            if (samePolymerType) {
+                                const start = this.coords[firstIdx];
+                                const end = this.coords[lastIdx];
+                                const distSq = start.distanceToSq(end);
+                                const chainbreakDistSq = getChainbreakDistSq(type1, type2);
+
+                                if (distSq < chainbreakDistSq) {
+                                    this.segmentIndices.push({
+                                        idx1: firstIdx,
+                                        idx2: lastIdx,
+                                        colorIndex: this.perChainIndices[firstIdx],
+                                        origIndex: firstIdx,
+                                        chainId: chainId,
+                                        type: type1,
+                                        len: Math.sqrt(distSq)
+                                    });
+                                }
                             }
                         }
                     }
