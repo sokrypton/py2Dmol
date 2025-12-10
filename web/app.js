@@ -1818,7 +1818,12 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch) {
 
         // Store PAE data
         if (paeData) {
-            const ignoreLigands = !!(window.viewerConfig && window.viewerConfig.ui?.ignoreLigands);
+            // Check if ligands should be filtered (loadLigands=false means ignoreLigands=true)
+            const loadLigands = window.viewerConfig && window.viewerConfig.ui?.loadLigands !== undefined
+                ? window.viewerConfig.ui.loadLigands
+                : true; // Default to loading ligands
+            const ignoreLigands = !loadLigands;
+
             if (ignoreLigands && originalIsLigandPosition.length > 0) {
                 // PAE matrix indices map directly to position indices in originalFrameData
                 // We need to filter out ligand positions from the PAE matrix
