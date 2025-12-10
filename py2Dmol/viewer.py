@@ -449,34 +449,27 @@ class view:
             const allObjectsData = {json.dumps(all_objects_data)};
             const allObjectsMetadata = {json.dumps(all_objects_metadata)};
 
-            // Broadcast state update (works cross-iframe and same-window)
-            // Use a persistent channel to handle viewer ready events
-            let dataChannel = null;
-            try {{
-                dataChannel = new BroadcastChannel('py2dmol_{viewer_id}');
+            // DISABLED: BroadcastChannel (testing memory leak)
+            // let dataChannel = null;
+            // try {{
+            //     dataChannel = new BroadcastChannel('py2dmol_{viewer_id}');
+            //     dataChannel.postMessage({{
+            //         operation: 'fullStateUpdate',
+            //         args: [allObjectsData, allObjectsMetadata],
+            //         sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
+            //     }});
+            //     dataChannel.onmessage = (event) => {{
+            //         if (event.data.operation === 'viewerReady') {{
+            //             dataChannel.postMessage({{
+            //                 operation: 'fullStateUpdate',
+            //                 args: [allObjectsData, allObjectsMetadata],
+            //                 sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
+            //             }});
+            //         }}
+            //     }};
+            // }} catch (e) {{}}
 
-                // Broadcast immediately in case viewer is already listening
-                dataChannel.postMessage({{
-                    operation: 'fullStateUpdate',
-                    args: [allObjectsData, allObjectsMetadata],
-                    sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
-                }});
-
-                // Listen for viewer ready signal and re-broadcast
-                dataChannel.onmessage = (event) => {{
-                    if (event.data.operation === 'viewerReady') {{
-                        dataChannel.postMessage({{
-                            operation: 'fullStateUpdate',
-                            args: [allObjectsData, allObjectsMetadata],
-                            sourceInstanceId: 'datacell_' + Math.random().toString(36).substring(2, 15)
-                        }});
-                    }}
-                }};
-            }} catch (e) {{
-                // BroadcastChannel not supported, will use fallback
-            }}
-
-            // Fallback: apply locally if BroadcastChannel not supported
+            // Direct execution (no BroadcastChannel)
             function execute() {{
                 if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
                     const viewer = window.py2dmol_viewers['{viewer_id}'];
@@ -547,8 +540,7 @@ class view:
                 }}
             }}
 
-            // Fallback: try immediate execution for same-window scenarios
-            // (BroadcastChannel handshake handles cross-iframe cases)
+            // Execute directly (BroadcastChannel disabled for testing)
             execute();
         }})();
         """

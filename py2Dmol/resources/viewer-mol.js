@@ -7003,76 +7003,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             renderer // Expose the renderer instance for external access
         };
 
-        // BroadcastChannel for cross-iframe communication
-        try {
-            const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
-            const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
-
-            // Send viewerReady signal to trigger data re-broadcast from persistent data cell
-            channel.postMessage({
-                operation: 'viewerReady',
-                sourceInstanceId: thisInstanceId
-            });
-
-            channel.onmessage = (event) => {
-                const { operation, args, sourceInstanceId } = event.data;
-                if (sourceInstanceId === thisInstanceId) {
-                    return;
-                }
-
-                if (operation === 'fullStateUpdate') {
-                    const [allObjectsData, allObjectsMetadata] = args;
-
-                    if (Object.keys(allObjectsData).length === 0) {
-                        handlePythonClearAll();
-                        return;
-                    }
-
-                    const newlyCreatedObjects = new Set();
-                    for (const objectName of Object.keys(allObjectsData)) {
-                        if (!renderer.objectsData[objectName]) {
-                            handlePythonNewObject(objectName);
-                            newlyCreatedObjects.add(objectName);
-                        }
-                    }
-
-                    for (const [objectName, frames] of Object.entries(allObjectsData)) {
-                        if (!frames || frames.length === 0) continue;
-
-                        const obj = renderer.objectsData[objectName];
-                        const currentFrameCount = obj ? obj.frames.length : 0;
-
-                        for (let i = currentFrameCount; i < frames.length; i++) {
-                            handlePythonUpdate(JSON.stringify(frames[i]), objectName);
-                        }
-                    }
-
-                    for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {
-                        const obj = renderer.objectsData[objectName];
-                        if (obj) {
-                            if (metadata.color) obj.color = metadata.color;
-                            if (metadata.contacts) obj.contacts = metadata.contacts;
-                            if (metadata.bonds) obj.bonds = metadata.bonds;
-
-                            if (newlyCreatedObjects.has(objectName)) {
-                                if (metadata.rotation_matrix && obj.viewerState) {
-                                    obj.viewerState.rotation = metadata.rotation_matrix;
-                                }
-                                if (metadata.center && obj.viewerState) {
-                                    obj.viewerState.center = metadata.center;
-                                }
-                            }
-                        }
-                    }
-
-                    renderer.cachedSegmentIndices = null;
-                    renderer.cachedSegmentIndicesFrame = -1;
-                    renderer.cachedSegmentIndicesObjectName = null;
-                    renderer.setFrame(renderer.currentFrame);
-                    renderer.render('broadcast update');
-                }
-            };
-        } catch (e) {}
+        // DISABLED: BroadcastChannel (testing memory leak)
+        // try {
+        //     const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
+        //     const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
+        //     channel.postMessage({
+        //         operation: 'viewerReady',
+        //         sourceInstanceId: thisInstanceId
+        //     });
+        //     channel.onmessage = (event) => {
+        //         const { operation, args, sourceInstanceId } = event.data;
+        //         if (sourceInstanceId === thisInstanceId) return;
+        //         if (operation === 'fullStateUpdate') {
+        //             // ... handler code ...
+        //         }
+        //     };
+        // } catch (e) {}
 
     } else {
         console.error("py2dmol: viewer_id not found in config. Cannot register API.");
