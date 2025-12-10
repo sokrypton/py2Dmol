@@ -5150,13 +5150,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 tint = tint_cutoff_sq / (tint_cutoff_sq + dist2D_sq * alpha);
             }
 
-            // Adjust shadow strength based on segment type
-            // Zero-length segments (single atoms) cast 1/2 strength shadows compared to regular segments (2 atoms)
+            // Adjust shadow strength proportional to ideal bond lengths
+            // Using protein CA-CA as baseline = 1.0
+            // Ligand: REF_LENGTHS['L'] / REF_LENGTHS['P'] ≈ 0.395
+            // Protein: REF_LENGTHS['P'] / REF_LENGTHS['P'] = 1.0
+            // DNA/RNA: REF_LENGTHS['D'] / REF_LENGTHS['P'] ≈ 1.553
+
             let strengthMultiplier = 1.0;
+
+            // Base strength proportional to segment length
+            const type2 = segInfo2.type;
+            const proteinRefLength = REF_LENGTHS['P'];
+
+            if (type2 === 'P') {
+                // Protein: use as baseline
+                strengthMultiplier = 1.0;
+            } else if (type2 === 'D' || type2 === 'R') {
+                // DNA/RNA: longer segments cast stronger shadows
+                strengthMultiplier = REF_LENGTHS['D'] / proteinRefLength;
+            } else if (type2 === 'L') {
+                // Ligand: shorter segments cast weaker shadows
+                strengthMultiplier = REF_LENGTHS['L'] / proteinRefLength;
+            }
+
+            // Further reduce for single atoms (positions)
             if (isPosition2) {
-                // Casting segment is a single atom -> half strength
+                // Single atom represents half the mass of a segment (bond)
                 strengthMultiplier *= 0.5;
             }
+
+            // Final scaling to reduce overall shadow intensity
+            strengthMultiplier *= 0.5;
 
             return { shadow: shadow * strengthMultiplier, tint: tint * strengthMultiplier };
         }
