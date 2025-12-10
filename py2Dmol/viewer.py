@@ -291,6 +291,10 @@ class view:
         self._is_live = False             # True if .show() was called *before* .add()
         self._data_display_id = None      # For updating data cell only (not viewer)
 
+        # Track sent frames and metadata to enable true incremental updates
+        self._sent_frame_count = {}       # {"obj_name": num_frames_sent}
+        self._sent_metadata = {}          # {"obj_name": {metadata_dict}}
+
         # --- Alignment/Dynamic State ---
         self._coords = None
         self._rotation_matrix = None
@@ -404,58 +408,99 @@ class view:
                 return obj
         return None
 
-    def _update_live_data_cell(self):
+    def _send_incremental_update(self):
         """
-        Sends incremental state update to viewer.
-        Uses display() instead of update_display() to avoid memory accumulation.
-        Heavy processing moved to viewer-mol.js (handleIncrementalStateUpdate) for minimal code size.
+        Sends incremental state update to viewer (frames and metadata).
+
+        Only sends:
+        - NEW frames that haven't been sent yet
+        - CHANGED metadata (color, contacts, bonds, rotation, center)
+
+        Uses display(Javascript()) to create ephemeral scripts that get garbage collected.
+        Heavy processing is done in viewer-mol.js (handleIncrementalStateUpdate).
         """
         if not self._is_live:
             return
 
         viewer_id = self.config["viewer_id"]
 
-        # Build a dict of all objects with their frames and metadata
-        all_objects_data = {}
-        all_objects_metadata = {}
+        # Track new frames and changed metadata to send
+        new_frames_by_object = {}
+        changed_metadata_by_object = {}
+
         for obj in self.objects:
             obj_name = obj.get("name", "")
+            if not obj_name:
+                continue
+
             frames = obj.get("frames", [])
-            if obj_name:
-                all_objects_data[obj_name] = frames
+            total_frame_count = len(frames)
 
-                # Collect object-level metadata
-                metadata = {}
-                if obj.get("color") is not None:
-                    metadata["color"] = obj["color"]
-                if obj.get("contacts") is not None:
-                    metadata["contacts"] = obj["contacts"]
-                if obj.get("bonds") is not None:
-                    metadata["bonds"] = obj["bonds"]
-                if obj.get("rotation_matrix") is not None:
-                    metadata["rotation_matrix"] = obj["rotation_matrix"]
-                if obj.get("center") is not None:
-                    metadata["center"] = obj["center"]
-                if metadata:
-                    all_objects_metadata[obj_name] = metadata
+            # Determine which frames are new (not yet sent)
+            frames_already_sent = self._sent_frame_count.get(obj_name, 0)
 
-        # MINIMAL JavaScript - all logic is in viewer-mol.js
+            if total_frame_count > frames_already_sent:
+                # Extract only the new frames using slice
+                new_frames = frames[frames_already_sent:]
+                new_frames_by_object[obj_name] = new_frames
+
+                # Update tracking: mark these frames as sent
+                self._sent_frame_count[obj_name] = total_frame_count
+
+            # Collect current metadata for this object
+            current_metadata = {}
+            if obj.get("color") is not None:
+                current_metadata["color"] = obj["color"]
+            if obj.get("contacts") is not None:
+                current_metadata["contacts"] = obj["contacts"]
+            if obj.get("bonds") is not None:
+                current_metadata["bonds"] = obj["bonds"]
+            if obj.get("rotation_matrix") is not None:
+                current_metadata["rotation_matrix"] = obj["rotation_matrix"]
+            if obj.get("center") is not None:
+                current_metadata["center"] = obj["center"]
+
+            # Determine which metadata fields have changed
+            if current_metadata:
+                previously_sent_metadata = self._sent_metadata.get(obj_name, {})
+                changed_metadata_fields = {}
+
+                for field_name, field_value in current_metadata.items():
+                    # Include if new or changed
+                    if field_name not in previously_sent_metadata or previously_sent_metadata[field_name] != field_value:
+                        changed_metadata_fields[field_name] = field_value
+
+                if changed_metadata_fields:
+                    changed_metadata_by_object[obj_name] = changed_metadata_fields
+                    # Update tracking: mark this metadata as sent
+                    self._sent_metadata[obj_name] = current_metadata
+
+        # Skip update if nothing new to send
+        if not new_frames_by_object and not changed_metadata_by_object:
+            return
+
+        # Build minimal JavaScript to send update
+        # Use short variable names in JS to minimize payload size
         incremental_update_js = f"""
 (function() {{
-    const d = {json.dumps(all_objects_data)};
-    const m = {json.dumps(all_objects_metadata)};
-    const v = '{viewer_id}';
-    const id = 'py_' + Date.now();
+    const newFrames = {json.dumps(new_frames_by_object)};
+    const changedMetadata = {json.dumps(changed_metadata_by_object)};
+    const viewerId = '{viewer_id}';
+    const instanceId = 'py_' + Date.now();
 
-    // BroadcastChannel for cross-iframe (Colab)
+    // BroadcastChannel for cross-iframe communication (Google Colab)
     try {{
-        const c = new BroadcastChannel('py2dmol_' + v);
-        c.postMessage({{ operation: 'incrementalStateUpdate', args: [d, m], sourceInstanceId: id }});
+        const channel = new BroadcastChannel('py2dmol_' + viewerId);
+        channel.postMessage({{
+            operation: 'incrementalStateUpdate',
+            args: [newFrames, changedMetadata],
+            sourceInstanceId: instanceId
+        }});
     }} catch(e) {{}}
 
-    // Direct call for same-window (JupyterLab, VSCode)
-    if (window.py2dmol_viewers && window.py2dmol_viewers[v]) {{
-        window.py2dmol_viewers[v].handleIncrementalStateUpdate(d, m);
+    // Direct call for same-window scenarios (JupyterLab, VSCode)
+    if (window.py2dmol_viewers && window.py2dmol_viewers[viewerId]) {{
+        window.py2dmol_viewers[viewerId].handleIncrementalStateUpdate(newFrames, changedMetadata);
     }}
 }})();
 """
@@ -464,10 +509,13 @@ class view:
 
     def _send_message(self, message_dict):
         """
-        Sends a message to the viewer by updating the persistent data cell.
-        All state changes (add, set_color, clear, etc.) go through the single data cell.
+        Sends incremental update to viewer in live mode.
+
+        Legacy wrapper maintained for backwards compatibility.
+        The message_dict parameter is no longer used - all updates now go through
+        _send_incremental_update() which tracks and sends only new/changed data.
         """
-        self._update_live_data_cell()
+        self._send_incremental_update()
 
     def _display_viewer(self, static_data=None, include_libs=True):
         """
@@ -699,6 +747,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._position_names = None
         self._position_residue_numbers = None
         self._is_live = False
+
+        # Reset incremental update tracking
+        self._sent_frame_count = {}
+        self._sent_metadata = {}
 
     def _parse_contact_color(self, color_str):
         """

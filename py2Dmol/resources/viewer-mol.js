@@ -6989,75 +6989,81 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // 12. Start the main animation loop
     renderer.animate();
 
-    // 12b. Add function to handle incremental state updates (memory-efficient)
-    const handleIncrementalStateUpdate = (allObjectsData, allObjectsMetadata) => {
-        // This function processes state updates with ALL logic in JavaScript
-        // Python sends minimal data, we do the heavy lifting here
+    // 12b. Handle incremental state updates from Python (memory-efficient)
+    const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject) => {
+        /**
+         * Processes incremental updates sent from Python.
+         * Python only sends NEW frames and CHANGED metadata to minimize data transfer.
+         *
+         * @param {Object} newFramesByObject - {"objectName": [newFrame1, newFrame2, ...]}
+         * @param {Object} changedMetadataByObject - {"objectName": {color, contacts, bonds, ...}}
+         */
 
-        if (!allObjectsData || Object.keys(allObjectsData).length === 0) {
-            handlePythonClearAll();
-            return;
-        }
-
+        // Create objects if they don't exist yet
         const newlyCreatedObjects = new Set();
 
-        // Create missing objects
-        for (const objectName of Object.keys(allObjectsData)) {
-            if (!renderer.objectsData[objectName]) {
-                handlePythonNewObject(objectName);
-                newlyCreatedObjects.add(objectName);
-            }
-        }
-
-        // Add missing frames (incremental diff)
-        for (const [objectName, frames] of Object.entries(allObjectsData)) {
-            if (!frames || frames.length === 0) continue;
-
-            const obj = renderer.objectsData[objectName];
-            const currentFrameCount = obj ? obj.frames.length : 0;
-
-            // Only add NEW frames
-            for (let i = currentFrameCount; i < frames.length; i++) {
-                try {
-                    handlePythonUpdate(frames[i], objectName);
-                } catch (e) {
-                    console.error(`Error adding frame to '${objectName}':`, e);
+        if (newFramesByObject) {
+            for (const objectName of Object.keys(newFramesByObject)) {
+                if (!renderer.objectsData[objectName]) {
+                    handlePythonNewObject(objectName);
+                    newlyCreatedObjects.add(objectName);
                 }
             }
         }
 
-        // Apply metadata
-        if (allObjectsMetadata) {
-            let metadataApplied = false;
-            for (const [objectName, metadata] of Object.entries(allObjectsMetadata)) {
+        // Add new frames to each object
+        if (newFramesByObject) {
+            for (const [objectName, newFrames] of Object.entries(newFramesByObject)) {
+                if (!newFrames || newFrames.length === 0) continue;
+
+                // Python sends only NEW frames, so we just append them all
+                for (const frame of newFrames) {
+                    try {
+                        handlePythonUpdate(frame, objectName);
+                    } catch (e) {
+                        console.error(`Error adding frame to '${objectName}':`, e);
+                    }
+                }
+            }
+        }
+
+        // Apply changed metadata fields
+        if (changedMetadataByObject) {
+            let needsRerender = false;
+
+            for (const [objectName, changedFields] of Object.entries(changedMetadataByObject)) {
                 const obj = renderer.objectsData[objectName];
-                if (obj) {
-                    if (metadata.color) {
-                        obj.color = metadata.color;
-                        metadataApplied = true;
+                if (!obj) continue;
+
+                // Apply each changed metadata field
+                if (changedFields.color) {
+                    obj.color = changedFields.color;
+                    needsRerender = true;
+                }
+                if (changedFields.contacts) {
+                    obj.contacts = changedFields.contacts;
+                    needsRerender = true;
+                }
+                if (changedFields.bonds) {
+                    obj.bonds = changedFields.bonds;
+                    needsRerender = true;
+                }
+
+                // Only apply rotation/center for newly created objects
+                if (newlyCreatedObjects.has(objectName)) {
+                    if (changedFields.rotation_matrix && obj.viewerState) {
+                        obj.viewerState.rotation = changedFields.rotation_matrix;
+                        needsRerender = true;
                     }
-                    if (metadata.contacts) {
-                        obj.contacts = metadata.contacts;
-                        metadataApplied = true;
-                    }
-                    if (metadata.bonds) {
-                        obj.bonds = metadata.bonds;
-                        metadataApplied = true;
-                    }
-                    if (newlyCreatedObjects.has(objectName)) {
-                        if (metadata.rotation_matrix && obj.viewerState) {
-                            obj.viewerState.rotation = metadata.rotation_matrix;
-                            metadataApplied = true;
-                        }
-                        if (metadata.center && obj.viewerState) {
-                            obj.viewerState.center = metadata.center;
-                            metadataApplied = true;
-                        }
+                    if (changedFields.center && obj.viewerState) {
+                        obj.viewerState.center = changedFields.center;
+                        needsRerender = true;
                     }
                 }
             }
 
-            if (metadataApplied) {
+            // Invalidate caches and re-render if metadata changed
+            if (needsRerender) {
                 renderer.cachedSegmentIndices = null;
                 renderer.cachedSegmentIndicesFrame = -1;
                 renderer.cachedSegmentIndicesObjectName = null;
@@ -7094,12 +7100,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             channel.onmessage = (event) => {
                 const { operation, args, sourceInstanceId } = event.data;
+
+                // Ignore messages from this viewer instance (avoid echo)
                 if (sourceInstanceId === thisInstanceId) return;
 
                 if (operation === 'incrementalStateUpdate') {
-                    // NEW: Use the efficient handler defined above
-                    const [allObjectsData, allObjectsMetadata] = args;
-                    handleIncrementalStateUpdate(allObjectsData, allObjectsMetadata);
+                    // Unpack new frames and changed metadata from args
+                    const [newFramesByObject, changedMetadataByObject] = args;
+                    handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject);
                 }
             };
         } catch (e) {
