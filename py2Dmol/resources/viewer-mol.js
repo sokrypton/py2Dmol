@@ -3336,6 +3336,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.overlayState.autoColor = merged.autoColor;
             this.lastOperationMode = 'overlay-enter';
 
+            // Disable speed button in overlay mode (no animation)
+            if (this.speedButton) {
+                this.speedButton.disabled = true;
+                this.speedButton.style.opacity = '0.5';
+                this.speedButton.style.cursor = 'not-allowed';
+            }
+
             this._invalidateSegmentCache();
 
             // Set current frame to 0 for merged view
@@ -3365,6 +3372,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.overlayState.frameIdMap = null;
             this.overlayState.autoColor = null;
             this.lastOperationMode = 'overlay-exit';
+
+            // Re-enable speed button when exiting overlay mode
+            if (this.speedButton) {
+                this.speedButton.disabled = false;
+                this.speedButton.style.opacity = '1.0';
+                this.speedButton.style.cursor = 'pointer';
+            }
 
             // Invalidate segment cache (critical after exiting overlay)
             this.cachedSegmentIndices = null;
