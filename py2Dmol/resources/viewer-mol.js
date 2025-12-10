@@ -3284,6 +3284,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // Recalculate autoColor based on MERGED chains, not just first frame
+            // This ensures multi-chain structures are properly colored by chain in overlay mode
+            const uniqueMergedChains = new Set(mergedChains);
+            const hasFirstPAE = firstFrame?.pae && firstFrame.pae.length > 0;
+
+            if (hasFirstPAE) {
+                autoColor = 'plddt';
+            } else if (uniqueMergedChains.size > 1) {
+                autoColor = 'chain';
+            } else {
+                autoColor = 'rainbow';
+            }
+
             // Return merged data object
             return {
                 coords: mergedCoords,
@@ -3896,7 +3909,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
-            // In overlay mode, use pre-merge auto color based on first frame
+            // In overlay mode, use merged auto color based on all frames
             const uniqueChains = new Set(this.chains);
             if (this.overlayState.enabled && this.overlayState.autoColor) {
                 this.resolvedAutoColor = this.overlayState.autoColor;
@@ -4698,11 +4711,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Use resolved color mode (frame color takes priority over passed-in global mode)
             // If resolveColorHierarchy found a specific mode, use it
-            if (resolvedMode && resolvedMode !== this.colorMode) {
+            // IMPORTANT: 'auto' is not a real color mode, it must be resolved via _getEffectiveColorMode()
+            if (resolvedMode && resolvedMode !== 'auto' && resolvedMode !== this.colorMode) {
                 effectiveColorMode = resolvedMode;
-            } else if (!effectiveColorMode) {
-                effectiveColorMode = resolvedMode || this._getEffectiveColorMode();
+            } else if (!effectiveColorMode || effectiveColorMode === 'auto' || resolvedMode === 'auto') {
+                // Resolve 'auto' to actual mode (chain/rainbow/plddt)
+                effectiveColorMode = this._getEffectiveColorMode();
             }
+
             const type = (this.positionTypes && atomIndex < this.positionTypes.length) ? this.positionTypes[atomIndex] : undefined;
             let color;
 
