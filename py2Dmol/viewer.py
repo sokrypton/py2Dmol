@@ -488,6 +488,8 @@ class view:
     const viewerId = '{viewer_id}';
     const instanceId = 'py_' + Date.now();
 
+    let deliveredViaChannel = false;
+
     // BroadcastChannel for cross-iframe communication (Google Colab)
     try {{
         const channel = new BroadcastChannel('py2dmol_' + viewerId);
@@ -496,10 +498,11 @@ class view:
             args: [newFrames, changedMetadata],
             sourceInstanceId: instanceId
         }});
+        deliveredViaChannel = true;
     }} catch(e) {{}}
 
-    // Direct call for same-window scenarios (JupyterLab, VSCode)
-    if (window.py2dmol_viewers && window.py2dmol_viewers[viewerId]) {{
+    // Fallback direct call only if channel path failed (avoids double-delivery)
+    if (!deliveredViaChannel && window.py2dmol_viewers && window.py2dmol_viewers[viewerId]) {{
         window.py2dmol_viewers[viewerId].handleIncrementalStateUpdate(newFrames, changedMetadata);
     }}
 }})();
