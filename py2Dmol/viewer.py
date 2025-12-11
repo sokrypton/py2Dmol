@@ -483,26 +483,11 @@ class view:
         # Use short variable names in JS to minimize payload size
         incremental_update_js = f"""
 (function() {{
-    const newFrames = {json.dumps(new_frames_by_object)};
-    const changedMetadata = {json.dumps(changed_metadata_by_object)};
-    const viewerId = '{viewer_id}';
-    const instanceId = 'py_' + Date.now();
-    let deliveredViaChannel = false;
-
-    // BroadcastChannel for cross-iframe communication (Google Colab)
-    try {{
-        const channel = new BroadcastChannel('py2dmol_' + viewerId);
-        channel.postMessage({{
-            operation: 'incrementalStateUpdate',
-            args: [newFrames, changedMetadata],
-            sourceInstanceId: instanceId
-        }});
-        deliveredViaChannel = true;
-    }} catch(e) {{}}
-
-    // Fallback direct call only if channel path failed (avoids double-delivery)
-    if (!deliveredViaChannel && window.py2dmol_viewers && window.py2dmol_viewers[viewerId]) {{
-        window.py2dmol_viewers[viewerId].handleIncrementalStateUpdate(newFrames, changedMetadata);
+    const nf = {json.dumps(new_frames_by_object)};
+    const cm = {json.dumps(changed_metadata_by_object)};
+    const vid = '{viewer_id}';
+    if (window.py2dmol_pushIncrementalUpdate) {{
+        window.py2dmol_pushIncrementalUpdate(vid, nf, cm);
     }}
 }})();
 """

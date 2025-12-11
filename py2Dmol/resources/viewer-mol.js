@@ -7087,6 +7087,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             renderer // Expose the renderer instance for external access
         };
 
+        // Tiny helper to apply incremental updates (used by Python injections)
+        if (!window.py2dmol_pushIncrementalUpdate) {
+            window.py2dmol_pushIncrementalUpdate = function (targetViewerId, newFrames, changedMetadata) {
+                let deliveredViaChannel = false;
+                try {
+                    const channel = new BroadcastChannel('py2dmol_' + targetViewerId);
+                    channel.postMessage({
+                        operation: 'incrementalStateUpdate',
+                        args: [newFrames, changedMetadata],
+                        sourceInstanceId: 'py_' + Date.now()
+                    });
+                    deliveredViaChannel = true;
+                } catch (e) {
+                    // BroadcastChannel not available
+                }
+
+                if (!deliveredViaChannel && window.py2dmol_viewers && window.py2dmol_viewers[targetViewerId]) {
+                    window.py2dmol_viewers[targetViewerId].handleIncrementalStateUpdate(newFrames, changedMetadata);
+                }
+            };
+        }
+
         // BroadcastChannel for cross-iframe communication
         try {
             const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
