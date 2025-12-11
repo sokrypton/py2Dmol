@@ -290,7 +290,6 @@ class view:
         self._current_object_data = None  # List to hold frames for current object
         self._is_live = False             # True if .show() was called *before* .add()
         self._data_display_id = None      # For updating data cell only (not viewer)
-        self._data_display_handle = None  # DisplayHandle for incremental JS (avoid extra outputs)
 
         # Track sent frames and metadata to enable true incremental updates
         self._sent_frame_count = {}       # {"obj_name": num_frames_sent}
@@ -507,7 +506,7 @@ class view:
     }}
 }})();
 """
-        # Use display() (persisting in notebook) and attach styles directly to the script tag
+        # Use HTML-wrapped script (display:none to avoid layout changes)
         html_wrapper = f'<script style="display:none">{incremental_update_js}</script>'
         display(HTML(html_wrapper))
 
@@ -1937,7 +1936,6 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         # Reset data display ID for new viewer
         self._data_display_id = None
-        self._data_display_handle = None
 
     def _detect_redundant_fields(self, frames):
         """
