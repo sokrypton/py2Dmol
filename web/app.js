@@ -17,6 +17,7 @@
 
 let viewerApi = null;
 let pendingObjects = [];
+let scatterViewer = null;
 
 // Helper function to check if PAE data is valid
 function isValidPAE(pae) {
@@ -257,6 +258,14 @@ function initializeViewerConfig() {
         pae: {
             enabled: true,
             size: PAE_PLOT_SIZE
+        },
+        scatter: {
+            enabled: false,
+            size: 300,
+            xlabel: null,
+            ylabel: null,
+            xlim: null,
+            ylim: null
         },
         overlay: {
             enabled: false
@@ -506,7 +515,7 @@ function setupEventListeners() {
     // Expose update function globally for programmatic mode changes
     window.updateSequenceModeDropdown = updateSequenceModeDropdown;
 
-    // Monitor frame changes to update sequence view during animation
+    // Monitor frame changes to update sequence view and scatter plot during animation
     let lastCheckedFrame = -1;
     function checkFrameChange() {
         if (viewerApi?.renderer) {
@@ -514,6 +523,12 @@ function setupEventListeners() {
             const currentFrame = renderer.currentFrame;
             if (currentFrame !== lastCheckedFrame && currentFrame >= 0) {
                 lastCheckedFrame = currentFrame;
+
+                // Dispatch frame change event for scatter plot and other listeners
+                document.dispatchEvent(new CustomEvent('py2dmol-frame-change', {
+                    detail: { frameIndex: currentFrame }
+                }));
+
                 // Check if sequence view needs updating
                 const objectName = renderer.currentObjectName;
                 if (objectName && renderer.objectsData[objectName]) {
@@ -2150,10 +2165,10 @@ function applyPendingObjects() {
         }
 
         // Create and feed frames (new or replaced)
-        viewerApi.handlePythonNewObject(obj.name);
+        r.addObject(obj.name);
         newNames.push(obj.name);
         for (const frame of obj.frames) {
-            viewerApi.handlePythonUpdate(frame, obj.name);
+            r.addFrame(frame, obj.name);
         }
 
         // Set MSA data (replacing any existing MSA)
@@ -2515,9 +2530,9 @@ function clearAllObjects() {
     }
 
     // Use viewer's comprehensive reset method
-    if (viewerApi && viewerApi.handlePythonResetAll) {
+    if (viewerApi && viewerApi.renderer) {
         try {
-            viewerApi.handlePythonResetAll();
+            viewerApi.renderer.resetAll();
             // Reset status message
             setStatus("Ready. Upload a file or fetch an ID.");
         } catch (e) {
@@ -5328,10 +5343,13 @@ function handleFileUpload(event) {
 
     const zipFiles = [];
     const looseFiles = [];
+    const csvFiles = [];
 
     for (const file of files) {
         if (file.name.toLowerCase().endsWith('.zip')) {
             zipFiles.push(file);
+        } else if (file.name.toLowerCase().endsWith('.csv')) {
+            csvFiles.push(file);
         } else {
             looseFiles.push({
                 name: file.name,
@@ -5373,12 +5391,47 @@ function handleFileUpload(event) {
                     `Successfully loaded ${objectsLoaded} new object(s) from ${sourceName} ` +
                     `(${stats.framesAdded} total frame${stats.framesAdded !== 1 ? 's' : ''}${paeMessage}).`
                 );
+
+                // Process CSV files after structure files are loaded
+                if (csvFiles.length > 0) {
+                    processCSVFiles(csvFiles);
+                }
             } catch (e) {
                 console.error("Loose file processing failed:", e);
                 setStatus(`Error processing loose files: ${e.message}`, true);
             }
         })();
+    } else if (csvFiles.length > 0) {
+        // Only CSV files uploaded, process them directly
+        processCSVFiles(csvFiles);
     }
+}
+
+// Process CSV files for scatter plot
+function processCSVFiles(csvFiles) {
+    if (csvFiles.length === 0) return;
+
+    // Process first CSV file (ignore additional ones)
+    const csvFile = csvFiles[0];
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+        try {
+            const csvText = e.target.result;
+            parseAndLoadScatterData(csvText);
+
+            if (csvFiles.length > 1) {
+                setStatus(`Loaded scatter data from ${csvFile.name}. Additional CSV files ignored.`);
+            } else {
+                setStatus(`Loaded scatter data from ${csvFile.name}`);
+            }
+        } catch (error) {
+            console.error("Error loading CSV:", error);
+            setStatus(`Error loading CSV: ${error.message}`, true);
+        }
+    };
+
+    reader.readAsText(csvFile);
 }
 
 // ============================================================================
@@ -5422,6 +5475,87 @@ function initDragAndDrop() {
 function preventDefaults(e) {
     e.preventDefault();
     e.stopPropagation();
+}
+
+// ============================================================================
+// SCATTER PLOT HANDLING
+// ============================================================================
+
+function parseAndLoadScatterData(csvText) {
+    const lines = csvText.trim().split('\n');
+    if (lines.length < 2) {
+        throw new Error("CSV must have at least a header row and one data row");
+    }
+
+    // Parse header (first row)
+    const header = lines[0].split(',').map(h => h.trim());
+    if (header.length < 2) {
+        throw new Error("CSV must have at least 2 columns");
+    }
+
+    const xLabel = header[0];
+    const yLabel = header[1];
+
+    // Parse data rows
+    const xData = [];
+    const yData = [];
+
+    for (let i = 1; i < lines.length; i++) {
+        const values = lines[i].split(',').map(v => v.trim());
+        if (values.length < 2) continue;
+
+        const x = parseFloat(values[0]);
+        const y = parseFloat(values[1]);
+
+        if (!isNaN(x) && !isNaN(y)) {
+            xData.push(x);
+            yData.push(y);
+        }
+    }
+
+    if (xData.length === 0) {
+        throw new Error("No valid data points found in CSV");
+    }
+
+    // Create or update scatter viewer
+    const scatterCanvas = document.getElementById('scatterCanvas');
+    if (!scatterCanvas) {
+        throw new Error("Scatter canvas not found");
+    }
+
+    if (!scatterViewer && viewerApi?.renderer) {
+        scatterViewer = new ScatterPlotViewer(scatterCanvas, viewerApi.renderer);
+    }
+
+    if (scatterViewer) {
+        scatterViewer.setData(xData, yData, xLabel, yLabel);
+        scatterCanvas.style.display = 'block';
+
+        // Show scatter container if hidden
+        const scatterContainer = document.getElementById('scatterContainer');
+        if (scatterContainer) {
+            scatterContainer.style.display = 'block';
+        }
+
+        // IMPORTANT: Store scatter data in frames (matching Python interface)
+        // This ensures scatter data is saved when saving state
+        if (viewerApi?.renderer?.currentObjectName) {
+            const currentObj = viewerApi.renderer.objectsData[viewerApi.renderer.currentObjectName];
+            if (currentObj && currentObj.frames) {
+                // Store scatter data in each frame as [x, y]
+                for (let i = 0; i < currentObj.frames.length && i < xData.length; i++) {
+                    currentObj.frames[i].scatter = [xData[i], yData[i]];
+                }
+            }
+        }
+
+        // Store scatter labels in config
+        if (window.viewerConfig) {
+            window.viewerConfig.scatter.xlabel = xLabel;
+            window.viewerConfig.scatter.ylabel = yLabel;
+            window.viewerConfig.scatter.enabled = true;
+        }
+    }
 }
 
 // ============================================================================
@@ -5496,6 +5630,8 @@ function saveViewerState() {
                 if (frame.position_types) frameData.position_types = frame.position_types;
                 if (frame.residue_numbers) frameData.residue_numbers = frame.residue_numbers;
                 if (frame.bonds) frameData.bonds = frame.bonds;
+                if (frame.scatter) frameData.scatter = frame.scatter;
+                if (frame.color) frameData.color = frame.color;
 
                 // Map modified residues to standard equivalents (e.g., MSE -> MET)
                 if (frame.position_names) {
@@ -5673,6 +5809,8 @@ function saveViewerState() {
 
         // Create state object
         const stateData = {
+            version: "2.0",  // Version for nested config format
+            config: window.viewerConfig,  // Save nested config
             objects: objects,
             viewer_state: viewerState,
             selections_by_object: selectionsByObject
@@ -5762,6 +5900,7 @@ async function loadViewerState(stateData) {
                         position_types: frameData.position_types || objPositionTypes,  // undefined if both missing
                         plddts: frameData.plddts,  // undefined if missing (will use inheritance or default)
                         pae: frameData.pae,  // undefined if missing (will use inheritance or default)
+                        scatter: frameData.scatter,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
                         residue_numbers: frameData.residue_numbers,  // undefined if missing (will default)
                         bonds: frameData.bonds || objBonds  // undefined if both missing
@@ -5855,6 +5994,83 @@ async function loadViewerState(stateData) {
         } else {
             setStatus("Error: No valid objects found in state file.", true);
             return;
+        }
+
+        // Restore config (v2.0 nested format)
+        if (stateData.config) {
+            // Merge saved config with current config (preserving ui settings)
+            if (stateData.config.scatter) {
+                window.viewerConfig.scatter = {
+                    enabled: stateData.config.scatter.enabled || false,
+                    size: stateData.config.scatter.size || 300,
+                    xlabel: stateData.config.scatter.xlabel || null,
+                    ylabel: stateData.config.scatter.ylabel || null,
+                    xlim: stateData.config.scatter.xlim || null,
+                    ylim: stateData.config.scatter.ylim || null
+                };
+            }
+            if (stateData.config.pae) {
+                window.viewerConfig.pae = {
+                    enabled: stateData.config.pae.enabled !== false,
+                    size: stateData.config.pae.size || 300
+                };
+            }
+            // Other config sections can be restored here if needed
+        }
+
+        // Re-initialize scatter plot if scatter data exists and is enabled
+        if (window.viewerConfig?.scatter?.enabled) {
+            const scatterCanvas = document.getElementById('scatterCanvas');
+            if (scatterCanvas && renderer.currentObjectName) {
+                const currentObj = renderer.objectsData[renderer.currentObjectName];
+                if (currentObj && currentObj.frames && currentObj.frames.length > 0) {
+                    // Collect scatter data from frames
+                    const xData = [];
+                    const yData = [];
+
+                    for (const frame of currentObj.frames) {
+                        if (frame.scatter && Array.isArray(frame.scatter) && frame.scatter.length === 2) {
+                            xData.push(frame.scatter[0]);
+                            yData.push(frame.scatter[1]);
+                        } else {
+                            // Frame has no scatter data - use NaN or previous value
+                            xData.push(NaN);
+                            yData.push(NaN);
+                        }
+                    }
+
+                    // Initialize scatter viewer if we have data
+                    if (xData.some(x => !isNaN(x))) {
+                        if (!scatterViewer) {
+                            scatterViewer = new ScatterPlotViewer(scatterCanvas, renderer);
+                        }
+
+                        const xlabel = window.viewerConfig.scatter.xlabel || 'X';
+                        const ylabel = window.viewerConfig.scatter.ylabel || 'Y';
+
+                        scatterViewer.setData(xData, yData, xlabel, ylabel);
+
+                        // Apply limits if provided
+                        if (window.viewerConfig.scatter.xlim) {
+                            scatterViewer.xMin = window.viewerConfig.scatter.xlim[0];
+                            scatterViewer.xMax = window.viewerConfig.scatter.xlim[1];
+                        }
+                        if (window.viewerConfig.scatter.ylim) {
+                            scatterViewer.yMin = window.viewerConfig.scatter.ylim[0];
+                            scatterViewer.yMax = window.viewerConfig.scatter.ylim[1];
+                        }
+
+                        scatterViewer.render();
+
+                        // Show scatter container
+                        const scatterContainer = document.getElementById('scatterContainer');
+                        if (scatterContainer) {
+                            scatterContainer.style.display = 'block';
+                        }
+                        scatterCanvas.style.display = 'block';
+                    }
+                }
+            }
         }
 
         // Restore viewer state

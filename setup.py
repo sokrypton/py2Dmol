@@ -16,6 +16,7 @@ setup(
             'resources/viewer.html',
             'resources/viewer-mol.min.js',
             'resources/viewer-pae.min.js',
+            'resources/viewer-scatter.min.js',
         ],
     },
     license='BEER-WARE',

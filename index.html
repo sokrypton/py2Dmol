@@ -84,7 +84,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
 
                                     <input type="file" id="file-upload"
-                                        accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto" multiple
+                                        accept=".pdb,.cif,.ent,.zip,.json,.cst,.a3m,.fasta,.fa,.fas,.sto,.csv" multiple
                                         class="hidden">
                                 </div>
                             </div>
@@ -322,6 +322,11 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                     <div id="paeContainer" class="container-box" style="display: none;">
                         <canvas id="paeCanvas" style="cursor: crosshair;"></canvas>
                     </div>
+
+                    <!-- Scatter Plot Container -->
+                    <div id="scatterContainer" class="container-box" style="display: none;">
+                        <canvas id="scatterCanvas" width="600" height="600" style="cursor: pointer; width: 300px; height: 300px;"></canvas>
+                    </div>
                 </div>
             </div>
 
@@ -448,6 +453,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
     <script src="web/utils.js"></script>
     <script src="py2Dmol/resources/viewer-mol.js"></script>
     <script src="py2Dmol/resources/viewer-pae.js"></script>
+    <script src="web/viewer-scatter.js"></script>
     <script src="py2Dmol/resources/viewer-seq.js"></script>
     <script src="py2Dmol/resources/viewer-msa.js"></script>
     <script src="web/app.js"></script>

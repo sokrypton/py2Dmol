@@ -526,6 +526,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             enabled: false,
             size: 300
         },
+        scatter: {
+            enabled: false,
+            size: 300,
+            xlabel: 'X',
+            ylabel: 'Y',
+            xlim: null,
+            ylim: null
+        },
         overlay: {
             enabled: false
         }
@@ -562,13 +570,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 enabled: cfg.pae?.enabled ?? cfg.pae ?? DEFAULT_CONFIG.pae.enabled,
                 size: cfg.pae?.size || cfg.pae_size || DEFAULT_CONFIG.pae.size
             },
+            scatter: {
+                enabled: cfg.scatter?.enabled ?? cfg.scatter ?? DEFAULT_CONFIG.scatter.enabled,
+                size: cfg.scatter?.size || cfg.scatter_size || DEFAULT_CONFIG.scatter.size,
+                xlabel: cfg.scatter?.xlabel ?? DEFAULT_CONFIG.scatter.xlabel,
+                ylabel: cfg.scatter?.ylabel ?? DEFAULT_CONFIG.scatter.ylabel,
+                xlim: cfg.scatter?.xlim ?? DEFAULT_CONFIG.scatter.xlim,
+                ylim: cfg.scatter?.ylim ?? DEFAULT_CONFIG.scatter.ylim
+            },
             overlay: {
                 enabled: cfg.overlay?.enabled ?? cfg.overlay ?? DEFAULT_CONFIG.overlay.enabled
             }
         };
 
         // Carry over any additional top-level keys not explicitly normalized
-        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "pastel", "colorblind", "pae_size"]);
+        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "pastel", "colorblind", "pae_size", "scatter_size"]);
         for (const [key, value] of Object.entries(cfg)) {
             if (!knownKeys.has(key)) {
                 normalized[key] = value;
@@ -1172,6 +1188,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // --- PAE / Visibility ---
         setPAERenderer(paeRenderer) {
             this.paeRenderer = paeRenderer;
+        }
+
+        setScatterRenderer(scatterRenderer) {
+            this.scatterRenderer = scatterRenderer;
         }
 
         // [PATCH] Re-routed setResidueVisibility to use the new unified selection model
@@ -2081,6 +2101,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 object._lastPaeFrame = -1; // No PAE in first frame
             }
 
+            // Update scatter renderer if new frame has scatter data
+            if (this.scatterRenderer && data.scatter && Array.isArray(data.scatter) && data.scatter.length === 2) {
+                try {
+                    this.scatterRenderer.addPoint(data.scatter[0], data.scatter[1]);
+                } catch (e) {
+                    console.error("Error adding scatter point:", e);
+                }
+            }
+
             // If this is the first frame and overlay should be auto-enabled, enable it now
             // Commit 6: Use _enterOverlayMode instead of toggleOverlay for atomic state management
             let justAutoEnabledOverlay = false;
@@ -2831,6 +2860,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.updatePAEContainerVisibility();
 
             this.setUIEnabled(true); // Make sure controls are enabled
+
+            // Notify listeners (e.g., scatter plot) of frame change
+            try {
+                if (typeof document !== 'undefined') {
+                    document.dispatchEvent(new CustomEvent('py2dmol-frame-change', {
+                        detail: { frameIndex }
+                    }));
+                }
+            } catch (e) {
+                // Ignore dispatch errors
+            }
+
+            // Directly update scatter renderer highlight if present
+            if (this.scatterRenderer) {
+                this.scatterRenderer.currentFrameIndex = frameIndex;
+                this.scatterRenderer.render();
+            }
         }
 
         // Check if PAE data is valid
@@ -6327,6 +6373,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                     needsRender = true;
                 }
+
+                // Keep scatter highlight in sync during playback
+                if (this.scatterRenderer) {
+                    this.scatterRenderer.currentFrameIndex = currentFrame;
+                    this.scatterRenderer.render();
+                }
             }
 
             // 4. Final render if needed
@@ -6626,6 +6678,127 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     }
 
+    // Initialize scatter plot if enabled
+    if (config.scatter && config.scatter.enabled) {
+        try {
+            const scatterContainer = containerElement.querySelector('#scatterContainer');
+            const scatterCanvas = containerElement.querySelector('#scatterCanvas');
+
+            if (scatterContainer && scatterCanvas) {
+                // Apply size (supports scatter.size or scatter_size)
+                const scatterSize = config.scatter?.size || config.scatter_size || 300;
+                const padding = (config.display?.box === false) ? 0 : 8; // margin around canvas inside container
+                const innerSize = Math.max(10, scatterSize - padding * 2);
+                const containerSize = scatterSize;
+
+                // Set canvas intrinsic size for DPI
+                scatterCanvas.width = innerSize * currentDPR;
+                scatterCanvas.height = innerSize * currentDPR;
+
+                // Set canvas CSS size and margin to create inset spacing
+                scatterCanvas.style.width = `${innerSize}px`;
+                scatterCanvas.style.height = `${innerSize}px`;
+                scatterCanvas.style.margin = `${padding}px`;
+
+                // Box styling via CSS classes
+                const showBox = config.display?.box !== false;
+                scatterContainer.classList.toggle('scatter-container', true);
+                scatterContainer.classList.toggle('box-off', !showBox);
+                scatterContainer.style.display = 'flex';
+                scatterContainer.style.width = `${containerSize}px`;
+                scatterContainer.style.height = `${containerSize}px`;
+
+                // Function to initialize scatter renderer
+                const initializeScatterRenderer = () => {
+                    if (!window.ScatterPlotViewer) {
+                        return;
+                    }
+
+                    const scatterRenderer = new window.ScatterPlotViewer(scatterCanvas, renderer);
+                    renderer.setScatterRenderer(scatterRenderer);
+
+                    // Apply labels/limits even before data arrives (live mode)
+                    const xlabel = config.scatter.xlabel || 'X';
+                    const ylabel = config.scatter.ylabel || 'Y';
+                    scatterRenderer.setData([], [], xlabel, ylabel);
+                    if (config.scatter.xlim && Array.isArray(config.scatter.xlim) && config.scatter.xlim.length === 2) {
+                        scatterRenderer.xMin = config.scatter.xlim[0];
+                        scatterRenderer.xMax = config.scatter.xlim[1];
+                    }
+                    if (config.scatter.ylim && Array.isArray(config.scatter.ylim) && config.scatter.ylim.length === 2) {
+                        scatterRenderer.yMin = config.scatter.ylim[0];
+                        scatterRenderer.yMax = config.scatter.ylim[1];
+                    }
+
+                    // Collect scatter data from ALL frames in current object
+                    if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
+                        const object = renderer.objectsData[renderer.currentObjectName];
+                        const frames = object.frames || [];
+
+                        if (frames.length > 0) {
+                            const xData = [];
+                            const yData = [];
+
+                            // Iterate through all frames to collect scatter points
+                            let lastScatter = null;
+                            for (let i = 0; i < frames.length; i++) {
+                                const frame = frames[i];
+
+                                // Resolve scatter with inheritance (like plddts, chains)
+                                const scatterPoint = frame.scatter !== undefined ? frame.scatter : lastScatter;
+
+                                if (scatterPoint && Array.isArray(scatterPoint) && scatterPoint.length === 2) {
+                                    xData.push(scatterPoint[0]);
+                                    yData.push(scatterPoint[1]);
+                                    lastScatter = scatterPoint;
+                                } else {
+                                    // Frame has no scatter point - use NaN for gap
+                                    xData.push(NaN);
+                                    yData.push(NaN);
+                                }
+                            }
+
+                            // Set accumulated data to scatter renderer
+                            if (xData.length > 0) {
+                                const xlabel = config.scatter.xlabel || 'X';
+                                const ylabel = config.scatter.ylabel || 'Y';
+
+                                scatterRenderer.setData(xData, yData, xlabel, ylabel);
+
+                                // Apply limits if provided (override auto-calculation)
+                                if (config.scatter.xlim && Array.isArray(config.scatter.xlim) && config.scatter.xlim.length === 2) {
+                                    scatterRenderer.xMin = config.scatter.xlim[0];
+                                    scatterRenderer.xMax = config.scatter.xlim[1];
+                                }
+                                if (config.scatter.ylim && Array.isArray(config.scatter.ylim) && config.scatter.ylim.length === 2) {
+                                    scatterRenderer.yMin = config.scatter.ylim[0];
+                                    scatterRenderer.yMax = config.scatter.ylim[1];
+                                }
+
+                                scatterRenderer.render();
+
+                                // Show scatter container
+                                scatterContainer.style.display = 'flex';
+                            }
+                        }
+                    }
+                };
+
+                // Try to initialize immediately (offline mode) or wait for scatter script load event
+                requestAnimationFrame(() => {
+                    if (window.ScatterPlotViewer) {
+                        initializeScatterRenderer();
+                    } else {
+                        // Wait for scatter script to load (online mode)
+                        window.addEventListener('py2dmol_scatter_loaded', initializeScatterRenderer, { once: true });
+                    }
+                });
+            }
+        } catch (e) {
+            console.error("Failed to initialize scatter renderer:", e);
+        }
+    }
+
     // 5. Setup general controls
     const colorSelect = containerElement.querySelector('#colorSelect');
 
@@ -6771,103 +6944,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         renderer.setClearColor(true);
     }
 
-    // 7. Add function for Python to call (for new frames)
-    // These are now locally scoped consts, not on window
-    const handlePythonUpdate = (jsonDataOrObject, objectName) => {
-        try {
-            // Accept either JSON string or raw object to avoid Uint8Array serialization issues
-            const data = typeof jsonDataOrObject === 'string' ? JSON.parse(jsonDataOrObject) : jsonDataOrObject;
-            // Pass name to addFrame
-            renderer.addFrame(data, objectName);
-        } catch (e) {
-            console.error("Error adding frame:", e);
-        }
-    };
-
-    // 8. Add function for Python to start a new object
-    const handlePythonNewObject = (name) => {
-        renderer.addObject(name);
-    };
-
-    // 9. Add function for Python to clear everything
-    const handlePythonClearAll = () => {
-        renderer.clearAllObjects();
-    };
-
-    // 9b. Add function to reset all controls and state
-    const handlePythonResetAll = () => {
-        renderer.resetAll();
-    };
-
-    // 10. Add function for Python to set color mode (e.g., for from_afdb)
-    const handlePythonSetColor = (colorMode) => {
-        if (colorSelect) {
-            colorSelect.value = colorMode;
-            // Manually trigger the change event
-            colorSelect.dispatchEvent(new Event('change'));
-        }
-    };
-
-    // 10b. Add function for Python to set object-level color
-    const handlePythonSetObjectColor = (colorJsonOrObject, objectName) => {
-        try {
-            const color = typeof colorJsonOrObject === 'string' ?
-                JSON.parse(colorJsonOrObject) : colorJsonOrObject;
-
-            if (!objectName) {
-                objectName = renderer.currentObjectName;
-            }
-
-            if (objectName && renderer.objectsData[objectName]) {
-                // Store color for this object
-                renderer.objectsData[objectName].color = color;
-
-                // Invalidate all caches to force recalculation with new color
-                renderer.cachedSegmentIndices = null;
-                renderer.cachedSegmentIndicesFrame = -1;
-                renderer.cachedSegmentIndicesObjectName = null;
-                renderer.colors = null;  // Invalidate color cache
-                renderer.plddtColors = null;  // Invalidate plddt color cache
-                renderer.colorsNeedUpdate = true;  // Force color recalculation
-                renderer.plddtColorsNeedUpdate = true;  // Force plddt color recalculation
-
-                // Re-render with new colors
-                renderer.render('SetObjectColor');
-            }
-        } catch (e) {
-            console.error("Failed to set object color from Python:", e);
-        }
-    };
-
-    // 10c. Add function for Python to set view transform (rotation + center)
-    const handlePythonSetViewTransform = (rotationJsonString, centerJsonString, objectName) => {
-        try {
-            // Parse the double-encoded JSON strings from Python
-            const rotation = JSON.parse(rotationJsonString);
-            const center = JSON.parse(centerJsonString);
-
-            if (!objectName) {
-                objectName = renderer.currentObjectName;
-            }
-
-            if (objectName && renderer.objectsData[objectName]) {
-                // Store rotation matrix and center for this object
-                renderer.objectsData[objectName].rotation_matrix = rotation;
-                renderer.objectsData[objectName].center = center;
-
-                // Invalidate shadow cache since rotation affects shadows
-                renderer.cachedShadows = null;
-                renderer.lastShadowRotationMatrix = null;
-
-                // Re-render with new transform applied
-                renderer.render('SetViewTransform');
-            }
-        } catch (e) {
-            console.error("Failed to set view transform from Python:", e);
-        }
-    };
-
-    // 11. Load initial data
+    // 7. Load initial data
     if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (window.py2dmol_staticData[viewerId]).length > 0) {
         // === STATIC MODE (from show()) ===
         try {
@@ -6896,7 +6973,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             position_names: lightFrame.position_names || undefined,  // Will default in setCoords
                             residue_numbers: lightFrame.residue_numbers || undefined,  // Will default in setCoords
                             bonds: lightFrame.bonds || staticBonds || undefined,  // Bonds for connectivity
-                            color: lightFrame.color || undefined  // Frame-level color from Python
+                            color: lightFrame.color || undefined,  // Frame-level color from Python
+                            scatter: lightFrame.scatter || undefined  // Scatter point for this frame
                         };
 
                         renderer.addFrame(fullFrameData, obj.name);
@@ -7005,7 +7083,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         if (newFramesByObject) {
             for (const objectName of Object.keys(newFramesByObject)) {
                 if (!renderer.objectsData[objectName]) {
-                    handlePythonNewObject(objectName);
+                    renderer.addObject(objectName);
                     newlyCreatedObjects.add(objectName);
                 }
             }
@@ -7019,7 +7097,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Python sends only NEW frames, so we just append them all
                 for (const frame of newFrames) {
                     try {
-                        handlePythonUpdate(frame, objectName);
+                        renderer.addFrame(frame, objectName);
                     } catch (e) {
                         console.error(`Error adding frame to '${objectName}':`, e);
                     }
@@ -7076,14 +7154,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // Use viewerId parameter passed to function
     if (viewerId) {
         window.py2dmol_viewers[viewerId] = {
-            handlePythonUpdate,
-            handlePythonNewObject,
-            handlePythonClearAll,
-            handlePythonResetAll,
-            handlePythonSetColor,
-            handlePythonSetObjectColor,
-            handlePythonSetViewTransform,
-            handleIncrementalStateUpdate, // NEW: Memory-efficient state updates
+            handleIncrementalStateUpdate, // Primary: Memory-efficient incremental state updates
             renderer // Expose the renderer instance for external access
         };
 

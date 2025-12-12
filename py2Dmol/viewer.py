@@ -42,6 +42,14 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "size": 300
     },
+    "scatter": {
+        "enabled": False,
+        "size": 300,
+        "xlabel": None,
+        "ylabel": None,
+        "xlim": None,
+        "ylim": None
+    },
     "overlay": {
         "enabled": False
     }
@@ -75,10 +83,27 @@ def _nest_config(**flat):
     # PAE
     if "pae" in flat: config["pae"]["enabled"] = flat["pae"]
     if "pae_size" in flat: config["pae"]["size"] = flat["pae_size"]
-    
+
+    # Scatter
+    if "scatter" in flat:
+        if isinstance(flat["scatter"], dict):
+            config["scatter"] = {
+                "enabled": flat["scatter"].get("enabled", True),
+                "size": flat["scatter"].get("size", 300),
+                "xlabel": flat["scatter"].get("xlabel", None),
+                "ylabel": flat["scatter"].get("ylabel", None),
+                "xlim": flat["scatter"].get("xlim", None),
+                "ylim": flat["scatter"].get("ylim", None)
+            }
+        elif flat["scatter"] is True:
+            config["scatter"]["enabled"] = True
+        elif flat["scatter"] is False:
+            config["scatter"]["enabled"] = False
+    if "scatter_size" in flat: config["scatter"]["size"] = flat["scatter_size"]
+
     # Overlay
     if "overlay" in flat: config["overlay"]["enabled"] = flat["overlay"]
-    
+
     return config
     
 import importlib.resources
@@ -248,15 +273,21 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, pastel=0.25, shadow=True, shadow_strength=0.5,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, overlay=False, detect_cyclic=True, id=None,
+        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True, id=None,
     ):
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
             pae_size = int(pae_size[0])
         else:
             pae_size = int(pae_size)
-        
-        
+
+        # Normalize scatter_size: if tuple/list, use first value; otherwise use as-is
+        if isinstance(scatter_size, (tuple, list)) and len(scatter_size) > 0:
+            scatter_size = int(scatter_size[0])
+        else:
+            scatter_size = int(scatter_size)
+
+
         # Create nested config (accepts flat kwargs for backward compat)
         self.config = _nest_config(
             size=size,
@@ -274,6 +305,8 @@ class view:
             autoplay=autoplay,
             pae=pae,
             pae_size=pae_size,
+            scatter=scatter,
+            scatter_size=scatter_size,
             overlay=overlay,
             detect_cyclic=detect_cyclic
         )
@@ -303,6 +336,7 @@ class view:
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
 
@@ -336,6 +370,9 @@ class view:
             scaled_pae = np.clip(np.round(self._pae * 8), 0, 255).astype(np.uint8)
             payload["pae"] = scaled_pae.flatten().tolist()
 
+        if self._scatter is not None:
+            payload["scatter"] = self._scatter  # Already in [x, y] format
+
         if self._position_names is not None:
             payload["position_names"] = list(self._position_names)
 
@@ -344,7 +381,7 @@ class view:
 
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, align=True, position_names=None, residue_numbers=None, atom_types=None):
+    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None):
       """
       Updates the internal state with new data. Coordinates are kept in original space.
       Rotation matrix is ALWAYS computed for first frame (best_view).
@@ -379,6 +416,7 @@ class view:
       self._chains = chains
       self._position_types = position_types
       self._pae = pae
+      self._scatter = scatter
       self._position_names = position_names
       self._position_residue_numbers = residue_numbers
 
@@ -510,16 +548,6 @@ class view:
         html_wrapper = f'<script style="display:none">{incremental_update_js}</script>'
         display(HTML(html_wrapper))
 
-    def _send_message(self, message_dict):
-        """
-        Sends incremental update to viewer in live mode.
-
-        Legacy wrapper maintained for backwards compatibility.
-        The message_dict parameter is no longer used - all updates now go through
-        _send_incremental_update() which tracks and sends only new/changed data.
-        """
-        self._send_incremental_update()
-
     def _display_viewer(self, static_data=None, include_libs=True):
         """
         Internal: Renders the viewer's HTML directly into a div.
@@ -562,6 +590,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 prev_position_names = None
                 prev_residue_numbers = None
                 prev_bonds = None
+                prev_scatter = None
 
                 for frame_idx, frame in enumerate(py_obj["frames"]):
                     # Skip frames without coords (they're invalid)
@@ -623,6 +652,13 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                         if curr_bonds is not None:
                             light_frame["bonds"] = curr_bonds
                         prev_bonds = curr_bonds
+
+                    # scatter
+                    curr_scatter = frame.get("scatter")
+                    if frame_idx == 0 or curr_scatter != prev_scatter:
+                        if curr_scatter is not None:
+                            light_frame["scatter"] = curr_scatter
+                        prev_scatter = curr_scatter
 
                     # color (always include if present)
                     if "color" in frame and frame["color"] is not None:
@@ -719,6 +755,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     pae_js_content = f.read()
                 container_html = f'<script>{pae_js_content}</script>\n' + container_html
 
+            if self.config["scatter"]["enabled"]:
+                with importlib.resources.open_text(py2dmol_resources, 'viewer-scatter.min.js') as f:
+                    scatter_js_content = f.read()
+                container_html = f'<script>{scatter_js_content}</script>\n' + container_html
+
         return container_html
 
     def _display_html(self, html_string):
@@ -733,13 +774,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self.objects = []
         self._current_object_data = None
 
-        # Dynamic mode: send clear message if viewer is active
-        if self._is_live:
-            self._send_message({
-                "type": "py2DmolClearAll"
-            })
-
         # Reset python state
+        # Note: We don't send a message to the viewer because:
+        # 1. self.objects is already cleared above
+        # 2. _is_live is set to False below
+        # 3. The viewer will continue showing its current content until show() is called again
         self._coords = None
         self._rotation_matrix = None
         self._center = None
@@ -747,6 +786,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
         self._is_live = False
@@ -932,6 +972,123 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             print(f"Error: contacts must be a filepath (str) or list of lists, got {type(contacts)}")
             return None
 
+    def _parse_scatter_csv(self, filepath):
+        """
+        Parse a CSV file containing scatter plot data.
+
+        Expected format:
+        - First row: header with 2 columns (xlabel, ylabel)
+        - Subsequent rows: x,y numeric data pairs
+
+        Args:
+            filepath (str): Path to CSV file
+
+        Returns:
+            dict: {"data": [[x1, y1], [x2, y2], ...], "xlabel": str, "ylabel": str}
+                  or None if parsing fails
+        """
+        try:
+            with open(filepath, 'r') as f:
+                lines = f.readlines()
+
+            if len(lines) < 2:
+                print(f"Error: CSV file '{filepath}' must have at least a header row and one data row")
+                return None
+
+            # Parse header (first row)
+            header = [h.strip() for h in lines[0].strip().split(',')]
+            if len(header) < 2:
+                print(f"Error: CSV file '{filepath}' must have at least 2 columns")
+                return None
+
+            xlabel = header[0]
+            ylabel = header[1]
+
+            # Parse data rows
+            scatter_data = []
+            for i, line in enumerate(lines[1:], start=2):
+                line = line.strip()
+                if not line:  # Skip empty lines
+                    continue
+
+                values = [v.strip() for v in line.split(',')]
+                if len(values) < 2:
+                    print(f"Warning: Skipping row {i} in '{filepath}' (insufficient columns)")
+                    continue
+
+                try:
+                    x = float(values[0])
+                    y = float(values[1])
+                    scatter_data.append([x, y])
+                except (ValueError, TypeError):
+                    print(f"Warning: Skipping row {i} in '{filepath}' (non-numeric values)")
+                    continue
+
+            if len(scatter_data) == 0:
+                print(f"Error: No valid data points found in CSV file '{filepath}'")
+                return None
+
+            return {
+                "data": scatter_data,
+                "xlabel": xlabel,
+                "ylabel": ylabel
+            }
+
+        except Exception as e:
+            print(f"Error parsing scatter CSV file '{filepath}': {e}")
+            return None
+
+    def _process_scatter(self, scatter):
+        """
+        Process scatter input (filepath string or list/array of points).
+
+        Args:
+            scatter: Either:
+                - String: filepath to CSV file (returns dict with data, xlabel, ylabel)
+                - List/array: [[x1, y1], [x2, y2], ...] or [(x1, y1), (x2, y2), ...]
+                  (returns list format)
+
+        Returns:
+            dict: {"data": [[x1, y1], ...], "xlabel": str, "ylabel": str} if CSV
+            list: [[x1, y1], ...] if list input
+            None if invalid
+        """
+        if scatter is None:
+            return None
+
+        if isinstance(scatter, str):
+            # Filepath - parse CSV
+            return self._parse_scatter_csv(scatter)
+        elif isinstance(scatter, (list, tuple, np.ndarray)):
+            # List/array of points - validate format
+            validated = []
+            for i, point in enumerate(scatter):
+                if isinstance(point, (list, tuple)) and len(point) >= 2:
+                    try:
+                        x = float(point[0])
+                        y = float(point[1])
+                        validated.append([x, y])
+                    except (ValueError, TypeError):
+                        print(f"Warning: Skipping invalid scatter point at index {i}: {point}")
+                elif isinstance(point, np.ndarray) and point.shape == (2,):
+                    try:
+                        x = float(point[0])
+                        y = float(point[1])
+                        validated.append([x, y])
+                    except (ValueError, TypeError):
+                        print(f"Warning: Skipping invalid scatter point at index {i}: {point}")
+                else:
+                    print(f"Warning: Skipping invalid scatter point at index {i}: {point} (must be [x, y] pair)")
+
+            if len(validated) == 0:
+                print(f"Error: No valid scatter points found in provided data")
+                return None
+
+            return validated
+        else:
+            print(f"Error: scatter must be a filepath (str) or list/array of [x, y] points, got {type(scatter)}")
+            return None
+
     def _process_bonds(self, bonds):
         """
         Process bonds input (list of bond pairs).
@@ -978,6 +1135,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
 
@@ -998,12 +1156,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         
         # Send message *only if* in dynamic/hybrid mode and already displayed
         if self._is_live:
-            self._send_message({
-                "type": "py2DmolNewObject",
-                "name": name
-            })
+            self._send_incremental_update()
     
-    def add(self, coords, plddts=None, chains=None, position_types=None, pae=None,
+    def add(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
             name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None):
         """
         Adds a new *frame* of data to the viewer.
@@ -1016,6 +1171,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             chains (list, optional): N-length list of chain identifiers.
             position_types (list, optional): N-length list of position types ('P', 'D', 'R', 'L').
             pae (np.array, optional): LxL PAE matrix.
+            scatter (list/tuple/dict, optional): Scatter plot data point for this frame.
+                   Accepts: [x, y], (x, y), or {"x": x, "y": y}
             name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
             align (bool, optional): If True, aligns subsequent frames to the first frame.
                                    Best-view rotation is ALWAYS computed for first frame. Defaults to True.
@@ -1053,8 +1210,29 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         
         is_first_frame = len(self._current_object_data) == 0 if self._current_object_data is not None else False
 
+        # --- Step 1.5: Validate and normalize scatter data ---
+        if scatter is not None:
+            # Accept multiple formats: [x, y], (x, y), {"x": x, "y": y}
+            if isinstance(scatter, dict) and "x" in scatter and "y" in scatter:
+                scatter = [scatter["x"], scatter["y"]]
+            elif isinstance(scatter, (list, tuple)) and len(scatter) == 2:
+                scatter = list(scatter)  # Ensure it's a list
+            else:
+                raise ValueError(
+                    "scatter must be [x, y], (x, y), or {'x': x, 'y': y} "
+                    f"for a single point per frame, got: {type(scatter)}"
+                )
+
+            # Validate values are numeric
+            try:
+                x, y = float(scatter[0]), float(scatter[1])
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"scatter values must be numeric: {e}")
+
+            scatter = [x, y]  # Normalized format
+
         # --- Step 2: Update Python-side alignment state ---
-        self._update(coords, plddts, chains, position_types, pae,
+        self._update(coords, plddts, chains, position_types, pae, scatter,
             align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
@@ -1117,20 +1295,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             if "bonds" in self.objects[-1]:
                 payload["bonds"] = self.objects[-1]["bonds"]
 
-            self._send_message({
-                "type": "py2DmolUpdate",
-                "name": self.objects[-1]["name"],
-                "payload": payload
-            })
-
-            # Send rotation/center for first frame
-            if is_first_frame:
-                self._send_message({
-                    "type": "py2DmolSetViewTransform",
-                    "name": self.objects[-1]["name"],
-                    "rotation": self._rotation_matrix.tolist(),
-                    "center": self._center.tolist()
-                })
+            self._send_incremental_update()
 
     def set_color(self, color, name=None, chain=None, position=None, frame=None):
         """
@@ -1339,15 +1504,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             else:
                 final_color = target_obj.get("color")
 
-            if final_color:
-                self._send_message({
-                    "type": "py2DmolSetObjectColor",
-                    "name": name,
-                    "color": final_color
-                })
+            if final_color and self._is_live:
+                self._send_incremental_update()
 
 
-    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None):
+    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -1367,6 +1528,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
+            scatter: Optional scatter plot data for trajectory visualization. Can be:
+                    - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
+                    - List/array: [[x1, y1], [x2, y2], ...] - one point per model/frame
+                    When CSV is provided, xlabel/ylabel are extracted and scatter config is updated.
             color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
         """
@@ -1396,6 +1561,27 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             processed_contacts = self._process_contacts(contacts)
             if processed_contacts is not None:
                 self.objects[-1]["contacts"] = processed_contacts
+
+        # --- Process scatter if provided ---
+        scatter_data = None
+        scatter_xlabel = None
+        scatter_ylabel = None
+        if scatter is not None:
+            processed_scatter = self._process_scatter(scatter)
+            if processed_scatter is not None:
+                if isinstance(processed_scatter, dict):
+                    # CSV format - extract data and labels
+                    scatter_data = processed_scatter["data"]
+                    scatter_xlabel = processed_scatter["xlabel"]
+                    scatter_ylabel = processed_scatter["ylabel"]
+
+                    # Update scatter config with labels if scatter is enabled
+                    if self.config["scatter"]["enabled"]:
+                        self.config["scatter"]["xlabel"] = scatter_xlabel
+                        self.config["scatter"]["ylabel"] = scatter_ylabel
+                else:
+                    # List format - just data
+                    scatter_data = processed_scatter
 
         # --- Load structure ---
         try:
@@ -1455,11 +1641,15 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 # Only add PAE matrix to the first model
                 pae_to_add = paes[i] if paes and i < len(paes) else None
 
+                # Extract scatter point for this model (if scatter data provided)
+                scatter_to_add = scatter_data[i] if scatter_data and i < len(scatter_data) else None
+
                 # Call add() - this will handle batch vs. live
                 # Only pass name on first model to ensure all models go to same object
                 model_name = name if i == 0 else None
                 self.add(coords_np, plddts_np, position_chains, position_types,
                     pae=pae_to_add,
+                    scatter=scatter_to_add,
                     name=model_name,
                     align=align,
                     position_names=position_names,
@@ -1589,11 +1779,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         # Send update if in live mode
         if self._is_live:
-            self._send_message({
-                "type": "py2DmolUpdate",
-                "name": target_obj.get("name", ""),
-                "payload": {}  # Empty payload, just triggers metadata update
-            })
+            self._send_incremental_update()
 
     def add_bonds(self, bonds, name=None):
         """
@@ -1660,11 +1846,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         # Send update if in live mode
         if self._is_live:
-            self._send_message({
-                "type": "py2DmolUpdate",
-                "name": target_obj.get("name", ""),
-                "payload": {}  # Empty payload, just triggers metadata update
-            })
+            self._send_incremental_update()
 
     def _get_filepath_from_pdb_id(self, pdb_id):
         """
@@ -1791,7 +1973,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, color=None, ignore_ligands=None, show=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None, ignore_ligands=None, show=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -1809,6 +1991,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
             contacts: Optional contact restraints. Can be a filepath (str) or list of contact arrays.
+            scatter: Optional scatter plot data for trajectory visualization. Can be:
+                    - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
+                    - List/array: [[x1, y1], [x2, y2], ...] - one point per model/frame
             color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
             ignore_ligands (bool, optional): Deprecated. If provided, overrides load_ligands.
@@ -1831,7 +2016,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self.add_pdb(filepath, chains=chains,
                          name=name, paes=None, align=align,
                          use_biounit=use_biounit, biounit_name=biounit_name,
-                         load_ligands=load_ligands, contacts=contacts, color=color)
+                         load_ligands=load_ligands, contacts=contacts,
+                         scatter=scatter, color=color)
 
             # Determine whether to auto-show
             # show=True: always show
@@ -1844,7 +2030,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         else:
             print(f"Could not load structure for '{pdb_id}'.")
 
-    def from_afdb(self, uniprot_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, color=None, show=None):
+    def from_afdb(self, uniprot_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, scatter=None, color=None, show=None):
         """
         Loads a structure from an AlphaFold DB UniProt ID (downloads from EBI)
         and adds it to the viewer.
@@ -1864,6 +2050,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             use_biounit (bool): If True, attempts to generate the biological assembly.
             biounit_name (str): The name of the assembly to generate (default "1").
             load_ligands (bool): If True, loads ligand atoms. Defaults to True.
+            scatter: Optional scatter plot data for trajectory visualization. Can be:
+                    - String: filepath to CSV file (first row = header with xlabel,ylabel; subsequent rows = x,y data)
+                    - List/array: [[x1, y1], [x2, y2], ...] - one point per model/frame
             color (str, optional): Color for this structure. Can be a literal color (e.g., "red", "#ff0000") or a color mode
                                   (e.g., "chain", "plddt", "rainbow", "auto", "entropy", "deepmind").
             show (bool, optional): If True, automatically displays the viewer after loading (default behavior).
@@ -1892,7 +2081,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self.add_pdb(struct_filepath, chains=chains,
                 name=name, paes=[pae_matrix] if pae_matrix is not None else None, align=align,
                 use_biounit=use_biounit, biounit_name=biounit_name,
-                load_ligands=load_ligands, color=color)
+                load_ligands=load_ligands, scatter=scatter, color=color)
 
             # Determine whether to auto-show
             # show=True: always show
@@ -2001,7 +2190,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     frame_data["plddts"] = [round(p) for p in frame["plddts"]]
 
                 # Copy other fields
-                for key in ["chains", "position_types", "position_names", "residue_numbers", "bonds", "color", "pae"]:
+                for key in ["chains", "position_types", "position_names", "residue_numbers", "bonds", "scatter", "color", "pae"]:
                     if key in frame:
                         frame_data[key] = frame[key]
 
@@ -2094,6 +2283,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     position_names = frame_data.get("position_names")
                     residue_numbers = frame_data.get("residue_numbers")
                     pae = np.array(frame_data["pae"]) if "pae" in frame_data else None
+                    scatter = frame_data.get("scatter")  # Load scatter data [x, y]
                     bonds = frame_data.get("bonds")
                     color = frame_data.get("color")  # Extract frame-level color if present
 
@@ -2104,6 +2294,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                         chains,
                         position_types,
                         pae=pae,
+                        scatter=scatter,
                         name=None,
                         align=False,  # Don't re-align loaded data
                         position_names=position_names,

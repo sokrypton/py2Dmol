@@ -2,7 +2,7 @@
 
 **Purpose**: Complete technical documentation for AI systems and developers working with py2Dmol codebase.
 
-**Last Updated**: 2025-12-05
+**Last Updated**: 2025-12-11
 
 ---
 
@@ -16,6 +16,7 @@
 - [Data Flow](#data-flow)
   - [Cross-Cell Communication (BroadcastChannel)](#cross-cell-communication-broadcastchannel)
 - [Rendering System](#rendering-system)
+- [Scatter Plot Visualization](#scatter-plot-visualization)
 - [Function Reference](#function-reference)
 
 ---
@@ -46,6 +47,7 @@ graph TB
         C -->|uses| G[viewer-pae.js]
         C -->|uses| H[viewer-seq.js]
         C -->|uses| I[viewer-msa.js]
+        C -->|uses| J[viewer-scatter.js]
     end
     
     style C fill:#3b82f6,color:#fff
@@ -84,7 +86,8 @@ py2Dmol/
 │       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (6,791 lines)
 │       ├── viewer-pae.js        # PAE matrix visualization (906 lines)
 │       ├── viewer-seq.js        # Sequence viewer (2,257 lines)
-│       └── viewer-msa.js        # MSA viewer (4,702 lines)
+│       ├── viewer-msa.js        # MSA viewer (4,702 lines)
+│       └── viewer-scatter.js    # Scatter plot visualization (478 lines)
 │
 ├── web/                         # Web Application
 │   ├── app.js                   # Web app logic (6,485 lines)
@@ -146,6 +149,8 @@ def __init__(self,
     autoplay=False,           # Auto-play animation
     pae=False,                # Show PAE matrix
     pae_size=300,             # PAE canvas size
+    scatter=None,             # Scatter plot: False/True/dict with xlabel, ylabel, xlim, ylim
+    scatter_size=300,         # Scatter canvas size
     overlay=False,            # Overlay all frames
     id=None                   # Explicit viewer ID (auto-generated if None)
 ):
@@ -167,6 +172,7 @@ self._plddts = None
 self._chains = None
 self._position_types = None
 self._pae = None
+self._scatter = None
 self._position_names = None
 self._position_residue_numbers = None
 ```
@@ -186,6 +192,7 @@ def add(self,
     chains=None,              # N-length chain IDs
     position_types=None,      # N-length types: P/D/R/L
     pae=None,                 # LxL PAE matrix
+    scatter=None,             # Scatter plot point: [x, y], (x, y), or {"x": x, "y": y}
     name=None,                # Object name (auto-creates new obj if different)
     align=True,               # Auto-align to first frame
     position_names=None,      # Residue names
@@ -262,8 +269,8 @@ Save/restore complete viewer state to JSON.
 graph LR
     A[show BEFORE add] --> B[Live Mode]
     C[add BEFORE show] --> D[Static Mode]
-    
-    B --> E[Incremental updates via messages]
+
+    B --> E[Incremental updates: only new frames/changed metadata]
     D --> F[All data embedded in HTML]
 ```
 
@@ -272,8 +279,11 @@ graph LR
 - Single HTML output
 
 **Live Mode**: `show()` → `add()`
-- Updates sent via `display(Javascript(...))`
-- Messages handled by `window.py2dmol_viewers[viewer_id]`
+- **Incremental updates** sent via `display(Javascript(...))`
+- Only sends NEW frames not yet transmitted (tracked in `_sent_frame_count`)
+- Only sends CHANGED metadata (tracked in `_sent_metadata`)
+- Ephemeral JavaScript scripts that get garbage collected
+- Updates processed by `handleIncrementalStateUpdate()` in viewer-mol.js
 
 ---
 
@@ -629,7 +639,7 @@ viewer.show() ───────┘
                     └─→ Render all frames
 ```
 
-### Live Mode
+### Live Mode (Incremental Updates)
 
 ```
 Python                           JavaScript
@@ -638,19 +648,31 @@ viewer.show() ────→ Empty viewer initialized
     │                       │
     │                       └─→ window.py2dmol_viewers[id]
     │
-viewer.add() ─────→ _send_message()
+viewer.add() ─────→ _send_incremental_update()
     │                       │
-    ├─→ Serialize frame     │
-    ├─→ Create JS:          │
+    ├─→ Detect new frames (via _sent_frame_count)
+    ├─→ Detect changed metadata (via _sent_metadata)
+    ├─→ Serialize ONLY new/changed data
+    ├─→ Create ephemeral JS:
     │   "window.py2dmol_viewers[id]
-    │    .handlePythonUpdate(payload)"
+    │    .handleIncrementalStateUpdate(
+    │       newFramesByObject,
+    │       changedMetadataByObject
+    │    )"
     │                       │
     └─→ display(Javascript(...))
                             │
-                            └─→ Renderer processes update
-                                    │
-                                    └─→ Immediate re-render
+                            ├─→ Create missing objects
+                            ├─→ Append new frames
+                            ├─→ Apply changed metadata
+                            └─→ Re-render
 ```
+
+**Key Features:**
+- **Memory efficient**: Only transmits deltas, not full state
+- **Auto garbage collection**: Ephemeral scripts disappear after execution
+- **Tracked state**: `_sent_frame_count` and `_sent_metadata` dictionaries
+- **Cross-iframe compatible**: Works via BroadcastChannel in Google Colab
 
 ### Cross-Cell Communication (BroadcastChannel)
 
@@ -686,90 +708,128 @@ graph TB
     style G fill:#f59e0b,color:#fff
 ```
 
-**Flow (with Handshake)**:
+**Flow (Incremental Updates)**:
 
 1. **Cell 1**: User calls `viewer.show()` → Creates viewer with BroadcastChannel listener
-2. **Viewer**: Sends `viewerReady` signal on BroadcastChannel
-3. **Cell 2**: User calls `viewer.from_pdb("1UBQ")` → Triggers `_update_live_data_cell()`
-4. **Data Cell** (Cell 2): Listens for `viewerReady` signal and re-broadcasts state when received
-5. **Viewer** (Cell 1): Receives broadcast, applies update, re-renders
+2. **Viewer**: Sends `viewerReady` signal on BroadcastChannel (if needed for synchronization)
+3. **Cell 2**: User calls `viewer.from_pdb("1UBQ")` → Triggers `_send_incremental_update()`
+4. **Python**: Calculates NEW frames and CHANGED metadata, broadcasts via BroadcastChannel
+5. **Viewer** (Cell 1): Receives incremental update, applies deltas, re-renders
 
-**Handshake Mechanism**: Solves race condition where data cell might broadcast before viewer is ready to listen (especially with CDN-loaded scripts). Viewer signals readiness, triggering data cell to re-broadcast.
+**Incremental Design**: Only transmits changes (new frames/metadata) instead of full state. Uses `_sent_frame_count` and `_sent_metadata` to track what has been sent. Ephemeral scripts get garbage collected after execution.
 
 **Key Components**:
 
-#### Python: `_update_live_data_cell()` (viewer.py:402)
+#### Python: `_send_incremental_update()` (viewer.py:411)
 
 ```python
-def _update_live_data_cell(self):
+def _send_incremental_update(self):
     """
-    Updates the persistent data cell and broadcasts state to all viewer instances.
-    Enables cross-cell communication (Google Colab) and state persistence on refresh.
-    """
-    # Serialize all objects and metadata
-    all_objects_data = {...}
-    all_objects_metadata = {...}
+    Sends incremental state update to viewer (frames and metadata).
 
-    # JavaScript that runs in data cell
-    all_frames_js = f"""
-        // BroadcastChannel with handshake
+    Only sends:
+    - NEW frames that haven't been sent yet
+    - CHANGED metadata (color, contacts, bonds, rotation, center)
+
+    Uses display(Javascript()) to create ephemeral scripts that get garbage collected.
+    Heavy processing is done in viewer-mol.js (handleIncrementalStateUpdate).
+    """
+    # Track new frames and changed metadata
+    new_frames_by_object = {}
+    changed_metadata_by_object = {}
+
+    for obj in self.objects:
+        # Detect new frames not yet sent
+        frames_already_sent = self._sent_frame_count.get(obj_name, 0)
+        if total_frame_count > frames_already_sent:
+            new_frames = frames[frames_already_sent:]
+            new_frames_by_object[obj_name] = new_frames
+            self._sent_frame_count[obj_name] = total_frame_count
+
+        # Detect changed metadata
+        current_metadata = {color, contacts, bonds, rotation_matrix, center}
+        previously_sent = self._sent_metadata.get(obj_name, {})
+        changed_fields = {k: v for k, v in current_metadata.items()
+                         if k not in previously_sent or previously_sent[k] != v}
+        if changed_fields:
+            changed_metadata_by_object[obj_name] = changed_fields
+            self._sent_metadata[obj_name] = current_metadata
+
+    # Build ephemeral JavaScript
+    incremental_update_js = f"""
+    (function() {{
+        const newFrames = {json.dumps(new_frames_by_object)};
+        const changedMetadata = {json.dumps(changed_metadata_by_object)};
+
+        // BroadcastChannel for cross-iframe delivery
         const channel = new BroadcastChannel('py2dmol_{viewer_id}');
-
-        // Broadcast immediately in case viewer is already listening
         channel.postMessage({{
-            operation: 'fullStateUpdate',
-            args: [allObjectsData, allObjectsMetadata],
-            sourceInstanceId: 'datacell_...'
+            operation: 'incrementalStateUpdate',
+            args: [newFrames, changedMetadata],
+            sourceInstanceId: 'py_' + Date.now()
         }});
 
-        // Listen for viewerReady signal and re-broadcast
-        channel.onmessage = (event) => {{
-            if (event.data.operation === 'viewerReady') {{
-                channel.postMessage({{
-                    operation: 'fullStateUpdate',
-                    args: [allObjectsData, allObjectsMetadata],
-                    sourceInstanceId: 'datacell_...'
-                }});
-            }}
-        }};
-
-        // Fallback: same-window scenarios
-        function execute() {{ /* apply directly if viewer exists */ }}
-        execute();
+        // Fallback for same-window scenarios
+        if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
+            window.py2dmol_viewers['{viewer_id}']
+                .handleIncrementalStateUpdate(newFrames, changedMetadata);
+        }}
+    }})();
     """
-    update_display(HTML(f'<script>{all_frames_js}</script>'))
+    display(HTML(f'<script style="display:none">{incremental_update_js}</script>'))
 ```
 
-#### JavaScript: BroadcastChannel Listener (viewer-mol.js:6802)
+#### JavaScript: `handleIncrementalStateUpdate()` (viewer-mol.js:6993)
 
 ```javascript
-// Set up listener when viewer initializes
-const channel = new BroadcastChannel(`py2dmol_${viewerId}`);
-const thisInstanceId = 'viewer_' + Math.random().toString(36).substring(2, 15);
+const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject) => {
+    /**
+     * Processes incremental updates sent from Python.
+     * Python only sends NEW frames and CHANGED metadata to minimize data transfer.
+     *
+     * @param {Object} newFramesByObject - {"objectName": [newFrame1, newFrame2, ...]}
+     * @param {Object} changedMetadataByObject - {"objectName": {color, contacts, bonds, ...}}
+     */
 
-// Send viewerReady signal to trigger data re-broadcast
-channel.postMessage({
-    operation: 'viewerReady',
-    sourceInstanceId: thisInstanceId
-});
+    // Create objects if they don't exist yet
+    const newlyCreatedObjects = new Set();
+    for (const objectName of Object.keys(newFramesByObject)) {
+        if (!renderer.objectsData[objectName]) {
+            handlePythonNewObject(objectName);
+            newlyCreatedObjects.add(objectName);
+        }
+    }
 
+    // Append new frames to existing objects
+    for (const [objectName, frames] of Object.entries(newFramesByObject)) {
+        for (const frameData of frames) {
+            renderer.addFrame(frameData, objectName);
+        }
+    }
+
+    // Apply changed metadata (color, contacts, bonds, rotation, center)
+    for (const [objectName, metadata] of Object.entries(changedMetadataByObject)) {
+        if (metadata.color) { /* update color */ }
+        if (metadata.contacts) { /* update contacts */ }
+        if (metadata.bonds) { /* update bonds */ }
+        if (metadata.rotation_matrix) { /* update rotation */ }
+        if (metadata.center) { /* update center */ }
+    }
+
+    // Re-render
+    renderer.render('incremental update');
+};
+```
+
+**BroadcastChannel Integration** (viewer-mol.js:7107):
+```javascript
 channel.onmessage = (event) => {
     const { operation, args, sourceInstanceId } = event.data;
     if (sourceInstanceId === thisInstanceId) return;  // Skip own broadcasts
 
-    if (operation === 'fullStateUpdate') {
-        const [allObjectsData, allObjectsMetadata] = args;
-
-        // Create missing objects
-        for (const objectName of Object.keys(allObjectsData)) {
-            if (!renderer.objectsData[objectName]) {
-                handlePythonNewObject(objectName);
-            }
-        }
-
-        // Add missing frames
-        // Apply metadata (color, contacts, bonds, rotation, center)
-        // Re-render
+    if (operation === 'incrementalStateUpdate') {
+        const [newFramesByObject, changedMetadataByObject] = args;
+        handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject);
     }
 };
 ```
@@ -778,26 +838,23 @@ channel.onmessage = (event) => {
 
 ```javascript
 {
-    operation: 'fullStateUpdate',
+    operation: 'incrementalStateUpdate',
     args: [
-        // allObjectsData: object name → frames array
+        // newFramesByObject: object name → NEW frames only (not sent before)
         {
             "protein1": [
                 { coords: [...], plddts: [...], chains: [...] }
             ]
         },
-        // allObjectsMetadata: object name → metadata
+        // changedMetadataByObject: object name → CHANGED metadata only
         {
             "protein1": {
                 color: { type: "mode", value: "plddt" },
-                contacts: [...],
-                bonds: [...],
-                rotation_matrix: [[...], [...], [...]],
-                center: [x, y, z]
+                // Only fields that changed are included
             }
         }
     ],
-    sourceInstanceId: 'datacell_xxx' or 'viewer_yyy'
+    sourceInstanceId: 'py_xxx' or 'viewer_yyy'
 }
 ```
 
@@ -814,63 +871,67 @@ channel.onmessage = (event) => {
 
 1. **Cross-iframe support** - Works in Google Colab where cells are isolated
 2. **Same-window optimization** - Also works in JupyterLab/VSCode
-3. **State persistence** - Data cell preserves state on page refresh
+3. **Incremental efficiency** - Only transmits new/changed data, not full state
 4. **No polling** - Event-driven, efficient
-5. **Automatic cleanup** - Browser manages channel lifecycle
+5. **Automatic cleanup** - Ephemeral scripts get garbage collected
+6. **Memory efficient** - Tracks sent state to avoid retransmission
 
-### Message Protocol
+### Message Protocol (Live Mode)
 
-#### `py2DmolUpdate`
+**Current Protocol**: Incremental State Updates (as of 2025-12-11)
 
-**Sent by**: `add()` in live mode
+All live mode updates use the `incrementalStateUpdate` operation via BroadcastChannel.
 
-```python
+#### `incrementalStateUpdate`
+
+**Sent by**: `_send_incremental_update()` (called by `add()`, `set_color()`, etc.)
+
+**Message Structure**:
+```javascript
 {
-    "type": "py2DmolUpdate",
-    "name": "object_name",
-    "payload": {
-        "coords": [[x, y, z], ...],
-        "plddts": [50, 60, ...],
-        "chains": ["A", "B", ...],
-        "position_types": ["P", "P", ...],
-        "pae": [uint8, uint8, ...] or None,
-        "position_names": ["ALA", ...],
-        "residue_numbers": [1, 2, ...],
-        "bonds": [[0, 1], [1, 2]],
-        "contacts": [[10, 50, 1.0, {r, g, b}], ...],
-        "color": {"type": "mode", "value": "plddt"}
+    operation: 'incrementalStateUpdate',
+    args: [newFramesByObject, changedMetadataByObject],
+    sourceInstanceId: 'py_xxx'
+}
+```
+
+**Arguments**:
+
+1. **newFramesByObject**: Object name → Array of NEW frames
+```javascript
+{
+    "protein1": [
+        {
+            coords: [[x, y, z], ...],
+            plddts: [50, 60, ...],
+            chains: ["A", "B", ...],
+            position_types: ["P", "P", ...],
+            pae: [uint8, ...] or null,
+            position_names: ["ALA", ...],
+            residue_numbers: [1, 2, ...],
+            bonds: [[0, 1], [1, 2]],
+            contacts: [[10, 50, 1.0, {r, g, b}], ...]
+        }
+    ]
+}
+```
+
+2. **changedMetadataByObject**: Object name → CHANGED metadata fields only
+```javascript
+{
+    "protein1": {
+        color: {type: "mode", value: "plddt"},
+        contacts: [[10, 50, 1.0, {r, g, b}], ...],
+        bonds: [[0, 1], [1, 2]],
+        rotation_matrix: [[...], [...], [...]],
+        center: [x, y, z]
     }
 }
 ```
 
-#### `py2DmolNewObject`
-
-**Sent by**: `new_obj()` in live mode
-
-```python
-{
-    "type": "py2DmolNewObject",
-    "name": "object_name"
-}
-```
-
-#### `py2DmolSetObjectColor`
-
-**Sent by**: `set_color(...)` in live mode
-
-```python
-{
-    "type": "py2DmolSetObjectColor",
-    "name": "object_name",
-    "color": {"type": "mode", "value": "chain"}
-}
-```
-
-#### Other Messages
-
-- `py2DmolSetColor` - Global color update
-- `py2DmolSetViewTransform` - Update rotation/center
-- `py2DmolClearAll` - Remove all objects
+**Legacy Message Types** (deprecated as of 2025-12-11):
+- `py2DmolUpdate`, `py2DmolNewObject`, `py2DmolSetObjectColor`, `py2DmolSetColor`, `py2DmolSetViewTransform`, `py2DmolClearAll` are no longer used
+- `_send_message()` is now a legacy wrapper that calls `_send_incremental_update()`
 
 ---
 
@@ -947,6 +1008,404 @@ function resolveColor(position, chain, frame, object, global) {
 
 ---
 
+## Scatter Plot Visualization
+
+### Overview
+
+The scatter plot feature allows displaying 2D scatter plots synchronized with frame animation. Each frame can have an associated scatter point (e.g., RMSD vs Energy, PC1 vs PC2) that is highlighted during playback.
+
+**Path**: `py2Dmol/resources/viewer-scatter.js`
+**Class**: `ScatterPlotViewer`
+**Lines**: 478
+
+### Architecture
+
+**Data Model**: Per-frame data (not per-object like PAE)
+- Each frame can have `scatter=[x, y]` representing one point
+- Scatter plot accumulates all frame points for visualization
+- Frame index directly maps to scatter point index
+
+**Integration Pattern**: Follows PAE integration approach with adaptations:
+- Configuration in nested config structure
+- Conditional script loading
+- HTML container similar to PAE
+- JavaScript initialization collects all frame data
+- Frame synchronization via `py2dmol-frame-change` event
+
+### Python API
+
+#### Configuration
+
+**Simple form** (boolean):
+```python
+v = viewer.view(scatter=True)
+v.add(coords, scatter=[1.5, -120.5])
+```
+
+**Matplotlib-style** (dict with options):
+```python
+v = viewer.view(
+    scatter={
+        "xlabel": "RMSD (Å)",
+        "ylabel": "Energy (kcal/mol)",
+        "xlim": [0, 10],       # Optional: [min, max]
+        "ylim": [-150, -90]    # Optional: [min, max]
+    }
+)
+
+for rmsd, energy, coords in zip(rmsd_vals, energy_vals, trajectory):
+    v.add(coords, scatter=[rmsd, energy])
+
+v.show()
+```
+
+#### Per-Frame Data
+
+**Supported formats**:
+```python
+# List (preferred)
+v.add(coords, scatter=[1.5, -120.5])
+
+# Tuple
+v.add(coords, scatter=(1.5, -120.5))
+
+# Dictionary
+v.add(coords, scatter={"x": 1.5, "y": -120.5})
+
+# None (no scatter for this frame)
+v.add(coords, scatter=None)
+```
+
+**Validation**:
+- Format checked: must be [x, y], (x, y), or {"x": x, "y": y}
+- Values validated: must be numeric (float convertible)
+- Normalized to [x, y] list format internally
+
+#### Frame Inheritance
+
+Frames inherit scatter from previous frame if omitted:
+```python
+v = viewer.view(scatter=True)
+v.add(coords1, scatter=[1.0, -120])  # Frame 0: explicit
+v.add(coords2)                       # Frame 1: inherits [1.0, -120]
+v.add(coords3, scatter=[2.0, -115])  # Frame 2: explicit
+# Scatter points: [1.0,-120], [1.0,-120], [2.0,-115]
+```
+
+This follows the same pattern as `plddts`, `chains`, and `position_types`.
+
+### JavaScript Implementation
+
+#### ScatterPlotViewer Class
+
+**Constructor**:
+```javascript
+new ScatterPlotViewer(canvas, mainRenderer)
+```
+- `canvas`: Canvas element for scatter plot
+- `mainRenderer`: Reference to Pseudo3DRenderer for frame synchronization
+
+**Key Methods**:
+
+| Method | Purpose | Parameters |
+|--------|---------|------------|
+| `setData(xData, yData, xlabel, ylabel)` | Set complete scatter data | Arrays of x/y values, axis labels |
+| `addPoint(x, y)` | Add single point (live mode) | X and Y coordinates |
+| `render()` | Render scatter plot | None |
+| `findNearestPoint(mouseX, mouseY)` | Find point near cursor | Mouse coordinates |
+| `dataToCanvas(x, y)` | Convert data to screen coordinates | Data coordinates |
+
+#### Initialization Flow
+
+```javascript
+// 1. Check if scatter enabled
+if (config.scatter && config.scatter.enabled) {
+
+    // 2. Get canvas element
+    const scatterCanvas = document.querySelector('#scatterCanvas');
+
+    // 3. Create ScatterPlotViewer instance
+    const scatterRenderer = new ScatterPlotViewer(scatterCanvas, renderer);
+    renderer.setScatterRenderer(scatterRenderer);
+
+    // 4. Collect scatter data from ALL frames
+    const xData = [], yData = [];
+    let lastScatter = null;
+
+    for (let i = 0; i < frames.length; i++) {
+        const frame = frames[i];
+
+        // Resolve with inheritance
+        const scatterPoint = frame.scatter !== undefined
+            ? frame.scatter
+            : lastScatter;
+
+        if (scatterPoint && scatterPoint.length === 2) {
+            xData.push(scatterPoint[0]);
+            yData.push(scatterPoint[1]);
+            lastScatter = scatterPoint;
+        } else {
+            // No scatter point - use NaN
+            xData.push(NaN);
+            yData.push(NaN);
+        }
+    }
+
+    // 5. Set data and labels
+    scatterRenderer.setData(
+        xData, yData,
+        config.scatter.xlabel || 'X',
+        config.scatter.ylabel || 'Y'
+    );
+
+    // 6. Apply limits if provided (overrides auto-calculation)
+    if (config.scatter.xlim) {
+        scatterRenderer.xMin = config.scatter.xlim[0];
+        scatterRenderer.xMax = config.scatter.xlim[1];
+    }
+    if (config.scatter.ylim) {
+        scatterRenderer.yMin = config.scatter.ylim[0];
+        scatterRenderer.yMax = config.scatter.ylim[1];
+    }
+
+    // 7. Render
+    scatterRenderer.render();
+}
+```
+
+#### Dynamic Frame Addition
+
+When new frames are added in live mode:
+
+```javascript
+// In addFrame() method (viewer-mol.js:2104)
+if (this.scatterRenderer && data.scatter &&
+    Array.isArray(data.scatter) && data.scatter.length === 2) {
+    try {
+        this.scatterRenderer.addPoint(data.scatter[0], data.scatter[1]);
+    } catch (e) {
+        console.error("Error adding scatter point:", e);
+    }
+}
+```
+
+### Rendering Features
+
+#### Visual Design
+
+**Point Colors**:
+- **Past frames**: Normal blue (`#3b82f6`)
+- **Future frames**: Light blue/faded (`#bfdbfe`)
+- **Current frame**: Gold/yellow with outline (`#fbbf24` fill, `#f59e0b` stroke)
+- **Hovered point**: Light blue highlight (`#60a5fa`)
+
+**Drawing Order**: Reverse order (later frames drawn under earlier frames)
+
+**Point Size**: 4px radius (scaled by DPI)
+
+#### Interactive Features
+
+**Hover**: Highlights nearest point within 15px threshold
+- Cursor changes to pointer
+- Point color changes to hover color
+
+**Click**: Jumps to corresponding frame
+- Calls `mainRenderer.setFrame(index)`
+- Updates 3D viewer to clicked frame
+
+**Frame Synchronization**:
+- Listens to `py2dmol-frame-change` custom event
+- Automatically highlights current frame point
+- Works during animation playback
+
+#### Axis System
+
+**Auto-Scaling**:
+- Calculates min/max from data
+- Adds 5% padding on each side
+- Handles edge cases (single point, zero range)
+
+**Manual Limits**:
+- `xlim` and `ylim` override auto-calculation
+- Applied after `setData()` call
+- Format: `[min, max]`
+
+**Tick Generation**:
+- Nice round numbers (1, 2, 5, 10 multiples)
+- Target ~5 ticks per axis
+- Smart formatting (K/M notation for large numbers)
+
+**Labels**:
+- X-axis label centered below plot
+- Y-axis label rotated 90° on left side
+- Font: 12px sans-serif (scaled by DPI)
+
+### Data Flow
+
+```
+Python API
+    ↓
+add(coords, scatter=[x, y])  # Per frame
+    ↓
+Validate format and values
+    ↓
+Store in self._scatter
+    ↓
+Serialize to frame dict: {"scatter": [x, y]}
+    ↓
+Diff optimization (only include when changed)
+    ↓
+Embed in HTML JSON: window.py2dmol_staticData
+    ↓
+JavaScript loads static data
+    ↓
+Iterate ALL frames, collect scatter points
+    ↓
+Build xData = [x0, x1, ...], yData = [y0, y1, ...]
+    ↓
+ScatterPlotViewer.setData(xData, yData, xlabel, ylabel)
+    ↓
+Apply xlim/ylim if provided
+    ↓
+Render scatter plot
+    ↓
+Frame change → highlight corresponding point (index = frameIndex)
+```
+
+### Performance Optimizations
+
+#### Memory
+
+**Diff Optimization**: Only serialize scatter when it changes between frames
+```python
+# In _display_viewer() (viewer.py:656-661)
+curr_scatter = frame.get("scatter")
+if frame_idx == 0 or curr_scatter != prev_scatter:
+    if curr_scatter is not None:
+        light_frame["scatter"] = curr_scatter
+    prev_scatter = curr_scatter
+```
+
+**Frame Inheritance**: Reduces redundancy for slowly-changing metrics
+
+**Minification**: Terser compression to 6.4KB
+
+#### Rendering
+
+**Canvas-Based**: Hardware-accelerated 2D canvas rendering
+
+**DPI-Aware**: Scales canvas for high-resolution displays
+
+**Single Render**: Only re-renders on data change or frame change
+
+### Use Cases
+
+#### RMSD vs Energy Trajectory
+```python
+v = viewer.view(
+    scatter={
+        "xlabel": "RMSD from Native (Å)",
+        "ylabel": "Potential Energy (kcal/mol)",
+        "xlim": [0, 8],
+        "ylim": [-500, -200]
+    }
+)
+
+for frame in md_trajectory:
+    rmsd = calculate_rmsd(frame, native)
+    energy = calculate_energy(frame)
+    v.add(frame.coords, scatter=[rmsd, energy])
+```
+
+#### PCA Visualization
+```python
+pca_coords = pca.transform(trajectory_data)  # Nx2 array
+
+v = viewer.view(
+    scatter={
+        "xlabel": "Principal Component 1",
+        "ylabel": "Principal Component 2"
+    }
+)
+
+for i, coords in enumerate(trajectory):
+    v.add(coords, scatter=[pca_coords[i, 0], pca_coords[i, 1]])
+```
+
+#### Conformational Space Exploration
+```python
+v = viewer.view(scatter=True)
+
+for angle1, angle2, coords in zip(phi_angles, psi_angles, structures):
+    v.add(coords, scatter=[angle1, angle2])
+# Creates Ramachandran-like plot synchronized with structure
+```
+
+### Technical Details
+
+#### Config Normalization
+
+**Python** (`viewer.py:87-102`):
+```python
+if "scatter" in flat:
+    if isinstance(flat["scatter"], dict):
+        config["scatter"] = {
+            "enabled": flat["scatter"].get("enabled", True),
+            "size": flat["scatter"].get("size", 300),
+            "xlabel": flat["scatter"].get("xlabel", None),
+            "ylabel": flat["scatter"].get("ylabel", None),
+            "xlim": flat["scatter"].get("xlim", None),
+            "ylim": flat["scatter"].get("ylim", None)
+        }
+    elif flat["scatter"] is True:
+        config["scatter"]["enabled"] = True
+    elif flat["scatter"] is False:
+        config["scatter"]["enabled"] = False
+if "scatter_size" in flat:
+    config["scatter"]["size"] = flat["scatter_size"]
+```
+
+**JavaScript** (`viewer-mol.js:573-580`):
+```javascript
+scatter: {
+    enabled: cfg.scatter?.enabled ?? cfg.scatter ?? DEFAULT_CONFIG.scatter.enabled,
+    size: cfg.scatter?.size || cfg.scatter_size || DEFAULT_CONFIG.scatter.size,
+    xlabel: cfg.scatter?.xlabel ?? DEFAULT_CONFIG.scatter.xlabel,
+    ylabel: cfg.scatter?.ylabel ?? DEFAULT_CONFIG.scatter.ylabel,
+    xlim: cfg.scatter?.xlim ?? DEFAULT_CONFIG.scatter.xlim,
+    ylim: cfg.scatter?.ylim ?? DEFAULT_CONFIG.scatter.ylim
+}
+```
+
+#### Conditional Loading
+
+Scatter script only loaded when enabled:
+```python
+# In show() method (viewer.py:758-761)
+if self.config["scatter"]["enabled"]:
+    with importlib.resources.open_text(py2dmol_resources, 'viewer-scatter.min.js') as f:
+        scatter_js_content = f.read()
+    container_html = f'<script>{scatter_js_content}</script>\n' + container_html
+```
+
+**Benefits**:
+- No overhead when scatter not used
+- Keeps HTML file size minimal
+- On-demand feature loading
+
+### Comparison with PAE
+
+| Aspect | PAE | Scatter |
+|--------|-----|---------|
+| **Data Level** | Per-object (one matrix) | Per-frame (one point) |
+| **Visualization** | Single heatmap | Accumulated scatter plot |
+| **Data Structure** | 2D matrix (L×L) | 2D point [x, y] |
+| **Initialization** | Load once per object | Collect from all frames |
+| **Frame Changes** | Replace entire matrix | Highlight corresponding point |
+| **Use Case** | Structural confidence | Trajectory metrics |
+
+---
+
 ## Function Reference
 
 ### Python: `viewer.py`
@@ -961,6 +1420,8 @@ function resolveColor(position, chain, frame, object, global) {
 | `show()` | Display viewer | Mode depends on when called |
 | `new_obj(name)` | Create new object | `name` |
 | `set_color(color, name)` | Set object color | `color`, `name` |
+| `_send_incremental_update()` | Send incremental update to viewer (live mode) | Tracks new frames and changed metadata |
+| `_send_message(message_dict)` | Legacy wrapper (deprecated) | Calls `_send_incremental_update()` |
 | `save_state(filepath)` | Save to JSON | `filepath` |
 | `load_state(filepath)` | Load from JSON | `filepath` |
 | `kabsch(a, b)` | Kabsch alignment | Two Nx3 arrays |
@@ -983,13 +1444,15 @@ function resolveColor(position, chain, frame, object, global) {
 
 | Function | Purpose | Parameters |
 |----------|---------|------------|
-| `handlePythonUpdate(payload, name)` | Process live update from Python | Payload JSON, object name |
-| `handlePythonNewObject(name)` | Create new object from Python | Object name |
-| `handlePythonSetObjectColor(colorData, name)` | Update object color | Color data, object name |
-| `handlePythonSetColor(colorMode)` | Update global color mode | Color mode string |
-| `handlePythonSetViewTransform(data)` | Update rotation/center | Transform data |
-| `handlePythonClearAll()` | Clear all objects | None |
-| `handlePythonResetAll()` | Reset viewer state | None |
+| `handleIncrementalStateUpdate(newFrames, changedMeta)` | **Primary**: Process incremental updates | New frames object, changed metadata object |
+| `handlePythonUpdate(payload, name)` | Legacy: Process live update (deprecated) | Payload JSON, object name |
+| `handlePythonNewObject(name)` | Legacy: Create new object (deprecated) | Object name |
+| `handlePythonSetObjectColor(colorData, name)` | Legacy: Update object color (deprecated) | Color data, object name |
+| `handlePythonSetColor(colorMode)` | Legacy: Update global color mode (deprecated) | Color mode string |
+| `handlePythonSetViewTransform(data)` | Legacy: Update rotation/center (deprecated) | Transform data |
+| `handlePythonClearAll()` | Legacy: Clear all objects (deprecated) | None |
+| `handlePythonResetAll()` | Legacy: Reset viewer state (deprecated) | None |
+| `renderer` | Reference to Pseudo3DRenderer instance | N/A |
 
 ### JavaScript: `utils.js`
 
@@ -1018,6 +1481,7 @@ function resolveColor(position, chain, frame, object, global) {
             "chains": ["A", "B", ...],
             "position_types": ["P", "P", ...],
             "pae": [uint8_array] or None,
+            "scatter": [x, y] or None,
             "position_names": ["ALA", "GLY", ...],
             "residue_numbers": [1, 2, ...],
             "color": {"type": "mode", "value": "plddt"}
@@ -1058,6 +1522,14 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "size": 300
     },
+    "scatter": {
+        "enabled": False,
+        "size": 300,
+        "xlabel": None,
+        "ylabel": None,
+        "xlim": None,
+        "ylim": None
+    },
     "overlay": {
         "enabled": False
     }
@@ -1073,6 +1545,7 @@ DEFAULT_CONFIG = {
     rendering: { shadow, outline, width, ortho, pastel },
     color: { mode, colorblind },
     pae: { enabled, size },
+    scatter: { enabled, size, xlabel, ylabel, xlim, ylim },
     overlay: { enabled }
 }
 ```
@@ -1232,9 +1705,40 @@ const colorblindSafeChainColors = [
 
 ## Version History
 
-**Current**: Latest development version (2025-12-06)
+**Current**: Latest development version (2025-12-11)
 
-### Recent Changes (2025-12-06)
+### Recent Changes (2025-12-11)
+
+- ✅ **Added Scatter Plot Visualization**
+  - New feature for displaying 2D scatter plots synchronized with frame animation
+  - Per-frame data architecture: each frame can have `scatter=[x, y]`
+  - Matplotlib-style API: `scatter={'xlabel': 'RMSD', 'ylabel': 'Energy', 'xlim': [0,10], 'ylim': [-150,-90]}`
+  - Multiple input formats supported: list, tuple, dict (`[x,y]`, `(x,y)`, `{"x":x, "y":y}`)
+  - Frame inheritance: frames inherit scatter from previous frame if omitted
+  - Interactive features: click points to jump to frames, hover highlighting, synchronized playback
+  - Visual design: color-coded points (blue for past, gold for current, light blue for future)
+  - Auto-scaling with 5% padding, manual limits override support
+  - Diff optimization: only serialize scatter when changed between frames
+  - Conditional loading: script only loaded when scatter enabled (6.4KB minified)
+  - Use cases: RMSD vs Energy, PCA trajectories, conformational space exploration
+  - Files modified: `viewer.py`, `viewer.html`, `viewer-mol.js`, new `viewer-scatter.js`
+  - Comprehensive validation and error handling
+  - Full documentation in technical README
+
+- ✅ **Replaced accumulation/restore with incremental updates (Live Mode)**
+  - Removed full state accumulation and restore approach
+  - Implemented true incremental updates via `_send_incremental_update()`
+  - Only sends NEW frames not yet transmitted (tracked in `_sent_frame_count`)
+  - Only sends CHANGED metadata (tracked in `_sent_metadata`)
+  - Ephemeral JavaScript scripts get auto garbage collected
+  - Deprecated legacy message types (`py2DmolUpdate`, `py2DmolNewObject`, etc.)
+  - New unified message protocol: `incrementalStateUpdate` operation
+  - BroadcastChannel now uses incremental updates for cross-cell communication
+  - JavaScript handler: `handleIncrementalStateUpdate()` processes deltas efficiently
+  - Dramatically reduces memory usage and data transfer in live mode
+  - `_send_message()` now a legacy wrapper that calls `_send_incremental_update()`
+
+### Previous Changes (2025-12-06)
 
 - ✅ **Removed CDN/offline parameter**
   - Removed `offline` parameter from `view()` constructor

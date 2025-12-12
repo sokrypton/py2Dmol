@@ -40,6 +40,18 @@ viewer.show()
 
 ```
 
+### Example: Scatter + Structure (live)
+
+Add a per-frame 2D point alongside the molecular frames. The scatter plot plays in sync with the viewer, supports sizing, and inherits the box/controls styling. [See detailed scatter plot documentation below](#scatter-plot-visualization).
+
+```python
+import py2Dmol, numpy as np
+viewer = py2Dmol.view(scatter={"xlabel": "PC1", "ylabel": "PC2", "size": 300})
+viewer.show()  # live mode
+for _ in range(100):
+    viewer.add(np.random.rand(200, 3) * 200, scatter=[np.random.rand(), np.random.rand()])
+```
+
 ### Example: Comparing Multiple Trajectories
 
 You can add multiple PDB files as separate, switchable trajectories. When you provide a different name, a new object is automatically created:
@@ -80,6 +92,8 @@ viewer = py2Dmol.view(
     controls=True,       # show controls
     pae=False,           # show pae
     pae_size=300,        # set pae canvas size (single integer for square canvas)
+    scatter=False,       # show scatter plot (or dict with xlabel, ylabel, xlim, ylim, size)
+    scatter_size=300,    # set scatter canvas size (if scatter=True)
 )
 
 viewer.add_pdb("my_complex.cif")
@@ -287,6 +301,194 @@ viewer.show()
 ```
 
 Contacts will appear as colored lines connecting the specified residues, with line width proportional to the weight value.
+
+---
+
+## Scatter Plot Visualization
+
+Visualize 2D data (e.g., RMSD vs Energy, PC1 vs PC2) synchronized with your molecular trajectory. Each frame in the trajectory can have an associated scatter point, and the scatter plot highlights the current frame during animation.
+
+### Configuration
+
+Enable scatter plots when creating the viewer:
+
+```python
+import py2Dmol
+
+# Basic: use defaults
+viewer = py2Dmol.view(scatter=True)
+
+# Advanced: customize labels and limits
+viewer = py2Dmol.view(scatter={
+    "xlabel": "RMSD (Å)",
+    "ylabel": "Energy (kcal/mol)",
+    "xlim": [0, 10],      # Optional: [min, max] or None for auto
+    "ylim": [-150, -90],  # Optional: [min, max] or None for auto
+    "size": 300           # Canvas size in pixels (default: 300)
+})
+```
+
+**Configuration Options:**
+- `xlabel`: X-axis label (default: "X")
+- `ylabel`: Y-axis label (default: "Y")
+- `xlim`: X-axis limits `[min, max]` or `None` for auto-scaling
+- `ylim`: Y-axis limits `[min, max]` or `None` for auto-scaling
+- `size`: Canvas size in pixels (default: 300)
+
+### Adding Scatter Data
+
+#### Method 1: Per-Frame with `add()`
+
+Add scatter data point-by-point in live mode:
+
+```python
+viewer = py2Dmol.view(scatter={"xlabel": "RMSD", "ylabel": "Energy"})
+viewer.show()  # Live mode
+
+for coords, rmsd, energy in trajectory:
+    viewer.add(coords, scatter=[rmsd, energy])
+```
+
+**Supported Formats:**
+```python
+viewer.add(coords, scatter=[x, y])              # List
+viewer.add(coords, scatter=(x, y))              # Tuple
+viewer.add(coords, scatter={"x": x, "y": y})   # Dict
+```
+
+#### Method 2: CSV File with `add_pdb()`
+
+Load scatter data from a CSV file when loading a PDB:
+
+```python
+viewer = py2Dmol.view(scatter=True)
+viewer.add_pdb('trajectory.pdb', scatter='data.csv')
+viewer.show()
+```
+
+**CSV Format:**
+```csv
+RMSD (Å),Energy (kcal/mol)
+1.5,-120.5
+2.1,-118.3
+2.8,-115.2
+3.2,-112.8
+```
+
+- **First row**: Header with xlabel and ylabel (automatically applied to plot)
+- **Subsequent rows**: Numeric x,y data pairs (one per model/frame)
+
+The CSV file must have exactly as many data rows as there are models/frames in the PDB file.
+
+#### Method 3: List/Array with `add_pdb()`
+
+Provide scatter data as a list or NumPy array:
+
+```python
+import numpy as np
+
+scatter_data = [[1.5, -120.5], [2.1, -118.3], [2.8, -115.2]]
+viewer = py2Dmol.view(scatter=True)
+viewer.add_pdb('trajectory.pdb', scatter=scatter_data)
+viewer.show()
+```
+
+**Supported Formats:**
+- List of lists: `[[x1, y1], [x2, y2], ...]`
+- List of tuples: `[(x1, y1), (x2, y2), ...]`
+- NumPy array: `np.array([[x1, y1], [x2, y2], ...])`
+
+### Complete Examples
+
+#### Example 1: MD Trajectory Analysis
+
+```python
+import py2Dmol
+import numpy as np
+
+# Load trajectory with RMSD vs energy scatter plot
+viewer = py2Dmol.view(
+    scatter={
+        "xlabel": "RMSD from native (Å)",
+        "ylabel": "Total Energy (kcal/mol)",
+        "xlim": [0, 8],
+        "ylim": [-150, -80]
+    },
+    autoplay=True
+)
+
+# Load from CSV file
+viewer.add_pdb('md_trajectory.pdb', scatter='md_analysis.csv')
+viewer.show()
+```
+
+#### Example 2: PCA Visualization
+
+```python
+import py2Dmol
+import numpy as np
+
+# Generate PCA trajectory
+viewer = py2Dmol.view(scatter={"xlabel": "PC1", "ylabel": "PC2", "size": 350})
+viewer.show()  # Live mode
+
+# Simulate PCA trajectory
+for i in range(100):
+    coords = generate_coords(i)  # Your coordinate generation
+    pc1 = np.cos(i * 0.1) * 5
+    pc2 = np.sin(i * 0.1) * 3
+    viewer.add(coords, scatter=[pc1, pc2])
+```
+
+#### Example 3: Multi-Trajectory Comparison
+
+```python
+import py2Dmol
+
+viewer = py2Dmol.view(scatter=True)
+
+# First trajectory
+viewer.add_pdb('simulation1.pdb',
+               scatter='sim1_data.csv',
+               name="sim1")
+
+# Second trajectory
+viewer.add_pdb('simulation2.pdb',
+               scatter='sim2_data.csv',
+               name="sim2")
+
+viewer.show()
+# Use dropdown to switch between trajectories
+```
+
+### Interactive Features
+
+- **Frame Synchronization**: The scatter plot highlights the current frame in gold/yellow
+- **Click Navigation**: Click any scatter point to jump to that frame in the 3D viewer
+- **Animation**: During playback, the highlighted point moves through the scatter plot
+- **Visual Layers**: Past frames (blue), current frame (gold), future frames (light blue)
+
+### Frame Inheritance
+
+If you omit scatter data for a frame, it inherits from the previous frame (similar to `plddts`, `chains`, etc.):
+
+```python
+viewer = py2Dmol.view(scatter=True)
+viewer.show()
+
+viewer.add(coords1, scatter=[1.0, -120])  # Frame 0: point at (1.0, -120)
+viewer.add(coords2)                        # Frame 1: inherits (1.0, -120)
+viewer.add(coords3, scatter=[2.0, -115])  # Frame 2: new point at (2.0, -115)
+```
+
+This is useful for trajectories where scatter values don't change every frame.
+
+### Notes
+
+- Scatter data is per-frame (one point per frame), unlike PAE which is per-object
+- If `scatter=False` or not specified in `view()`, scatter data in `add()` calls is ignored
+- Scatter plots use hardware-accelerated 2D canvas rendering for smooth performance
+- The scatter canvas is DPI-aware and scales properly on high-resolution displays
 
 ---
 

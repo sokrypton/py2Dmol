@@ -118,6 +118,25 @@
     /* Prevent empty ruleset warning */
 }
 
+/* Scatter container styling (matches viewer box) */
+.scatter-container {
+    box-sizing: border-box;
+    padding: 0;
+    border: 1px solid var(--color-gray-200);
+    border-radius: var(--radius-lg);
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.scatter-container.box-off {
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+}
+
 
 /* Hide default resize handle for canvasContainer */
 .py2dmol-viewer-instance #canvasContainer::-webkit-resizer {
