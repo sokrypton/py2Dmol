@@ -1124,8 +1124,13 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         return validated_bonds if validated_bonds else None
 
-    def new_obj(self, name=None):
-        """Starts a new object for subsequent 'add' calls."""
+    def new_obj(self, name=None, scatter_config=None):
+        """Starts a new object for subsequent 'add' calls.
+
+        Args:
+            name (str, optional): Object name; defaults to incremental index.
+            scatter_config (dict, optional): Per-object scatter settings (xlabel, ylabel, xlim, ylim).
+        """
 
         # This is a new object, reset the alignment reference
         self._coords = None
@@ -1152,7 +1157,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             "contacts": None,  # Initialize contacts as None
             "bonds": None,     # Initialize bonds as None
             "color": None,     # Initialize color overrides as None
-            "scatter_config": None  # Initialize per-object scatter configuration
+            "scatter_config": scatter_config  # Initialize per-object scatter configuration
         })
         
         # Send message *only if* in dynamic/hybrid mode and already displayed
@@ -1207,7 +1212,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             create_new_object = True
 
         if create_new_object or not self.objects:
-            self.new_obj(name)
+            self.new_obj(name, scatter_config=scatter_config)
         
         is_first_frame = len(self._current_object_data) == 0 if self._current_object_data is not None else False
 
@@ -1578,7 +1583,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             create_new_object = True
 
         if create_new_object or not self.objects:
-             self.new_obj(name)
+            self.new_obj(name, scatter_config=scatter_config)
         
         current_obj_name = self.objects[-1]["name"]
         
@@ -2299,7 +2304,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 obj_chains = obj_data.get("chains")
                 obj_position_types = obj_data.get("position_types")
                 
-                self.new_obj(obj_data["name"])
+                self.new_obj(obj_data["name"], scatter_config=obj_data.get("scatter_config"))
                 
                 for frame_data in obj_data["frames"]:
                     # Convert frame data to numpy arrays
