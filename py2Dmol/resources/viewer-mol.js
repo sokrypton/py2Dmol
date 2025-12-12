@@ -1622,6 +1622,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.objectSelect.addEventListener('change', () => {
                     this.stopAnimation();
                     const newObjectName = this.objectSelect.value;
+                    console.log('[SCATTER] Object dropdown changed:', {
+                        from: this.currentObjectName,
+                        to: newObjectName
+                    });
+
                     if (this.currentObjectName === newObjectName) {
                         return;
                     }
@@ -1629,6 +1634,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this._switchToObject(newObjectName);
                     this.setFrame(0);
                     this.updatePAEContainerVisibility();
+                    console.log('[SCATTER] About to call updateScatterContainerVisibility for', newObjectName);
+                    this.updateScatterContainerVisibility();
                 });
             }
 
@@ -1958,6 +1965,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Add a new object
         addObject(name) {
+            console.log('[SCATTER] addObject called:', {
+                name,
+                currentObjectName: this.currentObjectName,
+                existingObjects: Object.keys(this.objectsData)
+            });
+
             this.stopAnimation();
 
             // If object with same name already exists, only clear if it has no frames
@@ -2512,6 +2525,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.paeRenderer.render();
             }
 
+            // Update scatter visibility and data for extracted object
+            this.updateScatterContainerVisibility();
+
             // Update object dropdown to reflect the change
             if (this.objectSelect) {
                 this.objectSelect.value = extractName;
@@ -2999,6 +3015,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return object.frames.some(frame => this._hasPaeData(frame));
         }
 
+        // Check if current object has scatter data
+        objectHasScatter(objectName = null) {
+            const name = objectName || this.currentObjectName;
+            if (!name || !this.objectsData[name]) {
+                return false;
+            }
+
+            const object = this.objectsData[name];
+            if (!object.frames || object.frames.length === 0) {
+                return false;
+            }
+
+            // Check if any frame has valid scatter data (directly or via inheritance)
+            let lastScatter = null;
+            for (let i = 0; i < object.frames.length; i++) {
+                const frame = object.frames[i];
+                const scatterPoint = frame.scatter !== undefined ? frame.scatter : lastScatter;
+
+                if (scatterPoint && Array.isArray(scatterPoint) && scatterPoint.length === 2) {
+                    return true;
+                }
+                lastScatter = scatterPoint;
+            }
+            return false;
+        }
+
         // Update PAE container visibility based on current object's PAE data
         updatePAEContainerVisibility() {
             const paeContainer = this._findPAEContainer();
@@ -3010,6 +3052,117 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const paeCanvas = paeContainer.querySelector('#paeCanvas');
             if (paeCanvas) {
                 paeCanvas.style.display = hasPAE ? 'block' : 'none';
+            }
+        }
+
+        // Update scatter plot data for current object
+        updateScatterData(objectName = null) {
+            if (!this.scatterRenderer) {
+                return;
+            }
+
+            const name = objectName || this.currentObjectName;
+            if (!name || !this.objectsData[name]) {
+                this.scatterRenderer.setData([], [], 'X', 'Y');
+                this.scatterRenderer.render();
+                return;
+            }
+
+            const object = this.objectsData[name];
+            const frames = object.frames || [];
+
+            if (frames.length === 0) {
+                this.scatterRenderer.setData([], [], 'X', 'Y');
+                this.scatterRenderer.render();
+                return;
+            }
+
+            // Collect scatter data from all frames (same logic as initialization)
+            const xData = [];
+            const yData = [];
+            let lastScatter = null;
+
+            for (let i = 0; i < frames.length; i++) {
+                const frame = frames[i];
+                const scatterPoint = frame.scatter !== undefined ? frame.scatter : lastScatter;
+
+                if (scatterPoint && Array.isArray(scatterPoint) && scatterPoint.length === 2) {
+                    xData.push(scatterPoint[0]);
+                    yData.push(scatterPoint[1]);
+                    lastScatter = scatterPoint;
+                } else {
+                    // Frame has no scatter point - use NaN for gap
+                    xData.push(NaN);
+                    yData.push(NaN);
+                }
+            }
+
+            // Get labels from object-specific metadata, fall back to global config
+            const config = window.py2dmol_configs?.[this.viewerId];
+
+            // If object doesn't have metadata stored yet, create it from config
+            if (!object.scatterMetadata) {
+                console.log('[SCATTER] Creating metadata - config check:', {
+                    viewerId: this.viewerId,
+                    hasConfig: !!config,
+                    scatterConfig: config?.scatter,
+                    py2dmol_configs: window.py2dmol_configs
+                });
+                object.scatterMetadata = {
+                    xlabel: config?.scatter?.xlabel || 'X',
+                    ylabel: config?.scatter?.ylabel || 'Y',
+                    xlim: config?.scatter?.xlim || null,
+                    ylim: config?.scatter?.ylim || null
+                };
+                console.log('[SCATTER] Data update for', name, '- Created metadata:', object.scatterMetadata);
+            } else {
+                console.log('[SCATTER] Data update for', name, '- Using stored metadata:', object.scatterMetadata);
+            }
+
+            const xlabel = object.scatterMetadata.xlabel;
+            const ylabel = object.scatterMetadata.ylabel;
+
+            // Update scatter renderer with new data
+            this.scatterRenderer.setData(xData, yData, xlabel, ylabel);
+
+            // Apply limits from object-specific metadata
+            const xlim = object.scatterMetadata.xlim;
+            const ylim = object.scatterMetadata.ylim;
+
+            if (xlim && Array.isArray(xlim) && xlim.length === 2) {
+                this.scatterRenderer.xMin = xlim[0];
+                this.scatterRenderer.xMax = xlim[1];
+            }
+            if (ylim && Array.isArray(ylim) && ylim.length === 2) {
+                this.scatterRenderer.yMin = ylim[0];
+                this.scatterRenderer.yMax = ylim[1];
+            }
+
+            this.scatterRenderer.render();
+        }
+
+        // Update scatter container visibility based on current object's scatter data
+        updateScatterContainerVisibility() {
+            const scatterContainer = document.getElementById('scatterContainer');
+            if (!scatterContainer) return;
+
+            const hasScatter = this.objectHasScatter();
+            console.log('[SCATTER] Visibility update:', {
+                object: this.currentObjectName,
+                hasScatter,
+                action: hasScatter ? 'show & update data' : 'hide'
+            });
+
+            scatterContainer.style.display = hasScatter ? 'flex' : 'none';
+
+            const scatterCanvas = document.getElementById('scatterCanvas');
+            if (scatterCanvas) {
+                scatterCanvas.style.display = hasScatter ? 'block' : 'none';
+            }
+
+            // Update data if scatter exists
+            if (hasScatter) {
+                this.updateScatterData();
             }
         }
 
@@ -6621,6 +6774,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     // 3. Create renderer
     const renderer = new Pseudo3DRenderer(canvas);
+    renderer.viewerId = viewerId;  // Store viewerId for config access
 
     // ADDED: ResizeObserver to handle canvas resizing
     const canvasContainer = containerElement.querySelector('#canvasContainer');
@@ -6761,10 +6915,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     }
 
     // Initialize scatter plot if enabled
+    console.log('[SCATTER] Checking if scatter should initialize:', {
+        hasScatterConfig: !!config.scatter,
+        scatterEnabled: config.scatter?.enabled,
+        fullScatterConfig: config.scatter
+    });
+
     if (config.scatter && config.scatter.enabled) {
+        console.log('[SCATTER] Scatter is enabled, initializing...');
         try {
             const scatterContainer = containerElement.querySelector('#scatterContainer');
             const scatterCanvas = containerElement.querySelector('#scatterCanvas');
+
+            console.log('[SCATTER] Container elements:', {
+                hasContainer: !!scatterContainer,
+                hasCanvas: !!scatterCanvas
+            });
 
             if (scatterContainer && scatterCanvas) {
                 // Apply size (supports scatter.size or scatter_size)
@@ -6793,7 +6959,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Function to initialize scatter renderer
                 const initializeScatterRenderer = () => {
+                    console.log('[SCATTER INIT] initializeScatterRenderer called', {
+                        hasScatterPlotViewer: !!window.ScatterPlotViewer,
+                        currentObject: renderer.currentObjectName,
+                        scatterConfig: config.scatter
+                    });
+
                     if (!window.ScatterPlotViewer) {
+                        console.log('[SCATTER INIT] ScatterPlotViewer not available, exiting');
                         return;
                     }
 
@@ -6803,6 +6976,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // Apply labels/limits even before data arrives (live mode)
                     const xlabel = config.scatter.xlabel || 'X';
                     const ylabel = config.scatter.ylabel || 'Y';
+                    console.log('[SCATTER INIT] Initial labels from config:', { xlabel, ylabel });
                     scatterRenderer.setData([], [], xlabel, ylabel);
                     if (config.scatter.xlim && Array.isArray(config.scatter.xlim) && config.scatter.xlim.length === 2) {
                         scatterRenderer.xMin = config.scatter.xlim[0];
@@ -6817,6 +6991,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
                         const object = renderer.objectsData[renderer.currentObjectName];
                         const frames = object.frames || [];
+
+                        console.log('[SCATTER INIT] Collecting scatter data from frames:', {
+                            objectName: renderer.currentObjectName,
+                            frameCount: frames.length
+                        });
 
                         if (frames.length > 0) {
                             const xData = [];
@@ -6842,9 +7021,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             }
 
                             // Set accumulated data to scatter renderer
+                            console.log('[SCATTER INIT] Collected data points:', xData.length);
+
                             if (xData.length > 0) {
                                 const xlabel = config.scatter.xlabel || 'X';
                                 const ylabel = config.scatter.ylabel || 'Y';
+
+                                console.log('[SCATTER INIT] Storing initial metadata for object:', {
+                                    objectName: renderer.currentObjectName,
+                                    xlabel,
+                                    ylabel,
+                                    xlim: config.scatter.xlim,
+                                    ylim: config.scatter.ylim
+                                });
+
+                                // Store scatter metadata in object for future reference
+                                object.scatterMetadata = {
+                                    xlabel: xlabel,
+                                    ylabel: ylabel,
+                                    xlim: config.scatter.xlim || null,
+                                    ylim: config.scatter.ylim || null
+                                };
 
                                 scatterRenderer.setData(xData, yData, xlabel, ylabel);
 
@@ -7119,6 +7316,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Use requestAnimationFrame to ensure PAE renderer is initialized
                 requestAnimationFrame(() => {
                     renderer.updatePAEContainerVisibility();
+                    renderer.updateScatterContainerVisibility();
                 });
             }
         } catch (error) {

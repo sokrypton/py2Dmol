@@ -278,6 +278,19 @@ function initializeViewerConfig() {
         viewer_id: "standalone-viewer-1"
     };
 
+    // Store config in py2dmol_configs for viewer-mol.js to access
+    if (!window.py2dmol_configs) {
+        window.py2dmol_configs = {};
+    }
+    window.py2dmol_configs[window.viewerConfig.viewer_id] = window.viewerConfig;
+
+    // Helper to sync config changes to py2dmol_configs
+    window.syncViewerConfig = function() {
+        if (window.viewerConfig && window.viewerConfig.viewer_id) {
+            window.py2dmol_configs[window.viewerConfig.viewer_id] = window.viewerConfig;
+        }
+    };
+
     // Sync UI with config
     if (biounitEl) {
         biounitEl.checked = window.viewerConfig.ui.biounit;
@@ -2222,6 +2235,7 @@ function applyPendingObjects() {
         if (r?.objectSelect) r.objectSelect.value = show;
         if (objectSelect) objectSelect.value = show;
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
+        if (r?.updateScatterContainerVisibility) r.updateScatterContainerVisibility();
         if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
         if (window.SequenceViewer?.clearPreview) window.SequenceViewer.clearPreview();
         if (typeof buildSequenceView === 'function') buildSequenceView();
@@ -5556,6 +5570,7 @@ function parseAndLoadScatterData(csvText) {
             window.viewerConfig.scatter.xlabel = xLabel;
             window.viewerConfig.scatter.ylabel = yLabel;
             window.viewerConfig.scatter.enabled = true;
+            window.syncViewerConfig();  // Sync to py2dmol_configs
         }
     }
 }
@@ -6018,6 +6033,9 @@ async function loadViewerState(stateData) {
                 };
             }
             // Other config sections can be restored here if needed
+
+            // Sync restored config to py2dmol_configs
+            window.syncViewerConfig();
         }
 
         // Re-initialize scatter plot if scatter data exists and is enabled
@@ -6330,6 +6348,11 @@ async function loadViewerState(stateData) {
                             if (currentFrameData && currentFrameData.pae) {
                                 renderer.paeRenderer.setData(currentFrameData.pae);
                             }
+                        }
+
+                        // Update scatter visibility for current object
+                        if (renderer.updateScatterContainerVisibility) {
+                            renderer.updateScatterContainerVisibility();
                         }
 
                         // Rebuild sequence view and update UI first
