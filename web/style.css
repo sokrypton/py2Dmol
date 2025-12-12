@@ -99,23 +99,14 @@
 
 .py2dmol-viewer-instance #canvasContainer {
     display: inline-block;
-    overflow: auto;
+    overflow: hidden;
     resize: both;
     width: 600px;
     height: 600px;
     min-width: 200px;
     min-height: 200px;
-    min-height: 200px;
     position: relative;
-    box-sizing: content-box;
-    /* Ensure content width matches canvas.width (600px) */
-}
-
-.py2dmol-viewer-instance #canvasContainer.container-box {
-    /* Inherits all container-box styles from .container-box */
-    /* Intentionally empty - styles inherited from .container-box */
-    display: block;
-    /* Prevent empty ruleset warning */
+    box-sizing: border-box;
 }
 
 /* Scatter container styling (matches viewer box) */
