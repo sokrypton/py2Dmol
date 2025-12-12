@@ -801,8 +801,8 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 8px;
-    width: fit-content;
-    min-width: 626px;
+    width: 100%;
+    min-width: 0;
     box-sizing: border-box;
     font-family: 'Inter', sans-serif;
     font-size: 14px;
