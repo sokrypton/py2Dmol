@@ -1224,6 +1224,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     return feature
                 return feature
 
+            # Suppress per-frame live sends and emit one incremental update at the end
+            live_before = self._is_live
+            if live_before:
+                self._is_live = False
+
             for i in range(batch_size):
                 self.add(
                     coords_batch[i],
@@ -1242,6 +1247,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     color=color,
                     scatter_config=scatter_config
                 )
+
+            # Restore live flag and send all new frames in one incremental message
+            if live_before:
+                self._is_live = True
+                self._send_incremental_update()
             return
         
         # --- Step 1: Handle object creation BEFORE touching alignment state ---
