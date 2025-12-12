@@ -5562,13 +5562,28 @@ function parseAndLoadScatterData(csvText) {
                 for (let i = 0; i < currentObj.frames.length && i < xData.length; i++) {
                     currentObj.frames[i].scatter = [xData[i], yData[i]];
                 }
+
+                // Store scatter labels in object-specific config (camelCase)
+                if (!currentObj.scatterConfig) {
+                    currentObj.scatterConfig = {};
+                }
+                currentObj.scatterConfig.xlabel = xLabel;
+                currentObj.scatterConfig.ylabel = yLabel;
+
+                // Immediately refresh scatter plot with stored metadata/data
+                if (viewerApi.renderer.scatterRenderer) {
+                    viewerApi.renderer.updateScatterData(viewerApi.renderer.currentObjectName);
+                }
+            } else {
+                console.warn('[SCATTER CSV] Cannot store - currentObj or frames missing:', {
+                    currentObj: !!currentObj,
+                    frames: currentObj?.frames?.length
+                });
             }
         }
 
-        // Store scatter labels in config
+        // Enable scatter globally (but labels are per-object now)
         if (window.viewerConfig) {
-            window.viewerConfig.scatter.xlabel = xLabel;
-            window.viewerConfig.scatter.ylabel = yLabel;
             window.viewerConfig.scatter.enabled = true;
             window.syncViewerConfig();  // Sync to py2dmol_configs
         }
@@ -5741,6 +5756,12 @@ function saveViewerState() {
                 objToSave.contacts = objectData.contacts;
             }
 
+            // Add scatter config if it exists (camelCase internal)
+            const scatterCfg = objectData.scatterConfig;
+            if (scatterCfg) {
+                objToSave.scatter_config = scatterCfg;
+            }
+
             // Add color overrides if they exist
             if (objectData.color) {
                 objToSave.color = objectData.color;
@@ -5896,8 +5917,14 @@ async function loadViewerState(stateData) {
                 const objChains = objData.chains;
                 const objPositionTypes = objData.position_types;
                 const objBonds = objData.bonds;
+                const objScatterConfig = objData.scatter_config;
 
                 renderer.addObject(objData.name);
+
+                // Restore scatter config at object level
+                if (objScatterConfig) {
+                    renderer.objectsData[objData.name].scatterConfig = objScatterConfig;
+                }
 
                 // Temporarily disable auto frame setting during batch load
                 const wasPlaying = renderer.isPlaying;
@@ -6065,19 +6092,23 @@ async function loadViewerState(stateData) {
                             scatterViewer = new ScatterPlotViewer(scatterCanvas, renderer);
                         }
 
-                        const xlabel = window.viewerConfig.scatter.xlabel || 'X';
-                        const ylabel = window.viewerConfig.scatter.ylabel || 'Y';
+                        // Get labels from object-specific config (camelCase, fallback to legacy)
+                        const cfg = currentObj.scatterConfig || {};
+                        const xlabel = cfg.xlabel || 'X';
+                        const ylabel = cfg.ylabel || 'Y';
+                        const xlim = cfg.xlim || null;
+                        const ylim = cfg.ylim || null;
 
                         scatterViewer.setData(xData, yData, xlabel, ylabel);
 
                         // Apply limits if provided
-                        if (window.viewerConfig.scatter.xlim) {
-                            scatterViewer.xMin = window.viewerConfig.scatter.xlim[0];
-                            scatterViewer.xMax = window.viewerConfig.scatter.xlim[1];
+                        if (xlim && Array.isArray(xlim) && xlim.length === 2) {
+                            scatterViewer.xMin = xlim[0];
+                            scatterViewer.xMax = xlim[1];
                         }
-                        if (window.viewerConfig.scatter.ylim) {
-                            scatterViewer.yMin = window.viewerConfig.scatter.ylim[0];
-                            scatterViewer.yMax = window.viewerConfig.scatter.ylim[1];
+                        if (ylim && Array.isArray(ylim) && ylim.length === 2) {
+                            scatterViewer.yMin = ylim[0];
+                            scatterViewer.yMax = ylim[1];
                         }
 
                         scatterViewer.render();

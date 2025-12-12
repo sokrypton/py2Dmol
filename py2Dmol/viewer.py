@@ -44,11 +44,7 @@ DEFAULT_CONFIG = {
     },
     "scatter": {
         "enabled": False,
-        "size": 300,
-        "xlabel": None,
-        "ylabel": None,
-        "xlim": None,
-        "ylim": None
+        "size": 300
     },
     "overlay": {
         "enabled": False
@@ -697,6 +693,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 if "color" in py_obj and py_obj["color"] is not None:
                     obj_to_serialize["color"] = py_obj["color"]
 
+                # Add scatter_config if it exists
+                if "scatter_config" in py_obj and py_obj["scatter_config"] is not None:
+                    obj_to_serialize["scatter_config"] = py_obj["scatter_config"]
+
                 serialized_objects.append(obj_to_serialize)
 
             data_json = json.dumps(serialized_objects)
@@ -1151,7 +1151,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             "frames": self._current_object_data,
             "contacts": None,  # Initialize contacts as None
             "bonds": None,     # Initialize bonds as None
-            "color": None      # Initialize color overrides as None
+            "color": None,     # Initialize color overrides as None
+            "scatter_config": None  # Initialize per-object scatter configuration
         })
         
         # Send message *only if* in dynamic/hybrid mode and already displayed
@@ -1159,7 +1160,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None):
+            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None):
         """
         Adds a new *frame* of data to the viewer.
 
@@ -1286,6 +1287,31 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 normalized_color = _normalize_color(color)
                 if normalized_color:
                     data_dict["color"] = normalized_color
+
+        # --- Step 8.5: Process scatter_config if provided ---
+        if scatter_config is not None and isinstance(scatter_config, dict):
+            validated_config = {}
+
+            # Optional: xlabel, ylabel
+            if "xlabel" in scatter_config:
+                validated_config["xlabel"] = str(scatter_config["xlabel"])
+            if "ylabel" in scatter_config:
+                validated_config["ylabel"] = str(scatter_config["ylabel"])
+
+            # Optional: xlim, ylim (must be [min, max] tuples)
+            if "xlim" in scatter_config:
+                xlim = scatter_config["xlim"]
+                if isinstance(xlim, (list, tuple)) and len(xlim) == 2:
+                    validated_config["xlim"] = [float(xlim[0]), float(xlim[1])]
+
+            if "ylim" in scatter_config:
+                ylim = scatter_config["ylim"]
+                if isinstance(ylim, (list, tuple)) and len(ylim) == 2:
+                    validated_config["ylim"] = [float(ylim[0]), float(ylim[1])]
+
+            # Store in object (only set once per object, on first frame)
+            if is_first_frame and self.objects[-1].get("scatter_config") is None:
+                self.objects[-1]["scatter_config"] = validated_config
 
         # --- Step 9: Send message if in "live" mode ---
         if self._is_live:
@@ -1508,7 +1534,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 self._send_incremental_update()
 
 
-    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None):
+    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None, scatter_config=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -1575,10 +1601,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     scatter_xlabel = processed_scatter["xlabel"]
                     scatter_ylabel = processed_scatter["ylabel"]
 
-                    # Update scatter config with labels if scatter is enabled
+                    # Store labels in object-specific config instead of global config
                     if self.config["scatter"]["enabled"]:
-                        self.config["scatter"]["xlabel"] = scatter_xlabel
-                        self.config["scatter"]["ylabel"] = scatter_ylabel
+                        if self.objects[-1]["scatter_config"] is None:
+                            self.objects[-1]["scatter_config"] = {}
+                        self.objects[-1]["scatter_config"]["xlabel"] = scatter_xlabel
+                        self.objects[-1]["scatter_config"]["ylabel"] = scatter_ylabel
                 else:
                     # List format - just data
                     scatter_data = processed_scatter
@@ -1973,7 +2001,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         return struct_filepath, pae_filepath
 
 
-    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None, ignore_ligands=None, show=None):
+    def from_pdb(self, pdb_id, chains=None, name=None, align=True, use_biounit=False, biounit_name="1", load_ligands=True, contacts=None, scatter=None, color=None, ignore_ligands=None, show=None, scatter_config=None):
         """
         Loads a structure from a PDB code (downloads from RCSB if not found locally)
         and adds it to the viewer.
@@ -2218,6 +2246,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 obj_to_serialize["contacts"] = obj["contacts"]
             if "bonds" in obj and obj["bonds"]:
                 obj_to_serialize["bonds"] = obj["bonds"]
+            # Add scatter_config and scatter_metadata if present
+            if "scatter_config" in obj and obj["scatter_config"] is not None:
+                obj_to_serialize["scatter_config"] = obj["scatter_config"]
+            if "scatter_metadata" in obj and obj["scatter_metadata"] is not None:
+                obj_to_serialize["scatter_metadata"] = obj["scatter_metadata"]
             objects.append(obj_to_serialize)
         
         # Create state object with nested config
@@ -2310,6 +2343,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     self.objects[-1]["bonds"] = obj_data["bonds"]
                 if "color" in obj_data:
                     self.objects[-1]["color"] = obj_data["color"]
+                # Restore scatter config (prefer scatter_config, but accept legacy scatter_metadata)
+                scatter_cfg = obj_data.get("scatter_config")
+                if not scatter_cfg and obj_data.get("scatter_metadata"):
+                    scatter_cfg = obj_data["scatter_metadata"]
+                if scatter_cfg:
+                    self.objects[-1]["scatter_config"] = scatter_cfg
         
         # Restore config (v2.0 nested format only)
         if "config" in state_data:
