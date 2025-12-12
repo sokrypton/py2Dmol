@@ -2,7 +2,7 @@
 
 **Purpose**: Complete technical documentation for AI systems and developers working with py2Dmol codebase.
 
-**Last Updated**: 2025-12-11
+**Last Updated**: 2025-12-12
 
 ---
 
@@ -80,21 +80,22 @@ graph TB
 ```
 py2Dmol/
 ├── py2Dmol/                     # Python Package
-│   ├── viewer.py                # Main Python interface (1,971 lines)
+│   ├── viewer.py                # Main Python interface (2,424 lines)
+│   ├── grid.py                  # Grid layout system (271 lines)
 │   └── resources/
-│       ├── viewer.html          # Jupyter widget template (606 lines)
-│       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (6,791 lines)
+│       ├── viewer.html          # Jupyter widget template (200 lines)
+│       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (7,447 lines)
 │       ├── viewer-pae.js        # PAE matrix visualization (906 lines)
 │       ├── viewer-seq.js        # Sequence viewer (2,257 lines)
-│       ├── viewer-msa.js        # MSA viewer (4,702 lines)
-│       └── viewer-scatter.js    # Scatter plot visualization (478 lines)
+│       ├── viewer-msa.js        # MSA viewer (4,713 lines)
+│       └── viewer-scatter.js    # Scatter plot visualization (588 lines)
 │
 ├── web/                         # Web Application
-│   ├── app.js                   # Web app logic (6,485 lines)
+│   ├── app.js                   # Web app logic (6,451 lines)
 │   ├── utils.js                 # Utilities: parsing, alignment (2,797 lines)
 │   └── style.css                # Global styles
 │
-├── index.html                   # Main web app entry (450 lines)
+├── index.html                   # Main web app entry (463 lines)
 ├── msa.html                     # Standalone MSA viewer (231 lines)
 └── README.md                    # User documentation
 ```
@@ -120,9 +121,9 @@ Every major file has an AI-friendly header:
 
 ### Entry Point: `viewer.py`
 
-**Path**: `py2Dmol/viewer.py`  
-**Class**: `view`  
-**Lines**: 1,934
+**Path**: `py2Dmol/viewer.py`
+**Class**: `view`
+**Lines**: 2,424
 
 #### Core Responsibilities
 
@@ -142,6 +143,7 @@ def __init__(self,
     colorblind=False,         # Colorblind-safe palette
     pastel=0.25,              # Pastel saturation (0.0-1.0)
     shadow=True,              # Enable/disable shadows
+    shadow_strength=0.5,      # Shadow strength (0.0-1.0)
     outline="full",           # Outline mode: "full", "partial", "none"
     width=3.0,                # Line width (2.0-4.7)
     ortho=1.0,                # Ortho projection (0=perspective, 1=ortho)
@@ -152,6 +154,7 @@ def __init__(self,
     scatter=None,             # Scatter plot: False/True/dict with xlabel, ylabel, xlim, ylim
     scatter_size=300,         # Scatter canvas size
     overlay=False,            # Overlay all frames
+    detect_cyclic=True,       # Auto-detect cyclic molecules
     id=None                   # Explicit viewer ID (auto-generated if None)
 ):
 ```
@@ -200,7 +203,8 @@ def add(self,
     atom_types=None,          # Deprecated: use position_types
     contacts=None,            # Contact restraints
     bonds=None,               # Explicit bonds
-    color=None                # Color override
+    color=None,               # Color override
+    scatter_config=None       # Per-object scatter settings: {"xlabel", "ylabel", "xlim", "ylim"}
 ):
 ```
 
@@ -221,7 +225,9 @@ def add_pdb(self,
     biounit_name="1",         # Assembly name
     load_ligands=True,        # Load ligands
     contacts=None,            # Contact restraints
-    color=None                # Color override
+    scatter=None,             # Scatter plot data (CSV filepath or array)
+    color=None,               # Color override
+    scatter_config=None       # Per-object scatter settings
 ):
 ```
 
@@ -241,8 +247,11 @@ def from_pdb(self,
     biounit_name="1",
     load_ligands=True,
     contacts=None,
+    scatter=None,             # Scatter plot data (CSV filepath or array)
     color=None,
-    ignore_ligands=None       # Deprecated parameter (backward compat)
+    ignore_ligands=None,      # Deprecated parameter (backward compat)
+    show=None,                # Auto-display viewer (default: True for first call)
+    scatter_config=None       # Per-object scatter settings
 ):
 ```
 
@@ -250,7 +259,22 @@ def from_pdb(self,
 
 ##### `from_afdb(uniprot_id, ...)`
 
-Loads from AlphaFold DB.
+Loads from AlphaFold DB (downloads from EBI).
+
+```python
+def from_afdb(self,
+    uniprot_id,               # UniProt ID (e.g., "Q5VSL9")
+    chains=None,
+    name=None,
+    align=True,
+    use_biounit=False,
+    biounit_name="1",
+    load_ligands=True,
+    scatter=None,             # Scatter plot data
+    color=None,
+    show=None                 # Auto-display viewer
+):
+```
 
 ##### `show()`
 
@@ -295,7 +319,7 @@ The Grid system allows displaying multiple py2Dmol viewers in a responsive grid 
 
 **Path**: `py2Dmol/grid.py`
 **Class**: `Grid`
-**Lines**: 306
+**Lines**: 271
 
 ### Three Usage Patterns
 
@@ -391,7 +415,7 @@ Grid injects CSS selectors with higher specificity (grid.py:184-192):
 
 **Flow**: Grid size → viewer config → JavaScript reads config → sets canvas/container sizes
 
-Grid defaults (e.g., size=(200,200)) are applied to viewers, serialized in config, and JavaScript (viewer-mol.js:6291-6294) applies them to DOM elements. Previous approach using inline style injection was removed to avoid forced sizing.
+Grid defaults (e.g., size=(200,200)) are applied to viewers, serialized in config, and JavaScript (viewer-mol.js:6764-6765) applies them to DOM elements. Previous approach using inline style injection was removed to avoid forced sizing.
 
 ### Debugging
 
@@ -463,9 +487,9 @@ with py2Dmol.grid(cols=3) as g:
 
 ### Core Renderer: `viewer-mol.js`
 
-**Path**: `py2Dmol/resources/viewer-mol.js`  
-**Class**: `Pseudo3DRenderer`  
-**Lines**: 6,711
+**Path**: `py2Dmol/resources/viewer-mol.js`
+**Class**: `Pseudo3DRenderer`
+**Lines**: 7,447
 
 #### Global Registry
 
@@ -487,15 +511,11 @@ window.viewerApi = null;              // Reference to main renderer API
 
 **Public API** (exposed via `window.py2dmol_viewers[viewer_id]`):
 
-The viewer exposes an API object containing:
-- `handlePythonUpdate` - Process live frame updates from Python
-- `handlePythonNewObject` - Handle new object creation from Python
-- `handlePythonSetObjectColor` - Update object color from Python
-- `handlePythonSetColor` - Update global color mode from Python
-- `handlePythonSetViewTransform` - Update rotation/center from Python
-- `handlePythonClearAll` - Clear all objects from Python
-- `handlePythonResetAll` - Reset viewer state from Python
+The viewer exposes a minimal API:
+- `handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject)` - Process incremental updates from Python
 - `renderer` - Reference to the Pseudo3DRenderer instance
+
+**Note**: Legacy `handlePython*` methods (handlePythonUpdate, handlePythonNewObject, etc.) have been removed and replaced with the unified `handleIncrementalStateUpdate` method.
 
 **Per-Object State** (stored in `this.objectsData[name].viewerState`):
 ```javascript
@@ -512,44 +532,19 @@ The viewer exposes an API object containing:
 
 #### Rendering Pipeline
 
-The `render()` method (viewer-mol.js:5032) follows this high-level flow:
-
-```javascript
-// 1. Apply rotation matrix to all coordinates
-rotatedCoords = coords.map(c => applyRotation(c, viewerState.rotation))
-
-// 2. Project 3D coordinates to 2D screen space
-//    Uses inline projectPosition function with orthographic/perspective blend
-for each position:
-    screen[i] = project(rotatedCoords[i], zoom, ortho, focalLength)
-
-// 3. Build segment array from bonds/contacts
-//    Each segment stores: idx1, idx2, depth, color, type
-for each bond:
-    segment = {idx1, idx2, depth: avgZ, color, positionType}
-    segments.push(segment)
-
-// 4. Depth sort (painter's algorithm)
-segments.sort((a, b) => a.depth - b.depth)
-
-// 5. Grid-based culling (optional, for large molecules)
-//    Keeps top N segments per 2D grid cell for performance
-if (positions > LARGE_MOLECULE_CUTOFF):
-    segments = cullByGrid(segments)
-
-// 6. Draw in two passes: outline then main
-for each segment:
-    if (outline): drawLine(ctx, thicker, darker)
-    drawLine(ctx, thinner, color)
-
-// 7. Apply shadows (grid-based shadow map)
-//    Darkens segments below the max Z in their grid cell
-```
+The `render()` method follows this flow:
+1. Apply rotation matrix to coordinates
+2. Project 3D → 2D screen space (ortho/perspective blend)
+3. Build segments from bonds/contacts with depth
+4. Depth sort (painter's algorithm)
+5. Grid-based culling (for large molecules)
+6. Draw in two passes: outline then main
+7. Apply shadows (grid-based shadow map)
 
 ### Web App: `app.js`
 
-**Path**: `web/app.js`  
-**Lines**: 6,496
+**Path**: `web/app.js`
+**Lines**: 6,451
 
 #### Initialization Flow
 
@@ -720,143 +715,27 @@ graph TB
 
 **Key Components**:
 
-#### Python: `_send_incremental_update()` (viewer.py:411)
+#### Python: `_send_incremental_update()` (viewer.py:445)
 
-```python
-def _send_incremental_update(self):
-    """
-    Sends incremental state update to viewer (frames and metadata).
+Sends only NEW frames and CHANGED metadata to minimize data transfer:
+- Tracks sent frames via `_sent_frame_count` dict
+- Tracks sent metadata via `_sent_metadata` dict
+- Broadcasts via BroadcastChannel for cross-iframe support
+- Falls back to direct window call for same-window scenarios
+- Creates ephemeral scripts that auto garbage collect
 
-    Only sends:
-    - NEW frames that haven't been sent yet
-    - CHANGED metadata (color, contacts, bonds, rotation, center)
+#### JavaScript: `handleIncrementalStateUpdate()` (viewer-mol.js:7326)
 
-    Uses display(Javascript()) to create ephemeral scripts that get garbage collected.
-    Heavy processing is done in viewer-mol.js (handleIncrementalStateUpdate).
-    """
-    # Track new frames and changed metadata
-    new_frames_by_object = {}
-    changed_metadata_by_object = {}
+Processes incremental updates from Python:
+1. Creates missing objects
+2. Appends new frames to objects
+3. Applies changed metadata (color, contacts, bonds, rotation, center)
+4. Re-renders
 
-    for obj in self.objects:
-        # Detect new frames not yet sent
-        frames_already_sent = self._sent_frame_count.get(obj_name, 0)
-        if total_frame_count > frames_already_sent:
-            new_frames = frames[frames_already_sent:]
-            new_frames_by_object[obj_name] = new_frames
-            self._sent_frame_count[obj_name] = total_frame_count
-
-        # Detect changed metadata
-        current_metadata = {color, contacts, bonds, rotation_matrix, center}
-        previously_sent = self._sent_metadata.get(obj_name, {})
-        changed_fields = {k: v for k, v in current_metadata.items()
-                         if k not in previously_sent or previously_sent[k] != v}
-        if changed_fields:
-            changed_metadata_by_object[obj_name] = changed_fields
-            self._sent_metadata[obj_name] = current_metadata
-
-    # Build ephemeral JavaScript
-    incremental_update_js = f"""
-    (function() {{
-        const newFrames = {json.dumps(new_frames_by_object)};
-        const changedMetadata = {json.dumps(changed_metadata_by_object)};
-
-        // BroadcastChannel for cross-iframe delivery
-        const channel = new BroadcastChannel('py2dmol_{viewer_id}');
-        channel.postMessage({{
-            operation: 'incrementalStateUpdate',
-            args: [newFrames, changedMetadata],
-            sourceInstanceId: 'py_' + Date.now()
-        }});
-
-        // Fallback for same-window scenarios
-        if (window.py2dmol_viewers && window.py2dmol_viewers['{viewer_id}']) {{
-            window.py2dmol_viewers['{viewer_id}']
-                .handleIncrementalStateUpdate(newFrames, changedMetadata);
-        }}
-    }})();
-    """
-    display(HTML(f'<script style="display:none">{incremental_update_js}</script>'))
-```
-
-#### JavaScript: `handleIncrementalStateUpdate()` (viewer-mol.js:6993)
-
-```javascript
-const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject) => {
-    /**
-     * Processes incremental updates sent from Python.
-     * Python only sends NEW frames and CHANGED metadata to minimize data transfer.
-     *
-     * @param {Object} newFramesByObject - {"objectName": [newFrame1, newFrame2, ...]}
-     * @param {Object} changedMetadataByObject - {"objectName": {color, contacts, bonds, ...}}
-     */
-
-    // Create objects if they don't exist yet
-    const newlyCreatedObjects = new Set();
-    for (const objectName of Object.keys(newFramesByObject)) {
-        if (!renderer.objectsData[objectName]) {
-            handlePythonNewObject(objectName);
-            newlyCreatedObjects.add(objectName);
-        }
-    }
-
-    // Append new frames to existing objects
-    for (const [objectName, frames] of Object.entries(newFramesByObject)) {
-        for (const frameData of frames) {
-            renderer.addFrame(frameData, objectName);
-        }
-    }
-
-    // Apply changed metadata (color, contacts, bonds, rotation, center)
-    for (const [objectName, metadata] of Object.entries(changedMetadataByObject)) {
-        if (metadata.color) { /* update color */ }
-        if (metadata.contacts) { /* update contacts */ }
-        if (metadata.bonds) { /* update bonds */ }
-        if (metadata.rotation_matrix) { /* update rotation */ }
-        if (metadata.center) { /* update center */ }
-    }
-
-    // Re-render
-    renderer.render('incremental update');
-};
-```
-
-**BroadcastChannel Integration** (viewer-mol.js:7107):
-```javascript
-channel.onmessage = (event) => {
-    const { operation, args, sourceInstanceId } = event.data;
-    if (sourceInstanceId === thisInstanceId) return;  // Skip own broadcasts
-
-    if (operation === 'incrementalStateUpdate') {
-        const [newFramesByObject, changedMetadataByObject] = args;
-        handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject);
-    }
-};
-```
-
-**Broadcast Message Format**:
-
-```javascript
-{
-    operation: 'incrementalStateUpdate',
-    args: [
-        // newFramesByObject: object name → NEW frames only (not sent before)
-        {
-            "protein1": [
-                { coords: [...], plddts: [...], chains: [...] }
-            ]
-        },
-        // changedMetadataByObject: object name → CHANGED metadata only
-        {
-            "protein1": {
-                color: { type: "mode", value: "plddt" },
-                // Only fields that changed are included
-            }
-        }
-    ],
-    sourceInstanceId: 'py_xxx' or 'viewer_yyy'
-}
-```
+**BroadcastChannel Integration**:
+- Listens for `incrementalStateUpdate` operations
+- Skips own broadcasts via `sourceInstanceId` check
+- Message format: `{operation, args: [newFramesByObject, changedMetadataByObject], sourceInstanceId}`
 
 **Compatibility**:
 
@@ -1016,47 +895,100 @@ The scatter plot feature allows displaying 2D scatter plots synchronized with fr
 
 **Path**: `py2Dmol/resources/viewer-scatter.js`
 **Class**: `ScatterPlotViewer`
-**Lines**: 478
+**Lines**: 588
+
+**Shared Component**: `viewer-scatter.js` is used by both Python interface (Jupyter/Colab) and web interface (browser app), just like the core renderer and other visualization components (PAE, MSA, sequence).
 
 ### Architecture
 
-**Data Model**: Per-frame data (not per-object like PAE)
-- Each frame can have `scatter=[x, y]` representing one point
+**Data Model**: Per-frame data with per-object configuration
+- **Scatter data**: Each frame can have `scatter=[x, y]` representing one point (per-frame)
+- **Scatter config**: Each object has its own labels and limits (per-object)
 - Scatter plot accumulates all frame points for visualization
 - Frame index directly maps to scatter point index
 
+**Configuration Hierarchy**:
+- **Global** (`window.viewerConfig.scatter`): Only `enabled` (boolean) and `size` (canvas size in pixels)
+- **Per-Object** (`object.scatterConfig`): `xlabel`, `ylabel`, `xlim`, `ylim` (each object has its own)
+  - Python sends `scatter_config` (snake_case) in JSON
+  - JavaScript stores as `scatterConfig` (camelCase) internally
+- **No fallback to global** for labels - purely object-specific or defaults ("X", "Y")
+
 **Integration Pattern**: Follows PAE integration approach with adaptations:
-- Configuration in nested config structure
-- Conditional script loading
+- **Shared component**: Same `viewer-scatter.js` used by both Python and web interfaces
+- Configuration split: global (canvas size) + per-object (labels/limits)
+- Conditional script loading (only when scatter enabled)
 - HTML container similar to PAE
 - JavaScript initialization collects all frame data
 - Frame synchronization via `py2dmol-frame-change` event
+- Object switching updates scatter labels/limits automatically
 
 ### Python API
 
-#### Configuration
+#### Global Configuration
 
-**Simple form** (boolean):
+**Enable scatter globally**:
 ```python
-v = viewer.view(scatter=True)
-v.add(coords, scatter=[1.5, -120.5])
+v = viewer.view(scatter=True)              # Enable with default 300x300 canvas
+v = viewer.view(scatter=True, scatter_size=400)  # Custom canvas size
+
+# Set global defaults for all objects (can be overridden per-object)
+v = viewer.view(scatter={
+    "enabled": True,
+    "size": 400,
+    "xlabel": "X",
+    "ylabel": "Y",
+    "xlim": [0, 10],
+    "ylim": [0, 10]
+})
 ```
 
-**Matplotlib-style** (dict with options):
-```python
-v = viewer.view(
-    scatter={
-        "xlabel": "RMSD (Å)",
-        "ylabel": "Energy (kcal/mol)",
-        "xlim": [0, 10],       # Optional: [min, max]
-        "ylim": [-150, -90]    # Optional: [min, max]
-    }
-)
+**Note**: Global scatter config sets defaults for all objects. Per-object `scatter_config` parameter overrides these defaults.
 
+#### Per-Object Configuration (Labels and Limits)
+
+**Basic usage** (per-object labels):
+```python
+v = viewer.view(scatter=True)
+
+# Object 1: RMSD vs Energy
+v.add(coords, scatter=[1.5, -120.5],
+      scatter_config={"xlabel": "RMSD (Å)", "ylabel": "Energy (kcal/mol)"})
+
+# Object 2: PC1 vs PC2
+v.new_obj("pca")
+v.add(coords, scatter=[-0.5, 0.3],
+      scatter_config={"xlabel": "PC1", "ylabel": "PC2"})
+
+v.show()
+# Switching objects updates scatter plot labels automatically
+```
+
+**With limits** (object-specific limits):
+```python
+v = viewer.view(scatter=True)
+
+v.add(coords, scatter=[1.5, -120.5],
+      scatter_config={
+          "xlabel": "RMSD (Å)",
+          "ylabel": "Energy (kcal/mol)",
+          "xlim": [0, 10],       # Optional: [min, max]
+          "ylim": [-150, -90]    # Optional: [min, max]
+      })
+
+# Add more frames - they inherit scatter_config from first frame
 for rmsd, energy, coords in zip(rmsd_vals, energy_vals, trajectory):
     v.add(coords, scatter=[rmsd, energy])
 
 v.show()
+```
+
+**Without explicit labels** (uses defaults):
+```python
+v = viewer.view(scatter=True)
+v.add(coords, scatter=[1.5, -120.5])  # No scatter_config
+v.show()
+# Labels default to "X" and "Y"
 ```
 
 #### Per-Frame Data
@@ -1094,6 +1026,40 @@ v.add(coords3, scatter=[2.0, -115])  # Frame 2: explicit
 
 This follows the same pattern as `plddts`, `chains`, and `position_types`.
 
+#### CSV Label Extraction (Automatic)
+
+When loading scatter data from CSV files in `add_pdb()`, labels are automatically extracted from headers and stored in object-specific config:
+
+```python
+v = viewer.view(scatter=True)
+v.add_pdb("protein.pdb", scatter="rmsd.csv")  # CSV headers: "Frame,RMSD"
+# scatter_config automatically created: {"xlabel": "Frame", "ylabel": "RMSD"}
+v.show()
+# Scatter plot displays with extracted labels
+```
+
+#### Object Structure
+
+Scatter config is stored in the object dict alongside contacts, bonds, and color:
+
+```python
+{
+    "name": "protein1",
+    "frames": [...],
+    "contacts": None,
+    "bonds": None,
+    "color": None,
+    "scatter_config": {          # NEW: per-object scatter configuration
+        "xlabel": "RMSD (Å)",
+        "ylabel": "Energy (kcal/mol)",
+        "xlim": [0, 10],
+        "ylim": [-150, -90]
+    }
+}
+```
+
+**Serialization**: `scatter_config` is included in JSON output when saving state or embedding in HTML.
+
 ### JavaScript Implementation
 
 #### ScatterPlotViewer Class
@@ -1115,79 +1081,17 @@ new ScatterPlotViewer(canvas, mainRenderer)
 | `findNearestPoint(mouseX, mouseY)` | Find point near cursor | Mouse coordinates |
 | `dataToCanvas(x, y)` | Convert data to screen coordinates | Data coordinates |
 
-#### Initialization Flow
+#### Config Initialization
 
-```javascript
-// 1. Check if scatter enabled
-if (config.scatter && config.scatter.enabled) {
+On static data load, each object's `scatterConfig` is initialized from Python's `scatter_config` (snake_case → camelCase conversion). Defaults: `{xlabel: 'X', ylabel: 'Y', xlim: null, ylim: null}`.
 
-    // 2. Get canvas element
-    const scatterCanvas = document.querySelector('#scatterCanvas');
+#### Config Usage (Object Switching)
 
-    // 3. Create ScatterPlotViewer instance
-    const scatterRenderer = new ScatterPlotViewer(scatterCanvas, renderer);
-    renderer.setScatterRenderer(scatterRenderer);
-
-    // 4. Collect scatter data from ALL frames
-    const xData = [], yData = [];
-    let lastScatter = null;
-
-    for (let i = 0; i < frames.length; i++) {
-        const frame = frames[i];
-
-        // Resolve with inheritance
-        const scatterPoint = frame.scatter !== undefined
-            ? frame.scatter
-            : lastScatter;
-
-        if (scatterPoint && scatterPoint.length === 2) {
-            xData.push(scatterPoint[0]);
-            yData.push(scatterPoint[1]);
-            lastScatter = scatterPoint;
-        } else {
-            // No scatter point - use NaN
-            xData.push(NaN);
-            yData.push(NaN);
-        }
-    }
-
-    // 5. Set data and labels
-    scatterRenderer.setData(
-        xData, yData,
-        config.scatter.xlabel || 'X',
-        config.scatter.ylabel || 'Y'
-    );
-
-    // 6. Apply limits if provided (overrides auto-calculation)
-    if (config.scatter.xlim) {
-        scatterRenderer.xMin = config.scatter.xlim[0];
-        scatterRenderer.xMax = config.scatter.xlim[1];
-    }
-    if (config.scatter.ylim) {
-        scatterRenderer.yMin = config.scatter.ylim[0];
-        scatterRenderer.yMax = config.scatter.ylim[1];
-    }
-
-    // 7. Render
-    scatterRenderer.render();
-}
-```
+When switching objects, `updateScatterData()` reads `object.scatterConfig` and updates the scatter renderer with object-specific labels/limits.
 
 #### Dynamic Frame Addition
 
-When new frames are added in live mode:
-
-```javascript
-// In addFrame() method (viewer-mol.js:2104)
-if (this.scatterRenderer && data.scatter &&
-    Array.isArray(data.scatter) && data.scatter.length === 2) {
-    try {
-        this.scatterRenderer.addPoint(data.scatter[0], data.scatter[1]);
-    } catch (e) {
-        console.error("Error adding scatter point:", e);
-    }
-}
-```
+In live mode, `addFrame()` automatically calls `scatterRenderer.addPoint(x, y)` when frame includes scatter data.
 
 ### Rendering Features
 
@@ -1243,33 +1147,17 @@ if (this.scatterRenderer && data.scatter &&
 ### Data Flow
 
 ```
-Python API
+Python: view(scatter={...}) + add(coords, scatter=[x, y], scatter_config={...})
     ↓
-add(coords, scatter=[x, y])  # Per frame
+Validate and store: self._scatter (per-frame), object["scatter_config"] (per-object)
     ↓
-Validate format and values
+Serialize to JSON: frame["scatter"], object["scatter_config"]
     ↓
-Store in self._scatter
+JavaScript: Load static data → store as scatterConfig (camelCase)
     ↓
-Serialize to frame dict: {"scatter": [x, y]}
+Collect all frame points → ScatterPlotViewer.setData(xData, yData, xlabel, ylabel)
     ↓
-Diff optimization (only include when changed)
-    ↓
-Embed in HTML JSON: window.py2dmol_staticData
-    ↓
-JavaScript loads static data
-    ↓
-Iterate ALL frames, collect scatter points
-    ↓
-Build xData = [x0, x1, ...], yData = [y0, y1, ...]
-    ↓
-ScatterPlotViewer.setData(xData, yData, xlabel, ylabel)
-    ↓
-Apply xlim/ylim if provided
-    ↓
-Render scatter plot
-    ↓
-Frame change → highlight corresponding point (index = frameIndex)
+Render scatter plot + sync with frame changes
 ```
 
 ### Performance Optimizations
@@ -1278,7 +1166,7 @@ Frame change → highlight corresponding point (index = frameIndex)
 
 **Diff Optimization**: Only serialize scatter when it changes between frames
 ```python
-# In _display_viewer() (viewer.py:656-661)
+# In _display_viewer() (viewer.py:653-656)
 curr_scatter = frame.get("scatter")
 if frame_idx == 0 or curr_scatter != prev_scatter:
     if curr_scatter is not None:
@@ -1345,43 +1233,20 @@ for angle1, angle2, coords in zip(phi_angles, psi_angles, structures):
 
 #### Config Normalization
 
-**Python** (`viewer.py:87-102`):
-```python
-if "scatter" in flat:
-    if isinstance(flat["scatter"], dict):
-        config["scatter"] = {
-            "enabled": flat["scatter"].get("enabled", True),
-            "size": flat["scatter"].get("size", 300),
-            "xlabel": flat["scatter"].get("xlabel", None),
-            "ylabel": flat["scatter"].get("ylabel", None),
-            "xlim": flat["scatter"].get("xlim", None),
-            "ylim": flat["scatter"].get("ylim", None)
-        }
-    elif flat["scatter"] is True:
-        config["scatter"]["enabled"] = True
-    elif flat["scatter"] is False:
-        config["scatter"]["enabled"] = False
-if "scatter_size" in flat:
-    config["scatter"]["size"] = flat["scatter_size"]
-```
+**Python**:
+- Global: `scatter` parameter in `view()` accepts `True`, `False`, or dict with `{enabled, size, xlabel, ylabel, xlim, ylim}`
+- Per-object: `scatter_config` parameter in `add()` accepts dict with `{xlabel, ylabel, xlim, ylim}`
+- Per-object config overrides global defaults
 
-**JavaScript** (`viewer-mol.js:573-580`):
-```javascript
-scatter: {
-    enabled: cfg.scatter?.enabled ?? cfg.scatter ?? DEFAULT_CONFIG.scatter.enabled,
-    size: cfg.scatter?.size || cfg.scatter_size || DEFAULT_CONFIG.scatter.size,
-    xlabel: cfg.scatter?.xlabel ?? DEFAULT_CONFIG.scatter.xlabel,
-    ylabel: cfg.scatter?.ylabel ?? DEFAULT_CONFIG.scatter.ylabel,
-    xlim: cfg.scatter?.xlim ?? DEFAULT_CONFIG.scatter.xlim,
-    ylim: cfg.scatter?.ylim ?? DEFAULT_CONFIG.scatter.ylim
-}
-```
+**JavaScript**:
+- Receives `scatter_config` (snake_case) from Python, stores as `scatterConfig` (camelCase)
+- Defaults: xlabel='X', ylabel='Y', xlim=null, ylim=null
 
 #### Conditional Loading
 
 Scatter script only loaded when enabled:
 ```python
-# In show() method (viewer.py:758-761)
+# In show() method (viewer.py:759)
 if self.config["scatter"]["enabled"]:
     with importlib.resources.open_text(py2dmol_resources, 'viewer-scatter.min.js') as f:
         scatter_js_content = f.read()
@@ -1418,10 +1283,9 @@ if self.config["scatter"]["enabled"]:
 | `from_pdb(pdb_id, ...)` | Load from RCSB | `pdb_id`, `chains`, `name`, `align=True` |
 | `from_afdb(uniprot_id, ...)` | Load from AlphaFold | `uniprot_id`, `chains` |
 | `show()` | Display viewer | Mode depends on when called |
-| `new_obj(name)` | Create new object | `name` |
+| `new_obj(name, scatter_config)` | Create new object | `name`, `scatter_config` |
 | `set_color(color, name)` | Set object color | `color`, `name` |
 | `_send_incremental_update()` | Send incremental update to viewer (live mode) | Tracks new frames and changed metadata |
-| `_send_message(message_dict)` | Legacy wrapper (deprecated) | Calls `_send_incremental_update()` |
 | `save_state(filepath)` | Save to JSON | `filepath` |
 | `load_state(filepath)` | Load from JSON | `filepath` |
 | `kabsch(a, b)` | Kabsch alignment | Two Nx3 arrays |
@@ -1444,14 +1308,7 @@ if self.config["scatter"]["enabled"]:
 
 | Function | Purpose | Parameters |
 |----------|---------|------------|
-| `handleIncrementalStateUpdate(newFrames, changedMeta)` | **Primary**: Process incremental updates | New frames object, changed metadata object |
-| `handlePythonUpdate(payload, name)` | Legacy: Process live update (deprecated) | Payload JSON, object name |
-| `handlePythonNewObject(name)` | Legacy: Create new object (deprecated) | Object name |
-| `handlePythonSetObjectColor(colorData, name)` | Legacy: Update object color (deprecated) | Color data, object name |
-| `handlePythonSetColor(colorMode)` | Legacy: Update global color mode (deprecated) | Color mode string |
-| `handlePythonSetViewTransform(data)` | Legacy: Update rotation/center (deprecated) | Transform data |
-| `handlePythonClearAll()` | Legacy: Clear all objects (deprecated) | None |
-| `handlePythonResetAll()` | Legacy: Reset viewer state (deprecated) | None |
+| `handleIncrementalStateUpdate(newFrames, changedMeta)` | Process incremental updates from Python | New frames by object, changed metadata by object |
 | `renderer` | Reference to Pseudo3DRenderer instance | N/A |
 
 ### JavaScript: `utils.js`
@@ -1491,7 +1348,13 @@ if self.config["scatter"]["enabled"]:
     "center": [x, y, z],
     "contacts": [[idx1, idx2, weight, {r,g,b}], ...],
     "bonds": [[idx1, idx2], ...],
-    "color": {"type": "mode", "value": "chain"}
+    "color": {"type": "mode", "value": "chain"},
+    "scatter_config": {                           # NEW: per-object scatter configuration
+        "xlabel": "RMSD (Å)",
+        "ylabel": "Energy (kcal/mol)",
+        "xlim": [0, 10],
+        "ylim": [-150, -90]
+    }
 }
 ```
 
@@ -1509,10 +1372,12 @@ DEFAULT_CONFIG = {
     },
     "rendering": {
         "shadow": True,
+        "shadow_strength": 0.5,
         "outline": "full",
         "width": 3.0,
         "ortho": 1.0,
-        "pastel": 0.25
+        "pastel": 0.25,
+        "detect_cyclic": True
     },
     "color": {
         "mode": "auto",
@@ -1525,10 +1390,11 @@ DEFAULT_CONFIG = {
     "scatter": {
         "enabled": False,
         "size": 300,
-        "xlabel": None,
-        "ylabel": None,
-        "xlim": None,
-        "ylim": None
+        "xlabel": None,    # Optional: global default label
+        "ylabel": None,    # Optional: global default label
+        "xlim": None,      # Optional: global default limit
+        "ylim": None       # Optional: global default limit
+        # Note: Per-object scatter_config overrides these global defaults
     },
     "overlay": {
         "enabled": False
@@ -1538,15 +1404,20 @@ DEFAULT_CONFIG = {
 
 **JavaScript** (`viewer-mol.js` or `window.viewerConfig` from Python):
 ```javascript
-// Config is sent from Python as nested structure
+// Global config (sent from Python as nested structure)
 // JavaScript receives it via window.viewerConfig
 {
     display: { size, rotate, autoplay, controls, box },
-    rendering: { shadow, outline, width, ortho, pastel },
+    rendering: { shadow, shadow_strength, outline, width, ortho, pastel, detect_cyclic },
     color: { mode, colorblind },
     pae: { enabled, size },
-    scatter: { enabled, size, xlabel, ylabel, xlim, ylim },
+    scatter: { enabled, size, xlabel, ylabel, xlim, ylim },  // xlabel, ylabel, xlim, ylim can be global defaults
     overlay: { enabled }
+}
+
+// Per-object scatter config (in renderer.objectsData[name]):
+{
+    scatterConfig: { xlabel, ylabel, xlim, ylim }  // Camel case (converted from Python's scatter_config)
 }
 ```
 
@@ -1562,7 +1433,7 @@ const PROTEIN_CHAINBREAK = 5.0;   // CA-CA distance threshold
 const NUCLEIC_CHAINBREAK = 7.5;   // C4'-C4' distance threshold
 ```
 
-**Python**: Default distance-based bonding uses 2.0 Å cutoff (mentioned in `viewer.py:1464`)
+**Python**: Default distance-based bonding uses 2.0 Å cutoff (mentioned in `viewer.py:1881`)
 
 ### Position Types
 
@@ -1575,7 +1446,7 @@ const NUCLEIC_CHAINBREAK = 7.5;   // C4'-C4' distance threshold
 
 ### Color Palettes
 
-**Chain Colors** (`viewer-mol.js:253` - PyMOL palette):
+**Chain Colors** (`viewer-mol.js:252` - PyMOL palette):
 ```javascript
 const pymolColors = [
     "#33ff33",  // Green
@@ -1587,7 +1458,7 @@ const pymolColors = [
 ];
 ```
 
-**Colorblind-Safe Palette** (`viewer-mol.js:254`):
+**Colorblind-Safe Palette** (`viewer-mol.js:253`):
 ```javascript
 const colorblindSafeChainColors = [
     "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
@@ -1705,9 +1576,28 @@ const colorblindSafeChainColors = [
 
 ## Version History
 
-**Current**: Latest development version (2025-12-11)
+**Current**: Latest development version (2025-12-12)
 
-### Recent Changes (2025-12-11)
+### Recent Changes (2025-12-12)
+
+- ✅ **Refactored Scatter Configuration from Global to Object-Specific**
+  - **Breaking change**: Scatter labels and limits are now per-object instead of global
+  - **Global config**: Only `scatter.enabled` (boolean) and `scatter.size` (canvas size) remain global
+  - **Per-object config**: `xlabel`, `ylabel`, `xlim`, `ylim` are now stored per-object
+  - **New Python API**: Added `scatter_config` parameter to `add()`, `add_pdb()`, `from_pdb()` methods
+  - **Object structure**: Added `scatter_config` field to object dict (like contacts, bonds, color)
+  - **JavaScript implementation**:
+    - Python sends `scatter_config` (snake_case) in JSON
+    - JavaScript stores as `object.scatterConfig` (camelCase) internally
+    - Config automatically used when switching objects
+  - **CSV label extraction**: Labels from CSV headers now stored in object-specific config
+  - **Data flow**: scatter_config serialized per-object, converted to scatterConfig on load
+  - **Use cases**: Different objects can have different scatter plots (e.g., "RMSD vs Energy" for one object, "PC1 vs PC2" for another)
+  - **Backward compatibility**: Not required - scatter feature not yet public
+  - **Files modified**: `viewer.py`, `viewer-mol.js`, `app.js`, `technical_readme.md`
+  - **Key benefit**: Enables multi-object scatter plots with different labels/limits that persist when switching objects
+
+### Previous Changes (2025-12-11)
 
 - ✅ **Added Scatter Plot Visualization**
   - New feature for displaying 2D scatter plots synchronized with frame animation
