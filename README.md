@@ -108,6 +108,12 @@ viewer.add_pdb('trajectory.pdb', scatter='data.csv')  # header supplies labels
 viewer.show()
 ```
 
+**Batch add**
+```python
+# coords: (batch, N, 3), scatter: (batch, 2) or list of pairs
+viewer.add(batch_coords, scatter=batch_scatter)
+```
+
 ### Scatter highlights
 - Frame sync, click-to-jump, playback highlight, past/current/future color layers.
 - Missing scatter for a frame inherits previous frame’s value.

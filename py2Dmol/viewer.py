@@ -1173,6 +1173,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         Args:
             coords (np.array): Nx3 array of coordinates.
+                               Also supports batched input with shape (batch, N, 3).
             plddts (np.array, optional): N-length array of pLDDT scores.
             chains (list, optional): N-length list of chain identifiers.
             position_types (list, optional): N-length list of position types ('P', 'D', 'R', 'L').
@@ -1193,6 +1194,55 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                    - String (literal): "red", "#ff0000", etc.
                    - Dict (advanced): {"frame": mode/color, "chain": {...}, "position": {...}}
         """
+
+        # --- Step 0: Handle batched coordinates (shape: batch x N x 3) ---
+        batch_size = None
+        coords_batch = None
+        if isinstance(coords, np.ndarray) and coords.ndim == 3:
+            batch_size = coords.shape[0]
+            coords_batch = coords
+        elif isinstance(coords, (list, tuple)) and len(coords) > 0:
+            try:
+                arr = np.asarray(coords)
+                if arr.ndim == 3:
+                    batch_size = arr.shape[0]
+                    coords_batch = arr
+            except Exception:
+                pass  # Fall back to single-frame handling
+
+        if batch_size is not None and batch_size > 0:
+            def _slice(feature, idx):
+                if feature is None:
+                    return None
+                if isinstance(feature, np.ndarray):
+                    if feature.ndim >= 1 and feature.shape[0] == batch_size:
+                        return feature[idx]
+                    return feature
+                if isinstance(feature, (list, tuple)):
+                    if len(feature) == batch_size:
+                        return feature[idx]
+                    return feature
+                return feature
+
+            for i in range(batch_size):
+                self.add(
+                    coords_batch[i],
+                    _slice(plddts, i),
+                    _slice(chains, i),
+                    _slice(position_types, i),
+                    pae=_slice(pae, i),
+                    scatter=_slice(scatter, i),
+                    name=name,
+                    align=align,
+                    position_names=_slice(position_names, i),
+                    residue_numbers=_slice(residue_numbers, i),
+                    atom_types=_slice(atom_types, i),
+                    contacts=contacts,  # contacts/bonds/color assumed shared across batch
+                    bonds=bonds,
+                    color=color,
+                    scatter_config=scatter_config
+                )
+            return
         
         # --- Step 1: Handle object creation BEFORE touching alignment state ---
         # Doing this first avoids wiping the freshly computed best_view rotation
