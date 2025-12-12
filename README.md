@@ -82,13 +82,16 @@ Visualize per-frame 2D data (RMSD vs energy, PCA, etc.) synced to the trajectory
 
 **Enable/configure**
 ```python
-viewer = py2Dmol.view(scatter=True)
+viewer = py2Dmol.view(scatter=True, scatter_size=300)  # defaults: X/Y labels, size is global
 viewer = py2Dmol.view(scatter={
-    "xlabel": "RMSD (Å)", "ylabel": "Energy (kcal/mol)",
-    "xlim": [0, 10], "ylim": [-150, -90], "size": 300
-})
+    "xlabel": "RMSD (Å)",
+    "ylabel": "Energy (kcal/mol)",
+    "xlim": [0, 10],
+    "ylim": [-150, -90]
+}, scatter_size=300)
 ```
-Supported formats: list/tuple/dict per frame, CSV with header, or list/NumPy array passed to `add_pdb()` or `add()`.
+Per-object settings (labels/limits) are stored automatically in the object’s scatterConfig; only `scatter_size` is global.
+Supported formats: per-frame list/tuple/dict, CSV with header, or list/NumPy array via `add_pdb()` or `add()`.
 
 **Live per-frame**
 ```python
