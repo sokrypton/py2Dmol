@@ -3591,6 +3591,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Wait for frame to be captured, then advance
             // Use requestAnimationFrame to ensure render is complete
             requestAnimationFrame(() => {
+                // Update scatter plot for current frame if present
+                if (this.scatterRenderer) {
+                    if (currentFrame === 0 || currentFrame % 10 === 0) {
+                    }
+                    this.scatterRenderer.currentFrameIndex = currentFrame;
+                    this.scatterRenderer.render();
+                }
+
+                // Update composite canvas if recording with scatter plot
+                if (this.updateCompositeCanvas) {
+                    if (currentFrame === 0 || currentFrame % 10 === 0) {
+                    }
+                    this.updateCompositeCanvas();
+                }
+
                 // Give MediaRecorder time to capture (MediaRecorder captures at 30fps = ~33ms per frame)
                 // Use animationSpeed or minimum 50ms to ensure capture
                 const captureDelay = Math.max(50, this.animationSpeed);
@@ -3660,9 +3675,60 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Temporarily disable drag by preventing mousedown
             this.canvas.style.pointerEvents = 'none'; // Disable all mouse interaction
 
+            // Check if scatter plot is visible
+            const scatterCanvas = document.getElementById('scatterCanvas');
+            const scatterContainer = document.getElementById('scatterContainer');
+            const hasScatter = scatterCanvas && scatterContainer &&
+                              scatterContainer.style.display !== 'none' &&
+                              this.scatterRenderer;
+
             // Capture stream from canvas at 30fps for smooth playback
             const fps = 30;
-            this.recordingStream = this.canvas.captureStream(fps);
+
+            if (hasScatter) {
+                // Create composite canvas for both molecular viewer and scatter plot
+                this.recordingCompositeCanvas = document.createElement('canvas');
+                const molHeight = this.canvas.height;
+                const molWidth = this.canvas.width;
+                const scatterHeight = scatterCanvas.height;
+                const scatterWidth = scatterCanvas.width;
+
+                // Calculate scatter dimensions when scaled to match mol height
+                const scatterScale = molHeight / scatterHeight;
+                const scatterScaledWidth = scatterWidth * scatterScale;
+                const scatterScaledHeight = molHeight;
+
+                // Set composite canvas size (side by side, same height)
+                this.recordingCompositeCanvas.height = molHeight;
+                this.recordingCompositeCanvas.width = molWidth + scatterScaledWidth;
+
+                const ctx = this.recordingCompositeCanvas.getContext('2d');
+
+                // Create a function to composite both canvases
+                let compositeCallCount = 0;
+                this.updateCompositeCanvas = () => {
+                    compositeCallCount++;
+                    if (compositeCallCount === 1 || compositeCallCount % 10 === 0) {
+                    }
+
+                    // Clear composite canvas
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, this.recordingCompositeCanvas.width, this.recordingCompositeCanvas.height);
+
+                    // Draw molecular viewer on the left
+                    ctx.drawImage(this.canvas, 0, 0, molWidth, molHeight);
+
+                    // Draw scatter plot on the right, scaled to match molecular viewer height
+                    ctx.drawImage(scatterCanvas, molWidth, 0, scatterScaledWidth, scatterScaledHeight);
+                };
+
+                // Capture stream from composite canvas
+                // Note: composite is updated on-demand in recordFrameSequence() after each render
+                this.recordingStream = this.recordingCompositeCanvas.captureStream(fps);
+            } else {
+                // No scatter plot - capture only the molecular viewer canvas
+                this.recordingStream = this.canvas.captureStream(fps);
+            }
 
             // Set up MediaRecorder with very low compression (very high quality)
             const options = {
@@ -3718,6 +3784,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Wait a moment for MediaRecorder to start capturing
                 requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
+                        // Update scatter plot and composite for frame 0 before starting
+                        if (this.scatterRenderer) {
+                            this.scatterRenderer.currentFrameIndex = 0;
+                            this.scatterRenderer.render();
+                        }
+                        if (this.updateCompositeCanvas) {
+                            this.updateCompositeCanvas();
+                        }
+
                         // Start sequential frame recording
                         this.recordFrameSequence();
                     });
@@ -3756,6 +3831,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Stop stream
             this._stopRecordingTracks();
+
+            // Clean up composite canvas if it exists
+            this.updateCompositeCanvas = null;
+            this.recordingCompositeCanvas = null;
         }
 
         // Finish recording and download file
@@ -3768,6 +3847,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.recordingStream.getTracks().forEach(track => track.stop());
                     this.recordingStream = null;
                 }
+
+                // Clean up composite canvas if it exists
+                this.updateCompositeCanvas = null;
+                this.recordingCompositeCanvas = null;
+
                 // Ensure animation is stopped and state is clean
                 this.stopAnimation();
                 // Reset currentFrame to last valid frame before updating UI
@@ -3792,6 +3876,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.isRecording = false;
             this.mediaRecorder = null;
             this._stopRecordingTracks();
+
+            // Clean up composite canvas if it exists
+            this.updateCompositeCanvas = null;
+            this.recordingCompositeCanvas = null;
 
             // Ensure animation is fully stopped and state is clean
             this.stopAnimation();
@@ -6549,46 +6637,40 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     }
     if (canvasContainer && window.ResizeObserver) {
+        let resizeRaf = null;
+        let lastWidth = displayWidth;
+        let lastHeight = displayHeight;
         const resizeObserver = new ResizeObserver(entries => {
-            for (let entry of entries) {
-                // Get new dimensions from the container
-                let newWidth = entry.contentRect.width;
-                let newHeight = entry.contentRect.height;
+            if (!entries || entries.length === 0) return;
+            let newWidth = Math.max(entries[0].contentRect.width, 1);
+            let newHeight = Math.max(entries[0].contentRect.height, 1);
 
-                // Ensure non-zero dimensions which can break canvas
-                newWidth = Math.max(newWidth, 1);
-                newHeight = Math.max(newHeight, 1);
-
-                // Only update if display size actually changed
-                const currentDisplayWidth = parseInt(canvas.style.width) || displayWidth;
-                const currentDisplayHeight = parseInt(canvas.style.height) || displayHeight;
-
-                if (Math.abs(newWidth - currentDisplayWidth) > 0.5 ||
-                    Math.abs(newHeight - currentDisplayHeight) > 0.5) {
-                    // Update canvas resolution with high-DPI scaling
-                    const internalWidth = newWidth * currentDPR;
-                    const internalHeight = newHeight * currentDPR;
-
-                    canvas.width = internalWidth;
-                    canvas.height = internalHeight;
-                    canvas.style.width = newWidth + 'px';
-                    canvas.style.height = newHeight + 'px';
-                    if (viewerWrapper) {
-                        viewerWrapper.style.width = newWidth + 'px';
-                    }
-
-                    // Scale context to match internal resolution
-                    const ctx = canvas.getContext('2d');
-                    ctx.setTransform(1, 0, 0, 1, 0, 0);
-                    ctx.scale(currentDPR, currentDPR);
-
-                    // Update cached dimensions in renderer
-                    renderer._updateCanvasDimensions();
-
-                    // Always render on resize - canvas setup is necessary for proper display
-                    renderer.render('ResizeObserver');
-                }
+            if (Math.abs(newWidth - lastWidth) < 0.5 && Math.abs(newHeight - lastHeight) < 0.5) {
+                return; // no meaningful change
             }
+            lastWidth = newWidth;
+            lastHeight = newHeight;
+
+            if (resizeRaf) cancelAnimationFrame(resizeRaf);
+            resizeRaf = requestAnimationFrame(() => {
+                const internalWidth = newWidth * currentDPR;
+                const internalHeight = newHeight * currentDPR;
+
+                canvas.width = internalWidth;
+                canvas.height = internalHeight;
+                canvas.style.width = newWidth + 'px';
+                canvas.style.height = newHeight + 'px';
+                if (viewerWrapper) {
+                    viewerWrapper.style.width = newWidth + 'px';
+                }
+
+                const ctx = canvas.getContext('2d');
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                ctx.scale(currentDPR, currentDPR);
+
+                renderer._updateCanvasDimensions();
+                renderer.render('ResizeObserver');
+            });
         });
 
         // Start observing the canvas container
@@ -6691,9 +6773,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const innerSize = Math.max(10, scatterSize - padding * 2);
                 const containerSize = scatterSize;
 
-                // Set canvas intrinsic size for DPI
-                scatterCanvas.width = innerSize * currentDPR;
-                scatterCanvas.height = innerSize * currentDPR;
+                // Set canvas intrinsic size for DPI (boosted for sharper scatter)
+                const scatterDPR = Math.max(2, currentDPR * 2);
+                scatterCanvas.width = innerSize * scatterDPR;
+                scatterCanvas.height = innerSize * scatterDPR;
 
                 // Set canvas CSS size and margin to create inset spacing
                 scatterCanvas.style.width = `${innerSize}px`;

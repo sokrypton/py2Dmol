@@ -5525,6 +5525,8 @@ function parseAndLoadScatterData(csvText) {
 
     if (!scatterViewer && viewerApi?.renderer) {
         scatterViewer = new ScatterPlotViewer(scatterCanvas, viewerApi.renderer);
+        // CRITICAL: Register scatter renderer with main renderer for recording
+        viewerApi.renderer.setScatterRenderer(scatterViewer);
     }
 
     if (scatterViewer) {

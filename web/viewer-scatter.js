@@ -474,4 +474,9 @@
     // Export to global scope
     window.ScatterPlotViewer = ScatterPlotViewer;
 
+    // Dispatch load event for initialization
+    if (typeof document !== 'undefined') {
+        document.dispatchEvent(new Event('py2dmol_scatter_loaded'));
+    }
+
 })();
