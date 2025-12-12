@@ -177,7 +177,7 @@
 
             let minDist = Infinity;
             let nearestIndex = -1;
-            const threshold = 15 * this.scale; // pixels (scaled)
+            const threshold = 12 * this.sizeUnit; // pixels (scaled with canvas)
 
             for (let i = 0; i < this.xData.length; i++) {
                 const pos = this.dataToCanvas(this.xData[i], this.yData[i]);
@@ -241,19 +241,33 @@
             });
         }
 
+        // Compute a responsive unit that scales with CSS size and DPI
+        getSizeUnit() {
+            const rect = this.canvas.getBoundingClientRect
+                ? this.canvas.getBoundingClientRect()
+                : { width: this.canvas.width / this.scale, height: this.canvas.height / this.scale };
+            const cssMin = Math.max(Math.min(rect.width, rect.height), 60); // guard very small
+            const base = cssMin / 320; // grow with canvas CSS size
+            const clamped = Math.min(Math.max(base, 0.7), 1.6); // avoid extremes
+            return this.scale * clamped;
+        }
+
         render() {
             const ctx = this.ctx;
             const width = this.canvas.width;
             const height = this.canvas.height;
 
+            // Responsive sizing
+            this.sizeUnit = this.getSizeUnit();
+
             // Precompute ticks for layout metrics
-            const tickFont = 14 * this.scale;
-            const labelFont = 18 * this.scale;
+            const tickFont = 12 * this.sizeUnit;
+            const labelFont = 16 * this.sizeUnit;
             const xTicks = this.getNiceTicks(this.xMin, this.xMax, 5);
             const yTicks = this.getNiceTicks(this.yMin, this.yMax, 5);
 
             // Update paddings based on actual text metrics to avoid overlaps
-            this.computeDynamicPadding(ctx, tickFont, labelFont, xTicks, yTicks);
+            this.computeDynamicPadding(ctx, this.sizeUnit, tickFont, labelFont, xTicks, yTicks);
 
             this.plotWidth = width - this.paddingLeft - this.paddingRight;
             this.plotHeight = height - this.paddingTop - this.paddingBottom;
@@ -266,7 +280,7 @@
             ctx.fillRect(0, 0, width, height);
 
             // Draw axes
-            this.drawAxes(xTicks, yTicks, tickFont, labelFont);
+            this.drawAxes(xTicks, yTicks, this.sizeUnit, tickFont, labelFont);
 
             // Draw data points
             if (this.xData && this.yData && this.xData.length > 0) {
@@ -274,7 +288,7 @@
             }
         }
 
-        computeDynamicPadding(ctx, tickFont, labelFont, xTicks, yTicks) {
+        computeDynamicPadding(ctx, sizeUnit, tickFont, labelFont, xTicks, yTicks) {
             const measureHeight = (text, fallbackSize) => {
                 const metrics = ctx.measureText(text);
                 const ascent = metrics.actualBoundingBoxAscent || fallbackSize * 0.7;
@@ -285,10 +299,10 @@
                 };
             };
 
-            const tickMarkLen = 5 * this.scale;
-            const tickLabelGap = 4 * this.scale;
-            const labelGap = 8 * this.scale;
-            const minPadding = 12 * this.scale;
+            const tickMarkLen = 4 * sizeUnit;
+            const tickLabelGap = 4 * sizeUnit;
+            const labelGap = 8 * sizeUnit;
+            const minPadding = 10 * sizeUnit;
 
             ctx.save();
             ctx.font = `${tickFont}px sans-serif`;
@@ -342,16 +356,16 @@
             ctx.restore();
         }
 
-        drawAxes(xTicks, yTicks, tickFont, labelFont) {
+        drawAxes(xTicks, yTicks, sizeUnit, tickFont, labelFont) {
             const ctx = this.ctx;
             const width = this.canvas.width;
             const height = this.canvas.height;
 
             // Fallback if metrics are missing
             const metrics = this.textMetrics || {
-                tickMarkLen: 5 * this.scale,
-                tickLabelGap: 4 * this.scale,
-                labelGap: 8 * this.scale,
+                tickMarkLen: 4 * sizeUnit,
+                tickLabelGap: 4 * sizeUnit,
+                labelGap: 8 * sizeUnit,
                 xTickHeight: tickFont,
                 xLabelHeight: labelFont,
                 yLabelWidth: labelFont,
@@ -396,7 +410,7 @@
             ctx.restore();
 
             // Draw tick marks and labels
-            this.drawTicks(xTicks, yTicks, tickFont);
+            this.drawTicks(xTicks, yTicks, sizeUnit, tickFont);
         }
 
         // Generate nice tick values (round numbers)
@@ -461,14 +475,14 @@
             return formatted;
         }
 
-        drawTicks(xTicks, yTicks, tickFont) {
+        drawTicks(xTicks, yTicks, sizeUnit, tickFont) {
             const ctx = this.ctx;
             const height = this.canvas.height;
 
             ctx.font = `${tickFont}px sans-serif`;
             ctx.fillStyle = '#666';
             ctx.strokeStyle = '#999';
-            ctx.lineWidth = 1 * this.scale;
+            ctx.lineWidth = 1 * sizeUnit;
 
             // X-axis ticks
             for (const x of xTicks) {
@@ -477,13 +491,13 @@
                 // Tick mark
                 ctx.beginPath();
                 ctx.moveTo(pos.x, height - this.paddingBottom);
-                ctx.lineTo(pos.x, height - this.paddingBottom + 5 * this.scale);
+                ctx.lineTo(pos.x, height - this.paddingBottom + 4 * sizeUnit);
                 ctx.stroke();
 
                 // Label
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'top';
-                ctx.fillText(this.formatTickNumber(x), pos.x, height - this.paddingBottom + 8 * this.scale);
+                ctx.fillText(this.formatTickNumber(x), pos.x, height - this.paddingBottom + 6 * sizeUnit);
             }
 
             // Y-axis ticks
@@ -492,20 +506,20 @@
 
                 // Tick mark
                 ctx.beginPath();
-                ctx.moveTo(this.paddingLeft - 5 * this.scale, pos.y);
+                ctx.moveTo(this.paddingLeft - 4 * sizeUnit, pos.y);
                 ctx.lineTo(this.paddingLeft, pos.y);
                 ctx.stroke();
 
                 // Label
                 ctx.textAlign = 'right';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(this.formatTickNumber(y), this.paddingLeft - 8 * this.scale, pos.y);
+                ctx.fillText(this.formatTickNumber(y), this.paddingLeft - 6 * sizeUnit, pos.y);
             }
         }
 
         drawPoints() {
             const ctx = this.ctx;
-            const radius = 4 * this.scale; // Same size for all dots
+            const radius = 4 * this.sizeUnit; // Same size for all dots
 
             // Helper function to draw a single point
             const drawPoint = (i, fillColor) => {
