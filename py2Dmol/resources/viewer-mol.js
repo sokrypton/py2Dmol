@@ -2179,22 +2179,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.render('addFrame-color');
             }
 
-            // Update global center sum and count (from all positions for viewing)
-            let frameSum = new Vec3(0, 0, 0);
-            let frameAtoms = 0;
-            if (data && data.coords) {
-                frameAtoms = data.coords.length;
-                for (let i = 0; i < data.coords.length; i++) {
-                    const c = data.coords[i];
-                    frameSum = frameSum.add(new Vec3(c[0], c[1], c[2]));
+            // Recompute global center and extent across all frames (handles overlay/non-overlay)
+            let globalCenter = new Vec3(0, 0, 0);
+            let totalCount = 0;
+            for (const frame of object.frames) {
+                if (frame && frame.coords) {
+                    for (let i = 0; i < frame.coords.length; i++) {
+                        const c = frame.coords[i];
+                        globalCenter = globalCenter.add(new Vec3(c[0], c[1], c[2]));
+                        totalCount++;
+                    }
                 }
-                object.globalCenterSum = object.globalCenterSum.add(frameSum);
-                object.totalPositions += frameAtoms;
+            }
+            if (totalCount > 0) {
+                globalCenter = globalCenter.mul(1 / totalCount);
             }
 
-            const globalCenter = (object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0, 0, 0);
-
-            // Recalculate maxExtent and standard deviation for all frames using the new global center
+            // Recalculate maxExtent and standard deviation using the global center
             let maxDistSq = 0;
             let sumDistSq = 0;
             let positionCount = 0;
@@ -2214,6 +2215,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             object.maxExtent = Math.sqrt(maxDistSq);
             // Calculate standard deviation: sqrt(mean of squared distances)
             object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
+            object.center = [globalCenter.x, globalCenter.y, globalCenter.z];
+            this.viewerState.center = { x: globalCenter.x, y: globalCenter.y, z: globalCenter.z };
+            object.totalPositions = totalCount;
+            object.globalCenterSum = new Vec3(globalCenter.x * totalCount, globalCenter.y * totalCount, globalCenter.z * totalCount);
 
             // If this is the first frame being loaded, we need to
             // Recalculate focal length if perspective is enabled and object size changed
