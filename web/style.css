@@ -68,6 +68,12 @@
     border-color: var(--color-gray-300);
 }
 
+.py2dmol-viewer-instance #canvasContainer.container-box,
+.py2dmol-viewer-instance #scatterContainer.container-box,
+.py2dmol-viewer-instance #paeContainer.container-box {
+    padding: 0;
+}
+
 /* [EDIT] Centered viewer on the page */
 .py2dmol-viewer-instance {
     position: relative;

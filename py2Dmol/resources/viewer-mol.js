@@ -6936,10 +6936,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const showBox = config.display?.box !== false;
 
                 // Intrinsic size (DPI scaled) + CSS size (display pixels)
-                scatterCanvas.width = scatterDisplaySize * scatterDPR;
-                scatterCanvas.height = scatterDisplaySize * scatterDPR;
-                scatterCanvas.style.width = `${scatterDisplaySize}px`;
-                scatterCanvas.style.height = `${scatterDisplaySize}px`;
+                const borderAdjust = 2; // 1px border on each side
+                const cssScatterSize = Math.max(10, scatterDisplaySize - borderAdjust);
+                scatterCanvas.width = cssScatterSize * scatterDPR;
+                scatterCanvas.height = cssScatterSize * scatterDPR;
+                scatterCanvas.style.width = `${cssScatterSize}px`;
+                scatterCanvas.style.height = `${cssScatterSize}px`;
                 scatterCanvas.style.margin = '0px';
 
                 // Container sizing mirrors main viewer containers
@@ -6968,8 +6970,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         lastWidth = newWidth;
                         lastHeight = newHeight;
 
-                        const innerW = Math.max(10, newWidth);
-                        const innerH = Math.max(10, newHeight);
+                        const innerW = Math.max(10, newWidth - borderAdjust);
+                        const innerH = Math.max(10, newHeight - borderAdjust);
                         scatterCanvas.width = innerW * scatterDPR;
                         scatterCanvas.height = innerH * scatterDPR;
                         scatterCanvas.style.width = `${innerW}px`;

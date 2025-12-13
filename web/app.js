@@ -261,7 +261,7 @@ function initializeViewerConfig() {
         },
         scatter: {
             enabled: false,
-            size: 300,
+            size: 340,
             xlabel: null,
             ylabel: null,
             xlim: null,
@@ -5545,8 +5545,9 @@ function parseAndLoadScatterData(csvText) {
     const showBox = window.viewerConfig?.display?.box !== false;
 
     const applyScatterSize = (w, h) => {
-        const innerW = Math.max(10, w);
-        const innerH = Math.max(10, h);
+        const borderAdjust = 2; // account for 1px border on container
+        const innerW = Math.max(10, w - borderAdjust);
+        const innerH = Math.max(10, h - borderAdjust);
         scatterCanvas.width = innerW * scatterDPR;
         scatterCanvas.height = innerH * scatterDPR;
         scatterCanvas.style.width = `${innerW}px`;
