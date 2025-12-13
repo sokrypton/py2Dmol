@@ -143,19 +143,26 @@ function initializeApp() {
 }
 
 function refreshEntropyColors() {
-    if (!viewerApi?.renderer || viewerApi.renderer.colorMode !== 'entropy') {
+    if (!viewerApi?.renderer) {
         return;
     }
 
     const renderer = viewerApi.renderer;
-    renderer._mapEntropyToStructure();
-    renderer.colors = null;
-    renderer.colorsNeedUpdate = true;
-    renderer.render('app.js: refreshEntropyColors');
-    document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
 
-    if (typeof updateSequenceViewColors === 'function') {
-        updateSequenceViewColors();
+    // Always map entropy to structure when MSA data is available
+    // This ensures the entropy dropdown option becomes visible
+    renderer._mapEntropyToStructure();
+
+    // Only re-render and update colors if entropy mode is active
+    if (renderer.colorMode === 'entropy') {
+        renderer.colors = null;
+        renderer.colorsNeedUpdate = true;
+        renderer.render('app.js: refreshEntropyColors');
+        document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+
+        if (typeof updateSequenceViewColors === 'function') {
+            updateSequenceViewColors();
+        }
     }
 }
 
