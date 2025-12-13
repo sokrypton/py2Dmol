@@ -9,6 +9,7 @@ AI Context: MAIN PYTHON INTERFACE
 - Implements the "Live Mode" communication bridge (Python -> JS).
 """
 import json
+import copy
 import numpy as np
 import re
 from IPython.display import display, HTML, Javascript, update_display
@@ -506,8 +507,8 @@ class view:
 
                 if changed_metadata_fields:
                     changed_metadata_by_object[obj_name] = changed_metadata_fields
-                    # Update tracking: mark this metadata as sent
-                    self._sent_metadata[obj_name] = current_metadata
+                    # Update tracking: mark this metadata as sent (deep copy to avoid aliasing)
+                    self._sent_metadata[obj_name] = copy.deepcopy(current_metadata)
 
         # Skip update if nothing new to send
         if not new_frames_by_object and not changed_metadata_by_object:
@@ -2215,6 +2216,29 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             html_to_display = self._display_viewer(static_data=self.objects)
             self._display_html(html_to_display)
             self._is_live = True
+
+            # Mark existing frames/metadata as already sent so later incremental
+            # updates (e.g., add_contacts) don't resend full frames.
+            self._sent_frame_count = {}
+            self._sent_metadata = {}
+            for obj in self.objects:
+                obj_name = obj.get("name", "")
+                if not obj_name:
+                    continue
+                self._sent_frame_count[obj_name] = len(obj.get("frames", []))
+                current_metadata = {}
+                if obj.get("color") is not None:
+                    current_metadata["color"] = obj["color"]
+                if obj.get("contacts") is not None:
+                    current_metadata["contacts"] = obj["contacts"]
+                if obj.get("bonds") is not None:
+                    current_metadata["bonds"] = obj["bonds"]
+                if obj.get("rotation_matrix") is not None:
+                    current_metadata["rotation_matrix"] = obj["rotation_matrix"]
+                if obj.get("center") is not None:
+                    current_metadata["center"] = obj["center"]
+                if current_metadata:
+                    self._sent_metadata[obj_name] = copy.deepcopy(current_metadata)
 
         # Reset data display ID for new viewer
         self._data_display_id = None
