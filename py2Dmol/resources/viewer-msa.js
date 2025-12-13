@@ -4707,7 +4707,416 @@
 
         buildMSAView: buildMSAView,
         buildPSSMView: buildPSSMView,
-        buildLogoView: buildLogoView
+        buildLogoView: buildLogoView,
+        computeMSAProperties: computeMSAProperties,
+        extractSubset: extractMSASubset
     };
+
+    // ============================================================================
+    // MOVED LOGIC FROM APP.JS AND VIEWER-MOL.JS
+    // ============================================================================
+
+    function computeMSAProperties(msaData, selectionMask = null) {
+        if (!msaData || !msaData.sequences || msaData.sequences.length === 0) return;
+
+        const queryLength = msaData.queryLength;
+        const numSequences = msaData.sequences.length;
+
+        // Use selectionMask from msaData if not provided
+        if (!selectionMask && msaData.selectionMask) {
+            selectionMask = msaData.selectionMask;
+        }
+        const frequencies = msaData.frequencies || [];
+
+        // Amino acid code mapping to array index (A=0, R=1, N=2, D=3, C=4, Q=5, E=6, G=7, H=8, I=9, L=10, K=11, M=12, F=13, P=14, S=15, T=16, W=17, Y=18, V=19)
+        const aaCodeMap = {
+            'A': 0, 'R': 1, 'N': 2, 'D': 3, 'C': 4, 'Q': 5, 'E': 6, 'G': 7, 'H': 8,
+            'I': 9, 'L': 10, 'K': 11, 'M': 12, 'F': 13, 'P': 14, 'S': 15, 'T': 16,
+            'W': 17, 'Y': 18, 'V': 19
+        };
+        // Reverse mapping: array index to amino acid code
+        const aaCodes = ['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P', 'S', 'T', 'W', 'Y', 'V'];
+
+        // Compute frequencies
+        if (!msaData.frequencies) {
+            // Pre-extract all sequence strings to avoid repeated property access
+            const sequenceStrings = new Array(numSequences);
+            const sequenceLengths = new Uint16Array(numSequences);
+            for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
+                const seqStr = msaData.sequences[seqIdx].sequence;
+                sequenceStrings[seqIdx] = seqStr;
+                sequenceLengths[seqIdx] = seqStr.length;
+            }
+
+            // Pre-allocate arrays
+            if (!msaData.frequencies) {
+                for (let pos = 0; pos < queryLength; pos++) {
+                    frequencies.push({});
+                }
+            }
+
+            // Character code lookup table for fast AA code mapping (ASCII: A=65, Z=90, a=97, z=122)
+            // Maps char codes directly to array indices, -1 for invalid
+            const charCodeToAACode = new Int8Array(128);
+            charCodeToAACode.fill(-1);
+            charCodeToAACode[65] = 0;  // A
+            charCodeToAACode[97] = 0;  // a
+            charCodeToAACode[82] = 1;  // R
+            charCodeToAACode[114] = 1; // r
+            charCodeToAACode[78] = 2;  // N
+            charCodeToAACode[110] = 2; // n
+            charCodeToAACode[68] = 3;  // D
+            charCodeToAACode[100] = 3; // d
+            charCodeToAACode[67] = 4;  // C
+            charCodeToAACode[99] = 4;  // c
+            charCodeToAACode[81] = 5;  // Q
+            charCodeToAACode[113] = 5; // q
+            charCodeToAACode[69] = 6;  // E
+            charCodeToAACode[101] = 6; // e
+            charCodeToAACode[71] = 7;  // G
+            charCodeToAACode[103] = 7; // g
+            charCodeToAACode[72] = 8;  // H
+            charCodeToAACode[104] = 8; // h
+            charCodeToAACode[73] = 9;  // I
+            charCodeToAACode[105] = 9; // i
+            charCodeToAACode[76] = 10; // L
+            charCodeToAACode[108] = 10; // l
+            charCodeToAACode[75] = 11; // K
+            charCodeToAACode[107] = 11; // k
+            charCodeToAACode[77] = 12; // M
+            charCodeToAACode[109] = 12; // m
+            charCodeToAACode[70] = 13; // F
+            charCodeToAACode[102] = 13; // f
+            charCodeToAACode[80] = 14; // P
+            charCodeToAACode[112] = 14; // p
+            charCodeToAACode[83] = 15; // S
+            charCodeToAACode[115] = 15; // s
+            charCodeToAACode[84] = 16; // T
+            charCodeToAACode[116] = 16; // t
+            charCodeToAACode[87] = 17; // W
+            charCodeToAACode[119] = 17; // w
+            charCodeToAACode[89] = 18; // Y
+            charCodeToAACode[121] = 18; // y
+            charCodeToAACode[86] = 19; // V
+            charCodeToAACode[118] = 19; // v
+
+            // Compute frequencies for ALL positions (dimming happens during rendering, not computation)
+            const resultFrequencies = [];
+
+            for (let pos = 0; pos < queryLength; pos++) {
+                // Use typed array for counts (faster than object)
+                const counts = new Uint32Array(20);
+                let total = 0;
+
+                // Count amino acids at this position - optimized inner loop
+                for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
+                    if (pos < sequenceLengths[seqIdx]) {
+                        const charCode = sequenceStrings[seqIdx].charCodeAt(pos);
+                        // Fast lookup: skip gaps (45='-') and X (88='X', 120='x')
+                        if (charCode !== 45 && charCode !== 88 && charCode !== 120) {
+                            const code = charCodeToAACode[charCode];
+                            if (code >= 0) {
+                                counts[code]++;
+                                total++;
+                            }
+                        }
+                    }
+                }
+
+                // Build frequency object
+                const freq = {};
+                const invTotal = total > 0 ? 1 / total : 0;
+
+                for (let i = 0; i < 20; i++) {
+                    if (counts[i] > 0) {
+                        const p = counts[i] * invTotal;
+                        freq[aaCodes[i]] = p;
+                    }
+                }
+
+                resultFrequencies.push(freq);
+            }
+
+            msaData.frequencies = resultFrequencies;
+        }
+
+        // Compute entropy from frequencies (if frequencies exist and entropy not already computed)
+        if (msaData.frequencies && !msaData.entropy) {
+            const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
+            const entropyValues = [];
+
+            // Compute entropy for ALL positions (frequencies array contains all positions)
+            for (let i = 0; i < msaData.frequencies.length; i++) {
+                const freq = msaData.frequencies[i];
+                if (!freq) {
+                    entropyValues.push(0);
+                    continue;
+                }
+
+                // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
+                let entropy = 0;
+                for (const aa in freq) {
+                    const p = freq[aa];
+                    if (p > 0) {
+                        entropy -= p * Math.log2(p);
+                    }
+                }
+
+                // Normalize by max entropy (0 to 1 scale)
+                const normalizedEntropy = entropy / maxEntropy;
+                entropyValues.push(normalizedEntropy);
+            }
+
+            msaData.entropy = entropyValues;
+        }
+    }
+
+    /**
+     * Extract MSA data for selected positions
+     * Maps structure positions to MSA positions and extracts only selected MSA regions
+     * @param {Object} sourceObject - Original object with MSA data
+     * @param {Object} extractedObject - New extracted object
+     * @param {Object} frame - Frame data for mapping
+     * @param {Array} selectedIndices - Array of selected position indices
+     */
+    function extractMSASubset(sourceObject, extractedObject, frame, selectedIndices) {
+        if (!sourceObject.msa || !sourceObject.msa.msasBySequence || !sourceObject.msa.chainToSequence) {
+            return;
+        }
+
+        const selectedPositionsSet = new Set(selectedIndices);
+        const extractedFrame = extractedObject.frames[0];
+        if (!extractedFrame || !extractedFrame.chains) {
+            return;
+        }
+
+        // Initialize MSA structure for extracted object
+        extractedObject.msa = {
+            msasBySequence: {},
+            chainToSequence: {},
+            availableChains: [],
+            defaultChain: null,
+            msaToChains: {}
+        };
+
+        // Check if extractChainSequences is available (from global window)
+        const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function'
+            ? window.extractChainSequences
+            : null;
+
+        if (!extractChainSequences) {
+            console.warn("extractChainSequences not available, cannot extract MSA data");
+            return;
+        }
+
+        // Extract chain sequences from extracted frame
+        const extractedChainSequences = extractChainSequences(extractedFrame);
+
+        // For each chain in the original MSA
+        for (const [chainId, querySeq] of Object.entries(sourceObject.msa.chainToSequence)) {
+            const msaEntry = sourceObject.msa.msasBySequence[querySeq];
+            if (!msaEntry) continue;
+
+            // Use msaData directly - it is now always the canonical unfiltered source
+            // (We no longer mutate msaEntry.msaData with filtered data)
+            const originalMSAData = msaEntry.msaData;
+            if (!originalMSAData) continue;
+
+            const originalQuerySequence = originalMSAData.querySequence; // Query sequence has no gaps (removed during parsing)
+
+            // Extract chain sequence from original frame
+            const originalChainSequences = extractChainSequences(frame);
+            const originalChainSequence = originalChainSequences[chainId];
+            if (!originalChainSequence) continue;
+
+            // Find representative positions for this chain in original frame (position_types === 'P')
+            const chainPositions = [];
+            const positionCount = frame.chains.length;
+
+            for (let i = 0; i < positionCount; i++) {
+                if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
+                    chainPositions.push(i);
+                }
+            }
+
+            if (chainPositions.length === 0) continue;
+
+            // Sort positions by residue number to match sequence order
+            chainPositions.sort((a, b) => {
+                const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                return residueNumA - residueNumB;
+            });
+
+            // Map MSA positions to structure positions and find which MSA positions are selected
+            // Query sequence has no gaps, so mapping is straightforward
+            const msaQueryUpper = originalQuerySequence.toUpperCase();
+            const chainSeqUpper = originalChainSequence.toUpperCase();
+            const minLength = Math.min(msaQueryUpper.length, chainSeqUpper.length, chainPositions.length);
+            const selectedMSAPositions = new Set(); // MSA position indices that correspond to selected structure positions
+
+            for (let i = 0; i < minLength; i++) {
+                // Check if this MSA position matches the chain sequence position
+                if (msaQueryUpper[i] === chainSeqUpper[i]) {
+                    // Match found - check if this structure position is selected
+                    const positionIndex = chainPositions[i];
+                    if (selectedPositionsSet.has(positionIndex)) {
+                        selectedMSAPositions.add(i); // Store MSA position index
+                    }
+                }
+            }
+
+            if (selectedMSAPositions.size === 0) continue;
+
+            // Extract selected MSA positions from ALL sequences (not filtered by coverage/identity)
+            // Use sequencesOriginal to include all sequences, even those hidden by coverage/identity filters
+            const allSequences = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+            const extractedSequences = [];
+            const extractedQuerySequence = [];
+
+            // Extract from query sequence (only selected positions/columns)
+            for (let i = 0; i < originalQuerySequence.length; i++) {
+                if (selectedMSAPositions.has(i)) {
+                    extractedQuerySequence.push(originalQuerySequence[i]);
+                }
+            }
+
+            // Extract from ALL sequences (including those hidden by coverage/identity filters)
+            // But only extract the selected MSA positions (columns)
+            for (const seq of allSequences) {
+                const extractedSeq = {
+                    name: seq.name || 'Unknown',
+                    sequence: ''
+                };
+
+                // Copy any other properties from the original sequence
+                if (seq.id !== undefined) extractedSeq.id = seq.id;
+                if (seq.description !== undefined) extractedSeq.description = seq.description;
+
+                // Handle both string and array sequence formats
+                const seqStr = Array.isArray(seq.sequence) ? seq.sequence.join('') : seq.sequence;
+
+                // Extract only the selected MSA positions (columns) from this sequence
+                for (let i = 0; i < seqStr.length; i++) {
+                    if (selectedMSAPositions.has(i)) {
+                        extractedSeq.sequence += seqStr[i];
+                    }
+                }
+
+                extractedSequences.push(extractedSeq);
+            }
+
+            // Create new MSA data with extracted sequences (selected positions only, but all sequences)
+            const extractedQuerySeq = extractedQuerySequence.join('');
+            const extractedQuerySeqNoGaps = extractedQuerySeq.replace(/-/g, '').toUpperCase();
+
+            if (extractedQuerySeqNoGaps.length === 0) continue;
+
+            // Find query sequence in original MSA and extract its name
+            // Use sequencesOriginal to find query in all sequences
+            let queryName = '>query';
+            const originalQueryIndex = originalMSAData.queryIndex !== undefined ? originalMSAData.queryIndex : 0;
+            if (allSequences && allSequences[originalQueryIndex]) {
+                queryName = allSequences[originalQueryIndex].name || '>query';
+            }
+
+            // Ensure query sequence is first and has proper name
+            const querySeqIndex = extractedSequences.findIndex(s =>
+                s.name && s.name.toLowerCase().includes('query')
+            );
+            if (querySeqIndex === -1 && extractedSequences.length > 0) {
+                // No query found, make first sequence the query
+                extractedSequences[0].name = queryName;
+            } else if (querySeqIndex > 0) {
+                // Query found but not first, move it to first position
+                const querySeq = extractedSequences.splice(querySeqIndex, 1)[0];
+                extractedSequences.unshift(querySeq);
+            }
+
+            // Build residue_numbers mapping for extracted MSA
+            // Map extracted MSA positions to extracted structure residue_numbers values
+            const extractedResidueNumbers = new Array(extractedQuerySeq.length).fill(null);
+
+            // Get sorted selected indices for THIS CHAIN ONLY to match sequence order
+            const selectedIndicesForChain = chainPositions.filter(posIdx => selectedPositionsSet.has(posIdx));
+            const sortedSelectedIndicesForChain = selectedIndicesForChain.sort((a, b) => {
+                const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                return residueNumA - residueNumB;
+            });
+
+            let extractedSeqIdx = 0; // Position in extracted sequence (no gaps, sorted by residue_numbers)
+
+            // Map extracted MSA positions to extracted structure residue numbers
+            for (let i = 0; i < extractedQuerySeq.length; i++) {
+                const msaChar = extractedQuerySeq[i];
+                if (msaChar === '-') {
+                    // Gap - leave as null
+                    continue;
+                }
+                // Find corresponding position in extracted frame (for this chain only)
+                if (extractedSeqIdx < sortedSelectedIndicesForChain.length) {
+                    const originalPositionIdx = sortedSelectedIndicesForChain[extractedSeqIdx];
+                    // Get residue_numbers from original frame
+                    if (frame.residue_numbers && originalPositionIdx < frame.residue_numbers.length) {
+                        extractedResidueNumbers[i] = frame.residue_numbers[originalPositionIdx];
+                    }
+                    extractedSeqIdx++;
+                }
+            }
+
+            const extractedMSAData = {
+                sequences: extractedSequences,
+                querySequence: extractedQuerySeq,
+                queryLength: extractedQuerySeqNoGaps.length,
+                sequencesOriginal: extractedSequences, // All sequences included (not filtered by cov/qid)
+                queryIndex: 0, // Query is always first after extraction
+                residueNumbers: extractedResidueNumbers // Map to structure residue_numbers
+            };
+
+            // Compute MSA properties (frequencies, logOdds) for extracted sequences
+            computeMSAProperties(extractedMSAData);
+
+            // Check if extracted chain sequence matches the extracted query sequence (no gaps)
+            const extractedChainSeq = extractedChainSequences[chainId];
+            if (extractedChainSeq && extractedChainSeq.toUpperCase() === extractedQuerySeqNoGaps) {
+                // Store MSA in extracted object
+                if (!extractedObject.msa.msasBySequence[extractedQuerySeqNoGaps]) {
+                    extractedObject.msa.msasBySequence[extractedQuerySeqNoGaps] = {
+                        msaData: extractedMSAData,
+                        chains: [chainId]
+                    };
+                }
+
+                extractedObject.msa.chainToSequence[chainId] = extractedQuerySeqNoGaps;
+
+                if (!extractedObject.msa.availableChains.includes(chainId)) {
+                    extractedObject.msa.availableChains.push(chainId);
+                }
+
+                if (!extractedObject.msa.defaultChain) {
+                    extractedObject.msa.defaultChain = chainId;
+                }
+            }
+        }
+
+        // Update MSA container visibility and chain selector after extraction
+        if (typeof window !== 'undefined') {
+            // Trigger MSA viewer update if available
+            if (window.updateMSAContainerVisibility) {
+                setTimeout(() => {
+                    window.updateMSAContainerVisibility();
+                }, 100);
+            }
+            if (window.updateMSAChainSelectorIndex) {
+                setTimeout(() => {
+                    window.updateMSAChainSelectorIndex();
+                }, 100);
+            }
+        }
+
+        return extractedObject.msa;
+    }
+
 
 })();

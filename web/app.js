@@ -102,7 +102,7 @@ function initializeApp() {
                 filteredMSAData.logOdds = null;
 
                 // Recompute properties (frequencies and entropy) from filtered MSA
-                computeMSAProperties(filteredMSAData);
+                MSAViewer.computeMSAProperties(filteredMSAData);
 
                 // Apply filters to all MSAs (will reuse computed entropy for active chain)
                 const { coverageCutoff, identityCutoff } = getCurrentMSAFilters();
@@ -227,7 +227,7 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
         if (!filteredMSA) continue;
 
         // Compute entropy from filtered sequences
-        computeMSAProperties(filteredMSA);
+        MSAViewer.computeMSAProperties(filteredMSA);
 
         if (filteredMSA.entropy) {
             sourceData.entropy = filteredMSA.entropy;
@@ -291,7 +291,7 @@ function initializeViewerConfig() {
     window.py2dmol_configs[window.viewerConfig.viewer_id] = window.viewerConfig;
 
     // Helper to sync config changes to py2dmol_configs
-    window.syncViewerConfig = function() {
+    window.syncViewerConfig = function () {
         if (window.viewerConfig && window.viewerConfig.viewer_id) {
             window.py2dmol_configs[window.viewerConfig.viewer_id] = window.viewerConfig;
         }
@@ -3896,7 +3896,7 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
         filteredMSAData.entropy = null;
         filteredMSAData.logOdds = null;
         // Compute properties
-        computeMSAProperties(filteredMSAData);
+        MSAViewer.computeMSAProperties(filteredMSAData);
     }
 
     // Update chain selector
@@ -3932,162 +3932,7 @@ function loadMSADataIntoViewer(msaData, chainId, objectName, options = {}) {
  * @param {Object} msaData - MSA data object
  * @param {Array<boolean>} selectionMask - Optional mask indicating which positions to include (for dim mode)
  */
-function computeMSAProperties(msaData, selectionMask = null) {
-    if (!msaData || !msaData.sequences || msaData.sequences.length === 0) return;
 
-    const queryLength = msaData.queryLength;
-    const numSequences = msaData.sequences.length;
-
-    // Use selectionMask from msaData if not provided
-    if (!selectionMask && msaData.selectionMask) {
-        selectionMask = msaData.selectionMask;
-    }
-    const frequencies = msaData.frequencies || [];
-
-    // Amino acid code mapping to array index (A=0, R=1, N=2, D=3, C=4, Q=5, E=6, G=7, H=8, I=9, L=10, K=11, M=12, F=13, P=14, S=15, T=16, W=17, Y=18, V=19)
-    const aaCodeMap = {
-        'A': 0, 'R': 1, 'N': 2, 'D': 3, 'C': 4, 'Q': 5, 'E': 6, 'G': 7, 'H': 8,
-        'I': 9, 'L': 10, 'K': 11, 'M': 12, 'F': 13, 'P': 14, 'S': 15, 'T': 16,
-        'W': 17, 'Y': 18, 'V': 19
-    };
-    // Reverse mapping: array index to amino acid code
-    const aaCodes = ['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P', 'S', 'T', 'W', 'Y', 'V'];
-
-    // Compute frequencies
-    if (!msaData.frequencies) {
-        // Pre-extract all sequence strings to avoid repeated property access
-        const sequenceStrings = new Array(numSequences);
-        const sequenceLengths = new Uint16Array(numSequences);
-        for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
-            const seqStr = msaData.sequences[seqIdx].sequence;
-            sequenceStrings[seqIdx] = seqStr;
-            sequenceLengths[seqIdx] = seqStr.length;
-        }
-
-        // Pre-allocate arrays
-        if (!msaData.frequencies) {
-            for (let pos = 0; pos < queryLength; pos++) {
-                frequencies.push({});
-            }
-        }
-
-        // Character code lookup table for fast AA code mapping (ASCII: A=65, Z=90, a=97, z=122)
-        // Maps char codes directly to array indices, -1 for invalid
-        const charCodeToAACode = new Int8Array(128);
-        charCodeToAACode.fill(-1);
-        charCodeToAACode[65] = 0;  // A
-        charCodeToAACode[97] = 0;  // a
-        charCodeToAACode[82] = 1;  // R
-        charCodeToAACode[114] = 1; // r
-        charCodeToAACode[78] = 2;  // N
-        charCodeToAACode[110] = 2; // n
-        charCodeToAACode[68] = 3;  // D
-        charCodeToAACode[100] = 3; // d
-        charCodeToAACode[67] = 4;  // C
-        charCodeToAACode[99] = 4;  // c
-        charCodeToAACode[81] = 5;  // Q
-        charCodeToAACode[113] = 5; // q
-        charCodeToAACode[69] = 6;  // E
-        charCodeToAACode[101] = 6; // e
-        charCodeToAACode[71] = 7;  // G
-        charCodeToAACode[103] = 7; // g
-        charCodeToAACode[72] = 8;  // H
-        charCodeToAACode[104] = 8; // h
-        charCodeToAACode[73] = 9;  // I
-        charCodeToAACode[105] = 9; // i
-        charCodeToAACode[76] = 10; // L
-        charCodeToAACode[108] = 10; // l
-        charCodeToAACode[75] = 11; // K
-        charCodeToAACode[107] = 11; // k
-        charCodeToAACode[77] = 12; // M
-        charCodeToAACode[109] = 12; // m
-        charCodeToAACode[70] = 13; // F
-        charCodeToAACode[102] = 13; // f
-        charCodeToAACode[80] = 14; // P
-        charCodeToAACode[112] = 14; // p
-        charCodeToAACode[83] = 15; // S
-        charCodeToAACode[115] = 15; // s
-        charCodeToAACode[84] = 16; // T
-        charCodeToAACode[116] = 16; // t
-        charCodeToAACode[87] = 17; // W
-        charCodeToAACode[119] = 17; // w
-        charCodeToAACode[89] = 18; // Y
-        charCodeToAACode[121] = 18; // y
-        charCodeToAACode[86] = 19; // V
-        charCodeToAACode[118] = 19; // v
-
-        // Compute frequencies for ALL positions (dimming happens during rendering, not computation)
-        const resultFrequencies = [];
-
-        for (let pos = 0; pos < queryLength; pos++) {
-            // Use typed array for counts (faster than object)
-            const counts = new Uint32Array(20);
-            let total = 0;
-
-            // Count amino acids at this position - optimized inner loop
-            for (let seqIdx = 0; seqIdx < numSequences; seqIdx++) {
-                if (pos < sequenceLengths[seqIdx]) {
-                    const charCode = sequenceStrings[seqIdx].charCodeAt(pos);
-                    // Fast lookup: skip gaps (45='-') and X (88='X', 120='x')
-                    if (charCode !== 45 && charCode !== 88 && charCode !== 120) {
-                        const code = charCodeToAACode[charCode];
-                        if (code >= 0) {
-                            counts[code]++;
-                            total++;
-                        }
-                    }
-                }
-            }
-
-            // Build frequency object
-            const freq = {};
-            const invTotal = total > 0 ? 1 / total : 0;
-
-            for (let i = 0; i < 20; i++) {
-                if (counts[i] > 0) {
-                    const p = counts[i] * invTotal;
-                    freq[aaCodes[i]] = p;
-                }
-            }
-
-            resultFrequencies.push(freq);
-        }
-
-        msaData.frequencies = resultFrequencies;
-    }
-
-    // Compute entropy from frequencies (if frequencies exist and entropy not already computed)
-    if (msaData.frequencies && !msaData.entropy) {
-        const maxEntropy = Math.log2(20); // Maximum entropy for 20 amino acids
-        const entropyValues = [];
-
-        // Compute entropy for ALL positions (frequencies array contains all positions)
-        for (let i = 0; i < msaData.frequencies.length; i++) {
-            const freq = msaData.frequencies[i];
-            if (!freq) {
-                entropyValues.push(0);
-                continue;
-            }
-
-            // Calculate Shannon entropy: H = -Σ(p_i * log2(p_i))
-            let entropy = 0;
-            for (const aa in freq) {
-                const p = freq[aa];
-                if (p > 0) {
-                    entropy -= p * Math.log2(p);
-                }
-            }
-
-            // Normalize by max entropy (0 to 1 scale)
-            const normalizedEntropy = entropy / maxEntropy;
-            entropyValues.push(normalizedEntropy);
-        }
-
-        msaData.entropy = entropyValues;
-    }
-
-    // logOdds will be computed on-demand when needed for logo view
-}
 
 /**
  * Merge multiple MSAs that match the same chain
@@ -4098,7 +3943,7 @@ function mergeMSAs(msaDataList) {
     if (!msaDataList || msaDataList.length === 0) return null;
     if (msaDataList.length === 1) {
         // Compute properties for single MSA
-        computeMSAProperties(msaDataList[0].msaData);
+        MSAViewer.computeMSAProperties(msaDataList[0].msaData);
         return msaDataList[0].msaData;
     }
 
@@ -4136,7 +3981,7 @@ function mergeMSAs(msaDataList) {
     }
 
     // Compute properties for merged MSA
-    computeMSAProperties(mergedMSA);
+    MSAViewer.computeMSAProperties(mergedMSA);
 
     return mergedMSA;
 }
@@ -4196,7 +4041,7 @@ function matchMSAsToChains(msaDataList, chainSequences) {
             }
         } else if (msaList.length === 1) {
             // Single MSA for this chain - compute properties
-            computeMSAProperties(msaList[0].msaData);
+            MSAViewer.computeMSAProperties(msaList[0].msaData);
             chainToMSA[chainId] = { msaData: msaList[0].msaData };
         }
     }
@@ -6049,8 +5894,8 @@ async function loadViewerState(stateData) {
                                 };
 
                                 // Recompute properties (frequencies, logOdds, positionIndex)
-                                if (typeof computeMSAProperties === 'function') {
-                                    computeMSAProperties(restoredMSAData);
+                                if (window.MSAViewer && typeof window.MSAViewer.computeMSAProperties === 'function') {
+                                    window.MSAViewer.computeMSAProperties(restoredMSAData);
                                 }
                             }
                         }
