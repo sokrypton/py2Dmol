@@ -82,29 +82,29 @@ Visualize per-frame 2D data (RMSD vs energy, PCA, etc.) synced to the trajectory
 
 **Enable/configure**
 ```python
-viewer = py2Dmol.view(scatter=True, scatter_size=300)  # defaults: X/Y labels, size is global
-viewer = py2Dmol.view(scatter={
-    "xlabel": "RMSD (Å)",
-    "ylabel": "Energy (kcal/mol)",
-    "xlim": [0, 10],
-    "ylim": [-150, -90]
-}, scatter_size=300)
+viewer = py2Dmol.view(scatter=True, scatter_size=300)  # scatter_size is global; labels/limits are per-object
+# Set per-object labels/limits when adding data
+viewer.add_pdb("trajectory.pdb", scatter_config={"xlabel": "RMSD (Å)", "ylabel": "Energy (kcal/mol)", "xlim": [0, 10], "ylim": [-150, -90]})
 ```
-Per-object settings (labels/limits) are stored automatically in the object’s scatterConfig; only `scatter_size` is global.
+Per-object settings (labels/limits) live in the object’s scatterConfig; only `scatter_size` is global.
 Supported formats: per-frame list/tuple/dict, CSV with header, or list/NumPy array via `add_pdb()` or `add()`.
 
 **Live per-frame**
 ```python
-viewer = py2Dmol.view(scatter={"xlabel": "RMSD", "ylabel": "Energy"})
+# Trajectory with scatter points
+viewer = py2Dmol.view(scatter=True, scatter_size=300)
+viewer.add_pdb(
+    "trajectory.pdb",
+    scatter=trajectory_scatter_points,  # list/array of [x, y] per frame (or path to CSV with x,y; first row used as labels if present)
+    scatter_config={"xlabel": "RMSD (Å)", "ylabel": "Energy (kcal/mol)", "xlim": [0, 10], "ylim": [-150, -90]},
+)
 viewer.show()
-for coords, rmsd, energy in trajectory:
-    viewer.add(coords, scatter=[rmsd, energy])
 ```
 
 **CSV with trajectory**
 ```python
 viewer = py2Dmol.view(scatter=True)
-viewer.add_pdb('trajectory.pdb', scatter='data.csv')  # header supplies labels
+viewer.add_pdb('trajectory.pdb', scatter='data.csv')  # header supplies labels if present
 viewer.show()
 ```
 

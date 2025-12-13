@@ -1389,8 +1389,8 @@ DEFAULT_CONFIG = {
     "scatter": {
         "enabled": False,
         "size": 300,
-        "xlabel": None,    # Optional: global default label
-        "ylabel": None,    # Optional: global default label
+        "xlabel": "X",     # Optional: global default label
+        "ylabel": "Y",     # Optional: global default label
         "xlim": None,      # Optional: global default limit
         "ylim": None       # Optional: global default limit
         # Note: Per-object scatter_config overrides these global defaults

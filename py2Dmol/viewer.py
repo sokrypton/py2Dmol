@@ -84,11 +84,7 @@ def _nest_config(**flat):
         if isinstance(flat["scatter"], dict):
             config["scatter"] = {
                 "enabled": flat["scatter"].get("enabled", True),
-                "size": flat["scatter"].get("size", 300),
-                "xlabel": flat["scatter"].get("xlabel", None),
-                "ylabel": flat["scatter"].get("ylabel", None),
-                "xlim": flat["scatter"].get("xlim", None),
-                "ylim": flat["scatter"].get("ylim", None)
+                "size": flat["scatter"].get("size", 300)
             }
         elif flat["scatter"] is True:
             config["scatter"]["enabled"] = True

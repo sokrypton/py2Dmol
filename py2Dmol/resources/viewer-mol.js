@@ -533,11 +533,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         },
         scatter: {
             enabled: false,
-            size: 300,
-            xlabel: 'X',
-            ylabel: 'Y',
-            xlim: null,
-            ylim: null
+            size: 300
         },
         overlay: {
             enabled: false
@@ -576,11 +572,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             },
             scatter: {
                 enabled: cfg.scatter?.enabled ?? cfg.scatter ?? DEFAULT_CONFIG.scatter.enabled,
-                size: cfg.scatter?.size || cfg.scatter_size || DEFAULT_CONFIG.scatter.size,
-                xlabel: cfg.scatter?.xlabel ?? DEFAULT_CONFIG.scatter.xlabel,
-                ylabel: cfg.scatter?.ylabel ?? DEFAULT_CONFIG.scatter.ylabel,
-                xlim: cfg.scatter?.xlim ?? DEFAULT_CONFIG.scatter.xlim,
-                ylim: cfg.scatter?.ylim ?? DEFAULT_CONFIG.scatter.ylim
+                size: cfg.scatter?.size || cfg.scatter_size || DEFAULT_CONFIG.scatter.size
             },
             overlay: {
                 enabled: cfg.overlay?.enabled ?? cfg.overlay ?? DEFAULT_CONFIG.overlay.enabled
@@ -2035,7 +2027,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         extent: null,
                         currentFrame: -1
                     },
-                    // Initialize scatterConfig with defaults
+                    // Initialize scatterConfig with neutral defaults; labels/limits can be set per object
                     scatterConfig: {
                         xlabel: 'X',
                         ylabel: 'Y',
