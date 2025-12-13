@@ -1,42 +1,35 @@
+<!--
+msa.html
+--------
+AI Context: STANDALONE MSA VIEWER
+- A dedicated page for the Multiple Sequence Alignment (MSA) viewer.
+- Loads `web/app.js` and `py2Dmol/resources/viewer-msa.js`.
+- Provides UI for fetching/uploading MSAs and controlling visualization modes.
+-->
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MSA Viewer - py2Dmol (Resizable)</title>
+    <title>MSA Viewer - py2Dmol</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <!-- JSZip library for handling zip file uploads -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- Numeric.js for SVD calculations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+        crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link rel="stylesheet" href="web/style.css">
     <style>
-        /* MSA-specific drag overlay styles */
-        .drag-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(59, 130, 246, 0.1);
-            border: 3px dashed #3b82f6;
-            z-index: 9999;
-            display: none;
-            align-items: center;
-            justify-content: center;
-            pointer-events: none;
+        /* Hide structure viewer components on MSA-only page */
+        #viewer-container,
+        #sequence-viewer-container {
+            display: none !important;
         }
-        
-        .drag-overlay-content {
-            background: white;
-            padding: 24px 48px;
-            border-radius: var(--radius-lg);
-            box-shadow: var(--shadow-xl);
-            text-align: center;
-            font-size: 18px;
-            color: #1e40af;
-            font-weight: 600;
-        }
-        
+
         /* Match fetch input styling from index.html */
-        #fetch-uniprot-id {
+        #fetch-id {
             flex-grow: 1;
             height: 42px;
             padding: 0 16px;
@@ -46,48 +39,59 @@
             transition: all 0.2s;
             background: #ffffff;
         }
-        
-        #fetch-uniprot-id:hover {
+
+        #fetch-id:hover {
             border-color: #9ca3af;
         }
-        
-        #fetch-uniprot-id:focus {
+
+        #fetch-id:focus {
             border-color: #3b82f6;
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
             outline: none;
         }
-        
-        #fetch-uniprot-id::placeholder {
+
+        #fetch-id::placeholder {
             color: #9ca3af;
         }
-        
+
         #fetch-input-container {
             display: flex;
             gap: 8px;
             align-items: center;
         }
-        
+
         #fetch-input-container input {
             flex-grow: 1;
             height: 42px;
         }
     </style>
 </head>
+
 <body class="bg-gray-50 text-gray-800 font-sans p-8">
-    <!-- Total width (600 + 8 + 340 = 948px) -->
-    <div class="mx-auto" style="width: 948px; position: relative;">
+    <!-- Global Drop Overlay Element -->
+    <div id="global-drop-overlay">
+        <p><i class="fa-solid fa-cloud-arrow-up mr-3"></i> Drop File Anywhere to Load</p>
+    </div>
+    <!-- End Global Drop Overlay -->
+
+    <!-- Total width (600 + 26 + 8 + 340 = 974px) -->
+    <div class="mx-auto" style="width: 974px; position: relative;">
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">MSA Viewer</h1>
-        <p class="text-gray-500 mb-4">Fetch from AlphaFold DB (UniProt ID) or upload A3M, FASTA, or STO file to visualize multiple sequence alignment</p>
-        
+        <p class="text-gray-500 mb-4">Fetch from AlphaFold DB (UniProt ID) or upload A3M, FASTA, or STO file to
+            visualize multiple sequence alignment</p>
+
         <!-- Fetch and Upload Section -->
-        <div class="container-box" style="width: 948px; margin-bottom: 10px;">
+        <div id="upload-options-container" class="container-box" style="width: 974px; margin-bottom: 10px;">
             <!-- Fetch Section -->
-            <label for="fetch-uniprot-id" style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Fetch from AlphaFold DB (PDB or UniProt ID)</label>
+            <label for="fetch-id"
+                style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">
+                PDB (4-char) or UniProt ID
+            </label>
             <div id="fetch-input-container" style="margin-bottom: 8px;">
-                <input type="text" id="fetch-uniprot-id" placeholder="e.g., 4HHB or P0A8I3">
+                <input type="text" id="fetch-id" placeholder="e.g., 4HHB or P0A8I3">
                 <button id="fetch-btn" class="btn btn-primary">Fetch</button>
             </div>
-            
+
             <!-- Upload Section -->
             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">
                 Upload MSA File
@@ -100,11 +104,21 @@
                 <input type="file" id="file-upload" accept=".a3m,.fasta,.fa,.fas,.sto" class="hidden">
                 <span id="file-name" style="color: #6b7280; font-size: 14px;"></span>
             </div>
-            <div id="status-message" style="display: none; margin-top: 12px;"></div>
-            
+
+            <!-- Hidden checkboxes for app.js compatibility -->
+            <input type="checkbox" id="loadAsFramesCheckbox" checked style="display: none;">
+            <input type="checkbox" id="alignFramesCheckbox" checked style="display: none;">
+            <input type="checkbox" id="loadMSACheckbox" checked style="display: none;">
+            <input type="checkbox" id="loadPAECheckbox" checked style="display: none;">
+            <input type="checkbox" id="biounitCheckbox" checked style="display: none;">
+            <input type="checkbox" id="loadLigandsCheckbox" style="display: none;">
+
+            <div id="status-message" style="margin-top: 12px;"></div>
+
             <!-- Example buttons -->
             <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
-                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
+                <label
+                    style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
                 <div style="display: flex; gap: 8px;">
                     <button class="btn btn-success" data-example-value="Q5VSL9">
                         <span>Q5VSL9</span>
@@ -115,85 +129,202 @@
                 </div>
             </div>
         </div>
-        
-        <!-- Drag overlay (shown when dragging files over the page) -->
-        <div id="drag-overlay" class="drag-overlay">
-            <div class="drag-overlay-content">
-                📁 Drop your A3M file here
+
+        <!-- Hidden viewer container (for app.js compatibility) -->
+        <div id="viewer-container" class="py2dmol-viewer-instance" style="display: none;">
+            <div id="mainContainer">
+                <div id="viewerColumn">
+                    <div id="canvasContainer" class="container-box">
+                        <canvas id="canvas"></canvas>
+                    </div>
+                    <div id="controlsContainer" class="container-box">
+                        <button id="playButton" class="btn btn-secondary btn-icon-only"><i class="fa-solid fa-play"></i></button>
+                        <button id="recordButton" class="btn btn-secondary btn-icon-only"><i class="fa-solid fa-video"></i></button>
+                        <input type="range" id="frameSlider" min="0" max="0" value="0">
+                        <span id="frameCounter">0 / 0</span>
+                        <button id="speedButton" class="btn btn-grey btn-icon-only">1x</button>
+                        <button id="overlayButton" class="btn btn-secondary">⧉</button>
+                    </div>
+                </div>
+                <div id="rightPanelsContainer">
+                    <div id="rightPanelContainer" class="container-box">
+                        <div id="navigationControls" class="toolbar">
+                            <div class="toolbar-row">
+                                <label class="btn-toggle btn-flex" id="orientToggle">
+                                    <input type="checkbox" style="display: none;">
+                                    <span>Orient</span>
+                                </label>
+                                <label class="btn-toggle btn-flex" id="rotateToggle">
+                                    <input type="checkbox" id="rotationCheckbox">
+                                    <span>Rotate</span>
+                                </label>
+                            </div>
+                            <div class="toolbar-row">
+                                <label class="btn-toggle btn-flex btn-small">
+                                    <input type="checkbox" id="shadowEnabledCheckbox" checked>
+                                    <span>Shadow</span>
+                                </label>
+                                <button id="outlineModeButton" class="btn-toggle btn-flex btn-small">
+                                    <span>Outline</span>
+                                </button>
+                                <button id="saveSvgButton" class="btn-toggle btn-flex btn-icon-only btn-small">
+                                    <span><i class="fa-solid fa-camera"></i></span>
+                                </button>
+                            </div>
+                        </div>
+                        <div id="styleAppearanceContainer" class="control-group">
+                            <div class="toggle-item">
+                                <label for="colorSelect">Color:</label>
+                                <select id="colorSelect">
+                                    <option value="auto">Auto</option>
+                                    <option value="plddt">pLDDT</option>
+                                    <option value="deepmind">DeepMind</option>
+                                    <option value="rainbow">Rainbow</option>
+                                    <option value="chain">Chain</option>
+                                </select>
+                                <label class="btn-toggle btn-no-margin btn-small">
+                                    <input type="checkbox" id="colorblindCheckbox">
+                                    <span>Colorblind</span>
+                                </label>
+                            </div>
+                            <div class="toggle-item">
+                                <label for="lineWidthSlider">Width:</label>
+                                <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1">
+                                <label for="outlineWidthSlider">Outline:</label>
+                                <input type="range" id="outlineWidthSlider" min="0" max="10" value="3.0" step="0.1">
+                            </div>
+                            <div class="toggle-item">
+                                <label for="orthoSlider">Ortho:</label>
+                                <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
+                                <label for="shadowSlider">Shadow:</label>
+                                <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01">
+                            </div>
+                            <div class="toggle-item">
+                                <label for="objectSelect">Object:</label>
+                                <select id="objectSelect"></select>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="paeContainer" class="container-box" style="display: none;">
+                        <canvas id="paeCanvas"></canvas>
+                    </div>
+                </div>
             </div>
         </div>
-        
+
+        <!-- Hidden sequence container (for app.js compatibility) -->
+        <div id="sequence-viewer-container" class="container-box sequence-section-container" style="display: none;">
+            <div id="sequenceHeader" class="sequence-header">
+                <select id="sequenceModeSelect" class="btn btn-grey btn-small">
+                    <option value="sequence" selected>Sequence</option>
+                    <option value="chain">Chain</option>
+                </select>
+                <div class="sequence-actions">
+                    <button id="selectAllResidues" class="btn btn-grey btn-small">Show all</button>
+                    <button id="clearAllResidues" class="btn btn-grey btn-small">Hide all</button>
+                    <button id="copySelectionButton" class="btn btn-grey btn-small" disabled>Copy selection</button>
+                </div>
+            </div>
+            <div id="sequenceView" class="sequence-content hidden"></div>
+        </div>
+
         <!-- MSA Viewer Container -->
-        <div id="msa-buttons" class="container-box sequence-section-container" style="display: none;">
+        <div id="msa-buttons" class="container-box sequence-section-container" style="width: 974px; display: none;">
             <div id="msaHeader" class="sequence-header">
-                <!-- Left side: Mode dropdown, Sort checkbox, and Bit-score checkbox -->
+                <!-- Left side: Mode dropdown, Save buttons, Sort checkbox, Bit-score checkbox -->
                 <div style="display: flex; align-items: center; gap: 8px;">
-                    <select id="msaModeSelect" class="btn btn-grey btn-small" style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
+                    <select id="msaModeSelect" class="btn btn-grey btn-small"
+                        style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px;">
                         <option value="msa" selected>MSA</option>
                         <option value="pssm">PSSM</option>
                         <option value="logo">Logo</option>
                         <option value="coverage">Coverage</option>
                     </select>
+                    <div id="msaSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="msaSaveFastaButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            Fasta</button>
+                    </div>
+                    <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            SVG</button>
+                    </div>
+                    <div id="pssmSaveContainer" style="display: none; align-items: center; gap: 4px;">
+                        <button id="pssmSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            SVG</button>
+                        <button id="pssmSaveCsvButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save
+                            CSV</button>
+                    </div>
                     <div id="msaSortContainer" style="display: flex; align-items: center; gap: 4px;">
-                        <label for="msaSortCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                        <label for="msaSortCheckbox"
+                            style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
                             <input type="checkbox" id="msaSortCheckbox" checked style="cursor: pointer;">
                             <span>Sort</span>
                         </label>
                     </div>
                     <div id="logoBitScoreContainer" style="display: none; align-items: center; gap: 4px;">
-                        <label for="logoBitScoreCheckbox" style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                        <label for="logoBitScoreCheckbox"
+                            style="font-size: 12px; color: #666; white-space: nowrap; display: flex; align-items: center; gap: 4px; cursor: pointer;">
                             <input type="checkbox" id="logoBitScoreCheckbox" checked style="cursor: pointer;">
                             <span>Bit-score</span>
                         </label>
                     </div>
-                    <div id="msaSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                        <button id="msaSaveFastaButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save Fasta</button>
-                    </div>
-                    <div id="logoSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                        <button id="logoSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
-                    </div>
-                    <div id="pssmSaveContainer" style="display: none; align-items: center; gap: 4px;">
-                        <button id="pssmSaveSvgButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save SVG</button>
-                        <button id="pssmSaveCsvButton" class="btn btn-grey btn-small" style="font-size: 11px;">Save CSV</button>
-                    </div>
                 </div>
-                
-                <!-- Right: Filters box -->
-                <div style="display: flex; align-items: center; gap: 10px; margin-left: auto; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
-                    <span style="font-size: 12px; color: #666; font-weight: 500;">Filters:</span>
-                    <div style="display: flex; align-items: center; gap: 4px;">
-                        <label for="coverageSlider" style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
-                        <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5" style="width: 100px;">
-                        <span id="coverageValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">75%</span>
+
+                <!-- Right: Filters box and Chain selector -->
+                <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
+                    <div
+                        style="display: flex; align-items: center; gap: 10px; padding: 4px 10px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;">
+                        <span style="font-size: 12px; color: #666; font-weight: 500;">Filters:</span>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <label for="coverageSlider"
+                                style="font-size: 11px; color: #666; white-space: nowrap;">cov:</label>
+                            <input type="range" id="coverageSlider" min="0" max="100" value="75" step="5"
+                                style="width: 100px;">
+                            <span id="coverageValue"
+                                style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">75%</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <label for="identitySlider"
+                                style="font-size: 11px; color: #666; white-space: nowrap;">qid:</label>
+                            <input type="range" id="identitySlider" min="0" max="100" value="15" step="5"
+                                style="width: 100px;">
+                            <span id="identityValue"
+                                style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">15%</span>
+                        </div>
+                        <span id="msaSequenceCount"
+                            style="font-size: 11px; color: #666; white-space: nowrap; min-width: 80px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 4px;">
-                        <label for="identitySlider" style="font-size: 11px; color: #666; white-space: nowrap;">qid:</label>
-                        <input type="range" id="identitySlider" min="0" max="100" value="15" step="5" style="width: 100px;">
-                        <span id="identityValue" style="font-size: 11px; color: #666; width: 40px; text-align: right; display: inline-block;">15%</span>
-                    </div>
-                    <span id="msaSequenceCount" style="font-size: 11px; color: #666; white-space: nowrap; min-width: 80px; text-align: center; margin-left: 4px; display: inline-block;">-</span>
+                    <!-- Chain selector (hidden by default, shown when multiple chains available) -->
+                    <select id="msaChainSelect" class="btn btn-grey btn-small"
+                        style="display: none; min-width: 50px; height: 28px; font-size: 12px; padding: 0 8px;"></select>
                 </div>
             </div>
         </div>
-        </div>
     </div>
-    
+    </div>
+
     <!-- Footer -->
     <footer style="margin-top: var(--container-gap); padding: 0; color: #6b7280; font-size: 13px;">
-        <div style="width: 948px; margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
+        <div
+            style="width: 974px; margin: 0 auto; padding: 10px 0 0 0; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
             <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px;">
-                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: none;">
+                <a href="https://github.com/sokrypton/py2Dmol" target="_blank" rel="noopener noreferrer"
+                    style="color: #3b82f6; text-decoration: none;">
                     <i class="fab fa-github" style="margin-right: 6px;"></i>View on GitHub
                 </a>
             </div>
             <div style="flex: 0 0 auto; font-size: 12px;">
                 <i class="fa-solid fa-shield-halved" style="margin-right: 6px; color: #10b981;"></i>
-                <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a server.
+                <strong>Privacy:</strong> All processing is performed locally in your browser. No data is uploaded to a
+                server.
             </div>
         </div>
     </footer>
-    
-    <!-- Load MSA viewer script -->
+
+    <!-- Load scripts in order (same as index.html) -->
+    <script src="web/utils.js"></script>
+    <script src="py2Dmol/resources/viewer-mol.js"></script>
+    <script src="py2Dmol/resources/viewer-pae.js"></script>
+    <script src="py2Dmol/resources/viewer-seq.js"></script>
     <script src="py2Dmol/resources/viewer-msa.js"></script>
-    <!-- Load app.js for unified MSA functionality -->
     <script src="web/app.js"></script>
