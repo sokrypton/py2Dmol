@@ -275,30 +275,43 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const chainColorsColorblind = colorblindSafeChainColors.map(hex => lightenHex(hex));
     const DEFAULT_GREY = { r: 160, g: 160, b: 160 };
     const DEFAULT_CONTACT_COLOR = { r: 255, g: 255, b: 0 };
-    function hsvToRgb(h, s, v) { const c = v * s; const x = c * (1 - Math.abs((h / 60) % 2 - 1)); const m = v - c; let r, g, b; if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; } else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; } else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; } const base = { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 }; return lightenRgb(base, LIGHTEN_FACTOR); }
+    function hsvToRgb(h, s, v) {
+        const c = v * s;
+        const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+        const m = v - c;
+        let r, g, b;
+        if (h < 60) { r = c; g = x; b = 0; }
+        else if (h < 120) { r = x; g = c; b = 0; }
+        else if (h < 180) { r = 0; g = c; b = x; }
+        else if (h < 240) { r = 0; g = x; b = c; }
+        else if (h < 300) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+        return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
+    }
+    function lightenColor(color) { return lightenRgb(color, LIGHTEN_FACTOR); }
 
     // N-term (blue) to C-term (red/yellow)
     function getRainbowColor(value, min, max, colorblind = false) {
-        if (max - min < 1e-6) return hsvToRgb(240, 1.0, 1.0); // Default to blue
+        if (max - min < 1e-6) return lightenColor(hsvToRgb(240, 1.0, 1.0)); // Default to blue
         let normalized = (value - min) / (max - min);
         normalized = Math.max(0, Math.min(1, normalized));
         const hue = colorblind
             ? 240 - normalized * 180  // Blue (240°) → Yellow (60°)
             : 240 * (1 - normalized);  // Blue (240°) → Red (0°)
-        return hsvToRgb(hue, 1.0, 1.0);
+        return lightenColor(hsvToRgb(hue, 1.0, 1.0));
     }
 
     // pLDDT rainbow: 50 (red/yellow) to 90 (blue)
     function getPlddtRainbowColor(value, min, max, colorblind = false) {
         if (max - min < 1e-6) {
-            return hsvToRgb(colorblind ? 60 : 0, 1.0, 1.0); // Default to yellow or red
+            return lightenColor(hsvToRgb(colorblind ? 60 : 0, 1.0, 1.0)); // Default to yellow or red
         }
         let normalized = (value - min) / (max - min);
         normalized = Math.max(0, Math.min(1, normalized));
         const hue = colorblind
             ? 60 + normalized * 180   // Yellow (60°) → Blue (240°)
             : normalized * 240;        // Red (0°) → Blue (240°)
-        return hsvToRgb(hue, 1.0, 1.0);
+        return lightenColor(hsvToRgb(hue, 1.0, 1.0));
     }
 
     function getPlddtColor(plddt, colorblind = false) {
@@ -314,7 +327,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         const hue = colorblind
             ? 240 - normalized * 180  // Blue (240°) → Yellow (60°)
             : 240 * (1 - normalized);  // Blue (240°) → Red (0°)
-        return hsvToRgb(hue, 1.0, 1.0);
+        return lightenColor(hsvToRgb(hue, 1.0, 1.0));
     }
 
     // AlphaFold pLDDT color scheme (4 categories based on confidence)
