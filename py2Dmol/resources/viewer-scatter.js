@@ -58,6 +58,58 @@
             }
         }
 
+        /**
+         * Load scatter data from a py2Dmol object
+         * @param {Object} object - The object containing frames and config
+         */
+        loadFromObject(object) {
+            if (!object || !object.frames || object.frames.length === 0) {
+                this.setData([], [], 'X', 'Y');
+                this.render();
+                return;
+            }
+
+            // Collect scatter data from all frames
+            const xData = [];
+            const yData = [];
+            let lastScatter = null;
+
+            for (let i = 0; i < object.frames.length; i++) {
+                const frame = object.frames[i];
+                const scatterPoint = frame.scatter !== undefined ? frame.scatter : lastScatter;
+
+                if (scatterPoint && Array.isArray(scatterPoint) && scatterPoint.length === 2) {
+                    xData.push(scatterPoint[0]);
+                    yData.push(scatterPoint[1]);
+                    lastScatter = scatterPoint;
+                } else {
+                    // Frame has no scatter point - use NaN for gap
+                    xData.push(NaN);
+                    yData.push(NaN);
+                }
+            }
+
+            // Extract labels and config
+            const cfg = object.scatterConfig || {};
+            const xLabel = cfg.xlabel || 'X';
+            const yLabel = cfg.ylabel || 'Y';
+
+            // Set data (this triggers recalculation of ranges and render)
+            this.setData(xData, yData, xLabel, yLabel);
+
+            // Apply custom limits if specified
+            if (cfg.xlim && Array.isArray(cfg.xlim) && cfg.xlim.length === 2) {
+                this.xMin = cfg.xlim[0];
+                this.xMax = cfg.xlim[1];
+                this.render(); // Re-render with new limits
+            }
+            if (cfg.ylim && Array.isArray(cfg.ylim) && cfg.ylim.length === 2) {
+                this.yMin = cfg.ylim[0];
+                this.yMax = cfg.ylim[1];
+                this.render(); // Re-render with new limits
+            }
+        }
+
         setData(xData, yData, xLabel = 'X', yLabel = 'Y') {
             this.xData = xData;
             this.yData = yData;
