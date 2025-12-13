@@ -32,7 +32,6 @@ DEFAULT_CONFIG = {
         "outline": "full",
         "width": 3.0,
         "ortho": 1.0,
-        "pastel": 0.25,
         "detect_cyclic": True
     },
     "color": {
@@ -70,7 +69,6 @@ def _nest_config(**flat):
     if "outline" in flat: config["rendering"]["outline"] = flat["outline"]
     if "width" in flat: config["rendering"]["width"] = flat["width"]
     if "ortho" in flat: config["rendering"]["ortho"] = flat["ortho"]
-    if "pastel" in flat: config["rendering"]["pastel"] = flat["pastel"]
     if "detect_cyclic" in flat: config["rendering"]["detect_cyclic"] = flat["detect_cyclic"]
 
     # Color
@@ -268,7 +266,7 @@ def _normalize_color(color):
 
 class view:
     def __init__(self, size=(400,400), controls=True, box=True,
-        color="auto", colorblind=False, pastel=0.25, shadow=True, shadow_strength=0.5,
+        color="auto", colorblind=False, shadow=True, shadow_strength=0.5,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True, id=None,
     ):
@@ -292,7 +290,6 @@ class view:
             box=box,
             color=color,
             colorblind=colorblind,
-            pastel=pastel,
             shadow=shadow,
             shadow_strength=shadow_strength,
             outline=outline,

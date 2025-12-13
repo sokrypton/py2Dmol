@@ -141,7 +141,6 @@ def __init__(self,
     box=True,                 # Show bounding box
     color="auto",             # Color mode
     colorblind=False,         # Colorblind-safe palette
-    pastel=0.25,              # Pastel saturation (0.0-1.0)
     shadow=True,              # Enable/disable shadows
     shadow_strength=0.5,      # Shadow strength (0.0-1.0)
     outline="full",           # Outline mode: "full", "partial", "none"
@@ -159,6 +158,7 @@ def __init__(self,
 ):
 ```
 
+Colors are pre-lightened by mixing 25% white for all modes except `deepmind` (which uses the original AlphaFold palette). Lightening is baked into the palettes—there is no user-configurable pastel parameter.
 
 
 #### Key State Variables
@@ -1376,7 +1376,6 @@ DEFAULT_CONFIG = {
         "outline": "full",
         "width": 3.0,
         "ortho": 1.0,
-        "pastel": 0.25,
         "detect_cyclic": True
     },
     "color": {
@@ -1408,7 +1407,7 @@ DEFAULT_CONFIG = {
 // JavaScript receives it via window.viewerConfig
 {
     display: { size, rotate, autoplay, controls, box },
-    rendering: { shadow, shadow_strength, outline, width, ortho, pastel, detect_cyclic },
+    rendering: { shadow, shadow_strength, outline, width, ortho, detect_cyclic },
     color: { mode, colorblind },
     pae: { enabled, size },
     scatter: { enabled, size, xlabel, ylabel, xlim, ylim },  // xlabel, ylabel, xlim, ylim can be global defaults

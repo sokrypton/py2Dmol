@@ -49,7 +49,7 @@ py2Dmol.view(pae=True).from_afdb('Q5VSL9')                          # AlphaFold 
 ### Basic viewer options
 ```python
 viewer = py2Dmol.view(
-    size=(300, 300), color='auto', pastel=0.25, colorblind=False,
+    size=(300, 300), color='auto', colorblind=False,
     shadow=True, outline='full', width=3.0, ortho=1.0,
     rotate=False, autoplay=False, box=True, controls=True,
     pae=False, pae_size=300, scatter=False, scatter_size=300,
@@ -135,6 +135,7 @@ viewer.add(coords, plddts, chains, types, contacts='contacts.cst')
 ```
 
 ## Colors (advanced)
+Rendering uses a fixed 25% white mix to soften colors (DeepMind palette remains unlightened); there is no user-facing pastel/lightening setting.
 Five-level priority: Global (`view(color=...)`) < Object < Frame < Chain < Position.
 
 Semantic modes: `auto`, `chain`, `plddt`, `rainbow`, `entropy`, `deepmind`  

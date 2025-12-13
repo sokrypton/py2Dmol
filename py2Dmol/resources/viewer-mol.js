@@ -257,6 +257,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         "#C49C94", "#F7B6D2", "#C7C7C7", "#DBDB8D", "#9EDAE5",
         "#393B79", "#637939", "#8C6D31", "#843C39", "#7B4173",
         "#5254A3", "#8CA252", "#BD9E39", "#AD494A", "#A55194"];
+    const LIGHTEN_FACTOR = 0.25;
 
     // Named color map for common color names
     const namedColorsMap = {
@@ -267,22 +268,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     };
 
     function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return { r: 128, g: 128, b: 128 }; } const r = parseInt(hex.slice(1, 3), 16); const g = parseInt(hex.slice(3, 5), 16); const b = parseInt(hex.slice(5, 7), 16); return { r, g, b }; }
-    function hsvToRgb(h, s, v) { const c = v * s; const x = c * (1 - Math.abs((h / 60) % 2 - 1)); const m = v - c; let r, g, b; if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; } else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; } else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; } return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) }; }
-
-    /**
-     * Apply pastel effect to any color
-     * @param {{r, g, b}} color - RGB color object
-     * @param {number} level - Mixing level (0=none, 1=full white)
-     * @returns {{r, g, b}} Pastelized color
-     */
-    function applyPastelToColor(color, level) {
-        if (level <= 0) return color;
-        return {
-            r: Math.round(color.r * (1 - level) + 255 * level),
-            g: Math.round(color.g * (1 - level) + 255 * level),
-            b: Math.round(color.b * (1 - level) + 255 * level)
-        };
-    }
+    function rgbToHex({ r, g, b }) { const clamp = (v) => Math.max(0, Math.min(255, Math.round(v))); const cr = clamp(r).toString(16).padStart(2, '0'); const cg = clamp(g).toString(16).padStart(2, '0'); const cb = clamp(b).toString(16).padStart(2, '0'); return `#${cr}${cg}${cb}`; }
+    function lightenRgb(color, factor = LIGHTEN_FACTOR) { return { r: Math.round(color.r * (1 - factor) + 255 * factor), g: Math.round(color.g * (1 - factor) + 255 * factor), b: Math.round(color.b * (1 - factor) + 255 * factor) }; }
+    function lightenHex(hex, factor = LIGHTEN_FACTOR) { return rgbToHex(lightenRgb(hexToRgb(hex), factor)); }
+    const chainColors = pymolColors.map(hex => lightenHex(hex));
+    const chainColorsColorblind = colorblindSafeChainColors.map(hex => lightenHex(hex));
+    const DEFAULT_GREY = { r: 160, g: 160, b: 160 };
+    const DEFAULT_CONTACT_COLOR = { r: 255, g: 255, b: 0 };
+    function hsvToRgb(h, s, v) { const c = v * s; const x = c * (1 - Math.abs((h / 60) % 2 - 1)); const m = v - c; let r, g, b; if (h < 60) { r = c; g = x; b = 0; } else if (h < 120) { r = x; g = c; b = 0; } else if (h < 180) { r = 0; g = c; b = x; } else if (h < 240) { r = 0; g = x; b = c; } else if (h < 300) { r = x; g = 0; b = c; } else { r = c; g = 0; b = x; } const base = { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 }; return lightenRgb(base, LIGHTEN_FACTOR); }
 
     // N-term (blue) to C-term (red/yellow)
     function getRainbowColor(value, min, max, colorblind = false) {
@@ -515,8 +508,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             shadow: true,
             outline: "full",
             width: 3.0,
-            ortho: 1.0,
-            pastel: 0.25
+            ortho: 1.0
         },
         color: {
             mode: "auto",
@@ -559,8 +551,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 shadow: cfg.rendering?.shadow ?? cfg.shadow ?? DEFAULT_CONFIG.rendering.shadow,
                 outline: cfg.rendering?.outline ?? cfg.outline ?? DEFAULT_CONFIG.rendering.outline,
                 width: cfg.rendering?.width ?? cfg.width ?? DEFAULT_CONFIG.rendering.width,
-                ortho: cfg.rendering?.ortho ?? cfg.ortho ?? DEFAULT_CONFIG.rendering.ortho,
-                pastel: cfg.rendering?.pastel ?? cfg.pastel ?? DEFAULT_CONFIG.rendering.pastel
+                ortho: cfg.rendering?.ortho ?? cfg.ortho ?? DEFAULT_CONFIG.rendering.ortho
             },
             color: {
                 mode: colorMode || DEFAULT_CONFIG.color.mode,
@@ -584,7 +575,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         };
 
         // Carry over any additional top-level keys not explicitly normalized
-        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "pastel", "colorblind", "pae_size", "scatter_size"]);
+        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "colorblind", "pae_size", "scatter_size"]);
         for (const [key, value] of Object.entries(cfg)) {
             if (!knownKeys.has(key)) {
                 normalized[key] = value;
@@ -671,7 +662,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } else {
                 this.outlineMode = 'full'; // Default to full
             }
-            this.pastelLevel = (typeof config.rendering?.pastel === 'number') ? config.rendering.pastel : 0.25;
             this.colorblindMode = (typeof config.color?.colorblind === 'boolean') ? config.color.colorblind : false;
 
             // Width multipliers are now always based on TYPE_BASELINES (no robust scaling)
@@ -1205,19 +1195,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
         // [END PATCH]
-
-        _applyPastel(rgb) {
-            if (this.pastelLevel <= 0) {
-                return rgb;
-            }
-            // Apply pastel transformation (mix with white)
-            const mix = this.pastelLevel;
-            return {
-                r: Math.round(rgb.r * (1 - mix) + 255 * mix),
-                g: Math.round(rgb.g * (1 - mix) + 255 * mix),
-                b: Math.round(rgb.b * (1 - mix) + 255 * mix)
-            };
-        }
 
         setupInteraction() {
             // Add inertia logic
@@ -5013,7 +4990,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         getAtomColor(atomIndex, effectiveColorMode = null) {
             if (atomIndex < 0 || atomIndex >= this.coords.length) {
-                return applyPastelToColor({ r: 128, g: 128, b: 128 }, this.pastelLevel);
+                return DEFAULT_GREY;
             }
 
             // Resolve color through the unified hierarchy
@@ -5034,24 +5011,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             const { resolvedMode, resolvedLiteralColor } = resolveColorHierarchy(context, null);
 
-            // If we have a resolved literal color, use it immediately (highest priority)
-            // Now applies pastel uniformly to literals as well
-            if (resolvedLiteralColor !== null) {
-                let literalColor;
-                if (typeof resolvedLiteralColor === 'string' && resolvedLiteralColor.startsWith('#')) {
-                    literalColor = hexToRgb(resolvedLiteralColor);
-                } else if (typeof resolvedLiteralColor === 'string') {
-                    // Try to convert named color to hex
-                    const hex = namedColorsMap[resolvedLiteralColor.toLowerCase()];
-                    literalColor = hex ? hexToRgb(hex) : { r: 128, g: 128, b: 128 };
-                } else if (resolvedLiteralColor && typeof resolvedLiteralColor === 'object' && (resolvedLiteralColor.r !== undefined || resolvedLiteralColor.g !== undefined || resolvedLiteralColor.b !== undefined)) {
-                    literalColor = resolvedLiteralColor; // Already RGB object
-                }
-                if (literalColor) {
-                    return applyPastelToColor(literalColor, this.pastelLevel);
-                }
-            }
-
             // Use resolved color mode (frame color takes priority over passed-in global mode)
             // If resolveColorHierarchy found a specific mode, use it
             // IMPORTANT: 'auto' is not a real color mode, it must be resolved via _getEffectiveColorMode()
@@ -5060,6 +5019,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } else if (!effectiveColorMode || effectiveColorMode === 'auto' || resolvedMode === 'auto') {
                 // Resolve 'auto' to actual mode (chain/rainbow/plddt)
                 effectiveColorMode = this._getEffectiveColorMode();
+            }
+
+            // If we have a resolved literal color, use it immediately (highest priority)
+            if (resolvedLiteralColor !== null) {
+                let literalColor;
+                if (typeof resolvedLiteralColor === 'string' && resolvedLiteralColor.startsWith('#')) {
+                    literalColor = hexToRgb(resolvedLiteralColor);
+                } else if (typeof resolvedLiteralColor === 'string') {
+                    // Try to convert named color to hex
+                    const hex = namedColorsMap[resolvedLiteralColor.toLowerCase()];
+                    literalColor = hex ? hexToRgb(hex) : DEFAULT_GREY;
+                } else if (resolvedLiteralColor && typeof resolvedLiteralColor === 'object' && (resolvedLiteralColor.r !== undefined || resolvedLiteralColor.g !== undefined || resolvedLiteralColor.b !== undefined)) {
+                    literalColor = resolvedLiteralColor; // Already RGB object
+                }
+                if (literalColor) {
+                    return literalColor;
+                }
             }
 
             const type = (this.positionTypes && atomIndex < this.positionTypes.length) ? this.positionTypes[atomIndex] : undefined;
@@ -5083,23 +5059,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     color = getEntropyColor(entropy, this.colorblindMode);
                 } else {
                     // No entropy data for this position (ligand, RNA/DNA, or unmapped) - use default grey
-                    color = { r: 128, g: 128, b: 128 };
+                    color = DEFAULT_GREY;
                 }
             } else if (effectiveColorMode === 'chain') {
                 const chainId = this.chains[atomIndex] || 'A';
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
                     // Ligands in chains with P/D/R positions are grey
-                    color = { r: 128, g: 128, b: 128 };
+                    color = DEFAULT_GREY;
                 } else {
                     // Regular positions, or ligands in ligand-only chains, get chain color
                     if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
                         const chainIndex = this.chainIndexMap.get(chainId);
-                        const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
+                        const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
                         const hex = colorArray[chainIndex % colorArray.length];
                         color = hexToRgb(hex);
                     } else {
                         // Fallback: use a default color if chainIndexMap is not initialized
-                        const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
+                        const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
                         const hex = colorArray[0]; // Use first color as default
                         color = hexToRgb(hex);
                     }
@@ -5119,7 +5095,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } else { // rainbow
                 if (isLigand) {
                     // All ligands are grey in rainbow mode
-                    color = { r: 128, g: 128, b: 128 };
+                    color = DEFAULT_GREY;
                 } else {
                     // Regular positions get rainbow color
                     const chainId = this.chains[atomIndex] || 'A';
@@ -5144,17 +5120,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // UNIFORM PASTEL APPLICATION - no special cases
-            return applyPastelToColor(color, this.pastelLevel);
+            return color;
         }
 
         // Get chain color for a given chain ID (for UI elements like sequence viewer)
         getChainColorForChainId(chainId) {
             if (!this.chainIndexMap || !chainId) {
-                return { r: 128, g: 128, b: 128 }; // Default gray
+                return DEFAULT_GREY; // Default lightened gray
             }
             const chainIndex = this.chainIndexMap.get(chainId) || 0;
-            const colorArray = this.colorblindMode ? colorblindSafeChainColors : pymolColors;
+            const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
             const hex = colorArray[chainIndex % colorArray.length];
             return hexToRgb(hex);
         }
@@ -5174,12 +5149,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
             return this.segmentIndices.map(segInfo => {
-                // Contacts use custom color if provided, otherwise yellow (no pastel applied)
+                // Contacts use custom color if provided, otherwise yellow
                 if (segInfo.type === 'C') {
                     if (segInfo.contactColor) {
                         return segInfo.contactColor; // Use custom color from contact file
                     }
-                    return { r: 255, g: 255, b: 0 }; // Default yellow
+                    return DEFAULT_CONTACT_COLOR; // Default yellow
                 }
 
                 const positionIndex = segInfo.origIndex;
@@ -5204,10 +5179,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const segInfo = this.segmentIndices[i];
 
                 // Contacts: use custom color if provided, otherwise yellow
-                // Now pastel is applied uniformly to contacts as well
                 if (segInfo.type === 'C') {
-                    const contactColor = segInfo.contactColor || { r: 255, g: 255, b: 0 };
-                    colors[i] = applyPastelToColor(contactColor, this.pastelLevel);
+                    const contactColor = segInfo.contactColor || DEFAULT_CONTACT_COLOR;
+                    colors[i] = contactColor;
                     continue;
                 }
 
@@ -5226,8 +5200,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     color = plddtFunc((plddt1 + plddt2) / 2, this.colorblindMode);
                 }
 
-                // Apply pastel uniformly to all pLDDT colors
-                colors[i] = applyPastelToColor(color, this.pastelLevel);
+                colors[i] = color;
             }
             return colors;
         }
@@ -7161,7 +7134,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const shadowSlider = containerElement.querySelector('#shadowSlider');
 
 
-    // Set defaults for width, rotate, and pastel
+    // Set defaults for width, rotation, and shadow
     if (lineWidthSlider) lineWidthSlider.value = renderer.lineWidth;
     if (outlineWidthSlider) outlineWidthSlider.value = renderer.relativeOutlineWidth || 3.0;
     if (shadowSlider) shadowSlider.value = renderer.shadowStrength || 0.5;

@@ -248,8 +248,7 @@ function initializeViewerConfig() {
             shadow: true,
             outline: "full",  // "none", "partial", or "full"
             width: 3.0,
-            ortho: 1.0,  // Normalized 0-1 range (1.0 = full orthographic)
-            pastel: 0.25
+            ortho: 1.0  // Normalized 0-1 range (1.0 = full orthographic)
         },
         color: {
             mode: "auto",
@@ -5861,7 +5860,6 @@ function saveViewerState() {
             shadow_enabled: renderer.shadowEnabled !== false,
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
-            pastel_level: renderer.pastelLevel || 0.25,
             detect_cyclic: detectCyclic,
             ortho_slider_value: orthoSliderValue, // Save the normalized slider value (0.0-1.0)
             animation_speed: renderer.animationSpeed || 100
@@ -6283,11 +6281,6 @@ async function loadViewerState(stateData) {
                     colorblindCheckbox.checked = vs.colorblind_mode;
                     colorblindCheckbox.dispatchEvent(new Event('change'));
                 }
-            }
-
-            // Restore pastel level
-            if (typeof vs.pastel_level === 'number') {
-                renderer.pastelLevel = vs.pastel_level;
             }
 
             // Restore detect_cyclic - check both Python config format and web viewer_state format
