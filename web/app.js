@@ -5571,7 +5571,6 @@ function parseAndLoadScatterData(csvText) {
         }
 
         if (window.ResizeObserver && !scatterContainer._scatterResizeObserver) {
-            let resizeRaf = null;
             let lastW = scatterDisplaySize;
             let lastH = scatterDisplaySize;
             const observer = new ResizeObserver(entries => {
@@ -5582,8 +5581,7 @@ function parseAndLoadScatterData(csvText) {
                 if (Math.abs(newW - lastW) < 0.5 && Math.abs(newH - lastH) < 0.5) return;
                 lastW = newW;
                 lastH = newH;
-                if (resizeRaf) cancelAnimationFrame(resizeRaf);
-                resizeRaf = requestAnimationFrame(() => applyScatterSize(newW, newH));
+                applyScatterSize(newW, newH);
             });
             observer.observe(scatterContainer);
             scatterContainer._scatterResizeObserver = observer;

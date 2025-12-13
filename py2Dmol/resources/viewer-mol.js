@@ -6817,26 +6817,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             lastWidth = newWidth;
             lastHeight = newHeight;
 
-            if (resizeRaf) cancelAnimationFrame(resizeRaf);
-            resizeRaf = requestAnimationFrame(() => {
-                const internalWidth = newWidth * currentDPR;
-                const internalHeight = newHeight * currentDPR;
+            const internalWidth = newWidth * currentDPR;
+            const internalHeight = newHeight * currentDPR;
 
-                canvas.width = internalWidth;
-                canvas.height = internalHeight;
-                canvas.style.width = newWidth + 'px';
-                canvas.style.height = newHeight + 'px';
-                if (viewerWrapper) {
-                    viewerWrapper.style.width = newWidth + 'px';
-                }
+            canvas.width = internalWidth;
+            canvas.height = internalHeight;
+            canvas.style.width = newWidth + 'px';
+            canvas.style.height = newHeight + 'px';
+            if (viewerWrapper) {
+                viewerWrapper.style.width = newWidth + 'px';
+            }
 
-                const ctx = canvas.getContext('2d');
-                ctx.setTransform(1, 0, 0, 1, 0, 0);
-                ctx.scale(currentDPR, currentDPR);
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.scale(currentDPR, currentDPR);
 
-                renderer._updateCanvasDimensions();
-                renderer.render('ResizeObserver');
-            });
+            renderer._updateCanvasDimensions();
+            renderer.render('ResizeObserver');
         });
 
         // Start observing the canvas container
@@ -6957,7 +6954,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Mirror main viewer: observe container resizes and resize canvas accordingly
                 if (scatterContainer && window.ResizeObserver) {
-                    let resizeRaf = null;
                     let lastWidth = scatterDisplaySize;
                     let lastHeight = scatterDisplaySize;
                     const resizeObserver = new ResizeObserver(entries => {
@@ -6972,19 +6968,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         lastWidth = newWidth;
                         lastHeight = newHeight;
 
-                        if (resizeRaf) cancelAnimationFrame(resizeRaf);
-                        resizeRaf = requestAnimationFrame(() => {
-                            const innerW = Math.max(10, newWidth);
-                            const innerH = Math.max(10, newHeight);
-                            scatterCanvas.width = innerW * scatterDPR;
-                            scatterCanvas.height = innerH * scatterDPR;
-                            scatterCanvas.style.width = `${innerW}px`;
-                            scatterCanvas.style.height = `${innerH}px`;
+                        const innerW = Math.max(10, newWidth);
+                        const innerH = Math.max(10, newHeight);
+                        scatterCanvas.width = innerW * scatterDPR;
+                        scatterCanvas.height = innerH * scatterDPR;
+                        scatterCanvas.style.width = `${innerW}px`;
+                        scatterCanvas.style.height = `${innerH}px`;
 
-                            if (renderer.scatterRenderer) {
-                                renderer.scatterRenderer.render();
-                            }
-                        });
+                        if (renderer.scatterRenderer) {
+                            renderer.scatterRenderer.render();
+                        }
                     });
                     resizeObserver.observe(scatterContainer);
                 } else if (!window.ResizeObserver) {

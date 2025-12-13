@@ -8,12 +8,15 @@
 #viewerWrapper {
     display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
     width: fit-content; max-width: 100%;
+    flex: 0 0 auto;
 }
 #canvasContainer, #scatterContainer {
     display: inline-block; border: 1px solid #ddd; border-radius: 12px;
     overflow: hidden; background: #ffffff; resize: both;
     position: relative;
     box-sizing: border-box;
+    flex: 0 0 auto;
+    align-self: flex-start;
 }
 #canvasContainer { width: 600px; height: 600px; min-width: 200px; min-height: 200px; }
 #scatterContainer { min-width: 200px; min-height: 200px; }
@@ -77,6 +80,7 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
 #rightPanelContainer {
     display: flex; flex-direction: column; gap: 5px; width: 180px; border: 1px solid #e5e7eb;
     border-radius: 10px; padding: 8px; background: #f9fafb; flex-shrink: 0;
+    flex: 0 0 auto;
 }
 .control-group { display: flex; flex-direction: column; gap: 5px; }
 .toggle-item { display: flex; align-items: center; gap: 5px; width: 100%; }
