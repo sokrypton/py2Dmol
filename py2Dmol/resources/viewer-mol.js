@@ -5712,13 +5712,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Core rendering logic - can render to any context (canvas, SVG, etc.)
         _renderToContext(ctx, displayWidth, displayHeight) {
-            // Use clearRect or fillRect based on transparency
+            // Clear the full canvas in device pixels, independent of current transform
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
             if (this.isTransparent) {
-                ctx.clearRect(0, 0, displayWidth, displayHeight);
+                ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
             } else {
                 ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, displayWidth, displayHeight);
+                ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             }
+            ctx.restore();
 
             // Check segment length
             if (this.coords.length === 0 || this.segmentIndices.length === 0 || !this.currentObjectName) {
