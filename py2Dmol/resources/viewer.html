@@ -117,12 +117,18 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
         display: flex;
         align-items: center;
         justify-content: center;
+        overflow: hidden;
+        position: relative;
     }
     .scatter-container.box-off {
         padding: 0;
         border: none;
         border-radius: 0;
         background: transparent;
+    }
+    #scatterCanvas {
+        background: transparent;
+        display: block;
     }
 </style>
 <div id="mainContainer">
@@ -144,7 +150,7 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
         <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
     </div>
     <div id="scatterContainer" class="scatter-container" style="display: none;">
-        <canvas id="scatterCanvas" width="300" height="300" style="cursor: pointer; width: 300px; height: 300px;"></canvas>
+        <canvas id="scatterCanvas" style="cursor: pointer;"></canvas>
     </div>
     <div id="rightPanelContainer">
         <div class="control-group">

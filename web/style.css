@@ -119,6 +119,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden; /* clip canvas corners like main viewer */
+    position: relative;
 }
 
 .scatter-container.box-off {
@@ -126,6 +128,12 @@
     border: none;
     border-radius: 0;
     background: transparent;
+}
+
+/* Ensure scatter canvas itself is transparent so rounded corners show */
+#scatterCanvas {
+    background: transparent;
+    display: block;
 }
 
 

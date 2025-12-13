@@ -6933,29 +6933,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const scatterCanvas = containerElement.querySelector('#scatterCanvas');
 
             if (scatterContainer && scatterCanvas) {
-                // Apply size (supports scatter.size or scatter_size)
-            const scatterSize = config.scatter?.size || config.scatter_size || 300;
-                const padding = (config.display?.box === false) ? 0 : 8; // margin around canvas inside container
-                const innerSize = Math.max(10, scatterSize - padding * 2);
-                const containerSize = scatterSize;
-
-                // Set canvas intrinsic size for DPI (boosted for sharper scatter)
-                const scatterDPR = Math.max(2, currentDPR * 2);
-                scatterCanvas.width = innerSize * scatterDPR;
-                scatterCanvas.height = innerSize * scatterDPR;
-
-                // Set canvas CSS size and margin to create inset spacing
-                scatterCanvas.style.width = `${innerSize}px`;
-                scatterCanvas.style.height = `${innerSize}px`;
-                scatterCanvas.style.margin = `${padding}px`;
-
-                // Box styling via CSS classes
+                // Apply size using the same pattern as the main viewer
+                const scatterDisplaySize = config.scatter?.size || config.scatter_size || 300;
+                const scatterDPR = Math.max(2, currentDPR * 2); // keep sharper DPI but mirror naming
                 const showBox = config.display?.box !== false;
+                const scatterPadding = showBox ? 8 : 0;
+                const scatterInnerSize = Math.max(10, scatterDisplaySize - scatterPadding * 2);
+
+                // Intrinsic size (DPI scaled) + CSS size (display pixels)
+                scatterCanvas.width = scatterInnerSize * scatterDPR;
+                scatterCanvas.height = scatterInnerSize * scatterDPR;
+                scatterCanvas.style.width = `${scatterInnerSize}px`;
+                scatterCanvas.style.height = `${scatterInnerSize}px`;
+                scatterCanvas.style.margin = '0px';
+
+                // Container sizing mirrors main viewer containers
+                scatterContainer.style.display = 'flex';
+                scatterContainer.style.width = `${scatterDisplaySize}px`;
+                scatterContainer.style.height = `${scatterDisplaySize}px`;
+                scatterContainer.style.padding = `${scatterPadding}px`;
+
+                // Box styling via CSS classes (kept unchanged)
                 scatterContainer.classList.toggle('scatter-container', true);
                 scatterContainer.classList.toggle('box-off', !showBox);
-                scatterContainer.style.display = 'flex';
-                scatterContainer.style.width = `${containerSize}px`;
-                scatterContainer.style.height = `${containerSize}px`;
 
                 // Function to initialize scatter renderer
                 const initializeScatterRenderer = () => {

@@ -5536,6 +5536,32 @@ function parseAndLoadScatterData(csvText) {
     if (!scatterCanvas) {
         throw new Error("Scatter canvas not found");
     }
+    const scatterContainer = document.getElementById('scatterContainer');
+
+    // Apply sizing consistent with viewer-mol scatter setup
+    const scatterDisplaySize = (window.viewerConfig?.scatter?.size) || 300;
+    const currentDPR = Math.min(window.devicePixelRatio || 1, 1.5);
+    const scatterDPR = Math.max(2, currentDPR * 2);
+    const showBox = window.viewerConfig?.display?.box !== false;
+    const scatterPadding = showBox ? 8 : 0;
+    const scatterInnerSize = Math.max(10, scatterDisplaySize - scatterPadding * 2);
+
+    scatterCanvas.width = scatterInnerSize * scatterDPR;
+    scatterCanvas.height = scatterInnerSize * scatterDPR;
+    scatterCanvas.style.width = `${scatterInnerSize}px`;
+    scatterCanvas.style.height = `${scatterInnerSize}px`;
+    if (scatterContainer) {
+        scatterContainer.style.width = `${scatterDisplaySize}px`;
+        scatterContainer.style.height = `${scatterDisplaySize}px`;
+        scatterContainer.style.padding = `${scatterPadding}px`;
+        scatterContainer.style.display = 'flex';
+        scatterContainer.classList.add('scatter-container');
+        if (window.viewerConfig?.display?.box === false) {
+            scatterContainer.classList.add('box-off');
+        } else {
+            scatterContainer.classList.remove('box-off');
+        }
+    }
 
     if (!scatterViewer && viewerApi?.renderer) {
         scatterViewer = new ScatterPlotViewer(scatterCanvas, viewerApi.renderer);
@@ -5548,7 +5574,6 @@ function parseAndLoadScatterData(csvText) {
         scatterCanvas.style.display = 'block';
 
         // Show scatter container if hidden
-        const scatterContainer = document.getElementById('scatterContainer');
         if (scatterContainer) {
             scatterContainer.style.display = 'block';
         }
