@@ -9,19 +9,22 @@
     display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
     width: fit-content; max-width: 100%;
 }
-#canvasContainer {
+#canvasContainer, #scatterContainer {
     display: inline-block; border: 1px solid #ddd; border-radius: 12px;
     overflow: hidden; background: #ffffff; resize: both;
     position: relative;
     box-sizing: border-box;
 }
+#canvasContainer { width: 600px; height: 600px; min-width: 200px; min-height: 200px; }
+#scatterContainer { min-width: 200px; min-height: 200px; }
 #canvasContainer::-webkit-resizer { display: none; }
-#canvasContainer .resize-handle {
+#scatterContainer::-webkit-resizer { display: none; }
+#canvasContainer .resize-handle, #scatterContainer .resize-handle {
     position: absolute; bottom: 2px; right: 2px; width: 16px; height: 16px;
     cursor: nwse-resize; opacity: 0.4; transition: opacity 0.2s; z-index: 100; pointer-events: none;
 }
-#canvasContainer:hover .resize-handle { opacity: 0.8; }
-#canvasContainer .resize-handle::before {
+#canvasContainer:hover .resize-handle, #scatterContainer:hover .resize-handle { opacity: 0.8; }
+#canvasContainer .resize-handle::before, #scatterContainer .resize-handle::before {
     content: ''; position: absolute; bottom: 0; right: 0; width: 0; height: 0;
     border-style: solid; border-width: 0 0 16px 16px; border-color: transparent transparent #3b82f6 transparent;
 }
@@ -149,8 +152,9 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
     <div id="paeContainer">
         <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
     </div>
-    <div id="scatterContainer" class="scatter-container" style="display: none;">
+    <div id="scatterContainer" class="scatter-container" style="display: none; position: relative;">
         <canvas id="scatterCanvas" style="cursor: pointer;"></canvas>
+        <div class="resize-handle" aria-label="Resize scatter plot"></div>
     </div>
     <div id="rightPanelContainer">
         <div class="control-group">

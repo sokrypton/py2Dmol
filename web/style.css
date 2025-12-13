@@ -97,16 +97,20 @@
     min-width: 600px;
 }
 
-.py2dmol-viewer-instance #canvasContainer {
+.py2dmol-viewer-instance #canvasContainer,
+.py2dmol-viewer-instance #scatterContainer {
     display: inline-block;
     overflow: hidden;
     resize: both;
-    width: 600px;
-    height: 600px;
     min-width: 200px;
     min-height: 200px;
     position: relative;
     box-sizing: border-box;
+}
+
+.py2dmol-viewer-instance #canvasContainer {
+    width: 600px;
+    height: 600px;
 }
 
 /* Scatter container styling (matches viewer box) */
@@ -141,9 +145,13 @@
 .py2dmol-viewer-instance #canvasContainer::-webkit-resizer {
     display: none;
 }
+.py2dmol-viewer-instance #scatterContainer::-webkit-resizer {
+    display: none;
+}
 
 /* Custom resize handle for canvasContainer */
-.py2dmol-viewer-instance #canvasContainer .resize-handle {
+.py2dmol-viewer-instance #canvasContainer .resize-handle,
+.py2dmol-viewer-instance #scatterContainer .resize-handle {
     position: absolute;
     bottom: 2px;
     right: 2px;
@@ -156,11 +164,13 @@
     pointer-events: none;
 }
 
-.py2dmol-viewer-instance #canvasContainer:hover .resize-handle {
+.py2dmol-viewer-instance #canvasContainer:hover .resize-handle,
+.py2dmol-viewer-instance #scatterContainer:hover .resize-handle {
     opacity: 0.8;
 }
 
-.py2dmol-viewer-instance #canvasContainer .resize-handle::before {
+.py2dmol-viewer-instance #canvasContainer .resize-handle::before,
+.py2dmol-viewer-instance #scatterContainer .resize-handle::before {
     content: '';
     position: absolute;
     bottom: 0;

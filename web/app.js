@@ -5538,28 +5538,55 @@ function parseAndLoadScatterData(csvText) {
     }
     const scatterContainer = document.getElementById('scatterContainer');
 
-    // Apply sizing consistent with viewer-mol scatter setup
+    // Apply sizing consistent with viewer-mol scatter setup and attach ResizeObserver
     const scatterDisplaySize = (window.viewerConfig?.scatter?.size) || 300;
     const currentDPR = Math.min(window.devicePixelRatio || 1, 1.5);
     const scatterDPR = Math.max(2, currentDPR * 2);
     const showBox = window.viewerConfig?.display?.box !== false;
-    const scatterPadding = showBox ? 8 : 0;
-    const scatterInnerSize = Math.max(10, scatterDisplaySize - scatterPadding * 2);
 
-    scatterCanvas.width = scatterInnerSize * scatterDPR;
-    scatterCanvas.height = scatterInnerSize * scatterDPR;
-    scatterCanvas.style.width = `${scatterInnerSize}px`;
-    scatterCanvas.style.height = `${scatterInnerSize}px`;
+    const applyScatterSize = (w, h) => {
+        const innerW = Math.max(10, w);
+        const innerH = Math.max(10, h);
+        scatterCanvas.width = innerW * scatterDPR;
+        scatterCanvas.height = innerH * scatterDPR;
+        scatterCanvas.style.width = `${innerW}px`;
+        scatterCanvas.style.height = `${innerH}px`;
+        if (scatterViewer) {
+            scatterViewer.render();
+        }
+    };
+
+    applyScatterSize(scatterDisplaySize, scatterDisplaySize);
+
     if (scatterContainer) {
         scatterContainer.style.width = `${scatterDisplaySize}px`;
         scatterContainer.style.height = `${scatterDisplaySize}px`;
-        scatterContainer.style.padding = `${scatterPadding}px`;
+        scatterContainer.style.padding = '0px';
         scatterContainer.style.display = 'flex';
         scatterContainer.classList.add('scatter-container');
-        if (window.viewerConfig?.display?.box === false) {
+        if (!showBox) {
             scatterContainer.classList.add('box-off');
         } else {
             scatterContainer.classList.remove('box-off');
+        }
+
+        if (window.ResizeObserver && !scatterContainer._scatterResizeObserver) {
+            let resizeRaf = null;
+            let lastW = scatterDisplaySize;
+            let lastH = scatterDisplaySize;
+            const observer = new ResizeObserver(entries => {
+                if (!entries || entries.length === 0) return;
+                const rect = entries[0].contentRect || {};
+                const newW = Math.max(rect.width || scatterDisplaySize, 1);
+                const newH = Math.max(rect.height || scatterDisplaySize, 1);
+                if (Math.abs(newW - lastW) < 0.5 && Math.abs(newH - lastH) < 0.5) return;
+                lastW = newW;
+                lastH = newH;
+                if (resizeRaf) cancelAnimationFrame(resizeRaf);
+                resizeRaf = requestAnimationFrame(() => applyScatterSize(newW, newH));
+            });
+            observer.observe(scatterContainer);
+            scatterContainer._scatterResizeObserver = observer;
         }
     }
 
