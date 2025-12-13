@@ -1627,6 +1627,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
         """
+
+        # Allow passing a 4-letter PDB code directly; fetch if local file is missing
+        if isinstance(filepath, str) and len(filepath) == 4 and filepath.isalnum() and not os.path.exists(filepath):
+            resolved = self._get_filepath_from_pdb_id(filepath)
+            if resolved:
+                filepath = resolved
         
         # --- Handle object naming logic FIRST ---
         # If name is provided, check if an object with that name already exists
@@ -2107,19 +2113,24 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             load_ligands = not ignore_ligands
 
         if filepath:
-            self.add_pdb(filepath, chains=chains,
-                         name=name, paes=None, align=align,
-                         use_biounit=use_biounit, biounit_name=biounit_name,
-                         load_ligands=load_ligands, contacts=contacts,
-                         scatter=scatter, color=color)
+            # Delegate to add_pdb for consistent handling
+            self.add_pdb(
+                filepath,
+                chains=chains,
+                name=name,
+                paes=None,
+                align=align,
+                use_biounit=use_biounit,
+                biounit_name=biounit_name,
+                load_ligands=load_ligands,
+                contacts=contacts,
+                scatter=scatter,
+                color=color,
+                scatter_config=scatter_config,
+            )
 
-            # Determine whether to auto-show
-            # show=True: always show
-            # show=False: never show
-            # show=None (default): show if not in live mode
-            if show is True:
-                self.show()
-            elif show is None and not self._is_live:
+            # Determine whether to auto-show (mirror add_pdb + show sequence)
+            if show is True or (show is None and not self._is_live):
                 self.show()
         else:
             print(f"Could not load structure for '{pdb_id}'.")
