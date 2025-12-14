@@ -6903,6 +6903,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     obj.bonds = changedFields.bonds;
                     needsRerender = true;
                 }
+                if (changedFields.scatter_config) {
+                    obj.scatterConfig = changedFields.scatter_config;
+                    // Refresh scatter axes if this is the active object
+                    if (objectName === renderer.currentObjectName && renderer.scatterRenderer) {
+                        renderer.updateScatterData(objectName);
+                    }
+                }
 
                 // Only apply rotation/center for newly created objects
                 if (newlyCreatedObjects.has(objectName)) {

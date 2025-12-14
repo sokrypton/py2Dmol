@@ -84,10 +84,10 @@ py2Dmol/
 │   ├── grid.py                  # Grid layout system (271 lines)
 │   └── resources/
 │       ├── viewer.html          # Jupyter widget template (200 lines)
-│       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (7,447 lines)
+│       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (6,969 lines)
 │       ├── viewer-pae.js        # PAE matrix visualization (906 lines)
 │       ├── viewer-seq.js        # Sequence viewer (2,257 lines)
-│       ├── viewer-msa.js        # MSA viewer (4,713 lines)
+│       ├── viewer-msa.js        # MSA viewer (5,293 lines)
 │       └── viewer-scatter.js    # Scatter plot visualization (588 lines)
 │
 ├── web/                         # Web Application
@@ -554,7 +554,7 @@ DOMContentLoaded → initializeApp() → {
     2. setupCanvasDimensions()        // Set canvas 600x600
     3. initializePy2DmolViewer()      // Create Pseudo3DRenderer
     4. Get viewerApi reference        // window.py2dmol_viewers[id]
-    5. Setup MSA callbacks            // If MSAViewer exists
+    5. Setup MSA callbacks            // If window.MSA exists
     6. setupEventListeners()          // Wire 60+ UI handlers
     7. initDragAndDrop()              // File drag/drop
     8. setStatus("Ready...")          // Display message

@@ -483,6 +483,8 @@ class view:
                 current_metadata["contacts"] = obj["contacts"]
             if obj.get("bonds") is not None:
                 current_metadata["bonds"] = obj["bonds"]
+            if obj.get("scatter_config") is not None:
+                current_metadata["scatter_config"] = obj["scatter_config"]
             if obj.get("rotation_matrix") is not None:
                 current_metadata["rotation_matrix"] = obj["rotation_matrix"]
             if obj.get("center") is not None:
