@@ -508,9 +508,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         },
         rendering: {
             shadow: true,
+            shadow_strength: 0.5,
             outline: "full",
             width: 3.0,
-            ortho: 1.0
+            ortho: 1.0,
+            detect_cyclic: true
         },
         color: {
             mode: "auto",
@@ -547,9 +549,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             },
             rendering: {
                 shadow: cfg.rendering?.shadow ?? cfg.shadow ?? DEFAULT_CONFIG.rendering.shadow,
+                shadow_strength: cfg.rendering?.shadow_strength ?? cfg.shadow_strength ?? DEFAULT_CONFIG.rendering.shadow_strength,
                 outline: cfg.rendering?.outline ?? cfg.outline ?? DEFAULT_CONFIG.rendering.outline,
                 width: cfg.rendering?.width ?? cfg.width ?? DEFAULT_CONFIG.rendering.width,
-                ortho: cfg.rendering?.ortho ?? cfg.ortho ?? DEFAULT_CONFIG.rendering.ortho
+                ortho: cfg.rendering?.ortho ?? cfg.ortho ?? DEFAULT_CONFIG.rendering.ortho,
+                detect_cyclic: cfg.rendering?.detect_cyclic ?? cfg.detect_cyclic ?? DEFAULT_CONFIG.rendering.detect_cyclic
             },
             color: {
                 mode: colorMode || DEFAULT_CONFIG.color.mode,
@@ -569,7 +573,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         };
 
         // Carry over any additional top-level keys not explicitly normalized
-        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "colorblind", "pae_size", "scatter_size"]);
+        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "colorblind", "pae_size", "scatter_size", "detect_cyclic"]);
         for (const [key, value] of Object.entries(cfg)) {
             if (!knownKeys.has(key)) {
                 normalized[key] = value;
@@ -588,7 +592,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // PSEUDO-3D RENDERER
     // ============================================================================
     class Pseudo3DRenderer {
-        constructor(canvas) {
+        constructor(canvas, viewerConfig) {
             this.canvas = canvas;
             this.ctx = canvas.getContext('2d');
 
@@ -606,9 +610,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.displayWidth = parseInt(canvas.style.width) || canvas.width;
             this.displayHeight = parseInt(canvas.style.height) || canvas.height;
 
-            // Get config from window.viewerConfig
-            const config = normalizeConfig(window.viewerConfig);
-            // Ensure downstream code sees normalized structure
+            // Store viewer-specific config on instance for reliable access in methods
+            // Use provided config or fallback to window.viewerConfig
+            const config = viewerConfig || normalizeConfig(window.viewerConfig);
+            this.config = config;
+            
+            // Update global viewerConfig for backward compatibility
             window.viewerConfig = config;
 
             // Current render state
@@ -2894,8 +2901,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Check config.display.controls before showing
             // Unified check for all object/frame totals
-            const config = window.viewerConfig || {};
-            const controlsEnabled = config.display?.controls !== false;
+            const controlsEnabled = this.config.display?.controls !== false;
             this.controlsContainer.style.display = controlsEnabled ? 'flex' : 'none';
 
             // Get container element from canvas (for finding parent containers)
@@ -2924,7 +2930,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const containerToShow = mainControlsContainer || objectContainer;
                     if (containerToShow) {
                         // Always show if controls are enabled (regardless of number of objects)
-                        containerToShow.style.display = config.display?.controls ? 'flex' : 'none';
+                        containerToShow.style.display = this.config.display?.controls ? 'flex' : 'none';
                     }
                 }
             }
@@ -4124,7 +4130,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
 
                 // Check for cyclic peptides (first-to-last bond) per chain
-                const detectCyclic = (typeof config.rendering?.detect_cyclic === 'boolean') ? config.rendering.detect_cyclic : true;
+                const detectCyclic = (typeof this.config.rendering?.detect_cyclic === 'boolean') ? this.config.rendering.detect_cyclic : true;
                 if (detectCyclic) {
                     for (const [chainId, bounds] of chainPolymerBounds.entries()) {
                         const firstIdx = bounds.first;
@@ -6336,8 +6342,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     // We no longer set a fixed width on viewerColumn, to allow resizing.
 
-    // 3. Create renderer
-    const renderer = new Pseudo3DRenderer(canvas);
+    // 3. Create renderer with viewer-specific config
+    const renderer = new Pseudo3DRenderer(canvas, config);
     renderer.viewerId = viewerId;  // Store viewerId for config access
 
     // ADDED: ResizeObserver to handle canvas resizing
