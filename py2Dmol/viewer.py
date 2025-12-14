@@ -264,8 +264,36 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, shadow=True, shadow_strength=0.5,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
-        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True, id=None,
+        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True, 
+        persistence=True, id=None,
     ):
+        """
+        Initialize a py2Dmol viewer.
+
+        Args:
+            size (tuple): Canvas dimensions (width, height) in pixels. Default (400, 400).
+            controls (bool): Show playback controls. Default True.
+            box (bool): Show bounding box. Default True.
+            color (str): Color mode - "auto", "chain", "rainbow", "plddt", "deepmind", "entropy". Default "auto".
+            colorblind (bool): Use colorblind-friendly palette. Default False.
+            shadow (bool): Enable shadow rendering. Default True.
+            shadow_strength (float): Shadow intensity 0-1. Default 0.5.
+            outline (str): Outline mode - "none", "partial", "full". Default "full".
+            width (float): Line width. Default 3.0.
+            ortho (float): Orthographic projection strength 0-1. Default 1.0.
+            rotate (bool): Auto-rotate the structure. Default False.
+            autoplay (bool): Auto-play animation on load. Default False.
+            pae (bool): Enable PAE (Predicted Aligned Error) visualization. Default False.
+            pae_size (int): PAE plot size in pixels. Default 300.
+            scatter (bool/dict): Enable scatter plot. Default None.
+            scatter_size (int): Scatter plot size in pixels. Default 300.
+            overlay (bool): Enable overlay mode (show all frames simultaneously). Default False.
+            detect_cyclic (bool): Auto-detect cyclic peptides (N-C terminus bonds). Default True.
+            persistence (bool): If True (default), incremental frame updates create new 
+                               notebook cells. If False, updates reuse the same cell - 
+                               better for 10,000s of frames to avoid notebook bloat.
+            id (str): Custom viewer ID. If None, auto-generated. Default None.
+        """
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
             pae_size = int(pae_size[0])
@@ -317,6 +345,10 @@ class view:
         # Track sent frames and metadata to enable true incremental updates
         self._sent_frame_count = {}       # {"obj_name": num_frames_sent}
         self._sent_metadata = {}          # {"obj_name": {metadata_dict}}
+
+        # Persistence settings for memory optimization
+        self._persistence = persistence   # Store persistence setting
+        self._incremental_display_id = None  # Display ID for update_display()
 
         # --- Alignment/Dynamic State ---
         self._coords = None
@@ -538,7 +570,13 @@ class view:
 """
         # Use HTML-wrapped script (display:none to avoid layout changes)
         html_wrapper = f'<script style="display:none">{incremental_update_js}</script>'
-        display(HTML(html_wrapper))
+        
+        # Use update_display if persistence=False to avoid creating new cells
+        if not self._persistence:
+            update_display(HTML(html_wrapper), display_id=self._incremental_display_id)
+        else:
+            # Default: create new cell each time (backward compatible)
+            display(HTML(html_wrapper))
 
     def _display_viewer(self, static_data=None, include_libs=True):
         """
@@ -2215,6 +2253,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             html_to_display = self._display_viewer(static_data=None)
             self._display_html(html_to_display)
             self._is_live = True
+            
+            # Create separate display cell for incremental updates if persistence=False
+            if not self._persistence:
+                self._incremental_display_id = f"py2dmol_inc_{self.config['viewer_id']}"
+                # Create empty placeholder cell for incremental updates
+                display(HTML(''), display_id=self._incremental_display_id)
         else:
             # --- "Publish Static" Mode ---
             # .show() was called *after* .add()
@@ -2222,6 +2266,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             html_to_display = self._display_viewer(static_data=self.objects)
             self._display_html(html_to_display)
             self._is_live = True
+            
+            # Create separate display cell for incremental updates if persistence=False
+            if not self._persistence:
+                self._incremental_display_id = f"py2dmol_inc_{self.config['viewer_id']}"
+                # Create empty placeholder cell for incremental updates
+                display(HTML(''), display_id=self._incremental_display_id)
 
             # Mark existing frames/metadata as already sent so later incremental
             # updates (e.g., add_contacts) don't resend full frames.
