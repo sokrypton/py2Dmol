@@ -22,9 +22,21 @@ pip install git+https://github.com/sokrypton/py2Dmol.git
 ### Load a PDB (static)
 ```python
 import py2Dmol
-viewer = py2Dmol.view(size=(600, 600))
-viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
+viewer = py2Dmol.view()
+viewer.add_pdb('6MRR')
 viewer.show()
+```
+
+### Load a PDB (live)
+cell #1
+```python
+import py2Dmol
+viewer = py2Dmol.view()
+viewer.show()
+```
+cell #2 (cell #1 will be updated)
+```python
+viewer.add_pdb('6MRR')
 ```
 
 ### Helpful loading shortcuts
@@ -46,21 +58,6 @@ viewer.add_pdb("my_complex.cif")
 viewer.show()
 ```
 
-### Live mode wiggle
-```python
-import numpy as np
-viewer = py2Dmol.view(autoplay=True)
-viewer.show()
-angles = np.linspace(0, 2 * np.pi, 20, endpoint=False)
-for frame in range(60):
-    coords = np.column_stack([
-        4 * np.sin(2 * angles + frame * 4 * np.pi/60),
-        12 * np.cos(angles + frame * np.pi/60),
-        12 * np.sin(angles + frame * np.pi/60)
-    ])
-    viewer.add(coords)
-```
-
 ## Layouts & multiple objects
 
 ### Compare trajectories
@@ -80,7 +77,7 @@ with py2Dmol.grid(cols=2, size=(300, 300)) as g:
     g.view().from_pdb('2BEG')
 ```
 
-## Scatter plot visualization (advanced)
+## Scatter plot
 Visualize per-frame 2D data (RMSD vs energy, PCA, etc.) synced to the trajectory. Scatter highlights the current frame and is clickable to jump frames.
 
 ```python
@@ -101,6 +98,16 @@ viewer.add_pdb('trajectory.pdb', scatter='data.csv')  # header used to set axis 
 viewer.show()
 ```
 
+**Data sources**
+- Array/list: per-frame `scatter=[x, y]` (list/tuple/dict) or a 2-column array with one row per frame.
+- CSV file: two numeric columns; optional header row sets `xlabel`, `ylabel`. Example:
+  ```
+  RMSD,Energy
+  1.2,-150.3
+  1.4,-149.8
+  1.6,-149.1
+  ```
+
 # Advanced
 
 ## Contact restraints
@@ -109,6 +116,10 @@ Contacts are colored lines between residues; width follows weight.
 **File formats (`.cst`)**
 - `idx1 idx2 weight [color]` (0-based)  
 - `chain1 res1 chain2 res2 weight [color]`
+
+**Data sources**
+- Array/list: list/array of `[idx1, idx2, weight]` or `[idx1, idx2, weight, {r,g,b}]` (0-based indices).
+- File: `.cst` text file, one contact per line (formats above).
 
 **Add contacts**
 ```python
@@ -124,6 +135,13 @@ Five-level priority: Global (`view(color=...)`) < Object < Frame < Chain < Posit
 Semantic modes: `auto`, `chain`, `plddt`, `rainbow`, `entropy`, `deepmind`  
 Literal: named, hex, or `{"r":255,"g":0,"b":0}`
 
+**How to target colors**
+- Position: `set_color("red", position=10)` or `position=(start, end)`
+- Chain: `set_color("red", chain="A")`
+- Frame: `add(..., color="rainbow")` on a single frame
+- Object: `set_color({"type": "mode", "value": "plddt"}, name="obj1")`
+- Global: `view(color="chain")`
+
 ```python
 viewer = py2Dmol.view(color="plddt")
 viewer.add_pdb("protein.pdb")
@@ -133,7 +151,9 @@ viewer.set_color("red", chain="A", position=10, frame=0)
 viewer.show()
 ```
 
-## Super-advanced: custom `add()` payloads
+# Super Advanced
+
+## custom `add()` payloads
 Build mixed systems (protein/DNA/ligand) with explicit atom types.
 ```python
 import numpy as np, py2Dmol
@@ -154,6 +174,21 @@ types = ['P']*50 + ['D']*30 + ['L']*6
 viewer = py2Dmol.view((400,300), rotate=True)
 viewer.add(coords, plddts, chains, types)
 viewer.show()
+```
+
+## Live mode wiggle
+```python
+import numpy as np
+viewer = py2Dmol.view(autoplay=True)
+viewer.show()
+angles = np.linspace(0, 2 * np.pi, 20, endpoint=False)
+for frame in range(60):
+    coords = np.column_stack([
+        4 * np.sin(2 * angles + frame * 4 * np.pi/60),
+        12 * np.cos(angles + frame * np.pi/60),
+        12 * np.sin(angles + frame * np.pi/60)
+    ])
+    viewer.add(coords)
 ```
 
 ## Saving and loading
