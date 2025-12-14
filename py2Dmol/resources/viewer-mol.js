@@ -1611,7 +1611,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                     this._switchToObject(newObjectName);
                     this.setFrame(0);
-                    this.updatePAEContainerVisibility();
+                    // PAE visibility updated by setFrame -> updateFrame
                     this.updateScatterContainerVisibility();
                 });
             }
@@ -2121,7 +2121,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 object._lastPlddtFrame = -1; // No plddt in first frame
             }
 
-            if (this._hasPaeData(data)) {
+            if (window.PAE && window.PAE.isValid(data.pae)) {
                 object._lastPaeFrame = newFrameIndex;
             } else if (newFrameIndex === 0) {
                 object._lastPaeFrame = -1; // No PAE in first frame
@@ -2253,7 +2253,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.updateUIControls();
 
             // Update PAE container visibility when frames are added
-            this.updatePAEContainerVisibility();
+            if (window.PAE) {
+                window.PAE.updateVisibility(this);
+            }
 
             // Handle autoplay
             if (this.autoplay && !this.isPlaying && this.currentObjectName) {
@@ -2393,7 +2395,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Resolve inherited plddt and PAE data before extracting
                 const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
-                const resolvedPae = this._resolvePaeData(object, frameIndex);
+                const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : null;
 
                 // Use resolved data if available, otherwise use frame's own data
                 const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
@@ -2536,12 +2538,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // The PAE renderer stores its own copy of paeData, so we must call setData()
             // with the extracted object's PAE before calling render()
             const extractedObj = this.objectsData[extractName];
-            if (this.paeRenderer && extractedObj?.frames?.[0]?.pae) {
-                this.paeRenderer.setData(extractedObj.frames[0].pae);
+            if (window.PAE && extractedObj) {
+                window.PAE.updateFrame(this, extractedObj, 0);
             }
-
-            // Update PAE visibility and render
-            this.updatePAEContainerVisibility();
             if (this.paeRenderer && this.paeRenderer.render) {
                 this.paeRenderer.render();
             }
@@ -2647,8 +2646,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             this.lastRenderedFrame = frameIndex;
 
-            // Update PAE container visibility
-            this.updatePAEContainerVisibility();
+            // Update PAE container visibility and data
+            if (window.PAE) {
+                window.PAE.updateFrame(this, object, frameIndex);
+            }
 
             this.setUIEnabled(true); // Make sure controls are enabled
 
@@ -2670,28 +2671,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
-        // Check if PAE data is valid
-        _isValidPAE(pae) {
-            if (!pae) return false;
-            // Standard array or TypedArray
-            if ((Array.isArray(pae) && pae.length > 0) || (pae.buffer && pae.length > 0)) return true;
-            // Array-like object (JSON serialized Uint8Array)
-            if (typeof pae === 'object' && typeof pae.length !== 'number') {
-                // Check if it has keys that look like indices
-                const keys = Object.keys(pae);
-                return keys.length > 0 && !isNaN(parseInt(keys[0]));
-            }
-            return false;
-        }
+
 
         // Check if frame has valid plddt data
         _hasPlddtData(frame) {
             return frame && frame.plddts && Array.isArray(frame.plddts) && frame.plddts.length > 0;
-        }
-
-        // Check if frame has valid PAE data
-        _hasPaeData(frame) {
-            return this._isValidPAE(frame && frame.pae);
         }
 
         // Resolve plddt data for a frame (returns actual data or null)
@@ -2728,68 +2712,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return null;
         }
 
-        // Resolve PAE data for a frame (returns actual data or null)
-        // Searches backward from frameIndex to find most recent frame with PAE
-        _resolvePaeData(object, frameIndex) {
-            if (frameIndex < 0 || frameIndex >= object.frames.length) return null;
-
-            // Check current frame first
-            if (this._hasPaeData(object.frames[frameIndex])) {
-                return object.frames[frameIndex].pae;
-            }
-
-            // Use object-level tracking for optimization (if available and valid)
-            if (object._lastPaeFrame >= 0 && object._lastPaeFrame < frameIndex) {
-                if (this._hasPaeData(object.frames[object._lastPaeFrame])) {
-                    return object.frames[object._lastPaeFrame].pae;
-                }
-            }
-
-            // Search backward for most recent frame with PAE
-            for (let i = frameIndex - 1; i >= 0; i--) {
-                if (this._hasPaeData(object.frames[i])) {
-                    return object.frames[i].pae;
-                }
-            }
-
-            return null;
-        }
-
-        // Find PAE container with fallback logic
-        _findPAEContainer() {
-            if (this.paeContainer) return this.paeContainer;
-
-            if (this.canvas && this.canvas.parentElement) {
-                const mainContainer = this.canvas.parentElement.closest('#mainContainer');
-                if (mainContainer) {
-                    this.paeContainer = mainContainer.querySelector('#paeContainer');
-                    if (this.paeContainer) return this.paeContainer;
-                }
-            }
-
-            this.paeContainer = document.querySelector('#paeContainer');
-            return this.paeContainer;
-        }
-
-        // Check if an object has PAE data (can be called with object name or uses current object)
-        objectHasPAE(objectName = null) {
-            const name = objectName || this.currentObjectName;
-            if (!name || !this.objectsData[name]) {
-                return false;
-            }
-
-            const object = this.objectsData[name];
-            if (!object.frames || object.frames.length === 0) {
-                return false;
-            }
-
-            // Check if any frame has valid PAE data (directly or via inheritance)
-            if (this._hasPaeData(object.frames[0])) {
-                return true;
-            }
-            return object.frames.some(frame => this._hasPaeData(frame));
-        }
-
         // Check if current object has scatter data
         objectHasScatter(objectName = null) {
             const name = objectName || this.currentObjectName;
@@ -2814,20 +2736,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 lastScatter = scatterPoint;
             }
             return false;
-        }
-
-        // Update PAE container visibility based on current object's PAE data
-        updatePAEContainerVisibility() {
-            const paeContainer = this._findPAEContainer();
-            if (!paeContainer) return;
-
-            const hasPAE = this.objectHasPAE();
-            paeContainer.style.display = hasPAE ? 'flex' : 'none';
-
-            const paeCanvas = paeContainer.querySelector('#paeCanvas');
-            if (paeCanvas) {
-                paeCanvas.style.display = hasPAE ? 'block' : 'none';
-            }
         }
 
         // Update scatter plot data for current object
@@ -4542,7 +4450,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Resolve inherited plddt and PAE data
             const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
-            const resolvedPae = this._resolvePaeData(object, frameIndex);
+            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : (data.pae || null);
 
             // Get bonds from object-level if available
             const resolvedBonds = object.bonds || null;
@@ -4559,8 +4467,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._loadDataIntoRenderer(resolvedData, skipRender);
 
             // Load PAE data (use resolved value)
-            if (this.paeRenderer) {
-                this.paeRenderer.setData(resolvedPae !== null ? resolvedPae : (data.pae || null));
+            if (window.PAE) {
+                // We use updateFrame which handles data setting and visibility
+                window.PAE.updateFrame(this, object, frameIndex);
+            } else if (this.paeRenderer) {
+                this.paeRenderer.setData(resolvedPae);
             }
 
             // Reset selection to default (show all) when loading a new object's frame
@@ -6586,83 +6497,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     }
 
     // 4. Setup PAE Renderer (if enabled)
+    // 4. Setup PAE Renderer (if enabled)
     if (config.pae?.enabled) {
-        try {
-            const paeContainer = containerElement.querySelector('#paeContainer');
-            const paeCanvas = containerElement.querySelector('#paeCanvas');
-            if (!paeContainer || !paeCanvas) {
-                console.warn("PAE container or canvas not found");
-            } else {
-                renderer.paeContainer = paeContainer;
-                paeContainer.style.display = 'none';
-
-                // Function to update PAE canvas size based on container
-                const updatePAECanvasSize = () => {
-                    const containerRect = paeContainer.getBoundingClientRect();
-                    const paeContainerWidth = containerRect.width || 340;
-                    const paeContainerHeight = containerRect.height || paeContainerWidth;
-
-                    // Set canvas size to match container
-                    paeCanvas.width = paeContainerWidth;
-                    paeCanvas.height = paeContainerHeight;
-
-                    // Use 100% to fill container
-                    paeCanvas.style.width = '100%';
-                    paeCanvas.style.height = '100%';
-
-                    // Update context
-                    const paeCtx = paeCanvas.getContext('2d');
-                    paeCtx.setTransform(1, 0, 0, 1, 0, 0);
-
-                    // Update PAE renderer size if it exists
-                    if (renderer.paeRenderer) {
-                        renderer.paeRenderer.size = paeContainerWidth;
-                        renderer.paeRenderer.scheduleRender();
-                    }
-
-                    return paeContainerWidth;
-                };
-
-                // Set initial size (will be updated when container is visible)
-                updatePAECanvasSize();
-
-                // Function to initialize PAE renderer
-                const initializePAERenderer = () => {
-                    if (!window.PAERenderer) {
-                        return;
-                    }
-
-                    updatePAECanvasSize();
-
-                    const paeRenderer = new window.PAERenderer(paeCanvas, renderer);
-                    const containerRect = paeContainer.getBoundingClientRect();
-                    paeRenderer.size = containerRect.width || 340;
-                    renderer.setPAERenderer(paeRenderer);
-                    // If static data was already loaded, set PAE data for current frame
-                    if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
-                        const object = renderer.objectsData[renderer.currentObjectName];
-                        if (object.frames && object.frames.length > 0 && renderer.currentFrame >= 0) {
-                            const currentFrame = object.frames[renderer.currentFrame];
-                            if (currentFrame && currentFrame.pae) {
-                                paeRenderer.setData(currentFrame.pae);
-                            }
-                        }
-                    }
-                    renderer.updatePAEContainerVisibility();
-                };
-
-                // Try to initialize immediately (offline mode) or wait for PAE script load event
-                requestAnimationFrame(() => {
-                    if (window.PAERenderer) {
-                        initializePAERenderer();
-                    } else {
-                        // Wait for PAE script to load (online mode)
-                        window.addEventListener('py2dmol_pae_loaded', initializePAERenderer, { once: true });
-                    }
-                });
+        // Initialize immediately if PAE script is loaded
+        const initPAE = () => {
+            if (window.PAE && window.PAE.initialize) {
+                window.PAE.initialize(renderer, containerElement, config);
             }
-        } catch (e) {
-            console.error("Failed to initialize PAE renderer:", e);
+        };
+
+        if (window.PAE) {
+            initPAE();
+        } else {
+            // Wait for script
+            window.addEventListener('py2dmol_pae_loaded', initPAE, { once: true });
         }
     }
 
@@ -7061,7 +6909,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Update PAE container visibility after initial load
                 // Use requestAnimationFrame to ensure PAE renderer is initialized
                 requestAnimationFrame(() => {
-                    renderer.updatePAEContainerVisibility();
+                    if (window.PAE) {
+                        window.PAE.updateVisibility(renderer);
+                    }
                     renderer.updateScatterContainerVisibility();
                 });
             }
