@@ -27,17 +27,6 @@ viewer.add_pdb('my_protein.pdb', chains=['A', 'B'])
 viewer.show()
 ```
 
-### Live mode wiggle
-```python
-import numpy as np, time, py2Dmol
-viewer = py2Dmol.view(); viewer.show()
-for frame in range(60):
-    angles = np.linspace(0, 2*np.pi, 20, endpoint=False)
-    coords = np.column_stack([np.cos(angles)*15, np.sin(angles)*15, np.sin(frame/5)*3*np.cos(angles)])
-    viewer.add(coords, np.full(20, 80), ['A']*20, ['P']*20)
-    time.sleep(0.05)
-```
-
 ### Helpful loading shortcuts
 ```python
 py2Dmol.view(autoplay=True).from_pdb('1YNE')                        # ensemble
@@ -52,10 +41,24 @@ viewer = py2Dmol.view(
     size=(300, 300), color='auto', colorblind=False,
     shadow=True, outline='full', width=3.0, ortho=1.0,
     rotate=False, autoplay=False, box=True, controls=True,
-    pae=False, pae_size=300, scatter=False, scatter_size=300,
 )
 viewer.add_pdb("my_complex.cif")
 viewer.show()
+```
+
+### Live mode wiggle
+```python
+import numpy as np
+viewer = py2Dmol.view(autoplay=True)
+viewer.show()
+angles = np.linspace(0, 2 * np.pi, 20, endpoint=False)
+for frame in range(60):
+    coords = np.column_stack([
+        4 * np.sin(2 * angles + frame * 4 * np.pi/60),
+        12 * np.cos(angles + frame * np.pi/60),
+        12 * np.sin(angles + frame * np.pi/60)
+    ])
+    viewer.add(coords)
 ```
 
 ## Layouts & multiple objects
@@ -80,16 +83,6 @@ with py2Dmol.grid(cols=2, size=(300, 300)) as g:
 ## Scatter plot visualization (advanced)
 Visualize per-frame 2D data (RMSD vs energy, PCA, etc.) synced to the trajectory. Scatter highlights the current frame and is clickable to jump frames.
 
-**Enable/configure**
-```python
-viewer = py2Dmol.view(scatter=True, scatter_size=300)  # scatter_size is global; labels/limits are per-object
-# Set per-object labels/limits when adding data
-viewer.add_pdb("trajectory.pdb", scatter_config={"xlabel": "RMSD (Å)", "ylabel": "Energy (kcal/mol)", "xlim": [0, 10], "ylim": [-150, -90]})
-```
-Per-object settings (labels/limits) live in the object’s scatterConfig; only `scatter_size` is global.
-Supported formats: per-frame list/tuple/dict, CSV with header, or list/NumPy array via `add_pdb()` or `add()`.
-
-**Live per-frame**
 ```python
 # Trajectory with scatter points
 viewer = py2Dmol.view(scatter=True, scatter_size=300)
@@ -104,21 +97,13 @@ viewer.show()
 **CSV with trajectory**
 ```python
 viewer = py2Dmol.view(scatter=True)
-viewer.add_pdb('trajectory.pdb', scatter='data.csv')  # header supplies labels if present
+viewer.add_pdb('trajectory.pdb', scatter='data.csv')  # header used to set axis labels
 viewer.show()
 ```
 
-**Batch add**
-```python
-# coords: (batch, N, 3), scatter: (batch, 2) or list of pairs
-viewer.add(batch_coords, scatter=batch_scatter)
-```
+# Advanced
 
-### Scatter highlights
-- Frame sync, click-to-jump, playback highlight, past/current/future color layers.
-- Missing scatter for a frame inherits previous frame’s value.
-
-## Contact restraints (advanced)
+## Contact restraints
 Contacts are colored lines between residues; width follows weight.
 
 **File formats (`.cst`)**
@@ -128,13 +113,11 @@ Contacts are colored lines between residues; width follows weight.
 **Add contacts**
 ```python
 viewer = py2Dmol.view()
-viewer.add_pdb('structure.pdb')
-viewer.add_contacts('contacts.cst')            # last object
-viewer.add_contacts('contacts.cst', name="a")  # specific object
-viewer.add(coords, plddts, chains, types, contacts='contacts.cst')
+viewer.add_pdb('structure.pdb', contacts='contacts.cst')
+viewer.show()
 ```
 
-## Colors (advanced)
+## Colors
 Rendering uses a fixed 25% white mix to soften colors (DeepMind palette remains unlightened); there is no user-facing pastel/lightening setting.
 Five-level priority: Global (`view(color=...)`) < Object < Frame < Chain < Position.
 
