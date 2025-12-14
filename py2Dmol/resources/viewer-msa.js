@@ -1359,14 +1359,8 @@
         if (!msaQuerySequence) return null;
 
         // Check if extractChainSequences is available (from app.js)
-        const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function'
-            ? window.extractChainSequences
-            : null;
-
-        if (!extractChainSequences) return null;
-
-        // Extract chain sequence from structure
-        const chainSequences = extractChainSequences(frame);
+        // Extract chain sequences from structure using internal helper
+        const chainSequences = extractSequences(frame);
         const chainSequence = chainSequences[chainId];
         if (!chainSequence) return null;
 
@@ -4274,10 +4268,192 @@
     }
 
     // ============================================================================
-    // PUBLIC API
+    // EXTERNAL API
     // ============================================================================
 
-    window.MSAViewer = {
+    // Entropy color: low entropy (conserved, blue) to high entropy (variable, red/yellow)
+    function getEntropyColor(entropy, colorblind = false) {
+        // Clamp entropy to 0-1 range
+        const normalized = Math.max(0, Math.min(1, entropy || 0));
+        // Low entropy (conserved) -> blue (240), high entropy (variable) -> red (0) or yellow (60)
+        // We want conserved (low normalized) to be blue, variable (high normalized) to be red/yellow
+
+        // HSL Interpolation
+        // 0.0 (conserved) -> 240 (blue)
+        // 0.5 (mid) -> 120 (green)
+        // 1.0 (variable) -> 0 (red) or 60 (yellow)
+
+        let h;
+        if (normalized < 0.5) {
+            // 0.0 -> 240, 0.5 -> 120
+            h = 240 - (normalized * 2 * 120);
+        } else {
+            // 0.5 -> 120, 1.0 -> 0
+            h = 120 - ((normalized - 0.5) * 2 * 120);
+        }
+
+        // Colorblind adjustments
+        if (colorblind) {
+            // Use blue-orange/yellow scale
+            if (normalized < 0.5) {
+                // Blue range
+                h = 220 + (normalized * 2 * 20); // 220-240
+            } else {
+                // Orange/Yellow range
+                h = 40 - ((normalized - 0.5) * 2 * 40); // 40-0
+            }
+        }
+
+        // Convert HSV to RGB
+        const s = 1.0;
+        const v = 1.0;
+        const c = v * s;
+        const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+        const m = v - c;
+
+        let r, g, b;
+        if (h < 60) { r = c; g = x; b = 0; }
+        else if (h < 120) { r = x; g = c; b = 0; }
+        else if (h < 180) { r = 0; g = c; b = x; }
+        else if (h < 240) { r = 0; g = x; b = c; }
+        else if (h < 300) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+
+        return {
+            r: Math.round((r + m) * 255),
+            g: Math.round((g + m) * 255),
+            b: Math.round((b + m) * 255)
+        };
+    }
+
+    /**
+     * Extract chain sequences from frame data
+     * @param {Object} frame - Frame data with chains, position_names, residue_numbers
+     * @returns {Object} - Map of chainId -> sequence string
+     */
+    function extractSequences(frame) {
+        if (!frame || !frame.chains || !frame.position_names) {
+            return {};
+        }
+
+        const chainSequences = {};
+        const chainPositionData = {}; // chainId -> array of {positionName, residueNum}
+
+        // Group positions by chain
+        for (let i = 0; i < frame.chains.length; i++) {
+            const chainId = frame.chains[i];
+            const positionName = frame.position_names[i];
+            const residueNum = frame.residue_numbers ? frame.residue_numbers[i] : i;
+            const positionType = frame.position_types ? frame.position_types[i] : 'P';
+
+            // Only process protein positions (skip ligands, nucleic acids for now)
+            if (positionType !== 'P') continue;
+
+            if (!chainPositionData[chainId]) {
+                chainPositionData[chainId] = [];
+            }
+            chainPositionData[chainId].push({ positionName, residueNum });
+        }
+
+        // Convert position names to single-letter codes for each chain
+        for (const chainId of Object.keys(chainPositionData)) {
+            const positionData = chainPositionData[chainId];
+            // Sort by residue number to maintain order
+            positionData.sort((a, b) => a.residueNum - b.residueNum);
+
+            // Convert to sequence string
+            const sequence = positionData.map(p => {
+                const positionName = (p.positionName || '').toString().trim().toUpperCase();
+                // Handle modified positions - try to get standard name
+                let standardPositionName = positionName;
+                if (typeof getStandardResidueName === 'function') {
+                    standardPositionName = getStandardResidueName(positionName).toUpperCase();
+                }
+                // Use global RESIDUE_TO_AA if available, otherwise X
+                return (window.RESIDUE_TO_AA && window.RESIDUE_TO_AA[standardPositionName]) || 'X';
+            }).join('');
+
+            if (sequence.length > 0) {
+                chainSequences[chainId] = sequence;
+            }
+        }
+
+        return chainSequences;
+    }
+
+    /**
+     * Map entropy values from sequence MSA logic to structure positions.
+     * @param {Object} objectData - The 3D molecule object data (contains frames, msa)
+     * @param {Number} frameIndex - Index of the current frame to map to
+     * @return {Array<number>} Entropy vector aligned to `frame.chains` length (-1 for no data)
+     */
+    function mapEntropyToStructure(objectData, frameIndex = 0) {
+        if (!objectData || !objectData.msa || !objectData.msa.msasBySequence || !objectData.msa.chainToSequence) {
+            return null;
+        }
+
+        const frame = objectData.frames[frameIndex];
+        if (!frame || !frame.chains) {
+            return null;
+        }
+
+        // Initialize entropy vector with -1 for all positions (full molecule length)
+        const positionCount = frame.chains.length;
+        const entropyVector = new Array(positionCount).fill(-1);
+
+        // Extract chain sequences from structure using internal helper
+        const chainSequences = extractSequences(frame);
+
+        // For each chain, get its MSA and map entropy values
+        for (const [chainId, querySeq] of Object.entries(objectData.msa.chainToSequence)) {
+            const msaEntry = objectData.msa.msasBySequence[querySeq];
+            if (!msaEntry || !msaEntry.msaData || !msaEntry.msaData.entropy) {
+                continue; // No entropy data for this chain's MSA
+            }
+
+            const msaData = msaEntry.msaData;
+            const msaEntropy = msaData.entropy; // Pre-computed entropy array
+
+            const chainSequence = chainSequences[chainId];
+            if (!chainSequence) {
+                continue; // Chain not found in frame
+            }
+
+            // Find representative positions for this chain (position_types === 'P')
+            const allChainPositions = []; // Array of all position indices for this chain
+
+            for (let i = 0; i < positionCount; i++) {
+                if (frame.chains[i] === chainId && frame.position_types && frame.position_types[i] === 'P') {
+                    allChainPositions.push(i);
+                }
+            }
+
+            if (allChainPositions.length === 0) {
+                continue; // No representative positions found
+            }
+
+            // Sort positions by residue number to match sequence order
+            allChainPositions.sort((a, b) => {
+                const residueNumA = frame.residue_numbers ? frame.residue_numbers[a] : a;
+                const residueNumB = frame.residue_numbers ? frame.residue_numbers[b] : b;
+                return residueNumA - residueNumB;
+            });
+
+            // Direct 1:1 mapping: msaEntropy[i] -> allChainPositions[i]
+            const mapLength = Math.min(msaEntropy.length, allChainPositions.length);
+            for (let i = 0; i < mapLength; i++) {
+                const positionIndex = allChainPositions[i];
+                if (positionIndex < entropyVector.length) {
+                    entropyVector[positionIndex] = msaEntropy[i];
+                }
+            }
+        }
+
+        return entropyVector;
+    }
+
+    // Export module
+    window.MSA = {
         setCallbacks: function (cb) {
             callbacks = Object.assign({}, callbacks, cb);
         },
@@ -4709,7 +4885,12 @@
         buildPSSMView: buildPSSMView,
         buildLogoView: buildLogoView,
         computeMSAProperties: computeMSAProperties,
-        extractSubset: extractMSASubset
+        extractSubset: extractMSASubset,
+
+        // MSA utility functions (moved from app.js and viewer-mol.js)
+        extractSequences: extractSequences,
+        getEntropyColor: getEntropyColor,
+        mapEntropyToStructure: mapEntropyToStructure
     };
 
     // ============================================================================
@@ -4899,18 +5080,8 @@
             msaToChains: {}
         };
 
-        // Check if extractChainSequences is available (from global window)
-        const extractChainSequences = typeof window !== 'undefined' && typeof window.extractChainSequences === 'function'
-            ? window.extractChainSequences
-            : null;
-
-        if (!extractChainSequences) {
-            console.warn("extractChainSequences not available, cannot extract MSA data");
-            return;
-        }
-
-        // Extract chain sequences from extracted frame
-        const extractedChainSequences = extractChainSequences(extractedFrame);
+        // Extract chain sequences from extracted frame using internal helper
+        const extractedChainSequences = extractSequences(extractedFrame);
 
         // For each chain in the original MSA
         for (const [chainId, querySeq] of Object.entries(sourceObject.msa.chainToSequence)) {
@@ -4925,7 +5096,7 @@
             const originalQuerySequence = originalMSAData.querySequence; // Query sequence has no gaps (removed during parsing)
 
             // Extract chain sequence from original frame
-            const originalChainSequences = extractChainSequences(frame);
+            const originalChainSequences = extractSequences(frame);
             const originalChainSequence = originalChainSequences[chainId];
             if (!originalChainSequence) continue;
 

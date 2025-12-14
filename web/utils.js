@@ -2796,3 +2796,22 @@ function buildBioFromCIF(text) {
         chemCompMap: chemCompMap
     };
 }
+// ============================================================================
+// RESIDUE MAPPING UTILITIES
+// ============================================================================
+
+/**
+ * Residue name to single-letter amino acid code mapping
+ */
+const RESIDUE_TO_AA = {
+    ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLU: 'E', GLN: 'Q', GLY: 'G',
+    HIS: 'H', ILE: 'I', LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P', SER: 'S',
+    THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V', SEC: 'U', PYL: 'O',
+    // common modified residues → canonical letters
+    MSE: 'M', HSD: 'H', HSE: 'H', HID: 'H', HIE: 'H', HIP: 'H'
+};
+
+// Expose globally
+if (typeof window !== 'undefined') {
+    window.RESIDUE_TO_AA = RESIDUE_TO_AA;
+}
