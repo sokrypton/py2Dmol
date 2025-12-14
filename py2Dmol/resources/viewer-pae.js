@@ -530,9 +530,92 @@
                 this.ctx.drawImage(overlayCanvas, 0, 0);
             }
 
-            if (this.mainRenderer && this.mainRenderer.isLive && this.paeData) {
-                // Live mode rendering logic if needed, but standard logic above covers it
+            // 4. Draw selection boxes (outlines)
+            this._drawSelectionBoxes(activeBoxes, previewBox, n, this.size / n);
+
+            // 5. Draw chain boundary lines
+            this._drawChainBoundaries(n, this.size / n);
+        }
+
+        // Helper to draw selection boxes around selected regions
+        _drawSelectionBoxes(activeBoxes, previewBox, n, cellSize) {
+            this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)'; // Black box
+            this.ctx.lineWidth = 2;
+            this.ctx.setLineDash([]);
+
+            // Draw active boxes
+            for (const box of activeBoxes) {
+                const i_start = Math.min(box.i_start, box.i_end);
+                const i_end = Math.max(box.i_start, box.i_end);
+                const j_start = Math.min(box.j_start, box.j_end);
+                const j_end = Math.max(box.j_start, box.j_end);
+
+                const x1 = Math.floor(j_start * cellSize);
+                const y1 = Math.floor(i_start * cellSize);
+                const x2 = Math.floor((j_end + 1) * cellSize);
+                const y2 = Math.floor((i_end + 1) * cellSize);
+
+                this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
             }
+
+            // Draw preview box if dragging
+            if (previewBox && previewBox.x1 !== -1) {
+                const i_start = Math.min(previewBox.y1, previewBox.y2);
+                const i_end = Math.max(previewBox.y1, previewBox.y2);
+                const j_start = Math.min(previewBox.x1, previewBox.x2);
+                const j_end = Math.max(previewBox.x1, previewBox.x2);
+
+                const x1 = Math.floor(j_start * cellSize);
+                const y1 = Math.floor(i_start * cellSize);
+                const x2 = Math.floor((j_end + 1) * cellSize);
+                const y2 = Math.floor((i_end + 1) * cellSize);
+
+                // Dashed line for preview
+                this.ctx.setLineDash([5, 5]);
+                this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)'; // Lighter black for preview
+                this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+                this.ctx.setLineDash([]);
+            }
+        }
+
+        // Helper to draw chain boundary lines in PAE plot
+        _drawChainBoundaries(n, cellSize) {
+            const renderer = this.mainRenderer;
+            if (!renderer.chains || renderer.chains.length === 0) return;
+
+            const boundaries = new Set(); // Set of PAE positions where chain changes
+
+            // Find chain boundaries
+            for (let r = 0; r < n - 1 && r < renderer.chains.length - 1; r++) {
+                const chain1 = renderer.chains[r];
+                const chain2 = renderer.chains[r + 1];
+
+                if (chain1 !== chain2) {
+                    // Chain boundary at position r+1 (draw line before this position)
+                    boundaries.add(r + 1);
+                }
+            }
+
+            if (boundaries.size === 0) return; // No boundaries to draw
+
+            // Draw vertical and horizontal lines at chain boundaries
+            this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)'; // More visible black lines
+            this.ctx.lineWidth = 2;
+            this.ctx.setLineDash([]); // Solid lines
+
+            this.ctx.beginPath();
+            for (const pos of boundaries) {
+                const coord = Math.floor(pos * cellSize);
+
+                // Vertical line
+                this.ctx.moveTo(coord, 0);
+                this.ctx.lineTo(coord, this.size);
+
+                // Horizontal line
+                this.ctx.moveTo(0, coord);
+                this.ctx.lineTo(this.size, coord);
+            }
+            this.ctx.stroke();
         }
     }
 
