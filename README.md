@@ -28,13 +28,13 @@ viewer.show()
 ```
 
 ### Load a PDB (live)
-cell #1
+#### cell #1
 ```python
 import py2Dmol
 viewer = py2Dmol.view()
 viewer.show()
 ```
-cell #2 (cell #1 will be updated)
+#### cell #2
 ```python
 viewer.add_pdb('6MRR')
 ```
