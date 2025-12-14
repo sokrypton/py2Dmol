@@ -749,7 +749,7 @@
                     const i_start = Math.min(box.i_start, box.i_end);
                     const i_end = Math.max(box.i_start, box.i_end);
                     const j_start = Math.min(box.j_start, box.j_end);
-                    const j_end = Math.max(box.i_start, box.i_end);
+                    const j_end = Math.max(box.j_start, box.j_end);
                     drawMaskRegion(i_start, i_end, j_start, j_end);
                 }
 
