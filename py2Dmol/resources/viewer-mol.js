@@ -2619,6 +2619,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             this.currentFrame = frameIndex;
             this.viewerState.currentFrame = frameIndex;
+            
+            // Invalidate shadow cache when frame changes (different geometry needs new shadows)
+            this._invalidateShadowCache();
+            this.lastShadowRotationMatrix = null;
 
             // Commit 4: Make setFrame overlay-aware
             // In overlay mode, DON'T reload frame data (would destroy merged data)
@@ -3837,6 +3841,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         setCoords(coords, plddts, chains, positionTypes, hasPAE = false, positionNames, residueNumbers, skipRender = false, bonds = null) {
+            // Invalidate shadow cache when coordinates change (different geometry needs new shadows)
+            this._invalidateShadowCache();
+            this.lastShadowRotationMatrix = null;
+            
             this.coords = coords;
 
             // Set bonds from parameter or from object's stored bonds
