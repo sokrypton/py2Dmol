@@ -6882,6 +6882,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
             
+            // Invalidate shadow cache since new frames may have different geometry
+            renderer._invalidateShadowCache();
+            renderer.lastShadowRotationMatrix = null;
+            
             // Update UI once after all frames added
             renderer.updateUIControls();
             
