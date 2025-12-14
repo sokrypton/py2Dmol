@@ -6889,6 +6889,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (window.PAE) {
                 window.PAE.updateVisibility(renderer);
             }
+            
+            // Trigger render to update shadows and display new frame
+            if (!renderer.isPlaying) {
+                renderer.render('handleIncrementalStateUpdate');
+            }
         }
 
         // Apply changed metadata fields
