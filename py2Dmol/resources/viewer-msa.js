@@ -52,7 +52,7 @@
     // Minimal canvas2svg implementation for MSA viewer
     // Supports: fillRect, strokeRect, fillText, clip, save/restore
 
-    function MSACanvas2SVG(width, height) {
+    function SimpleCanvas2SVG(width, height) {
         this.width = width;
         this.height = height;
         this.strokeStyle = '#000000';
@@ -68,7 +68,7 @@
         this.currentTransform = { tx: 0, ty: 0, sx: 1, sy: 1, rotation: 0 };
     }
 
-    MSACanvas2SVG.prototype.fillRect = function (x, y, w, h) {
+    SimpleCanvas2SVG.prototype.fillRect = function (x, y, w, h) {
         this.operations.push({
             type: 'rect',
             x: x, y: y, width: w, height: h,
@@ -77,7 +77,7 @@
         });
     };
 
-    MSACanvas2SVG.prototype.strokeRect = function (x, y, w, h) {
+    SimpleCanvas2SVG.prototype.strokeRect = function (x, y, w, h) {
         this.operations.push({
             type: 'strokeRect',
             x: x, y: y, width: w, height: h,
@@ -87,7 +87,7 @@
         });
     };
 
-    MSACanvas2SVG.prototype.fillText = function (text, x, y) {
+    SimpleCanvas2SVG.prototype.fillText = function (text, x, y) {
         // Store transform state at time of fillText call
         // Note: drawScaledLetter draws at (0,0) after translate/scale, so x,y will be 0,0
         // The transform contains the actual position (tx, ty) and scale (sx, sy)
@@ -110,21 +110,21 @@
         });
     };
 
-    MSACanvas2SVG.prototype.beginPath = function () {
+    SimpleCanvas2SVG.prototype.beginPath = function () {
         this.currentPath = [];
     };
 
-    MSACanvas2SVG.prototype.moveTo = function (x, y) {
+    SimpleCanvas2SVG.prototype.moveTo = function (x, y) {
         if (!this.currentPath) this.beginPath();
         this.currentPath.push({ type: 'M', x: x, y: y });
     };
 
-    MSACanvas2SVG.prototype.lineTo = function (x, y) {
+    SimpleCanvas2SVG.prototype.lineTo = function (x, y) {
         if (!this.currentPath) this.beginPath();
         this.currentPath.push({ type: 'L', x: x, y: y });
     };
 
-    MSACanvas2SVG.prototype.stroke = function () {
+    SimpleCanvas2SVG.prototype.stroke = function () {
         if (!this.currentPath || this.currentPath.length === 0) return;
 
         let pathData = '';
@@ -144,12 +144,12 @@
         this.currentPath = null;
     };
 
-    MSACanvas2SVG.prototype.rect = function (x, y, w, h) {
+    SimpleCanvas2SVG.prototype.rect = function (x, y, w, h) {
         // Used for clipping
         this.currentPath = { type: 'rect', x: x, y: y, width: w, height: h };
     };
 
-    MSACanvas2SVG.prototype.clip = function () {
+    SimpleCanvas2SVG.prototype.clip = function () {
         if (this.currentPath && this.currentPath.type === 'rect') {
             this.currentClip = {
                 type: 'rect',
@@ -162,12 +162,12 @@
         }
     };
 
-    MSACanvas2SVG.prototype.save = function () {
+    SimpleCanvas2SVG.prototype.save = function () {
         this.clipStack.push(this.currentClip);
         this.transformStack.push({ ...this.currentTransform });
     };
 
-    MSACanvas2SVG.prototype.restore = function () {
+    SimpleCanvas2SVG.prototype.restore = function () {
         if (this.clipStack.length > 0) {
             this.currentClip = this.clipStack.pop();
         } else {
@@ -180,37 +180,37 @@
         }
     };
 
-    MSACanvas2SVG.prototype.clearRect = function () {
+    SimpleCanvas2SVG.prototype.clearRect = function () {
         // Ignore - we add white background in SVG
     };
 
     // Transform methods - track transforms and apply to operations
-    MSACanvas2SVG.prototype.translate = function (tx, ty) {
+    SimpleCanvas2SVG.prototype.translate = function (tx, ty) {
         this.currentTransform.tx += tx * this.currentTransform.sx;
         this.currentTransform.ty += ty * this.currentTransform.sy;
     };
 
-    MSACanvas2SVG.prototype.scale = function (sx, sy) {
+    SimpleCanvas2SVG.prototype.scale = function (sx, sy) {
         this.currentTransform.sx *= sx;
         this.currentTransform.sy *= (sy !== undefined ? sy : sx);
     };
 
-    MSACanvas2SVG.prototype.rotate = function (angle) {
+    SimpleCanvas2SVG.prototype.rotate = function (angle) {
         this.currentTransform.rotation += angle;
     };
 
-    MSACanvas2SVG.prototype.setTransform = function () {
+    SimpleCanvas2SVG.prototype.setTransform = function () {
         // Reset transform
         this.currentTransform = { tx: 0, ty: 0, sx: 1, sy: 1, rotation: 0 };
     };
 
-    MSACanvas2SVG.prototype.fill = function () { };
+    SimpleCanvas2SVG.prototype.fill = function () { };
 
     // measureText - needed for getGlyphMetrics
     // Create a temporary canvas context for text measurement
     let measureTextCanvas = null;
     let measureTextCtx = null;
-    MSACanvas2SVG.prototype.measureText = function (text) {
+    SimpleCanvas2SVG.prototype.measureText = function (text) {
         // Use a temporary canvas context for measurement
         if (!measureTextCanvas) {
             measureTextCanvas = document.createElement('canvas');
@@ -249,7 +249,7 @@
     }
 
     // Generate SVG
-    MSACanvas2SVG.prototype.getSerializedSvg = function () {
+    SimpleCanvas2SVG.prototype.getSerializedSvg = function () {
         let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}" viewBox="0 0 ${this.width} ${this.height}">\n`;
         svg += `  <rect width="${this.width}" height="${this.height}" fill="#ffffff"/>\n`;
 
@@ -4495,7 +4495,7 @@
             const fullWidth = LABEL_WIDTH + (displayedMSA.queryLength * CHAR_WIDTH);
 
             // Create SVG context with full width
-            const svgCtx = new MSACanvas2SVG(fullWidth, logicalHeight);
+            const svgCtx = new SimpleCanvas2SVG(fullWidth, logicalHeight);
 
             // Render to SVG context (full view, no scrolling)
             renderLogoToContext(svgCtx, fullWidth, logicalHeight, true);
@@ -4519,7 +4519,7 @@
             const fullWidth = LABEL_WIDTH + (displayedMSA.queryLength * CHAR_WIDTH);
 
             // Create SVG context with full width
-            const svgCtx = new MSACanvas2SVG(fullWidth, logicalHeight);
+            const svgCtx = new SimpleCanvas2SVG(fullWidth, logicalHeight);
 
             // Render to SVG context (full view, no scrolling)
             renderPSSMToContext(svgCtx, fullWidth, logicalHeight, true);

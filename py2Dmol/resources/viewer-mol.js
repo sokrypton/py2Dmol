@@ -51,7 +51,7 @@ function getAllValidColorModes() {
 (function () {
     'use strict';
 
-    function MolCanvas2SVG(width, height) {
+    function SimpleCanvas2SVG(width, height) {
         this.width = width;
         this.height = height;
         this.strokeStyle = '#000000';
@@ -63,28 +63,28 @@ function getAllValidColorModes() {
     }
 
     // Path operations
-    MolCanvas2SVG.prototype.beginPath = function () {
+    SimpleCanvas2SVG.prototype.beginPath = function () {
         this.currentPath = [];
     };
 
-    MolCanvas2SVG.prototype.moveTo = function (x, y) {
+    SimpleCanvas2SVG.prototype.moveTo = function (x, y) {
         if (!this.currentPath) this.beginPath();
         this.currentPath.push({ type: 'M', x: x, y: y });
     };
 
-    MolCanvas2SVG.prototype.lineTo = function (x, y) {
+    SimpleCanvas2SVG.prototype.lineTo = function (x, y) {
         if (!this.currentPath) this.beginPath();
         this.currentPath.push({ type: 'L', x: x, y: y });
     };
 
-    MolCanvas2SVG.prototype.arc = function (x, y, radius, startAngle, endAngle) {
+    SimpleCanvas2SVG.prototype.arc = function (x, y, radius, startAngle, endAngle) {
         if (!this.currentPath) this.beginPath();
         // py2Dmol only uses full circles (0 to 2π)
         this.currentPath.push({ type: 'CIRCLE', x: x, y: y, radius: radius });
     };
 
     // Drawing operations
-    MolCanvas2SVG.prototype.stroke = function () {
+    SimpleCanvas2SVG.prototype.stroke = function () {
         if (!this.currentPath || this.currentPath.length === 0) return;
 
         let pathData = '';
@@ -104,7 +104,7 @@ function getAllValidColorModes() {
         this.currentPath = null;
     };
 
-    MolCanvas2SVG.prototype.fill = function () {
+    SimpleCanvas2SVG.prototype.fill = function () {
         if (!this.currentPath || this.currentPath.length === 0) return;
 
         // Check if single full circle (positions)
@@ -134,7 +134,7 @@ function getAllValidColorModes() {
         this.currentPath = null;
     };
 
-    MolCanvas2SVG.prototype.fillRect = function (x, y, w, h) {
+    SimpleCanvas2SVG.prototype.fillRect = function (x, y, w, h) {
         this.operations.push({
             type: 'rect',
             x: x, y: y, width: w, height: h,
@@ -142,17 +142,17 @@ function getAllValidColorModes() {
         });
     };
 
-    MolCanvas2SVG.prototype.clearRect = function () {
+    SimpleCanvas2SVG.prototype.clearRect = function () {
         // Ignore - we add white background in SVG
     };
 
     // Stub methods (not used in rendering)
-    MolCanvas2SVG.prototype.save = function () { };
-    MolCanvas2SVG.prototype.restore = function () { };
-    MolCanvas2SVG.prototype.scale = function () { };
-    MolCanvas2SVG.prototype.setTransform = function () { };
-    MolCanvas2SVG.prototype.translate = function () { };
-    MolCanvas2SVG.prototype.rotate = function () { };
+    SimpleCanvas2SVG.prototype.save = function () { };
+    SimpleCanvas2SVG.prototype.restore = function () { };
+    SimpleCanvas2SVG.prototype.scale = function () { };
+    SimpleCanvas2SVG.prototype.setTransform = function () { };
+    SimpleCanvas2SVG.prototype.translate = function () { };
+    SimpleCanvas2SVG.prototype.rotate = function () { };
 
     // Color conversion: rgb(r,g,b) -> #rrggbb
     function rgbToHex(color) {
@@ -168,7 +168,7 @@ function getAllValidColorModes() {
     }
 
     // Generate SVG
-    MolCanvas2SVG.prototype.getSerializedSvg = function () {
+    SimpleCanvas2SVG.prototype.getSerializedSvg = function () {
         let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}" viewBox="0 0 ${this.width} ${this.height}">\n`;
         svg += `  <rect width="${this.width}" height="${this.height}" fill="#ffffff"/>\n`;
 
@@ -191,10 +191,10 @@ function getAllValidColorModes() {
 
     // Export as C2S for compatibility with existing code
     if (typeof window !== 'undefined') {
-        window.C2S = MolCanvas2SVG;
+        window.C2S = SimpleCanvas2SVG;
     }
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = MolCanvas2SVG;
+        module.exports = SimpleCanvas2SVG;
     }
 
 })();
@@ -2844,9 +2844,62 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             const object = this.objectsData[name];
+            const frames = object.frames || [];
 
-            // Delegate data extraction and rendering to the scatter viewer
-            this.scatterRenderer.loadFromObject(object);
+            if (frames.length === 0) {
+                return;
+            }
+
+            // If object truly has no scatter data, note it explicitly
+            // (no-op here; scatter presence is derived from frames below)
+
+            // Collect scatter data from all frames (same logic as initialization)
+            const xData = [];
+            const yData = [];
+            let lastScatter = null;
+
+            for (let i = 0; i < frames.length; i++) {
+                const frame = frames[i];
+                const scatterPoint = frame.scatter !== undefined ? frame.scatter : lastScatter;
+
+                if (scatterPoint && Array.isArray(scatterPoint) && scatterPoint.length === 2) {
+                    xData.push(scatterPoint[0]);
+                    yData.push(scatterPoint[1]);
+                    lastScatter = scatterPoint;
+                } else {
+                    // Frame has no scatter point - use NaN for gap
+                    xData.push(NaN);
+                    yData.push(NaN);
+                }
+            }
+
+            // Ensure scatter_config is initialized (labels/limits)
+            const cfg = object.scatterConfig || {};
+            cfg.xlabel = cfg.xlabel || 'X';
+            cfg.ylabel = cfg.ylabel || 'Y';
+            cfg.xlim = cfg.xlim || null;
+            cfg.ylim = cfg.ylim || null;
+            object.scatterConfig = cfg;
+
+            const xlabel = cfg.xlabel;
+            const ylabel = cfg.ylabel;
+            const xlim = cfg.xlim;
+            const ylim = cfg.ylim;
+
+            // Update scatter renderer with new data
+            this.scatterRenderer.setData(xData, yData, xlabel, ylabel);
+
+            // Apply limits from object-specific metadata
+            if (xlim && Array.isArray(xlim) && xlim.length === 2) {
+                this.scatterRenderer.xMin = xlim[0];
+                this.scatterRenderer.xMax = xlim[1];
+            }
+            if (ylim && Array.isArray(ylim) && ylim.length === 2) {
+                this.scatterRenderer.yMin = ylim[0];
+                this.scatterRenderer.yMax = ylim[1];
+            }
+
+            this.scatterRenderer.render();
         }
 
         // Update scatter container visibility based on current object's scatter data
