@@ -2561,13 +2561,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.updateUIControls();
 
             // Force sequence viewer to rebuild for the new object
-            if (typeof window !== 'undefined' && window.SequenceViewer && window.SequenceViewer.buildSequenceView) {
+            if (typeof window !== 'undefined' && window.SEQ && window.SEQ.buildView) {
                 // Clear sequence viewer cache to force rebuild
-                if (window.SequenceViewer.clear) {
-                    window.SequenceViewer.clear();
+                if (window.SEQ.clear) {
+                    window.SEQ.clear();
                 }
                 // Rebuild sequence view for the new extracted object
-                window.SequenceViewer.buildSequenceView();
+                window.SEQ.buildView();
             }
 
         }
@@ -5239,8 +5239,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.displayHeight = parseInt(this.canvas.style.height) || this.canvas.height;
 
             // Update highlight overlay canvas size to match (managed by sequence viewer)
-            if (window.SequenceViewer && window.SequenceViewer.updateHighlightOverlaySize) {
-                window.SequenceViewer.updateHighlightOverlaySize();
+            if (window.SEQ && window.SEQ.updateHighlightOverlaySize) {
+                window.SEQ.updateHighlightOverlaySize();
             }
         }
 
@@ -6059,8 +6059,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Draw highlights on overlay canvas (doesn't require full render)
             // Highlight overlay is now managed by sequence viewer
             // Skip drawing highlights during dragging to prevent interference
-            if (!this.isDragging && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-                window.SequenceViewer.drawHighlights();
+            if (!this.isDragging && window.SEQ && window.SEQ.drawHighlights) {
+                window.SEQ.drawHighlights();
             }
         }
 

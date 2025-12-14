@@ -120,11 +120,11 @@ function initializeApp() {
     }
 
     // Initialize highlight overlay after viewer is created
-    if (viewerApi?.renderer && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+    if (viewerApi?.renderer && window.SEQ && window.SEQ.drawHighlights) {
         // Trigger initialization by calling drawHighlights (which will initialize if needed)
         const renderer = viewerApi.renderer;
         if (renderer.canvas) {
-            window.SequenceViewer.drawHighlights();
+            window.SEQ.drawHighlights();
         }
     }
 
@@ -163,8 +163,8 @@ function refreshEntropyColors() {
         renderer.render('app.js: refreshEntropyColors');
         document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
 
-        if (typeof updateSequenceViewColors === 'function') {
-            updateSequenceViewColors();
+        if (typeof updateColors === 'function') {
+            window.SEQ?.updateColors();
         }
     }
 }
@@ -503,32 +503,32 @@ function setupEventListeners() {
 
     // Helper function to sync dropdown with current mode
     function updateSequenceModeDropdown() {
-        if (sequenceModeSelect && window.SequenceViewer) {
-            const currentMode = window.SequenceViewer.getSequenceViewMode ? window.SequenceViewer.getSequenceViewMode() : true;
+        if (sequenceModeSelect && window.SEQ) {
+            const currentMode = window.SEQ.getMode ? window.SEQ.getMode() : true;
             sequenceModeSelect.value = currentMode ? 'sequence' : 'chain';
         }
     }
 
-    if (sequenceModeSelect && window.SequenceViewer) {
+    if (sequenceModeSelect && window.SEQ) {
         // Set initial value
-        const initialMode = window.SequenceViewer.getSequenceViewMode ? window.SequenceViewer.getSequenceViewMode() : true;
+        const initialMode = window.SEQ.getMode ? window.SEQ.getMode() : true;
         sequenceModeSelect.value = initialMode ? 'sequence' : 'chain';
 
         // Handle mode change
         sequenceModeSelect.addEventListener('change', (e) => {
             const mode = e.target.value;
             const sequenceMode = mode === 'sequence';
-            if (window.SequenceViewer) {
-                window.SequenceViewer.setSequenceViewMode(sequenceMode);
+            if (window.SEQ) {
+                window.SEQ.setMode(sequenceMode);
             }
-            // Always try to rebuild - buildSequenceView() will return early if no data is available
-            buildSequenceView();
+            // Always try to rebuild - window.SEQ?.buildView() will return early if no data is available
+            window.SEQ?.buildView();
         });
     }
 
     // Initialize sequence mode to enabled by default
-    if (window.SequenceViewer) {
-        window.SequenceViewer.setSequenceViewMode(true);
+    if (window.SEQ) {
+        window.SEQ.setMode(true);
     }
 
     // Initialize dropdown state to reflect default sequence mode
@@ -557,7 +557,7 @@ function setupEventListeners() {
                     const object = renderer.objectsData[objectName];
                     if (object.frames && object.frames.length > currentFrame) {
                         // Rebuild sequence view if sequence changed
-                        buildSequenceView();
+                        window.SEQ?.buildView();
                     }
                 }
             }
@@ -667,8 +667,8 @@ function setupEventListeners() {
     // Listen for the custom event dispatched by the renderer when color settings change
     document.addEventListener('py2dmol-color-change', () => {
         // Update colors in sequence view when color mode changes
-        updateSequenceViewColors();
-        updateSequenceViewSelectionState();
+        window.SEQ?.updateColors();
+        window.SEQ?.updateSelection();
         // Update PAE viewer colors when color mode changes
         if (viewerApi?.renderer?.paeRenderer) {
             viewerApi.renderer.paeRenderer.render();
@@ -680,7 +680,7 @@ function setupEventListeners() {
         // Sync chain pills with selection model
         syncChainPillsToSelection();
         // Update sequence view
-        updateSequenceViewSelectionState();
+        window.SEQ?.updateSelection();
         // Update MSA selection mapping and view
         applySelectionToMSA();
     });
@@ -792,10 +792,10 @@ function handleObjectChange() {
     }
 
     // Clear preview selection when switching objects
-    if (window.SequenceViewer?.clearPreview) window.SequenceViewer.clearPreview();
+    if (window.SEQ?.clearPreview) window.SEQ.clearPreview();
 
     // Rebuild sequence view for the new object
-    buildSequenceView();
+    window.SEQ?.buildView();
     // (no defaulting here — renderer already restored the object's saved selection)
 
     // Update MSA chain selector and container visibility for index.html
@@ -2249,8 +2249,8 @@ function applyPendingObjects() {
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
         if (r?.updateScatterContainerVisibility) r.updateScatterContainerVisibility();
         if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
-        if (window.SequenceViewer?.clearPreview) window.SequenceViewer.clearPreview();
-        if (typeof buildSequenceView === 'function') buildSequenceView();
+        if (window.SEQ?.clearPreview) window.SEQ.clearPreview();
+        if (typeof buildView === 'function') window.SEQ?.buildView();
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
         if (r?.updateUIControls) r.updateUIControls();
@@ -2269,8 +2269,8 @@ function applyPendingObjects() {
         if (objectSelect) objectSelect.value = snapshot.object;
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
         if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
-        if (window.SequenceViewer?.clearPreview) window.SequenceViewer.clearPreview();
-        if (typeof buildSequenceView === 'function') buildSequenceView();
+        if (window.SEQ?.clearPreview) window.SEQ.clearPreview();
+        if (typeof buildView === 'function') window.SEQ?.buildView();
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
     } else {
@@ -2434,9 +2434,9 @@ function toggleChainResidues(chain) {
 // [NEW] This function updates the chain buttons and sequence view
 // based on the renderer's selection model
 function syncChainPillsToSelection() {
-    // Chain buttons and sequence are now drawn on canvas, update via updateSequenceViewSelectionState
+    // Chain buttons and sequence are now drawn on canvas, update via updateSelection
     // The function will check internally if canvas data exists
-    updateSequenceViewSelectionState();
+    window.SEQ?.updateSelection();
 }
 
 function applySelection(previewPositions = null) {
@@ -2475,7 +2475,7 @@ function applySelection(previewPositions = null) {
         // Keep current PAE boxes and mode
     });
 
-    // Note: updateSequenceViewSelectionState will be called via event listener
+    // Note: updateSelection will be called via event listener
 }
 
 
@@ -2484,8 +2484,8 @@ function highlightPosition(positionIndex) {
         viewerApi.renderer.highlightedAtom = positionIndex;
         viewerApi.renderer.highlightedAtoms = null; // Clear multi-position highlight
         // Draw highlights on overlay canvas without re-rendering main scene
-        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-            window.SequenceViewer.drawHighlights();
+        if (window.SEQ && window.SEQ.drawHighlights) {
+            window.SEQ.drawHighlights();
         }
     }
 }
@@ -2495,8 +2495,8 @@ function highlightPositions(positionIndices) {
         viewerApi.renderer.highlightedAtoms = positionIndices instanceof Set ? positionIndices : new Set(positionIndices);
         viewerApi.renderer.highlightedAtom = null; // Clear single position highlight
         // Draw highlights on overlay canvas without re-rendering main scene
-        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-            window.SequenceViewer.drawHighlights();
+        if (window.SEQ && window.SEQ.drawHighlights) {
+            window.SEQ.drawHighlights();
         }
     }
 }
@@ -2506,8 +2506,8 @@ function clearHighlight() {
         viewerApi.renderer.highlightedAtom = null;
         viewerApi.renderer.highlightedAtoms = null;
         // Clear highlights on overlay canvas without re-rendering main scene
-        if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-            window.SequenceViewer.drawHighlights();
+        if (window.SEQ && window.SEQ.drawHighlights) {
+            window.SEQ.drawHighlights();
         }
     }
 }
@@ -2583,8 +2583,8 @@ function clearAllObjects() {
 
 // Sequence viewer is now in viewer-seq.js module
 // Set up callbacks to connect module to web app functions
-if (window.SequenceViewer) {
-    window.SequenceViewer.setCallbacks({
+if (window.SEQ) {
+    window.SEQ.setCallbacks({
         getRenderer: () => viewerApi?.renderer || null,
         getObjectSelect: () => document.getElementById('objectSelect'),
         toggleChainResidues: toggleChainResidues,
@@ -2598,14 +2598,14 @@ if (window.SequenceViewer) {
     // Initialize highlight overlay after viewer is created
     // This will be called after initializePy2DmolViewer completes
     function initializeHighlightOverlayIfNeeded() {
-        if (viewerApi?.renderer && window.SequenceViewer && window.SequenceViewer.drawHighlights) {
+        if (viewerApi?.renderer && window.SEQ && window.SEQ.drawHighlights) {
             // Trigger initialization by calling drawHighlights (which will initialize if needed)
             // But first make sure we have a renderer with canvas
             const renderer = viewerApi.renderer;
             if (renderer.canvas) {
                 // Force initialization by calling the internal function
                 // We'll do this by calling drawHighlights which will lazy-init
-                window.SequenceViewer.drawHighlights();
+                window.SEQ.drawHighlights();
             }
         }
     }
@@ -3247,25 +3247,6 @@ if (isIndexHTML) {
 }
 
 // MSA viewer callbacks are set up in initializeApp() after viewerApi is initialized
-
-// Wrapper functions that delegate to SequenceViewer module
-function buildSequenceView() {
-    if (window.SequenceViewer) {
-        window.SequenceViewer.buildSequenceView();
-    }
-}
-
-function updateSequenceViewColors() {
-    if (window.SequenceViewer) {
-        window.SequenceViewer.updateSequenceViewColors();
-    }
-}
-
-function updateSequenceViewSelectionState() {
-    if (window.SequenceViewer) {
-        window.SequenceViewer.updateSequenceViewSelectionState();
-    }
-}
 
 // ============================================================================
 // FETCH LOGIC
@@ -6224,7 +6205,7 @@ async function loadViewerState(stateData) {
                         }
 
                         // Rebuild sequence view and update UI first
-                        buildSequenceView();
+                        window.SEQ?.buildView();
                         // (no defaulting here — renderer already restored the object's saved selection)
                         updateObjectNavigationButtons();
 

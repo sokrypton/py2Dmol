@@ -1580,8 +1580,8 @@
                 hoveredResidueInfo = null; // Clear tooltip when not hovering over position
             }
             // Trigger highlight redraw to show tooltip
-            if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-                window.SequenceViewer.drawHighlights();
+            if (window.SEQ && window.SEQ.drawHighlights) {
+                window.SEQ.drawHighlights();
             }
         });
 
@@ -1592,8 +1592,8 @@
             // Clear hover state when mouse leaves
             if (callbacks.clearHighlight) callbacks.clearHighlight();
             hoveredResidueInfo = null;
-            if (window.SequenceViewer && window.SequenceViewer.drawHighlights) {
-                window.SequenceViewer.drawHighlights();
+            if (window.SEQ && window.SEQ.drawHighlights) {
+                window.SEQ.drawHighlights();
             }
         });
 
@@ -2207,7 +2207,7 @@
     // PUBLIC API
     // ============================================================================
 
-    window.SequenceViewer = {
+    window.SEQ = {
         // Initialize callbacks
         setCallbacks: function (cb) {
             callbacks = Object.assign({}, callbacks, cb);
@@ -2222,20 +2222,20 @@
         },
 
         // Main functions
-        buildSequenceView: buildSequenceView,
-        updateSequenceViewColors: updateSequenceViewColors,
-        updateSequenceViewSelectionState: updateSequenceViewSelectionState,
+        buildView: buildSequenceView,
+        updateColors: updateSequenceViewColors,
+        updateSelection: updateSequenceViewSelectionState,
 
         // Highlight overlay functions
         drawHighlights: drawHighlights,
         updateHighlightOverlaySize: updateHighlightOverlaySize,
 
         // State management
-        setSequenceViewMode: function (mode) {
+        setMode: function (mode) {
             sequenceViewMode = mode;
         },
 
-        getSequenceViewMode: function () {
+        getMode: function () {
             return sequenceViewMode;
         },
 
