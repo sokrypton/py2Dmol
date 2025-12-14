@@ -351,7 +351,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
 
     // PAE color functions moved to viewer-pae.js
-    // Use window.getPAEColor and window.getPAEColor_Colorblind if available
 
     // ============================================================================
     // COLOR RESOLUTION (Unified Hierarchy System)
