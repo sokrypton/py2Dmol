@@ -2253,12 +2253,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.lastRenderedFrame = -1; // Mark as needing render
             }
 
-            this.updateUIControls();
-
-            // Update PAE container visibility when frames are added
-            if (window.PAE) {
-                window.PAE.updateVisibility(this);
-            }
+            // UI updates moved to handleIncrementalStateUpdate for performance
 
             // Handle autoplay
             if (this.autoplay && !this.isPlaying && this.currentObjectName) {
@@ -6885,6 +6880,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         console.error(`Error adding frame to '${objectName}':`, e);
                     }
                 }
+            }
+            
+            // Update UI once after all frames added
+            renderer.updateUIControls();
+            
+            // Update PAE container visibility once at end
+            if (window.PAE) {
+                window.PAE.updateVisibility(renderer);
             }
         }
 
