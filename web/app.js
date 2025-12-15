@@ -5406,11 +5406,8 @@ function parseAndLoadScatterData(csvText) {
             }
         }
 
-        // Enable scatter globally (but labels are per-object now)
-        if (window.viewerConfig) {
-            window.viewerConfig.scatter.enabled = true;
-            window.syncViewerConfig();  // Sync to py2dmol_configs
-        }
+        // Note: Scatter visibility is now controlled per-object based on actual data
+        // No need to set global scatter.enabled = true here
     }
 }
 

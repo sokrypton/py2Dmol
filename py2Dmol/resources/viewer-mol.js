@@ -1963,6 +1963,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.updateScatterData(newObjectName);
                 this.scatterRenderer.currentFrameIndex = this.currentFrame;
                 this.scatterRenderer.render();
+                // Update visibility to hide scatter container if new object has no scatter data
+                this.updateScatterContainerVisibility();
             }
 
             // Rebuild sequence viewer for the new object to prevent stale data
@@ -2825,11 +2827,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Check if scatter should be visible
         objectHasScatter() {
-            // If scatter is explicitly enabled in config, always show it
-            if (this.config && this.config.scatter && this.config.scatter.enabled) {
-                return true;
-            }
-
             if (!this.currentObjectName || !this.objectsData[this.currentObjectName]) {
                 return false;
             }
@@ -2837,13 +2834,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const obj = this.objectsData[this.currentObjectName];
             const frames = obj.frames || [];
 
-            // Show scatter if there's scatter data in any frame
+            // Check if there's actual scatter data in any frame
             const hasScatterData = frames.some(frame => frame.scatter && frame.scatter.length === 2);
 
-            // OR if scatter_config is set (even without data yet)
-            const hasScatterConfig = obj.scatterConfig && Object.keys(obj.scatterConfig).length > 0;
+            // If there's actual scatter data, show it
+            if (hasScatterData) {
+                return true;
+            }
 
-            return hasScatterData || hasScatterConfig;
+            // If no scatter data but scatter is explicitly enabled in config (e.g., viewer.py with scatter=True),
+            // show empty scatter plot waiting for data
+            if (this.config && this.config.scatter && this.config.scatter.enabled) {
+                return true;
+            }
+
+            // No scatter data and not explicitly enabled
+            return false;
         }
 
         // Update scatter container visibility based on current object's scatter data
