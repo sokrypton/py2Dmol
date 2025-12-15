@@ -6950,6 +6950,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
+        // Ensure objects exist when only metadata (e.g., scatter_config) arrives
+        if (changedMetadataByObject) {
+            for (const objectName of Object.keys(changedMetadataByObject)) {
+                if (!renderer.objectsData[objectName]) {
+                    renderer.addObject(objectName);
+                    newlyCreatedObjects.add(objectName);
+                }
+            }
+        }
+
         // Add new frames to each object
         if (newFramesByObject) {
             for (const [objectName, newFrames] of Object.entries(newFramesByObject)) {
