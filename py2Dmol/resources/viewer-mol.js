@@ -614,7 +614,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Use provided config or fallback to window.viewerConfig
             const config = viewerConfig || normalizeConfig(window.viewerConfig);
             this.config = config;
-            
+
             // Update global viewerConfig for backward compatibility
             window.viewerConfig = config;
 
@@ -2619,7 +2619,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             this.currentFrame = frameIndex;
             this.viewerState.currentFrame = frameIndex;
-            
+
             // Invalidate shadow cache when frame changes (different geometry needs new shadows)
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
@@ -2747,7 +2747,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             const name = objectName || this.currentObjectName;
-            
+
             if (!name || !this.objectsData[name]) {
                 this.scatterRenderer.setData([], [], 'X', 'Y');
                 this.scatterRenderer.render();
@@ -2819,23 +2819,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.config && this.config.scatter && this.config.scatter.enabled) {
                 return true;
             }
-            
+
             if (!this.currentObjectName || !this.objectsData[this.currentObjectName]) {
                 return false;
             }
-            
+
             const obj = this.objectsData[this.currentObjectName];
             const frames = obj.frames || [];
-            
+
             // Show scatter if there's scatter data in any frame
             const hasScatterData = frames.some(frame => frame.scatter && frame.scatter.length === 2);
-            
+
             // OR if scatter_config is set (even without data yet)
             const hasScatterConfig = obj.scatterConfig && Object.keys(obj.scatterConfig).length > 0;
-            
+
             return hasScatterData || hasScatterConfig;
         }
-        
+
         // Update scatter container visibility based on current object's scatter data
         updateScatterContainerVisibility() {
             const scatterContainer = document.getElementById('scatterContainer');
@@ -3433,9 +3433,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Wait for frame to be captured, then advance
             // Use requestAnimationFrame to ensure render is complete
             requestAnimationFrame(() => {
-                if (currentFrame === 0 || currentFrame === this.recordingEndFrame) {
-                    console.log('[py2Dmol] record frame', currentFrame, 'scatter?', !!this.scatterRenderer, 'composite?', !!this.updateCompositeCanvas);
-                }
                 // Update scatter plot for current frame if present
                 if (this.scatterRenderer) {
                     this.scatterRenderer.currentFrameIndex = currentFrame;
@@ -3517,8 +3514,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.canvas.style.pointerEvents = 'none'; // Disable all mouse interaction
 
             // Check if scatter plot is visible
-            const scatterCanvas = document.getElementById('scatterCanvas');
-            const scatterContainer = document.getElementById('scatterContainer');
+            // Use viewer-specific canvas reference to avoid capturing scatter from wrong viewer
+            // when multiple py2Dmol viewers exist (e.g., in different notebook cells)
+            let scatterCanvas = null;
+            let scatterContainer = null;
+
+            if (this.scatterRenderer && this.scatterRenderer.canvas) {
+                // The scatter renderer already has the correct canvas reference for THIS viewer
+                scatterCanvas = this.scatterRenderer.canvas;
+                scatterContainer = scatterCanvas.parentElement;
+            }
+
             const hasScatter = scatterCanvas && scatterContainer &&
                 scatterContainer.style.display !== 'none' &&
                 this.scatterRenderer;
@@ -3546,12 +3552,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const ctx = this.recordingCompositeCanvas.getContext('2d');
 
                 // Create a function to composite both canvases
-                let compositeCallCount = 0;
                 this.updateCompositeCanvas = () => {
-                    compositeCallCount++;
-                    if (compositeCallCount === 1 || compositeCallCount % 10 === 0) {
-                    }
-
                     // Clear composite canvas
                     ctx.fillStyle = '#ffffff';
                     ctx.fillRect(0, 0, this.recordingCompositeCanvas.width, this.recordingCompositeCanvas.height);
@@ -3867,7 +3868,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Invalidate shadow cache when coordinates change (different geometry needs new shadows)
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
-            
+
             this.coords = coords;
 
             // Set bonds from parameter or from object's stored bonds
@@ -6518,7 +6519,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                     // Initialize with empty data (labels will be set when object metadata is available)
                     scatterRenderer.setData([], [], 'X', 'Y');
-                    
+
                     // Apply scatter_config from current object if it exists
                     if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
                         const obj = renderer.objectsData[renderer.currentObjectName];
@@ -6527,7 +6528,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             const xlabel = cfg.xlabel || 'X';
                             const ylabel = cfg.ylabel || 'Y';
                             scatterRenderer.setData([], [], xlabel, ylabel);
-                            
+
                             // Apply limits if provided
                             if (cfg.xlim && Array.isArray(cfg.xlim) && cfg.xlim.length === 2) {
                                 scatterRenderer.xMin = cfg.xlim[0];
@@ -6545,14 +6546,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
                         const object = renderer.objectsData[renderer.currentObjectName];
                         const frames = object.frames || [];
-                        
+
                         // Get labels from object metadata
                         const cfg = object.scatterConfig || {};
                         const xlabel = cfg.xlabel || 'X';
                         const ylabel = cfg.ylabel || 'Y';
                         const xlim = cfg.xlim || null;
                         const ylim = cfg.ylim || null;
-                        
+
 
                         if (frames.length > 0) {
                             const xData = [];
@@ -6599,7 +6600,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         } else {
                             // No frames yet, but apply labels if scatter_config exists
                             scatterRenderer.setData([], [], xlabel, ylabel);
-                            
+
                             // Apply limits if provided
                             if (xlim && Array.isArray(xlim) && xlim.length === 2) {
                                 scatterRenderer.xMin = xlim[0];
@@ -6609,7 +6610,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 scatterRenderer.yMin = ylim[0];
                                 scatterRenderer.yMax = ylim[1];
                             }
-                            
+
                             scatterRenderer.render(true);
                         }
                     }
@@ -6790,13 +6791,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (!renderer.objectsData[obj.name]) {
                         renderer.addObject(obj.name);
                     }
-                    
+
                     // Store scatter config IMMEDIATELY after creating object
                     if (obj.scatter_config) {
                         renderer.objectsData[obj.name].scatterConfig = obj.scatter_config;
                     }
                 }
-                
+
                 if (obj.name && obj.frames && obj.frames.length > 0) {
 
                     const staticChains = obj.chains; // Might be undefined
@@ -6887,12 +6888,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (window.PAE) {
                         window.PAE.updateVisibility(renderer);
                     }
-                    
+
                     // Update scatter with newly loaded config
                     if (renderer.scatterRenderer) {
                         renderer.updateScatterData(renderer.currentObjectName);
                     }
-                    
+
                     renderer.updateScatterContainerVisibility();
                 });
             }
@@ -6915,7 +6916,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // No initial data, start with an empty canvas.
         renderer.setFrame(-1);
     }
-    
+
     // Update scatter visibility after initial load (handles empty objects with scatter_config)
     if (renderer.scatterRenderer) {
         renderer.updateScatterContainerVisibility();
@@ -6982,28 +6983,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
             }
-            
+
             // Invalidate shadow cache since new frames may have different geometry
             renderer._invalidateShadowCache();
             renderer.lastShadowRotationMatrix = null;
-            
+
             // Update UI once after all frames added
             renderer.updateUIControls();
-            
+
             // Update PAE container visibility once at end
             if (window.PAE) {
                 window.PAE.updateVisibility(renderer);
             }
-            
+
             // Update scatter plot if frames were added (may have scatter data)
             if (renderer.scatterRenderer && renderer.currentObjectName) {
                 renderer.updateScatterData(renderer.currentObjectName);
                 renderer.updateScatterContainerVisibility();
             }
-            
+
             // Update UI controls to show/hide play button based on frame count
             renderer.updateUIControls();
-            
+
             // Trigger render to update shadows and display new frame
             if (!renderer.isPlaying) {
                 renderer.render('handleIncrementalStateUpdate');
