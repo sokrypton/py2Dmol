@@ -2981,10 +2981,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             });
 
-            // Hide the entire controls container if there are no frames or only one frame
+            // Show controls container if enabled (may have other controls like color, etc.)
+            // But individual frame controls (play/slider) are hidden separately based on frame count
             if (this.controlsContainer) {
-                const showControls = (hasMultipleFrames && controlsEnabled);
-                this.controlsContainer.style.display = showControls ? 'flex' : 'none';
+                this.controlsContainer.style.display = controlsEnabled ? 'flex' : 'none';
             }
 
             this._updateSpeedButtonLabel();
@@ -6982,6 +6982,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 renderer.updateScatterData(renderer.currentObjectName);
                 renderer.updateScatterContainerVisibility();
             }
+            
+            // Update UI controls to show/hide play button based on frame count
+            renderer.updateUIControls();
             
             // Trigger render to update shadows and display new frame
             if (!renderer.isPlaying) {
