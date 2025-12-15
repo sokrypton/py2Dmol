@@ -6928,15 +6928,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // 12. Start the main animation loop
     renderer.animate();
 
+    let lastIncrementalSeq = -1;
+
     // 12b. Handle incremental state updates from Python (memory-efficient)
-    const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject) => {
+    const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject, seq = null) => {
         /**
          * Processes incremental updates sent from Python.
          * Python only sends NEW frames and CHANGED metadata to minimize data transfer.
          *
          * @param {Object} newFramesByObject - {"objectName": [newFrame1, newFrame2, ...]}
          * @param {Object} changedMetadataByObject - {"objectName": {color, contacts, bonds, ...}}
+         * @param {number|null} seq - Optional sequence number for de-duplication
          */
+
+        if (typeof seq === 'number') {
+            if (seq <= lastIncrementalSeq) return;
+            lastIncrementalSeq = seq;
+        }
 
         // Create objects if they don't exist yet
         const newlyCreatedObjects = new Set();
@@ -7055,6 +7063,54 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     };
 
+    // 12c. Mailbox-based incremental delivery (single-slot, overwrite-only)
+    const mailboxId = `py2dmol_live_${viewerId}`;
+    let mailboxSeq = -1;
+
+    const processMailbox = () => {
+        const node = document.getElementById(mailboxId);
+        if (!node) return;
+
+        const raw = node.textContent || '';
+        if (!raw.trim()) return;
+
+        let payload;
+        try {
+            payload = JSON.parse(raw);
+        } catch (e) {
+            console.error('py2Dmol mailbox JSON parse error', e);
+            return;
+        }
+
+        const seq = typeof payload.seq === 'number' ? payload.seq : -1;
+        if (seq <= mailboxSeq) return;
+        mailboxSeq = seq;
+
+        const frames = payload.frames || payload.new_frames || {};
+        const meta = payload.meta || payload.changed_meta || {};
+        handleIncrementalStateUpdate(frames, meta, seq);
+    };
+
+    const mailboxObserver = new MutationObserver(() => processMailbox());
+
+    const startMailboxObserver = () => {
+        const node = document.getElementById(mailboxId);
+        if (!node) return false;
+        mailboxObserver.disconnect();
+        mailboxObserver.observe(node, { characterData: true, childList: true });
+        processMailbox();
+        return true;
+    };
+
+    // Observe document for mailbox creation/replacement (update_display swaps the node)
+    const mailboxRootObserver = new MutationObserver(() => {
+        startMailboxObserver();
+    });
+    mailboxRootObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Kick off once in case mailbox already exists
+    startMailboxObserver();
+
     // 13. Expose Public API
     // Use viewerId parameter passed to function
     if (viewerId) {
@@ -7075,7 +7131,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             });
 
             channel.onmessage = (event) => {
-                const { operation, args, sourceInstanceId } = event.data;
+                const { operation, args, sourceInstanceId, seq } = event.data;
 
                 // Ignore messages from this viewer instance (avoid echo)
                 if (sourceInstanceId === thisInstanceId) return;
@@ -7083,7 +7139,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (operation === 'incrementalStateUpdate') {
                     // Unpack new frames and changed metadata from args
                     const [newFramesByObject, changedMetadataByObject] = args;
-                    handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject);
+                    handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject, seq);
                 }
             };
         } catch (e) {

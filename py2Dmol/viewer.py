@@ -12,7 +12,7 @@ import json
 import copy
 import numpy as np
 import re
-from IPython.display import display, HTML, Javascript
+from IPython.display import display, HTML, Javascript, update_display
     
 # ============================================================================
 # CONFIG DEFAULTS - Single source of truth
@@ -342,6 +342,8 @@ class view:
         # Track sent frames and metadata to enable true incremental updates
         self._sent_frame_count = {}       # {"obj_name": num_frames_sent}
         self._sent_metadata = {}          # {"obj_name": {metadata_dict}}
+        self._live_seq = 0                # Monotonic sequence for live mailbox updates
+        self._incremental_display_id = None  # Display ID for mailbox updates
 
         # --- Alignment/Dynamic State ---
         self._coords = None
@@ -534,37 +536,28 @@ class view:
         if not new_frames_by_object and not changed_metadata_by_object:
             return
 
-        # Build minimal JavaScript to send update
-        # Use short variable names in JS to minimize payload size
-        incremental_update_js = f"""
-(function() {{
-    const newFrames = {json.dumps(new_frames_by_object)};
-    const changedMetadata = {json.dumps(changed_metadata_by_object)};
-    const viewerId = '{viewer_id}';
-    const instanceId = 'py_' + Date.now();
-    let deliveredViaChannel = false;
+        # Increment sequence for mailbox delivery
+        self._live_seq += 1
+        payload = {
+            "seq": self._live_seq,
+            "frames": new_frames_by_object,
+            "meta": changed_metadata_by_object
+        }
 
-    // BroadcastChannel for cross-iframe communication (Google Colab)
-    try {{
-        const channel = new BroadcastChannel('py2dmol_' + viewerId);
-        channel.postMessage({{
-            operation: 'incrementalStateUpdate',
-            args: [newFrames, changedMetadata],
-            sourceInstanceId: instanceId
-        }});
-        deliveredViaChannel = true;
-    }} catch(e) {{}}
-
-    // Fallback direct call only if channel path failed (avoids double-delivery)
-    if (!deliveredViaChannel && window.py2dmol_viewers && window.py2dmol_viewers[viewerId]) {{
-        window.py2dmol_viewers[viewerId].handleIncrementalStateUpdate(newFrames, changedMetadata);
-    }}
-}})();
-        """
-        # Use HTML-wrapped script (display:none to avoid layout changes)
-        html_wrapper = f'<script style="display:none">{incremental_update_js}</script>'
-
-        display(HTML(html_wrapper))
+        # Send data-only payload to mailbox script (single-slot, overwrite-only)
+        payload_json = json.dumps(payload)
+        mailbox_html = (
+            f'<script id="py2dmol_live_{viewer_id}" type="application/json">{payload_json}</script>'
+            f'<script>(function(){{'
+            f'const p={payload_json};'
+            f'const f=p.frames||p.new_frames||{{}};'
+            f'const m=p.meta||p.changed_meta||{{}};'
+            f'const vid="{viewer_id}";'
+            f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);ch.postMessage({{operation:"incrementalStateUpdate",args:[f,m],seq:p.seq}});}}catch(e){{}}'
+            f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleIncrementalStateUpdate(f,m,p.seq);}}'
+            f'}})();</script>'
+        )
+        update_display(HTML(mailbox_html), display_id=self._incremental_display_id)
 
     def _display_viewer(self, static_data=None, include_libs=True):
         """
@@ -2282,6 +2275,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         # Reset data display ID for new viewer
         self._data_display_id = None
+
+        # Initialize mailbox display for incremental updates (single-slot, overwrite-only)
+        viewer_id = self.config["viewer_id"]
+        self._incremental_display_id = f"py2dmol_inc_{viewer_id}"
+        display(HTML(f'<script id="py2dmol_live_{viewer_id}" type="application/json"></script>'),
+                display_id=self._incremental_display_id)
 
     def _detect_redundant_fields(self, frames):
         """
