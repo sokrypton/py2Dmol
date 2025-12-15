@@ -6777,6 +6777,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         renderer.setClearColor(true);
     }
 
+    // Snapshot persistence (sessionStorage)
+    let lastIncrementalSeq = -1;
+
     // 7. Load initial data
     if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (window.py2dmol_staticData[viewerId]).length > 0) {
         // === STATIC MODE (from show()) ===
@@ -6927,8 +6930,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     // 12. Start the main animation loop
     renderer.animate();
-
-    let lastIncrementalSeq = -1;
 
     // 12b. Handle incremental state updates from Python (memory-efficient)
     const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject, seq = null) => {

@@ -265,7 +265,7 @@ class view:
         color="auto", colorblind=False, shadow=True, shadow_strength=0.5,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True,
-        id=None,
+        persistence=True, id=None,
     ):
         """
         Initialize a py2Dmol viewer.
@@ -289,6 +289,9 @@ class view:
             scatter_size (int): Scatter plot size in pixels. Default 300.
             overlay (bool): Enable overlay mode (show all frames simultaneously). Default False.
             detect_cyclic (bool): Auto-detect cyclic peptides (N-C terminus bonds). Default True.
+            persistence (bool): If True (default), each incremental update uses a fresh output
+                                cell (classic behavior). If False, updates reuse a single hidden
+                                cell (mailbox) to avoid output bloat.
             id (str): Custom viewer ID. If None, auto-generated. Default None.
         """
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
@@ -344,6 +347,7 @@ class view:
         self._sent_metadata = {}          # {"obj_name": {metadata_dict}}
         self._live_seq = 0                # Monotonic sequence for live mailbox updates
         self._incremental_display_id = None  # Display ID for mailbox updates
+        self._persistence = bool(persistence)
 
         # --- Alignment/Dynamic State ---
         self._coords = None
@@ -536,7 +540,7 @@ class view:
         if not new_frames_by_object and not changed_metadata_by_object:
             return
 
-        # Increment sequence for mailbox delivery
+        # Increment sequence for delivery
         self._live_seq += 1
         payload = {
             "seq": self._live_seq,
@@ -544,20 +548,27 @@ class view:
             "meta": changed_metadata_by_object
         }
 
-        # Send data-only payload to mailbox script (single-slot, overwrite-only)
         payload_json = json.dumps(payload)
-        mailbox_html = (
-            f'<script id="py2dmol_live_{viewer_id}" type="application/json">{payload_json}</script>'
-            f'<script>(function(){{'
+
+        update_js = (
+            f'(function(){{'
             f'const p={payload_json};'
             f'const f=p.frames||p.new_frames||{{}};'
             f'const m=p.meta||p.changed_meta||{{}};'
             f'const vid="{viewer_id}";'
             f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);ch.postMessage({{operation:"incrementalStateUpdate",args:[f,m],seq:p.seq}});}}catch(e){{}}'
             f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleIncrementalStateUpdate(f,m,p.seq);}}'
-            f'}})();</script>'
+            f'}})();'
         )
-        update_display(HTML(mailbox_html), display_id=self._incremental_display_id)
+
+        if self._persistence:
+            display(HTML(f'<script style="display:none">{update_js}</script>'))
+        else:
+            mailbox_html = (
+                f'<script id="py2dmol_live_{viewer_id}" type="application/json" style="display:none">{payload_json}</script>'
+                f'<script style="display:none">{update_js}</script>'
+            )
+            update_display(HTML(mailbox_html), display_id=self._incremental_display_id)
 
     def _display_viewer(self, static_data=None, include_libs=True):
         """
@@ -2276,11 +2287,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Reset data display ID for new viewer
         self._data_display_id = None
 
-        # Initialize mailbox display for incremental updates (single-slot, overwrite-only)
-        viewer_id = self.config["viewer_id"]
-        self._incremental_display_id = f"py2dmol_inc_{viewer_id}"
-        display(HTML(f'<script id="py2dmol_live_{viewer_id}" type="application/json"></script>'),
-                display_id=self._incremental_display_id)
+        # Initialize mailbox display for incremental updates (single-slot, overwrite-only) when persistence=False
+        if not self._persistence:
+            viewer_id = self.config["viewer_id"]
+            self._incremental_display_id = f"py2dmol_inc_{viewer_id}"
+            display(HTML(f'<script id="py2dmol_live_{viewer_id}" type="application/json"></script>'),
+                    display_id=self._incremental_display_id)
 
     def _detect_redundant_fields(self, frames):
         """
