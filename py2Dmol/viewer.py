@@ -349,6 +349,20 @@ class view:
         self._incremental_display_id = None  # Display ID for mailbox updates
         self._persistence = bool(persistence)
 
+    def _ensure_mailbox_display(self):
+        """
+        Ensure a hidden mailbox cell exists for update_display paths.
+        Safe to call multiple times; no-ops if already initialized.
+        """
+        if self._incremental_display_id:
+            return
+        viewer_id = self.config["viewer_id"]
+        self._incremental_display_id = f"py2dmol_inc_{viewer_id}"
+        display(
+            HTML(f'<script id="py2dmol_live_{viewer_id}" type="application/json"></script>'),
+            display_id=self._incremental_display_id,
+        )
+
         # --- Alignment/Dynamic State ---
         self._coords = None
         self._rotation_matrix = None
@@ -564,11 +578,51 @@ class view:
         if self._persistence:
             display(HTML(f'<script style="display:none">{update_js}</script>'))
         else:
+            self._ensure_mailbox_display()
             mailbox_html = (
                 f'<script id="py2dmol_live_{viewer_id}" type="application/json" style="display:none">{payload_json}</script>'
                 f'<script style="display:none">{update_js}</script>'
             )
             update_display(HTML(mailbox_html), display_id=self._incremental_display_id)
+
+    def _send_replace_update(self, object_name, frame_data, meta):
+        """
+        Sends a replace-frame message (overwrite last frame) to the viewer.
+        """
+        if not self._is_live:
+            return
+
+        viewer_id = self.config["viewer_id"]
+
+        # Increment sequence for delivery
+        self._live_seq += 1
+        payload = {
+            "seq": self._live_seq,
+            "frame": frame_data,
+            "meta": meta or {},
+            "object": object_name
+        }
+
+        payload_json = json.dumps(payload)
+
+        update_js = (
+            f'(function(){{'
+            f'const p={payload_json};'
+            f'const obj=p.object||"{object_name}";'
+            f'const f=p.frame||{{}};'
+            f'const m=p.meta||{{}};'
+            f'const vid="{viewer_id}";'
+            f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);ch.postMessage({{operation:"replaceFrame",args:[f,m,obj],seq:p.seq}});}}catch(e){{}}'
+            f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleReplaceFrame(f,m,obj,p.seq);}}'
+            f'}})();'
+        )
+
+        self._ensure_mailbox_display()
+        mailbox_html = (
+            f'<script id="py2dmol_live_{viewer_id}" type="application/json" style="display:none">{payload_json}</script>'
+            f'<script style="display:none">{update_js}</script>'
+        )
+        update_display(HTML(mailbox_html), display_id=self._incremental_display_id)
 
     def _display_viewer(self, static_data=None, include_libs=True):
         """
@@ -1417,6 +1471,69 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 payload["bonds"] = self.objects[-1]["bonds"]
 
             self._send_incremental_update()
+
+    def replace(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
+                name=None, align=False, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None):
+        """
+        Replace the current frame for an object (streaming only, no history).
+
+        Optimized for real-time visualization where only the latest frame matters.
+        Does not accumulate frames; frontend keeps a single frame for the object.
+        """
+        # Ensure live viewer exists
+        if not self._is_live:
+            self.show()
+
+        # Default object name
+        if name is None:
+            name = self.objects[-1]["name"] if self.objects else "0"
+
+        # Create/ensure object
+        target_obj = self._find_object_by_name(name)
+        if target_obj is None:
+            self.new_obj(name, scatter_config=scatter_config)
+            target_obj = self.objects[-1]
+        elif scatter_config is not None and isinstance(scatter_config, dict):
+            existing_cfg = target_obj.get("scatter_config") or {}
+            target_obj["scatter_config"] = {**existing_cfg, **scatter_config}
+
+        # Update internal state and build frame
+        self._update(coords, plddts=plddts, chains=chains, position_types=position_types, pae=pae,
+                     scatter=scatter, align=align, position_names=position_names,
+                     residue_numbers=residue_numbers, atom_types=atom_types)
+
+        frame_data = self._get_data_dict()
+        if color is not None:
+            if isinstance(color, dict) and "type" in color and "value" in color:
+                frame_data["color"] = color
+            else:
+                normalized_color = _normalize_color(color)
+                if normalized_color:
+                    frame_data["color"] = normalized_color
+
+        # Merge per-object metadata
+        if contacts is not None:
+            target_obj["contacts"] = self._process_contacts(contacts) or target_obj.get("contacts")
+        if bonds is not None:
+            target_obj["bonds"] = self._process_bonds(bonds) or target_obj.get("bonds")
+        if color is not None and "color" in frame_data:
+            target_obj["color"] = frame_data["color"]
+
+        meta = {}
+        if target_obj.get("contacts") is not None:
+            meta["contacts"] = target_obj["contacts"]
+        if target_obj.get("bonds") is not None:
+            meta["bonds"] = target_obj["bonds"]
+        if target_obj.get("scatter_config") is not None:
+            meta["scatter_config"] = target_obj["scatter_config"]
+        if target_obj.get("color") is not None:
+            meta["color"] = target_obj["color"]
+
+        # Emit replace update
+        self._send_replace_update(name, frame_data, meta)
+
+        # Keep only latest frame locally
+        target_obj["frames"] = [frame_data]
 
     def set_color(self, color, name=None, chain=None, position=None, frame=None):
         """
@@ -2287,12 +2404,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Reset data display ID for new viewer
         self._data_display_id = None
 
-        # Initialize mailbox display for incremental updates (single-slot, overwrite-only) when persistence=False
+        # Initialize mailbox display for incremental updates (single-slot, overwrite-only) when needed
         if not self._persistence:
-            viewer_id = self.config["viewer_id"]
-            self._incremental_display_id = f"py2dmol_inc_{viewer_id}"
-            display(HTML(f'<script id="py2dmol_live_{viewer_id}" type="application/json"></script>'),
-                    display_id=self._incremental_display_id)
+            self._ensure_mailbox_display()
 
     def _detect_redundant_fields(self, frames):
         """

@@ -3433,18 +3433,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Wait for frame to be captured, then advance
             // Use requestAnimationFrame to ensure render is complete
             requestAnimationFrame(() => {
+                if (currentFrame === 0 || currentFrame === this.recordingEndFrame) {
+                    console.log('[py2Dmol] record frame', currentFrame, 'scatter?', !!this.scatterRenderer, 'composite?', !!this.updateCompositeCanvas);
+                }
                 // Update scatter plot for current frame if present
                 if (this.scatterRenderer) {
-                    if (currentFrame === 0 || currentFrame % 10 === 0) {
-                    }
                     this.scatterRenderer.currentFrameIndex = currentFrame;
                     this.scatterRenderer.render();
                 }
 
                 // Update composite canvas if recording with scatter plot
                 if (this.updateCompositeCanvas) {
-                    if (currentFrame === 0 || currentFrame % 10 === 0) {
-                    }
                     this.updateCompositeCanvas();
                 }
 
@@ -7064,6 +7063,46 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     };
 
+    // 12c. Handle replace-frame updates (overwrite latest frame)
+    const handleReplaceFrame = (frame, meta = {}, objectName = null, seq = null) => {
+        if (typeof seq === 'number') {
+            if (seq <= lastIncrementalSeq) return;
+            lastIncrementalSeq = seq;
+        }
+
+        const objName = objectName || renderer.currentObjectName || Object.keys(renderer.objectsData)[0] || '0';
+
+        if (!renderer.objectsData[objName]) {
+            renderer.addObject(objName);
+        }
+        const obj = renderer.objectsData[objName];
+
+        // Reset frames and load single frame
+        obj.frames = [];
+        obj._lastPlddtFrame = -1;
+        obj._lastPaeFrame = -1;
+        renderer.addFrame(frame, objName);
+
+        if (meta.color) obj.color = meta.color;
+        if (meta.contacts) obj.contacts = meta.contacts;
+        if (meta.bonds) obj.bonds = meta.bonds;
+        if (meta.scatter_config) obj.scatterConfig = meta.scatter_config;
+
+        renderer._invalidateShadowCache();
+        renderer.lastShadowRotationMatrix = null;
+
+        if (renderer.currentObjectName === objName) {
+            if (renderer.scatterRenderer) {
+                renderer.updateScatterData(objName);
+                renderer.updateScatterContainerVisibility();
+            }
+            renderer.cachedSegmentIndices = null;
+            renderer.cachedSegmentIndicesFrame = -1;
+            renderer.cachedSegmentIndicesObjectName = null;
+            renderer.setFrame(0);
+        }
+    };
+
     // 12c. Mailbox-based incremental delivery (single-slot, overwrite-only)
     const mailboxId = `py2dmol_live_${viewerId}`;
     let mailboxSeq = -1;
@@ -7117,6 +7156,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     if (viewerId) {
         window.py2dmol_viewers[viewerId] = {
             handleIncrementalStateUpdate, // Primary: Memory-efficient incremental state updates
+            handleReplaceFrame,
             renderer // Expose the renderer instance for external access
         };
 
@@ -7141,6 +7181,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // Unpack new frames and changed metadata from args
                     const [newFramesByObject, changedMetadataByObject] = args;
                     handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject, seq);
+                } else if (operation === 'replaceFrame') {
+                    const [frame, metaArg, objectName] = args;
+                    handleReplaceFrame(frame, metaArg, objectName, seq);
                 }
             };
         } catch (e) {
