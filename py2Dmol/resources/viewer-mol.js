@@ -3455,16 +3455,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             requestAnimationFrame(() => {
                 // Update scatter plot for current frame if present
                 if (this.scatterRenderer) {
-                    if (currentFrame === 0 || currentFrame % 10 === 0) {
-                    }
                     this.scatterRenderer.currentFrameIndex = currentFrame;
                     this.scatterRenderer.render();
                 }
 
                 // Update composite canvas if recording with scatter plot
                 if (this.updateCompositeCanvas) {
-                    if (currentFrame === 0 || currentFrame % 10 === 0) {
-                    }
                     this.updateCompositeCanvas();
                 }
 
@@ -3538,8 +3534,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.canvas.style.pointerEvents = 'none'; // Disable all mouse interaction
 
             // Check if scatter plot is visible
-            const scatterCanvas = document.getElementById('scatterCanvas');
-            const scatterContainer = document.getElementById('scatterContainer');
+            // Use viewer-specific canvas reference to avoid capturing scatter from wrong viewer
+            // when multiple py2Dmol viewers exist (e.g., in different notebook cells)
+            let scatterCanvas = null;
+            let scatterContainer = null;
+
+            if (this.scatterRenderer && this.scatterRenderer.canvas) {
+                // The scatter renderer already has the correct canvas reference for THIS viewer
+                scatterCanvas = this.scatterRenderer.canvas;
+                scatterContainer = scatterCanvas.parentElement;
+            }
+
             const hasScatter = scatterCanvas && scatterContainer &&
                 scatterContainer.style.display !== 'none' &&
                 this.scatterRenderer;
@@ -3567,12 +3572,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const ctx = this.recordingCompositeCanvas.getContext('2d');
 
                 // Create a function to composite both canvases
-                let compositeCallCount = 0;
                 this.updateCompositeCanvas = () => {
-                    compositeCallCount++;
-                    if (compositeCallCount === 1 || compositeCallCount % 10 === 0) {
-                    }
-
                     // Clear composite canvas
                     ctx.fillStyle = '#ffffff';
                     ctx.fillRect(0, 0, this.recordingCompositeCanvas.width, this.recordingCompositeCanvas.height);
@@ -6797,6 +6797,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         renderer.setClearColor(true);
     }
 
+    // Snapshot persistence (sessionStorage)
+    let lastIncrementalSeq = -1;
+
     // 7. Load initial data
     if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (window.py2dmol_staticData[viewerId]).length > 0) {
         // === STATIC MODE (from show()) ===
@@ -6949,14 +6952,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     renderer.animate();
 
     // 12b. Handle incremental state updates from Python (memory-efficient)
-    const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject) => {
+    const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject, seq = null) => {
         /**
          * Processes incremental updates sent from Python.
          * Python only sends NEW frames and CHANGED metadata to minimize data transfer.
          *
          * @param {Object} newFramesByObject - {"objectName": [newFrame1, newFrame2, ...]}
          * @param {Object} changedMetadataByObject - {"objectName": {color, contacts, bonds, ...}}
+         * @param {number|null} seq - Optional sequence number for de-duplication
          */
+
+        if (typeof seq === 'number') {
+            if (seq <= lastIncrementalSeq) return;
+            lastIncrementalSeq = seq;
+        }
 
         // Create objects if they don't exist yet
         const newlyCreatedObjects = new Set();
@@ -7075,11 +7084,100 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     };
 
+    // 12c. Handle replace-frame updates (overwrite latest frame)
+    const handleReplaceFrame = (frame, meta = {}, objectName = null, seq = null) => {
+        if (typeof seq === 'number') {
+            if (seq <= lastIncrementalSeq) return;
+            lastIncrementalSeq = seq;
+        }
+
+        const objName = objectName || renderer.currentObjectName || Object.keys(renderer.objectsData)[0] || '0';
+
+        if (!renderer.objectsData[objName]) {
+            renderer.addObject(objName);
+        }
+        const obj = renderer.objectsData[objName];
+
+        // Reset frames and load single frame
+        obj.frames = [];
+        obj._lastPlddtFrame = -1;
+        obj._lastPaeFrame = -1;
+        renderer.addFrame(frame, objName);
+
+        if (meta.color) obj.color = meta.color;
+        if (meta.contacts) obj.contacts = meta.contacts;
+        if (meta.bonds) obj.bonds = meta.bonds;
+        if (meta.scatter_config) obj.scatterConfig = meta.scatter_config;
+
+        renderer._invalidateShadowCache();
+        renderer.lastShadowRotationMatrix = null;
+
+        if (renderer.currentObjectName === objName) {
+            if (renderer.scatterRenderer) {
+                renderer.updateScatterData(objName);
+                renderer.updateScatterContainerVisibility();
+            }
+            renderer.cachedSegmentIndices = null;
+            renderer.cachedSegmentIndicesFrame = -1;
+            renderer.cachedSegmentIndicesObjectName = null;
+            renderer.setFrame(0);
+        }
+    };
+
+    // 12c. Mailbox-based incremental delivery (single-slot, overwrite-only)
+    const mailboxId = `py2dmol_live_${viewerId}`;
+    let mailboxSeq = -1;
+
+    const processMailbox = () => {
+        const node = document.getElementById(mailboxId);
+        if (!node) return;
+
+        const raw = node.textContent || '';
+        if (!raw.trim()) return;
+
+        let payload;
+        try {
+            payload = JSON.parse(raw);
+        } catch (e) {
+            console.error('py2Dmol mailbox JSON parse error', e);
+            return;
+        }
+
+        const seq = typeof payload.seq === 'number' ? payload.seq : -1;
+        if (seq <= mailboxSeq) return;
+        mailboxSeq = seq;
+
+        const frames = payload.frames || payload.new_frames || {};
+        const meta = payload.meta || payload.changed_meta || {};
+        handleIncrementalStateUpdate(frames, meta, seq);
+    };
+
+    const mailboxObserver = new MutationObserver(() => processMailbox());
+
+    const startMailboxObserver = () => {
+        const node = document.getElementById(mailboxId);
+        if (!node) return false;
+        mailboxObserver.disconnect();
+        mailboxObserver.observe(node, { characterData: true, childList: true });
+        processMailbox();
+        return true;
+    };
+
+    // Observe document for mailbox creation/replacement (update_display swaps the node)
+    const mailboxRootObserver = new MutationObserver(() => {
+        startMailboxObserver();
+    });
+    mailboxRootObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Kick off once in case mailbox already exists
+    startMailboxObserver();
+
     // 13. Expose Public API
     // Use viewerId parameter passed to function
     if (viewerId) {
         window.py2dmol_viewers[viewerId] = {
             handleIncrementalStateUpdate, // Primary: Memory-efficient incremental state updates
+            handleReplaceFrame,
             renderer // Expose the renderer instance for external access
         };
 
@@ -7095,7 +7193,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             });
 
             channel.onmessage = (event) => {
-                const { operation, args, sourceInstanceId } = event.data;
+                const { operation, args, sourceInstanceId, seq } = event.data;
 
                 // Ignore messages from this viewer instance (avoid echo)
                 if (sourceInstanceId === thisInstanceId) return;
@@ -7103,7 +7201,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (operation === 'incrementalStateUpdate') {
                     // Unpack new frames and changed metadata from args
                     const [newFramesByObject, changedMetadataByObject] = args;
-                    handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject);
+                    handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject, seq);
+                } else if (operation === 'replaceFrame') {
+                    const [frame, metaArg, objectName] = args;
+                    handleReplaceFrame(frame, metaArg, objectName, seq);
                 }
             };
         } catch (e) {
