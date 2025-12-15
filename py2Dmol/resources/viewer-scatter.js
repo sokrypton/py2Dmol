@@ -101,7 +101,7 @@
             // Initialize at frame 0
             this.currentFrameIndex = 0;
 
-            this.render();
+            this.render(true); // Force recalculation when data changes
         }
 
         addPoint(x, y) {
@@ -154,7 +154,7 @@
                 }
             }
 
-            this.render();
+            this.render(true); // Force recalculation when adding points (data changed)
         }
 
         // Convert data coordinates to canvas coordinates
@@ -252,13 +252,15 @@
             return this.scale * clamped;
         }
 
-        render() {
+        render(forceRecalculate = false) {
             const ctx = this.ctx;
             const width = this.canvas.width;
             const height = this.canvas.height;
 
-            // Responsive sizing
-            this.sizeUnit = this.getSizeUnit();
+            // Responsive sizing (only recalculate if forced or not yet calculated)
+            if (forceRecalculate || this.sizeUnit === undefined) {
+                this.sizeUnit = this.getSizeUnit();
+            }
 
             // Precompute ticks for layout metrics
             const tickFont = 12 * this.sizeUnit;
@@ -266,11 +268,18 @@
             const xTicks = this.getNiceTicks(this.xMin, this.xMax, 5);
             const yTicks = this.getNiceTicks(this.yMin, this.yMax, 5);
 
-            // Update paddings based on actual text metrics to avoid overlaps
-            this.computeDynamicPadding(ctx, this.sizeUnit, tickFont, labelFont, xTicks, yTicks);
+            // Update paddings based on actual text metrics to avoid overlaps (only if forced or not yet calculated)
+            if (forceRecalculate || this.plotWidth === undefined) {
+                this.computeDynamicPadding(ctx, this.sizeUnit, tickFont, labelFont, xTicks, yTicks);
+                this.plotWidth = width - this.paddingLeft - this.paddingRight;
+                this.plotHeight = height - this.paddingTop - this.paddingBottom;
+            }
 
-            this.plotWidth = width - this.paddingLeft - this.paddingRight;
-            this.plotHeight = height - this.paddingTop - this.paddingBottom;
+            // Recalculate plot dimensions if not done above
+            if (!forceRecalculate && this.plotWidth !== undefined) {
+                this.plotWidth = width - this.paddingLeft - this.paddingRight;
+                this.plotHeight = height - this.paddingTop - this.paddingBottom;
+            }
 
             // Clear canvas
             ctx.clearRect(0, 0, width, height);

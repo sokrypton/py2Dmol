@@ -609,7 +609,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         if static_data and isinstance(static_data, list):
             serialized_objects = []
             for py_obj in static_data:
-                if not py_obj.get("frames"):
+                # Skip objects with no frames AND no metadata
+                if not py_obj.get("frames") and not any(
+                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "rotation_matrix", "center"]
+                ):
                     continue
 
                 light_frames = []
@@ -622,7 +625,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 prev_bonds = None
                 prev_scatter = None
 
-                for frame_idx, frame in enumerate(py_obj["frames"]):
+                for frame_idx, frame in enumerate(py_obj.get("frames", [])):
                     # Skip frames without coords (they're invalid)
                     if "coords" not in frame or not frame["coords"]:
                         continue
@@ -696,18 +699,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
                     light_frames.append(light_frame)
 
-                # Skip objects with no valid frames
-                if not light_frames:
-                    continue
-
-                # For static data, we still need to provide chains and position_types
-                # for the whole object, but only if they exist in the first valid frame.
-                first_frame = light_frames[0]
+                # Create object serialization - even if no frames, we may have metadata
                 obj_to_serialize = {"name": py_obj.get("name"), "frames": light_frames}
-                if "chains" in first_frame and first_frame["chains"] is not None:
-                    obj_to_serialize["chains"] = first_frame["chains"]
-                if "position_types" in first_frame and first_frame["position_types"] is not None:
-                    obj_to_serialize["position_types"] = first_frame["position_types"]
+                
+                # For objects with frames, get chains/position_types from first frame
+                if light_frames:
+                    first_frame = light_frames[0]
+                    if "chains" in first_frame and first_frame["chains"] is not None:
+                        obj_to_serialize["chains"] = first_frame["chains"]
+                    if "position_types" in first_frame and first_frame["position_types"] is not None:
+                        obj_to_serialize["position_types"] = first_frame["position_types"]
 
                 # Add rotation_matrix and center if they exist (for viewing orientation)
                 if "rotation_matrix" in py_obj and py_obj["rotation_matrix"] is not None:
@@ -1408,9 +1409,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 if isinstance(ylim, (list, tuple)) and len(ylim) == 2:
                     validated_config["ylim"] = [float(ylim[0]), float(ylim[1])]
 
-            # Store in object (only set once per object, on first frame)
-            if is_first_frame and self.objects[-1].get("scatter_config") is None:
-                self.objects[-1]["scatter_config"] = validated_config
+            # Store in object (merge with existing config if present, only on first frame)
+            if is_first_frame:
+                existing_config = self.objects[-1].get("scatter_config") or {}
+                # Merge: validated_config takes precedence over existing
+                merged_config = {**existing_config, **validated_config}
+                self.objects[-1]["scatter_config"] = merged_config
 
         # --- Step 9: Send message if in "live" mode ---
         if self._is_live:
@@ -2247,10 +2251,14 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         if self._is_live:
             return  # Already displayed, don't create a duplicate
 
-        if not self.objects:
+        # Check if we have any objects with actual frames
+        has_frames = any(obj.get("frames") for obj in self.objects)
+        
+        if not has_frames:
             # --- "Go Live" Mode ---
-            # .show() was called *before* .add()
-            html_to_display = self._display_viewer(static_data=None)
+            # .show() was called *before* .add() (or objects exist but are empty)
+            # Pass objects to populate initial config (like scatter_config) even without frames
+            html_to_display = self._display_viewer(static_data=self.objects if self.objects else None)
             self._display_html(html_to_display)
             self._is_live = True
             

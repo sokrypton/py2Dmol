@@ -2747,6 +2747,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             const name = objectName || this.currentObjectName;
+            
             if (!name || !this.objectsData[name]) {
                 this.scatterRenderer.setData([], [], 'X', 'Y');
                 this.scatterRenderer.render();
@@ -2812,6 +2813,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.scatterRenderer.render();
         }
 
+        // Check if scatter should be visible
+        objectHasScatter() {
+            // If scatter is explicitly enabled in config, always show it
+            if (this.config && this.config.scatter && this.config.scatter.enabled) {
+                return true;
+            }
+            
+            if (!this.currentObjectName || !this.objectsData[this.currentObjectName]) {
+                return false;
+            }
+            
+            const obj = this.objectsData[this.currentObjectName];
+            const frames = obj.frames || [];
+            
+            // Show scatter if there's scatter data in any frame
+            const hasScatterData = frames.some(frame => frame.scatter && frame.scatter.length === 2);
+            
+            // OR if scatter_config is set (even without data yet)
+            const hasScatterConfig = obj.scatterConfig && Object.keys(obj.scatterConfig).length > 0;
+            
+            return hasScatterData || hasScatterConfig;
+        }
+        
         // Update scatter container visibility based on current object's scatter data
         updateScatterContainerVisibility() {
             const scatterContainer = document.getElementById('scatterContainer');
@@ -6495,11 +6519,41 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                     // Initialize with empty data (labels will be set when object metadata is available)
                     scatterRenderer.setData([], [], 'X', 'Y');
+                    
+                    // Apply scatter_config from current object if it exists
+                    if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
+                        const obj = renderer.objectsData[renderer.currentObjectName];
+                        if (obj.scatterConfig) {
+                            const cfg = obj.scatterConfig;
+                            const xlabel = cfg.xlabel || 'X';
+                            const ylabel = cfg.ylabel || 'Y';
+                            scatterRenderer.setData([], [], xlabel, ylabel);
+                            
+                            // Apply limits if provided
+                            if (cfg.xlim && Array.isArray(cfg.xlim) && cfg.xlim.length === 2) {
+                                scatterRenderer.xMin = cfg.xlim[0];
+                                scatterRenderer.xMax = cfg.xlim[1];
+                            }
+                            if (cfg.ylim && Array.isArray(cfg.ylim) && cfg.ylim.length === 2) {
+                                scatterRenderer.yMin = cfg.ylim[0];
+                                scatterRenderer.yMax = cfg.ylim[1];
+                            }
+                            scatterRenderer.render(true);
+                        }
+                    }
 
                     // Collect scatter data from ALL frames in current object
                     if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]) {
                         const object = renderer.objectsData[renderer.currentObjectName];
                         const frames = object.frames || [];
+                        
+                        // Get labels from object metadata
+                        const cfg = object.scatterConfig || {};
+                        const xlabel = cfg.xlabel || 'X';
+                        const ylabel = cfg.ylabel || 'Y';
+                        const xlim = cfg.xlim || null;
+                        const ylim = cfg.ylim || null;
+                        
 
                         if (frames.length > 0) {
                             const xData = [];
@@ -6526,13 +6580,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                             // Set accumulated data to scatter renderer
                             if (xData.length > 0) {
-                                // Get labels from object metadata (already initialized during data load)
-                                const cfg = object.scatterConfig || {};
-                                const xlabel = cfg.xlabel || 'X';
-                                const ylabel = cfg.ylabel || 'Y';
-                                const xlim = cfg.xlim || null;
-                                const ylim = cfg.ylim || null;
-
                                 scatterRenderer.setData(xData, yData, xlabel, ylabel);
 
                                 // Apply limits if provided
@@ -6550,6 +6597,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 // Show scatter container
                                 scatterContainer.style.display = 'flex';
                             }
+                        } else {
+                            // No frames yet, but apply labels if scatter_config exists
+                            scatterRenderer.setData([], [], xlabel, ylabel);
+                            
+                            // Apply limits if provided
+                            if (xlim && Array.isArray(xlim) && xlim.length === 2) {
+                                scatterRenderer.xMin = xlim[0];
+                                scatterRenderer.xMax = xlim[1];
+                            }
+                            if (ylim && Array.isArray(ylim) && ylim.length === 2) {
+                                scatterRenderer.yMin = ylim[0];
+                                scatterRenderer.yMax = ylim[1];
+                            }
+                            
+                            scatterRenderer.render(true);
                         }
                     }
                 };
@@ -6720,6 +6782,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // === STATIC MODE (from show()) ===
         try {
             for (const obj of (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])) {
+                // Create object even if no frames (for metadata like scatter_config)
+                if (obj.name) {
+                    // Ensure object exists in objectsData
+                    if (!renderer.objectsData[obj.name]) {
+                        renderer.addObject(obj.name);
+                    }
+                    
+                    // Store scatter config IMMEDIATELY after creating object
+                    if (obj.scatter_config) {
+                        renderer.objectsData[obj.name].scatterConfig = obj.scatter_config;
+                    }
+                }
+                
                 if (obj.name && obj.frames && obj.frames.length > 0) {
 
                     const staticChains = obj.chains; // Might be undefined
@@ -6770,17 +6845,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         }
                     }
 
-                    // Store scatter config at object level (camelCase internally; accept snake_case from Python)
-                    if (renderer.objectsData[obj.name]) {
-                        const cfg = obj.scatter_config || {
-                            xlabel: 'X',
-                            ylabel: 'Y',
-                            xlim: null,
-                            ylim: null
-                        };
-                        renderer.objectsData[obj.name].scatterConfig = cfg;
-                    }
-
                     // Store rotation matrix and center for view transform if present
                     if (obj.rotation_matrix && obj.center) {
                         if (renderer.objectsData[obj.name]) {
@@ -6821,6 +6885,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (window.PAE) {
                         window.PAE.updateVisibility(renderer);
                     }
+                    
+                    // Update scatter with newly loaded config
+                    if (renderer.scatterRenderer) {
+                        renderer.updateScatterData(renderer.currentObjectName);
+                    }
+                    
                     renderer.updateScatterContainerVisibility();
                 });
             }
@@ -6842,6 +6912,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // === EMPTY DYNAMIC MODE ===
         // No initial data, start with an empty canvas.
         renderer.setFrame(-1);
+    }
+    
+    // Update scatter visibility after initial load (handles empty objects with scatter_config)
+    if (renderer.scatterRenderer) {
+        renderer.updateScatterContainerVisibility();
     }
 
     // After data load, trigger ortho slider to set correct initial focal length
@@ -6902,6 +6977,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 window.PAE.updateVisibility(renderer);
             }
             
+            // Update scatter plot if frames were added (may have scatter data)
+            if (renderer.scatterRenderer && renderer.currentObjectName) {
+                renderer.updateScatterData(renderer.currentObjectName);
+                renderer.updateScatterContainerVisibility();
+            }
+            
             // Trigger render to update shadows and display new frame
             if (!renderer.isPlaying) {
                 renderer.render('handleIncrementalStateUpdate');
@@ -6934,6 +7015,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // Refresh scatter axes if this is the active object
                     if (objectName === renderer.currentObjectName && renderer.scatterRenderer) {
                         renderer.updateScatterData(objectName);
+                        renderer.updateScatterContainerVisibility();
                     }
                 }
 
