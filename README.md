@@ -10,7 +10,9 @@ Bonus: [online interactive version](http://py2dmol.solab.org/)
 ## Installation
 ```bash
 pip install py2Dmol
-# latest experimental
+```
+### latest experimental
+```bash
 pip install git+https://github.com/sokrypton/py2Dmol.git
 ```
 
