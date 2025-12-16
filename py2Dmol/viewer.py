@@ -438,19 +438,6 @@ class view:
                     mailbox_html = html_content
                 self._mailbox_handle.update(HTML(mailbox_html))
 
-
-        # --- Alignment/Dynamic State ---
-        self._coords = None
-        self._rotation_matrix = None
-        self._center = None
-        self._plddts = None
-        self._chains = None
-        self._position_types = None
-        self._pae = None
-        self._scatter = None
-        self._position_names = None
-        self._position_residue_numbers = None
-
     def _get_data_dict(self):
         """
         Serializes the current coordinate state to a dict, omitting
@@ -685,7 +672,6 @@ class view:
         # Emit to output using helper
         html_script = f'<script style="display:none">{update_js}</script>'
         self._emit_to_output(html_script, payload_json=payload_json, update_last_add=False)
-
 
     def _send_replace_update(self, object_name: str, frame_data: Dict[str, Any], meta: Dict[str, Any]) -> None:
         """
