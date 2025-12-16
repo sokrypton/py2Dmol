@@ -669,6 +669,177 @@ viewer.add() ─────→ _send_incremental_update()
 - **Tracked state**: `_sent_frame_count` and `_sent_metadata` dictionaries
 - **Cross-iframe compatible**: Works via BroadcastChannel in Google Colab
 
+### Persistence Modes (`persistence` Parameter)
+
+**Purpose**: Control whether output cells are preserved when the notebook is reloaded.
+
+**Key Distinction**:
+- **Persistence** = Python output cell management (for notebook reload)
+- **add/replace** = JavaScript frame behavior (append vs replace last frame)
+- These are **orthogonal** - independent concepts
+
+#### Two Modes
+
+**1. `persistence=True` (default)**
+- **add()**: Uses `display()` with `display_id` → creates **NEW** output cells, stores DisplayHandle
+- **replace()**: Uses `handle.update()` → updates the **last add()** cell via stored handle
+- **Purpose**: Output cells are preserved when notebook is reloaded
+- **Trade-off**: More cells = notebook bloat, but visible history
+- **Use cases**: 
+  - Want cells to persist after notebook reload
+  - Building up data incrementally
+  - Each step important to preserve
+
+**2. `persistence=False`**
+- **Both add() and replace()**: Use `handle.update()` → updates single "mailbox" cell
+- **First call**: Uses `display()` with `display_id` to create mailbox, stores handle
+- **Subsequent calls**: Uses `handle.update()` on stored handle
+- **Purpose**: Ephemeral output, cells NOT preserved on reload
+- **Trade-off**: No notebook bloat, but no persistence
+- **Use cases**:
+  - Temporary visualizations
+  - Don't need cells after reload
+  - Large frame counts that would bloat notebook
+  - Real-time animations
+
+#### Operations (JavaScript Frame Behavior)
+
+**`add()` Operation:**
+- **Python**: 
+  - `persistence=True` → `display(display_id=...)` (new cell)
+  - `persistence=False` → first time: `display(display_id=...)`, then: `handle.update()`
+- **JavaScript**: **Always appends** frames to trajectory
+- **Result**: Frames accumulate in viewer
+
+**`replace()` Operation:**
+- **Python**: 
+  - `persistence=True` → `handle.update()` on last add() cell
+  - `persistence=False` → `handle.update()` on mailbox cell
+- **JavaScript**: **Replaces last frame** (or adds if no frames exist yet)
+- **Result**: Last frame is overwritten
+
+#### Implementation Details
+
+**DisplayHandle Approach (Both Modes):**
+```python
+# All display() calls MUST include display_id for handle.update() to work
+handle = display(HTML(...), display_id="unique_id")  # Required!
+
+# Later, update that specific cell
+handle.update(HTML(...))  # Works because display_id was provided
+```
+
+**persistence=True Implementation:**
+```python
+# add(): Creates new cells with unique display_ids
+display_id = f"py2dmol_add_{viewer_id}_{seq}"
+self._latest_output_handle = display(HTML(...), display_id=display_id)
+self._live_seq += 1  # Increment for next unique ID
+
+# replace(): Updates last add() cell
+self._latest_output_handle.update(HTML(...))  # Updates that specific cell
+```
+
+**persistence=False Implementation:**
+```python
+# First call: Create mailbox
+if not self._mailbox_handle:
+    display_id = f"py2dmol_mailbox_{viewer_id}"
+    self._mailbox_handle = display(HTML(...), display_id=display_id)
+
+# Subsequent calls: Update mailbox
+else:
+    self._mailbox_handle.update(HTML(...))  # Always updates same cell
+```
+
+**Why display_id is Required:**
+- Without `display_id`, `handle.update()` doesn't work properly
+- Jupyter needs the ID to target the correct output cell
+- This is true for BOTH persistence modes
+
+#### JavaScript Frame Handling
+
+```javascript
+// add() - Always appends
+handleIncrementalStateUpdate(frames, meta) {
+    for (const frame of frames) {
+        renderer.addFrame(frame);  // Append to trajectory
+    }
+}
+
+// replace() - Replaces last or adds if empty
+handleReplaceFrame(frame, meta) {
+    if (obj.frames && obj.frames.length > 0) {
+        obj.frames.pop();  // Remove last frame
+    }
+    renderer.addFrame(frame);  // Add new frame (replacing last)
+}
+```
+
+#### Code Examples
+
+**Example 1: Preserve cells** (`persistence=True`)
+```python
+viewer = py2Dmol.view()  # persistence=True by default
+viewer.show()
+
+viewer.add(coords1)      # Cell #1, frame appended
+viewer.add(coords2)      # Cell #2, frame appended
+viewer.replace(coords3)  # Updates Cell #2, JS replaces frame 2
+
+# Result: 2 cells preserved, frames = [coords1, coords3]
+# After reload: Both cells still visible
+```
+
+**Example 2: Ephemeral mailbox** (`persistence=False`)
+```python
+viewer = py2Dmol.view(persistence=False)
+viewer.show()
+
+viewer.add(coords1)      # Mailbox created, frame appended
+viewer.add(coords2)      # Mailbox updated, frame appended  
+viewer.replace(coords3)  # Mailbox updated, JS replaces frame 2
+
+# Result: Single mailbox cell, frames = [coords1, coords3]
+# After reload: Mailbox cell gone (not preserved)
+```
+
+**Example 3: Building trajectory** (`persistence=True` + `replace()`)
+```python
+viewer = py2Dmol.view()
+viewer.show()
+
+for step in range(100):
+    coords = optimize_step(step)
+    if step == 0:
+        viewer.add(coords)      # First frame, new cell
+    else:
+        viewer.replace(coords)  # Update same cell, JS replaces frame
+
+# Result: 1 cell, 1 frame (current optimization state)
+# After reload: Cell preserved with last state
+```
+
+**Example 4: Streaming without persistence** (`persistence=False` + `replace()`)
+```python
+viewer = py2Dmol.view(persistence=False)
+viewer.show()
+
+for temp in temps:
+    coords = simulate(temp)
+    viewer.replace(coords)  # Mailbox updated, JS replaces frame
+
+# Result: Mailbox cell, 1 frame (current state)
+# After reload: Nothing (ephemeral)
+```
+
+#### Related Functions
+
+- **Python**: `_send_incremental_update()`, `_send_replace_update()`, `_emit_to_output()`
+- **JavaScript**: `handleIncrementalStateUpdate()`, `handleReplaceFrame()`
+- **Constants**: `OP_INCREMENTAL_UPDATE`, `OP_REPLACE_FRAME`
+
+
 ### Cross-Cell Communication (BroadcastChannel)
 
 **Purpose**: Enable viewers in different notebook cells to stay synchronized, especially in Google Colab where each cell output runs in a separate iframe.

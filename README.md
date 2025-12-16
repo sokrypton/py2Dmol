@@ -203,6 +203,27 @@ viewer2.load_state('my_visualization.json')
 viewer2.show()
 ```
 
+
+
+## Super Advanced
+
+### `replace()`
+
+
+```python
+viewer = py2Dmol.view()
+viewer.show()
+viewer.add(coords1)  # Cell #1
+viewer.add(coords2)  # Cell #2
+viewer.replace(coords3)  # Updates Cell #2, replaces last frame
+```
+
+### `persistence`
+
+Control output cell behavior with the `persistence` parameter:
+- `viewer.view(persistence=True)`: Default - Building trajectories, want visible history
+- `viewer.view(persistence=False)`: Animations, temporary viz, avoid notebook bloat
+
 ## Reference
 **Atom codes**: Protein=P (CA), DNA=D (C4'), RNA=R (C4'), Ligand=L (heavy atoms)  
 **Bond thresholds**: Protein CA-CA 5.0 Å; DNA/RNA C4'-C4' 7.5 Å; Ligand 2.0 Å  

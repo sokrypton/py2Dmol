@@ -3940,7 +3940,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._setDataField('chains', 'cachedChains', chains, n, (n) => Array(n).fill('A'));
             this._setDataField('positionTypes', 'cachedPositionTypes', positionTypes, n, (n) => Array(n).fill('P'));
             this._setDataField('positionNames', 'cachedPositionNames', positionNames, n, (n) => Array(n).fill('UNK'));
-            this._setDataField('residueNumbers', 'cachedResidueNumbers', residueNumbers, n, (n) => Array.from({ length: n }, (_, i) => i + 1));
+        this._setDataField('residueNumbers', 'cachedResidueNumbers', residueNumbers, n, (n) => Array.from({ length: n }, (_, i) => i + 1));
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
@@ -6958,6 +6958,44 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     renderer.animate();
 
     // 12b. Handle incremental state updates from Python (memory-efficient)
+
+    /**
+     * Helper: Apply metadata fields to an object.
+     * 
+     * Centralizes metadata application logic shared by both handleIncrementalStateUpdate
+     * and handleReplaceFrame.
+     *
+     * @param {Object} obj - Object data to update
+     * @param {Object} meta - Metadata fields (color, contacts, bonds, scatter_config)
+     * @returns {boolean} True if rerender is needed
+     */
+    const applyMetadataToObject = (obj, meta) => {
+        if (!obj || !meta) return false;
+
+        let needsRerender = false;
+
+        // Apply visual metadata
+        if (meta.color) {
+            obj.color = meta.color;
+            needsRerender = true;
+        }
+        if (meta.contacts) {
+            obj.contacts = meta.contacts;
+            needsRerender = true;
+        }
+        if (meta.bonds) {
+            obj.bonds = meta.bonds;
+            needsRerender = true;
+        }
+
+        // Scatter config doesn't trigger rerender (handled separately)
+        if (meta.scatter_config) {
+            obj.scatterConfig = meta.scatter_config;
+        }
+
+        return needsRerender;
+    };
+
     const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject, seq = null) => {
         /**
          * Processes incremental updates sent from Python.
@@ -7091,6 +7129,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     };
 
     // 12c. Handle replace-frame updates (overwrite latest frame)
+    /**
+     * Handle replace-frame updates from Python replace() calls.
+     *
+     * Always replaces the LAST frame (or adds if no frames exist).
+     *
+     * @param {Object} frame - Frame data to replace with (coords, plddts, chains, etc.)
+     * @param {Object} [meta={}] - Metadata (color, contacts, bonds, scatter_config)
+     * @param {string|null} [objectName=null] - Target object name (defaults to current)
+     * @param {number|null} [seq=null] - Sequence number for deduplication
+     *
+     * Behavior:
+     *   - Removes LAST frame and adds new one
+     *   - If no frames exist, simply adds the new frame
+     *   - Builds trajectory incrementally as replace() is called
+     *
+     * Frame Processing:
+     *   - Uses renderer.addFrame() to ensure proper validation and data processing
+     *   - Updates _lastPlddtFrame and _lastPaeFrame tracking correctly
+     *   - Maintains shadow cache invalidation
+     *
+     * @see handleIncrementalStateUpdate For add() operations (always appends)
+     */
     const handleReplaceFrame = (frame, meta = {}, objectName = null, seq = null) => {
         if (typeof seq === 'number') {
             if (seq <= lastIncrementalSeq) return;
@@ -7104,16 +7164,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
         const obj = renderer.objectsData[objName];
 
-        // Reset frames and load single frame
-        obj.frames = [];
-        obj._lastPlddtFrame = -1;
-        obj._lastPaeFrame = -1;
+        // Replace last frame (or add if no frames exist)
+        if (obj.frames && obj.frames.length > 0) {
+            // Remove the last frame
+            obj.frames.pop();
+
+            // Adjust pLDDT/PAE tracking indices if they point to the removed frame
+            if (obj._lastPlddtFrame >= obj.frames.length) {
+                obj._lastPlddtFrame = obj.frames.length - 1;
+            }
+            if (obj._lastPaeFrame >= obj.frames.length) {
+                obj._lastPaeFrame = obj.frames.length - 1;
+            }
+        }
+        // Add new frame properly using addFrame() to ensure correct processing
         renderer.addFrame(frame, objName);
 
-        if (meta.color) obj.color = meta.color;
-        if (meta.contacts) obj.contacts = meta.contacts;
-        if (meta.bonds) obj.bonds = meta.bonds;
-        if (meta.scatter_config) obj.scatterConfig = meta.scatter_config;
+
+        // Apply metadata using helper
+        applyMetadataToObject(obj, meta);
+
 
         renderer._invalidateShadowCache();
         renderer.lastShadowRotationMatrix = null;
@@ -7126,7 +7196,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             renderer.cachedSegmentIndices = null;
             renderer.cachedSegmentIndicesFrame = -1;
             renderer.cachedSegmentIndicesObjectName = null;
-            renderer.setFrame(0);
+            renderer.setFrame(obj.frames.length > 0 ? obj.frames.length - 1 : 0);
         }
     };
 
@@ -7209,7 +7279,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const [newFramesByObject, changedMetadataByObject] = args;
                     handleIncrementalStateUpdate(newFramesByObject, changedMetadataByObject, seq);
                 } else if (operation === 'replaceFrame') {
-                    const [frame, metaArg, objectName] = args;
+                    const [frame, metaArg, objectName] = args;  // persistence no longer needed
                     handleReplaceFrame(frame, metaArg, objectName, seq);
                 }
             };

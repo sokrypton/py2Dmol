@@ -12,8 +12,17 @@ import json
 import copy
 import numpy as np
 import re
+from typing import Optional, Dict, Any
 from IPython.display import display, HTML, Javascript, update_display
     
+# ============================================================================
+# BROADCAST OPERATION CONSTANTS
+# ============================================================================
+
+# Operation names for BroadcastChannel messages (Python -> JavaScript)
+OP_INCREMENTAL_UPDATE = "incrementalStateUpdate"
+OP_REPLACE_FRAME = "replaceFrame"
+
 # ============================================================================
 # CONFIG DEFAULTS - Single source of truth
 # ============================================================================
@@ -260,6 +269,24 @@ def _normalize_color(color):
 
 # --- view Class ---
 
+"""
+PERSISTENCE & LIVE UPDATE SYSTEM
+=================================
+
+The `persistence` parameter controls whether output cells are preserved after notebook reload.
+
+**Quick Summary:**
+- persistence=True: add() creates new cells, replace() updates last cell  
+- persistence=False: Both update single "mailbox" cell (ephemeral)
+- add/replace controls JavaScript frame behavior (append vs replace), independent of persistence
+
+**Implementation:**
+- Uses DisplayHandle.update() throughout for safety
+- MUST use display_id when calling display() for update() to work
+
+For complete documentation, see: technical_readme.md → "Persistence Modes"
+"""
+
 class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, shadow=True, shadow_strength=0.5,
@@ -345,23 +372,72 @@ class view:
         # Track sent frames and metadata to enable true incremental updates
         self._sent_frame_count = {}       # {"obj_name": num_frames_sent}
         self._sent_metadata = {}          # {"obj_name": {metadata_dict}}
-        self._live_seq = 0                # Monotonic sequence for live mailbox updates
-        self._incremental_display_id = None  # Display ID for mailbox updates
+        self._live_seq = 0                # Monotonic sequence for deduplication
+        self._mailbox_handle = None       # DisplayHandle for mailbox (persistence=False)
+        self._latest_output_handle = None   # DisplayHandle of last add() for replace() updates (persistence=True)
         self._persistence = bool(persistence)
 
-    def _ensure_mailbox_display(self):
+
+    def _emit_to_output(self, html_content: str, payload_json: Optional[str] = None, update_last_add: bool = False) -> None:
         """
-        Ensure a hidden mailbox cell exists for update_display paths.
-        Safe to call multiple times; no-ops if already initialized.
+        Emit HTML to output based on persistence mode.
+
+        Uses DisplayHandle.update() throughout for safety and simplicity.
+
+        Args:
+            html_content (str): HTML content to emit (usually JavaScript)
+            payload_json (str, optional): JSON payload for mailbox mode
+            update_last_add (bool): If True, this is a replace() operation
+
+        Behavior:
+            persistence=True + add():
+                - display() → creates NEW cell, stores handle
+            
+            persistence=True + replace():
+                - handle.update() → updates last add() cell
+
+            persistence=False (both add/replace):
+                - First time: display() → creates mailbox, stores handle
+                - Subsequent: handle.update() → updates mailbox
+
+        Note: Using handles instead of display_id strings prevents accidentally
+        updating the wrong cell.
         """
-        if self._incremental_display_id:
-            return
         viewer_id = self.config["viewer_id"]
-        self._incremental_display_id = f"py2dmol_inc_{viewer_id}"
-        display(
-            HTML(f'<script id="py2dmol_live_{viewer_id}" type="application/json"></script>'),
-            display_id=self._incremental_display_id,
-        )
+        
+        if self._persistence:
+            if update_last_add and self._latest_output_handle:
+                # Replace mode: Update existing add() output
+                self._latest_output_handle.update(HTML(html_content))
+            else:
+                # Add mode: Create new output with display_id and store handle
+                display_id = f"py2dmol_add_{viewer_id}_{self._live_seq}"
+                self._latest_output_handle = display(HTML(html_content), display_id=display_id)
+                self._live_seq += 1  # Increment for next unique display_id
+        else:
+            # Mailbox mode: Use handle.update() for all operations
+            if not self._mailbox_handle:
+                # First time: create mailbox with display_id and store handle
+                display_id = f"py2dmol_mailbox_{viewer_id}"
+                if payload_json:
+                    mailbox_html = (
+                        f'<script id="py2dmol_live_{viewer_id}" type="application/json" style="display:none">{payload_json}</script>'
+                        f'{html_content}'
+                    )
+                else:
+                    mailbox_html = html_content
+                self._mailbox_handle = display(HTML(mailbox_html), display_id=display_id)
+            else:
+                # Update existing mailbox
+                if payload_json:
+                    mailbox_html = (
+                        f'<script id="py2dmol_live_{viewer_id}" type="application/json" style="display:none">{payload_json}</script>'
+                        f'{html_content}'
+                    )
+                else:
+                    mailbox_html = html_content
+                self._mailbox_handle.update(HTML(mailbox_html))
+
 
         # --- Alignment/Dynamic State ---
         self._coords = None
@@ -481,16 +557,47 @@ class view:
                 return obj
         return None
 
-    def _send_incremental_update(self):
+    def _send_incremental_update(self) -> None:
         """
-        Sends incremental state update to viewer (frames and metadata).
+        Send incremental state update to viewer (for add() operations).
 
-        Only sends:
-        - NEW frames that haven't been sent yet
-        - CHANGED metadata (color, contacts, bonds, rotation, center)
+        Called by: add() method when in live mode (_is_live=True)
 
-        Uses display(Javascript()) to create ephemeral scripts that get garbage collected.
-        Heavy processing is done in viewer-mol.js (handleIncrementalStateUpdate).
+        Behavior:
+            - persistence=True: Creates NEW output cell using display()
+            - persistence=False: Updates SAME mailbox cell using update_display()
+
+        Data Sent:
+            - NEW frames that haven't been sent yet (tracked via _sent_frame_count)
+            - CHANGED metadata only (color, contacts, bonds, rotation, center)
+
+        Frame Accumulation: YES - frames always append to trajectory
+
+        Output Management:
+            persistence=True:
+                - Calls display(HTML(...))
+                - Stores returned DisplayHandle in _latest_output_handle
+                - Creates visible output cell in notebook
+                - Each call creates a new cell
+
+            persistence=False:
+                - Calls handle.update() on _mailbox_handle
+                - Updates the single "mailbox" cell
+                - Ephemeral output (doesn't bloat notebook)
+
+        JavaScript Handler: handleIncrementalStateUpdate()
+
+        Flow:
+            add() → _send_incremental_update() 
+                ↓
+                persistence=True? → display() → NEW cell → store handle
+                persistence=False? → update_display() → SAME mailbox cell
+                ↓
+                JavaScript receives → appends frames to trajectory
+
+        See Also:
+            _send_replace_update(): For replace() operations
+            handleIncrementalStateUpdate (viewer-mol.js): JavaScript handler
         """
         if not self._is_live:
             return
@@ -570,24 +677,51 @@ class view:
             f'const f=p.frames||p.new_frames||{{}};'
             f'const m=p.meta||p.changed_meta||{{}};'
             f'const vid="{viewer_id}";'
-            f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);ch.postMessage({{operation:"incrementalStateUpdate",args:[f,m],seq:p.seq}});}}catch(e){{}}'
+            f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);ch.postMessage({{operation:"{OP_INCREMENTAL_UPDATE}",args:[f,m],seq:p.seq}});}}catch(e){{}}'
             f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleIncrementalStateUpdate(f,m,p.seq);}}'
             f'}})();'
         )
 
-        if self._persistence:
-            display(HTML(f'<script style="display:none">{update_js}</script>'))
-        else:
-            self._ensure_mailbox_display()
-            mailbox_html = (
-                f'<script id="py2dmol_live_{viewer_id}" type="application/json" style="display:none">{payload_json}</script>'
-                f'<script style="display:none">{update_js}</script>'
-            )
-            update_display(HTML(mailbox_html), display_id=self._incremental_display_id)
+        # Emit to output using helper
+        html_script = f'<script style="display:none">{update_js}</script>'
+        self._emit_to_output(html_script, payload_json=payload_json, update_last_add=False)
 
-    def _send_replace_update(self, object_name, frame_data, meta):
+
+    def _send_replace_update(self, object_name: str, frame_data: Dict[str, Any], meta: Dict[str, Any]) -> None:
         """
-        Sends a replace-frame message (overwrite last frame) to the viewer.
+        Send replace-frame message to viewer (for replace() operations).
+
+        Called by: replace() method when in live mode (_is_live=True)
+
+        Behavior:
+            persistence=True:
+                - Updates LAST add() output cell using handle.update()
+                - JavaScript replaces LAST frame only → builds trajectory
+            
+            persistence=False:
+                - Updates mailbox cell using update_display()
+                - JavaScript replaces ALL frames → streaming mode
+
+        Args:
+            object_name: Name of object to update
+            frame_data: Frame data (coords, plddts, etc.)
+            meta: Metadata (color, contacts, bonds, scatter_config)
+
+        Payload includes:
+            - 'persistence' flag sent to JavaScript
+            - Determines replace behavior in handleReplaceFrame()
+
+        Flow:
+            replace() → _send_replace_update()
+                ↓
+                persistence=True? → handle.update() → update last cell
+                persistence=False? → update_display() → update mailbox
+                ↓
+                JavaScript adapts behavior based on persistence flag
+
+        See Also:
+            _send_incremental_update(): For add() operations
+            handleReplaceFrame (viewer-mol.js): JavaScript handler
         """
         if not self._is_live:
             return
@@ -612,17 +746,15 @@ class view:
             f'const f=p.frame||{{}};'
             f'const m=p.meta||{{}};'
             f'const vid="{viewer_id}";'
-            f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);ch.postMessage({{operation:"replaceFrame",args:[f,m,obj],seq:p.seq}});}}catch(e){{}}'
+            f'try{{const ch=new BroadcastChannel("py2dmol_"+vid);ch.postMessage({{operation:"{OP_REPLACE_FRAME}",args:[f,m,obj],seq:p.seq}});}}catch(e){{}}'
             f'if(window.py2dmol_viewers&&window.py2dmol_viewers[vid]){{window.py2dmol_viewers[vid].handleReplaceFrame(f,m,obj,p.seq);}}'
             f'}})();'
         )
 
-        self._ensure_mailbox_display()
-        mailbox_html = (
-            f'<script id="py2dmol_live_{viewer_id}" type="application/json" style="display:none">{payload_json}</script>'
-            f'<script style="display:none">{update_js}</script>'
-        )
-        update_display(HTML(mailbox_html), display_id=self._incremental_display_id)
+        # Emit to output using helper
+        html_script = f'<script style="display:none">{update_js}</script>'
+        self._emit_to_output(html_script, payload_json=payload_json, update_last_add=True)
+
 
     def _display_viewer(self, static_data=None, include_libs=True):
         """
@@ -1475,10 +1607,13 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
     def replace(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
                 name=None, align=False, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None):
         """
-        Replace the current frame for an object (streaming only, no history).
+        Replace frame(s) for an object (streaming mode).
 
-        Optimized for real-time visualization where only the latest frame matters.
-        Does not accumulate frames; frontend keeps a single frame for the object.
+        Behavior depends on persistence setting:
+        - persistence=False: Replaces ALL frames → always 1 frame (no history)
+        - persistence=True: Replaces LAST frame only → builds up trajectory over time
+        
+        Optimized for real-time visualization where you want to update incrementally.
         """
         # Ensure live viewer exists
         if not self._is_live:
@@ -1532,8 +1667,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Emit replace update
         self._send_replace_update(name, frame_data, meta)
 
-        # Keep only latest frame locally
-        target_obj["frames"] = [frame_data]
+        # Update local frame storage based on persistence mode
+        if self._persistence:
+            # persistence=True: Replace only the last frame (build trajectory)
+            if len(target_obj["frames"]) > 0:
+                target_obj["frames"][-1] = frame_data
+            else:
+                target_obj["frames"] = [frame_data]
+        else:
+            # persistence=False: Replace all frames (streaming mode, no history)
+            target_obj["frames"] = [frame_data]
 
     def set_color(self, color, name=None, chain=None, position=None, frame=None):
         """
@@ -2404,9 +2547,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Reset data display ID for new viewer
         self._data_display_id = None
 
-        # Initialize mailbox display for incremental updates (single-slot, overwrite-only) when needed
-        if not self._persistence:
-            self._ensure_mailbox_display()
+        # Note: Mailbox handle (for persistence=False) is created lazily on first add/replace
 
     def _detect_redundant_fields(self, frames):
         """
