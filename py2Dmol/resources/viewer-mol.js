@@ -2584,6 +2584,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 window.SEQ.buildView();
             }
 
+            // Remap entropy for the extracted object
+            if (window.MSA && typeof window.MSA.mapEntropyToStructure === 'function') {
+                const extractedObj = this.objectsData[extractName];
+                if (extractedObj) {
+                    this.entropy = window.MSA.mapEntropyToStructure(extractedObj, 0);
+                    if (this._updateEntropyOptionVisibility) this._updateEntropyOptionVisibility();
+                }
+            }
+
         }
 
 
