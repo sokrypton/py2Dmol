@@ -19,6 +19,125 @@ let viewerApi = null;
 let pendingObjects = [];
 let scatterViewer = null;
 
+function downloadTextFile(filename, content, mimeType = 'text/plain') {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function exportEntropyTSV() {
+    if (!viewerApi?.renderer) {
+        setStatus('No viewer available. Load a structure first.', true);
+        return;
+    }
+
+    const renderer = viewerApi.renderer;
+    const objectName = renderer.currentObjectName;
+    if (!objectName) {
+        setStatus('No object selected. Load a structure first.', true);
+        return;
+    }
+
+    const obj = renderer.objectsData?.[objectName];
+    if (!obj?.frames?.length) {
+        setStatus('No frame data available for export.', true);
+        return;
+    }
+
+    const frameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
+    const frame = obj.frames[frameIndex] || obj.frames[0];
+    if (!frame?.coords?.length) {
+        setStatus('No coordinates available for export.', true);
+        return;
+    }
+
+    // Best-effort: ensure renderer has current frame data loaded (keeps export consistent with view)
+    if (typeof renderer._loadFrameData === 'function') {
+        try {
+            renderer._loadFrameData(frameIndex, false);
+        } catch (e) {
+            console.warn('Failed to load frame data for TSV export:', e);
+        }
+    }
+
+    // Resolve per-position arrays. Some saves hoist redundant fields to the object-level.
+    const resolveField = (fieldName) => {
+        const candidate = frame?.[fieldName] ?? obj?.[fieldName] ?? null;
+        return Array.isArray(candidate) ? candidate : null;
+    };
+
+    // Prefer renderer helper for pLDDT (handles inherited data)
+    let resolvedPlddts = null;
+    if (typeof renderer._resolvePlddtData === 'function') {
+        try {
+            resolvedPlddts = renderer._resolvePlddtData(obj, frameIndex);
+        } catch (e) {
+            console.warn('Failed to resolve pLDDT data for TSV export:', e);
+        }
+    }
+    if (!Array.isArray(resolvedPlddts)) {
+        resolvedPlddts = resolveField('plddts');
+    }
+
+    const resolvedChains = resolveField('chains');
+    const resolvedResidueNumbers = resolveField('residue_numbers');
+    const resolvedPositionNames = resolveField('position_names');
+    const resolvedPositionTypes = resolveField('position_types');
+
+    // Entropy is computed/mapped on the renderer when MSA data exists; may be missing.
+    // Do NOT require it for export.
+    let entropyArray = Array.isArray(renderer.entropy) ? renderer.entropy : null;
+    if (!entropyArray && window.MSA?.mapEntropyToStructure) {
+        try {
+            entropyArray = window.MSA.mapEntropyToStructure(obj, frameIndex);
+        } catch (e) {
+            // Not fatal
+        }
+    }
+
+    const n = frame.coords.length;
+
+    const rows = [];
+    rows.push(['position_index', 'chain', 'residue_number', 'residue_name', 'position_type', 'plddt', 'entropy'].join('\t'));
+
+    for (let i = 0; i < n; i++) {
+        const chain = (resolvedChains && i < resolvedChains.length) ? (resolvedChains[i] ?? '') : '';
+        const resNum = (resolvedResidueNumbers && i < resolvedResidueNumbers.length) ? (resolvedResidueNumbers[i] ?? '') : '';
+        const resName = (resolvedPositionNames && i < resolvedPositionNames.length) ? (resolvedPositionNames[i] ?? '') : '';
+        const posType = (resolvedPositionTypes && i < resolvedPositionTypes.length) ? (resolvedPositionTypes[i] ?? '') : '';
+
+        const plddtVal = (resolvedPlddts && i < resolvedPlddts.length) ? resolvedPlddts[i] : undefined;
+        const entropyVal = (entropyArray && i < entropyArray.length) ? entropyArray[i] : undefined;
+
+        const plddt = Number.isFinite(plddtVal) ? String(plddtVal) : '';
+        const entropy = Number.isFinite(entropyVal) ? String(entropyVal) : '';
+
+        // Avoid tabs/newlines inside fields
+        const safe = (v) => String(v).replace(/[\t\n\r]/g, ' ');
+
+        rows.push([
+            String(i),
+            safe(chain),
+            safe(resNum),
+            safe(resName),
+            safe(posType),
+            plddt,
+            entropy
+        ].join('\t'));
+    }
+
+    const tsv = rows.join('\n') + '\n';
+    const filename = `${objectName}_frame_${frameIndex}_residue_metrics.tsv`;
+    downloadTextFile(filename, tsv, 'text/tab-separated-values');
+    setStatus(`Exported TSV: ${filename}`);
+}
+
 // Helper function to check if PAE data is valid
 function isValidPAE(pae) {
     return pae && ((Array.isArray(pae) && pae.length > 0) || (pae.buffer && pae.length > 0));
@@ -453,6 +572,14 @@ function setupEventListeners() {
             } else {
                 console.warn("Copy selection feature not available");
             }
+        });
+    }
+
+    const exportBtn = document.getElementById('exportEntropyTsvButton');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            exportEntropyTSV();
         });
     }
 

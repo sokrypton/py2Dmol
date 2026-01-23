@@ -1549,7 +1549,9 @@
                     hoveredResidueInfo = {
                         chain: residueData.chain,
                         resName: residueData.ligandName || residueData.resName,
-                        resSeq: residueData.resSeq
+                        resSeq: residueData.resSeq,
+                        positionIndex: residueData.positionIndices[0],
+                        positionIndicesCount: residueData.positionIndices.length
                     };
                 } else if (residueData.positionIndex >= 0 && callbacks.highlightAtom) {
                     callbacks.highlightAtom(residueData.positionIndex);
@@ -1557,7 +1559,8 @@
                     hoveredResidueInfo = {
                         chain: residueData.chain,
                         resName: residueData.resName,
-                        resSeq: residueData.resSeq
+                        resSeq: residueData.resSeq,
+                        positionIndex: residueData.positionIndex
                     };
                 } else {
                     hoveredResidueInfo = null;
@@ -2163,11 +2166,44 @@
             highlightOverlayCtx.textBaseline = 'bottom';
 
             // Build tooltip text
-            const lines = [
-                `Chain: ${hoveredResidueInfo.chain}`,
-                `Residue: ${hoveredResidueInfo.resName}`,
-                `Index: ${hoveredResidueInfo.resSeq}`
-            ];
+            const lines = [];
+
+            lines.push(`Chain: ${hoveredResidueInfo.chain}`);
+            lines.push(`Residue: ${hoveredResidueInfo.resName}`);
+            lines.push(`Index: ${hoveredResidueInfo.resSeq}`);
+
+            const posIndex = hoveredResidueInfo.positionIndex;
+            if (typeof posIndex === 'number' && Number.isFinite(posIndex) && posIndex >= 0) {
+                lines.push(`Pos: ${posIndex}`);
+
+                // Prefer current renderer arrays (they reflect current frame/object)
+                const resName = renderer.position_names?.[posIndex];
+                const resNum = renderer.residue_numbers?.[posIndex];
+                const posType = renderer.position_types?.[posIndex];
+                if (resName && resName !== hoveredResidueInfo.resName) {
+                    lines.push(`Name: ${resName}`);
+                }
+                if (resNum !== undefined && resNum !== null && resNum !== '' && String(resNum) !== String(hoveredResidueInfo.resSeq)) {
+                    lines.push(`Res#: ${resNum}`);
+                }
+                if (posType) {
+                    lines.push(`Type: ${posType}`);
+                }
+
+                const plddt = renderer.plddts?.[posIndex];
+                if (Number.isFinite(plddt)) {
+                    lines.push(`pLDDT: ${Number(plddt).toFixed(1)}`);
+                }
+
+                const entropy = renderer.entropy?.[posIndex];
+                if (Number.isFinite(entropy)) {
+                    lines.push(`Entropy: ${Number(entropy).toFixed(3)}`);
+                }
+            }
+
+            if (hoveredResidueInfo.positionIndicesCount && hoveredResidueInfo.positionIndicesCount > 1) {
+                lines.push(`Count: ${hoveredResidueInfo.positionIndicesCount}`);
+            }
 
             // Measure text to size background
             const textMetrics = lines.map(line => highlightOverlayCtx.measureText(line));
