@@ -513,7 +513,21 @@ class view:
       self._plddts = plddts
       self._chains = chains
       self._position_types = position_types
-      self._pae = pae
+
+      # Normalize PAE to a 2D numpy float array so arithmetic in _get_data_dict
+      # works correctly regardless of whether the caller passed a list-of-lists,
+      # a plain list, or an ndarray.
+      if pae is not None:
+          pae_arr = np.asarray(pae, dtype=float)
+          if pae_arr.ndim == 2:
+              self._pae = pae_arr
+          else:
+              print(f"Warning: PAE must be a 2D matrix, got shape {pae_arr.shape}. "
+                    "Did you pass `paes=data['pae']` instead of `paes=[data['pae']]`? Ignoring PAE.")
+              self._pae = None
+      else:
+          self._pae = None
+
       self._scatter = scatter
       self._position_names = position_names
       self._position_residue_numbers = residue_numbers
