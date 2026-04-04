@@ -513,7 +513,21 @@ class view:
       self._plddts = plddts
       self._chains = chains
       self._position_types = position_types
-      self._pae = pae
+
+      # Normalize PAE to a 2D numpy float array so arithmetic in _get_data_dict
+      # works correctly regardless of whether the caller passed a list-of-lists,
+      # a plain list, or an ndarray.
+      if pae is not None:
+          pae_arr = np.asarray(pae, dtype=float)
+          if pae_arr.ndim == 2:
+              self._pae = pae_arr
+          else:
+              print(f"Warning: PAE must be a 2D matrix, got shape {pae_arr.shape}. "
+                    "Did you pass `paes=data['pae']` instead of `paes=[data['pae']]`? Ignoring PAE.")
+              self._pae = None
+      else:
+          self._pae = None
+
       self._scatter = scatter
       self._position_names = position_names
       self._position_residue_numbers = residue_numbers
@@ -1902,6 +1916,23 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             color (str, optional): Color for this structure. Can be a color mode (e.g., "chain", "plddt",
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
         """
+
+        # Normalize paes: accept a single 2D matrix in addition to a list of matrices.
+        # Distinguishes by checking the depth of nesting:
+        #   paes=matrix        (ndarray/list-of-lists, ndim==2) → wrap as [matrix]
+        #   paes=[m1, m2, ...] (list of 2D matrices, ndim==3)   → keep as-is
+        if paes is not None:
+            try:
+                paes_arr = np.asarray(paes, dtype=float)
+                if paes_arr.ndim == 2:
+                    paes = [paes_arr]
+                elif paes_arr.ndim == 3:
+                    paes = [paes_arr[i] for i in range(paes_arr.shape[0])]
+                # ndim 1 or other: leave as-is; _update will warn when it gets there
+            except (ValueError, TypeError):
+                # Jagged / mixed-size matrices (different chain counts per model).
+                # Try element-wise conversion so each entry becomes a 2D numpy array.
+                paes = [np.asarray(m, dtype=float) for m in paes]
 
         # Allow passing a 4-letter PDB code directly; fetch if local file is missing
         if isinstance(filepath, str) and len(filepath) == 4 and filepath.isalnum() and not os.path.exists(filepath):
