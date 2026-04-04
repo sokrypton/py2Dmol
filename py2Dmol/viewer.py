@@ -1917,6 +1917,23 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                   "rainbow", "auto", "entropy", "deepmind") or a literal color (e.g., "red", "#ff0000").
         """
 
+        # Normalize paes: accept a single 2D matrix in addition to a list of matrices.
+        # Distinguishes by checking the depth of nesting:
+        #   paes=matrix        (ndarray/list-of-lists, ndim==2) → wrap as [matrix]
+        #   paes=[m1, m2, ...] (list of 2D matrices, ndim==3)   → keep as-is
+        if paes is not None:
+            try:
+                paes_arr = np.asarray(paes, dtype=float)
+                if paes_arr.ndim == 2:
+                    paes = [paes_arr]
+                elif paes_arr.ndim == 3:
+                    paes = [paes_arr[i] for i in range(paes_arr.shape[0])]
+                # ndim 1 or other: leave as-is; _update will warn when it gets there
+            except (ValueError, TypeError):
+                # Jagged / mixed-size matrices (different chain counts per model).
+                # Try element-wise conversion so each entry becomes a 2D numpy array.
+                paes = [np.asarray(m, dtype=float) for m in paes]
+
         # Allow passing a 4-letter PDB code directly; fetch if local file is missing
         if isinstance(filepath, str) and len(filepath) == 4 and filepath.isalnum() and not os.path.exists(filepath):
             resolved = self._get_filepath_from_pdb_id(filepath)
