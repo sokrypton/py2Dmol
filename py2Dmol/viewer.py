@@ -57,6 +57,11 @@ DEFAULT_CONFIG = {
     },
     "overlay": {
         "enabled": False
+    },
+    "cutoffs": {
+        "protein_bond": 5.0,
+        "nucleic_bond": 7.5,
+        "ligand_bond": 2.0
     }
 }
 
@@ -103,6 +108,12 @@ def _nest_config(**flat):
 
     # Overlay
     if "overlay" in flat: config["overlay"]["enabled"] = flat["overlay"]
+
+    # Cutoffs
+    if "cutoffs" in flat and isinstance(flat["cutoffs"], dict):
+        for key in ("protein_bond", "nucleic_bond", "ligand_bond"):
+            if key in flat["cutoffs"]:
+                config["cutoffs"][key] = float(flat["cutoffs"][key])
 
     return config
     
@@ -292,7 +303,7 @@ class view:
         color="auto", colorblind=False, shadow=True, shadow_strength=0.5,
         outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True,
-        persistence=True, id=None,
+        persistence=True, id=None, cutoffs=None,
     ):
         """
         Initialize a py2Dmol viewer.
@@ -320,6 +331,10 @@ class view:
                                 cell (classic behavior). If False, updates reuse a single hidden
                                 cell (mailbox) to avoid output bloat.
             id (str): Custom viewer ID. If None, auto-generated. Default None.
+            cutoffs (dict): Maximum distances (Å) for drawing bonds. Keys:
+                            "protein_bond" (CA-CA, default 5.0),
+                            "nucleic_bond" (C4'-C4', default 7.5),
+                            "ligand_bond" (heavy-atom, default 2.0).
         """
         # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
@@ -353,7 +368,8 @@ class view:
             scatter=scatter,
             scatter_size=scatter_size,
             overlay=overlay,
-            detect_cyclic=detect_cyclic
+            detect_cyclic=detect_cyclic,
+            cutoffs=cutoffs,
         )
         
         # Add viewer_id to root level

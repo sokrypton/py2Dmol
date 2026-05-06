@@ -4106,9 +4106,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } else {
                 // Generate Segment Definitions ONCE
                 this.segmentIndices = [];
-                const proteinChainbreak = 5.0;
-                const nucleicChainbreak = 7.5;
-                const ligandBondCutoff = 2.0;
+                const cutoffs = this.config.cutoffs || {};
+                const proteinChainbreak = cutoffs.protein_bond ?? 5.0;
+                const nucleicChainbreak = cutoffs.nucleic_bond ?? 7.5;
+                const ligandBondCutoff = cutoffs.ligand_bond ?? 2.0;
                 const proteinChainbreakSq = proteinChainbreak * proteinChainbreak;
                 const nucleicChainbreakSq = nucleicChainbreak * nucleicChainbreak;
                 const ligandBondCutoffSq = ligandBondCutoff * ligandBondCutoff;
