@@ -207,22 +207,23 @@ def best_view(coords):
 
   return best_rotation, center
 
-def kabsch(a, b):
+def kabsch(a, b, allow_reflection=False):
     """Calculates the optimal rotation matrix for aligning a to b."""
     ab = a.T @ b
     u, s, vh = np.linalg.svd(ab, full_matrices=False)
-    flip = np.linalg.det(u @ vh) < 0
-    if flip.any():
-        u[..., -1] = np.where(flip[..., None], -u[..., -1], u[..., -1])
+    if not allow_reflection:
+        flip = np.linalg.det(u @ vh) < 0
+        if flip.any():
+            u[..., -1] = np.where(flip[..., None], -u[..., -1], u[..., -1])
     return u @ vh  # Return the full rotation matrix
 
-def align_a_to_b(a, b):
+def align_a_to_b(a, b, allow_reflection=False):
     """Aligns coordinate set 'a' to 'b' using Kabsch algorithm."""
     a_mean = a.mean(axis=-2, keepdims=True)
     a_cent = a - a_mean
     b_mean = b.mean(axis=-2, keepdims=True)
     b_cent = b - b_mean
-    R = kabsch(a_cent, b_cent)
+    R = kabsch(a_cent, b_cent, allow_reflection=allow_reflection)
     a_aligned = (a_cent @ R) + b_mean
     return a_aligned
 
@@ -495,7 +496,7 @@ class view:
 
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None):
+    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False):
       """
       Updates the internal state with new data. Coordinates are kept in original space.
       Rotation matrix is ALWAYS computed for first frame (best_view).
@@ -521,7 +522,7 @@ class view:
       else:
           # Subsequent frames, align to the first frame if align=True
           if align and self._coords.shape == coords.shape:
-              self._coords = align_a_to_b(coords, self._coords)
+              self._coords = align_a_to_b(coords, self._coords, allow_reflection=allow_reflection)
           else:
               self._coords = coords
       
@@ -1394,7 +1395,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None):
+            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False):
         """
         Adds a new *frame* of data to the viewer.
 
@@ -1412,6 +1413,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
             align (bool, optional): If True, aligns subsequent frames to the first frame.
                                    Best-view rotation is ALWAYS computed for first frame. Defaults to True.
+            allow_reflection (bool, optional): If True, allows mirroring during alignment (may flip chirality). Defaults to False.
             position_names (list, optional): N-length list of position names.
             residue_numbers (list, optional): N-length list of PDB residue sequence numbers (resSeq).
                                               One per position. For ligands, multiple positions may share the same residue number.
@@ -1474,7 +1476,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     contacts=contacts,  # contacts/bonds/color assumed shared across batch
                     bonds=bonds,
                     color=color,
-                    scatter_config=scatter_config
+                    scatter_config=scatter_config,
+                    allow_reflection=allow_reflection,
                 )
 
             # Restore live flag and send all new frames in one incremental message
@@ -1528,7 +1531,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
 
         # --- Step 2: Update Python-side alignment state ---
         self._update(coords, plddts, chains, position_types, pae, scatter,
-            align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types)
+            align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types,
+            allow_reflection=allow_reflection)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         data_dict["name"] = None  # Don't set frame-level name; use object name instead
@@ -1621,7 +1625,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
 
     def replace(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None):
+                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False):
         """
         Replace frame(s) for an object (streaming mode).
 
@@ -1651,7 +1655,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Update internal state and build frame
         self._update(coords, plddts=plddts, chains=chains, position_types=position_types, pae=pae,
                      scatter=scatter, align=align, position_names=position_names,
-                     residue_numbers=residue_numbers, atom_types=atom_types)
+                     residue_numbers=residue_numbers, atom_types=atom_types, allow_reflection=allow_reflection)
 
         frame_data = self._get_data_dict()
         if color is not None:
