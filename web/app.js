@@ -471,6 +471,17 @@ function setupEventListeners() {
             });
         }
     }
+    // Hand-drawn build-up, beside Colorblind and Dark. Unchecking it (or
+    // touching the structure) skips to the finished picture, so it is never
+    // something you have to wait out.
+    const drawCheckbox = document.getElementById('drawCheckbox');
+    if (drawCheckbox) {
+        drawCheckbox.addEventListener('change', () => {
+            if (!renderer) return;
+            renderer.drawCheckbox = drawCheckbox;
+            renderer.setDrawMode(drawCheckbox.checked);
+        });
+    }
     if (prevObjectButton) prevObjectButton.addEventListener('click', gotoPreviousObject);
     if (nextObjectButton) nextObjectButton.addEventListener('click', gotoNextObject);
 

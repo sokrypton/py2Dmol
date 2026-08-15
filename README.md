@@ -150,16 +150,57 @@ which is where their edges were illegible anyway. This is for legibility, not sp
 ribbon actually issues slightly *more* canvas operations than the slab, because the slab path
 merges faces the flat path emits separately.
 
-**Image export** (the camera button) reproduces all of this, including the pencil grain (as an
-`feTurbulence` filter) and gradient shading. Pick SVG, compressed SVG, or PNG; PNG takes a DPI,
-where 300 dpi on a 600px view gives 1875x1875. A PNG is rendered *at* that size rather than
-scaled up afterwards, so a higher DPI buys genuinely finer curves, not just more pixels — while
-the settings that are in **pixels** rather than Ångströms (outline width, selection ink, the
-zoom test behind the thickness fade) are scaled to keep the proportions you see on screen. A
-300 dpi export is the view you were looking at, drawn larger and more finely; it is not a
-different picture with hairline outlines. Exports go out on a **transparent** background
-whatever the viewer is set to, so a figure drops into a document without a baked-in white or
-black rectangle behind it.
+**Draw** (in the Style panel, beside Colorblind and Dark) builds the picture up the way an
+illustrator makes one. A pencil line goes down first, on exactly the edges that are visible —
+never the creases inside a form, never the edges behind it. The colour follows a beat after the
+drawing is finished, laid on slightly off register and running past its edge in places; the
+graphite shows through it, because a wash is transparent — and it stays there. Both layers sweep
+N→C, so the hand follows the chain rather than wiping across the canvas.
+
+**What it arrives at is watercolour over pencil**, and it stays there: the graphite is never
+erased, the dark outline never goes down, and the colour keeps its off-register and its runs.
+Those are the look being made, not blemishes on the way to a clean render. Draw stays on to hold
+it; turning Draw off is what returns the viewer to its ordinary picture, and pressing it again
+replays the whole thing from blank paper.
+
+It is a gate on the ordinary render rather than a separate pipeline: every frame is a normal
+depth-sorted drawing of the part that exists so far, so occlusion stays correct throughout. The
+view stays live while it draws — drag, zoom and pan all work, and the drawing carries on.
+Cartoon style only.
+
+The hand does not move at a constant rate: it runs along straight stretches and slows through
+turns, since a turn is where the line can go wrong. Measured over the SS benchmark, the sharpest
+turns take 2.0× as long per residue as a straight step, loops 1.28×, helices 1.12× — a helix
+being close to straight on purpose, because its *axis* is what the hand follows.
+
+**Recording it, or keeping a frame.** While Draw (or Rotate) is on — and Draw stays on after the
+run — the camera button becomes **Save Video**, and its panel gives one row per output: seconds
+and frame rate ending in a record dot, DPI ending in a camera. Recording restarts the drawing
+from blank paper and captures the whole run; the camera grabs the picture as it stands right
+now, half-drawn and watercolour and all. Opening the panel pauses the animation — which is what
+makes the frame grab useful — and dismissing it carries on from where it paused. Frames are stepped by the recorder
+rather than by the clock, so one rendered frame is one video frame however slow a frame is to
+draw, and recording keeps working in a background tab. With Rotate on as well, the view makes
+exactly one revolution while the drawing is made.
+
+**Image export** (the camera button) offers PNG or SVG, and PNG takes a DPI — 300 dpi on a 600px
+view gives 1875x1875. Shift-click skips the panel and writes a file with the settings last used.
+In Draw mode it is PNG only: what makes that look is a pencil line a fraction of a pixel wide,
+paint sitting off register and translucent stains, which is a poor thing to ask a vector file to
+carry. Format is not offered while an animation is up, and DPI never applies to a recording — that is
+taken straight off the canvas at the size it is on screen.
+
+A PNG is rendered *at* its output size rather than scaled up afterwards, so a higher DPI buys
+genuinely finer curves, not just more pixels — while the settings that are in **pixels** rather
+than Ångströms (outline width, selection ink, the zoom test behind the thickness fade) are
+scaled to keep the proportions you see on screen. A 300 dpi export is the view you were looking
+at, drawn larger and more finely; it is not a different picture with hairline outlines. Exports
+go out on a **transparent** background whatever the
+viewer is set to, so a figure drops into a document without a baked-in white or black rectangle
+behind it.
+
+SVG carries the pencil grain as an `feTurbulence` filter and keeps the gradient shading, so a
+vector export is not a flat-colour version of the picture.
 
 **Moving the view.** Drag to rotate, scroll to zoom, and **middle-drag or Cmd/Ctrl-drag to pan**,
 as in PyMOL. A pan moves the rotation centre rather than the picture, so dragging the structure
@@ -169,7 +210,9 @@ that point, which is what makes panning useful for studying one end of a long mo
 **Recording a rotation.** With auto-rotate on, the camera button becomes **Save Video** and
 records one full turn as a webm that loops seamlessly: the frames cover 0-360 degrees and stop
 one step short of 360, so wrapping back to the first frame continues the same angular step
-instead of repeating a frame.
+instead of repeating a frame. Opening the panel pauses the turn while you set it up, and the
+same panel can save the frame you are looking at. With Draw on as well, the view makes one
+revolution while the drawing is made.
 
 **Fetching a chain.** The fetch box takes a chain suffix as well as a plain ID: `1timA`,
 `1TIM_A`, `1tim_AB` (one chain per character) or `1tim:A,B` (commas for multi-character chain

@@ -368,6 +368,75 @@
     // half the frame time, and 8 reproduces the old look outright. 2 is
     // the geometric floor (see MIN_SUB) and reads as deliberately faceted.
     const DETAIL_DEFAULT_N = 4;
+    // --- HAND-DRAWN BUILD-UP (see animateDrawing in viewer-mol.js) ----------
+    // Graphite, not black: a pencil under-drawing is grey and slightly warm,
+    // and it has to sit UNDER the ink without competing with it. Light, too -
+    // this is the layer you are meant to look past.
+    // Dark warm graphite. It was lighter, on the theory that an under-drawing
+    // should be something you look past - but the layer has to be READABLE
+    // first: thin, broken strokes at low alpha over a white ground disappear
+    // long before they read as pencil. Fine AND dark is a sharp pencil; fine
+    // and pale is nothing at all.
+    const SKETCH_CSS = 'rgb(74, 68, 62)';
+    // ONE pencil line, continuous - not several passes overlaid. The layers of
+    // the drawing do not accumulate on top of each other; each one ERASES what
+    // is under it as it advances. So a given stretch of the picture is pencil
+    // until the colour reaches it, and colour from then on, and the pencil
+    // exists only in the band between where the hand has drawn and where the
+    // brush has caught up.
+    //
+    // No dashes either. A dashed line is what a pencil looks like from close
+    // up on rough paper; on screen, at this size, it just looks dashed.
+    // Time to draw one residue: PACE_FLOOR on a dead straight run, plus
+    // PACE_CURVE x (turn angle / pi). Measured over 40 chains of the SS
+    // benchmark, this puts the sharpest 5% of turns at 2.0x the time of a
+    // straight step, loops at 1.28x and helices at 1.12x. A helix is close to
+    // straight here on purpose - its AXIS is what the hand follows, and paying
+    // for its per-residue coil made the pen crawl through most of a typical
+    // protein, which reads as uniformly slow rather than as slowing down.
+    //
+    // The floor matters as much as the coefficient: with the floor at 1 the
+    // whole range compresses into 1.0-1.5x and the effect stops being visible.
+    const PACE_FLOOR = 0.4;
+    const PACE_CURVE = 2.6;
+    // A gap longer than this is a chain break, not a corner.
+    const PACE_BREAK_A = 5.0;
+    // Half-width, in residues, of the smoothing applied before curvature is
+    // measured. 3 is a 7-residue window - about two turns of a helix, which is
+    // what it takes to average one down to its axis. At 2 the leftover coil
+    // still reads as curvature and helices come out 1.55x slow.
+    const PACE_SMOOTH = 3;
+    const SKETCH_ALPHA = 0.55;
+    const SKETCH_W = 0.42;          // fraction of the ink width - a fine pencil
+    // The pencil is not erased by the paint - it SHOWS THROUGH it. A wash is
+    // transparent, so the graphite under it stays visible; what happens to it
+    // is that it gets rubbed out at the end, once the ink is down, which is
+    // what the ERASE window in animateDrawing does. So behind the brush the
+    // line drops to a fraction of its strength rather than to nothing.
+    const SKETCH_UNDER = 0.45;
+    // Width of the step from full strength to that fraction, in fractions of
+    // the chain, and how many alpha levels it is drawn in. Stepped rather than
+    // per-segment because the whole layer is one stroked path per level; four
+    // is enough that it reads as the paint dulling the line rather than as a
+    // hard edge travelling over it.
+    const SKETCH_ERASE_U = 0.05;
+    const SKETCH_BANDS = 4;
+    // How far a sketch stroke wanders from the true line, in pixels. Big
+    // enough to read as a hand at a glance, small enough that the sketch still
+    // predicts where the ink lands - past about 2px the two layers stop
+    // looking like the same drawing.
+    const SKETCH_WOBBLE_PX = 0.9;
+    // Watercolour runs. A wash that stops exactly on its edge everywhere is
+    // the one thing that never happens on wet paper, but a wash that runs
+    // EVERYWHERE is a blur - so a minority of pieces bleed, faintly.
+    // How far the colour layer sits off register, in pixels. A hand colouring a
+    // drawing does not follow its own pencil exactly, and that near-miss is
+    // most of what makes the result read as painted rather than as computed.
+    const WASH_OFF_X = 0.9;
+    const WASH_OFF_Y = -0.7;
+    const WASH_SMEAR_FRAC = 0.18;   // share of pieces that run
+    const WASH_BLEED_ALPHA = 0.30;  // how strongly, relative to the wash
+    const WASH_BLEED_PX = 3.0;      // how far, mostly downhill
     const PENCIL_DEFAULT = 1.0;    // grain amount when the preset is selected
     const PENCIL_STRENGTH = 0.54;
     // Paper tooth size, as a multiplier on the grain tile. Below 1 the texture
@@ -2293,6 +2362,78 @@
         o[2] = h00 * p1.z + h10 * m1[2] + h01 * p2.z + h11 * m2[2];
     }
 
+    // PAPER. One 128px tile of two-octave value noise, cached on the renderer
+    // and multiplied over the finished frame by the coloured-pencil grain pass.
+    function paperTile(renderer) {
+        if (renderer._pencilTile !== undefined) return renderer._pencilTile;
+        if (typeof document === 'undefined') {
+            renderer._pencilTile = null;
+            return null;
+        }
+        const TS = 128;
+        const tile = document.createElement('canvas');
+        tile.width = TS; tile.height = TS;
+        const tc = tile.getContext('2d');
+        if (tc) {
+            // TWO OCTAVES. Paper has a fine tooth AND a coarser
+            // unevenness, and a single per-pixel noise gives only the
+            // first - it reads as film grain, which stays flat and
+            // uniform however strong it is pushed. The low-frequency
+            // layer is what makes it look like a sheet of paper: broad
+            // patches take slightly more pigment than their neighbours.
+            // Wrapped sampling keeps the tile seamless when repeated.
+            // Value noise on a wrapping grid, so the tile repeats
+            // seamlessly. Grain is built from OCTAVES rather than
+            // per-pixel randomness: independent noise at every pixel is
+            // film static - it has no scale, so pushing it harder just
+            // makes it louder, never more paper-like. Tooth is a
+            // clustered thing, a couple of pixels across.
+            const lerp = (a, b, t) => a + (b - a) * t;
+            const smooth = (t) => t * t * (3 - 2 * t);
+            const mkOctave = (G) => {
+                const g = new Float32Array(G * G);
+                for (let i = 0; i < G * G; i++) g[i] = Math.random();
+                return (x, y) => {
+                    const gx = (x / TS) * G;
+                    const gy = (y / TS) * G;
+                    const x0 = Math.floor(gx);
+                    const y0 = Math.floor(gy);
+                    const fx = smooth(gx - x0);
+                    const fy = smooth(gy - y0);
+                    const ix = (a, b2) => g[((b2 % G) + G) % G * G
+                        + ((a % G) + G) % G];
+                    return lerp(lerp(ix(x0, y0), ix(x0 + 1, y0), fx),
+                        lerp(ix(x0, y0 + 1), ix(x0 + 1, y0 + 1), fx), fy);
+                };
+            };
+            const mottleAt = mkOctave(8);    // broad paper unevenness
+            const toothAt = mkOctave(44);    // ~3 px clusters: the tooth
+            const gritAt = mkOctave(96);     // just enough bite on top
+            const im = tc.createImageData(TS, TS);
+            for (let y = 0; y < TS; y++) {
+                for (let x = 0; x < TS; x++) {
+                    const i = y * TS + x;
+                    const tooth = toothAt(x, y) - 0.5;
+                    const grit = gritAt(x, y) - 0.5;
+                    const mott = mottleAt(x, y) - 0.5;
+                    let v = 232 + tooth * PENCIL_TOOTH
+                        + grit * PENCIL_GRIT + mott * PENCIL_MOTTLE;
+                    v = v < 120 ? 120 : (v > 255 ? 255 : v);
+                    im.data[i * 4] = v;
+                    im.data[i * 4 + 1] = v;
+                    im.data[i * 4 + 2] = v - 3;   // faintly warm
+                    im.data[i * 4 + 3] = 255;
+                }
+            }
+            tc.putImageData(im, 0, 0);
+            renderer._pencilTile = tile;
+        } else {
+            // cache the failure too, or every frame retries the build
+            renderer._pencilTile = null;
+        }
+        return renderer._pencilTile;
+    }
+
     // ------------------------------------------------------------------------
     // Main entry, called by Pseudo3DRenderer._renderToContext when
     // style === 'cartoon'. `colors` is the per-segment color array the main
@@ -2395,12 +2536,122 @@
             ? (renderer.relativeOutlineWidth === 0
                 ? 0 : (renderer.relativeOutlineWidth || 3) * pxScale)
             : 0;
+        // HAND-DRAWN BUILD-UP. Null on every normal render, so all of this
+        // costs one property read. When the drawing animation is running
+        // (animateDrawing, viewer-mol.js) it carries how far each MEDIUM has
+        // got, as a position along the chain in 0..1, plus how strongly to
+        // paint it. Three layers in the order an illustrator works: graphite
+        // under-drawing, colour wash over it, ink line last.
+        // Chain position rather than depth or screen position is what makes it
+        // read as drawing rather than as a wipe: the hand follows the molecule.
+        let anim = renderer._drawAnim || null;
+        if (anim) {
+            // A HAND DOES NOT MOVE AT A CONSTANT RATE. It runs along a straight
+            // stretch and slows right down through a tight turn, because a turn
+            // is where the line can go wrong. So the layers' progress values
+            // arrive here as fractions of TIME and are converted to positions
+            // along the chain through the local curvature - which is why this
+            // lives in the renderer and not in the animation driver: the driver
+            // knows how long the run is, and nothing at all about the shape.
+            //
+            // Cost per residue is 1 + PACE_CURVE x (turn angle / pi), summed
+            // along the chain; the hand is at the point where the running cost
+            // reaches its share of the total. Chain breaks are skipped rather
+            // than read as an infinitely tight corner - two chains a long way
+            // apart in space are not a turn of the pen.
+            // Curvature of the SMOOTHED trace, not of the raw CA zigzag. The
+            // pen follows the drawn ribbon, which is a spline through the
+            // trace, and on the raw trace a helix turns about 89 degrees at
+            // EVERY residue - so measuring it directly makes every helix a
+            // tight corner and the whole structure uniformly slow. Averaged
+            // over a few residues the helix becomes what it looks like on the
+            // page, a long smooth sweep, and what stands out as a real corner
+            // is a turn between elements.
+            const sm = new Float64Array(n * 3);
+            for (let i = 0; i < n; i++) {
+                let sx = 0; let sy = 0; let sz = 0; let cnt = 0;
+                for (let j = i - PACE_SMOOTH; j <= i + PACE_SMOOTH; j++) {
+                    const q = rotated[j < 0 ? 0 : (j >= n ? n - 1 : j)];
+                    if (!q) continue;
+                    sx += q.x; sy += q.y; sz += q.z; cnt++;
+                }
+                if (!cnt) cnt = 1;
+                sm[i * 3] = sx / cnt; sm[i * 3 + 1] = sy / cnt; sm[i * 3 + 2] = sz / cnt;
+            }
+            const cum = new Float64Array(n);
+            let acc = 0;
+            for (let i = 0; i < n; i++) {
+                let ang = 0;
+                if (i > 0 && i + 1 < n) {
+                    const ux = sm[i * 3] - sm[(i - 1) * 3];
+                    const uy = sm[i * 3 + 1] - sm[(i - 1) * 3 + 1];
+                    const uz = sm[i * 3 + 2] - sm[(i - 1) * 3 + 2];
+                    const vx = sm[(i + 1) * 3] - sm[i * 3];
+                    const vy = sm[(i + 1) * 3 + 1] - sm[i * 3 + 1];
+                    const vz = sm[(i + 1) * 3 + 2] - sm[i * 3 + 2];
+                    const lu = Math.sqrt(ux * ux + uy * uy + uz * uz);
+                    const lv = Math.sqrt(vx * vx + vy * vy + vz * vz);
+                    if (lu > 0.05 && lv > 0.05
+                        && lu < PACE_BREAK_A && lv < PACE_BREAK_A) {
+                        const d = (ux * vx + uy * vy + uz * vz) / (lu * lv);
+                        ang = Math.acos(Math.max(-1, Math.min(1, d)));
+                    }
+                }
+                acc += PACE_FLOOR + PACE_CURVE * (ang / Math.PI);
+                cum[i] = acc;
+            }
+            // time fraction -> position along the chain, by binary search on
+            // the running cost
+            const paceU = (f) => {
+                if (!(f > 0)) return 0;
+                if (f >= 1 || acc <= 0 || n < 2) return 1;
+                const want = f * acc;
+                let lo = 0;
+                let hi = n - 1;
+                while (lo < hi) {
+                    const mid = (lo + hi) >> 1;
+                    if (cum[mid] < want) lo = mid + 1; else hi = mid;
+                }
+                const prev = lo > 0 ? cum[lo - 1] : 0;
+                const frac = cum[lo] > prev ? (want - prev) / (cum[lo] - prev) : 0;
+                return Math.min(1, (lo + frac) / (n - 1));
+            };
+            // A copy: the driver's object is the timeline, this is the same
+            // timeline read through the shape of this particular molecule.
+            anim = { sketch: paceU(anim.sketch), wash: paceU(anim.wash) };
+        }
+        // Where a piece sits along the chain, 0..1. Only ribbons and ink curves
+        // carry a chain coordinate; ligands, base plates and lone atoms do not,
+        // and 1 puts them at the END, which is where the details of a drawing
+        // go anyway.
+        const chainU = (g) => (g.gs0 === undefined
+            ? 1 : g.gs0 / Math.max(1, n - 1));
+        // Pencil state. anim.sketch is where the drawing hand has got to.
+        const sketching = !!(anim && anim.sketch > 0);
+        const sketchMax = sketching ? anim.sketch : 0;
+        const sketchSegs = [];   // x1,y1,x2,y2,u,curveId,station per segment
+        // Deterministic wobble, keyed to WHERE ON THE MOLECULE a point is
+        // rather than to time. A hand is unsteady, but it is unsteady in one
+        // fixed way per drawing - jitter reseeded per frame is a boiling
+        // outline, which reads as video noise rather than as pencil.
+        const wobble = (a, b) => {
+            const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+            return h - Math.floor(h) - 0.5;
+        };
         // The ink pass strokes at a fraction of the outline width - the band
         // under the fills carries the weight, the ink only has to close it.
         // The floor exists so a hairline cannot vanish entirely; it is far
         // below any useful setting and, being a floor on a fraction, it never
         // makes a line thicker than the outline the user asked for.
         const inkW = Math.max(0.35 * pxScale, outlineW * 0.55);
+        // NO INK ANYWHERE WHILE A DRAWING IS UP. Switching the ink PASS off was
+        // not enough: ink is also laid down in the paint loop, as the rim
+        // across the end of an element, the outline under a tube or a ligand
+        // bond, and the long edges of a base plate. Those kept drawing through
+        // the watercolour - most visibly as a dark line across the tip of every
+        // strand, which is where a cap rim is. Selection ink is not ink in this
+        // sense and is exempt: it is an indicator and has to stay legible.
+        const paintInkW = anim ? 0 : outlineW;
         // SELECTION INK. The selected residues are outlined using the ink pass
         // itself rather than a separate overlay: the silhouette machinery
         // already knows the exact contour of every element, so re-colouring its
@@ -2417,7 +2668,10 @@
         const SELECTION_INK_WIDTH = 2.5 * pxScale;
         // ... which also means the ink pass has to RUN when the outline is off
         // but something is selected.
-        const inkWanted = outlineW || !!selInk;
+        // The pencil is traced from the ink pass's own visibility (see the
+        // sketch collection there), so that pass has to RUN while a drawing is
+        // being sketched even if the style has no outline at all.
+        const inkWanted = outlineW || !!selInk || !!anim;
         // Edge candidates for the ink pass (hull silhouette + crease edges)
         const inkCurves = [];
         // The Shade slider sets how much directional shading is applied:
@@ -4097,6 +4351,12 @@
                         const prim = {
                             kind: 'tube',
                             pts: seg,
+                            // where this piece sits along the chain, for the
+                            // drawing animation; interpolated across the run
+                            // so a long loop is drawn along its length rather
+                            // than appearing whole
+                            gs0: tubeRun.i0 + (tubeRun.i1 - tubeRun.i0)
+                                * (a0 / Math.max(1, pts.length - 1)),
                             // ext carries one extension point beyond each end
                             // of the WHOLE run; the paint path only uses it when
                             // its length matches the piece, so a split piece
@@ -4988,6 +5248,10 @@
                             }
                             if (any) {
                                 inkCurves.push({
+                                    // stable identity for the pencil's wobble,
+                                    // so its wander does not reshuffle between
+                                    // frames of the same view
+                                    id: inkCurves.length,
                                     pts: curves[c],
                                     vis: visC[c],
                                     sel: !!(selInk && (selInk.has(i) || selInk.has(iN))),
@@ -5114,7 +5378,8 @@
             const segSel = !!(selInk
                 && (selInk.has(seg.idx1) || selInk.has(seg.idx2)));
             if (seg.idx1 === seg.idx2) {
-                prims.push({ kind: 'dot', x1: A[0], y1: A[1], z: A[2], r: wpx / 2, c: col, pA: A, sel: segSel });
+                prims.push({ kind: 'dot', x1: A[0], y1: A[1], z: A[2],
+                    r: wpx / 2, c: col, pA: A, sel: segSel, gs0: seg.idx1 });
             } else {
                 const prim = {
                     kind: 'line',
@@ -5125,6 +5390,7 @@
                     flat: seg.type === 'C', // contacts stay bright and flat
                     pA: A, pB: B,
                     sel: segSel,
+                    gs0: seg.idx1,
                 };
                 registerJoint(`R${seg.idx1}`, prim);
                 registerJoint(`R${seg.idx2}`, prim);
@@ -5182,7 +5448,8 @@
                             // path ran. It stayed latent for a long time because
                             // nothing selected that path automatically; it is
                             // reachable now only via renderer._quality='fast'.
-                            prims.push({ kind: 'ribStroke', pts: cp, z: zq + bias, c: cv.c });
+                            prims.push({ kind: 'ribStroke', pts: cp, z: zq + bias, c: cv.c,
+                            gs0: cv.gs0 });
                             if (a + 3 >= run.length) break;
                         }
                     }
@@ -5803,7 +6070,78 @@
         };
 
         ctx.lineJoin = 'round';
+        // COLOUR WASH. The fills go down over the sketch, slightly off
+        // register - a hand colouring a drawing does not follow its own pencil
+        // exactly, and that near-miss is most of what makes it read as painted
+        // rather than as computed. The offset is applied to the whole layer, so
+        // it costs one transform rather than a shift per piece.
+        const animWash = anim ? anim.wash : 1;
+        // Does this piece bleed? Deterministic per piece, so the same places
+        // run on every frame and the smear sits still instead of crawling.
+        const smearOf = (g) => (wobble(g.gs0 === undefined ? 0 : g.gs0, 3.7)
+            + 0.5) < WASH_SMEAR_FRAC;
+        // WHERE THE PAINT RAN. A minority of pieces get one extra translucent
+        // copy, offset past their own edge and mostly DOWNWARD - a wet edge
+        // runs with gravity, and matching the colour layer's own offset would
+        // only look like a thicker ribbon.
+        //
+        // Filled as ONE closed path per piece - up the top face's left edge and
+        // back down its right - never as the quads the piece is really made of.
+        // That is the whole trick: a translucent quad strip shows every seam
+        // inside it and reads as wireframe, while a single translucent
+        // silhouette reads as a stain. It is also cheaper than the painting it
+        // replaces, since it skips shading, lighting and edges entirely.
+        // animWash > 0: before the brush has touched the paper there is no
+        // paint to have run, and `>` alone would leave the first piece's stain
+        // sitting there through the entire pencil phase.
+        if (anim && animWash > 0) {
+            ctx.save();
+            ctx.translate((WASH_OFF_X * 2 + WASH_BLEED_PX * 0.4) * pxScale,
+                (WASH_OFF_Y * 2 + WASH_BLEED_PX) * pxScale);
+            ctx.globalAlpha = WASH_BLEED_ALPHA;
+            for (const g of prims) {
+                if (chainU(g) > animWash || !smearOf(g)) continue;
+                if (g.kind === 'rib') {
+                    const A = g.Lp;
+                    const B = g.Rp;
+                    if (!A || A.length < 2) continue;
+                    ctx.fillStyle = `rgb(${g.c.r},${g.c.g},${g.c.b})`;
+                    ctx.beginPath();
+                    ctx.moveTo(A[0][0], A[0][1]);
+                    for (let s = 1; s < A.length; s++) ctx.lineTo(A[s][0], A[s][1]);
+                    for (let s = B.length - 1; s >= 0; s--) ctx.lineTo(B[s][0], B[s][1]);
+                    ctx.closePath();
+                    ctx.fill();
+                } else if (g.kind === 'plate' && g.q) {
+                    ctx.fillStyle = `rgb(${g.c.r},${g.c.g},${g.c.b})`;
+                    ctx.beginPath();
+                    ctx.moveTo(g.q[0][0], g.q[0][1]);
+                    for (let k = 1; k < g.q.length; k++) ctx.lineTo(g.q[k][0], g.q[k][1]);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+            ctx.restore();
+        }
+        if (anim) {
+            ctx.save();
+            ctx.translate(WASH_OFF_X * pxScale, WASH_OFF_Y * pxScale);
+        }
+        // PAINT GOES DOWN OPAQUE. A piece used to fade up over a short "wet
+        // frontier", which sounded right and looked wrong: a ribbon is built
+        // from many quads that overlap along their shared edges, plus hairline
+        // strokes that seal the seams between them, and at any alpha below 1
+        // every one of those doubles up and shows. The result was a visible
+        // mesh over the drawing - the tessellation of the model, which is the
+        // one thing the illusion cannot survive. Anything translucent here has
+        // to be flattened first (see the bleed pass, which fills ONE silhouette
+        // path per piece for exactly this reason).
         for (const g of prims) {
+            // `>` alone lets the piece at chainU 0 through while the brush is
+            // still at 0 - so the first piece of the chain, and its bleed
+            // stain, sat on the paper through the whole pencil phase as a
+            // smudge in the middle of a drawing that had no colour in it yet.
+            if (anim && (animWash <= 0 || chainU(g) > animWash)) continue;
             const near = nearOf(g.z);
             // export culling: a piece whose every sampled corner is clearly
             // behind other geometry paints nothing visible - skip it entirely
@@ -6107,7 +6445,7 @@
                 // the junction included), which reads correctly at element
                 // ends - the depth-sorted thin-rim experiment either crossed
                 // the junction loop (up-bias) or hollowed out (down-bias).
-                if (outlineW && (g.capStart || g.capEnd)) {
+                if (paintInkW && (g.capStart || g.capEnd)) {
                     ctx.strokeStyle = inkOf(g, nearS);
                     // The rim is the outline's own width - no separate floor,
                     // which used to hold it at 2px while the outline thinned
@@ -6502,7 +6840,7 @@
                 surfaces.sort((s1, s2) => s1[0] - s2[0]);
                 for (const s of surfaces) s[1]();
             } else if (g.kind === 'ribStroke') {
-                if (outlineW) {
+                if (paintInkW) {
                     ctx.strokeStyle = inkOf(g, near);
                     ctx.lineWidth = inkW;
                     ctx.lineCap = 'round';
@@ -6541,9 +6879,9 @@
                 ctx.lineJoin = 'miter';
                 ctx.miterLimit = 2;
                 ctx.lineCap = 'butt';
-                if (outlineW) {
+                if (paintInkW) {
                     ctx.strokeStyle = inkOf(g, near);
-                    ctx.lineWidth = outlineW;
+                    ctx.lineWidth = paintInkW;
                     longEdges();
                     ctx.stroke();
                 }
@@ -6563,7 +6901,7 @@
                 ctx.stroke();
             } else if (g.kind === 'tube') {
                 const lw = Math.max(1.5, g.tubeA * 2 * scale * g.pe);
-                if (outlineW) {
+                if (paintInkW) {
                     const ink = inkOf(g, near);
                     ctx.lineCap = 'butt';
                     ctx.strokeStyle = ink;
@@ -6692,12 +7030,12 @@
                 }
             } else if (g.kind === 'line') {
                 const pts = [[g.x1, g.y1], [g.x2, g.y2]];
-                if (outlineW || g.sel) {
+                if (paintInkW || g.sel) {
                     const ink = g.sel ? SELECTION_INK_CSS : inkOf(g, near);
                     ctx.lineCap = 'butt';
                     ctx.strokeStyle = ink;
                     ctx.lineWidth = g.w + (g.sel
-                        ? Math.max(outlineW, SELECTION_INK_WIDTH * 2) : outlineW);
+                        ? Math.max(paintInkW, SELECTION_INK_WIDTH * 2) : paintInkW);
                     strokePath(pts);
                     const r = ctx.lineWidth / 2;
                     if (capAt(g, g.joints[0])) blackCap(g.x1, g.y1, r, ink);
@@ -6710,9 +7048,9 @@
                 ctx.lineWidth = g.w;
                 strokePath(pts);
             } else { // dot
-                if (outlineW || g.sel) {
+                if (paintInkW || g.sel) {
                     const ow = g.sel
-                        ? Math.max(outlineW, SELECTION_INK_WIDTH * 2) : outlineW;
+                        ? Math.max(paintInkW, SELECTION_INK_WIDTH * 2) : paintInkW;
                     ctx.beginPath();
                     ctx.arc(g.x1, g.y1, g.r + ow / 2, 0, Math.PI * 2);
                     ctx.fillStyle = g.sel ? SELECTION_INK_CSS : inkOf(g, near);
@@ -6724,6 +7062,7 @@
                 ctx.fill();
             }
         }
+        if (anim) ctx.restore();   // end of the off-register colour layer
 
         if (renderer._dumpInk) {
             renderer._inkDump = prims
@@ -6987,6 +7326,15 @@
                     zM: Math.max(a[2], b[2]) }, x0, y0, x1, y1);
             };
             for (const g of prims) {
+                // Only what the drawing has REACHED can hide anything - ink
+                // already on the paper must not be erased by a ribbon that has
+                // not been drawn yet, or finished strokes wink out as the
+                // drawing advances past them. Sketched geometry counts as well
+                // as painted: while the pencil is still working there is no
+                // colour anywhere, and an empty occluder set would let it draw
+                // every hidden line on the far side of the form.
+                const reached = Math.max(animWash > 0 ? animWash : -1, sketchMax);
+                if (anim && chainU(g) > reached) continue;
                 if (g.kind === 'rib') {
                     const strips = [
                         [g.Lp, g.Rp], [g.Lm, g.Rm], [g.Lp, g.Lm], [g.Rp, g.Rm],
@@ -7206,6 +7554,7 @@
             // over ghost geometry. 12 levels keeps stroke batching coarse.
             const inkGroups = new Map();
             const selKey = '\u0000sel';   // cannot collide with a colour string
+            const sketchKey = '\u0000sketch';
             for (const cv of inkCurves) {
                 // Selected curves batch under one key and skip the depth fade -
                 // an indicator that pales into the background is not doing its
@@ -7216,7 +7565,11 @@
                 if (cv.sel) {
                     key = selKey;
                 } else if (!outlineW) {
-                    continue;
+                    // No ink in this style - but the pencil still traces these
+                    // curves, so they are kept under a key that collects their
+                    // visibility and strokes nothing.
+                    if (!sketching) continue;
+                    key = sketchKey;
                 } else {
                     let zSum = 0;
                     for (const q2 of cv.pts) zSum += q2[2];
@@ -7228,8 +7581,18 @@
                 arr.push(cv);
             }
             let _strokeMs = 0;
+            // NO INK WHILE A DRAWING IS UP. The look is watercolour over
+            // pencil, and a dark outline is neither. The pass still runs: the
+            // pencil's lines are collected from its visibility decisions, which
+            // is the whole reason the two layers agree about what is visible.
+            //
+            // The selection indicator is exempt - it is an indicator, not ink,
+            // and has to stay legible whatever the drawing is doing.
             for (const [inkCss, group] of inkGroups) {
             const isSel = inkCss === selKey;
+            // Collected for the pencil only: this group exists because the
+            // style has no ink at all, so nothing is stroked from it.
+            const sketchOnly = inkCss === sketchKey;
             ctx.strokeStyle = isSel ? SELECTION_INK_CSS : inkCss;
             ctx.lineWidth = isSel ? SELECTION_INK_WIDTH : inkW;
             ctx.beginPath();
@@ -7277,15 +7640,34 @@
                 };
                 let open = false;
                 for (let s = 0; s < nSeg; s++) {
-                    let draw = okAt(s) && onCanvas(s);
-                    if (draw && (s === 0 || !okAt(s - 1)
+                    // VISIBLE is the geometric question - is this piece of edge
+                    // in sight - and is decided first, on its own. What each
+                    // MEDIUM has reached is a separate question asked of it
+                    // below, so the pencil and the pen make exactly the same
+                    // lines and differ only in how far along they have got.
+                    let visible = okAt(s) && onCanvas(s);
+                    if (visible && (s === 0 || !okAt(s - 1)
                         || s + 1 >= nSeg || !okAt(s + 1))) {
                         if (hidden(pts[s][0], pts[s][1], pts[s][2],
                             cv.gs0 + s * cv.gsStep)
                             || hidden(pts[s + 1][0], pts[s + 1][1],
                                 pts[s + 1][2],
-                                cv.gs0 + (s + 1) * cv.gsStep)) draw = false;
+                                cv.gs0 + (s + 1) * cv.gsStep)) visible = false;
                     }
+                    const uSeg = anim
+                        ? (cv.gs0 + (s + 0.5) * cv.gsStep) / Math.max(1, n - 1)
+                        : 0;
+                    // THE PENCIL TRACES THE INK. An artist does not sketch the
+                    // creases inside a form or the edges hidden behind it -
+                    // they draw the outline they can see and then work into it.
+                    // Collecting here, from the same `visible`, is what
+                    // guarantees that: the two layers cannot disagree, because
+                    // there is only one decision.
+                    if (visible && sketching && uSeg <= sketchMax) {
+                        sketchSegs.push(pts[s][0], pts[s][1],
+                            pts[s + 1][0], pts[s + 1][1], uSeg, cv.id || 0, s);
+                    }
+                    const draw = visible && !sketchOnly;
                     // Optional visibility trace: one bit per ink segment, in a
                     // deterministic order, so a test can measure how many
                     // segments FLIP between two nearly identical views. That is
@@ -7304,8 +7686,63 @@
                 }
             }
             const _s0 = _ph ? _pt() : 0;
-            ctx.stroke();
+            if (!sketchOnly && (!anim || isSel)) ctx.stroke();
             if (_ph) _strokeMs += _pt() - _s0;
+            }
+
+            // --- THE PENCIL --------------------------------------------------
+            // One continuous line, drawn on exactly the edges the ink pass just
+            // decided are visible - an artist draws neither the creases inside
+            // a form nor the edges behind it.
+            //
+            // Full strength ahead of the wash, and SKETCH_UNDER of it behind:
+            // paint dulls the graphite under it but does not remove it, and an
+            // illustrator only rubs the pencil out at the end, once the ink is
+            // down. That final erase is the ERASE window in animateDrawing.
+            //
+            // Drawn after the ink, which is both where its visibility comes
+            // from and where it belongs: under-drawing shows THROUGH a
+            // transparent wash, so painting it over the colour is what it
+            // looks like from the front.
+            if (sketching && sketchSegs.length) {
+                ctx.save();
+                ctx.strokeStyle = SKETCH_CSS;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.lineWidth = Math.max(0.3 * pxScale, inkW * SKETCH_W);
+                const wet = anim.wash;
+                for (let band = 0; band <= SKETCH_BANDS; band++) {
+                    // band 0 is everything the brush has already passed; the
+                    // rest step up across SKETCH_ERASE_U to full strength.
+                    const lo = (band === 0) ? -Infinity
+                        : wet + ((band - 1) / SKETCH_BANDS) * SKETCH_ERASE_U;
+                    const hi = (band === SKETCH_BANDS) ? Infinity
+                        : wet + (band / SKETCH_BANDS) * SKETCH_ERASE_U;
+                    ctx.globalAlpha = SKETCH_ALPHA
+                        * (SKETCH_UNDER + (1 - SKETCH_UNDER) * band / SKETCH_BANDS);
+                    ctx.beginPath();
+                    let prevId = -1;
+                    let prevS = -99;
+                    for (let k = 0; k < sketchSegs.length; k += 7) {
+                        const u = sketchSegs[k + 4];
+                        if (u < lo || u >= hi) { prevId = -1; continue; }
+                        const id = sketchSegs[k + 5];
+                        const st = sketchSegs[k + 6];
+                        const amp = SKETCH_WOBBLE_PX * pxScale;
+                        const jx = (x, kk) => x + amp * wobble(kk, id);
+                        const jy = (y, kk) => y + amp * wobble(id, kk);
+                        if (id !== prevId || st !== prevS + 1) {
+                            ctx.moveTo(jx(sketchSegs[k], st),
+                                jy(sketchSegs[k + 1], st));
+                        }
+                        ctx.lineTo(jx(sketchSegs[k + 2], st + 1),
+                            jy(sketchSegs[k + 3], st + 1));
+                        prevId = id;
+                        prevS = st;
+                    }
+                    ctx.stroke();
+                }
+                ctx.restore();
             }
             if (_ph) {
                 _ph.inkStroke = _strokeMs;
@@ -7344,69 +7781,7 @@
         if (realCtx && offCv) {
             const dw = offCv.width;
             const dh = offCv.height;
-            let tile = renderer._pencilTile;
-            if (!tile) {
-                const TS = 128;
-                tile = document.createElement('canvas');
-                tile.width = TS; tile.height = TS;
-                const tc = tile.getContext('2d');
-                if (tc) {
-                    // TWO OCTAVES. Paper has a fine tooth AND a coarser
-                    // unevenness, and a single per-pixel noise gives only the
-                    // first - it reads as film grain, which stays flat and
-                    // uniform however strong it is pushed. The low-frequency
-                    // layer is what makes it look like a sheet of paper: broad
-                    // patches take slightly more pigment than their neighbours.
-                    // Wrapped sampling keeps the tile seamless when repeated.
-                    // Value noise on a wrapping grid, so the tile repeats
-                    // seamlessly. Grain is built from OCTAVES rather than
-                    // per-pixel randomness: independent noise at every pixel is
-                    // film static - it has no scale, so pushing it harder just
-                    // makes it louder, never more paper-like. Tooth is a
-                    // clustered thing, a couple of pixels across.
-                    const lerp = (a, b, t) => a + (b - a) * t;
-                    const smooth = (t) => t * t * (3 - 2 * t);
-                    const mkOctave = (G) => {
-                        const g = new Float32Array(G * G);
-                        for (let i = 0; i < G * G; i++) g[i] = Math.random();
-                        return (x, y) => {
-                            const gx = (x / TS) * G;
-                            const gy = (y / TS) * G;
-                            const x0 = Math.floor(gx);
-                            const y0 = Math.floor(gy);
-                            const fx = smooth(gx - x0);
-                            const fy = smooth(gy - y0);
-                            const ix = (a, b2) => g[((b2 % G) + G) % G * G
-                                + ((a % G) + G) % G];
-                            return lerp(lerp(ix(x0, y0), ix(x0 + 1, y0), fx),
-                                lerp(ix(x0, y0 + 1), ix(x0 + 1, y0 + 1), fx), fy);
-                        };
-                    };
-                    const mottleAt = mkOctave(8);    // broad paper unevenness
-                    const toothAt = mkOctave(44);    // ~3 px clusters: the tooth
-                    const gritAt = mkOctave(96);     // just enough bite on top
-                    const im = tc.createImageData(TS, TS);
-                    for (let y = 0; y < TS; y++) {
-                        for (let x = 0; x < TS; x++) {
-                            const i = y * TS + x;
-                            const tooth = toothAt(x, y) - 0.5;
-                            const grit = gritAt(x, y) - 0.5;
-                            const mott = mottleAt(x, y) - 0.5;
-                            let v = 232 + tooth * PENCIL_TOOTH
-                                + grit * PENCIL_GRIT + mott * PENCIL_MOTTLE;
-                            v = v < 120 ? 120 : (v > 255 ? 255 : v);
-                            im.data[i * 4] = v;
-                            im.data[i * 4 + 1] = v;
-                            im.data[i * 4 + 2] = v - 3;   // faintly warm
-                            im.data[i * 4 + 3] = 255;
-                        }
-                    }
-                    tc.putImageData(im, 0, 0);
-                    renderer._pencilTile = tile;
-                } else {
-                    tile = null;
-                }
-            }
+            let tile = paperTile(renderer);
             const gc = tile && (renderer._pencilGrain
                 && renderer._pencilGrain.width === dw
                 && renderer._pencilGrain.height === dh

@@ -131,6 +131,7 @@ function getAllValidColorModes() {
 
         this.operations.push({
             type: 'stroke',
+            alpha: this.globalAlpha,
             pathData: pathData.trim(),
             strokeStyle: this.strokeStyle,
             lineWidth: r2(this.lineWidth),
@@ -147,6 +148,7 @@ function getAllValidColorModes() {
             const c = this.currentPath[0];
             this.operations.push({
                 type: 'circle',
+                alpha: this.globalAlpha,
                 x: c.x,
                 y: c.y,
                 radius: c.radius,
@@ -163,6 +165,7 @@ function getAllValidColorModes() {
             }
             this.operations.push({
                 type: 'fill',
+                alpha: this.globalAlpha,
                 pathData: pathData.trim(),
                 fillStyle: this.fillStyle
             });
@@ -183,6 +186,7 @@ function getAllValidColorModes() {
         }
         this.operations.push({
             type: 'rect',
+            alpha: this.globalAlpha,
             x: x, y: y, width: w, height: h,
             fillStyle: this.fillStyle
         });
@@ -244,24 +248,29 @@ function getAllValidColorModes() {
         const gradDefs = [];
         const gradIndex = {};
         let body = '';
+        // opacity attribute, omitted at full strength so ordinary files are
+        // unchanged by any of this
+        const op_ = (op) => ((op.alpha === undefined || op.alpha >= 0.999)
+            ? '' : ' opacity="' + Math.max(0, op.alpha).toFixed(3) + '"');
         for (let i = 0; i < this.operations.length; i++) {
             const op = this.operations[i];
             if (op.type === 'rect') {
                 body += '  <rect x="' + op.x + '" y="' + op.y + '" width="' + op.width
                     + '" height="' + op.height + '" fill="'
-                    + paintRef(op.fillStyle, gradDefs, gradIndex) + '"/>\n';
+                    + paintRef(op.fillStyle, gradDefs, gradIndex) + '"' + op_(op) + '/>\n';
             } else if (op.type === 'circle') {
                 body += '  <circle cx="' + op.x + '" cy="' + op.y + '" r="' + op.radius
-                    + '" fill="' + paintRef(op.fillStyle, gradDefs, gradIndex) + '"/>\n';
+                    + '" fill="' + paintRef(op.fillStyle, gradDefs, gradIndex) + '"'
+                    + op_(op) + '/>\n';
             } else if (op.type === 'stroke') {
                 const cap = op.lineCap === 'round' ? 'round' : 'butt';
                 body += '  <path d="' + op.pathData + '" stroke="'
                     + paintRef(op.strokeStyle, gradDefs, gradIndex)
                     + '" stroke-width="' + op.lineWidth + '" stroke-linecap="' + cap
-                    + '" fill="none"/>\n';
+                    + '" fill="none"' + op_(op) + '/>\n';
             } else if (op.type === 'fill') {
                 body += '  <path d="' + op.pathData + '" fill="'
-                    + paintRef(op.fillStyle, gradDefs, gradIndex) + '"/>\n';
+                    + paintRef(op.fillStyle, gradDefs, gradIndex) + '"' + op_(op) + '/>\n';
             }
         }
 
@@ -1586,6 +1595,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const isHighlightOverlay = e.target.id === 'highlightOverlay';
                 if (e.target !== this.canvas && !isHighlightOverlay) return;
 
+
                 // PAN instead of rotate on the middle button, or Cmd/Ctrl with
                 // the left - the same two gestures PyMOL uses. preventDefault
                 // is needed for the middle button or the browser starts its own
@@ -1602,10 +1612,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.lastDragX = e.clientX;
                 this.lastDragY = e.clientY;
                 this.lastDragTime = performance.now();
-                if (this.autoRotate) {
-                    this.autoRotate = false;
-                    if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
-                }
+                if (this.autoRotate) this._setAutoRotate(false);
 
                 // Add temporary window listeners for drag outside canvas
                 const handleMove = (e) => {
@@ -1854,10 +1861,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.lastDragX = e.touches[0].clientX;
                     this.lastDragY = e.touches[0].clientY;
                     this.lastDragTime = performance.now();
-                    if (this.autoRotate) {
-                        this.autoRotate = false;
-                        if (this.rotationCheckbox) this.rotationCheckbox.checked = false;
-                    }
+                    if (this.autoRotate) this._setAutoRotate(false);
                 } else if (e.touches.length === 2) {
                     // Start of a pinch-zoom
                     this.isDragging = false; // Stop dragging
@@ -2086,15 +2090,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             if (this.saveImageButton) {
-                // shift-click saves gzipped (.svgz): ~6x smaller, opens
-                // natively in Inkscape/Illustrator. Plain .svg stays the
-                // default because a local .svgz does not render in a browser.
                 this._syncSaveButtonMode();
                 this.saveImageButton.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    // shift-click keeps the old one-shot compressed SVG
-                    if (e.shiftKey) this.saveImage({ format: 'svgz' });
+                    // shift-click skips the panel and writes a PNG at whatever
+                    // DPI was last used, for when the settings are already right
+                    if (e.shiftKey) this.saveImage(this._saveOpts || { dpi: 300 });
                     else this._toggleSaveImagePanel(this.saveImageButton);
                 });
             }
@@ -2362,6 +2364,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
             if (this.style === style) return;
             this.style = style;
+            // The build-up is cartoon-only, so leaving cartoon leaves the mode
+            // too - otherwise the save button goes on offering to record a
+            // drawing this style cannot make.
+            if (style !== 'cartoon' && this.drawMode) this.setDrawMode(false);
             if (style === 'cartoon') {
                 // Entering the cartoon path lands on its default preset, which
                 // is what actually decides the look.
@@ -7155,8 +7161,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // 2. Handle auto-rotate (skip while actively dragging)
-            if (!this.isDragging && this.autoRotate && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
+            // 2. Handle auto-rotate (skip while actively dragging, or while the
+            // save panel is open - see _pauseForSavePanel)
+            if (!this.isDragging && this.autoRotate && !this._uiPaused
+                && this.spinVelocityX === 0 && this.spinVelocityY === 0) {
                 const rot = rotationMatrixY(0.005); // Constant rotation speed
                 this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation);
                 needsRender = true;
@@ -7218,7 +7226,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         saveImage(opts) {
             const o = opts || {};
-            const format = o.format || 'svg';
+            // PNG unless asked otherwise. The panel offers SVG alongside it
+            // everywhere except in Draw mode, where the look is made of
+            // sub-pixel pencil and translucent stains and PNG is simply what it
+            // is (see the panel for the argument).
+            const format = o.format || 'png';
             const dpi = Math.max(36, Math.min(1200, Number(o.dpi) || 300));
 
             const prevTransparent = this.isTransparent;
@@ -7351,6 +7363,316 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * cannot accumulate and leave the turn a fraction of a degree short of
          * closing - which would show up as a jump exactly once per loop.
          */
+        // --- HAND-DRAWN BUILD-UP ------------------------------------------
+        // Reveals the picture the way an illustrator builds one: graphite
+        // under-drawing first, colour wash over it, ink line last, with the
+        // pencil erased at the end. Each layer sweeps N->C along the chain, so
+        // the hand follows the molecule rather than wiping across the canvas.
+        //
+        // The layers OVERLAP in time on purpose. Nobody finishes sketching the
+        // whole page before opening the paints - the wash follows a little way
+        // behind the pencil, and the pen follows the wash - and that overlap is
+        // most of what makes it look like someone working rather than three
+        // separate animations played in sequence.
+        //
+        // All of it is a gate on the normal render (see _drawAnim in
+        // viewer-cartoon.js): every frame is an ordinary depth-sorted drawing
+        // of the part that exists so far, so occlusion stays correct and the
+        // final frame is EXACTLY the normal picture, not an approximation of
+        // it that happens to look close.
+        // WHERE EVERY LAYER IS AT TIME t (0..1 over the run). Pulled out of the
+        // animation loop because two things drive it: the live animation, off
+        // requestAnimationFrame, and the video recorder, which steps t itself
+        // at a fixed frame rate. Both have to produce identical pictures.
+        //
+        // Phase windows are [start, end] fractions of the run.
+        _drawAnimAt(t) {
+            // THE PENCIL GETS HALF THE RUN, in one continuous sweep - it is
+            // where the drawing is made, and the colour only follows it. The
+            // wash starts a beat after the pencil finishes, so the completed
+            // line drawing stands on its own for a moment before the colour
+            // begins to go over it.
+            //
+            // The paint dims the graphite under it but never removes it (see
+            // the pencil pass in viewer-cartoon.js), so these windows decide
+            // how long any part of the picture spends as bare pencil before the
+            // colour arrives, and nothing after that.
+            const SKETCH = [0.00, 0.50];
+            const WASH = [0.56, 0.94];
+            // ...and then nothing, for the last twentieth of the run: the
+            // picture is complete and STILL for a beat before the clock stops,
+            // so it reads as finished rather than as cut off.
+            //
+            // TWO LAYERS, AND NOTHING AFTER THEM. The look this arrives at is
+            // watercolour over pencil, so the run has exactly two things to do
+            // and then it is done. An earlier version faded a dark outline in
+            // at the end and rubbed the pencil out under it - which is how an
+            // INKED illustration is made, and it threw away the thing being
+            // made on the way there.
+            const ease = (u) => (u <= 0 ? 0 : u >= 1 ? 1
+                : u * u * (3 - 2 * u));       // smoothstep: starts and ends gently
+            const span = (w) => ease((t - w[0]) / (w[1] - w[0]));
+            // Where each hand has got to, as a fraction of the chain. Nothing
+            // else varies over a run: how the pencil and the paint LOOK is the
+            // renderer's business (viewer-cartoon.js), and none of it changes
+            // with time.
+            return { sketch: span(SKETCH), wash: span(WASH) };
+        }
+
+        animateDrawing(opts) {
+            const o = opts || {};
+            const ms = Math.max(500, Math.min(60000, Number(o.duration) || 12000));
+            if (this._drawAnimRaf) {          // pressed again: skip to the end
+                this.stopDrawing();
+                return;
+            }
+            if (!this._canDraw()) return;
+            if (this.drawCheckbox) this.drawCheckbox.checked = true;
+            // Resuming picks up where the pause left off rather than starting
+            // over - the drawing on screen is the one being continued. Pressing
+            // Draw while a finished painting is up replays it from blank paper,
+            // since `from` defaults to 0.
+            const from = Math.max(0, Math.min(1, Number(o.from) || 0));
+            const clock = () => (typeof performance !== 'undefined'
+                ? performance.now() : Date.now());
+            const t0 = clock() - from * ms;
+            const step = () => {
+                const t = Math.min(1, (clock() - t0) / ms);
+                this._drawT = t;
+                this._drawAnim = this._drawAnimAt(t);
+                this.render('animateDrawing');
+                // Finished: the clock stops but the picture stays as it was
+                // painted. Draw remains on - it is now what is holding the
+                // watercolour on screen - so the save button also goes on
+                // offering to record the run.
+                if (t >= 1) {
+                    if (this._drawAnimRaf) cancelAnimationFrame(this._drawAnimRaf);
+                    this._drawAnimRaf = null;
+                    this._drawT = 1;
+                    return;
+                }
+                this._drawAnimRaf = requestAnimationFrame(step);
+            };
+            this._drawAnimRaf = requestAnimationFrame(step);
+        }
+
+        // Shared gate: the build-up is a cartoon-style thing.
+        _canDraw() {
+            if (this.style === 'cartoon') return true;
+            const msg = 'The drawing animation needs the cartoon style.';
+            if (typeof setStatus === 'function') setStatus(msg, true);
+            this.drawMode = false;
+            if (this.drawCheckbox) this.drawCheckbox.checked = false;
+            this._syncSaveButtonMode();
+            return false;
+        }
+
+        // Ends the build-up and returns to the ordinary picture. Safe to call
+        // at any point - during a drag, on a style change, or from the button.
+        stopDrawing() {
+            if (this._drawAnimRaf) cancelAnimationFrame(this._drawAnimRaf);
+            this._drawAnimRaf = null;
+            if (this._drawAnim) {
+                this._drawAnim = null;
+                this.render('stopDrawing');
+            }
+        }
+
+        // OPENING THE SAVE PANEL PAUSES WHATEVER IS RUNNING. The panel exists
+        // to set up a recording of that very animation, so leaving it running
+        // underneath is both distracting and pointless - and for the drawing it
+        // was worse than that: a run finishing while the panel was open turned
+        // the mode off, which took the panel with it. Frozen, the picture on
+        // screen is also a fair preview of what is about to be recorded.
+        //
+        // Nothing is cancelled here. The drawing keeps its state and its
+        // position in the run, so dismissing the panel carries on from where it
+        // stopped, while pressing Record restarts it from blank paper.
+        _pauseForSavePanel() {
+            this._uiPaused = true;
+            if (this._drawAnimRaf) {
+                cancelAnimationFrame(this._drawAnimRaf);
+                this._drawAnimRaf = null;
+                this._drawPausedAt = this._drawT || 0;
+            } else {
+                // Nothing running - either the painting is finished or Draw is
+                // off. Marked complete so dismissing the panel does not restart
+                // a run from a position left over from an earlier pause.
+                this._drawPausedAt = 1;
+            }
+        }
+
+        _resumeFromSavePanel() {
+            if (!this._uiPaused) return;
+            this._uiPaused = false;
+            // Only a paused-mid-run drawing needs restarting; auto-rotate picks
+            // itself up again from the flag alone.
+            if (this.drawMode && this._drawAnim && !this._drawRecording
+                && this._drawPausedAt < 1) {
+                this.animateDrawing({ from: this._drawPausedAt });
+            }
+        }
+
+        // Auto-rotate goes on and off from several places - the checkbox, a
+        // mouse drag, a touch drag - and each has to keep the checkbox AND the
+        // save button in step, because that button records a rotation while it
+        // is on. Dragging used to set the flag and the checkbox directly, which
+        // left the button offering to record a rotation that had stopped.
+        _setAutoRotate(on) {
+            this.autoRotate = !!on;
+            if (this.rotationCheckbox) this.rotationCheckbox.checked = this.autoRotate;
+            this._syncSaveButtonMode();
+        }
+
+        // Draw is a MODE, like auto-rotate. It stays on after the run finishes,
+        // because what it is holding on screen is the painting - the runs, the
+        // off-register colour, the whole watercolour. Turning it off is what
+        // takes the viewer back to its ordinary picture, and while it is on the
+        // save button offers to record the run rather than save an image (see
+        // _syncSaveButtonMode), so a recording is always one press away.
+        setDrawMode(on) {
+            this.drawMode = !!on;
+            if (this.drawCheckbox) this.drawCheckbox.checked = this.drawMode;
+            if (this.drawMode) {
+                if (!this._canDraw()) { this.drawMode = false; return; }
+                this._syncSaveButtonMode();
+                this.animateDrawing();
+            } else {
+                this.stopDrawing();
+                this._syncSaveButtonMode();
+            }
+        }
+
+        // Record the build-up to a video file. Reached from the save button,
+        // which reads Save Video while Draw is on - the same way auto-rotate
+        // turns it into a recorder for a turn.
+        //
+        // Frames are stepped HERE, on a timer, rather than recorded off the
+        // live animation - the same choice saveRotationVideo makes, for the
+        // same two reasons. One rendered frame becomes one video frame however
+        // slow a frame is to draw, so a big structure records at the same speed
+        // as a small one; and setTimeout keeps running in a background tab,
+        // where requestAnimationFrame stops dead and would record a still.
+        //
+        // The curve is _drawAnimAt, exactly as the live animation uses it, so
+        // the video is the animation and not a second implementation of it.
+        saveDrawingVideo(opts) {
+            const o = opts || {};
+            const fps = Math.max(5, Math.min(60, Number(o.fps) || 30));
+            const seconds = Math.max(1, Math.min(60, Number(o.seconds) || 12));
+            const N = Math.max(2, Math.round(seconds * fps));
+            // A beat of the finished picture at the end, so the file does not
+            // stop on the frame the last change landed in.
+            const TAIL = Math.round(fps * 0.6);
+
+            if (typeof MediaRecorder === 'undefined' || !this.canvas
+                || !this.canvas.captureStream) {
+                const msg = 'Video recording is not supported in this browser.';
+                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                return;
+            }
+            if (this.isRecording || this._rotationRecording || this._drawRecording) return;
+            if (!this._canDraw()) return;
+
+            this.stopDrawing();               // no live run underneath the recording
+            this._drawRecording = true;
+            this.canvas.style.pointerEvents = 'none';
+            // AND IT CAN TURN WHILE IT DRAWS. If auto-rotate is on, the view
+            // makes exactly one revolution over the recording - driven here,
+            // per frame, rather than left to auto-rotate's wall clock, for the
+            // same reason the frames are: so the file does not depend on how
+            // fast this machine happens to render.
+            const R0 = this.viewerState.rotation.map((row) => [...row]);
+            const turning = !!this.autoRotate;
+            this.autoRotate = false;
+            this._drawR0 = R0;
+            this._drawWasAuto = turning;
+
+            const options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 20000000 };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm;codecs=vp8';
+                options.videoBitsPerSecond = 15000000;
+            }
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm';
+                options.videoBitsPerSecond = 15000000;
+            }
+
+            const stream = this.canvas.captureStream(fps);
+            const chunks = [];
+            let rec;
+            try {
+                rec = new MediaRecorder(stream, options);
+            } catch (err) {
+                this._endDrawingVideo(stream);
+                const msg = 'Failed to start recording: ' + err.message;
+                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                return;
+            }
+            rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+            rec.onstop = () => {
+                this._endDrawingVideo(stream);
+                if (!chunks.length) {
+                    if (typeof setStatus === 'function') setStatus('No video data recorded', true);
+                    return;
+                }
+                const blob = new Blob(chunks, { type: 'video/webm' });
+                const filename = this._generateFilename(this.currentObjectName, 'webm');
+                this._triggerDownload(blob, filename);
+                if (typeof setStatus === 'function') {
+                    setStatus(`Drawing exported to ${filename} `
+                        + `(${N + TAIL} frames, ${seconds}s at ${fps}fps)`);
+                }
+            };
+            rec.start(100);
+
+            const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+            let i = 0;
+            const tick = () => {
+                if (i > N + TAIL) {
+                    setTimeout(() => {
+                        try { rec.stop(); } catch (e) { /* already stopped */ }
+                    }, 1000 / fps);
+                    return;
+                }
+                // Past N the run is over; the tail frames hold the finished
+                // painting, which is where the animation ends on screen too.
+                this._drawAnim = this._drawAnimAt(Math.min(1, i / N));
+                if (turning) {
+                    this.viewerState.rotation = multiplyMatrices(
+                        rotationMatrixY((2 * Math.PI * i) / N), R0);
+                }
+                this.render('saveDrawingVideo');
+                if (track && track.requestFrame) {
+                    try { track.requestFrame(); } catch (e) { /* optional */ }
+                }
+                if (typeof setStatus === 'function' && i % fps === 0) {
+                    setStatus(`Recording drawing... ${Math.round((100 * i) / (N + TAIL))}%`);
+                }
+                i++;
+                this._drawTimer = setTimeout(tick, 1000 / fps);
+            };
+            tick();
+        }
+
+        _endDrawingVideo(stream) {
+            if (this._drawTimer) { clearTimeout(this._drawTimer); this._drawTimer = null; }
+            this._drawRecording = false;
+            // Leave the finished painting up, exactly as a live run does.
+            this._drawAnim = this.drawMode ? this._drawAnimAt(1) : null;
+            this._drawT = 1;
+            if (this._drawR0) {
+                this.viewerState.rotation = this._drawR0;
+                this._drawR0 = null;
+            }
+            if (this._drawWasAuto) { this.autoRotate = true; this._drawWasAuto = false; }
+            if (this.canvas) this.canvas.style.pointerEvents = '';
+            if (stream) {
+                try { stream.getTracks().forEach((tr) => tr.stop()); } catch (e) { /* gone */ }
+            }
+            this.render('drawingVideoEnd');
+        }
+
         saveRotationVideo(opts) {
             const o = opts || {};
             const fps = Math.max(5, Math.min(60, Number(o.fps) || 30));
@@ -7449,11 +7771,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.render();
         }
 
-        /** Camera button reads "Save Video" while auto-rotate is on. */
+        /** Camera button reads "Save Video" while either animation is on. */
         _syncSaveButtonMode() {
             const b = this.saveImageButton;
             if (!b) return;
-            const video = !!this.autoRotate;
+            // Either running animation turns the button into a recorder. Draw
+            // wins when both are on: a drawing that also turns is still a
+            // drawing, and saveDrawingVideo handles the turn itself.
+            const video = !!this.autoRotate || !!this.drawMode;
             const span = b.querySelector('span');
             const icon = b.querySelector('i');
             if (icon) {
@@ -7470,13 +7795,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (!replaced) span.appendChild(document.createTextNode(label));
             }
             b.title = video
-                ? 'Record one full rotation as a loopable video'
-                : 'Save image (SVG or PNG)';
+                ? 'Record it, or grab the frame on screen'
+                : 'Save image, PNG or SVG (shift-click to skip the panel)';
             // the open panel belongs to the other mode now
             if (this._savePanel) {
                 this._savePanel.remove();
                 this._savePanel = null;
                 b.setAttribute('aria-expanded', 'false');
+                this._uiPaused = false;
             }
         }
 
@@ -7485,10 +7811,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const open = this._savePanel.style.display === 'none';
                 this._savePanel.style.display = open ? 'flex' : 'none';
                 if (anchorEl) anchorEl.setAttribute('aria-expanded', String(open));
+                if (open) this._pauseForSavePanel();
+                else this._resumeFromSavePanel();
                 return;
             }
-            const video = !!this.autoRotate;
-            const prev = this._saveOpts || { format: 'svg', dpi: 300 };
+            const video = !!this.autoRotate || !!this.drawMode;
+            if (video) this._pauseForSavePanel();
+            const prev = this._saveOpts || { format: 'png', dpi: 300 };
             const prevV = this._videoOpts || { seconds: 6, fps: 30 };
             const SEL = 'flex:1; min-width:0; height:28px; font-size:12px; padding:0 8px;'
                 + ' border:1px solid #d1d5db; border-radius:8px; background:#fff;';
@@ -7500,29 +7829,99 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             p.style.cssText = 'display:flex; flex-direction:column; gap:6px;'
                 + ' border:1px solid #e5e7eb; border-radius:8px; background:#fff;'
                 + ' padding:8px; margin-top:6px;';
-            // While auto-rotate is on the button records a turn instead, so the
-            // panel offers the two things that decide the video and nothing
-            // else: how long one turn takes, and the frame rate. Format is not
-            // offered because there is one - webm is what MediaRecorder gives.
+            // ONE ROW PER OUTPUT, each ending in its own button: the numbers
+            // that decide a recording with a record dot after them, and the
+            // one that decides a still with a camera after that. Nothing has to
+            // be read in order or chosen between - the row you fill in is the
+            // thing you get.
+            //
+            // Glyphs rather than icon fonts: the embedded viewer does not load
+            // FontAwesome (its record button is a plain bullet), and one
+            // implementation for both pages beats two.
+            //
+            // Saving a frame while an animation runs is the point of having the
+            // camera here at all: the panel pauses whatever is running, so a
+            // half-finished drawing or a particular angle can be kept, and
+            // before it existed the only way to save one was to switch the
+            // animation off - which threw away the frame being looked at.
+            //
+            // SVG is offered on the plain panel but never with an animation up.
+            // A vector file of a normal cartoon is the better artifact; a
+            // vector file of the drawing is not, since that look is a pencil
+            // line a fraction of a pixel wide, paint sitting off register and
+            // translucent stains.
+            const svgOk = !video && !this.drawMode;
+            const NUM = 'width:52px; flex:0 0 auto; height:24px; font-size:12px;'
+                + ' padding:0 4px; border:1px solid #d1d5db; border-radius:6px;'
+                + ' background:#fff;';
+            const CAP = 'font-size:11px; color:#6b7280; flex:0 0 auto;';
+            // Styled inline rather than by copying the toolbar button's class:
+            // the two pages skin their buttons differently (and index.html's
+            // toggle skin lives on a span that follows a checkbox, which these
+            // do not have), so borrowing it renders one of them invisible.
+            const BTN = 'flex:0 0 auto; width:30px; min-width:0; padding:0;'
+                + ' height:24px; line-height:1; cursor:pointer; font-size:12px;'
+                + ' border:1px solid #d1d5db; border-radius:6px; background:#fff;';
+            const cell = (id, label, min, max, stepv) =>
+                `<label for="${id}" style="${CAP}">${label}</label>`
+                + `<input id="${id}" type="number" min="${min}" max="${max}"`
+                + ` step="${stepv}" style="${NUM}">`;
+            let html = '';
             if (video) {
-                p.innerHTML =
-                    `<div style="${ROW}">`
-                    + `<label for="saveSecondsInput" style="${LBL}">Seconds/turn:</label>`
-                    + `<input id="saveSecondsInput" type="number" min="1" max="60" step="1" style="${SEL}">`
-                    + '<button data-ok style="flex-shrink:0;"><span>Record</span></button></div>'
-                    + `<div style="${ROW}">`
-                    + `<label for="saveFpsInput" style="${LBL}">FPS:</label>`
-                    + `<input id="saveFpsInput" type="number" min="5" max="60" step="1" style="${SEL}"></div>`;
-                const row0 = (anchorEl && (anchorEl.closest('.toolbar-row') || anchorEl.parentElement))
-                    || (this.controlsContainer || document.body);
-                row0.insertAdjacentElement('afterend', p);
+                html += `<div style="${ROW}">`
+                    + cell('saveSecondsInput', this.drawMode ? 'Sec' : 'Turn', 1, 60, 1)
+                    + cell('saveFpsInput', 'FPS', 5, 60, 1)
+                    + '<span style="flex:1 1 auto;"></span>'
+                    + `<button data-rec style="${BTN} color:#ef4444;"`
+                    + ' title="Record to a video file"><span>&#9679;</span></button></div>';
+            } else if (svgOk) {
+                html += `<div style="${ROW}">`
+                    + `<select id="saveFormatSelect" style="${NUM} width:auto; flex:1 1 auto;">`
+                    + '<option value="png">PNG</option>'
+                    + '<option value="svg">SVG</option>'
+                    + '<option value="svgz">SVG.gz</option>'
+                    + '</select></div>';
+            }
+            html += `<div style="${ROW}">`
+                + `<span data-dpicell style="${ROW}">`
+                + cell('saveDpiInput', 'DPI', 36, 1200, 12) + '</span>'
+                + '<span style="flex:1 1 auto;"></span>'
+                + `<button data-ok style="${BTN}"`
+                + ` title="${video ? 'Save the frame on screen as an image'
+                    : 'Save an image'}"><span>&#128247;</span></button></div>`;
+            p.innerHTML = html;
+
+            const row = (anchorEl && (anchorEl.closest('.toolbar-row') || anchorEl.parentElement))
+                || (this.controlsContainer || document.body);
+            row.insertAdjacentElement('afterend', p);
+
+            const fSel = p.querySelector('#saveFormatSelect');
+            const dpiIn = p.querySelector('#saveDpiInput');
+            const dpiCell = p.querySelector('[data-dpicell]');
+            const okBtn = p.querySelector('[data-ok]');
+            dpiIn.value = prev.dpi;
+            if (fSel) fSel.value = svgOk ? prev.format : 'png';
+            // In Draw mode, and for a frame grabbed mid-animation, the look is
+            // PNG's whatever was last chosen.
+            const fmtOf = () => (svgOk && fSel ? fSel.value : 'png');
+            // DPI is meaningless for a vector export, so the cell is not merely
+            // disabled there - it is not shown at all. Set display rather than
+            // `hidden`: the element carries an inline display, which outranks
+            // the user-agent [hidden] rule (the same trap the Style panel
+            // documents).
+            const syncDpi = () => {
+                dpiCell.style.display = fmtOf() === 'png' ? 'flex' : 'none';
+            };
+            syncDpi();
+            if (fSel) fSel.addEventListener('change', syncDpi);
+
+            if (video) {
                 const secIn = p.querySelector('#saveSecondsInput');
                 const fpsIn = p.querySelector('#saveFpsInput');
-                const okB = p.querySelector('[data-ok]');
-                if (anchorEl && anchorEl.className) okB.className = anchorEl.className;
+                const recB = p.querySelector('[data-rec]');
                 secIn.value = prevV.seconds;
                 fpsIn.value = prevV.fps;
-                okB.addEventListener('click', (ev) => {
+                recB.addEventListener('click', (ev) => {
                     ev.preventDefault();
                     const vo = {
                         seconds: Number(secIn.value) || 6,
@@ -7531,63 +7930,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this._videoOpts = vo;
                     p.style.display = 'none';
                     if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
-                    this.saveRotationVideo(vo);
+                    // The recorders drive their own frames, so the pause the
+                    // panel put on is lifted without resuming anything.
+                    this._uiPaused = false;
+                    // Recording a drawing RESTARTS it from blank paper, so
+                    // hitting record part way through a run still gives a whole
+                    // one. Recording a rotation does not need to, since a turn
+                    // has no beginning.
+                    if (this.drawMode) this.saveDrawingVideo(vo);
+                    else this.saveRotationVideo(vo);
                 });
-                this._savePanel = p;
-                if (anchorEl) {
-                    anchorEl.setAttribute('aria-controls', 'savePanel');
-                    anchorEl.setAttribute('aria-expanded', 'true');
-                }
-                return;
             }
 
-            // Format and Save share a row; DPI gets its own row underneath, and
-            // only when it means something. Detail is not offered at all:
-            // subdivision follows the output resolution on its own.
-            p.innerHTML =
-                `<div style="${ROW}">`
-                + `<label for="saveFormatSelect" style="${LBL}">Format:</label>`
-                + `<select id="saveFormatSelect" style="${SEL}">`
-                + '<option value="svg">SVG</option>'
-                + '<option value="svgz">SVG (compressed)</option>'
-                + '<option value="png">PNG</option>'
-                + '</select>'
-                + '<button data-ok style="flex-shrink:0;"><span>Save</span></button></div>'
-                + `<div style="${ROW}" data-dpirow>`
-                + `<label for="saveDpiInput" style="${LBL}">DPI:</label>`
-                + `<input id="saveDpiInput" type="number" min="36" max="1200" step="12" style="${SEL}"></div>`;
-
-            const row = (anchorEl && (anchorEl.closest('.toolbar-row') || anchorEl.parentElement))
-                || (this.controlsContainer || document.body);
-            row.insertAdjacentElement('afterend', p);
-
-            const fSel = p.querySelector('#saveFormatSelect');
-            const dpiIn = p.querySelector('#saveDpiInput');
-            const dpiRow = p.querySelector('[data-dpirow]');
-            const okBtn = p.querySelector('[data-ok]');
-            if (anchorEl && anchorEl.className) okBtn.className = anchorEl.className;
-            fSel.value = prev.format;
-            dpiIn.value = prev.dpi;
-            // DPI is meaningless for a vector export, so the row is not merely
-            // disabled there - it is not shown at all. Set display rather than
-            // `hidden`: the row carries an inline display:flex, which outranks
-            // the user-agent [hidden] rule and leaves the row on screen (the
-            // same trap the Style panel documents in index.html).
-            const syncDpi = () => {
-                dpiRow.style.display = fSel.value === 'png' ? 'flex' : 'none';
-            };
-            syncDpi();
-            fSel.addEventListener('change', syncDpi);
             okBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                const opts = {
-                    format: fSel.value,
-                    dpi: Number(dpiIn.value) || 300,
-                };
+                const opts = { format: fmtOf(), dpi: Number(dpiIn.value) || 300 };
                 this._saveOpts = opts;
                 p.style.display = 'none';
                 if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
                 this.saveImage(opts);
+                // Saving a frame is not a reason to lose the run: whatever the
+                // panel paused picks up again once the file is on its way.
+                this._resumeFromSavePanel();
             });
             this._savePanel = p;
             if (anchorEl) {
@@ -8499,6 +8863,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             ? 0 : (renderer.shadowStrength || 0.5);
     }
     rotationCheckbox.checked = renderer.autoRotate;
+
+    // Hand-drawn build-up. A checkbox rather than a plain button so it takes
+    // the same pressed skin as Colorblind and Dark beside it, and so it reads
+    // as ON while the drawing is being made. The renderer clears it when the
+    // animation finishes or is interrupted, which is why it holds the element.
+    const drawCheckbox = containerElement.querySelector('#drawCheckbox');
+    if (drawCheckbox) {
+        renderer.drawCheckbox = drawCheckbox;
+        drawCheckbox.checked = false;
+        drawCheckbox.addEventListener('change', () => {
+            renderer.setDrawMode(drawCheckbox.checked);
+        });
+    }
 
     // Pass ALL controls to the renderer
     renderer.setUIControls(
