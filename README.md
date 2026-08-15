@@ -100,7 +100,7 @@ What the preset changes, and why:
 | --- | --- | --- | --- |
 | helix thickness | ~0 (flat) | uniform | a helix is a paper streamer coiling in space; thickness fights the coil |
 | strand thickness | full | uniform | the sheet has to read as a slab you could stack |
-| loop section | square at the defaults | narrow | the loop reads as the same card seen end-on; width and thickness are separate controls, and the default width is calibrated so the section comes out square |
+| loop section | square at the defaults | narrow | the loop is the same card seen end-on; width and thickness are separate controls, and the default width is calibrated so the section comes out square |
 | sheet edges | white | element colour | the pale rim is what separates strands where they overlap |
 | `sheet_flat` | `1.0` | `0.0` | real strands pleat; the drawings show them flat |
 | `pencil` | `1.0` | `0.0` | paper grain |
@@ -118,106 +118,37 @@ py2Dmol.view(preset='richardson', pencil=0, sheet_flat=0)   # no grain, natural 
 
 #### Shared cartoon options
 
-`thickness` (Ångströms, default `0` for cartoon, `0.7` for Richardson) sets slab thickness; `thickness=0` draws flat single-sheet ribbons. On the `Thick:` slider.
+`thickness` (Ångströms, default `0` for cartoon, `0.7` for Richardson) sets slab thickness; `thickness=0` draws flat single-sheet ribbons. It tapers off as you zoom out, since an edge thinner than a pixel reads as a grey fringe rather than as depth. On the `Thick:` slider.
 
 `shade` (0–1, default `1.0`; `0.7` for Richardson) sets how much directional modelling is applied: `0` is flat colour, `1` is full light and inner shadow. `highlight` is a separate control and is **not** scaled by it, so `shade=0, highlight=2` gives flat colour with a specular band still on top. Paired with `Hilite:` in the panel, since the two split the lighting between them.
 
-The `Outline:` slider is a width in **pixels**, and fractional values are real: it thins smoothly all the way down to a hairline before `0` turns the outline off. (It used to clamp, so the bottom half of the slider all drew alike and the outline appeared to snap off rather than fade.)
-
-`detail` (integer 2–8, default `4`) sets subdivisions per residue, on the `Detail:` slider. It is an upper bound: the renderer never samples finer than the output can show (see *Subdivision follows the output* below), so at normal zoom the setting is what you get and cost is roughly linear in it, while a structure drawn small quietly uses less. Lower is deliberately faceted and proportionally faster; 6–8 give the smoothest curves for a still frame. 2 is the geometric floor — below it a helix cannot represent its own coil.
+`detail` (integer 2–8, default `4`) sets subdivisions per residue, on the `Detail:` slider. It is an upper bound: nothing is sampled finer than the output can show, so a structure drawn small quietly uses less. Lower is deliberately faceted and proportionally faster; 6–8 give the smoothest curves for a still frame. 2 is the geometric floor — below it a helix cannot represent its own coil.
 
 `arrows` (default `True`) draws an arrowhead on the C-terminal end of each β-strand, half a Cα–Cα step long, and squares off the N-terminal end. `arrows=False` lets strands flow continuously out of their loops at both ends.
 
 `sheet_flat` (0–1) damps the β-pleat and smooths loops; `pencil` (0–1) adds coloured-pencil paper grain, applied to the structure only and never to the background.
 
-Element edges are always lit directionally, so a thickness band reads as a rounded section rather than a flat facet. This used to be a `loop_round` slider, but its only useful setting was full — anything less just reintroduced the facets it exists to remove.
+The `Outline:` slider is a width in pixels; fractional values are real, and it thins to a hairline before `0` turns the outline off.
 
-**Loops are drawn with their outer lines only.** Any slab seen at an angle shows three lines: the two silhouette edges, and the crease where its visible wide face meets its visible side face. On a helix or a strand that crease is worth drawing — it is what separates a wide face from a thin edge. On a loop, whose section is square, it runs a hair inside the silhouette and reads as a doubled line, so it is left to shading instead. This covers the stub joining a loop to a helix as well, which is drawn at loop width even though it takes the helix's colour.
+Element edges are always lit directionally, so a thickness band reads as a rounded section rather than a flat facet. This used to be a `loop_round` slider, but its only useful setting was full — anything less just reintroduced the facets it exists to remove.
 
 `color='ss'` colours by secondary structure. The palette is picked by `ss_palette` / the SSE dropdown: `pymol` (default: red helices, yellow strands, green loops), `jmol`, or the Jane Richardson schemes `jr1` (blue/green) and `jr2` (the 1981 hand-coloured drawings). It works with any style.
 
-**Subdivision follows the output.** Curves are subdivided only as finely as the output can
-show - about one station every 3 pixels - so a small domain at normal zoom draws at the full
-Detail setting while a large complex, whose residues are a few pixels each, quietly draws fewer.
-It applies to exports too, at *their* resolution rather than the screen's. There is no
-"maximum detail" export option because there is nothing for it to buy.
+Both **SVG and PNG export** reproduce all of this, including the pencil grain (as an `feTurbulence` filter in SVG) and the gradient shading.
 
-**Thickness fades out as you zoom out.** A ribbon edge is only readable while it is a few pixels
-wide; below that it stops reading as depth and becomes a grey fringe along every ribbon. So
-thickness is scaled by how big the band would be *on screen* and reaches exactly zero — flat
-ribbons — once it would fall under a pixel. Large complexes are therefore flat at default zoom,
-which is where their edges were illegible anyway. This is for legibility, not speed: a flat
-ribbon actually issues slightly *more* canvas operations than the slab, because the slab path
-merges faces the flat path emits separately.
+#### Draw
 
-**Draw** (in the Style panel, beside Colorblind and Dark) builds the picture up the way an
-illustrator makes one. A pencil line goes down first, on exactly the edges that are visible —
-never the creases inside a form, never the edges behind it. The colour follows a beat after the
-drawing is finished, laid on slightly off register and running past its edge in places; the
-graphite shows through it, because a wash is transparent — and it stays there. Both layers sweep
-N→C, so the hand follows the chain rather than wiping across the canvas.
+**Draw** (in the Style panel, beside Colorblind and Dark) builds the picture up the way an illustrator makes one: a pencil line first, then colour over it, slightly off register and running past its edge here and there. It ends on watercolour over pencil and stays there — turning Draw off returns the ordinary picture, pressing it again replays from blank paper. The view stays live while it draws. Cartoon style only.
 
-**What it arrives at is watercolour over pencil**, and it stays there: the graphite is never
-erased, the dark outline never goes down, and the colour keeps its off-register and its runs.
-Those are the look being made, not blemishes on the way to a clean render. Draw stays on to hold
-it; turning Draw off is what returns the viewer to its ordinary picture, and pressing it again
-replays the whole thing from blank paper.
+#### Saving
 
-It is a gate on the ordinary render rather than a separate pipeline: every frame is a normal
-depth-sorted drawing of the part that exists so far, so occlusion stays correct throughout. The
-view stays live while it draws — drag, zoom and pan all work, and the drawing carries on.
-Cartoon style only.
+The camera button writes a PNG or SVG. PNG takes a DPI — 300 dpi on a 600px view gives 1875x1875, rendered at that size rather than scaled up, so the curves get finer and not just bigger. The background is always transparent. Shift-click skips the panel.
 
-The hand does not move at a constant rate: it runs along straight stretches and slows through
-turns, since a turn is where the line can go wrong. Measured over the SS benchmark, the sharpest
-turns take 2.0× as long per residue as a straight step, loops 1.28×, helices 1.12× — a helix
-being close to straight on purpose, because its *axis* is what the hand follows.
+With **Rotate** or **Draw** on, the same button records a video instead — one full turn, looping seamlessly, or the drawing being made. Opening the panel pauses the animation so you can set seconds and frame rate, and the camera there grabs the frame on screen.
 
-**Recording it, or keeping a frame.** While Draw (or Rotate) is on — and Draw stays on after the
-run — the camera button becomes **Save Video**, and its panel gives one row per output: seconds
-and frame rate ending in a record dot, DPI ending in a camera. Recording restarts the drawing
-from blank paper and captures the whole run; the camera grabs the picture as it stands right
-now, half-drawn and watercolour and all. Opening the panel pauses the animation — which is what
-makes the frame grab useful — and dismissing it carries on from where it paused. Frames are stepped by the recorder
-rather than by the clock, so one rendered frame is one video frame however slow a frame is to
-draw, and recording keeps working in a background tab. With Rotate on as well, the view makes
-exactly one revolution while the drawing is made.
+**Moving the view.** Drag to rotate, scroll to zoom, and **middle-drag or Cmd/Ctrl-drag to pan**, as in PyMOL. A pan moves the rotation centre rather than the picture, so rotation, zoom and ortho keep working about the point you dragged to.
 
-**Image export** (the camera button) offers PNG or SVG, and PNG takes a DPI — 300 dpi on a 600px
-view gives 1875x1875. Shift-click skips the panel and writes a file with the settings last used.
-In Draw mode it is PNG only: what makes that look is a pencil line a fraction of a pixel wide,
-paint sitting off register and translucent stains, which is a poor thing to ask a vector file to
-carry. Format is not offered while an animation is up, and DPI never applies to a recording — that is
-taken straight off the canvas at the size it is on screen.
-
-A PNG is rendered *at* its output size rather than scaled up afterwards, so a higher DPI buys
-genuinely finer curves, not just more pixels — while the settings that are in **pixels** rather
-than Ångströms (outline width, selection ink, the zoom test behind the thickness fade) are
-scaled to keep the proportions you see on screen. A 300 dpi export is the view you were looking
-at, drawn larger and more finely; it is not a different picture with hairline outlines. Exports
-go out on a **transparent** background whatever the
-viewer is set to, so a figure drops into a document without a baked-in white or black rectangle
-behind it.
-
-SVG carries the pencil grain as an `feTurbulence` filter and keeps the gradient shading, so a
-vector export is not a flat-colour version of the picture.
-
-**Moving the view.** Drag to rotate, scroll to zoom, and **middle-drag or Cmd/Ctrl-drag to pan**,
-as in PyMOL. A pan moves the rotation centre rather than the picture, so dragging the structure
-to the left leaves the centre off to its right - rotation, zoom and ortho all keep working about
-that point, which is what makes panning useful for studying one end of a long molecule.
-
-**Recording a rotation.** With auto-rotate on, the camera button becomes **Save Video** and
-records one full turn as a webm that loops seamlessly: the frames cover 0-360 degrees and stop
-one step short of 360, so wrapping back to the first frame continues the same angular step
-instead of repeating a frame. Opening the panel pauses the turn while you set it up, and the
-same panel can save the frame you are looking at. With Draw on as well, the view makes one
-revolution while the drawing is made.
-
-**Fetching a chain.** The fetch box takes a chain suffix as well as a plain ID: `1timA`,
-`1TIM_A`, `1tim_AB` (one chain per character) or `1tim:A,B` (commas for multi-character chain
-IDs). Only four-character PDB IDs take a suffix — they start with a digit, which is what keeps a
-UniProt accession like `Q5VSL9` from being read as an ID plus chains.
+**Fetching a chain.** The fetch box takes a chain suffix as well as a plain ID: `1timA`, `1TIM_A`, `1tim_AB` (one chain per character) or `1tim:A,B` (commas for multi-character chain IDs). Only four-character PDB IDs take a suffix, which is what keeps a UniProt accession like `Q5VSL9` from being read as an ID plus chains.
 
 ## Layouts & multiple objects
 

@@ -7821,12 +7821,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const prevV = this._videoOpts || { seconds: 6, fps: 30 };
             const SEL = 'flex:1; min-width:0; height:28px; font-size:12px; padding:0 8px;'
                 + ' border:1px solid #d1d5db; border-radius:8px; background:#fff;';
-            const ROW = 'display:flex; align-items:center; gap:8px;';
+            // WRAPS. The embedded viewer's panel is 180px wide, and a row of
+            // two labelled numbers plus a button wants about 210 - so it hung
+            // out of the panel there while fitting fine in the standalone
+            // page's wider column. Wrapping adapts to both instead of picking
+            // one; the button simply falls to the next line when it has to.
+            const ROW = 'display:flex; align-items:center; gap:6px;'
+                + ' flex-wrap:wrap; row-gap:6px;';
             const LBL = 'font-size:12px; flex-shrink:0;';
 
             const p = document.createElement('div');
             p.id = 'savePanel';
             p.style.cssText = 'display:flex; flex-direction:column; gap:6px;'
+                + ' box-sizing:border-box; max-width:100%;'
                 + ' border:1px solid #e5e7eb; border-radius:8px; background:#fff;'
                 + ' padding:8px; margin-top:6px;';
             // ONE ROW PER OUTPUT, each ending in its own button: the numbers
@@ -7851,7 +7858,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // line a fraction of a pixel wide, paint sitting off register and
             // translucent stains.
             const svgOk = !video && !this.drawMode;
-            const NUM = 'width:52px; flex:0 0 auto; height:24px; font-size:12px;'
+            const NUM = 'width:46px; flex:0 0 auto; min-width:0; height:24px; font-size:12px;'
                 + ' padding:0 4px; border:1px solid #d1d5db; border-radius:6px;'
                 + ' background:#fff;';
             const CAP = 'font-size:11px; color:#6b7280; flex:0 0 auto;';

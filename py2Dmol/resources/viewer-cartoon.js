@@ -372,12 +372,20 @@
     // Graphite, not black: a pencil under-drawing is grey and slightly warm,
     // and it has to sit UNDER the ink without competing with it. Light, too -
     // this is the layer you are meant to look past.
-    // Dark warm graphite. It was lighter, on the theory that an under-drawing
-    // should be something you look past - but the layer has to be READABLE
-    // first: thin, broken strokes at low alpha over a white ground disappear
-    // long before they read as pencil. Fine AND dark is a sharp pencil; fine
-    // and pale is nothing at all.
-    const SKETCH_CSS = 'rgb(74, 68, 62)';
+    // Dark warm graphite on white paper. It was lighter once, on the theory
+    // that an under-drawing should be something you look past - but the layer
+    // has to be READABLE first: thin strokes at low alpha over a white ground
+    // disappear long before they read as pencil. Fine AND dark is a sharp
+    // pencil; fine and pale is nothing at all.
+    //
+    // On a black ground the same argument runs the other way: graphite on black
+    // is invisible, and what an illustrator reaches for is a white pencil - so
+    // the layer flips with the background, exactly as the ink and the paper
+    // tone already do. Warm off-white rather than pure white, to keep it a
+    // pencil rather than a highlight.
+    const SKETCH_ON_WHITE = 'rgb(74, 68, 62)';
+    const SKETCH_ON_BLACK = 'rgb(228, 223, 213)';
+    let SKETCH_CSS = SKETCH_ON_WHITE;
     // ONE pencil line, continuous - not several passes overlaid. The layers of
     // the drawing do not accumulate on top of each other; each one ERASES what
     // is under it as it advances. So a given stretch of the picture is pencil
@@ -407,7 +415,15 @@
     // still reads as curvature and helices come out 1.55x slow.
     const PACE_SMOOTH = 3;
     const SKETCH_ALPHA = 0.55;
-    const SKETCH_W = 0.42;          // fraction of the ink width - a fine pencil
+    // Pencil width in pixels, INDEPENDENT of the outline control. It used to be
+    // a fraction of the ink width, which tied the pencil to a setting that has
+    // nothing to do with it: the 3d preset draws no outline at all, so the
+    // pencil collapsed to its floor and the drawing was invisible, and even at
+    // the default outline it came out at 0.69px - a hairline that reads as a
+    // smudge rather than a line. A pencil is a pencil whatever the style does
+    // about outlines afterwards, so it is stated here in pixels, and only
+    // pxScale (the export factor) moves it.
+    const SKETCH_PX = 1.3;
     // The pencil is not erased by the paint - it SHOWS THROUGH it. A wash is
     // transparent, so the graphite under it stays visible; what happens to it
     // is that it gets rubbed out at the end, once the ink is down, which is
@@ -1401,6 +1417,32 @@
 
     function assignSecondaryOpen(coords, n, positionTypes, opts) {
         const cutoff = (opts && opts.hbCutoff !== undefined) ? opts.hbCutoff : HB_ENERGY_CUTOFF;
+        // Positions that may NOT bond to each other, one id per index. Overlay
+        // mode merges every frame of a trajectory into one coordinate array, so
+        // without this the assignment goes looking for hydrogen bonds between
+        // superimposed COPIES of the molecule - which are a couple of Angstroms
+        // apart and bond enthusiastically - and the secondary structure changed
+        // as soon as the overlay was switched on.
+        const groups = (opts && opts.groups) || null;
+        // ...and may not be each other's chain NEIGHBOURS either. Merged frames
+        // sit next to each other in the array, so the last residue of one and
+        // the first of the next are adjacent indices: without this the amide
+        // hydrogen and the phi/psi of the residues at every seam are built from
+        // a neighbour in a different copy of the molecule.
+        // ...and may not be each other's chain NEIGHBOURS either, which is a
+        // SEPARATE question from bonding. Two chains packed against each other
+        // SHOULD pair into a sheet - an inter-chain hydrogen bond is a real
+        // one - but they are not one polymer, and their termini are only
+        // adjacent in the array. When a C-terminus happened to land 3-4 A from
+        // the next chain's N-terminus (a packing distance, and exactly the
+        // window a peptide bond occupies), the backbone predictor invented a
+        // peptide bond across the break and the junction grew a strand.
+        //
+        // `links` is the file's own connectivity, one id per residue; `groups`
+        // is the overlay's frames, which are neither linked NOR bondable.
+        const links = (opts && opts.links) || groups || null;
+        const adj = (i, j) => !links
+            || (links[i] !== undefined && links[i] === links[j]);
         const LADDER_EXTEND = (opts && opts.extendLadder !== undefined) ? opts.extendLadder : LADDER_EXTEND_DEFAULT;
         const extendGate = (opts && opts.extendGate) || LADDER_EXTEND_GATE;
         const mirrored = mirroredOf(opts && opts.names);
@@ -1409,7 +1451,16 @@
         if (n < 5) return { sec, ladders };
         const at = (i) => coords[i];
         const isProtein = (i) => !positionTypes || positionTypes[i] === 'P';
-        const bb = predictBackbone(at, n, isProtein, undefined, mirrored);
+        // The backbone is predicted from a four-CA window, so a residue whose
+        // window would reach into another group gets none - which is exactly
+        // what happens to a residue at the end of a chain. Without this the
+        // last residue of each merged frame had a C and an O invented for it
+        // from the first residue of the NEXT frame, and went on to form bonds
+        // and a strand that do not exist.
+        const wantBb = links
+            ? (i) => isProtein(i) && adj(i, i - 1) && adj(i, i + 1) && adj(i, i + 2)
+            : isProtein;
+        const bb = predictBackbone(at, n, wantBb, undefined, mirrored);
         const has = (i, k) => {
             const o = i * 9 + k;
             return bb[o] !== 0 || bb[o + 1] !== 0 || bb[o + 2] !== 0;
@@ -1418,6 +1469,7 @@
         const H = new Float64Array(n * 3);
         for (let i = 1; i < n; i++) {
             if (!isProtein(i) || !has(i, 6) || !has(i - 1, 0)) continue;
+            if (!adj(i, i - 1)) continue;
             const o = i * 9, pc = (i - 1) * 9;
             let ax = bb[o + 6] - bb[pc], ay = bb[o + 7] - bb[pc + 1], az = bb[o + 8] - bb[pc + 2];
             const p = at(i);
@@ -1469,6 +1521,7 @@
             if (!isProtein(i)) continue;
             const o = i * 9, prev = (i - 1) * 9, next = (i + 1) * 9;
             if (!has(i - 1, 0) || !has(i, 6) || !has(i, 0) || !has(i + 1, 6)) continue;
+            if (!adj(i, i - 1) || !adj(i, i + 1)) continue;
             const ca = at(i);
             const phi = dihedral(
                 [bb[prev], bb[prev + 1], bb[prev + 2]],
@@ -1524,6 +1577,7 @@
                             if (!arr) continue;
                             for (const j of arr) {      // j donates N-H
                                 if (Math.abs(i - j) < 3) continue;
+                                if (groups && groups[i] !== groups[j]) continue;
                                 if (!has(j, 6)) continue;
                                 const hq = j * 3;
                                 if (!H[hq] && !H[hq + 1] && !H[hq + 2]) continue;
@@ -2624,8 +2678,14 @@
         // carry a chain coordinate; ligands, base plates and lone atoms do not,
         // and 1 puts them at the END, which is where the details of a drawing
         // go anyway.
+        // CLAMPED AT 1. The interval that closes a CYCLIC chain runs from the
+        // last residue back to the first, so its stations carry gs0 values
+        // PAST the end of the chain - n-1 and a bit. Unclamped they never
+        // satisfy `<= 1`, so the piece joining C back to N was skipped at every
+        // point of the run, including the finished painting: a cyclic peptide
+        // came out drawn as an open arc.
         const chainU = (g) => (g.gs0 === undefined
-            ? 1 : g.gs0 / Math.max(1, n - 1));
+            ? 1 : Math.min(1, g.gs0 / Math.max(1, n - 1)));
         // Pencil state. anim.sketch is where the drawing hand has got to.
         const sketching = !!(anim && anim.sketch > 0);
         const sketchMax = sketching ? anim.sketch : 0;
@@ -2716,6 +2776,7 @@
             PAPER = dark ? [0, 0, 0] : [255, 255, 255];
             INK_BASE = dark ? 255 : 0;
             OUTLINE_CSS = dark ? 'rgb(255,255,255)' : 'rgb(0,0,0)';
+            SKETCH_CSS = dark ? SKETCH_ON_BLACK : SKETCH_ON_WHITE;
         }
         // Detail is capped at the TUNED value (0.5) rather than at 2. Above it
         // the sampling only adds stations - and therefore cost, since fills
@@ -2826,12 +2887,29 @@
         // The assignment runs over the WHOLE structure at once rather than per
         // run: sheets pair strands from different chains, and a hydrogen bond
         // does not care that its two ends were parsed as separate segments. The
-        // bridge partners come back with it, and are the sheet ladders.
+        // bridge partners come back with it, and are the sheet ladders. What it
+        // is told, below, is which residues are one POLYMER and which may bond
+        // at all - two different questions, and neither of them "same chain".
         let sec = renderer._cartoonSec;
         let ladders = renderer._cartoonLadder;
         if (!sec || renderer._cartoonSecKey !== secKey) {
+            // In overlay mode every frame of the trajectory is in `coords` at
+            // once, so the frame index each position belongs to is handed over
+            // as a bonding group: a residue may only bond within its own frame.
+            const ovMap = (renderer.overlayState && renderer.overlayState.enabled
+                && renderer.overlayState.frameIdMap
+                && renderer.overlayState.frameIdMap.length === n)
+                ? renderer.overlayState.frameIdMap : null;
+            // Which residues are actually one polymer, taken from the segments
+            // the file gave us rather than guessed from distance. Runs are
+            // already this: bbSeg[i] connects i to i+1.
+            const linkId = new Int32Array(n).fill(-1);
+            for (let r = 0; r < runs.length; r++) {
+                for (let i = runs[r][0]; i <= runs[r][1]; i++) linkId[i] = r;
+            }
             const assigned = assignSecondary(renderer.coords, n, positionTypes,
-                { names: renderer.positionNames, rings: ringRuns });
+                { names: renderer.positionNames, rings: ringRuns,
+                    groups: ovMap, links: linkId });
             sec = applySse(assigned.sec, renderer);
             ladders = assigned.ladders;
             renderer._cartoonSec = sec;
@@ -7654,8 +7732,11 @@
                                 pts[s + 1][2],
                                 cv.gs0 + (s + 1) * cv.gsStep)) visible = false;
                     }
+                    // clamped for the same reason chainU is: a closure curve
+                    // runs past the end of the chain
                     const uSeg = anim
-                        ? (cv.gs0 + (s + 0.5) * cv.gsStep) / Math.max(1, n - 1)
+                        ? Math.min(1, (cv.gs0 + (s + 0.5) * cv.gsStep)
+                            / Math.max(1, n - 1))
                         : 0;
                     // THE PENCIL TRACES THE INK. An artist does not sketch the
                     // creases inside a form or the edges hidden behind it -
@@ -7709,7 +7790,7 @@
                 ctx.strokeStyle = SKETCH_CSS;
                 ctx.lineCap = 'round';
                 ctx.lineJoin = 'round';
-                ctx.lineWidth = Math.max(0.3 * pxScale, inkW * SKETCH_W);
+                ctx.lineWidth = SKETCH_PX * pxScale;
                 const wet = anim.wash;
                 for (let band = 0; band <= SKETCH_BANDS; band++) {
                     // band 0 is everything the brush has already passed; the
