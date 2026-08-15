@@ -2385,10 +2385,22 @@
         // style: black ink under/between the fills. Declared before the
         // geometry loop because ribbon ink prims are emitted DURING
         // construction (sorted at their own depth).
+        // No lower clamp beyond zero-means-off: the control is a width in
+        // pixels and fractional widths are meaningful - canvas draws a
+        // sub-pixel stroke as a lighter line, which is exactly what a finer
+        // outline should look like. A floor of 1 here (with the ink floor
+        // below) made the whole bottom half of the slider draw identically,
+        // so the outline appeared to stop thinning and then snap off at 0.
         const outlineW = renderer.outlineMode !== 'none'
             ? (renderer.relativeOutlineWidth === 0
-                ? 0 : Math.max(1, renderer.relativeOutlineWidth || 3) * pxScale)
+                ? 0 : (renderer.relativeOutlineWidth || 3) * pxScale)
             : 0;
+        // The ink pass strokes at a fraction of the outline width - the band
+        // under the fills carries the weight, the ink only has to close it.
+        // The floor exists so a hairline cannot vanish entirely; it is far
+        // below any useful setting and, being a floor on a fraction, it never
+        // makes a line thicker than the outline the user asked for.
+        const inkW = Math.max(0.35 * pxScale, outlineW * 0.55);
         // SELECTION INK. The selected residues are outlined using the ink pass
         // itself rather than a separate overlay: the silhouette machinery
         // already knows the exact contour of every element, so re-colouring its
@@ -6097,7 +6109,10 @@
                 // the junction loop (up-bias) or hollowed out (down-bias).
                 if (outlineW && (g.capStart || g.capEnd)) {
                     ctx.strokeStyle = inkOf(g, nearS);
-                    ctx.lineWidth = Math.max(2 * pxScale, outlineW);
+                    // The rim is the outline's own width - no separate floor,
+                    // which used to hold it at 2px while the outline thinned
+                    // past it and left every element end heavier than its sides.
+                    ctx.lineWidth = outlineW;
                     ctx.lineCap = 'butt';
                     ctx.lineJoin = 'round';
                     ctx.beginPath();
@@ -6489,7 +6504,7 @@
             } else if (g.kind === 'ribStroke') {
                 if (outlineW) {
                     ctx.strokeStyle = inkOf(g, near);
-                    ctx.lineWidth = Math.max(1.4 * pxScale, outlineW * 0.55);
+                    ctx.lineWidth = inkW;
                     ctx.lineCap = 'round';
                     ctx.lineJoin = 'round';
                     strokePath(g.pts);
@@ -7179,7 +7194,7 @@
             const hiddenZ = renderer._inkSample === 'point'
                 ? hiddenZPoint : hiddenZBilinear;
             const hidden = useZBuf ? hiddenZ : hiddenGrid;
-            ctx.lineWidth = Math.max(1.4 * pxScale, outlineW * 0.55);
+            ctx.lineWidth = inkW;
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             // One batched path per ink colour. With tint 0 every curve inks
@@ -7216,7 +7231,7 @@
             for (const [inkCss, group] of inkGroups) {
             const isSel = inkCss === selKey;
             ctx.strokeStyle = isSel ? SELECTION_INK_CSS : inkCss;
-            ctx.lineWidth = isSel ? SELECTION_INK_WIDTH : Math.max(1.4 * pxScale, outlineW * 0.55);
+            ctx.lineWidth = isSel ? SELECTION_INK_WIDTH : inkW;
             ctx.beginPath();
             for (const cv of group) {
                 const pts = cv.pts;

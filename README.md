@@ -122,6 +122,8 @@ py2Dmol.view(preset='richardson', pencil=0, sheet_flat=0)   # no grain, natural 
 
 `shade` (0–1, default `1.0`; `0.7` for Richardson) sets how much directional modelling is applied: `0` is flat colour, `1` is full light and inner shadow. `highlight` is a separate control and is **not** scaled by it, so `shade=0, highlight=2` gives flat colour with a specular band still on top. Paired with `Hilite:` in the panel, since the two split the lighting between them.
 
+The `Outline:` slider is a width in **pixels**, and fractional values are real: it thins smoothly all the way down to a hairline before `0` turns the outline off. (It used to clamp, so the bottom half of the slider all drew alike and the outline appeared to snap off rather than fade.)
+
 `detail` (integer 2–8, default `4`) sets subdivisions per residue, on the `Detail:` slider. It is an upper bound: the renderer never samples finer than the output can show (see *Subdivision follows the output* below), so at normal zoom the setting is what you get and cost is roughly linear in it, while a structure drawn small quietly uses less. Lower is deliberately faceted and proportionally faster; 6–8 give the smoothest curves for a still frame. 2 is the geometric floor — below it a helix cannot represent its own coil.
 
 `arrows` (default `True`) draws an arrowhead on the C-terminal end of each β-strand, half a Cα–Cα step long, and squares off the N-terminal end. `arrows=False` lets strands flow continuously out of their loops at both ends.
