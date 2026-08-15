@@ -100,7 +100,7 @@ What the preset changes, and why:
 | --- | --- | --- | --- |
 | helix thickness | ~0 (flat) | uniform | a helix is a paper streamer coiling in space; thickness fights the coil |
 | strand thickness | full | uniform | the sheet has to read as a slab you could stack |
-| loop section | square, side = sheet thickness | narrow | the loop is the same card seen end-on, so it ties to the thickness control, not the width one |
+| loop section | square at the defaults | narrow | the loop reads as the same card seen end-on; width and thickness are separate controls, and the default width is calibrated so the section comes out square |
 | sheet edges | white | element colour | the pale rim is what separates strands where they overlap |
 | `sheet_flat` | `1.0` | `0.0` | real strands pleat; the drawings show them flat |
 | `pencil` | `1.0` | `0.0` | paper grain |
@@ -122,7 +122,7 @@ py2Dmol.view(preset='richardson', pencil=0, sheet_flat=0)   # no grain, natural 
 
 `shade` (0–1, default `1.0`; `0.7` for Richardson) sets how much directional modelling is applied: `0` is flat colour, `1` is full light and inner shadow. `highlight` is a separate control and is **not** scaled by it, so `shade=0, highlight=2` gives flat colour with a specular band still on top. Paired with `Hilite:` in the panel, since the two split the lighting between them.
 
-`detail` (integer 2–8, default `4`) sets subdivisions per residue, on the `Detail:` slider. It is the only thing that sets sampling — the same geometry at every canvas size and zoom — so cost is predictable and roughly linear in it. Lower is deliberately faceted and proportionally faster; 6–8 give the smoothest curves for a still frame. 2 is the geometric floor — below it a helix cannot represent its own coil.
+`detail` (integer 2–8, default `4`) sets subdivisions per residue, on the `Detail:` slider. It is an upper bound: the renderer never samples finer than the output can show (see *Subdivision follows the output* below), so at normal zoom the setting is what you get and cost is roughly linear in it, while a structure drawn small quietly uses less. Lower is deliberately faceted and proportionally faster; 6–8 give the smoothest curves for a still frame. 2 is the geometric floor — below it a helix cannot represent its own coil.
 
 `arrows` (default `True`) draws an arrowhead on the C-terminal end of each β-strand, half a Cα–Cα step long, and squares off the N-terminal end. `arrows=False` lets strands flow continuously out of their loops at both ends.
 
@@ -130,13 +130,34 @@ py2Dmol.view(preset='richardson', pencil=0, sheet_flat=0)   # no grain, natural 
 
 Element edges are always lit directionally, so a thickness band reads as a rounded section rather than a flat facet. This used to be a `loop_round` slider, but its only useful setting was full — anything less just reintroduced the facets it exists to remove.
 
+**Loops are drawn with their outer lines only.** Any slab seen at an angle shows three lines: the two silhouette edges, and the crease where its visible wide face meets its visible side face. On a helix or a strand that crease is worth drawing — it is what separates a wide face from a thin edge. On a loop, whose section is square, it runs a hair inside the silhouette and reads as a doubled line, so it is left to shading instead. This covers the stub joining a loop to a helix as well, which is drawn at loop width even though it takes the helix's colour.
+
 `color='ss'` colours by secondary structure. The palette is picked by `ss_palette` / the SSE dropdown: `pymol` (default: red helices, yellow strands, green loops), `jmol`, or the Jane Richardson schemes `jr1` (blue/green) and `jr2` (the 1981 hand-coloured drawings). It works with any style.
+
+**Subdivision follows the output.** Curves are subdivided only as finely as the output can
+show - about one station every 3 pixels - so a small domain at normal zoom draws at the full
+Detail setting while a large complex, whose residues are a few pixels each, quietly draws fewer.
+It applies to exports too, at *their* resolution rather than the screen's. There is no
+"maximum detail" export option because there is nothing for it to buy.
+
+**Thickness fades out as you zoom out.** A ribbon edge is only readable while it is a few pixels
+wide; below that it stops reading as depth and becomes a grey fringe along every ribbon. So
+thickness is scaled by how big the band would be *on screen* and reaches exactly zero — flat
+ribbons — once it would fall under a pixel. Large complexes are therefore flat at default zoom,
+which is where their edges were illegible anyway. This is for legibility, not speed: a flat
+ribbon actually issues slightly *more* canvas operations than the slab, because the slab path
+merges faces the flat path emits separately.
 
 **Image export** (the camera button) reproduces all of this, including the pencil grain (as an
 `feTurbulence` filter) and gradient shading. Pick SVG, compressed SVG, or PNG; PNG takes a DPI,
-where 300 dpi on a 600px view gives 1875x1875. Exports always go out at maximum subdivision and
-on a **transparent** background whatever the viewer is set to, so a figure drops into a document
-without a baked-in white or black rectangle behind it.
+where 300 dpi on a 600px view gives 1875x1875. A PNG is rendered *at* that size rather than
+scaled up afterwards, so a higher DPI buys genuinely finer curves, not just more pixels — while
+the settings that are in **pixels** rather than Ångströms (outline width, selection ink, the
+zoom test behind the thickness fade) are scaled to keep the proportions you see on screen. A
+300 dpi export is the view you were looking at, drawn larger and more finely; it is not a
+different picture with hairline outlines. Exports go out on a **transparent** background
+whatever the viewer is set to, so a figure drops into a document without a baked-in white or
+black rectangle behind it.
 
 **Moving the view.** Drag to rotate, scroll to zoom, and **middle-drag or Cmd/Ctrl-drag to pan**,
 as in PyMOL. A pan moves the rotation centre rather than the picture, so dragging the structure

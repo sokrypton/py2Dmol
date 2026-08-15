@@ -164,8 +164,8 @@ The fix routes frame slack through the LOOPS. Elements own their faces - a
 strand's lies in its sheet, a helix's points at its axis, neither is negotiable
 - and each loop reconciles the two elements it joins, so nothing accumulates
 around the ring. Where the cycle cannot close, the leftover goes to the longest
-loop: in the Richardson preset a loop's thickness equals its width, so its face
-has no observable orientation and the leftover is free.
+loop: in the Richardson preset a loop's section is square at the default width,
+so its face has no observable orientation and the leftover is free.
 
 | | worst interval | worst closure | intervals over 90 deg |
 | --- | --- | --- | --- |

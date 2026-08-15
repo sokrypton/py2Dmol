@@ -309,7 +309,11 @@
     //     default single global thickness cannot serve both.
     //   - loops are thin and round, closer to a wire than a ribbon, so they
     //     recede and let the elements dominate.
-    const RICH_HALF_A = { H: 1.45, E: 1.65, C: 0.30 };
+    // C is 0.525 rather than 0.30 so that a loop keeps the size it had when its
+    // width was taken from the THICKNESS control: 0.525 * (2/3 width scale) is
+    // the 0.35 half-side it used to get from thickness 0.7. Same picture at the
+    // defaults, but Width now moves it.
+    const RICH_HALF_A = { H: 1.45, E: 1.65, C: 0.525 };
     // Per-SS thickness, RELATIVE to the Thick setting rather than absolute.
     // The whole point of the preset is that one global thickness cannot give
     // flat helices and solid strands at once - but the Thick slider still has
@@ -322,6 +326,15 @@
     // entirely, so selecting this style seeds the Thick control instead of
     // silently ignoring it.
     const RICH_THICK_DEFAULT = 0.7;
+    // Screen-space window over which thickness fades out as the view zooms out,
+    // measured on the HALF-thickness in pixels: below the first it is flat,
+    // above the second it is full, linear between.
+    // Below MIN the thickness is EXACTLY zero, not merely small: a fraction of
+    // a pixel of side face is not a thin edge, it is a grey fringe on one side
+    // of every ribbon, and it still costs a face per piece to draw. Above FULL
+    // it is at the user's setting, linear between.
+    const THICK_FADE_MIN_PX = 1.0;
+    const THICK_FADE_FULL_PX = 2.5;
     // Outlines in the drawings are a dark tint of the element's own colour, not
     // black - black flattens the palette and fights the pale sheet edges.
     const RICH_TINT_DEFAULT = 0.8;
@@ -2045,7 +2058,16 @@
     // step of the control distinct.
     const MIN_SUB = 2;
     let detailCur = 1;
-    const subFloor = (base) => Math.max(MIN_SUB, Math.round(base * detailCur));
+    // Stations closer together than this on screen cannot be told apart, so the
+    // extra ones are geometry, depth sorting and stroking spent on curvature the
+    // display cannot show.
+    const SUB_TARGET_PX = 3;
+    // Upper bound on subdivision from the size of a residue in the OUTPUT, set
+    // per render below. Exports are capped the same way - they render at their
+    // own resolution, so a high-dpi PNG raises the cap by itself.
+    let subCapCur = Infinity;
+    const subFloor = (base) => Math.max(MIN_SUB,
+        Math.min(Math.round(base * detailCur), subCapCur));
     // Depth fade DISABLED by default (user decision): 1.0 = uniform tone
     // at any depth. The old 0.45 fade read as "the object fading into the
     // screen" / a shade stuck to the view. Re-enable per renderer with
@@ -2297,6 +2319,16 @@
         // the scale this style actually drew at, so a pan drag can convert
         // screen pixels into Angstroms (see the pan handler in viewer-mol.js)
         renderer._viewScale = scale;
+        // AUTO-SUBDIVISION. Detail is a quality control, not a promise to draw
+        // curvature finer than the screen can resolve. A residue is CA_STEP_A
+        // long, so at this scale it spans CA_STEP_A * scale pixels; splitting it
+        // into more than that over SUB_TARGET_PX gains nothing visible and costs
+        // a station's worth of work in every pass. It binds only when the
+        // structure is SMALL on screen - a single domain at default zoom is
+        // ~31px per residue and keeps the full setting - so it is a large-
+        // structure and zoomed-out saving, which is where the cost actually is.
+        // MIN_SUB still applies underneath: 2 is a hard floor, not a preference.
+        subCapCur = Math.max(MIN_SUB, Math.floor((CA_STEP_A * scale) / SUB_TARGET_PX));
         const persp = (typeof vs.ortho === 'number') ? vs.ortho < 1 : false;
         const fl = vs.focalLength;
         const widthScale = (renderer.lineWidth || 3.0) / 3.0;
@@ -2341,13 +2373,21 @@
             else genericSegs.push(s);
         }
 
+        // EXPORT PIXEL SCALE. Most sizes here are Angstroms through `scale`, so
+        // they follow the output resolution by themselves. A few are pixels by
+        // definition - line widths the user set in pixels, and tolerances that
+        // ask "do these project to the same spot on screen" - and those have to
+        // be multiplied to keep their SCREEN meaning when a 300 dpi export
+        // renders the same view three times larger. Without it an export comes
+        // out with hairline outlines over a full-size structure.
+        const pxScale = renderer._exportPxScale || 1;
         // Outline width follows the outline control, matching the ribbon
         // style: black ink under/between the fills. Declared before the
         // geometry loop because ribbon ink prims are emitted DURING
         // construction (sorted at their own depth).
         const outlineW = renderer.outlineMode !== 'none'
             ? (renderer.relativeOutlineWidth === 0
-                ? 0 : Math.max(1, renderer.relativeOutlineWidth || 3))
+                ? 0 : Math.max(1, renderer.relativeOutlineWidth || 3) * pxScale)
             : 0;
         // SELECTION INK. The selected residues are outlined using the ink pass
         // itself rather than a separate overlay: the silhouette machinery
@@ -2362,7 +2402,7 @@
         const SELECTION_INK_CSS = 'rgb(255, 190, 0)';
         // absolute stroke width here, unlike viewer-mol.js's
         // SELECTION_INK_EXTRA, which is ADDED to the line width
-        const SELECTION_INK_WIDTH = 2.5;
+        const SELECTION_INK_WIDTH = 2.5 * pxScale;
         // ... which also means the ink pass has to RUN when the outline is off
         // but something is selected.
         const inkWanted = outlineW || !!selInk;
@@ -3890,14 +3930,13 @@
                 if (!isProt) return naWidthA * widthScale;
                 const jj = wrapIdx(j);
                 const t = sec[jj];
-                // Richardson loops are a SQUARE section whose side is the sheet
-                // THICKNESS: the loop reads as the same piece of card as the
-                // arrows, seen end-on. That ties it to the thickness control
-                // rather than the width one - halfT returns halfW for 'C', so
-                // setting the width here makes both dimensions equal - and it
-                // means the Thick slider moves loops and sheets together, which
-                // is what keeps them looking like one material.
-                if (rich && t !== 'H' && t !== 'E') return thickScale;
+                // Every class reads the WIDTH control, loops included. Richardson
+                // loops used to take their width from the THICKNESS control so
+                // they came out square, which made the two sliders one control
+                // in disguise: Width did nothing to a loop and Thick changed its
+                // width. They are separate quantities and are now read from
+                // separate controls; RICH_HALF_A.C is calibrated so the default
+                // still draws the square section the preset is meant to have.
                 return (WIDTHS[t] || WIDTHS.C) * widthScale;
             };
             // ARROWHEADS (Richardson preset). The head is HALF a CA-CA step
@@ -3932,16 +3971,40 @@
             // The Richardson preset is the exception, and the reason this
             // function had to take an argument: the look REQUIRES flat helices
             // and solid strands simultaneously, which a single global value
-            // cannot express. Loops there take thickness == width so they read
-            // as round rather than as a flat tape on edge. The Thick slider
-            // still scales the whole profile, so the control keeps working.
-            const thickScale = (renderer.cartoonThickness !== undefined
+            // cannot express. Each class scales the Thick control by its own
+            // factor - a helix is 0, so it stays a flat ribbon whatever the
+            // slider says.
+            const thickScaleRaw = (renderer.cartoonThickness !== undefined
                 ? renderer.cartoonThickness / 2 : RIBBON_TH_A);
+
+            // THICKNESS TAPERS OFF AS YOU ZOOM OUT. Thickness is only readable
+            // while the band is a few pixels wide; below that it stops being a
+            // solid edge and becomes a dark fringe along every ribbon, which
+            // reads as dirt rather than as depth. So it is faded to nothing in
+            // SCREEN space: the same structure keeps its edges when you zoom in
+            // and loses them when you zoom out, which is what the eye expects
+            // from a real object.
+            //
+            // This is a LEGIBILITY change, not a performance one. A flat ribbon
+            // might look like less to draw, but measured on a helix+coil test
+            // it issues about 3% MORE canvas operations at zoom 0.3 than the
+            // slab does (5627 vs 5484): the slab path merges faces that the
+            // flat path emits separately. Do not reach for it as an
+            // optimisation.
+            // Measured against the DISPLAY, not the output: this is a question
+            // about what the viewer can see, and the answer must not change
+            // because the same view is being exported larger. Dividing the
+            // export scale back out keeps a flat ribbon on screen flat in its
+            // PNG - the export stays what you were looking at.
+            const thPx = thickScaleRaw * scale / pxScale;
+            const thickZoom = Math.max(0, Math.min(1,
+                (thPx - THICK_FADE_MIN_PX) / (THICK_FADE_FULL_PX - THICK_FADE_MIN_PX)));
+            const thickScale = thickScaleRaw * thickZoom;
+
             const halfT = (j) => {
                 if (!rich || !isProt) return thickScale;
                 const jj = wrapIdx(j);
                 const t = sec[jj];
-                if (t === 'C') return halfW(jj);           // round-ish loop
                 const k = RICH_TH_REL[t] !== undefined ? RICH_TH_REL[t] : RICH_TH_REL.C;
                 return thickScale * k;
             };
@@ -4794,7 +4857,7 @@
                             hull.pop();
                             // mark corners whose points are on or near the
                             // hull boundary (near-tie: coincident twins)
-                            const TOL2 = 1.5 * 1.5;
+                            const TOL2 = (1.5 * pxScale) * (1.5 * pxScale);
                             for (let c8 = 0; c8 < 8; c8++) {
                                 let on = false;
                                 for (let h = 0; h < hull.length && !on; h++) {
@@ -4832,6 +4895,78 @@
                             if (nMid > CE || botOuter) visC[1][s] = true;
                             if (nMid < -CE || topOuter) visC[2][s] = true;
                             if (nMid < -CE || botOuter) visC[3][s] = true;
+                            // LOOPS: OUTER LINES ONLY. A slab seen at an angle
+                            // puts three lines on screen - the two silhouette
+                            // edges, plus the crease where the visible wide
+                            // face meets the visible side face. On a helix or
+                            // strand that crease is worth drawing: it is what
+                            // separates a wide face from its thin edge. On a
+                            // loop it is not. The section is square at the
+                            // defaults (0.35 A half-side either way), so the
+                            // crease runs a hair inside the silhouette and
+                            // reads as a doubled line rather than as structure.
+                            // Keeping only the corners that are EXTREME across
+                            // the chain leaves the silhouette exact and the
+                            // crease unlined, carried by shading alone.
+                            //
+                            // Gated on squareLoop rather than on ssCls: a
+                            // transition interval is BUILT as a loop but is
+                            // classed 'H' next to a helix (see ssCls - the
+                            // helix wins its transitions so the spiral is not
+                            // cut a residue early), and the question here is
+                            // geometric, not what colour the interval takes.
+                            //
+                            // Extremes are taken at EACH station and unioned,
+                            // which normally keeps 2 corners and keeps 3 across
+                            // a handoff - where the outer edge passes from the
+                            // top corner to the bottom one. A single winner per
+                            // segment unlines the incoming curve for exactly
+                            // the segment in which it becomes the silhouette,
+                            // which shows as a nick in the outer line at every
+                            // turn. No tolerance on the comparison: a handoff
+                            // mid-step already reads as two different winners
+                            // at the two ends, so a tolerance adds nothing but
+                            // corners a pixel inside the edge, and those stroke
+                            // as the second line this is here to remove.
+                            if (squareLoop) {
+                                // Across-chain direction: the segment's mean
+                                // step, turned 90 degrees. Unnormalised - only
+                                // the ORDER of the projections matters.
+                                let mx0 = 0; let my0 = 0; let mx1 = 0; let my1 = 0;
+                                for (let c = 0; c < 4; c++) {
+                                    mx0 += curves[c][s][0]; my0 += curves[c][s][1];
+                                    mx1 += curves[c][s + 1][0]; my1 += curves[c][s + 1][1];
+                                }
+                                const perpX = (my0 - my1) / 4;
+                                const perpY = (mx1 - mx0) / 4;
+                                // Chain running at the viewer: the step projects
+                                // to under a hundredth of a pixel and "across"
+                                // is undefined, so leave the hull's answer -
+                                // which needs no chain direction - in place.
+                                if (perpX * perpX + perpY * perpY > 1e-4) {
+                                    const v0 = new Array(4);   // offset at s
+                                    const v1 = new Array(4);   // offset at s+1
+                                    let hi0 = -Infinity; let lo0 = Infinity;
+                                    let hi1 = -Infinity; let lo1 = Infinity;
+                                    for (let c = 0; c < 4; c++) {
+                                        const a = curves[c][s][0] * perpX
+                                            + curves[c][s][1] * perpY;
+                                        const b = curves[c][s + 1][0] * perpX
+                                            + curves[c][s + 1][1] * perpY;
+                                        v0[c] = a; v1[c] = b;
+                                        if (a > hi0) hi0 = a;
+                                        if (a < lo0) lo0 = a;
+                                        if (b > hi1) hi1 = b;
+                                        if (b < lo1) lo1 = b;
+                                    }
+                                    for (let c = 0; c < 4; c++) {
+                                        // >= and <=, so exact ties keep both
+                                        const keep = v0[c] >= hi0 || v1[c] >= hi1
+                                            || v0[c] <= lo0 || v1[c] <= lo1;
+                                        if (!keep) visC[c][s] = false;
+                                    }
+                                }
+                            }
                         }
 
                         for (let c = 0; c < 4; c++) {
@@ -5962,7 +6097,7 @@
                 // the junction loop (up-bias) or hollowed out (down-bias).
                 if (outlineW && (g.capStart || g.capEnd)) {
                     ctx.strokeStyle = inkOf(g, nearS);
-                    ctx.lineWidth = Math.max(2, outlineW);
+                    ctx.lineWidth = Math.max(2 * pxScale, outlineW);
                     ctx.lineCap = 'butt';
                     ctx.lineJoin = 'round';
                     ctx.beginPath();
@@ -6354,7 +6489,7 @@
             } else if (g.kind === 'ribStroke') {
                 if (outlineW) {
                     ctx.strokeStyle = inkOf(g, near);
-                    ctx.lineWidth = Math.max(1.4, outlineW * 0.55);
+                    ctx.lineWidth = Math.max(1.4 * pxScale, outlineW * 0.55);
                     ctx.lineCap = 'round';
                     ctx.lineJoin = 'round';
                     strokePath(g.pts);
@@ -7044,7 +7179,7 @@
             const hiddenZ = renderer._inkSample === 'point'
                 ? hiddenZPoint : hiddenZBilinear;
             const hidden = useZBuf ? hiddenZ : hiddenGrid;
-            ctx.lineWidth = Math.max(1.4, outlineW * 0.55);
+            ctx.lineWidth = Math.max(1.4 * pxScale, outlineW * 0.55);
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             // One batched path per ink colour. With tint 0 every curve inks
@@ -7081,7 +7216,7 @@
             for (const [inkCss, group] of inkGroups) {
             const isSel = inkCss === selKey;
             ctx.strokeStyle = isSel ? SELECTION_INK_CSS : inkCss;
-            ctx.lineWidth = isSel ? SELECTION_INK_WIDTH : Math.max(1.4, outlineW * 0.55);
+            ctx.lineWidth = isSel ? SELECTION_INK_WIDTH : Math.max(1.4 * pxScale, outlineW * 0.55);
             ctx.beginPath();
             for (const cv of group) {
                 const pts = cv.pts;

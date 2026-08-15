@@ -414,8 +414,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         : false;
 
     const LIGHTEN_FACTOR = 0.25;
-    // top of the Detail slider's range, used by 'max detail' exports
-    const SAVE_MAX_DETAIL = 8;
 
     // Named color map for common color names
     // Selection indicator. The cartoon plugin has its own copy of the colour
@@ -6657,6 +6655,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // baseLineWidth is this.lineWidth (in Angstroms) converted to pixels
             const baseLineWidthPixels = this.lineWidth * scale;
+            // Outline width is set in PIXELS, so unlike everything derived from
+            // Angstroms it does not follow the output resolution on its own. An
+            // export renders the view at its own (larger) size, which would
+            // leave a 300 dpi PNG with the same 3px outline around a structure
+            // drawn three times bigger - a hairline where the screen shows a
+            // firm edge. Scaling it here keeps the ratio the user set.
+            const pxScale = this._exportPxScale || 1;
+            const outlineWidthPx = this.relativeOutlineWidth * pxScale;
 
             const centerX = displayWidth / 2;
             const centerY = displayHeight / 2;
@@ -6925,7 +6931,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 {
                     const m = (baseLineWidthPixels
                         * this._calculateSegmentWidthMultiplier(segData[idx], segInfo)
-                        + this.relativeOutlineWidth) / 2 + 2;
+                        + outlineWidthPx) / 2 + 2;
                     if ((x1 < -m && x2 < -m)
                         || (x1 > displayWidth + m && x2 > displayWidth + m)
                         || (y1 < -m && y2 < -m)
@@ -6983,8 +6989,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (this.outlineMode !== 'none' || isSel) {
                     // --- 2-STEP DRAW (Outline) ---
                     const totalOutlineWidth = currentLineWidth + (isSel
-                        ? Math.max(this.relativeOutlineWidth, SELECTION_INK_EXTRA)
-                        : this.relativeOutlineWidth);
+                        ? Math.max(outlineWidthPx, SELECTION_INK_EXTRA * pxScale)
+                        : outlineWidthPx);
 
                     // For zero-length segments, draw single outline circle
                     if (segInfo.idx1 === segInfo.idx2) {
@@ -7196,8 +7202,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * Save the current view as an image.
          *
          * opts.format    'svg' | 'svgz' | 'png'
-         * opts.maxDetail raise subdivision to the maximum for the export only
          * opts.dpi       PNG only; CSS pixels are 96 dpi, so this is the scale
+         *
+         * Detail is NOT forced up for an export. Subdivision is capped by how
+         * big a residue is in the OUTPUT (see subCapCur in viewer-cartoon.js),
+         * so a PNG at 300 dpi already gets three times the subdivision of the
+         * screen, and on a large structure the extra stations the old "max
+         * detail" option added were finer than a pixel either way.
          *
          * EXPORTS ARE ALWAYS TRANSPARENT, whatever the viewer background is set
          * to. A saved figure goes into a document whose page colour is not ours
@@ -7208,16 +7219,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         saveImage(opts) {
             const o = opts || {};
             const format = o.format || 'svg';
-            const maxDetail = o.maxDetail !== false;
             const dpi = Math.max(36, Math.min(1200, Number(o.dpi) || 300));
 
             const prevTransparent = this.isTransparent;
-            const prevDetail = this.cartoonDetail;
             this.isTransparent = true;
-            if (maxDetail) this.cartoonDetail = SAVE_MAX_DETAIL;
             const restore = () => {
                 this.isTransparent = prevTransparent;
-                this.cartoonDetail = prevDetail;
                 try { this.render(); } catch (e) { /* view is cosmetic here */ }
             };
 
@@ -7241,8 +7248,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     out.width = Math.max(1, Math.round(width * k));
                     out.height = Math.max(1, Math.round(height * k));
                     const octx = out.getContext('2d');
-                    octx.scale(k, k);
-                    this._renderToContext(octx, width, height);
+                    // Render AT the output size rather than scaling a
+                    // screen-sized drawing up: the subdivision cap then sees
+                    // the real resolution, which is what makes a 300 dpi export
+                    // genuinely smoother rather than merely larger.
+                    // _exportPxScale tells the renderers how much bigger this
+                    // is than the view, so the quantities that are PIXELS by
+                    // definition - outline width, selection ink, the thickness
+                    // fade's screen-size test - keep the size they have on
+                    // screen. Everything else is Angstroms and follows the
+                    // resolution by itself.
+                    this._exportPxScale = k;
+                    try {
+                        this._renderToContext(octx, out.width, out.height);
+                    } finally {
+                        this._exportPxScale = 1;
+                    }
                     const objectName = this.currentObjectName;
                     out.toBlob((blob) => {
                         if (!blob) {
@@ -7298,7 +7319,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         /** Deprecated: kept so existing callers and saved pages keep working. */
         saveAsSvg(compress) {
-            this.saveImage({ format: compress ? 'svgz' : 'svg', maxDetail: false });
+            this.saveImage({ format: compress ? 'svgz' : 'svg' });
         }
 
         /**
@@ -7521,10 +7542,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Format and Save share a row; DPI gets its own row underneath, and
-            // only when it means something. Detail is not offered: an export is
-            // a finished figure, so it always goes out at the highest
-            // subdivision regardless of what the Detail slider is set to for
-            // interactive use.
+            // only when it means something. Detail is not offered at all:
+            // subdivision follows the output resolution on its own.
             p.innerHTML =
                 `<div style="${ROW}">`
                 + `<label for="saveFormatSelect" style="${LBL}">Format:</label>`
@@ -7563,7 +7582,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 e.preventDefault();
                 const opts = {
                     format: fSel.value,
-                    maxDetail: true,
                     dpi: Number(dpiIn.value) || 300,
                 };
                 this._saveOpts = opts;
