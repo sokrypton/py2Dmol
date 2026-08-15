@@ -50,7 +50,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
             </button>
         </div>
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">2Dmol</h1>
-        <p class="text-gray-500 mb-4">Load a PDB/CIF file or fetch from RCSB PDB (4-char ID) / AlphaFold DB (UniProt ID)
+        <p class="text-gray-500 mb-4">Load a PDB/CIF file or fetch from RCSB PDB (4-char ID, optionally with chains: <code>1timA</code>, <code>1tim_AB</code>) / AlphaFold DB (UniProt ID)
             to visualize protein structures.</p>
 
         <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
@@ -64,9 +64,9 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <!-- Fetch Section -->
                         <label for="fetch-id"
                             style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">PDB
-                            (4-char) or UniProt ID</label>
+                            (4-char, +chains) or UniProt ID</label>
                         <div id="fetch-input-container" style="margin-bottom: 8px;">
-                            <input type="text" id="fetch-id" placeholder="e.g., 4HHB or P0A8I3">
+                            <input type="text" id="fetch-id" placeholder="e.g., 4HHB, 4hhb_AB or P0A8I3">
                             <button id="fetch-btn" class="btn btn-primary">Fetch</button>
                         </div>
 
@@ -240,9 +240,10 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <span><i class="fa-solid fa-palette"></i>Style</span>
                                 </button>
 
-                                <button id="saveSvgButton" class="btn-toggle btn-flex"
-                                    title="Save as SVG">
-                                    <span><i class="fa-solid fa-camera"></i>Save SVG</span>
+                                <button id="saveImageButton" class="btn-toggle btn-flex"
+                                    aria-expanded="false" aria-controls="savePanel"
+                                    title="Save image (SVG or PNG)">
+                                    <span><i class="fa-solid fa-camera"></i>Save Image</span>
                                 </button>
                             </div>
                         </div>
@@ -251,10 +252,8 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             /* Inline display:flex on the style rows outranks the UA [hidden]
                                rule, so force it. Scoped to the style panel + its trigger. */
                             #styleAppearanceContainer [hidden] { display: none !important; }
-                            /* The box lives on the span, so the open cue goes there too. */
-                            #styleToggle[aria-expanded="true"] > span {
-                                background: var(--color-gray-300);
-                            }
+                            /* Open cue is the shared .btn-toggle[aria-expanded] rule
+                               in style.css - the same green as a checked toggle. */
                         </style>
                         <div id="styleAppearanceContainer" class="control-group">
 
@@ -379,7 +378,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="orthoSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
-                                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01"
+                                        <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
                                 </div>

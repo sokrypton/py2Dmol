@@ -149,7 +149,7 @@ def __init__(self,
     shadow_strength=0.5,      # Shadow strength (0.0-1.0)
     outline="full",           # Outline mode: "full", "partial", "none"
     width=3.0,                # Line width (2.0-4.7)
-    ortho=1.0,                # Ortho projection (0=perspective, 1=ortho)
+    ortho=0.5,                # Ortho projection (0=perspective, 1=ortho)
     rotate=False,             # Auto-rotate
     autoplay=False,           # Auto-play animation
     pae=False,                # Show PAE matrix
@@ -522,12 +522,22 @@ The viewer exposes a minimal API:
 **Note**: Legacy `handlePython*` methods (handlePythonUpdate, handlePythonNewObject, etc.) have been removed and replaced with the unified `handleIncrementalStateUpdate` method.
 
 **Per-Object State** (stored in `this.objectsData[name].viewerState`):
+
+`ortho` is the projection state; there is no separate "perspective is on" flag.
+One used to exist and could disagree with the slider - it was written only by the
+slider's handler, so a value arriving from config or a restored session left the
+control showing perspective while the projection stayed flat, and a guard
+elsewhere read `renderer.perspectiveEnabled` (a property that was never set) and
+so never fired. Perspective is now what `ortho < 1` MEANS, read at the point of
+use. `focalLength` is derived from `ortho` and the object's size, so it is
+recomputed when the object changes rather than carried across with saved state.
+
 ```javascript
 {
     rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],  // 3x3 rotation matrix
     zoom: 1.0,                                     // Zoom level
-    perspectiveEnabled: false,                     // Enable/disable perspective projection
-    focalLength: 200.0,                            // Focal length for perspective
+    ortho: 0.5,                                    // 0 = strong perspective, 1 = orthographic
+    focalLength: 200.0,                            // Derived from ortho AND object size
     center: null,                                  // Rotation center (computed)
     extent: null,                                  // Object extent (computed)
     currentFrame: -1                               // Active frame index (-1 = none)

@@ -82,7 +82,7 @@ function mkRenderer(coords, segments, opts) {
         segmentIndices: segments,
         positionTypes: new Array(n).fill('P'),
         positionNames: new Array(n).fill('ALA'),
-        viewerState: { extent: 30, zoom: 1, perspectiveEnabled: false, focalLength: 100 },
+        viewerState: { extent: 30, zoom: 1, ortho: 1, focalLength: 100 },
         objectsData: { obj: { maxExtent: 30 } },
         currentObjectName: 'obj',
         currentFrame: 0,
@@ -315,6 +315,7 @@ test('cyclic run closes the ribbon', () => {
     const stray = open.concat([{ type: 'P', idx1: 2, idx2: N - 4 }]);
     if (!(runOne(stray) > opsOpen)) throw new Error('a non-closure bond was dropped');
 });
+
 
 
 process.exit(failures ? 1 : 0);

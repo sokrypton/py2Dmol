@@ -406,7 +406,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         "#C49C94", "#F7B6D2", "#C7C7C7", "#DBDB8D", "#9EDAE5",
         "#393B79", "#637939", "#8C6D31", "#843C39", "#7B4173",
         "#5254A3", "#8CA252", "#BD9E39", "#AD494A", "#A55194"];
+    // Perspective is not a flag, it is what an ortho value below 1 MEANS. Read
+    // through here so there is one definition; `ortho` missing (an old saved
+    // state) reads as fully orthographic, which is what those sessions had.
+    const isPerspective = (vs) => (vs && typeof vs.ortho === 'number')
+        ? vs.ortho < 1
+        : false;
+
     const LIGHTEN_FACTOR = 0.25;
+    // top of the Detail slider's range, used by 'max detail' exports
+    const SAVE_MAX_DETAIL = 8;
 
     // Named color map for common color names
     // Selection indicator. The cartoon plugin has its own copy of the colour
@@ -477,9 +486,57 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     }
     function lightenColor(color) { return lightenRgb(color, LIGHTEN_FACTOR); }
 
-    // N-term (blue) to C-term (red/yellow)
-    function getRainbowColor(value, min, max, colorblind = false) {
+    // N-term (blue) to C-term (red/yellow); a CYCLIC chain goes all the way
+    // round the wheel instead, so its two ends meet.
+    function getRainbowColor(value, min, max, colorblind = false, cyclic = false) {
         if (max - min < 1e-6) return lightenColor(hsvToRgb(240, 1.0, 1.0)); // Default to blue
+        if (cyclic && !colorblind) {
+            // A ring has no first or last residue, but the ramp does: it runs
+            // out of hue at the C-term and puts blue hard against red exactly
+            // where the backbone closes, drawing a seam the structure does not
+            // have. Going the full circle - blue, cyan, green, yellow, red,
+            // magenta, back to blue - makes the colour as continuous as the
+            // chain. The span is one residue LONGER than the chain so the step
+            // from the last residue round to the first is the same size as
+            // every other step, instead of landing on the same hue twice.
+            let t = (value - min) / (max - min + 1);
+            t = Math.max(0, Math.min(1, t));
+            const hue = (240 - 360 * t + 360) % 360;
+            return lightenColor(hsvToRgb(hue, 1.0, 1.0));
+        }
+        if (cyclic && colorblind) {
+            // A dichromat has roughly TWO usable dimensions - luminance and the
+            // blue-yellow axis - and the ordinary colourblind ramp is a LINE
+            // along one of them. A line cannot close: running blue to yellow
+            // and back would give every colour twice over. Hue alone therefore
+            // cannot make a cyclic ramp that a dichromat can read.
+            //
+            // A closed LOOP in that plane can. Blue to yellow on the way out at
+            // high lightness, yellow to blue on the way back at low lightness,
+            // so position round the ring is (blue-yellow, light-dark) and every
+            // point is unique. Simulated against deuteranopia, protanopia and
+            // tritanopia, the closest pair more than a sixth of the ring apart
+            // scores 0.105 / 0.130 / 0.041 - better on every axis than the
+            // straight ramp this replaces (0.057 / 0.078 / 0.008), because the
+            // loop uses a second dimension the line left idle. The amplitude
+            // below is the measured optimum; more lightness helps tritanopes
+            // and costs the far more common red-green cases.
+            const th = 2 * Math.PI * Math.max(0, Math.min(1, (value - min) / (max - min + 1)));
+            const u = (1 - Math.cos(th)) / 2;         // 0 blue -> 1 yellow -> 0 blue
+            const L = 0.5 + 0.38 * Math.sin(th);      // out in the light, back in the dark
+            const base = hsvToRgb(240 - 180 * u, 1.0, 1.0);
+            let c;
+            if (L >= 0.5) {
+                const k = (L - 0.5) * 2 * 0.85;
+                c = { r: base.r + (255 - base.r) * k,
+                    g: base.g + (255 - base.g) * k,
+                    b: base.b + (255 - base.b) * k };
+            } else {
+                const k = (0.5 - L) * 2 * 0.8;
+                c = { r: base.r * (1 - k), g: base.g * (1 - k), b: base.b * (1 - k) };
+            }
+            return lightenColor({ r: Math.round(c.r), g: Math.round(c.g), b: Math.round(c.b) });
+        }
         let normalized = (value - min) / (max - min);
         normalized = Math.max(0, Math.min(1, normalized));
         const hue = colorblind
@@ -701,7 +758,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             shadow: true,
             shadow_strength: 0.5,
             outline: "full",
-            ortho: 1.0,
+            ortho: 0.5,
             detect_cyclic: true
         },
         color: {
@@ -855,7 +912,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.viewerState = {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
-                perspectiveEnabled: false,
+                // seeded from the control, not hardcoded: a new object must not
+                // silently discard the ortho setting the viewer is already on
+                ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
                 focalLength: 200.0,
                 center: null,
                 extent: null,
@@ -990,6 +1049,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.chainIndexMap = new Map(); // Initialize chain index map
             this.ligandOnlyChains = new Set(); // Chains that contain only ligands (no P/D/R atoms)
             this.rotatedCoords = [];
+            this.cyclicChains = new Set();   // chains whose backbone closes head to tail
+            // Scale and centre of the last frame drawn, filled in by render().
+            // A pan needs both to turn a drag in pixels into a shift in
+            // Angstroms of viewerState.center.
+            this._viewScale = null;
+            this._viewCenter = null;
             this.segmentIndices = [];
             this.segData = [];
             this.colors = [];
@@ -1103,7 +1168,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.playButton = null;
             this.overlayButton = null;
             this.recordButton = null;
-            this.saveSvgButton = null;
+            this.saveImageButton = null;
             this.frameSlider = null;
             this.frameCounter = null;
             this.objectSelect = null;
@@ -1523,6 +1588,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const isHighlightOverlay = e.target.id === 'highlightOverlay';
                 if (e.target !== this.canvas && !isHighlightOverlay) return;
 
+                // PAN instead of rotate on the middle button, or Cmd/Ctrl with
+                // the left - the same two gestures PyMOL uses. preventDefault
+                // is needed for the middle button or the browser starts its own
+                // autoscroll and swallows the drag.
+                this.isPanning = (e.button === 1) || e.metaKey || e.ctrlKey;
+                if (this.isPanning) e.preventDefault();
+
                 this.isDragging = true;
                 this.spinVelocityX = 0;
                 this.spinVelocityY = 0;
@@ -1555,6 +1627,45 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                     const dx = e.clientX - this.lastDragX;
                     const dy = e.clientY - this.lastDragY;
+
+                    if (this.isPanning) {
+                        if (dx === 0 && dy === 0) return;
+                        // MOVE THE ROTATION CENTRE, not the projection origin.
+                        // The centre is the 3D point that lands at the middle of
+                        // the canvas, so shifting it slides the structure while
+                        // leaving the pivot where it was on screen: drag the
+                        // structure left and the centre is now off to its right,
+                        // and rotation, ortho and zoom all work about that
+                        // point - which is what makes a pan useful for looking
+                        // at one end of a long molecule.
+                        //
+                        // rotated = m . (v - c), and screen x/y are
+                        // centre +- rotated * scale, so to move the drawing by
+                        // (dx, dy) pixels the centre moves by
+                        // -m^T . (dx/scale, -dy/scale, 0). m is a rotation, so
+                        // its transpose is its inverse.
+                        const sc = this._viewScale;
+                        const c0 = this.viewerState.center || this._viewCenter;
+                        const m = this.viewerState.rotation;
+                        if (sc && c0 && m) {
+                            const rx = dx / sc;
+                            const ry = -dy / sc;
+                            this.viewerState.center = {
+                                x: c0.x - (m[0][0] * rx + m[1][0] * ry),
+                                y: c0.y - (m[0][1] * rx + m[1][1] * ry),
+                                z: c0.z - (m[0][2] * rx + m[1][2] * ry),
+                            };
+                        }
+                        this.lastDragX = e.clientX;
+                        this.lastDragY = e.clientY;
+                        this.lastDragTime = now;
+                        // no inertia on a pan: a thrown structure that keeps
+                        // sliding is a nuisance to place precisely
+                        this.spinVelocityX = 0;
+                        this.spinVelocityY = 0;
+                        this.render();
+                        return;
+                    }
 
                     // Only update rotation if there's actual movement
                     if (dy !== 0 || dx !== 0) {
@@ -1609,6 +1720,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const handleUp = () => {
                     if (!this.isDragging) return;
                     this.isDragging = false;
+                    // cleared AFTER the canvas mouseup has run, which reads it to
+                    // tell a pan from a selection click
+                    setTimeout(() => { this.isPanning = false; }, 0);
                     window.removeEventListener('mousemove', handleMove);
                     window.removeEventListener('mouseup', handleUp);
                 };
@@ -1648,7 +1762,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // a rotate-drag, and only where nothing was hit - clicking the
                 // structure itself leaves the selection alone rather than
                 // clearing it out from under a tool the user is about to use.
-                if (e && this._pressX !== undefined) {
+                // A pan gesture is never a selection click, even if it happened
+                // not to move: middle-click and Cmd-click mean "grab", not "pick".
+                if (e && this._pressX !== undefined && !this.isPanning) {
                     const moved = Math.hypot(e.clientX - this._pressX,
                         e.clientY - this._pressY);
                     if (moved < 4) {
@@ -1927,12 +2043,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider, shadowSlider) {
+        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveImageButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider, shadowSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.overlayButton = overlayButton;
             this.recordButton = recordButton;
-            this.saveSvgButton = saveSvgButton;
+            this.saveImageButton = saveImageButton;
             this.frameSlider = frameSlider;
             this.frameCounter = frameCounter;
             this.objectSelect = objectSelect;
@@ -1971,16 +2087,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 console.warn("Record button not found - recording will not be available");
             }
 
-            if (this.saveSvgButton) {
+            if (this.saveImageButton) {
                 // shift-click saves gzipped (.svgz): ~6x smaller, opens
                 // natively in Inkscape/Illustrator. Plain .svg stays the
                 // default because a local .svgz does not render in a browser.
-                this.saveSvgButton.title = (this.saveSvgButton.title || 'Save as SVG')
-                    + ' (shift-click: compressed .svgz)';
-                this.saveSvgButton.addEventListener('click', (e) => {
+                this._syncSaveButtonMode();
+                this.saveImageButton.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    this.saveAsSvg(e.shiftKey);
+                    // shift-click keeps the old one-shot compressed SVG
+                    if (e.shiftKey) this.saveImage({ format: 'svgz' });
+                    else this._toggleSaveImagePanel(this.saveImageButton);
                 });
             }
 
@@ -2011,6 +2128,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             this.rotationCheckbox.addEventListener('change', (e) => {
                 this.autoRotate = e.target.checked;
+                this._syncSaveButtonMode();
                 // Stop inertia if user clicks auto-rotate
                 this.spinVelocityX = 0;
                 this.spinVelocityY = 0;
@@ -2067,14 +2185,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         baseSize = object.maxExtent;
                     }
 
+                    // ORTHO IS THE STATE; there is no separate "perspective is
+                    // on" flag to keep in step with it. One used to exist and
+                    // could disagree with the slider - it was written only from
+                    // here, so a value supplied by config or a restored session
+                    // left the slider showing perspective while the projection
+                    // stayed flat.
+                    this.viewerState.ortho = normalizedValue;
                     if (normalizedValue >= 1.0) {
-                        // Orthographic mode: no perspective
-                        this.viewerState.perspectiveEnabled = false;
                         this.viewerState.focalLength = baseSize * PERSPECTIVE_MAX_MULT;
                     } else {
-                        // Perspective mode: interpolate focal length based on slider value
                         const multiplier = PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * normalizedValue;
-                        this.viewerState.perspectiveEnabled = true;
                         this.viewerState.focalLength = baseSize * multiplier;
                     }
 
@@ -2372,7 +2493,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 obj.viewerState = {
                     rotation: this._deepCopyMatrix(this.viewerState.rotation),
                     zoom: this.viewerState.zoom,
-                    perspectiveEnabled: this.viewerState.perspectiveEnabled,
+                    ortho: this.viewerState.ortho,
                     focalLength: this.viewerState.focalLength,
                     center: this.viewerState.center ? { ...this.viewerState.center } : null,
                     extent: this.viewerState.extent,
@@ -2489,7 +2610,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const saved = obj.viewerState || {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
-                perspectiveEnabled: false,
+                // seeded from the control, not hardcoded: a new object must not
+                // silently discard the ortho setting the viewer is already on
+                ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
                 focalLength: 200.0,
                 center: null,
                 extent: null,
@@ -2498,7 +2621,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.viewerState = {
                 rotation: this._deepCopyMatrix(saved.rotation),
                 zoom: saved.zoom,
-                perspectiveEnabled: saved.perspectiveEnabled,
+                // older saves carry the boolean instead; false meant orthographic
+                ortho: (typeof saved.ortho === 'number') ? saved.ortho
+                    : (saved.perspectiveEnabled ? 0.5 : 1),
                 focalLength: saved.focalLength,
                 center: saved.center ? { ...saved.center } : null,
                 extent: saved.extent,
@@ -2525,6 +2650,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 // Rebuild sequence view for the new object
                 window.SEQ.buildView();
+            }
+
+            // Focal length is derived from the ortho value AND the object's
+            // size, so it cannot simply be carried across with the restored
+            // viewer state - a saved 200 belongs to whatever object saved it.
+            // Re-run the control, which is the one thing that knows how to turn
+            // an ortho value into a focal length for the object now in view.
+            if (this.orthoSlider) {
+                this.orthoSlider.dispatchEvent(new Event('input'));
             }
 
             // Note: _composeAndApplyMask will be called by setFrame after the frame data is loaded
@@ -2586,7 +2720,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     viewerState: {
                         rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                         zoom: 1.0,
-                        perspectiveEnabled: false,
+                        ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
                         focalLength: 200.0,
                         center: null,
                         extent: null,
@@ -2768,10 +2902,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             object.totalPositions = totalCount;
             object.globalCenterSum = new Vec3(globalCenter.x * totalCount, globalCenter.y * totalCount, globalCenter.z * totalCount);
 
-            // If this is the first frame being loaded, we need to
-            // Recalculate focal length if perspective is enabled and object size changed
-            // Skip during batch loading to avoid unnecessary renders
-            if (object.frames.length === 1 && this.viewerState.perspectiveEnabled && this.orthoSlider && !this._batchLoading) {
+            // First frame in: re-apply the Ortho slider, which sets both the
+            // perspective flag and a focal length scaled to the object's size.
+            // This used to be gated on perspective already being on, which was
+            // circular - the slider is what turns it on. With the old default of
+            // 1.0 (fully orthographic) that was invisible, but any default below
+            // 1.0 never reached the renderer for the first object loaded: the
+            // slider showed perspective while the view stayed flat.
+            // Skip during batch loading to avoid unnecessary renders.
+            if (object.frames.length === 1 && this.orthoSlider && !this._batchLoading) {
                 this.orthoSlider.dispatchEvent(new Event('input'));
             }
 
@@ -4459,7 +4598,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.viewerState = {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
-                perspectiveEnabled: false,
+                // seeded from the control, not hardcoded: a new object must not
+                // silently discard the ortho setting the viewer is already on
+                ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
                 focalLength: 200.0,
                 center: null,
                 extent: null,
@@ -4511,7 +4652,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.lineWidthSlider.value = '3.0';
             }
             if (this.orthoSlider) {
-                this.orthoSlider.value = '1.0';
+                this.orthoSlider.value = '0.5';
                 // Update camera perspective - trigger input event to update camera
                 this.orthoSlider.dispatchEvent(new Event('input'));
             }
@@ -4776,6 +4917,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             } else {
                 // Generate Segment Definitions ONCE
                 this.segmentIndices = [];
+                // rebuilt alongside them: which chains close head to tail
+                this.cyclicChains = new Set();
                 const cutoffs = this.config.cutoffs || {};
                 const proteinChainbreak = cutoffs.protein_bond ?? 5.0;
                 const nucleicChainbreak = cutoffs.nucleic_bond ?? 7.5;
@@ -4877,6 +5020,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 const chainbreakDistSq = getChainbreakDistSq(type1, type2);
 
                                 if (distSq < chainbreakDistSq) {
+                                    // this chain is a ring - the rainbow ramp
+                                    // wraps the full hue circle for it
+                                    this.cyclicChains.add(chainId);
                                     this.segmentIndices.push({
                                         idx1: firstIdx,
                                         idx2: lastIdx,
@@ -5450,11 +5596,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                     if (scale && scale.min !== Infinity && scale.max !== -Infinity) {
                         const colorIndex = this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0;
-                        color = getRainbowColor(colorIndex, scale.min, scale.max, this.colorblindMode);
+                        color = getRainbowColor(colorIndex, scale.min, scale.max,
+                            this.colorblindMode, this.cyclicChains && this.cyclicChains.has(chainId));
                     } else {
                         // Fallback: if scale not found, use a default rainbow based on colorIndex
                         const colorIndex = (this.perChainIndices && atomIndex < this.perChainIndices.length ? this.perChainIndices[atomIndex] : 0) || 0;
-                        color = getRainbowColor(colorIndex, 0, Math.max(1, colorIndex), this.colorblindMode);
+                        color = getRainbowColor(colorIndex, 0, Math.max(1, colorIndex),
+                            this.colorblindMode, this.cyclicChains && this.cyclicChains.has(chainId));
                     }
                 }
             }
@@ -6068,6 +6216,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Use temporary center if set (for orienting to visible positions), otherwise use global center
             const globalCenter = (object && object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0, 0, 0);
             const c = this.viewerState.center || globalCenter;
+            // A pan MOVES this point; remember it so the first drag has
+            // something to move even when the view is still on the default
+            // (null) centre.
+            this._viewCenter = { x: c.x, y: c.y, z: c.z };
 
             // Update pre-allocated rotatedCoords
             // Apply object's rotation_matrix first (best_view), then user's rotation
@@ -6499,6 +6651,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Apply zoom multiplier
             const scale = baseScale * this.viewerState.zoom;
+            // the scale this style drew at, for converting a pan drag from
+            // screen pixels to Angstroms
+            this._viewScale = scale;
 
             // baseLineWidth is this.lineWidth (in Angstroms) converted to pixels
             const baseLineWidthPixels = this.lineWidth * scale;
@@ -6630,7 +6785,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
                 let atomLineWidth = baseLineWidthPixels * widthMultiplier;
 
-                if (this.viewerState.perspectiveEnabled) {
+                if (isPerspective(this.viewerState)) {
                     const z = this.viewerState.focalLength - vec.z;
                     // Clamp z to prevent division by zero or negative values
                     // If z is too small, atom is too close to camera
@@ -6785,7 +6940,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const widthMultiplier = this._calculateSegmentWidthMultiplier(s, segInfo);
                 let currentLineWidth = baseLineWidthPixels * widthMultiplier;
 
-                if (this.viewerState.perspectiveEnabled) {
+                if (isPerspective(this.viewerState)) {
                     // Apply perspective scaling to the segment width
                     // Calculate the average perspective scale for this segment
                     // based on the Z-coordinates of its endpoints
@@ -7037,35 +7192,84 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.animationFrameId = requestAnimationFrame(() => this.animate());
         }
 
-        // Save as SVG. compress=true gzips to .svgz (native CompressionStream;
-        // falls back to plain .svg where unavailable).
-        saveAsSvg(compress) {
+        /**
+         * Save the current view as an image.
+         *
+         * opts.format    'svg' | 'svgz' | 'png'
+         * opts.maxDetail raise subdivision to the maximum for the export only
+         * opts.dpi       PNG only; CSS pixels are 96 dpi, so this is the scale
+         *
+         * EXPORTS ARE ALWAYS TRANSPARENT, whatever the viewer background is set
+         * to. A saved figure goes into a document whose page colour is not ours
+         * to choose, and a baked-in white rectangle is far more annoying to
+         * remove than a transparent one is to fill. The dark preset in
+         * particular would otherwise export a black slab.
+         */
+        saveImage(opts) {
+            const o = opts || {};
+            const format = o.format || 'svg';
+            const maxDetail = o.maxDetail !== false;
+            const dpi = Math.max(36, Math.min(1200, Number(o.dpi) || 300));
+
+            const prevTransparent = this.isTransparent;
+            const prevDetail = this.cartoonDetail;
+            this.isTransparent = true;
+            if (maxDetail) this.cartoonDetail = SAVE_MAX_DETAIL;
+            const restore = () => {
+                this.isTransparent = prevTransparent;
+                this.cartoonDetail = prevDetail;
+                try { this.render(); } catch (e) { /* view is cosmetic here */ }
+            };
+
             try {
-                if (typeof C2S === 'undefined') {
-                    throw new Error("canvas2svg library not loaded");
-                }
-
                 const canvas = this.canvas;
-                if (!canvas) {
-                    throw new Error("Canvas not found");
-                }
-
-                // Get display dimensions
+                if (!canvas) throw new Error('Canvas not found');
                 const width = this.displayWidth || parseInt(canvas.style.width) || canvas.width;
                 const height = this.displayHeight || parseInt(canvas.style.height) || canvas.height;
 
-                // Create SVG context and render directly to it - no context switching needed!
+                if (format === 'png') {
+                    // CSS px are 96 dpi by definition, so the scale IS dpi/96.
+                    // Clamped so a stray 4-digit dpi cannot ask for a canvas the
+                    // browser refuses to allocate - which fails as a silently
+                    // blank image rather than an error.
+                    let k = dpi / 96;
+                    const maxPx = 16000;
+                    if (width * k > maxPx || height * k > maxPx) {
+                        k = Math.min(maxPx / width, maxPx / height);
+                    }
+                    const out = document.createElement('canvas');
+                    out.width = Math.max(1, Math.round(width * k));
+                    out.height = Math.max(1, Math.round(height * k));
+                    const octx = out.getContext('2d');
+                    octx.scale(k, k);
+                    this._renderToContext(octx, width, height);
+                    const objectName = this.currentObjectName;
+                    out.toBlob((blob) => {
+                        if (!blob) {
+                            if (typeof setStatus === 'function') setStatus('PNG export failed', true);
+                            return;
+                        }
+                        const filename = this._generateFilename(objectName, 'png');
+                        this._triggerDownload(blob, filename);
+                        if (typeof setStatus === 'function') {
+                            setStatus(`PNG exported to ${filename} `
+                                + `(${out.width}x${out.height}, ${Math.round(k * 96)} dpi)`);
+                        }
+                    }, 'image/png');
+                    restore();
+                    return;
+                }
+
+                if (typeof C2S === 'undefined') throw new Error('canvas2svg library not loaded');
                 const svgCtx = new C2S(width, height);
                 this._renderToContext(svgCtx, width, height);
-
-                // Get SVG string and download
                 const svgString = svgCtx.getSerializedSvg();
+                const objectName = this.currentObjectName;
 
-                if (compress && typeof CompressionStream !== 'undefined') {
+                if (format === 'svgz' && typeof CompressionStream !== 'undefined') {
                     // .svgz: the same bytes through the browser's native gzip.
                     // Async, so it downloads from the promise; errors fall back
                     // to the plain path rather than losing the export.
-                    const objectName = this.currentObjectName;
                     new Response(
                         new Blob([svgString]).stream()
                             .pipeThrough(new CompressionStream('gzip'))
@@ -7077,22 +7281,303 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             setStatus(`SVGZ exported to ${filename}`);
                         }
                     }).catch(() => this._downloadSvg(svgString, objectName));
+                    restore();
                     return;
                 }
 
-                // Download SVG directly
-                this._downloadSvg(svgString, this.currentObjectName);
-
+                this._downloadSvg(svgString, objectName);
+                restore();
             } catch (e) {
-                console.error("Failed to export SVG:", e);
-                const errorMsg = `Error exporting SVG: ${e.message}`;
-                if (typeof setStatus === 'function') {
-                    setStatus(errorMsg, true);
-                } else {
-                    alert(errorMsg);
-                }
+                restore();
+                console.error('Failed to export image:', e);
+                const msg = `Error exporting image: ${e.message}`;
+                if (typeof setStatus === 'function') setStatus(msg, true);
+                else alert(msg);
             }
         }
+
+        /** Deprecated: kept so existing callers and saved pages keep working. */
+        saveAsSvg(compress) {
+            this.saveImage({ format: compress ? 'svgz' : 'svg', maxDetail: false });
+        }
+
+        /**
+         * Save panel, opened by the camera button.
+         *
+         * Built in JS rather than as markup so the standalone HTML export - which
+         * ships none of the app's CSS or panels - gets the same menu, and so
+         * pages exported before this existed still work. It is inserted IN FLOW
+         * under the button's row, the way the Style panel is, rather than
+         * floating over the canvas: a floating layer has to be positioned and
+         * repositioned against scroll and resize, and gets it wrong the first
+         * time it is opened near an edge.
+         *
+         * The Save button copies its class list from the camera button, so it
+         * inherits whatever button styling the host page uses (btn-toggle here,
+         * controlButton in the standalone viewer) instead of guessing.
+         */
+        /**
+         * Record ONE FULL TURN as a video that loops seamlessly.
+         *
+         * The loop is the whole point, so the frames cover [0, 360) and stop one
+         * step SHORT of 360: a frame at exactly 360 degrees is the same picture
+         * as the frame at 0, and playing both back-to-back stutters on every
+         * repeat. With the last frame one step short, wrapping round to the
+         * first continues the same constant angular step.
+         *
+         * Each frame is built as Ry(i * step) * R0 from the ORIGINAL matrix
+         * rather than by multiplying the previous frame again, so rounding
+         * cannot accumulate and leave the turn a fraction of a degree short of
+         * closing - which would show up as a jump exactly once per loop.
+         */
+        saveRotationVideo(opts) {
+            const o = opts || {};
+            const fps = Math.max(5, Math.min(60, Number(o.fps) || 30));
+            const seconds = Math.max(1, Math.min(60, Number(o.seconds) || 6));
+            const N = Math.max(2, Math.round(seconds * fps));
+
+            if (typeof MediaRecorder === 'undefined' || !this.canvas || !this.canvas.captureStream) {
+                const msg = 'Video recording is not supported in this browser.';
+                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                return;
+            }
+            if (this.isRecording || this._rotationRecording) return;
+
+            const R0 = this.viewerState.rotation.map((row) => [...row]);
+            const wasAuto = this.autoRotate;
+            // Drive the turn ourselves: auto-rotate advances by wall clock, which
+            // would make the number of degrees per recorded frame depend on how
+            // fast the machine happens to render.
+            this.autoRotate = false;
+            this._rotationRecording = true;
+            this.canvas.style.pointerEvents = 'none';
+
+            const options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 20000000 };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm;codecs=vp8';
+                options.videoBitsPerSecond = 15000000;
+            }
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm';
+                options.videoBitsPerSecond = 15000000;
+            }
+
+            const stream = this.canvas.captureStream(fps);
+            const chunks = [];
+            let rec;
+            try {
+                rec = new MediaRecorder(stream, options);
+            } catch (err) {
+                this._endRotationVideo(R0, wasAuto, stream);
+                const msg = 'Failed to start recording: ' + err.message;
+                if (typeof setStatus === 'function') setStatus(msg, true); else alert(msg);
+                return;
+            }
+            rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+            rec.onstop = () => {
+                this._endRotationVideo(R0, wasAuto, stream);
+                if (!chunks.length) {
+                    if (typeof setStatus === 'function') setStatus('No video data recorded', true);
+                    return;
+                }
+                const blob = new Blob(chunks, { type: 'video/webm' });
+                const filename = this._generateFilename(this.currentObjectName, 'webm');
+                this._triggerDownload(blob, filename);
+                if (typeof setStatus === 'function') {
+                    setStatus(`Video exported to ${filename} `
+                        + `(${N} frames, ${seconds}s at ${fps}fps, loops seamlessly)`);
+                }
+            };
+            rec.start(100);
+
+            const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+            const step = (2 * Math.PI) / N;
+            let i = 0;
+            const tick = () => {
+                if (i >= N) {
+                    // let the last frame land in the stream before closing
+                    setTimeout(() => { try { rec.stop(); } catch (e) { /* already stopped */ } }, 1000 / fps);
+                    return;
+                }
+                this.viewerState.rotation = multiplyMatrices(rotationMatrixY(i * step), R0);
+                this.render();
+                // captureStream samples the canvas on its own clock; nudging it
+                // where supported keeps one rendered frame to one video frame
+                if (track && track.requestFrame) { try { track.requestFrame(); } catch (e) { /* optional */ } }
+                if (typeof setStatus === 'function' && i % fps === 0) {
+                    setStatus(`Recording rotation... ${Math.round((100 * i) / N)}%`);
+                }
+                i++;
+                // setTimeout rather than requestAnimationFrame: the pacing has to
+                // hold even when the tab is not the foreground one, and rAF is
+                // throttled to a stop there.
+                this._rotationTimer = setTimeout(tick, 1000 / fps);
+            };
+            tick();
+        }
+
+        _endRotationVideo(R0, wasAuto, stream) {
+            if (this._rotationTimer) { clearTimeout(this._rotationTimer); this._rotationTimer = null; }
+            this._rotationRecording = false;
+            if (stream) { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* gone */ } }
+            if (this.canvas) this.canvas.style.pointerEvents = '';
+            // put the view back exactly where it was, and hand rotation back
+            if (R0) this.viewerState.rotation = R0.map((row) => [...row]);
+            this.autoRotate = wasAuto;
+            if (this.rotationCheckbox) this.rotationCheckbox.checked = wasAuto;
+            this.render();
+        }
+
+        /** Camera button reads "Save Video" while auto-rotate is on. */
+        _syncSaveButtonMode() {
+            const b = this.saveImageButton;
+            if (!b) return;
+            const video = !!this.autoRotate;
+            const span = b.querySelector('span');
+            const icon = b.querySelector('i');
+            if (icon) {
+                icon.classList.toggle('fa-camera', !video);
+                icon.classList.toggle('fa-video', video);
+            }
+            if (span) {
+                const label = video ? 'Save Video' : 'Save Image';
+                // replace only the text node, so the icon element survives
+                let replaced = false;
+                span.childNodes.forEach((n) => {
+                    if (n.nodeType === 3 && n.textContent.trim()) { n.textContent = label; replaced = true; }
+                });
+                if (!replaced) span.appendChild(document.createTextNode(label));
+            }
+            b.title = video
+                ? 'Record one full rotation as a loopable video'
+                : 'Save image (SVG or PNG)';
+            // the open panel belongs to the other mode now
+            if (this._savePanel) {
+                this._savePanel.remove();
+                this._savePanel = null;
+                b.setAttribute('aria-expanded', 'false');
+            }
+        }
+
+        _toggleSaveImagePanel(anchorEl) {
+            if (this._savePanel) {
+                const open = this._savePanel.style.display === 'none';
+                this._savePanel.style.display = open ? 'flex' : 'none';
+                if (anchorEl) anchorEl.setAttribute('aria-expanded', String(open));
+                return;
+            }
+            const video = !!this.autoRotate;
+            const prev = this._saveOpts || { format: 'svg', dpi: 300 };
+            const prevV = this._videoOpts || { seconds: 6, fps: 30 };
+            const SEL = 'flex:1; min-width:0; height:28px; font-size:12px; padding:0 8px;'
+                + ' border:1px solid #d1d5db; border-radius:8px; background:#fff;';
+            const ROW = 'display:flex; align-items:center; gap:8px;';
+            const LBL = 'font-size:12px; flex-shrink:0;';
+
+            const p = document.createElement('div');
+            p.id = 'savePanel';
+            p.style.cssText = 'display:flex; flex-direction:column; gap:6px;'
+                + ' border:1px solid #e5e7eb; border-radius:8px; background:#fff;'
+                + ' padding:8px; margin-top:6px;';
+            // While auto-rotate is on the button records a turn instead, so the
+            // panel offers the two things that decide the video and nothing
+            // else: how long one turn takes, and the frame rate. Format is not
+            // offered because there is one - webm is what MediaRecorder gives.
+            if (video) {
+                p.innerHTML =
+                    `<div style="${ROW}">`
+                    + `<label for="saveSecondsInput" style="${LBL}">Seconds/turn:</label>`
+                    + `<input id="saveSecondsInput" type="number" min="1" max="60" step="1" style="${SEL}">`
+                    + '<button data-ok style="flex-shrink:0;"><span>Record</span></button></div>'
+                    + `<div style="${ROW}">`
+                    + `<label for="saveFpsInput" style="${LBL}">FPS:</label>`
+                    + `<input id="saveFpsInput" type="number" min="5" max="60" step="1" style="${SEL}"></div>`;
+                const row0 = (anchorEl && (anchorEl.closest('.toolbar-row') || anchorEl.parentElement))
+                    || (this.controlsContainer || document.body);
+                row0.insertAdjacentElement('afterend', p);
+                const secIn = p.querySelector('#saveSecondsInput');
+                const fpsIn = p.querySelector('#saveFpsInput');
+                const okB = p.querySelector('[data-ok]');
+                if (anchorEl && anchorEl.className) okB.className = anchorEl.className;
+                secIn.value = prevV.seconds;
+                fpsIn.value = prevV.fps;
+                okB.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    const vo = {
+                        seconds: Number(secIn.value) || 6,
+                        fps: Number(fpsIn.value) || 30,
+                    };
+                    this._videoOpts = vo;
+                    p.style.display = 'none';
+                    if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
+                    this.saveRotationVideo(vo);
+                });
+                this._savePanel = p;
+                if (anchorEl) {
+                    anchorEl.setAttribute('aria-controls', 'savePanel');
+                    anchorEl.setAttribute('aria-expanded', 'true');
+                }
+                return;
+            }
+
+            // Format and Save share a row; DPI gets its own row underneath, and
+            // only when it means something. Detail is not offered: an export is
+            // a finished figure, so it always goes out at the highest
+            // subdivision regardless of what the Detail slider is set to for
+            // interactive use.
+            p.innerHTML =
+                `<div style="${ROW}">`
+                + `<label for="saveFormatSelect" style="${LBL}">Format:</label>`
+                + `<select id="saveFormatSelect" style="${SEL}">`
+                + '<option value="svg">SVG</option>'
+                + '<option value="svgz">SVG (compressed)</option>'
+                + '<option value="png">PNG</option>'
+                + '</select>'
+                + '<button data-ok style="flex-shrink:0;"><span>Save</span></button></div>'
+                + `<div style="${ROW}" data-dpirow>`
+                + `<label for="saveDpiInput" style="${LBL}">DPI:</label>`
+                + `<input id="saveDpiInput" type="number" min="36" max="1200" step="12" style="${SEL}"></div>`;
+
+            const row = (anchorEl && (anchorEl.closest('.toolbar-row') || anchorEl.parentElement))
+                || (this.controlsContainer || document.body);
+            row.insertAdjacentElement('afterend', p);
+
+            const fSel = p.querySelector('#saveFormatSelect');
+            const dpiIn = p.querySelector('#saveDpiInput');
+            const dpiRow = p.querySelector('[data-dpirow]');
+            const okBtn = p.querySelector('[data-ok]');
+            if (anchorEl && anchorEl.className) okBtn.className = anchorEl.className;
+            fSel.value = prev.format;
+            dpiIn.value = prev.dpi;
+            // DPI is meaningless for a vector export, so the row is not merely
+            // disabled there - it is not shown at all. Set display rather than
+            // `hidden`: the row carries an inline display:flex, which outranks
+            // the user-agent [hidden] rule and leaves the row on screen (the
+            // same trap the Style panel documents in index.html).
+            const syncDpi = () => {
+                dpiRow.style.display = fSel.value === 'png' ? 'flex' : 'none';
+            };
+            syncDpi();
+            fSel.addEventListener('change', syncDpi);
+            okBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const opts = {
+                    format: fSel.value,
+                    maxDetail: true,
+                    dpi: Number(dpiIn.value) || 300,
+                };
+                this._saveOpts = opts;
+                p.style.display = 'none';
+                if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
+                this.saveImage(opts);
+            });
+            this._savePanel = p;
+            if (anchorEl) {
+                anchorEl.setAttribute('aria-controls', 'savePanel');
+                anchorEl.setAttribute('aria-expanded', 'true');
+            }
+        }
+
 
         // Generate filename from object name and current timestamp
         _generateFilename(objectName, extension) {
@@ -7878,7 +8363,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const overlayButton = containerElement.querySelector('#overlayButton');
     // All buttons are within containerElement in both div and iframe modes
     const recordButton = containerElement.querySelector('#recordButton');
-    const saveSvgButton = containerElement.querySelector('#saveSvgButton');
+    // #saveSvgButton is the old id; still accepted so previously exported
+    // standalone HTML keeps working.
+    const saveImageButton = containerElement.querySelector('#saveImageButton')
+        || containerElement.querySelector('#saveSvgButton');
     const frameSlider = containerElement.querySelector('#frameSlider');
     const frameCounter = containerElement.querySelector('#frameCounter');
     // objectSelect is now in the sequence header, query from container
@@ -7996,7 +8484,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     // Pass ALL controls to the renderer
     renderer.setUIControls(
-        controlsContainer, playButton, overlayButton, recordButton, saveSvgButton,
+        controlsContainer, playButton, overlayButton, recordButton, saveImageButton,
         frameSlider, frameCounter, objectSelect,
         speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
         outlineModeButton, outlineModeSelect,

@@ -114,6 +114,86 @@ about a residue short of DSSP at each end; that is a limit of the CA-only
 feature, not of the thresholds — see the note in `viewer-cartoon.js` above
 `maxGrowE`.
 
+## Cyclic peptides — `cyclic_bench.py` / `cyclic_bench.js`
+
+    pip install pydssp
+    python tests/cyclic_bench.py --build   # fetch + DSSP -> tests/out/cyclic_truth.json
+    node tests/cyclic_bench.js             # overall and seam-only Q3
+    node tests/cyclic_bench.js --per-chain # which chains moved
+
+Head-to-tail cyclic peptides have no terminus: the backbone closes into a ring.
+Every SS assigner here walks the chain by index — the backbone frame needs
+i-1..i+2, DSSP's turns step i to i+n, bridges compare index separation — so the
+closure is invisible and an element spanning it is cut in two. This benchmark
+measures exactly that, over 24 cyclic chains / 1,079 residues fetched from RCSB:
+cyclotides and theta-defensins (beta, seam usually in a loop) and the AS-48
+family of cyclic bacteriocins (all-alpha, 60-70 residues, **seam inside a
+helix** — the case the others do not cover).
+
+The reference cannot be plain DSSP, which is linear and would bake the same bug
+into the truth. Each chain is instead assigned under TWO rotations of its
+residue order and merged, keeping every residue from the rotation where it sits
+furthest from the artificial break. Rotating a ring gives a different but
+equally valid linear chain — no coordinate moves, only where the break falls.
+The renderer's own ring handling (`opts.rings`) uses the same construction, for
+the same reason.
+
+Read the SEAM column, not overall Q3: most of a cyclic peptide is nowhere near
+its closure and scores like any other chain, which drowns the effect.
+
+Current, at 4 residues each side of the closure:
+
+| | overall Q3 | seam Q3 |
+| --- | --- | --- |
+| walked as a linear chain | 82.1% | 51.0% |
+| told the run is cyclic | **88.7%** | **87.0%** |
+
+14 of 24 chains improve, none regress. The AS-48 family and carnocyclin A go
+25% -> 100% at the seam: their closure sits mid-helix, which is the worst case.
+Overall then matches what `ss_bench` gets on ordinary proteins (89.8%), i.e.
+cyclic chains stop being a special case.
+
+The report also measures the RIBBON FRAME, which is a different thing from the
+classification: the side vector the strip is built from. Two consecutive sides
+pointing opposite ways make the strip cross itself - a bow-tie - pinching
+through zero width on the way. Inside a run the sign pass keeps that from
+happening by flipping each side to agree with the last; the closure is the one
+step it never sees, so a whole ring's accumulated sign landed there.
+
+The fix routes frame slack through the LOOPS. Elements own their faces - a
+strand's lies in its sheet, a helix's points at its axis, neither is negotiable
+- and each loop reconciles the two elements it joins, so nothing accumulates
+around the ring. Where the cycle cannot close, the leftover goes to the longest
+loop: in the Richardson preset a loop's thickness equals its width, so its face
+has no observable orientation and the leftover is free.
+
+| | worst interval | worst closure | intervals over 90 deg |
+| --- | --- | --- | --- |
+| loops dictating element signs | 178 deg | 178 deg | 22, over 15 chains |
+| elements first, loops absorb | **128 deg** | **128 deg** | **1** |
+
+An "element" here is a residue with a face worth keeping, which is not the same
+as its SS letter: a helix always has one, a strand only where the sheet frame
+reached it. A strand residue the sheet missed has nothing but the pleat normal,
+which alternates side every residue and says nothing about the sheet's plane -
+pinning the ribbon to it is worse than leaving it free, so it is framed as loop.
+A lone 'E' between two single-residue loops (1YP8 model 14, residues 1-3) forced
+the frame out to that noise and back within one step each way, which is a
+visible twist even though no single interval exceeded 90 degrees.
+
+The one left is `1JBL` (SFTI-1, 14 residues), coil end to end: no elements to
+pin a face and nothing to reconcile against. An all-loop ring wants a closed
+rotation-minimising frame instead, and in Richardson its face is unobservable
+anyway.
+
+The last line of the report is a CONTROL, and the strongest thing here: a ring
+has no canonical first residue, so cutting it somewhere else must give the same
+answer, rotated. Cuts are taken mid-element, where a linear assigner is worst.
+Currently **63/75 cuts** reproduce their assignment exactly (18/23 chains); the
+failures are 1-3 residues at element edges in the smallest peptides (n = 18-34),
+where no rotation puts the break a full DSSP neighbourhood away. This control is
+what set the rotation count: two passes scored 51/73.
+
 ## Sheet frames — `sheet_bench.py` / `sheet_bench.js`
 
     python tests/sheet_bench.py --build   # natives.zip -> tests/out/sheet_truth.json

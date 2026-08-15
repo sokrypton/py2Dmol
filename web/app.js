@@ -258,7 +258,7 @@ function initializeViewerConfig() {
             shadow: true,
             outline: "full",  // "none", "partial", or "full"
             width: 3.0,
-            ortho: 1.0  // Normalized 0-1 range (1.0 = full orthographic)
+            ortho: 0.5  // Normalized 0-1 range (1.0 = full orthographic)
         },
         color: {
             mode: "auto",
@@ -437,8 +437,8 @@ function setupEventListeners() {
         saveStateButton.addEventListener('click', saveViewerState);
     }
 
-    // Save SVG button (camera button)
-    // Save SVG button is now handled by viewer-mol.js via setUIControls (same as Record button)
+    // Save Image button (camera button)
+    // Handled by viewer-mol.js via setUIControls (same as Record button)
     // No need to set up listener here - renderer handles it
 
     // Copy selection button (moved to sequence actions)
@@ -1034,12 +1034,28 @@ function applyBestViewRotation(animate = true) {
         renderer._loadFrameData(currentFrame, true); // Load without render
     }
 
-    // Get current selection to determine which positions to use for orienting
+    // WHAT TO ORIENT ON, in priority order:
+    //   1. the residue SELECTION, if the user has made one - orienting on what
+    //      you just picked is the whole point of picking it
+    //   2. otherwise whatever is VISIBLE, so hiding a chain and orienting still
+    //      frames what is left rather than empty space around it
+    //   3. otherwise the entire object
+    // Selection and visibility are separate things here (see technical_readme):
+    // a selection is what you are working on, visibility is what is drawn, and
+    // only the first is a statement about where you want to be looking.
+    // residueSelection is a Set, or null when nothing is selected; some paths
+    // hand back an array, so normalise before asking for .size
+    const rawSel = renderer.residueSelection;
+    const picked = rawSel
+        ? (rawSel instanceof Set ? rawSel : new Set(rawSel))
+        : null;
     const selection = renderer.getVisibility();
     let selectedPositionIndices = null;
 
     // Determine which positions to use: selected positions if available, otherwise all positions
-    if (selection && selection.positions && selection.positions.size > 0) {
+    if (picked && picked.size > 0) {
+        selectedPositionIndices = picked;
+    } else if (selection && selection.positions && selection.positions.size > 0) {
         // Use only selected positions
         selectedPositionIndices = selection.positions;
     } else if (selection && selection.visibilityMode === 'default' &&
@@ -1218,7 +1234,7 @@ function applyBestViewRotation(animate = true) {
         if (rotationAnimation.visibleStdDev !== null && rotationAnimation.visibleStdDev !== undefined) {
             object.stdDev = rotationAnimation.visibleStdDev;
             // Update focal length if perspective is enabled
-            if (renderer.orthoSlider && renderer.perspectiveEnabled) {
+            if (renderer.orthoSlider && renderer.viewerState.ortho < 1) {
                 const STD_DEV_MULT = 2.0;
                 const PERSPECTIVE_MIN_MULT = 1.5;
                 const PERSPECTIVE_MAX_MULT = 20.0;
@@ -1379,7 +1395,7 @@ function animateRotation() {
             rotationAnimation.object.stdDev = rotationAnimation.visibleStdDev;
             // Update focal length directly to avoid triggering a render via ortho slider
             // This prevents zoom recalculation during animation completion
-            if (renderer.orthoSlider && renderer.perspectiveEnabled) {
+            if (renderer.orthoSlider && renderer.viewerState.ortho < 1) {
                 const STD_DEV_MULT = 2.0;
                 const PERSPECTIVE_MIN_MULT = 1.5;
                 const PERSPECTIVE_MAX_MULT = 20.0;
@@ -1460,7 +1476,7 @@ function animateRotation() {
 
         // Update focal length smoothly during animation to coordinate with stdDev changes
         // This ensures ortho/perspective settings stay in sync with the structure size
-        if (renderer.orthoSlider && renderer.perspectiveEnabled) {
+        if (renderer.orthoSlider && renderer.viewerState.ortho < 1) {
             const STD_DEV_MULT = 2.0;
             const PERSPECTIVE_MIN_MULT = 1.5;
             const PERSPECTIVE_MAX_MULT = 20.0;
@@ -1794,7 +1810,7 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
     return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
 }
 
-function buildPendingObject(text, name, paeData, targetObjectName, tempBatch) {
+function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, chainFilter) {
     let models;
     let modresMap = null;
     let chemCompMap = null;
@@ -1827,6 +1843,28 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch) {
 
         if (!models || models.length === 0 || models.every(m => m.length === 0)) {
             throw new Error(`Could not parse any models or atoms from ${name}.`);
+        }
+
+        // CHAIN SELECTION, applied before anything downstream sees the atoms -
+        // ahead of the biounit expansion in particular, so asking for one chain
+        // of an assembly does not first build every copy of every chain and
+        // then throw most of it away.
+        if (chainFilter && chainFilter.length) {
+            const exact = new Set(chainFilter);
+            const loose = new Set(chainFilter.map((c) => c.toUpperCase()));
+            const keep = (a) => {
+                const ch = a && a.chain;
+                if (ch === undefined || ch === null) return false;
+                return exact.has(ch) || loose.has(String(ch).toUpperCase());
+            };
+            const filtered = models.map((m) => m.filter(keep));
+            if (filtered.every((m) => m.length === 0)) {
+                const present = [...new Set(models.flat()
+                    .map((a) => a && a.chain).filter((c) => c !== undefined && c !== null))];
+                throw new Error(`No chain ${chainFilter.join(', ')} in this entry. `
+                    + `Chains present: ${present.join(', ') || 'none'}.`);
+            }
+            models = filtered;
         }
 
         // Apply biounit transformation to all models if requested
@@ -2455,6 +2493,11 @@ function applyPendingObjects() {
         if (r?.updateScatterContainerVisibility) r.updateScatterContainerVisibility();
         if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
         if (window.SEQ?.clearPreview) window.SEQ.clearPreview();
+        // Re-run the Ortho slider now the object is in and switched to. Focal
+        // length is scaled by the object's size, which is only known once it is
+        // loaded, and the switch above restores that object's own viewerState -
+        // so this has to come last or it gets overwritten.
+        if (r?.orthoSlider) r.orthoSlider.dispatchEvent(new Event('input'));
         if (typeof buildView === 'function') window.SEQ?.buildView();
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
@@ -3448,16 +3491,52 @@ if (isIndexHTML) {
 // FETCH LOGIC
 // ============================================================================
 
+/**
+ * Split a fetch box entry into a structure ID and an optional chain selection.
+ *
+ *   1TIM        -> { id: '1TIM', chains: null }      whole structure
+ *   1timA       -> { id: '1TIM', chains: ['A'] }
+ *   1TIM_A      -> { id: '1TIM', chains: ['A'] }
+ *   1tim_AB     -> { id: '1TIM', chains: ['A','B'] } one chain per character
+ *   1tim:A,B    -> { id: '1TIM', chains: ['A','B'] } commas for multi-character IDs
+ *   Q5VSL9      -> { id: 'Q5VSL9', chains: null }    UniProt, untouched
+ *
+ * Only a classic four-character PDB ID takes a chain suffix, and those start
+ * with a DIGIT. That is what keeps a UniProt accession from being read as a PDB
+ * ID plus chains - without it Q5VSL9 parses as 'Q5VS' chains L,9 and fetches the
+ * wrong thing entirely.
+ *
+ * Chain IDs keep the case the user typed, because a PDB chain can be lower case
+ * ('a' and 'A' are different chains in some entries); matching is tried
+ * case-sensitively first and only then loosened.
+ */
+function parseFetchId(raw) {
+    const s = String(raw || '').trim();
+    const m = s.match(/^([0-9][A-Za-z0-9]{3})[._:\-\s]*([A-Za-z0-9,]*)$/);
+    if (!m) return { id: s.toUpperCase(), chains: null };
+    const suffix = m[2] || '';
+    if (!suffix) return { id: m[1].toUpperCase(), chains: null };
+    const chains = suffix.indexOf(',') >= 0
+        ? suffix.split(',').map((c) => c.trim()).filter(Boolean)
+        : suffix.split('');
+    return { id: m[1].toUpperCase(), chains: chains.length ? chains : null };
+}
+
 async function handleFetch() {
     const tempBatch = [];
-    const fetchId = document.getElementById('fetch-id').value.trim().toUpperCase();
+    const parsedId = parseFetchId(document.getElementById('fetch-id').value);
+    const fetchId = parsedId.id;
+    const chainFilter = parsedId.chains;
 
     if (!fetchId) {
         setStatus("Please enter a PDB or UniProt ID.", true);
         return;
     }
 
-    setStatus(`Fetching ${fetchId} data...`);
+    setStatus(chainFilter
+        ? `Fetching ${fetchId} chain${chainFilter.length > 1 ? 's' : ''} `
+            + `${chainFilter.join(', ')}...`
+        : `Fetching ${fetchId} data...`);
 
     const isPDB = fetchId.length === 4;
     const isAFDB = !isPDB;
@@ -3476,7 +3555,9 @@ async function handleFetch() {
         paeUrl = `https://alphafold.ebi.ac.uk/files/AF-${fetchId}-F1-predicted_aligned_error_v6.json`;
         paeEnabled = window.viewerConfig.pae?.enabled && loadPAE;
     } else {
-        name = `${fetchId}.cif`;
+        // keep the selection in the object name so 1TIM and 1TIM_A can sit side
+        // by side in the object list
+        name = chainFilter ? `${fetchId}_${chainFilter.join('')}.cif` : `${fetchId}.cif`;
         structUrl = `https://files.rcsb.org/download/${fetchId}.cif`;
         paeUrl = null;
         paeEnabled = false;
@@ -3509,8 +3590,15 @@ async function handleFetch() {
             name,
             paeData,
             cleanObjectName(name),
-            tempBatch
+            tempBatch,
+            chainFilter
         );
+
+        // Nothing parsed: buildPendingObject has already put the reason on
+        // screen (an unknown chain, say). Stop here so the success lines below
+        // cannot overwrite it with "loaded 0 object(s)", which reads like the
+        // fetch worked and hides what actually went wrong.
+        if (!framesAdded || tempBatch.length === 0) return;
 
         pendingObjects.push(...tempBatch);
         applyPendingObjects();
@@ -5785,7 +5873,7 @@ function saveViewerState() {
                 objToSave.viewerState = {
                     rotation: sourceState.rotation,
                     zoom: sourceState.zoom,
-                    perspectiveEnabled: sourceState.perspectiveEnabled,
+                    ortho: sourceState.ortho,
                     focalLength: sourceState.focalLength,
                     center: sourceState.center,
                     extent: sourceState.extent,
@@ -5798,7 +5886,7 @@ function saveViewerState() {
 
         // Get viewer state
         const orthoSlider = document.getElementById('orthoSlider');
-        const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 1.0;
+        const orthoSliderValue = orthoSlider ? parseFloat(orthoSlider.value) : 0.5;
 
         // Get detect_cyclic from config
         const detectCyclic = (window.viewerConfig && typeof window.viewerConfig.rendering?.detect_cyclic === 'boolean')
@@ -5810,7 +5898,7 @@ function saveViewerState() {
             current_frame: renderer.viewerState.currentFrame,  // From viewerState, not global
             rotation_matrix: renderer.viewerState.rotation,
             zoom: renderer.viewerState.zoom,
-            perspective_enabled: renderer.viewerState.perspectiveEnabled,  // From viewerState
+            ortho: renderer.viewerState.ortho,  // 0-1; below 1 means perspective
             focal_length: renderer.viewerState.focalLength,  // NEW
             center: renderer.viewerState.center,  // NEW - for orient to selection
             extent: renderer.viewerState.extent,  // NEW - for orient to selection
@@ -5913,7 +6001,7 @@ function saveViewerState() {
 // ============================================================================
 // SVG EXPORT
 // ============================================================================
-// SVG export is now handled by renderer.saveAsSvg() in viewer-mol.js
+// Image export is now handled by renderer.saveImage() in viewer-mol.js
 // The renderer automatically detects if setStatus() is available (index.html) 
 // or uses console.log/alert (viewer.html)
 
@@ -6065,7 +6153,7 @@ async function loadViewerState(stateData) {
                     renderer.objectsData[objData.name].viewerState = {
                         rotation: objData.viewerState.rotation,
                         zoom: objData.viewerState.zoom,
-                        perspectiveEnabled: objData.viewerState.perspectiveEnabled,
+                        ortho: objData.viewerState.ortho,
                         focalLength: objData.viewerState.focalLength,
                         center: objData.viewerState.center,
                         extent: objData.viewerState.extent,
@@ -6197,9 +6285,14 @@ async function loadViewerState(stateData) {
                 renderer.currentFrame = vs.current_frame;
             }
 
-            // Restore perspective enabled (will be overridden by ortho slider if present)
-            if (typeof vs.perspective_enabled === 'boolean') {
-                renderer.viewerState.perspectiveEnabled = vs.perspective_enabled;
+            // Restore the ortho value (the slider below overrides it when saved).
+            // `perspective_enabled` is what older saves carry; false meant fully
+            // orthographic, true meant some perspective without recording how
+            // much, so it lands on the default.
+            if (typeof vs.ortho === 'number') {
+                renderer.viewerState.ortho = vs.ortho;
+            } else if (typeof vs.perspective_enabled === 'boolean') {
+                renderer.viewerState.ortho = vs.perspective_enabled ? 0.5 : 1;
             }
 
             // Restore focal length (will be overridden by ortho slider if present)
@@ -6343,7 +6436,8 @@ async function loadViewerState(stateData) {
             // Invalidate segment cache to trigger rebuild with new setting
             renderer.cachedSegmentIndices = null;
 
-            // Restore ortho slider value (this will set perspective_enabled and focal_length correctly)
+            // Restore the ortho slider, which sets viewerState.ortho and a focal
+            // length scaled to this object (the slider is the single writer)
             if (typeof vs.ortho_slider_value === 'number') {
                 const orthoSlider = document.getElementById('orthoSlider');
                 if (orthoSlider) {
@@ -6357,7 +6451,7 @@ async function loadViewerState(stateData) {
                     // Clamp value to valid range (0.0-1.0)
                     normalizedValue = Math.max(0.0, Math.min(1.0, normalizedValue));
                     orthoSlider.value = normalizedValue;
-                    // Trigger input event to update perspective_enabled and focal_length
+                    // Trigger input to apply ortho + focal length
                     orthoSlider.dispatchEvent(new Event('input'));
                 }
             } else if (typeof vs.focal_length === 'number') {

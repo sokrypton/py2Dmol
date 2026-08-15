@@ -593,6 +593,21 @@
     color: #fff;
 }
 
+/* A BUTTON that opens a panel reads as ON while the panel is open, in the same
+   green as a checked toggle. Style and Save Image are <button>, not
+   <label><input>, so the state lives on aria-expanded rather than :checked -
+   but it is the same state to the eye and should look the same. */
+.py2dmol-viewer-instance .btn-toggle[aria-expanded="true"]>span {
+    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+    color: #fff;
+}
+
+.py2dmol-viewer-instance .btn-toggle[aria-expanded="true"]>span:hover {
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
 .py2dmol-viewer-instance .btn-toggle input:not(:checked)+span:hover {
     background: var(--color-gray-300);
     box-shadow: var(--shadow-md);

@@ -925,9 +925,17 @@
      * This is the frame the carbonyl table is written in, and the one the
      * cached sheet coefficients are expressed in, so the two cannot drift.
      */
-    function localFrame(at, n, i, out) {
-        if (i < 1 || i > n - 3) return false;
-        const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1);
+    function localFrame(at, n, i, out, wrap) {
+        // `wrap` makes the frame available at the ends of a CYCLIC run, where
+        // i-1 or i+1 falls outside [0, n) but the chain genuinely continues.
+        // Without it the last residues of a ring have no frame, which is not a
+        // missing nicety: anything expressed in this frame - the cached sheet
+        // coefficients above all - silently falls back to another source there,
+        // and mixing two side-vector sources mid-strand is a visible twist.
+        if (!wrap && (i < 1 || i > n - 3)) return false;
+        const iP = wrap ? wrap(i - 1) : i - 1;
+        const iN = wrap ? wrap(i + 1) : i + 1;
+        const p0 = at(iP), p1 = at(i), p2 = at(iN);
         let ux = p2.x - p1.x, uy = p2.y - p1.y, uz = p2.z - p1.z;
         const ul = Math.sqrt(ux * ux + uy * uy + uz * uz);
         if (ul < CO_BOND_MIN || ul > CO_BOND_MAX) return false;   // chain break
@@ -1189,7 +1197,127 @@
      * `sec` is one of 'H' | 'E' | 'C' per position ('C' for anything that is not
      * protein), `ladders` the bridge pairs as [i, j].
      */
+    /**
+     * [lo, hi] runs that close head to tail, from the same segment list the
+     * geometry uses - so the SS pass and the ribbon cannot disagree about which
+     * runs are rings.
+     */
+    function ringsOf(segments, n) {
+        const bb = new Int8Array(n);
+        const cand = [];
+        for (const seg of (segments || [])) {
+            const poly = (seg.type === 'P' || seg.type === 'D' || seg.type === 'R')
+                && seg.contactIdx1 === undefined;
+            if (!poly) continue;
+            if (seg.idx2 === seg.idx1 + 1) bb[seg.idx1] = 1;
+            else if (seg.idx2 > seg.idx1 + 1) cand.push(seg);
+        }
+        if (!cand.length) return [];
+        const runs = [];
+        let st = -1;
+        for (let i = 0; i < n; i++) {
+            if (bb[i]) { if (st < 0) st = i; } else if (st >= 0) { runs.push([st, i]); st = -1; }
+        }
+        const rings = [];
+        for (const seg of cand) {
+            for (const r of runs) {
+                if (seg.idx1 === r[0] && seg.idx2 === r[1]) { rings.push(r); break; }
+            }
+        }
+        return rings;
+    }
+
+    /**
+     * Secondary structure, RING AWARE.
+     *
+     * assignSecondaryOpen walks the chain by index at every level - the
+     * backbone frame needs i-1..i+2, DSSP's turn patterns step i to i+n, and
+     * bridge partners compare index separation - so a head-to-tail closure is
+     * invisible to it and any element spanning the seam is cut in two.
+     *
+     * Rather than wrap every one of those index expressions, and risk the far
+     * more common linear path while doing it, a ring is assigned TWICE under
+     * different rotations of its residue order and the two merged. Rotating a
+     * ring gives a different but equally valid linear chain - no coordinate
+     * moves, only where the artificial break falls - so every residue is
+     * assigned once near a break and once far from one, and the far one wins.
+     * DSSP is local, so a residue well inside its rotation gets the assignment
+     * it would have had on a true ring. This is the same construction the
+     * benchmark uses to build its reference (tests/cyclic_bench.py).
+     *
+     * opts.rings: array of [lo, hi] inclusive ranges that close head to tail.
+     */
     function assignSecondary(coords, n, positionTypes, opts) {
+        const rings = (opts && opts.rings) || null;
+        if (!rings || !rings.length) {
+            return assignSecondaryOpen(coords, n, positionTypes, opts);
+        }
+        const names = (opts && opts.names) || null;
+        const base = assignSecondaryOpen(coords, n, positionTypes, opts);
+        const sec = Array.isArray(base.sec) ? base.sec.slice() : [...base.sec];
+        const ladders = (base.ladders || []).map((p) => [p[0], p[1]]);
+        const seenLad = new Set(ladders.map((p) => (p[0] < p[1]
+            ? p[0] * n + p[1] : p[1] * n + p[0])));
+
+        // ONLY THE SEAM IS WRONG, so only the seam is recomputed. The first
+        // pass above is the ordinary global assignment - every residue more
+        // than a DSSP neighbourhood from a closure already has its final answer
+        // there, with the full structure for context. The extra passes exist to
+        // give the residues AT the closure a view in which the break is
+        // somewhere else, and they run on the ring alone: a ring is a closed
+        // sub-chain, so rotating it needs none of the rest of the file. An
+        // earlier version rotated and re-assigned the whole structure per pass,
+        // which cost 7x on a 2000-residue complex holding one 30-residue ring.
+        //
+        // The trade is that a ring-local pass cannot see a bridge to another
+        // chain. That only reaches residues near the closure, where its result
+        // is used at all - and when the ring IS the structure, which is the
+        // usual case for a cyclic peptide, there is nothing to lose.
+        for (const [lo, hi] of rings) {
+            const span = hi - lo + 1;
+            if (span < 5) continue;
+            // Enough rotations that every residue gets one where the break is a
+            // full neighbourhood away. Cost is passes * span, independent of
+            // how big the rest of the structure is, so this can be generous.
+            const passes = Math.max(2, Math.min(8, span));
+            // margin from pass 0's break, which sits between hi and lo
+            const margin = new Int32Array(span);
+            for (let q = 0; q < span; q++) margin[q] = Math.min(q, span - 1 - q);
+            const sub = Object.assign({}, opts || {});
+            delete sub.rings;
+            for (let pass = 1; pass < passes; pass++) {
+                const shift = Math.round((pass * span) / passes) % span;
+                if (!shift) continue;
+                const pc = new Array(span);
+                const pt = positionTypes ? new Array(span) : null;
+                const pn = names ? new Array(span) : null;
+                const back = new Int32Array(span);      // local -> global
+                for (let q = 0; q < span; q++) {
+                    const g = lo + ((q + shift) % span);
+                    back[q] = g;
+                    pc[q] = coords[g];
+                    if (pt) pt[q] = positionTypes[g];
+                    if (pn) pn[q] = names[g];
+                }
+                if (pn) sub.names = pn; else delete sub.names;
+                const res = assignSecondaryOpen(pc, span, pt, sub);
+                for (let q = 0; q < span; q++) {
+                    const m = Math.min(q, span - 1 - q);
+                    const g = back[q];
+                    if (m > margin[g - lo]) { margin[g - lo] = m; sec[g] = res.sec[q]; }
+                }
+                for (const pair of (res.ladders || [])) {
+                    const a = back[pair[0]];
+                    const b = back[pair[1]];
+                    const key = a < b ? a * n + b : b * n + a;
+                    if (!seenLad.has(key)) { seenLad.add(key); ladders.push([a, b]); }
+                }
+            }
+        }
+        return { sec, ladders };
+    }
+
+    function assignSecondaryOpen(coords, n, positionTypes, opts) {
         const cutoff = (opts && opts.hbCutoff !== undefined) ? opts.hbCutoff : HB_ENERGY_CUTOFF;
         const LADDER_EXTEND = (opts && opts.extendLadder !== undefined) ? opts.extendLadder : LADDER_EXTEND_DEFAULT;
         const extendGate = (opts && opts.extendGate) || LADDER_EXTEND_GATE;
@@ -1496,7 +1624,107 @@
      *
      * -> Float64Array(n * 3), zeros where the residue has no sheet frame.
      */
+    /**
+     * Sheet frames, RING AWARE.
+     *
+     * buildSheetFramesOpen collects contiguous strand STRETCHES by index, so a
+     * strand crossing a head-to-tail closure arrives as two - and a one-residue
+     * remnant is dropped outright, leaving that residue with no sheet frame and
+     * a face orientation taken from raw curvature instead. Both show at the
+     * seam as a twist in the plate.
+     *
+     * The stretch loops are the tuned part of the sheet pipeline, so rather
+     * than teach six of them to wrap, each ring is ROTATED so its break lands
+     * on a residue that is not in a strand - then no strand is ever split and
+     * the machinery runs unchanged. A cut needs only sec[cut] !== 'E': a strand
+     * is split only when the residues either side of the break are both strand.
+     * A ring that is strand end to end has no such point and keeps the old
+     * behaviour, which is the best available.
+     */
     function buildSheetFrames(coords, n, sec, positionTypes, ladders, opts) {
+        const rings = (opts && opts.rings) || null;
+        if (!rings || !rings.length) {
+            return buildSheetFramesOpen(coords, n, sec, positionTypes, ladders, opts);
+        }
+        const perm = new Int32Array(n);      // perm[newIdx] = oldIdx
+        const inv = new Int32Array(n);       // inv[oldIdx] = newIdx
+        for (let i = 0; i < n; i++) { perm[i] = i; inv[i] = i; }
+        let rotated = false;
+        for (const [lo, hi] of rings) {
+            const span = hi - lo + 1;
+            if (span < 3) continue;
+            // WHERE TO CUT. Two conditions, and the second is the one that
+            // bit: no strand may be SPLIT by the break, and no strand residue
+            // may land at either END of the array. buildSheetFramesOpen builds
+            // its orientation vectors from predictBackbone, which is linear -
+            // it runs i = 1..n-3 and localFrame needs i-1..i+2 - so residues 0,
+            // n-2 and n-1 never get a frame at all. Cutting merely off-strand
+            // moved the seam strand to exactly those slots, and its residues
+            // fell back to curvature-derived sides while their neighbours used
+            // the sheet frame. Mixing the two sources mid-strand is a visible
+            // twist (1YP8 model 11).
+            //
+            // So require the residues landing at 0, 1, n-2 and n-1 to be
+            // non-strand, i.e. four in a row around the cut, and relax to three
+            // then to any non-strand residue when a ring has no such run.
+            const nonE = (q) => sec[lo + ((q % span) + span) % span] !== 'E';
+            let cut = -1;
+            for (const need of [4, 3, 1]) {
+                for (let q = 0; q < span; q++) {
+                    let ok = true;
+                    // positions n-2, n-1 come from q-2, q-1; 0 and 1 from q, q+1
+                    for (let d = -2; d < need - 2 && ok; d++) if (!nonE(q + d)) ok = false;
+                    if (need === 1) ok = nonE(q) && nonE(q - 1) && nonE(q - 2);
+                    if (ok) { cut = q; break; }
+                }
+                if (cut >= 0) break;
+            }
+            if (cut < 0) continue;           // strand end to end: nothing better
+            if (cut === 0) continue;         // already clean
+            rotated = true;
+            for (let q = 0; q < span; q++) {
+                const old = lo + ((q + cut) % span);
+                perm[lo + q] = old;
+                inv[old] = lo + q;
+            }
+        }
+        if (!rotated) {
+            return buildSheetFramesOpen(coords, n, sec, positionTypes, ladders, opts);
+        }
+        const names = (opts && opts.names) || null;
+        const pc = new Array(n);
+        const ps = new Array(n);
+        const pt = positionTypes ? new Array(n) : null;
+        const pn = names ? new Array(n) : null;
+        for (let k = 0; k < n; k++) {
+            pc[k] = coords[perm[k]];
+            ps[k] = sec[perm[k]];
+            if (pt) pt[k] = positionTypes[perm[k]];
+            if (pn) pn[k] = names[perm[k]];
+        }
+        const pl = (ladders || []).map((pair) => [inv[pair[0]], inv[pair[1]]]);
+        const sub = Object.assign({}, opts || {});
+        delete sub.rings;
+        if (pn) sub.names = pn;
+        const res = buildSheetFramesOpen(pc, n, ps, pt, pl, sub);
+        // back to the caller's indexing. The coefficients are expressed in each
+        // residue's own local frame, which is built from its neighbours - and
+        // rotation preserves those, so they carry over unchanged.
+        const local = new Float64Array(n * 3);
+        const flatLocal = new Float64Array(n * 3);
+        const onSheet = new Uint8Array(n);
+        for (let k = 0; k < n; k++) {
+            const old = perm[k];
+            for (let c = 0; c < 3; c++) {
+                local[old * 3 + c] = res.local[k * 3 + c];
+                flatLocal[old * 3 + c] = res.flatLocal[k * 3 + c];
+            }
+            onSheet[old] = res.onSheet[k];
+        }
+        return { local, flatLocal, onSheet };
+    }
+
+    function buildSheetFramesOpen(coords, n, sec, positionTypes, ladders, opts) {
         const flatCycles = (opts && opts.cycles !== undefined) ? opts.cycles : SHEET_FLAT_CYCLES;
         const relaxSweeps = (opts && opts.relax !== undefined) ? opts.relax : SHEET_FRAME_RELAX;
         const alongW = (opts && opts.along !== undefined) ? opts.along : SHEET_ALONG_W;
@@ -2066,7 +2294,10 @@
         ) * vs.zoom;
         const centerX = displayWidth / 2;
         const centerY = displayHeight / 2;
-        const persp = vs.perspectiveEnabled;
+        // the scale this style actually drew at, so a pan drag can convert
+        // screen pixels into Angstroms (see the pan handler in viewer-mol.js)
+        renderer._viewScale = scale;
+        const persp = (typeof vs.ortho === 'number') ? vs.ortho < 1 : false;
         const fl = vs.focalLength;
         const widthScale = (renderer.lineWidth || 3.0) / 3.0;
         const baseLineWidthPixels = (renderer.lineWidth || 3.0) * scale;
@@ -2274,6 +2505,11 @@
             // whatever did not close a run is still an ordinary bond to draw
             for (const s of byEnds.values()) genericSegs.push(s);
         }
+        // the cyclic runs, shared by the SS pass and the sheet-frame pass
+        const ringRuns = [];
+        for (let r = 0; r < runs.length; r++) {
+            if (runClose[r] >= 0) ringRuns.push(runs[r]);
+        }
 
         // --- secondary structure, cached per object/frame ---
         // Distances are rotation-invariant, so this never changes with the view.
@@ -2289,7 +2525,7 @@
         let ladders = renderer._cartoonLadder;
         if (!sec || renderer._cartoonSecKey !== secKey) {
             const assigned = assignSecondary(renderer.coords, n, positionTypes,
-                { names: renderer.positionNames });
+                { names: renderer.positionNames, rings: ringRuns });
             sec = applySse(assigned.sec, renderer);
             ladders = assigned.ladders;
             renderer._cartoonSec = sec;
@@ -2625,10 +2861,17 @@
         if (!sheet || renderer._cartoonSheetKey !== secKey) {
             sheet = ladders.length
                 ? buildSheetFrames(renderer.coords, n, sec, positionTypes, ladders,
-                    { names: renderer.positionNames })
+                    { names: renderer.positionNames, rings: ringRuns })
                 : null;
             renderer._cartoonSheet = sheet;
             renderer._cartoonSheetKey = secKey;
+        }
+        // index wrap for residues inside a cyclic run, else null
+        const ringWrap = new Array(n).fill(null);
+        for (const [rl, rh] of ringRuns) {
+            const span = rh - rl + 1;
+            const f = (k) => rl + (((k - rl) % span) + span) % span;
+            for (let i = rl; i <= rh && i < n; i++) ringWrap[i] = f;
         }
         const sheetLocal = sheet && sheet.local;
         // Map the cached coefficients into the rotated frame.
@@ -2640,12 +2883,60 @@
                 const o = i * 3;
                 const lx = sheetLocal[o], ly = sheetLocal[o + 1], lz = sheetLocal[o + 2];
                 if (!lx && !ly && !lz) continue;
-                if (!localFrame((k) => rotated[k], n, i, fr)) continue;
+                if (!localFrame((k) => rotated[k], n, i, fr, ringWrap[i])) continue;
                 const x = fr[0] * lx + fr[3] * ly + fr[6] * lz;
                 const y = fr[1] * lx + fr[4] * ly + fr[7] * lz;
                 const z = fr[2] * lx + fr[5] * ly + fr[8] * lz;
                 const l = Math.hypot(x, y, z);
                 if (l > 1e-9) sheetSides[i] = [x / l, y / l, z / l];
+            }
+            // STRAND EDGES BORROW THEIR OWN STRAND'S FACE.
+            // buildSheetFrames only yields coefficients where it could pair a
+            // residue into a ladder, so the first and last residue of a stretch
+            // - and any isolated one - come back empty: on 1TIM that is 17 of
+            // 32 such residues. Falling through to the curvature normal there
+            // is not a small error. A strand's curvature normal alternates with
+            // the PLEAT, the very thing the sheet frame exists to remove, so
+            // the fallback face can sit ~140 degrees from the strand's own
+            // (measured on 1YP8: sheet-vs-curvature runs 138, 23, 137, 21 along
+            // one strand). A short loop between two strands then has to absorb
+            // that in a step or two and the strip pinches to nothing - the
+            // bow-tie at a seam was this, not the loop transport, which was
+            // faithfully interpolating a garbage endpoint.
+            //
+            // Carry the nearest framed residue OF THE SAME STRAND across
+            // instead, walking contiguously so a neighbouring strand is never
+            // borrowed from, and orthonormalise it against the local tangent so
+            // the result is a valid side vector.
+            const isE = (i) => sec[i] === 'E';
+            for (let i = 0; i < n; i++) {
+                if (sheetSides[i] || !isE(i)) continue;
+                const wf = ringWrap[i];
+                const step = (k, d) => (wf ? wf(k + d) : k + d);
+                let src = null;
+                for (const dir of [-1, 1]) {
+                    let j = i;
+                    for (let d = 0; d < 6 && !src; d++) {
+                        const k = step(j, dir);
+                        if (k < 0 || k >= n || !isE(k)) break;
+                        j = k;
+                        if (sheetSides[j]) src = sheetSides[j];
+                    }
+                    if (src) break;
+                }
+                if (!src) continue;
+                const a = rotated[wf ? wf(i - 1) : Math.max(0, i - 1)];
+                const b = rotated[wf ? wf(i + 1) : Math.min(n - 1, i + 1)];
+                let tx = b.x - a.x, ty = b.y - a.y, tz = b.z - a.z;
+                const tl = Math.hypot(tx, ty, tz);
+                if (tl < 1e-9) continue;
+                tx /= tl; ty /= tl; tz /= tl;
+                const dp = src[0] * tx + src[1] * ty + src[2] * tz;
+                const ox = src[0] - dp * tx;
+                const oy = src[1] - dp * ty;
+                const oz = src[2] - dp * tz;
+                const ol = Math.hypot(ox, oy, oz);
+                if (ol > 1e-9) sheetSides[i] = [ox / ol, oy / ol, oz / ol];
             }
         }
 
@@ -2695,7 +2986,8 @@
             const fr3 = [0, 0, 0, 0, 0, 0, 0, 0, 0];
             for (let i = 0; i < n; i++) {
                 const p = rotated[i];
-                if (!sheet.onSheet[i] || !localFrame((k) => rotated[k], n, i, fr3)) {
+                if (!sheet.onSheet[i]
+                    || !localFrame((k) => rotated[k], n, i, fr3, ringWrap[i])) {
                     basePos[i] = p;
                     continue;
                 }
@@ -2728,6 +3020,28 @@
             // directly while the backbone would read posArr, sliding the trace
             // out from under its own bases.
             const smoothable = (i) => !positionTypes || positionTypes[i] === 'P';
+            // RING-AWARE SPANS. A strand can cross a head-to-tail closure, and
+            // a span gathered as an [a, b] range stops dead at hi - the strand
+            // is then flattened as two short fragments, or not at all when a
+            // fragment is under three residues, leaving the pleat visible at
+            // exactly the seam. Spans are gathered as index LISTS that wrap
+            // instead. On a linear run these walk lo..hi and nothing changes.
+            const onRing = new Int32Array(n).fill(-1);
+            for (let r = 0; r < runs.length; r++) {
+                if (runClose[r] < 0) continue;
+                for (let i = runs[r][0]; i <= runs[r][1] && i < n; i++) onRing[i] = r;
+            }
+            const nextRes = (i) => {
+                const r = onRing[i];
+                if (r >= 0 && i === runs[r][1]) return runs[r][0];
+                return i + 1 < n ? i + 1 : -1;
+            };
+            const prevRes = (i) => {
+                const r = onRing[i];
+                if (r >= 0 && i === runs[r][0]) return runs[r][1];
+                return i - 1;
+            };
+            const doneE = new Uint8Array(n);
             for (let a = 0; a < n; a++) {
                 // STRANDS ONLY, as in PyMOL: cartoon_flat_sheets flattens
                 // sheets and leaves everything else alone. Loops used to be
@@ -2736,18 +3050,34 @@
                 // setting with two effects - asking for flat sheets silently
                 // redrew every loop as well. Helices are likewise untouched;
                 // smoothing one would unwind the coil that is its whole point.
-                if (!smoothable(a)) continue;
+                if (doneE[a] || !smoothable(a)) continue;
                 if (sec[a] !== 'E') continue;
+                // back up to the strand's true start, then walk it forward;
+                // both stop at a chain end, a run change, or a full loop
+                let st = a;
+                for (;;) {
+                    const q = prevRes(st);
+                    if (q < 0 || q === a) break;
+                    if (!smoothable(q) || sec[q] !== 'E' || runHi[q] !== runHi[st]) break;
+                    st = q;
+                }
+                const idxs = [st];
+                doneE[st] = 1;
+                for (;;) {
+                    const q = nextRes(idxs[idxs.length - 1]);
+                    if (q < 0 || q === st) break;
+                    if (!smoothable(q) || sec[q] !== 'E' || runHi[q] !== runHi[st]) break;
+                    idxs.push(q);
+                    doneE[q] = 1;
+                }
                 let b = a;
                 // ... and never past the residue's own chain run: two chains
                 // whose facing termini are both coil are adjacent in index
                 // order, and without this bound the span crossed the break -
                 // the 3-point average then mixed positions ~15 A apart and
                 // bent both termini toward each other whenever sheetFlat > 0.
-                while (b + 1 < n && smoothable(b + 1)
-                    && (runHi[a] < 0 || b + 1 <= runHi[a])
-                    && sec[b + 1] === 'E') b++;
-                if (b - a >= 2) {
+                b = idxs[idxs.length - 1];
+                if (idxs.length >= 3) {
                     // STRANDS: PyMOL's cartoon_flat_sheets, exactly
                     // (RepCartoonFlattenSheets, layer2/RepCartoon.cpp): per
                     // contiguous strand, flat_cycles (4) iterations of a
@@ -2774,10 +3104,11 @@
                     // by 1/3 per cycle in every direction (waviness
                     // included), and four cycles leave the low-frequency bow
                     // - the sheet's real curvature - largely intact.
-                    const len = b - a + 1;
+                    const len = idxs.length;
                     const pvE = new Float64Array(len * 3);
-                    for (let j = a; j <= b; j++) {
-                        const k = (j - a) * 3;
+                    for (let q = 0; q < len; q++) {
+                        const j = idxs[q];
+                        const k = q * 3;
                         pvE[k] = rotated[j].x;
                         pvE[k + 1] = rotated[j].y;
                         pvE[k + 2] = rotated[j].z;
@@ -2798,8 +3129,9 @@
                         }
                     }
                     const w = Math.min(1, sheetFlat);
-                    for (let j = a + 1; j <= b - 1; j++) {   // ends pinned
-                        const k = (j - a) * 3;
+                    for (let q = 1; q < len - 1; q++) {      // ends pinned
+                        const j = idxs[q];
+                        const k = q * 3;
                         const v = rotated[j];
                         const p = posArr[j];
                         posArr[j] = {
@@ -2809,7 +3141,11 @@
                         };
                     }
                 }
-                a = b;
+                // Skip past the span just handled. Guarded because a WRAPPED
+                // span ends below where it started, and rewinding the cursor
+                // would rescan the whole ring; doneE makes the skip an
+                // optimisation rather than something correctness rests on.
+                if (b > a) a = b;
             }
         }
         // set renderer._posProbe = null before a render to receive the drawn
@@ -3292,8 +3628,18 @@
                     let prevSide = null;
                     for (let i = lo; i <= hi; i++) {
                         const k = i - lo;
-                        let sv = sheetSides[i];
-                        if (!sv) { prevSide = sides[k]; continue; }
+                        const sv0 = sheetSides[i];
+                        // BREAK THE CHAIN AT A LOOP, do not follow it. This used
+                        // to carry `prevSide = sides[k]` across loop residues,
+                        // which let a loop's curvature-derived face - a
+                        // direction with no intrinsic meaning, swinging through
+                        // every inflection - decide the sign of the next
+                        // strand's sheet face. Elements are the things with a
+                        // real face; loops connect them. The absolute sign of
+                        // each element is settled by the loop pass below, which
+                        // transports one element's face to the next.
+                        if (!sv0) { prevSide = null; continue; }
+                        let sv = sv0;
                         if (prevSide && (sv[0] * prevSide[0] + sv[1] * prevSide[1]
                             + sv[2] * prevSide[2]) < 0) {
                             sv = [-sv[0], -sv[1], -sv[2]];
@@ -3369,28 +3715,143 @@
                             v[2] * c + (k[0] * v[1] - k[1] * v[0]) * si + k[2] * d * (1 - c),
                         ];
                     };
-                    const isLoopAt = (j) => sec[j] !== 'H' && sec[j] !== 'E';
-                    for (let a2 = lo; a2 <= hi; a2++) {
-                        if (!isLoopAt(a2)) continue;
-                        let b2 = a2;
-                        while (b2 + 1 <= hi && isLoopAt(b2 + 1)) b2++;
-                        // seed from the element before the run, else its own side
-                        let cur = sides[(a2 > lo ? a2 - 1 : a2) - lo];
+                    // WHAT COUNTS AS AN ELEMENT, for framing. Not the SS
+                    // letter - whether the residue has a face worth keeping. A
+                    // helix does: its curvature points at its own axis. A strand
+                    // does only where the sheet frame reached it; a strand
+                    // residue the sheet missed has nothing but the pleat normal,
+                    // which alternates side every residue and carries no
+                    // information about the sheet's plane.
+                    //
+                    // Pinning the ribbon to that is worse than not pinning it at
+                    // all. 1YP8 model 14 reads E C E C H H H at its start: the
+                    // lone 'E' at residue 2 has a single-residue loop on either
+                    // side, so the frame had to swing out to the pleat normal
+                    // and back within one step each way - the twist at residue
+                    // 3. Treated as loop, the transport simply carries the face
+                    // through it, and the mismatch that was jammed into one
+                    // residue is spread over three.
+                    const isElAt = (j) => (sec[j] === 'H'
+                        || (sec[j] === 'E' && !!(sheetSides && sheetSides[j])));
+                    const isLoopAt = (j) => !isElAt(j);
+                    // Maximal runs of one kind, wrapping on a ring so a loop
+                    // that crosses the closure is ONE run rather than two
+                    // half-loops that each seed themselves from nothing.
+                    const runsOf = (want) => {
+                        const seen = new Uint8Array(span);
                         const out = [];
-                        for (let j = a2; j <= b2; j++) {
+                        for (let i = lo; i <= hi; i++) {
+                            if (!want(i) || seen[i - lo]) continue;
+                            let s0 = i;
+                            if (cyclic) {
+                                let g = 0;
+                                while (want(wrapIdx(s0 - 1)) && g++ < span) s0 = wrapIdx(s0 - 1);
+                            } else {
+                                while (s0 > lo && want(s0 - 1)) s0--;
+                            }
+                            const list = [];
+                            let j = s0;
+                            let g = 0;
+                            while (want(j) && !seen[j - lo] && g++ <= span) {
+                                seen[j - lo] = 1;
+                                list.push(j);
+                                if (!cyclic && j >= hi) break;
+                                j = cyclic ? wrapIdx(j + 1) : j + 1;
+                            }
+                            if (list.length) out.push(list);
+                        }
+                        return out;
+                    };
+                    const elems = runsOf(isElAt);
+                    const loops = runsOf(isLoopAt);
+                    const elemOf = new Int32Array(span).fill(-1);
+                    elems.forEach((el, ei) => el.forEach((j) => { elemOf[j - lo] = ei; }));
+
+                    // ELEMENT-INTERNAL SIGN, in the element's OWN order, which
+                    // wraps. The continuity pass far above walks lo..hi, so an
+                    // element spanning the closure - a helix straight through
+                    // the seam, as in the AS-48 bacteriocins - has its chain
+                    // broken at exactly that step and the strip arrives there
+                    // reversed. Flipping to agree costs nothing: a helix side
+                    // turns ~100 degrees per residue, and the flipped 80 draws
+                    // the same band. What matters is only that consecutive
+                    // vectors are not ANTIparallel, which is what makes the
+                    // strip between two stations pinch through zero and cross.
+                    for (const el of elems) {
+                        for (let k = 1; k < el.length; k++) {
+                            const a = sides[el[k - 1] - lo];
+                            const b = sides[el[k] - lo];
+                            if (!a || !b) continue;
+                            if (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] < 0) {
+                                sides[el[k] - lo] = [-b[0], -b[1], -b[2]];
+                            }
+                        }
+                    }
+
+                    // ORDER. Each loop reconciles the two elements it joins, so
+                    // nothing accumulates around the ring - the twist a loop
+                    // absorbs is its own neighbours' mismatch, measured at 11-86
+                    // degrees on 1YP8 rather than the ring's total. The element
+                    // signs are shared between adjacent loops though, so on a
+                    // ring the cycle may not close: exactly one loop can be left
+                    // with the complement of its residual. Process the LONGEST
+                    // loop last so that leftover lands where it is spread over
+                    // the most residues - and in the Richardson preset a loop's
+                    // thickness equals its width, so its face has no observable
+                    // orientation and the leftover is free.
+                    const order = loops.map((_, k) => k);
+                    if (cyclic && loops.length > 1) {
+                        let longest = 0;
+                        for (let k = 1; k < loops.length; k++) {
+                            if (loops[k].length > loops[longest].length) longest = k;
+                        }
+                        order.splice(order.indexOf(longest), 1);
+                        order.push(longest);
+                    }
+                    const locked = new Uint8Array(elems.length);
+                    for (const li of order) {
+                        const L = loops[li];
+                        const first = L[0];
+                        const last = L[L.length - 1];
+                        const prevI = cyclic ? wrapIdx(first - 1) : first - 1;
+                        const nextI = cyclic ? wrapIdx(last + 1) : last + 1;
+                        const hasPrev = prevI >= lo && prevI <= hi && isElAt(prevI);
+                        const hasNext = nextI >= lo && nextI <= hi && isElAt(nextI);
+                        if (hasPrev && elemOf[prevI - lo] >= 0) locked[elemOf[prevI - lo]] = 1;
+                        // seed from the element before the run, else its own side
+                        let cur = sides[(hasPrev ? prevI : first) - lo];
+                        const out = [];
+                        for (const j of L) {
                             const t = tanOf(j);
                             const pj = proj(cur, t);
                             if (pj) cur = pj;
                             out.push(cur);
                         }
                         // residual against the element after the run
-                        if (b2 < hi && out.length) {
-                            const tEnd = tanOf(b2);
-                            const want = proj(sides[b2 + 1 - lo], tEnd);
+                        if (hasNext && out.length) {
+                            const tEnd = tanOf(last);
+                            let want = proj(sides[nextI - lo], tEnd);
                             const have = out[out.length - 1];
                             if (want) {
                                 let dp = have[0] * want[0] + have[1] * want[1] + have[2] * want[2];
                                 dp = Math.max(-1, Math.min(1, dp));
+                                // AN ELEMENT'S FACE IS A DIRECTION, NOT AN
+                                // ORIENTATION: negating it draws the same ribbon.
+                                // So flip the element rather than make the loop
+                                // twist more than 90 degrees to reach it. Only
+                                // while it is still free - once a loop has been
+                                // solved against an element, that element is
+                                // fixed, or this would undo the earlier one.
+                                const eid = elemOf[nextI - lo];
+                                if (dp < 0 && eid >= 0 && !locked[eid]) {
+                                    for (const j of elems[eid]) {
+                                        const sv = sides[j - lo];
+                                        sides[j - lo] = [-sv[0], -sv[1], -sv[2]];
+                                    }
+                                    want = [-want[0], -want[1], -want[2]];
+                                    dp = -dp;
+                                }
+                                if (eid >= 0) locked[eid] = 1;
                                 let ang = Math.acos(dp);
                                 const cx = have[1] * want[2] - have[2] * want[1];
                                 const cy = have[2] * want[0] - have[0] * want[2];
@@ -3399,23 +3860,26 @@
                                 const nSteps = out.length;
                                 for (let k = 0; k < nSteps; k++) {
                                     const f = (k + 1) / nSteps;
-                                    out[k] = rot(out[k], tanOf(a2 + k), ang * f);
+                                    out[k] = rot(out[k], tanOf(L[k]), ang * f);
                                 }
                             }
                         }
-                        for (let j = a2; j <= b2; j++) sides[j - lo] = out[j - a2];
-                        a2 = b2;
+                        for (let k = 0; k < L.length; k++) sides[L[k] - lo] = out[k];
                     }
                 }
             }
 
-
-            // set renderer._sideProbe = null before a render to receive the
-            // per-residue side vectors; used to measure frame twist rate
-            if (renderer._sideProbe === null && isProt) {
-                renderer._sideProbe = [];
-                for (let j = 0; j < lo; j++) renderer._sideProbe.push(null);
-                for (let j = lo; j <= hi; j++) renderer._sideProbe.push(sides[j - lo]);
+            // set renderer._sideProbe = null before a render to receive the final
+            // ribbon side vector per residue; tests/cyclic_bench.js measures the
+            // frame's twist rate from it. Keyed by residue index rather than
+            // pushed in order, so a structure with several runs records all of
+            // them instead of only the first.
+            if (renderer._sideProbe === null) renderer._sideProbe = {};
+            if (renderer._sideProbe && isProt) {
+                for (let j = lo; j <= hi; j++) {
+                    const sv = sides[j - lo];
+                    if (sv) renderer._sideProbe[j] = [sv[0], sv[1], sv[2]];
+                }
             }
 
             // Per-RESIDUE half-width and half-thickness for the continuous
@@ -3442,10 +3906,22 @@
             // version widened the final two residues, which made the head as
             // long as the strand's last two steps - far longer than it is
             // drawn, and long enough to swallow short strands whole.
-            const isArrowInterval = (j) => arrowsOn && isProt
-                && j >= lo && j + 1 <= hi
-                && sec[j] === 'E' && sec[j + 1] === 'E'
-                && (j + 2 > hi || sec[j + 2] !== 'E');
+            // The arrow head marks where a strand ENDS. On a ring, running off
+            // the end of the index range is not the end of anything: for a
+            // strand crossing the closure this fired one interval early and
+            // planted a head mid-strand, splitting it into an arrow plus a
+            // detached plate on the far side of the seam.
+            const isArrowInterval = (j) => {
+                if (!arrowsOn || !isProt) return false;
+                if (cyclic) {
+                    if (j < lo || j > hi) return false;
+                    return sec[j] === 'E' && sec[wrapIdx(j + 1)] === 'E'
+                        && sec[wrapIdx(j + 2)] !== 'E';
+                }
+                return j >= lo && j + 1 <= hi
+                    && sec[j] === 'E' && sec[j + 1] === 'E'
+                    && (j + 2 > hi || sec[j + 2] !== 'E');
+            };
             // Thickness. In the DEFAULT cartoon this is ONE setting for the
             // whole strip - loops included. Forcing loops square ignored the
             // thickness control entirely: the Thick slider, and thickness=0
@@ -3475,6 +3951,18 @@
             // a cross-edge stroke, which is what makes a helix-to-loop
             // junction read as a finished ribbon end instead of a raw cut.)
             const sameElem = (j, t) => {
+                // On a ring the interval AT hi is the closure, and j == hi is a
+                // real interval rather than one past the end - without this an
+                // element crossing the seam looks like it stops there.
+                if (cyclic) {
+                    if (j < lo || j > hi) return false;
+                    const jN = j === hi ? lo : j + 1;
+                    const sIdx = j === hi ? closeSeg : bbSeg[j];
+                    if (sIdx < 0 || !colors[sIdx]) return false;
+                    if (!vis(j) || !vis(jN)) return false;
+                    if (!isProt) return false;
+                    return sec[j] === t && sec[jN] === t;
+                }
                 if (j < lo || j >= hi) return false;
                 const sIdx = bbSeg[j];
                 if (sIdx < 0 || !colors[sIdx]) return false;
@@ -3674,7 +4162,7 @@
                     // which reads as a second arrowhead. Starting it at the
                     // loop's own profile makes the loop leave the point at loop
                     // size, with no ghost.
-                    const afterArrow = isArrowInterval(i - 1);
+                    const afterArrow = isArrowInterval(cyclic ? wrapIdx(i - 1) : i - 1);
                     // Mirror case at the OTHER end: the interval running into a
                     // strand's N-terminus used to ramp up from loop width to
                     // strand width, so the strand faded in as a long wedge
@@ -3694,7 +4182,24 @@
                     const arrowHead = isArrowInterval(i);
                     const arrowBase = (WIDTHS.E || SS_HALF_A.E) * widthScale;
                     const s1 = sides[i - lo];
-                    const s2 = sides[iN - lo];
+                    let s2 = sides[iN - lo];
+                    // BOWTIE GUARD. A strip whose two end sides point opposite
+                    // ways crosses itself - the corners swap and the interval
+                    // renders as an hourglass. Inside a run this cannot happen:
+                    // the continuity pass above walks lo..hi flipping each side
+                    // to agree with its predecessor. The closure interval is
+                    // the one pair that pass never compares, so whatever sign
+                    // the ring accumulates on its way round lands exactly here
+                    // (1YP8 model 2, where the two sheet frames themselves
+                    // agree to within 0.1 degree - it is the propagated sign,
+                    // not the frame, that is inverted). Flip it back for this
+                    // strip; a ring whose parity is genuinely odd still has to
+                    // put half a twist somewhere, but a smooth twist beats a
+                    // self-intersection.
+                    if (s1 && s2
+                        && s1[0] * s2[0] + s1[1] * s2[1] + s1[2] * s2[2] < 0) {
+                        s2 = [-s2[0], -s2[1], -s2[2]];
+                    }
                     const pa = at(i);
                     const pb = at(iN);
                     // Ribbons have THICKNESS. An infinitely thin strip
@@ -4101,11 +4606,26 @@
                     // to the same convention. Turning arrows off puts strands
                     // back to flowing continuously out of their loops at both
                     // ends.
+                    // A ring has no first or last residue, so `i === lo` is not
+                    // an element start and `iN === hi` is not an element end -
+                    // taking them as such put a flat cap on both sides of the
+                    // seam, cutting a helix that runs straight through it. Fall
+                    // back to the neighbour's class, which is what decides every
+                    // other element boundary anyway.
+                    const iP = cyclic ? wrapIdx(i - 1) : i - 1;
                     const strandStart = arrowsOn && isProt && sec[i] === 'E'
-                        && (i === lo || sec[i - 1] !== 'E');
+                        && (cyclic ? sec[iP] !== 'E' : (i === lo || sec[i - 1] !== 'E'));
+                    // A ring has no first or last residue, so lo and hi are
+                    // not element ends and get no cap. Note this SUPPRESSES the
+                    // profiled cap on a ring rather than switching to the
+                    // sameElem test: `profiled` covers every interval in the
+                    // run, so consulting sameElem here put a cross-edge stroke
+                    // at EVERY residue of a cyclic peptide - visible as lines
+                    // ruled across the ribbon (5KX0).
                     const capStartV = strandStart
-                        || (profiled ? (i === lo) : !sameElem(i - 1, t0));
-                    const capEndV = profiled ? (iN === hi) : !sameElem(iN, t0);
+                        || (profiled ? (i === lo && !cyclic) : !sameElem(iP, t0));
+                    const capEndV = profiled
+                        ? (iN === hi && !cyclic) : !sameElem(iN, t0);
                     // Quarter-interval pieces: the depth sort can only be as
                     // good as each piece's z is local. A folded-back piece that
                     // wraps toward the viewer drags its mean depth past any
@@ -7003,7 +7523,8 @@
     // extendSec are the superseded C-alpha-only pipeline, kept because the
     // benchmarks report against them.
     window.py2dmolCartoon = { render, makeSec, smoothSec, extendSec, SS_PARAMS: SS,
-        predictBackbone, predictBaseFrames, assignSecondary, buildSheetFrames, localFrame,
+        predictBackbone, predictBaseFrames, assignSecondary, assignSecondaryOpen,
+        ringsOf, buildSheetFrames, localFrame,
         STYLE_DEFAULTS, SS_PALETTES };
     // Near-white, not pure white: a pure white edge disappears into the page.
     const SHEET_EDGE_RGB = { r: 244, g: 246, b: 240 };
@@ -7057,7 +7578,8 @@
         // the geometry: colouring from a different pipeline used to tint the
         // last residue of every helix as coil while the ribbon drew it as helix.
         const assigned = assignSecondary(renderer.coords, n, renderer.positionTypes,
-            { names: renderer.positionNames });
+            { names: renderer.positionNames,
+                rings: ringsOf(renderer.segmentIndices, n) });
         const sec = applySse(assigned.sec, renderer);
         renderer._ssColorSec = sec;
         renderer._ssColorKey = key;

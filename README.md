@@ -132,7 +132,26 @@ Element edges are always lit directionally, so a thickness band reads as a round
 
 `color='ss'` colours by secondary structure. The palette is picked by `ss_palette` / the SSE dropdown: `pymol` (default: red helices, yellow strands, green loops), `jmol`, or the Jane Richardson schemes `jr1` (blue/green) and `jr2` (the 1981 hand-coloured drawings). It works with any style.
 
-**SVG export** reproduces all of this, including the pencil grain (as an `feTurbulence` filter) and gradient shading.
+**Image export** (the camera button) reproduces all of this, including the pencil grain (as an
+`feTurbulence` filter) and gradient shading. Pick SVG, compressed SVG, or PNG; PNG takes a DPI,
+where 300 dpi on a 600px view gives 1875x1875. Exports always go out at maximum subdivision and
+on a **transparent** background whatever the viewer is set to, so a figure drops into a document
+without a baked-in white or black rectangle behind it.
+
+**Moving the view.** Drag to rotate, scroll to zoom, and **middle-drag or Cmd/Ctrl-drag to pan**,
+as in PyMOL. A pan moves the rotation centre rather than the picture, so dragging the structure
+to the left leaves the centre off to its right - rotation, zoom and ortho all keep working about
+that point, which is what makes panning useful for studying one end of a long molecule.
+
+**Recording a rotation.** With auto-rotate on, the camera button becomes **Save Video** and
+records one full turn as a webm that loops seamlessly: the frames cover 0-360 degrees and stop
+one step short of 360, so wrapping back to the first frame continues the same angular step
+instead of repeating a frame.
+
+**Fetching a chain.** The fetch box takes a chain suffix as well as a plain ID: `1timA`,
+`1TIM_A`, `1tim_AB` (one chain per character) or `1tim:A,B` (commas for multi-character chain
+IDs). Only four-character PDB IDs take a suffix — they start with a digit, which is what keeps a
+UniProt accession like `Q5VSL9` from being read as an ID plus chains.
 
 ## Layouts & multiple objects
 

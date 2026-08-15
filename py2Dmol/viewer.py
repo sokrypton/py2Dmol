@@ -52,7 +52,7 @@ DEFAULT_CONFIG = {
         "shadow_strength": 0.5,
         "outline": "full",
         "width": 3.0,
-        "ortho": 1.0,
+        "ortho": 0.5,
         "detect_cyclic": True
     },
     "color": {
@@ -342,7 +342,7 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
-        outline=None, width=None, ortho=1.0, bg=None, rotate=False, autoplay=False,
+        outline=None, width=None, ortho=0.5, bg=None, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True,
         persistence=True, id=None, cutoffs=None,
     ):
@@ -406,7 +406,7 @@ class view:
                 inks outlines in white and fades depth toward black. The Dark
                 toggle.
             width (float): Line width. Default 3.0.
-            ortho (float): Orthographic projection strength 0-1. Default 1.0.
+            ortho (float): Orthographic projection strength 0-1. Default 0.5.
             rotate (bool): Auto-rotate the structure. Default False.
             autoplay (bool): Auto-play animation on load. Default False.
             pae (bool): Enable PAE (Predicted Aligned Error) visualization. Default False.

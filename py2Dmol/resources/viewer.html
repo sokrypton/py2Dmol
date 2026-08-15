@@ -219,7 +219,7 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
             <div class="btn-row auto">
                 <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"
                     title="Render style and its settings">Style</button>
-                <button id="saveSvgButton" class="controlButton" title="Save as SVG">Save SVG</button>
+                <button id="saveImageButton" class="controlButton" title="Save image (SVG or PNG)">Save Image</button>
             </div>
             <!-- MIRRORS index.html's #stylePanel row for row: same rows, same
                  pairing, same ids and data-style / data-needs-* attributes, so
@@ -315,7 +315,7 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                     </div>
                     <div class="half">
                         <label for="orthoSlider">Ortho:</label>
-                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
+                        <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01">
                     </div>
                 </div>
                 <div class="toggle-item">
