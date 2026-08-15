@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='py2Dmol',
-    version='1.6.5',
+    version='1.7.0',
     author='sokrypton',
     author_email='so3@mit.edu',
     description='A Python library for visualizing protein structures in 2D.',
@@ -15,6 +15,7 @@ setup(
         'py2Dmol': [
             'resources/viewer.html',
             'resources/viewer-mol.min.js',
+            'resources/viewer-cartoon.min.js',
             'resources/viewer-pae.min.js',
             'resources/viewer-scatter.min.js',
         ],

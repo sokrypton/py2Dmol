@@ -62,25 +62,59 @@ function getAllValidColorModes() {
         this.operations = [];
     }
 
+    /**
+     * Linear gradients. Without these the cartoon renderer's `canGrad` guards
+     * see no createLinearGradient and fall back to FLAT fills, so every
+     * exported face and thickness band lost its shading - the SVG came out
+     * noticeably flatter than the screen. Two stops is all the renderer ever
+     * uses, but arbitrary stops cost nothing to support.
+     */
+    function SVGLinearGradient(x0, y0, x1, y1) {
+        this.x0 = x0; this.y0 = y0; this.x1 = x1; this.y1 = y1;
+        this.stops = [];
+    }
+    SVGLinearGradient.prototype.addColorStop = function (offset, color) {
+        this.stops.push({ offset, color });
+    };
+    SVGLinearGradient.prototype.__isGradient = true;
+
+    SimpleCanvas2SVG.prototype.createLinearGradient = function (x0, y0, x1, y1) {
+        return new SVGLinearGradient(x0, y0, x1, y1);
+    };
+
     // Path operations
     SimpleCanvas2SVG.prototype.beginPath = function () {
         this.currentPath = [];
     };
 
+    // Coordinates are rounded to 0.01 px AT CAPTURE. Full doubles serialized
+    // as 15+ digit strings were most of the file: a 1TIM export carried 115k
+    // coordinates averaging ~17 characters each - over a third of 3.3 MB -
+    // for precision no renderer can display.
+    const r2 = (v) => Math.round(v * 100) / 100;
+
     SimpleCanvas2SVG.prototype.moveTo = function (x, y) {
         if (!this.currentPath) this.beginPath();
-        this.currentPath.push({ type: 'M', x: x, y: y });
+        this.currentPath.push({ type: 'M', x: r2(x), y: r2(y) });
     };
 
     SimpleCanvas2SVG.prototype.lineTo = function (x, y) {
         if (!this.currentPath) this.beginPath();
-        this.currentPath.push({ type: 'L', x: x, y: y });
+        this.currentPath.push({ type: 'L', x: r2(x), y: r2(y) });
+    };
+
+    SimpleCanvas2SVG.prototype.closePath = function () {
+        // Was missing: any caller that closed a path threw during SVG export
+        // ("ctx.closePath is not a function"). Emits the SVG 'Z' command, which
+        // both stroke and fill below already pass through untouched.
+        if (!this.currentPath) this.beginPath();
+        this.currentPath.push({ type: 'Z' });
     };
 
     SimpleCanvas2SVG.prototype.arc = function (x, y, radius, startAngle, endAngle) {
         if (!this.currentPath) this.beginPath();
         // py2Dmol only uses full circles (0 to 2π)
-        this.currentPath.push({ type: 'CIRCLE', x: x, y: y, radius: radius });
+        this.currentPath.push({ type: 'CIRCLE', x: r2(x), y: r2(y), radius: r2(radius) });
     };
 
     // Drawing operations
@@ -92,13 +126,14 @@ function getAllValidColorModes() {
             const cmd = this.currentPath[i];
             if (cmd.type === 'M') pathData += `M ${cmd.x} ${cmd.y} `;
             else if (cmd.type === 'L') pathData += `L ${cmd.x} ${cmd.y} `;
+            else if (cmd.type === 'Z') pathData += 'Z ';
         }
 
         this.operations.push({
             type: 'stroke',
             pathData: pathData.trim(),
             strokeStyle: this.strokeStyle,
-            lineWidth: this.lineWidth,
+            lineWidth: r2(this.lineWidth),
             lineCap: this.lineCap
         });
         this.currentPath = null;
@@ -124,6 +159,7 @@ function getAllValidColorModes() {
                 const cmd = this.currentPath[i];
                 if (cmd.type === 'M') pathData += `M ${cmd.x} ${cmd.y} `;
                 else if (cmd.type === 'L') pathData += `L ${cmd.x} ${cmd.y} `;
+            else if (cmd.type === 'Z') pathData += 'Z ';
             }
             this.operations.push({
                 type: 'fill',
@@ -135,6 +171,16 @@ function getAllValidColorModes() {
     };
 
     SimpleCanvas2SVG.prototype.fillRect = function (x, y, w, h) {
+        // A full-canvas fill BEFORE any content is the background, not
+        // content: recorded as an operation it ends up inside the pencil
+        // filter's group, where its opaque alpha made SourceAlpha the whole
+        // canvas and the grain covered the page instead of the structure.
+        // The serializer emits its own background rect; keep only its colour.
+        if (this.operations.length === 0 && x <= 0 && y <= 0
+            && w >= this.width && h >= this.height) {
+            this.backgroundFill = this.fillStyle;
+            return;
+        }
         this.operations.push({
             type: 'rect',
             x: x, y: y, width: w, height: h,
@@ -168,23 +214,126 @@ function getAllValidColorModes() {
     }
 
     // Generate SVG
-    SimpleCanvas2SVG.prototype.getSerializedSvg = function () {
-        let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}" viewBox="0 0 ${this.width} ${this.height}">\n`;
-        svg += `  <rect width="${this.width}" height="${this.height}" fill="#ffffff"/>\n`;
+    /**
+     * Paint value -> SVG attribute. Gradients are registered in `defs` and
+     * DEDUPED on their geometry and stops: a large structure emits tens of
+     * thousands of quads and many repeat exactly, so without this the file
+     * gains a separate <linearGradient> per quad.
+     */
+    function paintRef(value, defs, index) {
+        if (!value || !value.__isGradient) return rgbToHex(value);
+        const key = [value.x0, value.y0, value.x1, value.y1].map((v) => Math.round(v * 10) / 10)
+            .join(',') + '|' + value.stops.map((s) => s.offset + ':' + rgbToHex(s.color)).join(',');
+        let id = index[key];
+        if (!id) {
+            id = 'g' + defs.length;
+            index[key] = id;
+            defs.push('    <linearGradient id="' + id + '" gradientUnits="userSpaceOnUse"'
+                + ' x1="' + value.x0.toFixed(2) + '" y1="' + value.y0.toFixed(2) + '"'
+                + ' x2="' + value.x1.toFixed(2) + '" y2="' + value.y1.toFixed(2) + '">'
+                + value.stops.map((s) => '<stop offset="' + s.offset + '" stop-color="'
+                    + rgbToHex(s.color) + '"/>').join('')
+                + '</linearGradient>');
+        }
+        return 'url(#' + id + ')';
+    }
 
+    SimpleCanvas2SVG.prototype.getSerializedSvg = function () {
+        // Body first: walking the operations is what discovers which gradients
+        // are used, and <defs> has to be emitted before them.
+        const gradDefs = [];
+        const gradIndex = {};
+        let body = '';
         for (let i = 0; i < this.operations.length; i++) {
             const op = this.operations[i];
             if (op.type === 'rect') {
-                svg += `  <rect x="${op.x}" y="${op.y}" width="${op.width}" height="${op.height}" fill="${rgbToHex(op.fillStyle)}"/>\n`;
+                body += '  <rect x="' + op.x + '" y="' + op.y + '" width="' + op.width
+                    + '" height="' + op.height + '" fill="'
+                    + paintRef(op.fillStyle, gradDefs, gradIndex) + '"/>\n';
             } else if (op.type === 'circle') {
-                svg += `  <circle cx="${op.x}" cy="${op.y}" r="${op.radius}" fill="${rgbToHex(op.fillStyle)}"/>\n`;
+                body += '  <circle cx="' + op.x + '" cy="' + op.y + '" r="' + op.radius
+                    + '" fill="' + paintRef(op.fillStyle, gradDefs, gradIndex) + '"/>\n';
             } else if (op.type === 'stroke') {
                 const cap = op.lineCap === 'round' ? 'round' : 'butt';
-                svg += `  <path d="${op.pathData}" stroke="${rgbToHex(op.strokeStyle)}" stroke-width="${op.lineWidth}" stroke-linecap="${cap}" fill="none"/>\n`;
+                body += '  <path d="' + op.pathData + '" stroke="'
+                    + paintRef(op.strokeStyle, gradDefs, gradIndex)
+                    + '" stroke-width="' + op.lineWidth + '" stroke-linecap="' + cap
+                    + '" fill="none"/>\n';
             } else if (op.type === 'fill') {
-                svg += `  <path d="${op.pathData}" fill="${rgbToHex(op.fillStyle)}"/>\n`;
+                body += '  <path d="' + op.pathData + '" fill="'
+                    + paintRef(op.fillStyle, gradDefs, gradIndex) + '"/>\n';
             }
         }
+
+        // PENCIL GRAIN. The canvas path multiplies a noise tile over the frame
+        // and masks it to the structure's alpha; SVG expresses the same thing
+        // natively, so the export is not stuck with flat colour:
+        //   feTurbulence        - fractal noise, the tile's octaves in one node
+        //   feComponentTransfer - squeeze it into a narrow band near white, so
+        //                         it reads as paper tooth rather than static
+        //   feComposite in2="SourceAlpha" operator="in"
+        //                       - the analogue of canvas 'destination-in':
+        //                         grain only where the structure is, so the
+        //                         paper stays clean
+        //   feBlend mode="multiply" - how a pencil lays pigment down
+        // Set by the cartoon renderer as ctx.pencilAmount.
+        const grain = Number(this.pencilAmount) || 0;
+
+        let svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + this.width
+            + '" height="' + this.height + '" viewBox="0 0 ' + this.width + ' '
+            + this.height + '">\n';
+
+        {
+            svg += '  <defs>\n';
+            // Everything renders through this clip. The canvas clips at its
+            // own edge implicitly; without the equivalent here, strokes that
+            // CROSS the border (kept whole, correctly) overhang the artboard
+            // in editors like Illustrator/Inkscape, which show the pasteboard.
+            svg += '    <clipPath id="py2dmolCanvas"><rect x="0" y="0" width="'
+                + this.width + '" height="' + this.height + '"/></clipPath>\n';
+            if (gradDefs.length) svg += gradDefs.join('\n') + '\n';
+            if (grain > 0) {
+                // Map the noise into a narrow band NEAR WHITE, matching the
+                // canvas tile: mean slightly below 1 (a little darkening) with
+                // a swing either side (the texture). Centring it on the noise's
+                // own mean of 0.5 instead - the obvious first attempt -
+                // multiplies everything by ~0.73, a flat wash with no grain.
+                // Coefficients calibrated so the export matches the SCREEN,
+                // measured with the same flat-interior grain metric on both;
+                // feTurbulence and the canvas tile are different generators, so
+                // equal parameters do not give equal results.
+                const amp = 0.41 * grain;
+                const centre = 1 - 0.09 * grain;
+                const slope = amp.toFixed(3);
+                const intercept = (centre - amp / 2).toFixed(3);
+                // sRGB, not the linearRGB default: the canvas composites in
+                // sRGB, and without this the exported grain differs visibly
+                // from what is on screen.
+                svg += '    <filter id="py2dmolPencil" x="0%" y="0%" width="100%"'
+                    + ' height="100%" color-interpolation-filters="sRGB">\n';
+                svg += '      <feTurbulence type="fractalNoise" baseFrequency="0.34"'
+                    + ' numOctaves="3" seed="11" result="noise"/>\n';
+                svg += '      <feColorMatrix in="noise" type="saturate" values="0" result="grey"/>\n';
+                svg += '      <feComponentTransfer in="grey" result="paper">\n';
+                svg += '        <feFuncR type="linear" slope="' + slope + '" intercept="' + intercept + '"/>\n';
+                svg += '        <feFuncG type="linear" slope="' + slope + '" intercept="' + intercept + '"/>\n';
+                svg += '        <feFuncB type="linear" slope="' + slope + '" intercept="' + intercept + '"/>\n';
+                svg += '        <feFuncA type="discrete" tableValues="1"/>\n';
+                svg += '      </feComponentTransfer>\n';
+                svg += '      <feComposite in="paper" in2="SourceAlpha" operator="in" result="masked"/>\n';
+                svg += '      <feBlend in="SourceGraphic" in2="masked" mode="multiply"/>\n';
+                svg += '    </filter>\n';
+            }
+            svg += '  </defs>\n';
+        }
+
+        svg += '  <rect width="' + this.width + '" height="' + this.height
+            + '" fill="' + rgbToHex(this.backgroundFill || '#ffffff') + '"/>\n';
+        svg += '  <g clip-path="url(#py2dmolCanvas)">\n';
+        if (grain > 0) svg += '  <g filter="url(#py2dmolPencil)">\n';
+        svg += body;
+        if (grain > 0) svg += '  </g>\n';
+        svg += '  </g>\n';
         svg += '</svg>';
         return svg;
     };
@@ -374,7 +523,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Check object-level key first
                 if (adv.object) {
                     const objLevelColor = adv.object;
-                    if (typeof objLevelColor === 'string' && VALID_COLOR_MODES.includes(objLevelColor.toLowerCase())) {
+                    if (typeof objLevelColor === 'string' && getAllValidColorModes().includes(objLevelColor.toLowerCase())) {
                         resolvedMode = objLevelColor.toLowerCase();
                     } else {
                         resolvedLiteralColor = objLevelColor;
@@ -384,7 +533,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Check chain-level at object scope
                 if (adv.chain && chainId && adv.chain[chainId]) {
                     const chainColor = adv.chain[chainId];
-                    if (typeof chainColor === 'string' && VALID_COLOR_MODES.includes(chainColor.toLowerCase())) {
+                    if (typeof chainColor === 'string' && getAllValidColorModes().includes(chainColor.toLowerCase())) {
                         resolvedMode = chainColor.toLowerCase();
                         resolvedLiteralColor = null;
                     } else {
@@ -395,7 +544,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Check position-level at object scope (highest priority)
                 if (adv.position && adv.position[posIndex] !== undefined) {
                     const posColor = adv.position[posIndex];
-                    if (typeof posColor === 'string' && VALID_COLOR_MODES.includes(posColor.toLowerCase())) {
+                    if (typeof posColor === 'string' && getAllValidColorModes().includes(posColor.toLowerCase())) {
                         resolvedMode = posColor.toLowerCase();
                         resolvedLiteralColor = null;
                     } else {
@@ -421,7 +570,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // Check frame-level key first
                     if (adv.frame) {
                         const frameLevelColor = adv.frame;
-                        if (typeof frameLevelColor === 'string' && VALID_COLOR_MODES.includes(frameLevelColor.toLowerCase())) {
+                        if (typeof frameLevelColor === 'string' && getAllValidColorModes().includes(frameLevelColor.toLowerCase())) {
                             resolvedMode = frameLevelColor.toLowerCase();
                             resolvedLiteralColor = null;
                         } else {
@@ -432,7 +581,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // === Level 3: Chain-level color ===
                     if (adv.chain && chainId && adv.chain[chainId]) {
                         const chainColor = adv.chain[chainId];
-                        if (typeof chainColor === 'string' && VALID_COLOR_MODES.includes(chainColor.toLowerCase())) {
+                        if (typeof chainColor === 'string' && getAllValidColorModes().includes(chainColor.toLowerCase())) {
                             resolvedMode = chainColor.toLowerCase();
                             resolvedLiteralColor = null;
                         } else {
@@ -443,7 +592,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // === Level 4: Position-level color (highest priority) ===
                     if (adv.position && adv.position[posIndex] !== undefined) {
                         const posColor = adv.position[posIndex];
-                        if (typeof posColor === 'string' && VALID_COLOR_MODES.includes(posColor.toLowerCase())) {
+                        if (typeof posColor === 'string' && getAllValidColorModes().includes(posColor.toLowerCase())) {
                             resolvedMode = posColor.toLowerCase();
                             resolvedLiteralColor = null;
                         } else {
@@ -464,8 +613,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // RENDERING CONSTANTS
     // ============================================================================
 
-    // Valid color modes for protein coloring
-    const VALID_COLOR_MODES = ['chain', 'plddt', 'rainbow', 'auto', 'entropy', 'deepmind'];
 
     // Type-specific baseline multipliers (maintains visual hierarchy)
     const TYPE_BASELINES = {
@@ -507,10 +654,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             box: true
         },
         rendering: {
+            style: "ribbon",
+            detail: 0.5,
+            // thickness / cel / highlight / outline_tint / width / arrows /
+            // pencil / sheet_flat are deliberately absent: they are resolved
+            // per style in the renderer constructor (see PRESET_KEYS in
+            // normalizeConfig), so a default here would override the preset.
             shadow: true,
             shadow_strength: 0.5,
             outline: "full",
-            width: 3.0,
             ortho: 1.0,
             detect_cyclic: true
         },
@@ -545,19 +697,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 rotate: cfg.display?.rotate ?? cfg.rotate ?? DEFAULT_CONFIG.display.rotate,
                 autoplay: cfg.display?.autoplay ?? cfg.autoplay ?? DEFAULT_CONFIG.display.autoplay,
                 controls: cfg.display?.controls ?? cfg.controls ?? DEFAULT_CONFIG.display.controls,
-                box: cfg.display?.box ?? cfg.box ?? DEFAULT_CONFIG.display.box
+                box: cfg.display?.box ?? cfg.box ?? DEFAULT_CONFIG.display.box,
+                background: cfg.display?.background ?? cfg.bg ?? 'white'
             },
             rendering: {
+                style: cfg.rendering?.style ?? cfg.style ?? DEFAULT_CONFIG.rendering.style,
+                detail: cfg.rendering?.detail ?? cfg.detail ?? DEFAULT_CONFIG.rendering.detail,
                 shadow: cfg.rendering?.shadow ?? cfg.shadow ?? DEFAULT_CONFIG.rendering.shadow,
                 shadow_strength: cfg.rendering?.shadow_strength ?? cfg.shadow_strength ?? DEFAULT_CONFIG.rendering.shadow_strength,
                 outline: cfg.rendering?.outline ?? cfg.outline ?? DEFAULT_CONFIG.rendering.outline,
-                width: cfg.rendering?.width ?? cfg.width ?? DEFAULT_CONFIG.rendering.width,
                 ortho: cfg.rendering?.ortho ?? cfg.ortho ?? DEFAULT_CONFIG.rendering.ortho,
                 detect_cyclic: cfg.rendering?.detect_cyclic ?? cfg.detect_cyclic ?? DEFAULT_CONFIG.rendering.detect_cyclic
             },
             color: {
                 mode: colorMode || DEFAULT_CONFIG.color.mode,
-                colorblind: cfg.color?.colorblind ?? cfg.colorblind ?? DEFAULT_CONFIG.color.colorblind
+                colorblind: cfg.color?.colorblind ?? cfg.colorblind ?? DEFAULT_CONFIG.color.colorblind,
+                // named palette for the 'ss' colour mode; undefined = the
+                // renderer's default palette (owned by viewer-cartoon.js)
+                ss_palette: cfg.color?.ss_palette ?? cfg.ss_palette
             },
             pae: {
                 enabled: cfg.pae?.enabled ?? cfg.pae ?? DEFAULT_CONFIG.pae.enabled,
@@ -572,8 +729,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         };
 
+        // Style-preset keys are passed through ONLY when the caller actually set
+        // one. Substituting a default here would make every value look explicit
+        // to the renderer, which resolves the per-style presets (richardson wants
+        // thickness 0.7, width 2.0, a tinted outline, no cel banding) for exactly
+        // the keys that were left out - so defaulting them silently flattened
+        // richardson into cartoon for any caller who set only `style`.
+        // arrows/pencil/sheet_flat additionally used to be dropped outright:
+        // they were absent from this object, so view(arrows=False) never reached
+        // the renderer at all.
+        const PRESET_KEYS = ["thickness", "smooth", "highlight", "outline_tint", "width",
+                             "arrows", "pencil", "sheet_flat", "fade"];
+        // base_plates has ONE global default (on), owned by the renderer -
+        // same pass-through-only-when-set rule as the preset keys.
+        for (const key of [...PRESET_KEYS, "base_plates", "preset"]) {
+            const value = cfg.rendering?.[key] ?? cfg[key];
+            if (value !== undefined && value !== null) {
+                normalized.rendering[key] = value;
+            }
+        }
+
         // Carry over any additional top-level keys not explicitly normalized
-        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "width", "ortho", "colorblind", "pae_size", "scatter_size", "detect_cyclic"]);
+        const knownKeys = new Set(["viewer_id", "display", "rendering", "color", "pae", "scatter", "overlay", "size", "rotate", "autoplay", "controls", "box", "shadow", "outline", "ortho", "colorblind", "pae_size", "scatter_size", "detect_cyclic", "style", "detail", "base_plates", "ss_palette", "preset", ...PRESET_KEYS]);
         for (const [key, value] of Object.entries(cfg)) {
             if (!knownKeys.has(key)) {
                 normalized[key] = value;
@@ -647,12 +824,108 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 currentFrame: -1
             };
 
-            this.lineWidth = (typeof config.rendering?.width === 'number') ? config.rendering.width : 3.0;
+            // Render style: 'ribbon' (default segment pipeline below) or 'cartoon'
+            // (secondary-structure cartoon; draw stage delegated to viewer-cartoon.js)
+            const _st = config.rendering?.style;
+            let _style = (_st === 'cartoon' || _st === 'richardson') ? _st : 'ribbon';
+            if (_style !== 'ribbon' && !window.py2dmolCartoon) {
+                // The plugin may simply not have been loaded yet (index.html
+                // loads it after this file). Fall back to ribbon so the dropdown
+                // never labels a ribbon "Cartoon", and take the requested style
+                // as soon as the plugin announces itself. setStyle applies the
+                // preset, so nothing is lost by deferring.
+                this._pendingStyle = _style;
+                _style = 'ribbon';
+                window.addEventListener('py2dmol_cartoon_loaded', () => {
+                    const want = this._pendingStyle;
+                    this._pendingStyle = null;
+                    if (want) this.setStyle(want);
+                }, { once: true });
+            }
+            this.style = _style;
+            // Richardson is the cartoon draw path with a per-SS profile preset.
+            this.cartoonRichardson = (this.style === 'richardson');
+            // Preset LABEL for the GUI dropdown; the concrete values arrive
+            // as normal settings, so this only names them.
+            this.stylePreset = (this.style === 'richardson') ? 'richardson'
+                : (config.rendering?.preset === '3d' ? '3d' : 'custom');
+            const th = Number(config.rendering?.thickness);
+            // Richardson's per-SS thickness is a set of RATIOS scaled by this
+            // control, so the global default of 0 (flat ribbons) would cancel
+            // the preset and the style would appear to do nothing. Fall back to
+            // the preset's own default instead - an explicit thickness, 0
+            // included, is still honoured.
+            const thDefault = this.cartoonRichardson ? 0.7 : 0;
+            this.cartoonThickness = Number.isFinite(th) && th >= 0 ? th : thDefault;
+            // arrows / pencil / sheet_flat are resolved here rather than left
+            // undefined for viewer-cartoon.js to default: leaving them unset let
+            // the sliders seed themselves from a different value than the draw
+            // path was using, so the panel read 0.85 while the render was flat.
+            this.cartoonArrows = config.rendering?.arrows !== false;
+            // DNA/RNA base plates on/off (the Bases toggle); default on
+            this.cartoonBasePlates = config.rendering?.base_plates !== false;
+            const pc = Number(config.rendering?.pencil);
+            this.cartoonPencil = Number.isFinite(pc) && pc >= 0
+                ? Math.min(1, pc) : (this.cartoonRichardson ? 1 : 0);
+            const sf = Number(config.rendering?.sheet_flat);
+            this.cartoonSheetFlat = Number.isFinite(sf) && sf >= 0
+                ? Math.min(1, sf) : (this.cartoonRichardson ? 1 : 0);
+            // Cartoon sampling density; 0.5 = tuned default, lower = faceted
+            // (and cheaper). Clamped again inside viewer-cartoon.js.
+            const det = Number(config.rendering?.detail);
+            // integer 1-4: subdivisions per helix residue at the floor
+            this.cartoonDetail = Number.isFinite(det) && det > 0
+                ? Math.min(8, Math.max(2, Math.round(det))) : 4;
+            // depth fade toward the paper (the Fade slider); off by default
+            const fd = Number(config.rendering?.fade);
+            this.cartoonFade = Number.isFinite(fd) && fd >= 0
+                ? Math.min(1, fd) : 0;
+            // Cel shading: one flat tone per face per piece instead of the
+            // smooth per-station gradient.
+            // smooth = gradient shading; off = flat tone bands (cel)
+            this.cartoonSmooth = (config.rendering?.smooth !== undefined)
+                ? config.rendering.smooth === true
+                : (this.style !== 'cartoon');
+            // Highlight gain: 0 = the old ceiling at the base colour, 1 = a
+            // full lift toward white on faces pointing at the light.
+            const hg = Number(config.rendering?.highlight);
+            this.cartoonHighlight = Number.isFinite(hg) && hg >= 0
+                ? hg : (this.cartoonRichardson ? 3.0 : 1.8);
+            // Outline tint: 0 = black ink, 1 = ribbon mode's 0.7 colour tint.
+            const ot = Number(config.rendering?.outline_tint);
+            // Richardson outlines are a tint of the element colour (see
+            // RICH_TINT_DEFAULT); an explicit value still wins.
+            this.cartoonOutlineTint = Number.isFinite(ot) && ot >= 0
+                ? Math.min(1, ot) : (this.cartoonRichardson ? 0.8 : 0);
+
+            this.lineWidth = (typeof config.rendering?.width === 'number')
+                ? config.rendering.width
+                : (this.cartoonRichardson ? 2.0 : 3.0);
+            // Width is a SHARED control - ribbon uses it too - so a style switch
+            // has to decide whether to impose the new style's preset on it. The
+            // rule is "until the user says otherwise": a switch adopts the
+            // preset, and stops doing so once the Width slider has been dragged.
+            // Keying this off the CONFIG instead was wrong: both shipped pages
+            // and every py2Dmol.view() send a width whether or not anyone chose
+            // it, so richardson kept ribbon's 3.0 while taking every other
+            // preset value.
+            this._lineWidthUserSet = false;
             this.relativeOutlineWidth = 3.0; // Default outline width relative to line width
             this.shadowIntensity = 0.95;
 
             // Set defaults from config, with fallback
             this.shadowEnabled = (typeof config.rendering?.shadow === 'boolean') ? config.rendering.shadow : true;
+            // SHADE: the cartoon's directional shading (light + inner
+            // shadow). Separate from 'shadow', which is the ribbon's
+            // cast-shadow effect (and reserved for real cartoon shadows).
+            // 0 = flat colour, 1 = full modelling. Was a boolean toggle; the
+            // panel now exposes it as a slider, and 0 matches the old "off".
+            this.cartoonShade = Number.isFinite(Number(config.rendering?.shade))
+                ? Math.min(1, Math.max(0, Number(config.rendering.shade))) : 1;
+            // page background: 'white' (default) or 'black'; the cartoon's
+            // paper, fade target and base ink all derive from it
+            this.backgroundColor = config.display?.background === 'black'
+                ? '#000000' : '#ffffff';
             this.shadowStrength = (typeof config.rendering?.shadow_strength === 'number') ? config.rendering.shadow_strength : 0.5;
             // Outline mode: 'none', 'partial', or 'full'
             if (typeof config.rendering?.outline === 'string' && ['none', 'partial', 'full'].includes(config.rendering.outline)) {
@@ -794,7 +1067,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.rotationCheckbox = null;
             this.lineWidthSlider = null;
             this.outlineWidthSlider = null;
-            this.shadowEnabledCheckbox = null;
+            this.shadeSlider = null;
             this.outlineModeButton = null; // Button that cycles through outline modes (index.html)
             this.outlineModeSelect = null; // Dropdown for outline modes (viewer.html)
             this.colorblindCheckbox = null;
@@ -1334,11 +1607,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.isZooming = true;
                 this.viewerState.zoom *= (1 - e.deltaY * 0.001);
                 this.viewerState.zoom = Math.max(0.1, Math.min(5, this.viewerState.zoom));
-                this.render();
+                // COALESCE TO ONE RENDER PER FRAME. Wheel events are not
+                // frame-aligned: a trackpad emits several per frame plus a
+                // momentum tail, and rendering synchronously in each one
+                // queued full renders back to back - which is why zooming
+                // stuttered while rotating stayed smooth (mousemove IS
+                // frame-aligned by the browser, so the drag path never had
+                // this problem). The zoom factor still accumulates on every
+                // event, so nothing about the zoom feel changes - only the
+                // redundant renders between frames are dropped.
+                if (!this._zoomRaf) {
+                    this._zoomRaf = requestAnimationFrame(() => {
+                        this._zoomRaf = null;
+                        this.render();
+                    });
+                }
                 // Clear zoom flag after a short delay to allow render to complete
                 clearTimeout(this.zoomTimeout);
                 this.zoomTimeout = setTimeout(() => {
                     this.isZooming = false;
+                    // gesture over: bring the highlight overlay back in sync
+                    if (window.SEQ && window.SEQ.drawHighlights) window.SEQ.drawHighlights();
                 }, 100);
             }, { passive: false });
 
@@ -1543,7 +1832,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Set UI controls from main script
-        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, shadowEnabledCheckbox, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider, shadowSlider) {
+        setUIControls(controlsContainer, playButton, overlayButton, recordButton, saveSvgButton, frameSlider, frameCounter, objectSelect, speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider, outlineModeButton, outlineModeSelect, colorblindCheckbox, orthoSlider, shadowSlider) {
             this.controlsContainer = controlsContainer;
             this.playButton = playButton;
             this.overlayButton = overlayButton;
@@ -1556,7 +1845,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.rotationCheckbox = rotationCheckbox;
             this.lineWidthSlider = lineWidthSlider;
             this.outlineWidthSlider = outlineWidthSlider;
-            this.shadowEnabledCheckbox = shadowEnabledCheckbox;
             this.outlineModeButton = outlineModeButton;
             this.outlineModeSelect = outlineModeSelect;
             this.colorblindCheckbox = colorblindCheckbox;
@@ -1589,10 +1877,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             if (this.saveSvgButton) {
+                // shift-click saves gzipped (.svgz): ~6x smaller, opens
+                // natively in Inkscape/Illustrator. Plain .svg stays the
+                // default because a local .svgz does not render in a browser.
+                this.saveSvgButton.title = (this.saveSvgButton.title || 'Save as SVG')
+                    + ' (shift-click: compressed .svgz)';
                 this.saveSvgButton.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    this.saveAsSvg();
+                    this.saveAsSvg(e.shiftKey);
                 });
             }
 
@@ -1631,6 +1924,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.lineWidthSlider) {
                 this.lineWidthSlider.addEventListener('input', (e) => {
                     this.lineWidth = parseFloat(e.target.value);
+                    // the user has taken width over; style switches stop
+                    // imposing their preset on it (see _applyStyleDefaults)
+                    this._lineWidthUserSet = true;
                     if (!this.isPlaying) {
                         this.render('updateUIControls: lineWidthSlider');
                     }
@@ -1639,7 +1935,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             if (this.outlineWidthSlider) {
                 this.outlineWidthSlider.addEventListener('input', (e) => {
-                    this.relativeOutlineWidth = parseFloat(e.target.value);
+                    const w = parseFloat(e.target.value);
+                    this.relativeOutlineWidth = w;
+                    // Width IS the outline switch: 0 turns it off. Skipped when a
+                    // separate mode control exists, so such a page keeps its own
+                    // none/partial/full behaviour.
+                    if (!this.outlineModeButton && !this.outlineModeSelect) {
+                        this.outlineMode = w > 0 ? 'full' : 'none';
+                    }
                     if (!this.isPlaying) {
                         this.render('updateUIControls: outlineWidthSlider');
                     }
@@ -1688,7 +1991,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             if (this.shadowSlider) {
                 this.shadowSlider.addEventListener('input', (e) => {
-                    this.shadowStrength = parseFloat(e.target.value);
+                    const s = parseFloat(e.target.value);
+                    this.shadowStrength = s;
+                    // Strength IS the shadow switch: 0 turns it off. Skipped when a
+                    // separate toggle exists. Cartoon reads only the on/off flag.
+                    this.shadowEnabled = s > 0;
                     // Invalidate shadow cache to force recalculation with new strength
                     this._invalidateShadowCache();
                     if (!this.isPlaying) {
@@ -1697,12 +2004,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 });
             }
 
-            if (this.shadowEnabledCheckbox) {
-                this.shadowEnabledCheckbox.addEventListener('change', (e) => {
-                    this.shadowEnabled = e.target.checked;
-                    this.render('shadowEnabledCheckbox');
-                });
-            }
 
             if (this.outlineModeButton) {
                 // Button mode (index.html) - cycles through modes
@@ -1772,7 +2073,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Also prevent canvas drag when interacting with other controls
             const allControls = [this.playButton, this.objectSelect, this.speedButton,
             this.rotationCheckbox, this.lineWidthSlider,
-            this.shadowEnabledCheckbox, this.outlineModeButton, this.outlineModeSelect,
+            this.shadeSlider, this.outlineModeButton, this.outlineModeSelect,
             this.colorblindCheckbox, this.orthoSlider];
             allControls.forEach(control => {
                 if (control) {
@@ -1804,6 +2105,134 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.cachedSegmentIndices = null;
             this.cachedSegmentIndicesFrame = -1;
             this.cachedSegmentIndicesObjectName = null;
+            // Everything the cartoon path derives from the unrotated coordinates
+            // goes stale whenever segments do. All three caches are keyed on
+            // object|frame|n|overlay, which a live-mode replace() leaves
+            // untouched, so the key alone cannot catch a coordinate swap:
+            //   _cartoonSec   secondary structure assignment
+            //   _cartoonPair  nucleic base pairing
+            //   _ssColorSec   SS assignment behind the 'ss' color mode
+            //   _cartoonLadder / _cartoonSheet  beta ladders, and the strand
+            //                 frames built on them
+            this._cartoonSec = null;
+            this._cartoonSecKey = null;
+            this._cartoonPair = null;
+            this._cartoonPairKey = null;
+            this._cartoonLadder = null;
+            this._cartoonLadderKey = null;
+            this._cartoonSheet = null;
+            this._cartoonSheetKey = null;
+            this._ssColorSec = null;
+            this._ssColorKey = null;
+        }
+
+        /**
+         * Switch render style: 'ribbon' (default segment pipeline) or 'cartoon'
+         * (secondary-structure cartoon, drawn by viewer-cartoon.js).
+         */
+        setStyle(style) {
+            if (style !== 'ribbon' && style !== 'cartoon' && style !== 'richardson') {
+                console.warn(`Invalid style "${style}" - expected "ribbon", "cartoon" or "richardson".`);
+                return;
+            }
+            // 'richardson' is the cartoon renderer driven by a different
+            // per-SS profile (flat wide helices, thick arrowed strands, thin
+            // round loops), not a separate draw path - so it has the same
+            // dependency and the same panel rows.
+            if ((style === 'cartoon' || style === 'richardson') && !window.py2dmolCartoon) {
+                console.warn(`Style "${style}" requested but viewer-cartoon.js is not loaded.`);
+                return;
+            }
+            if (this.style === style) return;
+            this.style = style;
+            this.cartoonRichardson = (style === 'richardson');
+            // The GUI models richardson as a PRESET of the cartoon style
+            // (Style: Cartoon, Preset: Richardson - the default); internally
+            // it stays its own style value because it also selects a
+            // different geometry profile. The only other preset is '3d'.
+            this.stylePreset = (style === 'richardson') ? 'richardson' : '3d';
+            // Apply the new style's preset values and push them to the
+            // controls. Previously each value was seeded ad hoc and ONLY in the
+            // richardson direction, so switching back to cartoon left the
+            // richardson thickness, tint, highlight and width in place and the
+            // sliders showing them - the style switch was not symmetric.
+            this._applyStyleDefaults(style);
+            if (this.styleSelect) {
+                // the dropdown only lists ribbon/cartoon; richardson shows as
+                // cartoon there, with the Preset dropdown carrying the rest
+                const uiStyle = (style === 'richardson') ? 'cartoon' : style;
+                if (this.styleSelect.value !== uiStyle) this.styleSelect.value = uiStyle;
+            }
+            // Re-filter the Style panel rows for the new style (no-op if the
+            // panel markup is absent).
+            if (this._syncStylePanel) this._syncStylePanel();
+            this.render('setStyle');
+        }
+
+        /**
+         * Select a cartoon PRESET: 'richardson' (the default) or '3d'.
+         * Presets are starting points - the sliders stay live and editing
+         * them simply diverges from the named values.
+         */
+        setPreset(name) {
+            if (name === 'richardson') {
+                if (this.style === 'richardson') return;
+                this.setStyle('richardson');
+                return;
+            }
+            if (name !== '3d') {
+                console.warn(`Invalid preset "${name}" - expected "richardson" or "3d".`);
+                return;
+            }
+            // leave the richardson geometry profile if it was active
+            if (this.style === 'richardson') {
+                this.style = 'cartoon';
+                this.cartoonRichardson = false;
+            } else if (this.style !== 'cartoon') {
+                this.setStyle('cartoon');   // from ribbon
+            }
+            this.stylePreset = '3d';
+            this._applyStyleDefaults('3d');
+            if (this._syncStylePanel) this._syncStylePanel();
+            this.render('setPreset');
+        }
+
+        /**
+         * Set every preset-controlled value to the given style's defaults and
+         * sync the sliders. Values come from py2dmolCartoon.STYLE_DEFAULTS so
+         * the renderer and the UI cannot disagree about what a style means.
+         */
+        _applyStyleDefaults(style) {
+            const table = window.py2dmolCartoon && window.py2dmolCartoon.STYLE_DEFAULTS;
+            const d = table && (table[style] || table.cartoon);
+            if (!d) return;
+            // Width is shared with ribbon, so it follows the style only until
+            // the user takes it over (see _lineWidthUserSet).
+            if (!this._lineWidthUserSet) this.lineWidth = d.width;
+            this.cartoonThickness = d.thickness;
+            this.cartoonOutlineTint = d.outlineTint;
+            this.cartoonHighlight = d.highlight;
+            this.cartoonSheetFlat = d.sheetFlat;
+            this.cartoonPencil = d.pencil;
+            if (d.smooth !== undefined) this.cartoonSmooth = d.smooth;
+            // Every other style-owned control re-asserts too; anything left
+            // out here inherits the previous style's slider silently -
+            // invisible under richardson, whose panel hides the controls.
+            if (d.outlineWidth !== undefined) {
+                this.relativeOutlineWidth = d.outlineWidth;
+                // width IS the outline switch (matches the slider handler):
+                // the 3d preset's 0 must actually turn the ink off
+                if (!this.outlineModeButton && !this.outlineModeSelect) {
+                    this.outlineMode = d.outlineWidth > 0 ? 'full' : 'none';
+                }
+            }
+            if (d.arrows !== undefined) this.cartoonArrows = d.arrows;
+            if (d.detail !== undefined) this.cartoonDetail = d.detail;
+            if (d.fade !== undefined) this.cartoonFade = d.fade;
+            if (d.shade !== undefined) this.cartoonShade = d.shade;
+            if (this._invalidateShadowCache) this._invalidateShadowCache();
+            if (this._invalidateSegmentCache) this._invalidateSegmentCache();
+            if (this._syncStyleControls) this._syncStyleControls();
         }
 
         // Helper to invalidate shadow and tint cache
@@ -2600,7 +3029,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (this.isTransparent) {
                     this.ctx.clearRect(0, 0, displayWidth, displayHeight);
                 } else {
-                    this.ctx.fillStyle = '#ffffff';
+                    this.ctx.fillStyle = this.backgroundColor || '#ffffff';
                     this.ctx.fillRect(0, 0, displayWidth, displayHeight);
                 }
             };
@@ -2929,7 +3358,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.speedButton) this.speedButton.disabled = !enabled;
             this.rotationCheckbox.disabled = !enabled;
             this.lineWidthSlider.disabled = !enabled;
-            if (this.shadowEnabledCheckbox) this.shadowEnabledCheckbox.disabled = !enabled;
+            if (this.shadeSlider) this.shadeSlider.disabled = !enabled;
             if (this.outlineModeButton) this.outlineModeButton.disabled = !enabled;
             if (this.outlineModeSelect) this.outlineModeSelect.disabled = !enabled;
             if (this.colorblindCheckbox) this.colorblindCheckbox.disabled = !enabled;
@@ -2939,6 +3368,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Update the text/slider values
         updateUIControls() {
+            // the panel's nucleic rows depend on what is loaded
+            if (this._syncStylePanel) this._syncStylePanel();
             if (!this.playButton) return;
 
             // Handle null object
@@ -3167,6 +3598,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const mergedResidueNumbers = [];
             const mergedBonds = [];
             const frameIdMap = [];
+            // Nucleic base geometry. Frames that repeat the previous frame's
+            // value carry none (Python delta-encodes it), so fall back to the
+            // last one seen and then to the object-level copy; frames with no
+            // base geometry at all contribute zero rows, which the cartoon
+            // reads as "estimate this one".
 
             // Merge all frames in the range
             for (let frameIdx = startFrame; frameIdx <= endFrame; frameIdx++) {
@@ -3309,9 +3745,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Invalidate segment cache (critical after exiting overlay)
-            this.cachedSegmentIndices = null;
-            this.cachedSegmentIndicesFrame = -1;
-            this.cachedSegmentIndicesObjectName = null;
+            this._invalidateSegmentCache();
 
             // Load the target single frame (NOT merged)
             this._loadFrameData(targetFrame, skipRender);
@@ -3580,7 +4014,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Create a function to composite both canvases
                 this.updateCompositeCanvas = () => {
                     // Clear composite canvas
-                    ctx.fillStyle = '#ffffff';
+                    ctx.fillStyle = this.backgroundColor || '#ffffff';
                     ctx.fillRect(0, 0, this.recordingCompositeCanvas.width, this.recordingCompositeCanvas.height);
 
                     // Draw molecular viewer on the left
@@ -3814,6 +4248,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
             this.shadowEnabled = true;
+            this.cartoonShade = 1;
             this.outlineMode = 'full';
             this.autoRotate = false;
             this.colorblindMode = false;
@@ -3821,8 +4256,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.animationSpeed = 100;
             this.currentFrame = -1;
             this.lastRenderedFrame = -1;
-            if (this.shadowEnabledCheckbox) {
-                this.shadowEnabledCheckbox.checked = true;
+            if (this.shadeSlider) {
+                this.shadeSlider.value = 1;
+            }
+            if (this.shadowSlider) {
+                this.shadowSlider.value = 0.5;
+                this.shadowStrength = 0.5;
+                this.shadowEnabled = true;
+            }
+            if (this.outlineWidthSlider && !this.outlineModeButton && !this.outlineModeSelect) {
+                this.outlineWidthSlider.value = 3.0;
+                this.relativeOutlineWidth = 3.0;
+                this.outlineMode = 'full';
             }
             if (this.outlineModeButton) {
                 this.outlineMode = 'full';
@@ -3940,7 +4385,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._setDataField('chains', 'cachedChains', chains, n, (n) => Array(n).fill('A'));
             this._setDataField('positionTypes', 'cachedPositionTypes', positionTypes, n, (n) => Array(n).fill('P'));
             this._setDataField('positionNames', 'cachedPositionNames', positionNames, n, (n) => Array(n).fill('UNK'));
-        this._setDataField('residueNumbers', 'cachedResidueNumbers', residueNumbers, n, (n) => Array.from({ length: n }, (_, i) => i + 1));
+            this._setDataField('residueNumbers', 'cachedResidueNumbers', residueNumbers, n, (n) => Array.from({ length: n }, (_, i) => i + 1));
 
             // Calculate what 'auto' should resolve to
             // Priority: plddt (if PAE present) > chain (if multi-chain) > rainbow
@@ -5322,7 +5767,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.isTransparent) {
                 ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
             } else {
-                ctx.fillStyle = '#ffffff';
+                ctx.fillStyle = this.backgroundColor || '#ffffff';
                 ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             }
             ctx.restore();
@@ -5373,6 +5818,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
                 out.y = m[1][0] * subX + m[1][1] * subY + m[1][2] * subZ;
                 out.z = m[2][0] * subX + m[2][1] * subY + m[2][2] * subZ;
+
             }
             const rotated = this.rotatedCoords;
 
@@ -5411,6 +5857,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     console.error("Color array mismatch even after recalculation. Aborting render.");
                     return; // Still bad, abort render
                 }
+            }
+
+            // STYLE DELEGATION: 'cartoon' replaces the entire draw stage below.
+            // The cartoon renderer (viewer-cartoon.js) reuses the rotation and
+            // per-segment colors computed above, plus this renderer's projection
+            // parameters, and paints its own primitives (SS ribbons + tubes).
+            if ((this.style === 'cartoon' || this.style === 'richardson')
+                && window.py2dmolCartoon) {
+                window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
+                // Sequence-viewer highlight overlay, skipped during ANY active
+                // gesture. drawHighlights() resizes its overlay canvas and
+                // reads getBoundingClientRect twice, forcing a synchronous
+                // layout every call - on the web app (which has the sequence
+                // viewer) that dominated the frame. Rotation was already
+                // exempt via isDragging, but ZOOM sets isZooming instead, so
+                // wheel zoom paid it on every frame while rotation did not -
+                // exactly the "cartoon zoom lags, rotation is fine" report.
+                // Each gesture's settle timer repaints it once at the end.
+                if (!this.isDragging && !this.isZooming && !this.isOrientAnimating
+                    && window.SEQ && window.SEQ.drawHighlights) {
+                    window.SEQ.drawHighlights();
+                }
+                return;
             }
 
             // Get visibility mask early to build visible segment list
@@ -6258,8 +6727,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.animationFrameId = requestAnimationFrame(() => this.animate());
         }
 
-        // Save as SVG
-        saveAsSvg() {
+        // Save as SVG. compress=true gzips to .svgz (native CompressionStream;
+        // falls back to plain .svg where unavailable).
+        saveAsSvg(compress) {
             try {
                 if (typeof C2S === 'undefined') {
                     throw new Error("canvas2svg library not loaded");
@@ -6280,6 +6750,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Get SVG string and download
                 const svgString = svgCtx.getSerializedSvg();
+
+                if (compress && typeof CompressionStream !== 'undefined') {
+                    // .svgz: the same bytes through the browser's native gzip.
+                    // Async, so it downloads from the promise; errors fall back
+                    // to the plain path rather than losing the export.
+                    const objectName = this.currentObjectName;
+                    new Response(
+                        new Blob([svgString]).stream()
+                            .pipeThrough(new CompressionStream('gzip'))
+                    ).blob().then((gz) => {
+                        const filename = this._generateFilename(objectName, 'svgz');
+                        this._triggerDownload(
+                            new Blob([gz], { type: 'image/svg+xml' }), filename);
+                        if (typeof setStatus === 'function') {
+                            setStatus(`SVGZ exported to ${filename}`);
+                        }
+                    }).catch(() => this._downloadSvg(svgString, objectName));
+                    return;
+                }
 
                 // Download SVG directly
                 this._downloadSvg(svgString, this.currentObjectName);
@@ -6670,6 +7159,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     if (colorSelect && renderer.colorMode) {
         colorSelect.value = renderer.colorMode;
     }
+    // Palette for the 'ss' colour mode (config.color.ss_palette / the SSE
+    // dropdown). Unset = viewer-cartoon.js's default palette.
+    if (config.color?.ss_palette) renderer.ssPalette = config.color.ss_palette;
 
     colorSelect.addEventListener('change', (e) => {
         const selectedMode = e.target.value;
@@ -6691,6 +7183,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             renderer.render();
             document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+            // the SSE palette row only shows while the mode is 'ss'
+            if (renderer._syncStylePanel) renderer._syncStylePanel();
         } else {
             // Invalid mode - reset dropdown to current colorMode
             colorSelect.value = renderer.colorMode || 'auto';
@@ -6700,9 +7194,358 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // Store reference to colorSelect in renderer for syncing
     renderer.colorSelect = colorSelect;
 
-    // Setup shadowEnabledCheckbox
-    const shadowEnabledCheckbox = containerElement.querySelector('#shadowEnabledCheckbox');
-    shadowEnabledCheckbox.checked = renderer.shadowEnabled; // Set default from renderer
+    // SSE palette picker (optional container, inside the Style panel): a
+    // CUSTOM dropdown, because a native <select> cannot colour its options.
+    // The closed button shows the CURRENT palette as C H E N L colour chips
+    // (coil, helix, strand, nucleic, ligand - each letter on its own palette
+    // colour) plus the name; opening it lists every palette the same way.
+    // Built from py2dmolCartoon.SS_PALETTES so the preview cannot drift from
+    // what the renderer draws. Row visibility is handled by syncStylePanel
+    // via data-needs-ss.
+    const ssPaletteBox = containerElement.querySelector('#ssPaletteButtons');
+    if (ssPaletteBox) {
+        const PAL_NAMES = {
+            pymol: 'PyMOL', jmol: 'Jmol',
+            jr1: 'JR1', jr2: 'JR2',   // Jane Richardson palettes, numbered
+        };
+        const fillRow = (el, key, pal, caret) => {
+            el.textContent = '';
+            for (const cls of ['C', 'H', 'E', 'N', 'L']) {
+                const c = pal[cls];
+                const lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+                const chip = document.createElement('span');
+                chip.textContent = cls;
+                chip.style.cssText = 'display:inline-block;width:14px;'
+                    + 'text-align:center;border-radius:3px;font-size:10px;'
+                    + 'font-weight:600;line-height:14px;flex-shrink:0;'
+                    + 'border:1px solid rgba(0,0,0,0.12);'
+                    + `background:rgb(${c.r},${c.g},${c.b});`
+                    + `color:${lum > 160 ? '#1f2937' : '#ffffff'};`;
+                el.appendChild(chip);
+            }
+            const nm = document.createElement('span');
+            nm.textContent = PAL_NAMES[key] || key;
+            nm.style.cssText = 'font-size:11px;color:#6b7280;margin-left:3px;'
+                + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+                + 'flex:1 1 0;min-width:0;text-align:left;';
+            el.appendChild(nm);
+            if (caret) {
+                const cv = document.createElement('span');
+                cv.textContent = '\u25be';
+                cv.style.cssText = 'font-size:10px;color:#6b7280;flex-shrink:0;';
+                el.appendChild(cv);
+            }
+        };
+        const buildSsPalette = () => {
+            const table = window.py2dmolCartoon && window.py2dmolCartoon.SS_PALETTES;
+            if (!table) return;
+            ssPaletteBox.textContent = '';
+            ssPaletteBox.style.position = 'relative';
+            const rowCss = 'display:flex;align-items:center;gap:2px;width:100%;'
+                + 'justify-content:flex-start;padding:2px 4px;height:24px;min-width:0;';
+            const closed = document.createElement('button');
+            closed.type = 'button';
+            closed.className = 'controlButton';
+            closed.style.cssText = rowCss;
+            closed.title = 'SSE palette - C coil, H helix, E strand, N nucleic, L ligand';
+            // MATCH THE SIBLING DROPDOWNS: copy the box (border, radius,
+            // height, font) from the page's own Style select, so the closed
+            // state looks like one of them on any page without hardcoding
+            // either page's dimensions here.
+            const refSel = containerElement.querySelector('#styleSelect');
+            let menuRadius = '6px';
+            if (refSel) {
+                const cs = refSel.ownerDocument.defaultView.getComputedStyle(refSel);
+                closed.style.border = cs.border;
+                closed.style.borderRadius = cs.borderRadius;
+                closed.style.height = cs.height;
+                closed.style.fontSize = cs.fontSize;
+                closed.style.background = '#ffffff';
+                menuRadius = cs.borderRadius;
+            }
+            const menu = document.createElement('div');
+            menu.hidden = true;
+            // sized to CONTENT and anchored to the right edge: constrained
+            // to the box width the chip rows overflowed the narrow widget
+            // panel; as an overlay the menu may spread left over the panel.
+            menu.style.cssText = 'position:absolute;top:100%;right:0;left:auto;'
+                + 'width:max-content;'
+                + 'margin-top:2px;background:#ffffff;border:1px solid #d1d5db;'
+                + 'box-shadow:0 4px 12px rgba(0,0,0,0.15);'
+                + 'display:flex;flex-direction:column;gap:2px;padding:3px;'
+                + 'z-index:1000;';
+            menu.style.borderRadius = menuRadius;
+            const syncClosed = () => {
+                const cur = renderer.ssPalette || 'pymol';
+                fillRow(closed, cur, table[cur] || table.pymol, true);
+                menu.querySelectorAll('.ssPalOption').forEach((b) => {
+                    const on = b.dataset.palette === cur;
+                    b.style.background = on ? '#e5e7eb' : '#ffffff';
+                });
+            };
+            for (const key of Object.keys(table)) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'controlButton ssPalOption';
+                btn.dataset.palette = key;
+                btn.title = (PAL_NAMES[key] || key)
+                    + ' - C coil, H helix, E strand, N nucleic, L ligand';
+                btn.style.cssText = rowCss + 'border:none;';
+                fillRow(btn, key, table[key], false);
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    renderer.ssPalette = key;
+                    menu.hidden = true;
+                    syncClosed();
+                    renderer.colorsNeedUpdate = true;
+                    renderer.plddtColorsNeedUpdate = true;
+                    renderer.render('ssPalette');
+                    // The sequence view and the PAE plot colour their residues
+                    // through the same per-residue colour function, so a palette
+                    // swap changes them too - but they only find out through
+                    // this event, which the colour-MODE dropdown dispatches and
+                    // this handler used to skip. Result: the ribbon recoloured
+                    // and the sequence stayed on the old palette.
+                    document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+                });
+                menu.appendChild(btn);
+            }
+            closed.addEventListener('click', (e) => {
+                e.stopPropagation();
+                menu.hidden = !menu.hidden;
+            });
+            // close on any click outside this widget
+            containerElement.ownerDocument.addEventListener('click', (e) => {
+                if (!menu.hidden && !ssPaletteBox.contains(e.target)) menu.hidden = true;
+            });
+            ssPaletteBox.appendChild(closed);
+            ssPaletteBox.appendChild(menu);
+            syncClosed();
+            // Expose it so ANY programmatic change to renderer.ssPalette (state
+            // restore, a preset, the Python API) can refresh the closed chip.
+            // Without this the ribbon recoloured while the dropdown kept
+            // showing the previous palette.
+            renderer._syncSsPaletteChip = syncClosed;
+        };
+        if (window.py2dmolCartoon) buildSsPalette();
+        else window.addEventListener('py2dmol_cartoon_loaded', buildSsPalette, { once: true });
+    }
+
+    // Setup style control (ribbon vs cartoon) - optional element
+    const styleSelect = containerElement.querySelector('#styleSelect');
+    // the dropdown lists ribbon/cartoon; richardson is a PRESET of cartoon
+    const uiStyleOf = (s) => (s === 'richardson' ? 'cartoon' : (s || 'ribbon'));
+    if (styleSelect) {
+        styleSelect.value = uiStyleOf(renderer.style);
+        styleSelect.addEventListener('change', (e) => {
+            // Cartoon's default preset is Richardson, so picking Cartoon
+            // lands there; the Preset dropdown reaches '3d'.
+            renderer.setStyle(e.target.value === 'cartoon' ? 'richardson' : e.target.value);
+            // setStyle rejects invalid/unloaded styles; re-sync the dropdown
+            if (styleSelect.value !== uiStyleOf(renderer.style)) {
+                styleSelect.value = uiStyleOf(renderer.style);
+            }
+            syncStylePanel();
+        });
+        renderer.styleSelect = styleSelect;
+    }
+
+    // Preset dropdown: named starting points for the cartoon style
+    // (Richardson is the default; sliders stay live under either).
+    const presetSelect = containerElement.querySelector('#presetSelect');
+    if (presetSelect) {
+        presetSelect.value = renderer.stylePreset || 'richardson';
+        presetSelect.addEventListener('change', (e) => {
+            renderer.setPreset(e.target.value);
+            if (presetSelect.value !== (renderer.stylePreset || 'richardson')) {
+                presetSelect.value = renderer.stylePreset || 'richardson';
+            }
+        });
+    }
+
+    // Setup the collapsible Style panel - optional. It holds the render
+    // controls; rows tagged data-style="ribbon|cartoon" appear only under that
+    // style (untagged rows are shared). Both markup and panel are optional, so
+    // every lookup below is null-guarded.
+    const styleToggle = containerElement.querySelector('#styleToggle');
+    const stylePanel = containerElement.querySelector('#stylePanel');
+
+    function syncStylePanel() {
+        const style = renderer.style || 'ribbon';
+        if (!stylePanel) return;
+        Array.prototype.forEach.call(stylePanel.children, (row) => {
+            row.hidden = false;
+        });
+        stylePanel.querySelectorAll('[data-style]').forEach((el) => {
+            const want = el.getAttribute('data-style');
+            // Richardson is the cartoon draw path with a different profile
+            // (a PRESET in the GUI), so it wants every row the cartoon style
+            // has. Rows may name several styles, space separated.
+            const wanted = want ? want.split(/\s+/) : null;
+            const show = !wanted || wanted.includes(style)
+                || (style === 'richardson' && wanted.includes('cartoon'));
+            el.hidden = !show;
+        });
+        // Both panels pair half-cells per row (same DOM); collapse a row once
+        // every tagged cell in it is hidden, so no empty rows are left behind.
+        // Rows with untagged children (Width/Outline) never auto-collapse.
+        stylePanel.querySelectorAll('.toggle-item').forEach((row) => {
+            const cells = row.querySelectorAll(':scope > [data-style]');
+            if (!cells.length || cells.length !== row.children.length) return;
+            row.hidden = Array.prototype.every.call(cells, (c) => c.hidden);
+        });
+        // The SSE palette row exists only while colouring by secondary
+        // structure.
+        const ssOn = (renderer._getEffectiveColorMode
+            ? renderer._getEffectiveColorMode() : renderer.colorMode) === 'ss';
+        stylePanel.querySelectorAll('[data-needs-ss]').forEach((el) => {
+            if (!ssOn) el.hidden = true;
+        });
+        // keep the Preset dropdown showing the live preset
+        const ps = stylePanel.querySelector('#presetSelect');
+        if (ps) ps.value = renderer.stylePreset || 'richardson';
+    }
+
+    if (styleToggle && stylePanel) {
+        styleToggle.addEventListener('click', () => {
+            const open = stylePanel.hidden;
+            stylePanel.hidden = !open;
+            styleToggle.setAttribute('aria-expanded', String(open));
+        });
+    }
+    // Exposed so setStyle() can re-filter the rows when called programmatically.
+    // Push renderer values onto the preset sliders. Registered here because
+    // this is where the slider elements are in scope; called by
+    // _applyStyleDefaults on every style switch.
+    renderer._syncStyleControls = () => {
+        const set = (el, v) => { if (el && v !== undefined) el.value = v; };
+        set(lineWidthSlider, renderer.lineWidth);
+        set(thicknessSlider, renderer.cartoonThickness);
+        set(highlightSlider, renderer.cartoonHighlight);
+        set(outlineTintSlider, renderer.cartoonOutlineTint);
+        set(sheetFlatSlider, renderer.cartoonSheetFlat);
+        set(pencilSlider, renderer.cartoonPencil);
+        if (smoothCheckbox) smoothCheckbox.checked = renderer.cartoonSmooth === true;
+        // queried at call time: these elements are set up after this closure
+        // is defined, and a lookup here can never hit a TDZ.
+        const qs = (id) => containerElement.querySelector(id);
+        set(qs('#outlineWidthSlider'), renderer.relativeOutlineWidth);
+        set(qs('#detailSlider'), renderer.cartoonDetail);
+        set(qs('#shadeSlider'), renderer.cartoonShade);
+        const arrowsCb = qs('#arrowsCheckbox');
+        if (arrowsCb) arrowsCb.checked = renderer.cartoonArrows !== false;
+        if (renderer._syncSsPaletteChip) renderer._syncSsPaletteChip();
+
+    };
+
+    renderer._syncStylePanel = syncStylePanel;
+    syncStylePanel();
+
+    // ---- Slider value readouts (calibration aid) --------------------------
+    // Every range input gets a small bubble above its thumb naming the option
+    // and showing its exact value, on hover and throughout a drag. Purely
+    // additive: the bubble is position:fixed so it costs no layout, and it
+    // never writes to the control.
+    // One bubble and one document listener per DOCUMENT, not per viewer: a page
+    // can host many viewers and nothing here is ever torn down, so a per-viewer
+    // node plus a per-viewer document listener would accumulate.
+    const sliderDoc = containerElement.ownerDocument;
+    if (!sliderDoc.__py2dmolReadout) {
+        sliderDoc.__py2dmolReadout = { el: null, dragging: null };
+    }
+    const readout = sliderDoc.__py2dmolReadout;
+
+    function readoutBubble() {
+        let readoutEl = readout.el;
+        if (readoutEl && readoutEl.isConnected) return readoutEl;
+        readoutEl = sliderDoc.createElement('div');
+        readout.el = readoutEl;
+        readoutEl.id = 'sliderReadout';
+        readoutEl.style.cssText = [
+            'position:fixed', 'z-index:2147483000', 'pointer-events:none',
+            'background:#111827', 'color:#f9fafb', 'font-size:11px',
+            'font-family:inherit', 'font-weight:500', 'line-height:1',
+            'padding:4px 6px', 'border-radius:4px', 'white-space:nowrap',
+            'box-shadow:0 1px 4px rgba(0,0,0,0.3)', 'display:none',
+        ].join(';');
+        sliderDoc.body.appendChild(readoutEl);
+        return readoutEl;
+    }
+
+    function readoutName(slider) {
+        // Scoped to this viewer: a page can host several viewers, and their
+        // control ids repeat, so a document-wide lookup could match a sibling.
+        const lab = slider.id && containerElement.querySelector(`label[for="${slider.id}"]`);
+        const raw = (lab && lab.textContent) || slider.getAttribute('aria-label') || slider.id || '';
+        return raw.trim().replace(/:$/, '');
+    }
+
+    function readoutText(slider) {
+        // Decimal places follow the step, so 0.05 shows 0.55 and 1 shows 3.
+        const step = parseFloat(slider.step);
+        const dp = Number.isFinite(step) && step > 0 && step < 1
+            ? (String(step).split('.')[1] || '').length : 0;
+        return `${readoutName(slider)}: ${parseFloat(slider.value).toFixed(dp)}`;
+    }
+
+    function showReadout(slider) {
+        const el = readoutBubble();
+        el.textContent = readoutText(slider);
+        el.style.display = 'block';
+        // The thumb centre travels the track width minus one thumb width.
+        const r = slider.getBoundingClientRect();
+        const min = parseFloat(slider.min);
+        const max = parseFloat(slider.max);
+        const frac = max > min ? (parseFloat(slider.value) - min) / (max - min) : 0;
+        const THUMB = 14;
+        const x = r.left + THUMB / 2 + (r.width - THUMB) * frac;
+        const b = el.getBoundingClientRect();
+        el.style.left = `${Math.round(Math.max(2, x - b.width / 2))}px`;
+        el.style.top = `${Math.round(r.top - b.height - 6)}px`;
+    }
+
+    function hideReadout() {
+        if (readout.el) readout.el.style.display = 'none';
+    }
+
+    containerElement.querySelectorAll('input[type="range"]').forEach((slider) => {
+        if (slider.id === 'frameSlider') return;   // already has its own counter
+        slider.addEventListener('pointerenter', () => { if (!readout.dragging) showReadout(slider); });
+        slider.addEventListener('pointerleave', () => { if (!readout.dragging) hideReadout(); });
+        slider.addEventListener('pointerdown', () => { readout.dragging = slider; showReadout(slider); });
+        slider.addEventListener('input', () => {
+            if (readout.dragging === slider || slider.matches(':hover')) showReadout(slider);
+        });
+    });
+    // Drags routinely end outside the track, so the release is caught on the
+    // document - once per document, shared by every viewer on the page.
+    if (!readout.bound) {
+        readout.bound = true;
+        sliderDoc.addEventListener('pointerup', () => {
+            if (!readout.dragging) return;
+            const s = readout.dragging;
+            readout.dragging = null;
+            if (!s.matches(':hover') && readout.el) readout.el.style.display = 'none';
+        });
+    }
+
+    // Dark background toggle: black page, white ink, fade toward black.
+    const darkCheckbox = containerElement.querySelector('#darkCheckbox');
+    if (darkCheckbox) {
+        darkCheckbox.checked = renderer.backgroundColor === '#000000';
+        darkCheckbox.addEventListener('change', (e) => {
+            renderer.backgroundColor = e.target.checked ? '#000000' : '#ffffff';
+            if (renderer.canvas) renderer.canvas.style.background = renderer.backgroundColor;
+            renderer.render('darkCheckbox');
+        });
+        // seed the canvas css background to match the config
+        if (renderer.canvas && renderer.backgroundColor === '#000000') {
+            renderer.canvas.style.background = renderer.backgroundColor;
+        }
+    }
+
+    // Setup the Shade toggle (cartoon directional shading)
+
 
     // Setup outline control - can be either a button (index.html) or dropdown (viewer.html)
     const outlineModeButton = containerElement.querySelector('#outlineModeButton');
@@ -6739,12 +7582,109 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const outlineWidthSlider = containerElement.querySelector('#outlineWidthSlider');
     const orthoSlider = containerElement.querySelector('#orthoSlider');
     const shadowSlider = containerElement.querySelector('#shadowSlider');
+    const thicknessSlider = containerElement.querySelector('#thicknessSlider');
+    const detailSlider = containerElement.querySelector('#detailSlider');
+    const sheetFlatSlider = containerElement.querySelector('#sheetFlatSlider');
+    const pencilSlider = containerElement.querySelector('#pencilSlider');
 
 
     // Set defaults for width, rotation, and shadow
     if (lineWidthSlider) lineWidthSlider.value = renderer.lineWidth;
-    if (outlineWidthSlider) outlineWidthSlider.value = renderer.relativeOutlineWidth || 3.0;
-    if (shadowSlider) shadowSlider.value = renderer.shadowStrength || 0.5;
+    if (thicknessSlider) {
+        thicknessSlider.value = renderer.cartoonThickness !== undefined
+            ? renderer.cartoonThickness : 0;
+        thicknessSlider.addEventListener('input', (e) => {
+            renderer.cartoonThickness = parseFloat(e.target.value);
+            renderer.render('thicknessSlider');
+        });
+    }
+    if (pencilSlider) {
+        pencilSlider.value = renderer.cartoonPencil;
+        pencilSlider.addEventListener('input', (e) => {
+            renderer.cartoonPencil = parseFloat(e.target.value);
+            renderer.render('pencilSlider');
+        });
+    }
+    if (sheetFlatSlider) {
+        sheetFlatSlider.value = renderer.cartoonSheetFlat;
+        sheetFlatSlider.addEventListener('input', (e) => {
+            renderer.cartoonSheetFlat = parseFloat(e.target.value);
+            // strand geometry changes, so cached segment geometry is stale
+            if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+            renderer.render('sheetFlatSlider');
+        });
+    }
+    const shadeSlider = containerElement.querySelector('#shadeSlider');
+    if (shadeSlider) {
+        renderer.shadeSlider = shadeSlider;
+        shadeSlider.value = renderer.cartoonShade !== undefined ? renderer.cartoonShade : 1;
+        shadeSlider.addEventListener('input', (e) => {
+            renderer.cartoonShade = parseFloat(e.target.value);
+            renderer.render('shadeSlider');
+        });
+    }
+    if (detailSlider) {
+        detailSlider.value = renderer.cartoonDetail !== undefined
+            ? renderer.cartoonDetail : 4;
+        detailSlider.addEventListener('input', (e) => {
+            renderer.cartoonDetail = parseInt(e.target.value, 10);
+            renderer.render('detailSlider');
+        });
+    }
+    const smoothCheckbox = containerElement.querySelector('#smoothCheckbox');
+    const arrowsCheckbox = containerElement.querySelector('#arrowsCheckbox');
+    if (arrowsCheckbox) {
+        arrowsCheckbox.checked = renderer.cartoonArrows !== false;
+        arrowsCheckbox.addEventListener('change', (e) => {
+            renderer.cartoonArrows = e.target.checked;
+            if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+            renderer.render('arrowsCheckbox');
+        });
+    }
+    // Bases toggle: DNA/RNA base plates (the rungs of a duplex) on/off.
+    const basePlatesCheckbox = containerElement.querySelector('#basePlatesCheckbox');
+    if (basePlatesCheckbox) {
+        basePlatesCheckbox.checked = renderer.cartoonBasePlates !== false;
+        basePlatesCheckbox.addEventListener('change', (e) => {
+            renderer.cartoonBasePlates = e.target.checked;
+            renderer.render('basePlatesCheckbox');
+        });
+    }
+    if (smoothCheckbox) {
+        smoothCheckbox.checked = renderer.cartoonSmooth === true;
+        smoothCheckbox.addEventListener('change', (e) => {
+            renderer.cartoonSmooth = e.target.checked;
+            syncStylePanel();
+            renderer.render('smoothCheckbox');
+        });
+    }
+    const highlightSlider = containerElement.querySelector('#highlightSlider');
+    if (highlightSlider) {
+        highlightSlider.value = renderer.cartoonHighlight !== undefined
+            ? renderer.cartoonHighlight : 1.8;
+        highlightSlider.addEventListener('input', (e) => {
+            renderer.cartoonHighlight = parseFloat(e.target.value);
+            renderer.render('highlightSlider');
+        });
+    }
+    const outlineTintSlider = containerElement.querySelector('#outlineTintSlider');
+    if (outlineTintSlider) {
+        outlineTintSlider.value = renderer.cartoonOutlineTint || 0;
+        outlineTintSlider.addEventListener('input', (e) => {
+            renderer.cartoonOutlineTint = parseFloat(e.target.value);
+            renderer.render('outlineTintSlider');
+        });
+    }
+
+    // outline/shadow are OFF at slider zero, so seed each from the live state
+    if (outlineWidthSlider) {
+        outlineWidthSlider.value = renderer.outlineMode === 'none'
+            ? 0 : (renderer.relativeOutlineWidth || 3.0);
+    }
+    if (shadowSlider) {
+        shadowSlider.value = renderer.shadowEnabled === false
+            ? 0 : (renderer.shadowStrength || 0.5);
+    }
     rotationCheckbox.checked = renderer.autoRotate;
 
     // Pass ALL controls to the renderer
@@ -6752,7 +7692,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         controlsContainer, playButton, overlayButton, recordButton, saveSvgButton,
         frameSlider, frameCounter, objectSelect,
         speedButton, rotationCheckbox, lineWidthSlider, outlineWidthSlider,
-        shadowEnabledCheckbox, outlineModeButton, outlineModeSelect,
+        outlineModeButton, outlineModeSelect,
         colorblindCheckbox, orthoSlider, shadowSlider
     );
 
@@ -6862,7 +7802,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         if (object) {
                             object.contacts = staticContacts;
                             // Invalidate segment cache to ensure contacts are included in next render
-                            renderer.cachedSegmentIndices = null;
+                            renderer._invalidateSegmentCache();
                         }
                     }
 
@@ -6871,7 +7811,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         if (renderer.objectsData[obj.name]) {
                             renderer.objectsData[obj.name].color = obj.color;
                             // Invalidate segment cache to ensure new colors are applied
-                            renderer.cachedSegmentIndices = null;
+                            renderer._invalidateSegmentCache();
                         }
                     }
 
@@ -7121,9 +8061,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Invalidate caches and re-render if metadata changed
             if (needsRerender) {
-                renderer.cachedSegmentIndices = null;
-                renderer.cachedSegmentIndicesFrame = -1;
-                renderer.cachedSegmentIndicesObjectName = null;
+                renderer._invalidateSegmentCache();
                 renderer.setFrame(renderer.currentFrame);
             }
         }
@@ -7194,9 +8132,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 renderer.updateScatterData(objName);
                 renderer.updateScatterContainerVisibility();
             }
-            renderer.cachedSegmentIndices = null;
-            renderer.cachedSegmentIndicesFrame = -1;
-            renderer.cachedSegmentIndicesObjectName = null;
+            // replace() swaps coordinates while object, frame index and length
+            // all stay the same, so the cartoon caches must be cleared by hand:
+            // their key cannot see the difference.
+            renderer._invalidateSegmentCache();
             renderer.setFrame(obj.frames.length > 0 ? obj.frames.length - 1 : 0);
         }
     };

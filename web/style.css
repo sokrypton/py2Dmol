@@ -694,11 +694,13 @@
     transform: scale(1.1);
 }
 
-/* Unified slider styles for all control sliders */
-.py2dmol-viewer-instance #lineWidthSlider,
-.py2dmol-viewer-instance #outlineWidthSlider,
-.py2dmol-viewer-instance #orthoSlider,
-.py2dmol-viewer-instance #shadowSlider {
+/* Unified slider styles for all control sliders.
+   Selects EVERY range input in a viewer rather than naming ids: the old rule
+   listed lineWidth/outlineWidth/ortho/shadow explicitly, so every slider added
+   afterwards (thick, detail, pencil, round, flat, hilite, ink) silently fell
+   back to the browser default and the panel ended up with two different slider
+   styles side by side. frameSlider keeps its own look and is excluded. */
+.py2dmol-viewer-instance input[type="range"]:not(#frameSlider) {
     height: 6px;
     -webkit-appearance: none;
     appearance: none;
@@ -709,10 +711,7 @@
     margin-top: 0;
 }
 
-.py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb,
-.py2dmol-viewer-instance #outlineWidthSlider::-webkit-slider-thumb,
-.py2dmol-viewer-instance #orthoSlider::-webkit-slider-thumb,
-.py2dmol-viewer-instance #shadowSlider::-webkit-slider-thumb {
+.py2dmol-viewer-instance input[type="range"]:not(#frameSlider)::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
     width: 16px;
@@ -724,18 +723,12 @@
     transition: all 0.2s;
 }
 
-.py2dmol-viewer-instance #lineWidthSlider::-webkit-slider-thumb:hover,
-.py2dmol-viewer-instance #outlineWidthSlider::-webkit-slider-thumb:hover,
-.py2dmol-viewer-instance #orthoSlider::-webkit-slider-thumb:hover,
-.py2dmol-viewer-instance #shadowSlider::-webkit-slider-thumb:hover {
+.py2dmol-viewer-instance input[type="range"]:not(#frameSlider)::-webkit-slider-thumb:hover {
     background: #2563eb;
     transform: scale(1.1);
 }
 
-.py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb,
-.py2dmol-viewer-instance #outlineWidthSlider::-moz-range-thumb,
-.py2dmol-viewer-instance #orthoSlider::-moz-range-thumb,
-.py2dmol-viewer-instance #shadowSlider::-moz-range-thumb {
+.py2dmol-viewer-instance input[type="range"]:not(#frameSlider)::-moz-range-thumb {
     width: 16px;
     height: 16px;
     background: #3b82f6;
@@ -746,10 +739,7 @@
     transition: all 0.2s;
 }
 
-.py2dmol-viewer-instance #lineWidthSlider::-moz-range-thumb:hover,
-.py2dmol-viewer-instance #outlineWidthSlider::-moz-range-thumb:hover,
-.py2dmol-viewer-instance #orthoSlider::-moz-range-thumb:hover,
-.py2dmol-viewer-instance #shadowSlider::-moz-range-thumb:hover {
+.py2dmol-viewer-instance input[type="range"]:not(#frameSlider)::-moz-range-thumb:hover {
     background: #2563eb;
     transform: scale(1.1);
 }

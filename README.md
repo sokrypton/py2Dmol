@@ -53,12 +53,84 @@ py2Dmol.view(pae=True).from_afdb('Q5VSL9')                          # AlphaFold 
 ```python
 viewer = py2Dmol.view(
     size=(300, 300), color='auto', colorblind=False,
+    style='ribbon',  # or 'cartoon' for secondary-structure cartoons
     shadow=True, outline='full', width=3.0, ortho=1.0,
     rotate=False, autoplay=False, box=True, controls=True,
 )
 viewer.add_pdb("my_complex.cif")
 viewer.show()
 ```
+
+### Render styles
+Two styles are available (switchable live via the Style dropdown in the controls):
+- **`ribbon`** (default) — the classic py2Dmol smooth backbone trace.
+- **`cartoon`** — secondary-structure cartoon: twisted ribbons for helices, plates with arrowheads for strands, thin tubes for loops, with outlines.
+
+The cartoon style carries named **presets** (the Preset dropdown, or `preset=` from Python) — starting points whose values load into the normal controls, which stay live for tweaking:
+- **`richardson`** (the default) — the hand-drawn convention of Jane Richardson's protein drawings: flat wide helices, thick β-strands carrying arrowheads and white card edges, thin loops, and coloured-pencil paper grain. See below.
+- **`3d`** — solid shaded geometry: thickness 1.0, no outline, smooth shading, flat sheets.
+
+Both cartoon styles work on C-alpha-only models, because the backbone is rebuilt from the trace: the local geometry is binned PULCHRA-style and the peptide C and N read out of a fitted table (C to 0.21 Å rms, N to 0.17 Å). Everything else follows from that backbone:
+
+- **Secondary structure** is real DSSP — hydrogen-bond energies, turns and bridges — run on the rebuilt backbone. Measured against DSSP on the true backbones of 151 native chains: **Q3 90.0%** with **94.0% strand recall**, against 85.3% / 72.4% for the C-alpha-only assignment it replaces. Backbone dihedrals gate the assignment the way PyMOL's `dss` does, and ladders are extended by one rung where φ/ψ allows: strict DSSP boundaries score a higher Q3 (91.3%) but only 86.9% strand recall, and a strand drawn as a loop is the more visible error in a cartoon.
+- **Which way a strand faces** comes from the sheet itself: the bridge partners give the ladders, and each strand residue's ribbon normal is fitted to a patch of the sheet spanning its own neighbourhood and its partners', then relaxed along the strand and across the rungs. The angle between the ribbon faces of two paired residues drops from 38.9° to 21.2° — which is the floor, since the sheets themselves twist 20.0° between paired residues.
+- **Nucleic bases** work the same way from the C4′ trace: where a base points, and the plane it lies in, come from a fitted table (16.7° median, 99.9% coverage). This one has a real tail — a base can sit *anti* or *syn* on an identical backbone and the trace cannot tell which — so the base-pair test is widened, a base pointing away from its partner is flipped once pairing is known, and the ribbon's twist per residue is capped. Against files that do carry the geometry, B-DNA and tRNA pair identically; tertiary RNA differs on a handful of pairs.
+
+Nothing per-residue is stored or shipped for either polymer — the trace is the input. See `tests/README.md`.
+
+```python
+py2Dmol.view(style='cartoon').from_pdb('4HHB', use_biounit=True)
+py2Dmol.view(style='richardson').from_pdb('1TIM')
+py2Dmol.view(style='cartoon', thickness=0).from_pdb('4HHB')   # flat ribbons
+```
+
+#### Richardson style
+
+`style='richardson'` is not a separate renderer — it is the cartoon draw path with a preset that changes the *profile* along the chain, so everything below is reachable from the plain cartoon too.
+
+```python
+py2Dmol.view(style='richardson', color='ss').from_pdb('1TIM')
+```
+
+What the preset changes, and why:
+
+| | Richardson | cartoon | rationale |
+| --- | --- | --- | --- |
+| helix thickness | ~0 (flat) | uniform | a helix is a paper streamer coiling in space; thickness fights the coil |
+| strand thickness | full | uniform | the sheet has to read as a slab you could stack |
+| loop section | square, side = sheet thickness | narrow | the loop is the same card seen end-on, so it ties to the thickness control, not the width one |
+| sheet edges | white | element colour | the pale rim is what separates strands where they overlap |
+| `sheet_flat` | `1.0` | `0.0` | real strands pleat; the drawings show them flat |
+| `pencil` | `1.0` | `0.0` | paper grain |
+| `outline_tint` | `0.8` | `0.0` | outlines are a dark tint of the element colour, not black |
+| `highlight` | `3.0` | `1.8` | a stronger specular band |
+| `width` | `2.0` | `3.0` | overall scale |
+| `smooth` | on | off | Richardson shades smoothly; the grain supplies the texture |
+| `shade` | `0.7` | `1.0` | pencil on paper models more lightly than a rendered solid |
+
+A preset is a starting point, not a lock: the sliders stay live showing its values. Everything is also settable from Python, and an explicit argument always wins over the preset:
+
+```python
+py2Dmol.view(style='richardson', pencil=0, sheet_flat=0)   # no grain, natural pleat
+```
+
+#### Shared cartoon options
+
+`thickness` (Ångströms, default `0` for cartoon, `0.7` for Richardson) sets slab thickness; `thickness=0` draws flat single-sheet ribbons. On the `Thick:` slider.
+
+`shade` (0–1, default `1.0`; `0.7` for Richardson) sets how much directional modelling is applied: `0` is flat colour, `1` is full light and inner shadow. `highlight` is a separate control and is **not** scaled by it, so `shade=0, highlight=2` gives flat colour with a specular band still on top. Paired with `Hilite:` in the panel, since the two split the lighting between them.
+
+`detail` (integer 2–8, default `4`) sets subdivisions per residue, on the `Detail:` slider. It is the only thing that sets sampling — the same geometry at every canvas size and zoom — so cost is predictable and roughly linear in it. Lower is deliberately faceted and proportionally faster; 6–8 give the smoothest curves for a still frame. 2 is the geometric floor — below it a helix cannot represent its own coil.
+
+`arrows` (default `True`) draws an arrowhead on the C-terminal end of each β-strand, half a Cα–Cα step long, and squares off the N-terminal end. `arrows=False` lets strands flow continuously out of their loops at both ends.
+
+`sheet_flat` (0–1) damps the β-pleat and smooths loops; `pencil` (0–1) adds coloured-pencil paper grain, applied to the structure only and never to the background.
+
+Element edges are always lit directionally, so a thickness band reads as a rounded section rather than a flat facet. This used to be a `loop_round` slider, but its only useful setting was full — anything less just reintroduced the facets it exists to remove.
+
+`color='ss'` colours by secondary structure. The palette is picked by `ss_palette` / the SSE dropdown: `pymol` (default: red helices, yellow strands, green loops), `jmol`, or the Jane Richardson schemes `jr1` (blue/green) and `jr2` (the 1981 hand-coloured drawings). It works with any style.
+
+**SVG export** reproduces all of this, including the pencil grain (as an `feTurbulence` filter) and gradient shading.
 
 ## Layouts & multiple objects
 

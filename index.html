@@ -233,77 +233,181 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 </label>
                             </div>
 
-                            <!-- New second row -->
                             <div class="toolbar-row">
-                                <label class="btn-toggle btn-flex btn-small" title="Toggle shadow">
-                                    <input type="checkbox" id="shadowEnabledCheckbox" checked>
-                                    <span>Shadow</span>
-                                </label>
-
-
-
-                                <button id="outlineModeButton" class="btn-toggle btn-flex btn-small"
-                                    title="Cycle outline mode: none → partial → full">
-                                    <span>Outline</span>
+                                <button id="styleToggle" class="btn-toggle btn-flex"
+                                    aria-expanded="false" aria-controls="stylePanel"
+                                    title="Render style and its settings">
+                                    <span><i class="fa-solid fa-palette"></i>Style</span>
                                 </button>
 
-                                <button id="saveSvgButton" class="btn-toggle btn-flex btn-icon-only btn-small"
+                                <button id="saveSvgButton" class="btn-toggle btn-flex"
                                     title="Save as SVG">
-                                    <span>
-                                        <i class="fa-solid fa-camera"></i>
-                                    </span>
+                                    <span><i class="fa-solid fa-camera"></i>Save SVG</span>
                                 </button>
                             </div>
                         </div>
 
+                        <style>
+                            /* Inline display:flex on the style rows outranks the UA [hidden]
+                               rule, so force it. Scoped to the style panel + its trigger. */
+                            #styleAppearanceContainer [hidden] { display: none !important; }
+                            /* The box lives on the span, so the open cue goes there too. */
+                            #styleToggle[aria-expanded="true"] > span {
+                                background: var(--color-gray-300);
+                            }
+                        </style>
                         <div id="styleAppearanceContainer" class="control-group">
 
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="colorSelect" class="font-medium text-gray-700"
-                                    style="font-size: 12px;">Color:</label>
-                                <select id="colorSelect"
-                                    style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px;">
-                                    <option value="auto">Auto</option>
-                                    <option value="plddt">pLDDT</option>
-                                    <option value="deepmind">DeepMind</option>
-                                    <option value="rainbow">Rainbow</option>
-                                    <option value="chain">Chain</option>
-                                    <option value="entropy" id="entropyColorOption" hidden>Entropy</option>
-                                </select>
-                                <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors">
-                                    <input type="checkbox" id="colorblindCheckbox">
-                                    <span>Colorblind</span>
-                                </label>
+                            <!-- Render controls live in a collapsible Style panel. Rows and
+                                 half-cells tagged data-style="ribbon|cartoon" appear only under
+                                 that style; data-needs-cel appears only while Cel is on.
+                                 Filtering is done by syncStylePanel() in viewer-mol.js. -->
+                            <div id="stylePanel" hidden
+                                style="display: flex; flex-direction: column; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px;">
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <label for="styleSelect" class="font-medium text-gray-700"
+                                        style="font-size: 12px;">Style:</label>
+                                    <select id="styleSelect"
+                                        style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
+                                        <option value="ribbon">Ribbon</option>
+                                        <option value="cartoon">Cartoon</option>
+                                    </select>
+                                    
+                                </div>
+                                <div class="toggle-item" data-style="cartoon" style="display: flex; align-items: center; gap: 8px;">
+                                    <label for="presetSelect" class="font-medium text-gray-700"
+                                        style="font-size: 12px;" title="Named starting points; editing any slider flips back to Custom">Preset:</label>
+                                    <select id="presetSelect"
+                                        style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
+                                                                                <option value="richardson">Richardson</option>
+                                        <option value="3d">3D</option>
+                                    </select>
+                                </div>
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;" data-style="cartoon">
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                        title="Smooth shading gradients (off = flat tone bands)">
+                                        <input type="checkbox" id="smoothCheckbox">
+                                        <span>Smooth</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                        title="Arrowheads on the C-terminal end of each beta strand">
+                                        <input type="checkbox" id="arrowsCheckbox" checked>
+                                        <span>Arrows</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                        title="DNA/RNA base plates (the rungs of a duplex)">
+                                        <input type="checkbox" id="basePlatesCheckbox" checked>
+                                        <span>Bases</span>
+                                    </label>
+                                </div>
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="lineWidthSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Width:</label>
+                                        <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="outlineWidthSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Outline:</label>
+                                        <input type="range" id="outlineWidthSlider" min="0" max="10" value="3.0" step="0.1"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                </div>
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="thicknessSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Cartoon slab thickness (0 = flat)">Thick:</label>
+                                        <input type="range" id="thicknessSlider" min="0" max="1.5" value="0" step="0.05"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                    <div data-style="cartoon richardson" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="sheetFlatSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Flatten beta strands (0 = natural pleat, 1 = flat)">Flat:</label>
+                                        <input type="range" id="sheetFlatSlider" min="0" max="1" value="0" step="0.05"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                </div>
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="highlightSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Brightness lift on faces pointing at the light (0 = base colour is the ceiling)">Hilite:</label>
+                                        <input type="range" id="highlightSlider" min="0" max="3" value="1.8" step="0.05"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="shadeSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Directional shading: 0 = flat colour, 1 = full light, highlight and inner shadow">Shade:</label>
+                                        <input type="range" id="shadeSlider" min="0" max="1" value="1" step="0.05"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                </div>
+                                
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <div data-style="cartoon richardson" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="pencilSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Coloured-pencil paper grain (0 = clean)">Pencil:</label>
+                                        <input type="range" id="pencilSlider" min="0" max="1" value="0" step="0.05"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                    <div data-style="ribbon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="shadowSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Shadow:</label>
+                                        <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="orthoSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
+                                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                </div>
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="detailSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Subdivisions per residue, 2-8 (low = faceted and faster)">Detail:</label>
+                                        <input type="range" id="detailSlider" min="2" max="8" value="4" step="1"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="outlineTintSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
+                                        <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05"
+                                            style="flex: 1; min-width: 0; outline: none;">
+                                    </div>
+                                </div>
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <label for="colorSelect" class="font-medium text-gray-700"
+                                        style="font-size: 12px;">Color:</label>
+                                    <select id="colorSelect"
+                                        style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
+                                        <option value="auto">Auto</option>
+                                        <option value="plddt">pLDDT</option>
+                                        <option value="deepmind">DeepMind</option>
+                                        <option value="rainbow">Rainbow</option>
+                                        <option value="chain">Chain</option>
+                                        <option value="ss">SSE</option>
+                                        <option value="entropy" id="entropyColorOption" hidden>Entropy</option>
+                                    </select>
+                                </div>
+                                <div class="toggle-item" data-needs-ss hidden style="display: flex; align-items: flex-start; gap: 8px;">
+                                    <label class="font-medium text-gray-700"
+                                        style="font-size: 12px; width: 50px; flex-shrink: 0;" title="Colour palette for the SSE mode; C coil, H helix, E strand, N nucleic, L ligand">SSE:</label>
+                                    <div id="ssPaletteButtons" style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;"></div>
+                                </div>
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1;">
+                                        <input type="checkbox" id="colorblindCheckbox">
+                                        <span>Colorblind</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" title="Black background (white ink, fade toward black)" style="flex: 1;">
+                                        <input type="checkbox" id="darkCheckbox">
+                                        <span>Dark</span>
+                                    </label>
+                                </div>
                             </div>
 
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="lineWidthSlider" class="font-medium text-gray-700"
-                                        style="width: 50px; font-size: 12px; flex-shrink: 0;">Width:</label>
-                                    <input type="range" id="lineWidthSlider" min="2.0" max="4.7" value="3.0" step="0.1"
-                                        style="flex: 1; min-width: 0; outline: none;">
-                                </div>
-                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="outlineWidthSlider" class="font-medium text-gray-700"
-                                        style="width: 50px; font-size: 12px; flex-shrink: 0;">Outline:</label>
-                                    <input type="range" id="outlineWidthSlider" min="0" max="10" value="3.0" step="0.1"
-                                        style="flex: 1; min-width: 0; outline: none;">
-                                </div>
-                            </div>
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="orthoSlider" class="font-medium text-gray-700"
-                                        style="width: 50px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
-                                    <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01"
-                                        style="flex: 1; min-width: 0; outline: none;">
-                                </div>
-                                <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                    <label for="shadowSlider" class="font-medium text-gray-700"
-                                        style="width: 50px; font-size: 12px; flex-shrink: 0;">Shadow:</label>
-                                    <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01"
-                                        style="flex: 1; min-width: 0; outline: none;">
-                                </div>
-                            </div>
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
                                 <label for="objectSelect" class="font-medium text-gray-700"
                                     style="font-size: 12px;">Object:</label>
@@ -453,6 +557,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
     <!-- Load scripts in order -->
     <script src="web/utils.js"></script>
     <script src="py2Dmol/resources/viewer-mol.js"></script>
+    <script src="py2Dmol/resources/viewer-cartoon.js"></script>
     <script src="py2Dmol/resources/viewer-pae.js"></script>
     <script src="py2Dmol/resources/viewer-scatter.js"></script>
     <script src="py2Dmol/resources/viewer-seq.js"></script>

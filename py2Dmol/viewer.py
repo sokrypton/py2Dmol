@@ -33,10 +33,22 @@ DEFAULT_CONFIG = {
         "rotate": False,
         "autoplay": False,
         "controls": True,
-        "box": True
+        "box": True,
+        "background": "white"
     },
     "rendering": {
+        "style": "ribbon",
+        "thickness": 0,
+        "sheet_flat": 0.0,
+        "arrows": True,
+        "pencil": 0.0,
+        "detail": 4,
+        "fade": 0,
+        "smooth": True,
+        "highlight": 1.8,
+        "outline_tint": 0.0,
         "shadow": True,
+        "shade": 1.0,
         "shadow_strength": 0.5,
         "outline": "full",
         "width": 3.0,
@@ -76,18 +88,40 @@ def _nest_config(**flat):
     if "autoplay" in flat: config["display"]["autoplay"] = flat["autoplay"]
     if "controls" in flat: config["display"]["controls"] = flat["controls"]
     if "box" in flat: config["display"]["box"] = flat["box"]
+    if "bg" in flat: config["display"]["background"] = flat["bg"]
     
     # Rendering
+    if "style" in flat: config["rendering"]["style"] = flat["style"]
+    if "thickness" in flat: config["rendering"]["thickness"] = flat["thickness"]
+    if "sheet_flat" in flat: config["rendering"]["sheet_flat"] = flat["sheet_flat"]
+    if "arrows" in flat: config["rendering"]["arrows"] = flat["arrows"]
+    if "pencil" in flat: config["rendering"]["pencil"] = flat["pencil"]
+    if "detail" in flat: config["rendering"]["detail"] = flat["detail"]
+    if "fade" in flat: config["rendering"]["fade"] = flat["fade"]
+    if flat.get("smooth") is not None: config["rendering"]["smooth"] = flat["smooth"]
+    if "highlight" in flat: config["rendering"]["highlight"] = flat["highlight"]
+    if "outline_tint" in flat: config["rendering"]["outline_tint"] = flat["outline_tint"]
     if "shadow" in flat: config["rendering"]["shadow"] = flat["shadow"]
+    if flat.get("shade") is not None: config["rendering"]["shade"] = flat["shade"]
     if "shadow_strength" in flat: config["rendering"]["shadow_strength"] = flat["shadow_strength"]
     if "outline" in flat: config["rendering"]["outline"] = flat["outline"]
     if "width" in flat: config["rendering"]["width"] = flat["width"]
     if "ortho" in flat: config["rendering"]["ortho"] = flat["ortho"]
     if "detect_cyclic" in flat: config["rendering"]["detect_cyclic"] = flat["detect_cyclic"]
+    # None = leave the key out so the renderer's default (plates on) applies
+    if flat.get("base_plates") is not None:
+        config["rendering"]["base_plates"] = flat["base_plates"]
+    # named cartoon preset (GUI dropdown label; the VALUES travel as the
+    # concrete settings above)
+    if flat.get("preset") is not None:
+        config["rendering"]["preset"] = flat["preset"]
 
     # Color
     if "color" in flat: config["color"]["mode"] = flat["color"]
     if "colorblind" in flat: config["color"]["colorblind"] = flat["colorblind"]
+    # None = leave the key out so the renderer's default palette applies
+    if flat.get("ss_palette") is not None:
+        config["color"]["ss_palette"] = flat["ss_palette"]
     
     # PAE
     if "pae" in flat: config["pae"]["enabled"] = flat["pae"]
@@ -229,8 +263,13 @@ def align_a_to_b(a, b, allow_reflection=False):
 
 # --- Color System Constants ---
 
-VALID_COLOR_MODES = {"chain", "plddt", "rainbow", "auto", "entropy", "deepmind"}
-"""Valid color modes for protein visualization."""
+VALID_COLOR_MODES = {"chain", "plddt", "rainbow", "auto", "entropy", "deepmind", "ss"}
+"""Valid color modes for protein visualization.
+
+"ss" colours by secondary structure (strands green, helices blue, loops pale
+blue) - the convention of the Richardson drawings. It is implemented in
+viewer-cartoon.js, which owns the SS assignment, and registered there as a
+custom colour mode, so it is available to every style."""
 
 # --- Color Utilities ---
 
@@ -301,8 +340,9 @@ For complete documentation, see: technical_readme.md → "Persistence Modes"
 
 class view:
     def __init__(self, size=(400,400), controls=True, box=True,
-        color="auto", colorblind=False, shadow=True, shadow_strength=0.5,
-        outline="full", width=3.0, ortho=1.0, rotate=False, autoplay=False,
+        color="auto", colorblind=False, ss_palette=None, style="ribbon", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
+        shadow=True, shade=None, shadow_strength=0.5,
+        outline=None, width=None, ortho=1.0, bg="white", rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True,
         persistence=True, id=None, cutoffs=None,
     ):
@@ -313,11 +353,57 @@ class view:
             size (tuple): Canvas dimensions (width, height) in pixels. Default (400, 400).
             controls (bool): Show playback controls. Default True.
             box (bool): Show bounding box. Default True.
-            color (str): Color mode - "auto", "chain", "rainbow", "plddt", "deepmind", "entropy". Default "auto".
+            color (str): Color mode - "auto", "chain", "rainbow", "plddt", "deepmind", "entropy", "ss" (secondary structure). Default "auto".
             colorblind (bool): Use colorblind-friendly palette. Default False.
-            shadow (bool): Enable shadow rendering. Default True.
+            ss_palette (str): Named palette for the "ss" colour mode -
+                "pymol" (red/yellow/green, the default), "jmol"
+                (magenta/yellow/white), "jr1" (Jane Richardson blue/green
+                convention) or "jr2" (her 1981 hand-coloured drawings: tan
+                helices, green strands). The SSE dropdown in the Style panel
+                while colouring by SSE.
+            base_plates (bool): Draw DNA/RNA base plates (the rungs of a
+                duplex). None (default) leaves the renderer's default (on).
+                The Bases toggle in the Style panel.
+            thickness (float): Cartoon slab thickness in Angstroms (default
+                0, flat single-sheet ribbons). Raise it for solid slabs.
+            detail (int): Cartoon subdivisions per residue, 2-8 (default 4).
+                Higher is smoother and proportionally slower. 2 is the
+                geometric floor - below it a helix cannot represent its own
+                coil and the depth sort has nothing to cut on.
+            fade (float): Depth fade, 0-1 (default 0 = off) - geometry
+                further back pales toward the page. The Fade slider.
+                Lower is deliberately faceted and proportionally faster. Values
+                above 0.5 are clamped: past the tuned value the extra stations
+                cost time without changing the drawn curves.
+            smooth (bool): Smooth shading gradients; False draws one flat
+                tone per cartoon face (cel shading) - the Smooth toggle.
+                Defaults to False for style="cartoon", True otherwise.
+            highlight (float): Brightness lift on faces pointing at the light,
+                >= 0 (default 1.8). 0 restores the old behaviour where the base
+                colour was the ceiling and lighting could only darken.
+            outline_tint (float): Cartoon outline colour, 0-1 (default 0.0).
+                0 inks pure black; 1 uses a 0.7 tint of the element's own
+                colour, matching ribbon mode.
+            preset (str): Named cartoon preset - "richardson" (the default
+                for style="cartoon"; equivalent to style="richardson") or
+                "3d" (solid shaded geometry: thickness 1.0, no outline,
+                smooth shading, flat sheets). Implies style="cartoon". An
+                explicit argument always wins over the preset. The Preset
+                dropdown in the Style panel.
+            style (str): Render style - "ribbon" (smooth backbone trace),
+                "richardson" (hand-drawn convention: flat wide helices, thick
+                arrowed strands, thin round loops) or
+                         "cartoon" (secondary-structure cartoon: helix/strand
+                         ribbons, loop tubes). Default "ribbon".
+            shadow (bool): Ribbon cast-shadow effect. Default True.
+            shade (float): Cartoon directional shading strength, 0-1
+                (default 1). 0 is flat colour; 1 is full light, highlight and
+                inner shadow, paired with `highlight` in the panel).
             shadow_strength (float): Shadow intensity 0-1. Default 0.5.
             outline (str): Outline mode - "none", "partial", "full". Default "full".
+            bg (str): Page background - "white" (default) or "black". Black
+                inks outlines in white and fades depth toward black. The Dark
+                toggle.
             width (float): Line width. Default 3.0.
             ortho (float): Orthographic projection strength 0-1. Default 1.0.
             rotate (bool): Auto-rotate the structure. Default False.
@@ -350,6 +436,88 @@ class view:
             scatter_size = int(scatter_size)
 
 
+        if style not in ("ribbon", "cartoon", "richardson"):
+            raise ValueError(
+                f'Invalid style "{style}" - expected "ribbon", "cartoon" or "richardson".')
+        # PRESETS are named starting points for the cartoon style, mirroring
+        # the GUI's Preset dropdown. "richardson" (the DEFAULT for cartoon)
+        # is equivalent to style="richardson" - it also selects the
+        # richardson geometry profile; "3d" keeps the standard profile and
+        # changes settings only. A preset implies the cartoon style.
+        if preset is not None and preset not in ("richardson", "3d"):
+            raise ValueError(
+                f'Invalid preset "{preset}" - expected "richardson" or "3d".')
+        if style == "cartoon" and preset is None:
+            preset = "richardson"
+        if preset == "richardson":
+            style = "richardson"
+        elif preset == "3d" and style == "ribbon":
+            style = "cartoon"
+        is3d = preset == "3d"
+        # Richardson scales its per-SS thickness ratios by this value, so the
+        # usual default of 0 (flat ribbons) would cancel the preset. An
+        # explicit thickness - 0 included - is still honoured.
+        if thickness is None:
+            thickness = 0.7 if style == "richardson" else (1.0 if is3d else 0)
+        # Beta-strand flattening. Real strands pleat; the Richardson drawings
+        # show them flat, so the preset defaults to mostly flat and every other
+        # style leaves the backbone alone.
+        # Richardson outlines are a dark tint of the element's own colour.
+        if outline_tint is None:
+            outline_tint = 0.8 if style == "richardson" else 0.0
+        # outline MODE ("full"/"partial"/"none"); the 3d preset draws no ink
+        if outline is None:
+            outline = "none" if is3d else "full"
+        # Loop cross-section shading: 0 square, 1 tubular.
+        # Detail is an integer 2-8 (2 = the geometric floor, see MIN_SUB in
+        # viewer-cartoon.js; 8 restores the old smooth sampling).
+        detail = min(8, max(2, int(round(float(detail)))))
+        fade = float(fade)
+        if not 0.0 <= fade <= 1.0:
+            raise ValueError("fade must be between 0.0 (off) and 1.0 (far side fully faded).")
+        # Poster (flat tone banding) suits the plain cartoon; Richardson shades
+        # smoothly and gets its texture from the pencil grain instead.
+        # smooth = gradient shading (the Smooth toggle)
+        if smooth is None:
+            smooth = not (style == "cartoon" and not is3d)
+        if width is None:
+            width = 2.0 if style == "richardson" else 3.0
+        if highlight is None:
+            highlight = 3.0 if style == "richardson" else (2.0 if is3d else 1.8)
+        if shade is None:
+            shade = 1.0
+        else:
+            shade = float(shade)
+            if not 0.0 <= shade <= 1.0:
+                raise ValueError(
+                    "shade must be between 0.0 (flat colour) and 1.0 (full shading)."
+                )
+        # Coloured-pencil paper grain. Reproduced in SVG export as an
+        # feTurbulence filter, so raster and vector output match.
+        if pencil is None:
+            pencil = 1.0 if style == "richardson" else 0.0
+        pencil = max(0.0, min(1.0, float(pencil)))
+        if sheet_flat is None:
+            sheet_flat = 1.0 if (style == "richardson" or is3d) else 0.0
+        sheet_flat = max(0.0, min(1.0, float(sheet_flat)))
+        thickness = float(thickness)
+        if thickness < 0:
+            raise ValueError("thickness must be >= 0 (0 draws flat single-sheet ribbons).")
+        smooth = bool(smooth)
+        highlight = float(highlight)
+        if highlight < 0:
+            raise ValueError("highlight must be >= 0 (0 = no brightening above the base color).")
+        outline_tint = float(outline_tint)
+        if not 0.0 <= outline_tint <= 1.0:
+            raise ValueError("outline_tint must be between 0.0 (black) and 1.0 (element color).")
+        if ss_palette is not None and ss_palette not in ("pymol", "jmol", "jr1", "jr2"):
+            raise ValueError(
+                f'Invalid ss_palette "{ss_palette}" - expected "pymol", "jmol", "jr1" or "jr2".')
+        if base_plates is not None:
+            base_plates = bool(base_plates)
+        if bg not in ("white", "black"):
+            raise ValueError(f'Invalid bg "{bg}" - expected "white" or "black".')
+
         # Create nested config (accepts flat kwargs for backward compat)
         self.config = _nest_config(
             size=size,
@@ -357,11 +525,26 @@ class view:
             box=box,
             color=color,
             colorblind=colorblind,
+            style=style,
+            thickness=thickness,
+            sheet_flat=sheet_flat,
+            arrows=bool(arrows),
+            pencil=pencil,
+            detail=detail,
+            fade=fade,
+            smooth=smooth,
+            highlight=highlight,
+            outline_tint=outline_tint,
+            ss_palette=ss_palette,
+            base_plates=base_plates,
+            preset=("3d" if is3d else None),
             shadow=shadow,
+            shade=shade,
             shadow_strength=shadow_strength,
             outline=outline,
             width=width,
             ortho=ortho,
+            bg=bg,
             rotate=rotate,
             autoplay=autoplay,
             pae=pae,
@@ -522,7 +705,8 @@ class view:
       else:
           # Subsequent frames, align to the first frame if align=True
           if align and self._coords.shape == coords.shape:
-              self._coords = align_a_to_b(coords, self._coords, allow_reflection=allow_reflection)
+              self._coords = align_a_to_b(coords, self._coords,
+                                          allow_reflection=allow_reflection)
           else:
               self._coords = coords
       
@@ -979,6 +1163,12 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             with importlib.resources.open_text(py2dmol_resources, 'viewer-mol.min.js') as f:
                 js_content_parent = f.read()
             container_html = f'<script>{js_content_parent}</script>\n' + container_html
+
+            # Cartoon style plugin (always included so the Style dropdown can
+            # switch between ribbon and cartoon at runtime)
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-cartoon.min.js') as f:
+                cartoon_js_content = f.read()
+            container_html = f'<script>{cartoon_js_content}</script>\n' + container_html
 
             if self.config["pae"]["enabled"]:
                 with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.min.js') as f:
@@ -1655,7 +1845,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Update internal state and build frame
         self._update(coords, plddts=plddts, chains=chains, position_types=position_types, pae=pae,
                      scatter=scatter, align=align, position_names=position_names,
-                     residue_numbers=residue_numbers, atom_types=atom_types, allow_reflection=allow_reflection)
+                     residue_numbers=residue_numbers, atom_types=atom_types,
+                     allow_reflection=allow_reflection)
 
         frame_data = self._get_data_dict()
         if color is not None:
@@ -2054,7 +2245,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
              # This can happen if biounit fails but structure had no models
              
         for i, model in enumerate(models_to_process):
-            coords, plddts, position_chains, position_types, position_names, residue_numbers = self._parse_model(model, chains, load_ligands=load_ligands)
+            (coords, plddts, position_chains, position_types, position_names,
+             residue_numbers) = self._parse_model(model, chains, load_ligands=load_ligands)
 
             if coords:
                 coords_np = np.array(coords)
@@ -2099,7 +2291,6 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         position_types = []
         position_names = []
         residue_numbers = []
-
         for chain in model:
             if chains_filter is None or chain.name in chains_filter:
                 for residue in chain:
@@ -2109,6 +2300,17 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     residue_info = gemmi.find_tabulated_residue(residue.name)
                     is_protein = residue_info.is_amino_acid()
                     is_nucleic = residue_info.is_nucleic_acid()
+                    # Modified nucleotides (YYG, 5MC, OMG, ...) are tabulated but
+                    # NOT flagged nucleic by gemmi, so they were dropped from the
+                    # chain entirely - 1EHZ lost 3 residues and the backbone broke
+                    # at each one (the gap then read as an over-length bond rather
+                    # than as the missing residue it was). Detect the ribose
+                    # structurally instead: C4' plus O4' plus C1' is a nucleotide
+                    # whatever the residue is called.
+                    if not is_nucleic and not is_protein:
+                        has = lambda *names: any(nm in residue for nm in names)
+                        if has("C4'", "C4*") and has("O4'", "O4*") and has("C1'", "C1*"):
+                            is_nucleic = True
 
                     if is_protein:
                         if 'CA' in residue:
@@ -2119,7 +2321,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                             position_types.append('P')
                             position_names.append(residue.name)
                             residue_numbers.append(residue.seqid.num)
-                            
+
                     elif is_nucleic:
                         c4_atom = None
                         if "C4'" in residue:
@@ -2137,11 +2339,18 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                 position_types.append('R')
                             elif residue.name in dna_bases or residue.name.startswith('D'):
                                 position_types.append('D')
+                            elif "O2'" in residue or "O2*" in residue:
+                                # modified residue: the 2'-OH is what separates
+                                # ribose from deoxyribose, and it is present
+                                # regardless of how the base was modified
+                                position_types.append('R')
+                            elif "C2'" in residue or "C2*" in residue:
+                                position_types.append('D')
                             else:
                                 position_types.append('R') # Default to RNA
                             position_names.append(residue.name)
                             residue_numbers.append(residue.seqid.num)
-                                
+
                     else:
                         # Ligand: use all heavy atoms
                         if load_ligands:
@@ -2153,8 +2362,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                                     position_types.append('L')
                                     position_names.append(residue.name)
                                     residue_numbers.append(residue.seqid.num)
-
-        return coords, plddts, position_chains, position_types, position_names, residue_numbers
+                
+        return (coords, plddts, position_chains, position_types,
+                position_names, residue_numbers)
 
     def add_contacts(self, contacts, name=None):
         """

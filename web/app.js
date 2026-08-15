@@ -2226,7 +2226,14 @@ function applyPendingObjects() {
             if (width > 0 && height > 0) {
                 canvas.style.width = width + 'px';
                 canvas.style.height = height + 'px';
-                const dpr = window.devicePixelRatio || 1;
+                // SAME DPR POLICY as viewer-mol.js's canvas setup: capped at
+                // 1.5x for performance, overridable via window.canvasDPR.
+                // Uncapped devicePixelRatio here silently overrode that cap -
+                // on a 2x display a 600px canvas became a 1200x1200 backing
+                // store, 1.78x the pixels the rest of the app sizes for, and
+                // paint is the dominant per-frame cost.
+                const dpr = window.canvasDPR !== undefined
+                    ? window.canvasDPR : Math.min(window.devicePixelRatio || 1, 1.5);
                 canvas.width = width * dpr;
                 canvas.height = height * dpr;
                 const ctx = canvas.getContext('2d');
@@ -5627,13 +5634,35 @@ function saveViewerState() {
             center: renderer.viewerState.center,  // NEW - for orient to selection
             extent: renderer.viewerState.extent,  // NEW - for orient to selection
             color_mode: renderer.colorMode || 'auto',
+            // the SSE palette is a separate axis from the colour MODE:
+            // restoring mode 'ss' without it put the ribbon back on the
+            // default palette whatever had been picked
+            ss_palette: renderer.ssPalette || 'pymol',
             line_width: renderer.lineWidth || 3.0,
             shadow_enabled: renderer.shadowEnabled !== false,
+            shade: renderer.cartoonShade !== undefined ? renderer.cartoonShade : 1,
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
             detect_cyclic: detectCyclic,
             ortho_slider_value: orthoSliderValue, // Save the normalized slider value (0.0-1.0)
-            animation_speed: renderer.animationSpeed || 100
+            animation_speed: renderer.animationSpeed || 100,
+            // Render style and its controls. These live on the renderer, not in
+            // window.viewerConfig (which only ever holds the values the viewer
+            // STARTED with), so saving the config alone would reload a session
+            // as whatever style it was first opened in.
+            style: renderer.style || 'ribbon',
+            // the preset is a separate axis from the style ('cartoon' can be
+            // showing richardson or 3d values), and applying one overwrites
+            // the sliders - so it is restored BEFORE them, like style
+            preset: renderer.stylePreset || 'richardson',
+            thickness: renderer.cartoonThickness,
+            detail: renderer.cartoonDetail,
+            smooth: renderer.cartoonSmooth === true,
+            arrows: renderer.cartoonArrows !== false,
+            sheet_flat: renderer.cartoonSheetFlat,
+            pencil: renderer.cartoonPencil,
+            highlight: renderer.cartoonHighlight,
+            outline_tint: renderer.cartoonOutlineTint
         };
 
         // Save MSA state (current chain) - only if MSA data actually exists
@@ -5999,9 +6028,45 @@ async function loadViewerState(stateData) {
                 renderer.viewerState.extent = vs.extent;
             }
 
+            // Restore render style BEFORE the individual controls: setStyle
+            // applies that style's preset, which would otherwise overwrite the
+            // values restored below.
+            if (typeof vs.style === 'string' && vs.style !== renderer.style) {
+                renderer.setStyle(vs.style);   // no-ops on an unknown/unloaded style
+                const styleSelect = document.getElementById('styleSelect');
+                if (styleSelect) styleSelect.value = renderer.style;
+            }
+            if (typeof vs.preset === 'string'
+                && vs.preset !== renderer.stylePreset
+                && typeof renderer.setPreset === 'function') {
+                renderer.setPreset(vs.preset);   // warns and no-ops on a bad name
+            }
+            // Cartoon controls. Each is only restored when present, so a state
+            // file written before these existed keeps the style's own defaults.
+            const restoreCartoon = (key, prop, id, kind) => {
+                const v = vs[key];
+                if (kind === 'bool' ? typeof v !== 'boolean' : typeof v !== 'number') return;
+                renderer[prop] = v;
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (kind === 'bool') el.checked = v; else el.value = v;
+            };
+            restoreCartoon('thickness', 'cartoonThickness', 'thicknessSlider');
+            restoreCartoon('detail', 'cartoonDetail', 'detailSlider');
+            restoreCartoon('sheet_flat', 'cartoonSheetFlat', 'sheetFlatSlider');
+            restoreCartoon('pencil', 'cartoonPencil', 'pencilSlider');
+            restoreCartoon('highlight', 'cartoonHighlight', 'highlightSlider');
+            restoreCartoon('outline_tint', 'cartoonOutlineTint', 'outlineTintSlider');
+            restoreCartoon('shade', 'cartoonShade', 'shadeSlider');
+            restoreCartoon('smooth', 'cartoonSmooth', 'smoothCheckbox', 'bool');
+            restoreCartoon('arrows', 'cartoonArrows', 'arrowsCheckbox', 'bool');
+
             // Restore color mode
             if (vs.color_mode) {
-                const validModes = ['auto', 'chain', 'rainbow', 'plddt', 'deepmind', 'entropy'];
+                // Registry lookup, not a hardcoded list: plugin modes such as
+                // 'ss' (viewer-cartoon.js) are valid too, and were being
+                // silently dropped on load.
+                const validModes = getAllValidColorModes();
                 if (validModes.includes(vs.color_mode)) {
                     renderer.colorMode = vs.color_mode;
                     const colorSelect = document.getElementById('colorSelect');
@@ -6011,6 +6076,24 @@ async function loadViewerState(stateData) {
                         renderer.plddtColorsNeedUpdate = true;
                         renderer.render();
                     }
+                }
+            }
+
+            // Restore the SSE palette. After colour mode, because the palette
+            // row only shows while the mode is 'ss', and the panel sync reads
+            // both. Validated against the plugin's own table so an unknown name
+            // from an older state file cannot leave the renderer pointing at a
+            // palette that does not exist.
+            if (typeof vs.ss_palette === 'string') {
+                const table = window.py2dmolCartoon
+                    && window.py2dmolCartoon.SS_PALETTES;
+                if (table && table[vs.ss_palette]) {
+                    renderer.ssPalette = vs.ss_palette;
+                    renderer.colorsNeedUpdate = true;
+                    renderer.plddtColorsNeedUpdate = true;
+                    if (renderer._syncStylePanel) renderer._syncStylePanel();
+                    document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+                    renderer.render('ss_palette restore');
                 }
             }
 
@@ -6027,12 +6110,8 @@ async function loadViewerState(stateData) {
             // Restore shadow
             if (typeof vs.shadow_enabled === 'boolean') {
                 renderer.shadowEnabled = vs.shadow_enabled;
-                const shadowCheckbox = document.getElementById('shadowEnabledCheckbox');
-                if (shadowCheckbox) {
-                    shadowCheckbox.checked = vs.shadow_enabled;
-                    shadowCheckbox.dispatchEvent(new Event('change'));
-                }
             }
+
 
             // Restore outline mode
             if (typeof vs.outline_mode === 'string' && ['none', 'partial', 'full'].includes(vs.outline_mode)) {

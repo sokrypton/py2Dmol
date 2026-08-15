@@ -1213,6 +1213,29 @@ function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allRes
         }
     }
 
+    // 5. STRUCTURAL fallback: a residue carrying a ribose/deoxyribose ring is a
+    // nucleotide whatever it is called. The dictionary above only lists PSU, so
+    // tRNA modifications (YYG, 5MC, 1MA, 2MG, 7MG, OMC, OMG, 4SU, H2U ...) fell
+    // through and were dropped from the chain - 1EHZ lost 3 residues and the
+    // backbone broke at each one, which then looked like an over-length bond
+    // rather than the missing residue it was. Mirrors the same fix in
+    // viewer.py. Connectivity is still required, so free nucleotide ligands
+    // (ATP, GTP) are not swept in.
+    const atomNamed = (...names) => residue.atoms
+        && residue.atoms.some(a => names.indexOf(a.atomName) !== -1);
+    if (atomNamed("C4'", "C4*") && atomNamed("O4'", "O4*") && atomNamed("C1'", "C1*")) {
+        // the 2'-OH is what separates ribose from deoxyribose, and it survives
+        // any modification of the base itself
+        const nucleicType = atomNamed("O2'", "O2*") ? 'R' : 'D';
+        if (allResidues) {
+            if (isResidueConnected(residue, allResidues, nucleicType)) {
+                return nucleicType;
+            }
+            return null;
+        }
+        return nucleicType;
+    }
+
     // No other cases - return null (removed all "last resort" checks and NUCLEOTIDE_LIGANDS exclusion)
     return null;
 }
@@ -1593,7 +1616,7 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                     plddts.push(normalizePlddt(atom.b));
                     position_chains.push(atom.chain);
                     position_types.push('L');
-                    residues.push(atom.res_name || atom.resName || residue.resName);
+                            residues.push(atom.res_name || atom.resName || residue.resName);
                     residue_numbers.push(atom.res_seq || atom.resSeq || residue.resSeq);
 
                     // Map serial/ID to new index

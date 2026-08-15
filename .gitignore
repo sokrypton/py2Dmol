@@ -17,3 +17,11 @@ implementation_plan.md
 *.json
 node_modules/
 *.egg-info/
+
+# cartoon test harness output (regenerate with python tests/build.py)
+tests/out/
+__pycache__/
+
+# Benchmark input for `python tests/ss_bench.py --build` (DSSP ground truth).
+# 3.8 MB and not needed to run the viewer; place it in the repo root to rebuild.
+natives.zip

@@ -85,6 +85,7 @@ py2Dmol/
 │   └── resources/
 │       ├── viewer.html          # Jupyter widget template (200 lines)
 │       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (6,969 lines)
+│       ├── viewer-cartoon.js    # Cartoon style plugin (SS ribbons/tubes; replaces draw stage when style="cartoon")
 │       ├── viewer-pae.js        # PAE matrix visualization (906 lines)
 │       ├── viewer-seq.js        # Sequence viewer (2,257 lines)
 │       ├── viewer-msa.js        # MSA viewer (5,293 lines)
@@ -141,6 +142,9 @@ def __init__(self,
     box=True,                 # Show bounding box
     color="auto",             # Color mode
     colorblind=False,         # Colorblind-safe palette
+    style="ribbon",           # Render style: "ribbon", "cartoon" or "richardson"
+    thickness=None,           # Cartoon slab thickness in A (default 0 flat, 0.7 for richardson)
+    detail=0.5,               # Cartoon sampling density 0.15-0.5 (lower = faceted + faster)
     shadow=True,              # Enable/disable shadows
     shadow_strength=0.5,      # Shadow strength (0.0-1.0)
     outline="full",           # Outline mode: "full", "partial", "none"
@@ -1016,6 +1020,15 @@ Segments sorted by **average Z** after rotation (painter's algorithm).
 2. Store highest Z per cell
 3. Segments below grid max are darkened
 4. **Shadow isolation**: Frames don't cast shadows on each other in overlay mode
+
+### Render Styles (Ribbon vs Cartoon)
+
+`config.rendering.style` selects the draw stage; everything upstream (data model, rotation, colors, selection, live updates) is shared.
+
+- **`ribbon`** (default): the segment pipeline in `viewer-mol.js` described in this section.
+- **`cartoon`**: `Pseudo3DRenderer._renderToContext()` delegates to `window.py2dmolCartoon.render()` (defined in `viewer-cartoon.js`) right after rotation and per-segment colors are computed, then returns. The plugin draws secondary-structure cartoons: one strip primitive per residue interval for helices/strands (subdivided stations; edges stroked as continuous polylines, outline band as one seamless polygon), flattened plates for strands, Catmull-Rom tube polylines for loops and nucleic backbones, black outlines with paint-order-aware end caps, cross-edge caps at element ends (closing helix-to-loop junctions), and silhouette strokes at ribbon folds (cross edges stroked only where screen-space winding flips, i.e. where the ribbon turns edge-on). SS assignment is real DSSP (hydrogen-bond energies, turns, bridges) run on a backbone rebuilt from the C-alpha trace (`predictBackbone`, a PULCHRA-style binned table for C and N; O follows from sp2 geometry), so it needs no atoms beyond the trace: Q3 90.0% with 94.0% strand recall against DSSP on the true backbone, from 85.3% / 72.4% for the C-alpha-only `make_sec` it replaces; backbone dihedrals gate the assignment as in PyMOL's `dss` (still exported for `tests/ss_bench.js`). The bridge partners come back with it and are the sheet ladders. Strand frames are built from them (`buildSheetFrames`: PyMOL's peptide-plane normal and flattening cycles, then a plane fitted to each residue's patch of the sheet, then a joint relaxation along the strand and across the rungs). SS, ladders and strand frames are cached per object/frame (`renderer._cartoonSec` / `_cartoonLadder` / `_cartoonSheet`, all invalidated by `_invalidateSegmentCache()`); the frames are stored as local-frame coefficients so a render only rebuilds the frame from the rotated trace. Nucleic bases are handled the same way and from the same principle: nothing per-nucleotide is stored, and the C4'->base-centroid direction and base-plane normal are predicted from the C4' trace (`predictBaseFrames`, `NA_BASE_TABLE`, fitted by `tests/na_table.py` and scored by `tests/na_bench.js`). That prediction is weaker than the peptide one - 16.7 deg median with a 69 deg p90 tail, because the glycosidic torsion is a free degree of freedom the trace cannot see - so three things downstream compensate: the base-geometry gate on a candidate pair is widened (`NA_BASE_SEP_MAX` / `NA_COPLANAR_MIN`), a base that points away from its pair partner is flipped after pairing, and the ribbon's twist per residue is capped (`NA_TWIST_MAX`). Measured against the frames files themselves carry, before that path was removed: B-DNA and tRNA pair identically, tertiary RNA differs on a handful. Ligands, contacts, explicit bonds and lone atoms stay generic primitives and depth-sort against the cartoon. Shadows are not used in cartoon mode (depth cue is a blend toward the background instead).
+- Runtime switching: `renderer.setStyle('ribbon'|'cartoon')`, wired to the `#styleSelect` dropdown in both viewer.html and index.html.
+- Python: `py2Dmol.view(style="cartoon")`; `viewer-cartoon.min.js` is always inlined next to `viewer-mol.min.js` so the dropdown works in notebooks.
 
 ### Outline Rendering
 

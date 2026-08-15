@@ -2041,14 +2041,23 @@
         const displayWidth = renderer.displayWidth || renderer.canvas.width;
         const displayHeight = renderer.displayHeight || renderer.canvas.height;
 
-        // Set canvas size
-        highlightOverlayCanvas.width = displayWidth;
-        highlightOverlayCanvas.height = displayHeight;
-        highlightOverlayCanvas.style.width = displayWidth + 'px';
-        highlightOverlayCanvas.style.height = displayHeight + 'px';
+        // IDEMPOTENT. Every statement below is expensive to repeat: assigning
+        // canvas.width/height REALLOCATES (and clears) the overlay even when
+        // the value is unchanged, and the two getBoundingClientRect calls
+        // force a synchronous layout - interleaved with the style writes that
+        // is layout thrashing. This runs once per highlight repaint, so on a
+        // per-frame caller it dominated the frame. Bail out when nothing has
+        // actually moved or resized.
+        const sizeChanged = highlightOverlayCanvas.width !== displayWidth
+            || highlightOverlayCanvas.height !== displayHeight;
+        if (sizeChanged) {
+            highlightOverlayCanvas.width = displayWidth;
+            highlightOverlayCanvas.height = displayHeight;
+            highlightOverlayCanvas.style.width = displayWidth + 'px';
+            highlightOverlayCanvas.style.height = displayHeight + 'px';
+        }
 
         // Position overlay to match main canvas position within container
-        // Get the main canvas position relative to its container
         const mainCanvas = renderer.canvas;
         const container = mainCanvas.parentElement;
         if (container) {
@@ -2059,8 +2068,12 @@
             const offsetLeft = canvasRect.left - containerRect.left;
             const offsetTop = canvasRect.top - containerRect.top;
 
-            highlightOverlayCanvas.style.left = offsetLeft + 'px';
-            highlightOverlayCanvas.style.top = offsetTop + 'px';
+            // only write when it actually changed - a style write invalidates
+            // layout, so an unconditional one makes the next read reflow again
+            const l = offsetLeft + 'px';
+            const t = offsetTop + 'px';
+            if (highlightOverlayCanvas.style.left !== l) highlightOverlayCanvas.style.left = l;
+            if (highlightOverlayCanvas.style.top !== t) highlightOverlayCanvas.style.top = t;
         }
     }
 
