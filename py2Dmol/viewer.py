@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
         "background": "white"
     },
     "rendering": {
-        "style": "ribbon",
+        "style": "tube",
         "thickness": 0,
         "sheet_flat": 0.0,
         "arrows": True,
@@ -340,9 +340,9 @@ For complete documentation, see: technical_readme.md → "Persistence Modes"
 
 class view:
     def __init__(self, size=(400,400), controls=True, box=True,
-        color="auto", colorblind=False, ss_palette=None, style="ribbon", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
+        color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
-        outline=None, width=None, ortho=1.0, bg="white", rotate=False, autoplay=False,
+        outline=None, width=None, ortho=1.0, bg=None, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True,
         persistence=True, id=None, cutoffs=None,
     ):
@@ -384,24 +384,25 @@ class view:
             outline_tint (float): Cartoon outline colour, 0-1 (default 0.0).
                 0 inks pure black; 1 uses a 0.7 tint of the element's own
                 colour, matching ribbon mode.
-            preset (str): Named cartoon preset - "richardson" (the default
-                for style="cartoon"; equivalent to style="richardson") or
-                "3d" (solid shaded geometry: thickness 1.0, no outline,
-                smooth shading, flat sheets). Implies style="cartoon". An
-                explicit argument always wins over the preset. The Preset
-                dropdown in the Style panel.
-            style (str): Render style - "ribbon" (smooth backbone trace),
-                "richardson" (hand-drawn convention: flat wide helices, thick
-                arrowed strands, thin round loops) or
-                         "cartoon" (secondary-structure cartoon: helix/strand
-                         ribbons, loop tubes). Default "ribbon".
+            preset (str): Named cartoon preset, the Preset dropdown in the
+                Style panel - "richardson" (the default for style="cartoon":
+                the hand-drawn convention of flat wide helices, thick arrowed
+                strands, thin round loops), "ribbon" (plain cartoon) or "3d"
+                (solid shaded geometry: thickness 1.0, no outline, smooth
+                shading, flat sheets, on a black page). Implies
+                style="cartoon". An explicit argument always wins over it.
+            style (str): Render style - "tube" (smooth backbone trace) or
+                "cartoon" (secondary-structure cartoon: helix/strand ribbons,
+                loop tubes). Default "tube". These are the only two, because
+                they are the only two draw paths; richardson is a preset.
             shadow (bool): Ribbon cast-shadow effect. Default True.
             shade (float): Cartoon directional shading strength, 0-1
                 (default 1). 0 is flat colour; 1 is full light, highlight and
                 inner shadow, paired with `highlight` in the panel).
             shadow_strength (float): Shadow intensity 0-1. Default 0.5.
             outline (str): Outline mode - "none", "partial", "full". Default "full".
-            bg (str): Page background - "white" (default) or "black". Black
+            bg (str): Page background - "white", or "black" (the default
+                for preset="3d"). Black
                 inks outlines in white and fades depth toward black. The Dark
                 toggle.
             width (float): Line width. Default 3.0.
@@ -436,38 +437,44 @@ class view:
             scatter_size = int(scatter_size)
 
 
-        if style not in ("ribbon", "cartoon", "richardson"):
+        # There are two STYLES, because there are two draw paths: "tube" (the
+        # backbone trace) and "cartoon". Richardson is not a third - it is the
+        # cartoon path with a different per-SS profile, which makes it a PRESET.
+        if style not in ("tube", "cartoon"):
             raise ValueError(
-                f'Invalid style "{style}" - expected "ribbon", "cartoon" or "richardson".')
-        # PRESETS are named starting points for the cartoon style, mirroring
-        # the GUI's Preset dropdown. "richardson" (the DEFAULT for cartoon)
-        # is equivalent to style="richardson" - it also selects the
-        # richardson geometry profile; "3d" keeps the standard profile and
-        # changes settings only. A preset implies the cartoon style.
-        if preset is not None and preset not in ("richardson", "3d"):
+                f'Invalid style "{style}" - expected "tube" or "cartoon".')
+        # PRESETS are named starting points for the cartoon style, mirroring the
+        # GUI's Preset dropdown: "richardson" (the default) also selects the
+        # richardson geometry profile, "ribbon" is the plain cartoon, and "3d"
+        # keeps the standard profile and changes settings only. A preset implies
+        # the cartoon style.
+        if preset is not None and preset not in ("richardson", "ribbon", "3d"):
             raise ValueError(
-                f'Invalid preset "{preset}" - expected "richardson" or "3d".')
-        if style == "cartoon" and preset is None:
-            preset = "richardson"
-        if preset == "richardson":
-            style = "richardson"
-        elif preset == "3d" and style == "ribbon":
+                f'Invalid preset "{preset}" - expected "richardson", "ribbon" or "3d".')
+        if preset is not None:
             style = "cartoon"
+        elif style == "cartoon":
+            preset = "richardson"
         is3d = preset == "3d"
         # Richardson scales its per-SS thickness ratios by this value, so the
         # usual default of 0 (flat ribbons) would cancel the preset. An
         # explicit thickness - 0 included - is still honoured.
         if thickness is None:
-            thickness = 0.7 if style == "richardson" else (1.0 if is3d else 0)
+            thickness = 0.7 if preset == "richardson" else (1.0 if is3d else 0)
         # Beta-strand flattening. Real strands pleat; the Richardson drawings
         # show them flat, so the preset defaults to mostly flat and every other
         # style leaves the backbone alone.
         # Richardson outlines are a dark tint of the element's own colour.
         if outline_tint is None:
-            outline_tint = 0.8 if style == "richardson" else 0.0
+            outline_tint = 0.8 if preset == "richardson" else 0.0
         # outline MODE ("full"/"partial"/"none"); the 3d preset draws no ink
         if outline is None:
             outline = "none" if is3d else "full"
+        # The 3d preset is solid shaded geometry, meant to be seen on black -
+        # the GUI preset sets the same thing. An explicit bg still wins, which
+        # is why the parameter defaults to None rather than to "white".
+        if bg is None:
+            bg = "black" if is3d else "white"
         # Loop cross-section shading: 0 square, 1 tubular.
         # Detail is an integer 2-8 (2 = the geometric floor, see MIN_SUB in
         # viewer-cartoon.js; 8 restores the old smooth sampling).
@@ -479,13 +486,20 @@ class view:
         # smoothly and gets its texture from the pencil grain instead.
         # smooth = gradient shading (the Smooth toggle)
         if smooth is None:
-            smooth = not (style == "cartoon" and not is3d)
+            # richardson and 3d shade smoothly; the plain "ribbon" preset is the
+            # flat-banded one. Tube ignores this. Written against the STYLE when
+            # richardson WAS a style - now that every preset shares
+            # style="cartoon", that test put richardson in the flat branch.
+            smooth = (style != "cartoon") or preset in ("richardson", "3d")
         if width is None:
-            width = 2.0 if style == "richardson" else 3.0
+            width = 2.0 if preset == "richardson" else 3.0
         if highlight is None:
-            highlight = 3.0 if style == "richardson" else (2.0 if is3d else 1.8)
+            highlight = 3.0 if preset == "richardson" else (2.0 if is3d else 1.8)
         if shade is None:
-            shade = 1.0
+            # mirrors STYLE_DEFAULTS: richardson models more lightly than a
+            # rendered solid. Sending a flat 1.0 here made view(preset=...)
+            # disagree with the identical preset chosen in the GUI.
+            shade = 0.7 if preset == "richardson" else 1.0
         else:
             shade = float(shade)
             if not 0.0 <= shade <= 1.0:
@@ -495,10 +509,10 @@ class view:
         # Coloured-pencil paper grain. Reproduced in SVG export as an
         # feTurbulence filter, so raster and vector output match.
         if pencil is None:
-            pencil = 1.0 if style == "richardson" else 0.0
+            pencil = 1.0 if preset == "richardson" else 0.0
         pencil = max(0.0, min(1.0, float(pencil)))
         if sheet_flat is None:
-            sheet_flat = 1.0 if (style == "richardson" or is3d) else 0.0
+            sheet_flat = 1.0 if (preset == "richardson" or is3d) else 0.0
         sheet_flat = max(0.0, min(1.0, float(sheet_flat)))
         thickness = float(thickness)
         if thickness < 0:
@@ -537,7 +551,11 @@ class view:
             outline_tint=outline_tint,
             ss_palette=ss_palette,
             base_plates=base_plates,
-            preset=("3d" if is3d else None),
+            # the RESOLVED preset, not just 3d: the viewer derives the
+            # richardson geometry profile (cartoonRichardson) from this, so
+            # sending None for richardson gave its slider values without its
+            # geometry - it used to ride in on style="richardson" instead.
+            preset=preset,
             shadow=shadow,
             shade=shade,
             shadow_strength=shadow_strength,
@@ -837,6 +855,13 @@ class view:
                 current_metadata["contacts"] = obj["contacts"]
             if obj.get("bonds") is not None:
                 current_metadata["bonds"] = obj["bonds"]
+            # set_sse() writes this and then asks for a broadcast, so it has to
+            # travel with the other per-object metadata or the call did nothing
+            # in live mode. Keys are stringified for JSON, as in the static path.
+            if obj.get("sse"):
+                current_metadata["sse"] = {
+                    str(k): v for k, v in obj["sse"].items()
+                }
             if obj.get("scatter_config") is not None:
                 current_metadata["scatter_config"] = obj["scatter_config"]
             if obj.get("rotation_matrix") is not None:
@@ -990,7 +1015,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             for py_obj in static_data:
                 # Skip objects with no frames AND no metadata
                 if not py_obj.get("frames") and not any(
-                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "rotation_matrix", "center"]
+                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "sse", "rotation_matrix", "center"]
                 ):
                     continue
 
@@ -1106,6 +1131,14 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 # Add color overrides if they exist
                 if "color" in py_obj and py_obj["color"] is not None:
                     obj_to_serialize["color"] = py_obj["color"]
+
+                # ... and secondary-structure overrides (set_ss), which travel
+                # with the object for the same reason colour does: both are keyed
+                # by position index and only mean anything against this object.
+                if py_obj.get("sse"):
+                    obj_to_serialize["sse"] = {
+                        str(k): v for k, v in py_obj["sse"].items()
+                    }
 
                 # Add scatter_config if it exists
                 if "scatter_config" in py_obj and py_obj["scatter_config"] is not None:
@@ -1888,6 +1921,83 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         else:
             # persistence=False: Replace all frames (streaming mode, no history)
             target_obj["frames"] = [frame_data]
+
+    def set_sse(self, sse, name=None, chain=None, position=None):
+        """
+        Override the secondary structure of specific residues.
+
+        The automatic assignment is good but not infallible, and a figure
+        sometimes wants a region drawn as a helix or strand regardless. This is
+        the same override the web interface's SSE control writes, so a structure
+        looks the same however it was set up.
+
+        Args:
+            sse (str or None): "H" helix, "E" strand/sheet, "C" coil/loop, or
+                None to clear the override and return those residues to the
+                automatic assignment.
+            name (str, optional): Object to apply to. Defaults to the last one added.
+            chain (str, optional): Apply to every residue of this chain.
+            position (int, list, tuple, range, optional): Position index/indices.
+                A 2-tuple is a half-open range, matching set_color.
+
+        Examples:
+            view.set_sse("H", position=(20, 35))     # force 20-34 to helix
+            view.set_sse("E", chain="B")             # all of chain B as strand
+            view.set_sse(None, position=(20, 35))    # back to automatic
+
+        Note:
+            Overrides are stored by POSITION INDEX, so they belong to one
+            object's numbering - the same limitation the GUI has.
+        """
+        if sse is not None:
+            sse = str(sse).upper()
+            if sse not in ("H", "E", "C"):
+                raise ValueError(
+                    f'Invalid sse "{sse}" - expected "H", "E", "C" or None.')
+
+        if not self.objects:
+            print("Error: No objects loaded. Cannot set secondary structure.")
+            return
+        target_obj = self.objects[-1] if name is None else next(
+            (o for o in self.objects if o.get("name") == name), None)
+        if target_obj is None:
+            print(f'Error: Object "{name}" not found.')
+            return
+
+        indices = []
+        if position is not None:
+            if isinstance(position, int):
+                indices = [int(position)]
+            elif isinstance(position, tuple) and len(position) == 2:
+                indices = list(range(int(position[0]), int(position[1])))
+            elif isinstance(position, (list, range)):
+                indices = [int(p) for p in position]
+            else:
+                raise ValueError(
+                    "position must be an int, list, range or (start, end) tuple.")
+        if chain is not None:
+            frames = target_obj.get("frames") or []
+            chains = frames[0].get("chains") if frames else None
+            if not chains:
+                print("Error: object has no chain information.")
+                return
+            indices += [i for i, c in enumerate(chains) if c == chain]
+        if not indices:
+            raise ValueError("set_sse needs position= and/or chain=.")
+
+        # Stored on the object so it travels with it, exactly like `color`.
+        current = dict(target_obj.get("sse") or {})
+        for i in indices:
+            if sse is None:
+                current.pop(i, None)
+                current.pop(str(i), None)
+            else:
+                current[i] = sse
+        target_obj["sse"] = current or None
+        # Same live-update path set_color uses, so a change lands immediately in
+        # an already-displayed viewer and is simply picked up by show() otherwise.
+        if self._is_live:
+            self._send_incremental_update()
 
     def set_color(self, color, name=None, chain=None, position=None, frame=None):
         """
@@ -2888,6 +2998,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 obj_to_serialize["contacts"] = obj["contacts"]
             if "bonds" in obj and obj["bonds"]:
                 obj_to_serialize["bonds"] = obj["bonds"]
+            # Object-level colour overrides (set_color with chain=/position=).
+            # load_state has always read this back; the save side simply never
+            # wrote it, so a manually coloured structure came back plain.
+            if obj.get("color") is not None:
+                obj_to_serialize["color"] = obj["color"]
+            # ... and secondary-structure overrides (set_ss), same reasoning.
+            if obj.get("sse"):
+                obj_to_serialize["sse"] = {
+                    str(k): v for k, v in obj["sse"].items()
+                }
             # Add scatter_config and scatter_metadata if present
             if "scatter_config" in obj and obj["scatter_config"] is not None:
                 obj_to_serialize["scatter_config"] = obj["scatter_config"]
@@ -2985,6 +3105,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     self.objects[-1]["bonds"] = obj_data["bonds"]
                 if "color" in obj_data:
                     self.objects[-1]["color"] = obj_data["color"]
+                if obj_data.get("sse"):
+                    # keys come back from JSON as strings; set_ss works in ints
+                    self.objects[-1]["sse"] = {
+                        int(k): v for k, v in obj_data["sse"].items()
+                    }
                 # Restore scatter config (prefer scatter_config, but accept legacy scatter_metadata)
                 scatter_cfg = obj_data.get("scatter_config")
                 if not scatter_cfg and obj_data.get("scatter_metadata"):
@@ -2995,6 +3120,17 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         # Restore config (v2.0 nested format only)
         if "config" in state_data:
             self.config = state_data["config"]
+            # Normalise the style, which used to name three things. A state
+            # written when "richardson" was a style would otherwise be read as
+            # "tube" (the only non-cartoon value) and render as the wrong thing
+            # silently. Not a compatibility layer - just three lines so a stale
+            # file fails visibly or correctly rather than quietly.
+            rend = self.config.setdefault("rendering", {})
+            if rend.get("style") == "richardson":
+                rend["style"] = "cartoon"
+                rend.setdefault("preset", "richardson")
+            elif rend.get("style") == "ribbon":
+                rend["style"] = "tube"
         
         # State loaded - user must call show() to display
         if not self.objects:

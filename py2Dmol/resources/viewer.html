@@ -114,7 +114,7 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
 .btn-row .btn-toggle { display: block; }
 .btn-row .btn-toggle span { width: 100%; box-sizing: border-box; }
 /* Style panel: inline expand under the Style button. Rows carry
-   data-style="cartoon|ribbon" (untagged = shared) and are shown/hidden by
+   data-style="cartoon|tube" (untagged = shared) and are shown/hidden by
    syncStylePanel() in viewer-mol.js. */
 #styleToggle { width: 100%; }
 /* Open state reuses the pressed look of the other toggle buttons, which is
@@ -227,19 +227,25 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                  cannot diverge. Only the CSS skin differs (half-cells stack in
                  this narrow panel). Edit BOTH files when a control changes. -->
             <div id="stylePanel" hidden>
+                <!-- Style and Preset share a row; the Preset half is tagged
+                     data-style="cartoon" so it only appears once a cartoon style
+                     is selected. -->
                 <div class="toggle-item">
-                    <label for="styleSelect">Style:</label>
-                    <select id="styleSelect">
-                        <option value="ribbon">Ribbon</option>
-                        <option value="cartoon">Cartoon</option>
-                    </select>
-                </div>
-                <div class="toggle-item" data-style="cartoon">
-                    <label for="presetSelect" title="Named starting points; editing any slider flips back to Custom">Preset:</label>
-                    <select id="presetSelect">
-                                                <option value="richardson">Richardson</option>
-                        <option value="3d">3D</option>
-                    </select>
+                    <div class="half">
+                        <label for="styleSelect">Style:</label>
+                        <select id="styleSelect">
+                            <option value="tube">Tube</option>
+                            <option value="cartoon">Cartoon</option>
+                        </select>
+                    </div>
+                    <div class="half" data-style="cartoon">
+                        <label for="presetSelect" title="Named starting points; the sliders stay live under any of them">Preset:</label>
+                        <select id="presetSelect">
+                            <option value="richardson">Richardson</option>
+                            <option value="ribbon">Ribbon</option>
+                            <option value="3d">3D</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="toggle-item" data-style="cartoon">
                     <label class="btn-toggle"
@@ -273,7 +279,7 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                         <label for="thicknessSlider" title="Cartoon slab thickness (0 = flat)">Thick:</label>
                         <input type="range" id="thicknessSlider" min="0" max="1.5" value="0" step="0.05">
                     </div>
-                    <div class="half" data-style="cartoon richardson">
+                    <div class="half" data-style="cartoon">
                         <label for="sheetFlatSlider" title="Flatten beta strands (0 = natural pleat, 1 = flat)">Flat:</label>
                         <input type="range" id="sheetFlatSlider" min="0" max="1" value="0" step="0.05">
                     </div>
@@ -289,17 +295,17 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                     </div>
                 </div>
                 <div class="toggle-item">
-                    <div class="half" data-style="cartoon richardson">
+                    <div class="half" data-style="cartoon">
                         <label for="pencilSlider" title="Coloured-pencil paper grain (0 = clean)">Pencil:</label>
                         <input type="range" id="pencilSlider" min="0" max="1" value="0" step="0.05">
                     </div>
-                    <div class="half" data-style="ribbon">
+                    <div class="half" data-style="tube">
                         <label for="shadowSlider" title="Shadow strength. 0 turns shadow off. Cartoon reads on/off only.">Shadow:</label>
                         <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01">
                     </div>
-                    <div class="half">
-                        <label for="orthoSlider">Ortho:</label>
-                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
+                    <div class="half" data-style="cartoon">
+                        <label for="outlineTintSlider" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
+                        <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05">
                     </div>
                 </div>
                 <div class="toggle-item">
@@ -307,9 +313,9 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                         <label for="detailSlider" title="Subdivisions per residue, 2-8 (low = faceted and faster)">Detail:</label>
                         <input type="range" id="detailSlider" min="2" max="8" value="4" step="1">
                     </div>
-                    <div class="half" data-style="cartoon">
-                        <label for="outlineTintSlider" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
-                        <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05">
+                    <div class="half">
+                        <label for="orthoSlider">Ortho:</label>
+                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01">
                     </div>
                 </div>
                 <div class="toggle-item">

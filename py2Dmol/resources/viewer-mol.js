@@ -409,12 +409,50 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const LIGHTEN_FACTOR = 0.25;
 
     // Named color map for common color names
+    // Selection indicator. The cartoon plugin has its own copy of the colour
+    // (viewer-cartoon.js, SELECTION_INK_CSS) because it is a separate file
+    // loaded independently; keep the two in step. The WIDTHS differ by design:
+    // this style adds to its line width, the cartoon sets an absolute stroke,
+    // hence EXTRA here and WIDTH there.
+    // Click targets are sized from the tube stroke, but the cartoon draws a
+    // ribbon several times wider; without this the fat parts of a helix are
+    // not clickable. Kept modest so background clicks still deselect.
+    const PICK_WIDTH_SCALE = 2.2;
+
+    const SELECTION_INK_CSS = 'rgb(255, 190, 0)';
+    const SELECTION_INK_EXTRA = 5;
+
     const namedColorsMap = {
         "red": "#ff0000", "green": "#00ff00", "blue": "#0000ff", "yellow": "#ffff00", "cyan": "#00ffff", "magenta": "#ff00ff",
         "orange": "#ffa500", "purple": "#800080", "pink": "#ffc0cb", "brown": "#8b4513", "gray": "#808080", "grey": "#808080",
         "white": "#ffffff", "black": "#000000", "lime": "#00ff00", "navy": "#000080", "teal": "#008080",
         "silver": "#c0c0c0", "maroon": "#800000", "olive": "#808000", "aqua": "#00ffff", "fuchsia": "#ff00ff"
     };
+
+    // Swatches for the selection colour picker: the SAME colours chains are
+    // drawn in, so the palette is the app's own vocabulary rather than a second
+    // one to learn - pick "the green one" and you get the green chains are.
+    // Follows colourblind mode for the same reason. Three neutrals are appended
+    // because white/grey/black are constantly wanted and are not chain colours.
+    // white / grey / black are constantly wanted and are not chain colours, so
+    // they join the end of the same run rather than sitting in a row of their own.
+    const PALETTE_NEUTRALS = ['#FFFFFF', '#808080', '#000000'];
+    function getPaletteColors(colorblind) {
+        const src = colorblind ? chainColorsColorblind : chainColors;
+        const rgbToHex = (c) => '#' + [c.r, c.g, c.b]
+            .map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+        const cells = src
+            .map((c) => (typeof c === 'string' ? c : rgbToHex(c)))
+            .concat(PALETTE_NEUTRALS);
+        // One continuous grid. The row width is chosen so the last row is not a
+        // near-empty stub - with 42 chain colours + 3 neutrals, 14 per row left a
+        // single black swatch stranded on a row of its own.
+        const perRow = Math.ceil(cells.length / Math.max(1, Math.round(cells.length / 15)));
+        const rows = [];
+        for (let i = 0; i < cells.length; i += perRow) rows.push(cells.slice(i, i + perRow));
+        return rows;
+    }
+    window.py2dmol_paletteColors = getPaletteColors;
 
     function hexToRgb(hex) { if (!hex || typeof hex !== 'string') { return { r: 128, g: 128, b: 128 }; } const r = parseInt(hex.slice(1, 3), 16); const g = parseInt(hex.slice(3, 5), 16); const b = parseInt(hex.slice(5, 7), 16); return { r, g, b }; }
     function rgbToHex({ r, g, b }) { const clamp = (v) => Math.max(0, Math.min(255, Math.round(v))); const cr = clamp(r).toString(16).padStart(2, '0'); const cg = clamp(g).toString(16).padStart(2, '0'); const cb = clamp(b).toString(16).padStart(2, '0'); return `#${cr}${cg}${cb}`; }
@@ -654,7 +692,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             box: true
         },
         rendering: {
-            style: "ribbon",
+            style: "tube",
             detail: 0.5,
             // thickness / cel / highlight / outline_tint / width / arrows /
             // pencil / sheet_flat are deliberately absent: they are resolved
@@ -824,18 +862,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 currentFrame: -1
             };
 
-            // Render style: 'ribbon' (default segment pipeline below) or 'cartoon'
+            // Render style: 'tube' (default segment pipeline below) or 'cartoon'
             // (secondary-structure cartoon; draw stage delegated to viewer-cartoon.js)
             const _st = config.rendering?.style;
-            let _style = (_st === 'cartoon' || _st === 'richardson') ? _st : 'ribbon';
-            if (_style !== 'ribbon' && !window.py2dmolCartoon) {
+            let _style = (_st === 'cartoon') ? 'cartoon' : 'tube';
+            if (_style === 'cartoon' && !window.py2dmolCartoon) {
                 // The plugin may simply not have been loaded yet (index.html
                 // loads it after this file). Fall back to ribbon so the dropdown
                 // never labels a ribbon "Cartoon", and take the requested style
                 // as soon as the plugin announces itself. setStyle applies the
                 // preset, so nothing is lost by deferring.
                 this._pendingStyle = _style;
-                _style = 'ribbon';
+                _style = 'tube';
                 window.addEventListener('py2dmol_cartoon_loaded', () => {
                     const want = this._pendingStyle;
                     this._pendingStyle = null;
@@ -844,11 +882,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
             this.style = _style;
             // Richardson is the cartoon draw path with a per-SS profile preset.
-            this.cartoonRichardson = (this.style === 'richardson');
+            this.cartoonRichardson = (config.rendering?.preset === 'richardson');
             // Preset LABEL for the GUI dropdown; the concrete values arrive
             // as normal settings, so this only names them.
-            this.stylePreset = (this.style === 'richardson') ? 'richardson'
-                : (config.rendering?.preset === '3d' ? '3d' : 'custom');
+            // 'ribbon' (plain cartoon) is the default, and the only other
+            // values are 'richardson' and '3d'. This used to fall back to
+            // 'custom', a preset that was removed - leaving the dropdown with a
+            // value it does not list.
+            const _p = config.rendering?.preset;
+            this.stylePreset = (_p === '3d' || _p === 'ribbon') ? _p : 'richardson';
             const th = Number(config.rendering?.thickness);
             // Richardson's per-SS thickness is a set of RATIOS scaled by this
             // control, so the global default of 0 (flat ribbons) would cancel
@@ -1029,7 +1071,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // PAE and Visibility
             this.paeRenderer = null;
-            this.visibilityMask = null; // Set of position indices to *show*
+            // Set of position indices to SHOW; null means everything is
+            // visible. Was called visibilityMask, which invited the wrong
+            // mental model - it is not a per-residue boolean array.
+            this.visiblePositions = null;
             this.highlightedAtom = null; // To store position index for highlighting (property name kept for API compatibility)
             this.highlightedAtoms = null; // To store Set of position indices for highlighting multiple positions (property name kept for API compatibility)
 
@@ -1037,13 +1082,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // positions: Set of position indices (0, 1, 2, ...) - one position per entry in frame data
             // chains: Set of chain IDs (empty => all chains)
             // paeBoxes: Array of selection rectangles in PAE position space {i_start,i_end,j_start,j_end}
-            // selectionMode: 'default' = empty selection means "show all" (initial state)
+            // visibilityMode: 'default' = empty selection means "show all" (initial state)
             //                'explicit' = empty selection means "show nothing" (user cleared)
-            this.selectionModel = {
+            this.visibilityModel = {
                 positions: new Set(), // Position indices: 0, 1, 2, ... (one position per entry in frame data)
                 chains: new Set(),
                 paeBoxes: [],
-                selectionMode: 'default' // Start in default mode (show all)
+                visibilityMode: 'default' // Start in default mode (show all)
             };
 
             // Ligand groups: Now stored per-object in objectsData[name].ligandGroups
@@ -1106,21 +1151,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // [PATCH] --- Unified Selection API ---
-        setSelection(patch, skip3DRender = false) {
+        setVisibility(patch, skip3DRender = false) {
             if (!patch) return;
             if (patch.positions !== undefined) {
                 const a = patch.positions;
-                this.selectionModel.positions = (a instanceof Set) ? new Set(a) : new Set(Array.from(a || []));
+                this.visibilityModel.positions = (a instanceof Set) ? new Set(a) : new Set(Array.from(a || []));
             }
             if (patch.chains !== undefined) {
                 const c = patch.chains;
-                this.selectionModel.chains = (c instanceof Set) ? new Set(c) : new Set(Array.from(c || []));
+                this.visibilityModel.chains = (c instanceof Set) ? new Set(c) : new Set(Array.from(c || []));
             }
             if (patch.paeBoxes !== undefined) {
                 if (patch.paeBoxes === 'clear' || patch.paeBoxes === null) {
-                    this.selectionModel.paeBoxes = [];
+                    this.visibilityModel.paeBoxes = [];
                 } else if (Array.isArray(patch.paeBoxes)) {
-                    this.selectionModel.paeBoxes = patch.paeBoxes.map(b => ({
+                    this.visibilityModel.paeBoxes = patch.paeBoxes.map(b => ({
                         i_start: Math.max(0, Math.floor(b.i_start ?? 0)),
                         i_end: Math.max(0, Math.floor(b.i_end ?? 0)),
                         j_start: Math.max(0, Math.floor(b.j_start ?? 0)),
@@ -1128,41 +1173,41 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }));
                 }
             }
-            if (patch.selectionMode !== undefined) {
-                this.selectionModel.selectionMode = patch.selectionMode;
+            if (patch.visibilityMode !== undefined) {
+                this.visibilityModel.visibilityMode = patch.visibilityMode;
             }
 
             // Normalize default mode: if in default mode with empty positions, populate with all positions
             // This ensures default mode always has positions filled, simplifying all selection logic
-            if (this.selectionModel.selectionMode === 'default' &&
-                (!this.selectionModel.positions || this.selectionModel.positions.size === 0)) {
+            if (this.visibilityModel.visibilityMode === 'default' &&
+                (!this.visibilityModel.positions || this.visibilityModel.positions.size === 0)) {
                 const n = this.coords ? this.coords.length : 0;
-                this.selectionModel.positions = new Set();
+                this.visibilityModel.positions = new Set();
                 for (let i = 0; i < n; i++) {
-                    this.selectionModel.positions.add(i);
+                    this.visibilityModel.positions.add(i);
                 }
             }
 
             // Save selection state to current object whenever it changes
             if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                this.objectsData[this.currentObjectName].selectionState = {
-                    positions: new Set(this.selectionModel.positions),
-                    chains: new Set(this.selectionModel.chains),
-                    paeBoxes: this.selectionModel.paeBoxes.map(box => ({ ...box })),
-                    selectionMode: this.selectionModel.selectionMode
+                this.objectsData[this.currentObjectName].visibilityState = {
+                    positions: new Set(this.visibilityModel.positions),
+                    chains: new Set(this.visibilityModel.chains),
+                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
+                    visibilityMode: this.visibilityModel.visibilityMode
                 };
             }
 
             this._composeAndApplyMask(skip3DRender);
         }
 
-        getSelection() {
-            const m = this.selectionModel;
+        getVisibility() {
+            const m = this.visibilityModel;
 
             // Normalize default mode: if in default mode with empty positions, populate with all positions
-            // This ensures getSelection() always returns positions populated for default mode
+            // This ensures getVisibility() always returns positions populated for default mode
             let positions = new Set(m.positions);
-            if (m.selectionMode === 'default' && positions.size === 0) {
+            if (m.visibilityMode === 'default' && positions.size === 0) {
                 const n = this.coords ? this.coords.length : 0;
                 positions = new Set();
                 for (let i = 0; i < n; i++) {
@@ -1174,25 +1219,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 positions: positions,
                 chains: new Set(m.chains),
                 paeBoxes: m.paeBoxes.map(b => ({ ...b })),
-                selectionMode: m.selectionMode
+                visibilityMode: m.visibilityMode
             };
         }
 
-        resetSelection() {
-            this.selectionModel = {
+        resetVisibility() {
+            this.visibilityModel = {
                 positions: new Set(),
                 chains: new Set(),
                 paeBoxes: [],
-                selectionMode: 'default'
+                visibilityMode: 'default'
             };
             this._composeAndApplyMask();
         }
 
         // Reset to default state: show all positions
-        resetToDefault() {
+        showAll() {
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
-                this.resetSelection();
+                this.resetVisibility();
                 return;
             }
 
@@ -1206,28 +1251,28 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const allChains = new Set(this.chains);
 
             // Clear PAE boxes when resetting to default (select all)
-            this.setSelection({
+            this.setVisibility({
                 positions: allPositions,
                 chains: allChains,
                 paeBoxes: [],
-                selectionMode: 'default'
+                visibilityMode: 'default'
             });
         }
 
         // Clear all selections: show nothing (explicit mode)
-        clearSelection() {
-            this.setSelection({
+        hideAll() {
+            this.setVisibility({
                 positions: new Set(),
                 chains: new Set(),
                 paeBoxes: [],
-                selectionMode: 'explicit'
+                visibilityMode: 'explicit'
             });
         }
 
         _composeAndApplyMask(skip3DRender = false) {
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
-                this.visibilityMask = null;
+                this.visiblePositions = null;
                 if (!skip3DRender) {
                     this.render('_composeAndApplyMask: empty coords');
                 }
@@ -1237,21 +1282,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // (1) Position/Chain contribution
             // Always compute position selection - it works together with PAE via UNION
             let allowedChains;
-            if (this.selectionModel.chains && this.selectionModel.chains.size > 0) {
-                allowedChains = this.selectionModel.chains;
+            if (this.visibilityModel.chains && this.visibilityModel.chains.size > 0) {
+                allowedChains = this.visibilityModel.chains;
             } else {
                 // All chains
                 allowedChains = new Set(this.chains);
             }
 
             let seqPositions = null;
-            if ((this.selectionModel.positions && this.selectionModel.positions.size > 0) ||
-                (this.selectionModel.chains && this.selectionModel.chains.size > 0)) {
+            if ((this.visibilityModel.positions && this.visibilityModel.positions.size > 0) ||
+                (this.visibilityModel.chains && this.visibilityModel.chains.size > 0)) {
                 seqPositions = new Set();
 
                 // In overlay mode, selections are based on frame[0] indices but need to be expanded
                 // to include corresponding positions from all frames in the merged array
-                if (this.overlayState.enabled && this.overlayState.frameIdMap && this.selectionModel.positions.size > 0) {
+                if (this.overlayState.enabled && this.overlayState.frameIdMap && this.visibilityModel.positions.size > 0) {
                     // Build frame offset map: frameIdx -> starting index in merged array
                     const frameOffsets = new Map();
                     const frameSizes = new Map();
@@ -1276,7 +1321,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // Expand selections: for each selected position (based on frame 0),
                     // find corresponding positions in all frames
                     const frame0Size = frameSizes.get(0) || 0;
-                    for (const selectedPos of this.selectionModel.positions) {
+                    for (const selectedPos of this.visibilityModel.positions) {
                         // Only process positions that exist in frame 0
                         if (selectedPos >= frame0Size) continue;
 
@@ -1300,7 +1345,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         if (!allowedChains.has(ch)) continue;
                         // If positions are explicitly selected, check if this position is in the set
                         // If no positions selected but chains are, include all positions in allowed chains
-                        if (this.selectionModel.positions.size === 0 || this.selectionModel.positions.has(i)) {
+                        if (this.visibilityModel.positions.size === 0 || this.visibilityModel.positions.has(i)) {
                             seqPositions.add(i);
                         }
                     }
@@ -1314,7 +1359,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // PAE may only cover subset of positions (e.g., only polymer)
             // Handled by mapping PAE positions directly to position indices
             let paePositions = null;
-            if (this.selectionModel.paeBoxes && this.selectionModel.paeBoxes.length > 0) {
+            if (this.visibilityModel.paeBoxes && this.visibilityModel.paeBoxes.length > 0) {
                 paePositions = new Set();
 
                 // In overlay mode, PAE selections should expand across all frames
@@ -1342,7 +1387,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
 
                     const frame0Size = frameSizes.get(0) || 0;
-                    for (const box of this.selectionModel.paeBoxes) {
+                    for (const box of this.visibilityModel.paeBoxes) {
                         const i0 = Math.max(0, Math.min(frame0Size - 1, Math.min(box.i_start, box.i_end)));
                         const i1 = Math.max(0, Math.min(frame0Size - 1, Math.max(box.i_start, box.i_end)));
                         const j0 = Math.max(0, Math.min(frame0Size - 1, Math.min(box.j_start, box.j_end)));
@@ -1368,7 +1413,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 } else {
                     // Normal mode
-                    for (const box of this.selectionModel.paeBoxes) {
+                    for (const box of this.visibilityModel.paeBoxes) {
                         const i0 = Math.max(0, Math.min(n - 1, Math.min(box.i_start, box.i_end)));
                         const i1 = Math.max(0, Math.min(n - 1, Math.max(box.i_start, box.i_end)));
                         const j0 = Math.max(0, Math.min(n - 1, Math.min(box.j_start, box.j_end)));
@@ -1394,19 +1439,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // (4) Apply based on selection mode
-            const mode = this.selectionModel.selectionMode || 'default';
-            const oldVisibilityMask = this.visibilityMask;
+            const mode = this.visibilityModel.visibilityMode || 'default';
+            const oldVisiblePositions = this.visiblePositions;
             if (combined && combined.size > 0) {
                 // We have some selection - use it
-                this.visibilityMask = combined;
+                this.visiblePositions = combined;
             } else {
                 // No selection computed
                 if (mode === 'default') {
                     // Default mode: empty selection means "show all"
-                    this.visibilityMask = null;
+                    this.visiblePositions = null;
                 } else {
                     // Explicit mode: empty selection means "show nothing"
-                    this.visibilityMask = new Set(); // Empty set = nothing visible
+                    this.visiblePositions = new Set(); // Empty set = nothing visible
                 }
             }
 
@@ -1414,9 +1459,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Visibility changes affect which segments are visible, so shadows need recalculation
             // Compare by reference and size (simple check - if different objects or different sizes, changed)
             const visibilityChanged = (
-                oldVisibilityMask !== this.visibilityMask &&
-                (oldVisibilityMask === null || this.visibilityMask === null ||
-                    oldVisibilityMask.size !== this.visibilityMask.size)
+                oldVisiblePositions !== this.visiblePositions &&
+                (oldVisiblePositions === null || this.visiblePositions === null ||
+                    oldVisiblePositions.size !== this.visiblePositions.size)
             );
             if (visibilityChanged && !skip3DRender) {
                 this._invalidateShadowCache();
@@ -1431,14 +1476,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Always dispatch event to notify UI of selection change (sequence/PAE viewers need this)
             if (typeof document !== 'undefined') {
                 try {
-                    document.dispatchEvent(new CustomEvent('py2dmol-selection-change', {
+                    document.dispatchEvent(new CustomEvent('py2dmol-visibility-change', {
                         detail: {
-                            hasSelection: this.visibilityMask !== null && this.visibilityMask.size > 0,
-                            selectionModel: {
-                                positions: Array.from(this.selectionModel.positions),
-                                chains: Array.from(this.selectionModel.chains),
-                                paeBoxes: this.selectionModel.paeBoxes.map(b => ({ ...b })),
-                                selectionMode: this.selectionModel.selectionMode
+                            hasSelection: this.visiblePositions !== null && this.visiblePositions.size > 0,
+                            visibilityModel: {
+                                positions: Array.from(this.visibilityModel.positions),
+                                chains: Array.from(this.visibilityModel.chains),
+                                paeBoxes: this.visibilityModel.paeBoxes.map(b => ({ ...b })),
+                                visibilityMode: this.visibilityModel.visibilityMode
                             }
                         }
                     }));
@@ -1462,10 +1507,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         setResidueVisibility(selection) {
             if (selection === null) {
                 // Clear only PAE contribution; leave sequence/chain selections intact
-                this.setSelection({ paeBoxes: 'clear' });
+                this.setVisibility({ paeBoxes: 'clear' });
             } else {
                 const { i_start, i_end, j_start, j_end } = selection;
-                this.setSelection({ paeBoxes: [{ i_start, i_end, j_start, j_end }] });
+                this.setVisibility({ paeBoxes: [{ i_start, i_end, j_start, j_end }] });
             }
         }
         // [END PATCH]
@@ -1481,6 +1526,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.isDragging = true;
                 this.spinVelocityX = 0;
                 this.spinVelocityY = 0;
+                // press origin, so mouseup can tell a CLICK from a rotate-drag
+                this._pressX = e.clientX;
+                this._pressY = e.clientY;
                 this.lastDragX = e.clientX;
                 this.lastDragY = e.clientY;
                 this.lastDragTime = performance.now();
@@ -1529,11 +1577,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         : 0;
                     // Count visible segments for inertia determination
                     let visibleSegmentCount = totalSegmentCount;
-                    if (this.visibilityMask && this.segmentIndices) {
+                    if (this.visiblePositions && this.segmentIndices) {
                         visibleSegmentCount = 0;
                         for (let i = 0; i < this.segmentIndices.length; i++) {
                             const seg = this.segmentIndices[i];
-                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                            if (this.visiblePositions.has(seg.idx1) && this.visiblePositions.has(seg.idx2)) {
                                 visibleSegmentCount++;
                             }
                         }
@@ -1570,9 +1618,56 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             });
 
             // Canvas-bound mouseup (fallback, but window listener handles it)
-            this.canvas.addEventListener('mouseup', () => {
+            // DOUBLE CLICK SELECTS THE WHOLE CHAIN. The single-click handler has
+            // already selected the one residue by the time this fires, so this
+            // widens that to its chain rather than starting from nothing.
+            // SHIFT adds the chain to what is already selected, matching the way
+            // shift extends a single-residue click - otherwise picking a second
+            // chain would throw away the first.
+            this.canvas.addEventListener('dblclick', (e) => {
+                if (e.target !== this.canvas) return;
+                const i = this.pickResidueAt(e.clientX, e.clientY);
+                if (i < 0 || !this.chains) return;
+                const chain = this.chains[i];
+                if (chain === undefined) return;
+                // the two shift-clicks that precede this already toggled residue
+                // i; the chain union covers it either way
+                const next = e.shiftKey ? new Set(this.residueSelection || []) : new Set();
+                for (let k = 0; k < this.chains.length; k++) {
+                    if (this.chains[k] === chain) next.add(k);
+                }
+                this.setResidueSelection(next);
+            });
+
+            this.canvas.addEventListener('mouseup', (e) => {
                 if (!this.isDragging) return;
                 this.isDragging = false;
+
+                // CLICK ON EMPTY BACKGROUND CLEARS THE SELECTION, the way
+                // clicking the background deselects in PyMOL. Only a click, not
+                // a rotate-drag, and only where nothing was hit - clicking the
+                // structure itself leaves the selection alone rather than
+                // clearing it out from under a tool the user is about to use.
+                if (e && this._pressX !== undefined) {
+                    const moved = Math.hypot(e.clientX - this._pressX,
+                        e.clientY - this._pressY);
+                    if (moved < 4) {
+                        const i = this.pickResidueAt(e.clientX, e.clientY);
+                        if (i < 0) {
+                            // empty background: deselect, as in PyMOL
+                            this.clearResidueSelection();
+                        } else if (e.shiftKey) {
+                            // shift extends, as in PyMOL - otherwise a click
+                            // replaces, so picking residues one at a time does
+                            // not silently accumulate
+                            const next = new Set(this.residueSelection || []);
+                            if (next.has(i)) next.delete(i); else next.add(i);
+                            this.setResidueSelection(next);
+                        } else {
+                            this.setResidueSelection(new Set([i]));
+                        }
+                    }
+                }
 
                 // Clear shadow cache when dragging ends (shadows need recalculation)
                 this._invalidateShadowCache();
@@ -1678,11 +1773,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         : 0;
                     // Count visible segments for inertia determination
                     let visibleSegmentCount = totalSegmentCount;
-                    if (this.visibilityMask && this.segmentIndices) {
+                    if (this.visiblePositions && this.segmentIndices) {
                         visibleSegmentCount = 0;
                         for (let i = 0; i < this.segmentIndices.length; i++) {
                             const seg = this.segmentIndices[i];
-                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                            if (this.visiblePositions.has(seg.idx1) && this.visiblePositions.has(seg.idx2)) {
                                 visibleSegmentCount++;
                             }
                         }
@@ -1742,11 +1837,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
                     // Count visible segments
                     let visibleSegmentCount = totalSegmentCount;
-                    if (this.visibilityMask && this.segmentIndices) {
+                    if (this.visiblePositions && this.segmentIndices) {
                         visibleSegmentCount = 0;
                         for (let i = 0; i < this.segmentIndices.length; i++) {
                             const seg = this.segmentIndices[i];
-                            if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                            if (this.visiblePositions.has(seg.idx1) && this.visiblePositions.has(seg.idx2)) {
                                 visibleSegmentCount++;
                             }
                         }
@@ -2127,74 +2222,96 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * Switch render style: 'ribbon' (default segment pipeline) or 'cartoon'
-         * (secondary-structure cartoon, drawn by viewer-cartoon.js).
+         * Switch render style: 'tube' (the segment pipeline in this file) or
+         * 'cartoon' (secondary-structure cartoon, drawn by viewer-cartoon.js).
+         *
+         * Those are the only two DRAW PATHS, and so the only two styles.
+         * Richardson is not a third: it is the cartoon path driven by a
+         * different per-SS profile, which makes it a PRESET (see setPreset).
+         * It used to be a style value as well, which meant every consumer -
+         * the dropdown, the panel row filter, the delegation check - carried a
+         * special case reading "...or richardson" to undo the mistake.
          */
         setStyle(style) {
-            if (style !== 'ribbon' && style !== 'cartoon' && style !== 'richardson') {
-                console.warn(`Invalid style "${style}" - expected "ribbon", "cartoon" or "richardson".`);
+            if (style !== 'tube' && style !== 'cartoon') {
+                console.warn(`Invalid style "${style}" - expected "tube" or "cartoon".`);
                 return;
             }
-            // 'richardson' is the cartoon renderer driven by a different
-            // per-SS profile (flat wide helices, thick arrowed strands, thin
-            // round loops), not a separate draw path - so it has the same
-            // dependency and the same panel rows.
-            if ((style === 'cartoon' || style === 'richardson') && !window.py2dmolCartoon) {
+            if (style === 'cartoon' && !window.py2dmolCartoon) {
                 console.warn(`Style "${style}" requested but viewer-cartoon.js is not loaded.`);
                 return;
             }
             if (this.style === style) return;
             this.style = style;
-            this.cartoonRichardson = (style === 'richardson');
-            // The GUI models richardson as a PRESET of the cartoon style
-            // (Style: Cartoon, Preset: Richardson - the default); internally
-            // it stays its own style value because it also selects a
-            // different geometry profile. The only other preset is '3d'.
-            this.stylePreset = (style === 'richardson') ? 'richardson' : '3d';
-            // Apply the new style's preset values and push them to the
-            // controls. Previously each value was seeded ad hoc and ONLY in the
-            // richardson direction, so switching back to cartoon left the
-            // richardson thickness, tint, highlight and width in place and the
-            // sliders showing them - the style switch was not symmetric.
-            this._applyStyleDefaults(style);
-            if (this.styleSelect) {
-                // the dropdown only lists ribbon/cartoon; richardson shows as
-                // cartoon there, with the Preset dropdown carrying the rest
-                const uiStyle = (style === 'richardson') ? 'cartoon' : style;
-                if (this.styleSelect.value !== uiStyle) this.styleSelect.value = uiStyle;
+            if (style === 'cartoon') {
+                // Entering the cartoon path lands on its default preset, which
+                // is what actually decides the look.
+                this.setPreset(this.stylePreset || 'richardson');
+                return;
             }
-            // Re-filter the Style panel rows for the new style (no-op if the
-            // panel markup is absent).
+            this.cartoonRichardson = false;
+            // stylePreset is deliberately NOT touched: tube has no preset, and
+            // clobbering it lost which cartoon preset to come back to, so
+            // Cartoon -> Tube -> Cartoon landed somewhere else than it left.
+            this._applyPresetBackground('ribbon');   // tube is drawn on paper
+            this._applyStyleDefaults('tube');
+            if (this.styleSelect && this.styleSelect.value !== style) {
+                this.styleSelect.value = style;
+            }
             if (this._syncStylePanel) this._syncStylePanel();
             this.render('setStyle');
         }
 
         /**
-         * Select a cartoon PRESET: 'richardson' (the default) or '3d'.
-         * Presets are starting points - the sliders stay live and editing
-         * them simply diverges from the named values.
+         * Select a cartoon PRESET: 'richardson' (the default), 'ribbon' or '3d'.
+         * Presets are starting points - the sliders stay live and editing them
+         * simply diverges from the named values.
+         *
+         * This is where richardson lives. The preset owns three things: the
+         * geometry profile (cartoonRichardson), the slider values
+         * (STYLE_DEFAULTS), and the page background. A preset always implies
+         * the cartoon style, so choosing one switches to it.
+         *
+         * 'ribbon' is the plain cartoon - smooth off, no slab thickness, ink on
+         * - which IS STYLE_DEFAULTS.cartoon; it exists as a named preset so
+         * there is a way back to plain cartoon after richardson or 3d.
          */
         setPreset(name) {
-            if (name === 'richardson') {
-                if (this.style === 'richardson') return;
-                this.setStyle('richardson');
+            if (name !== 'richardson' && name !== 'ribbon' && name !== '3d') {
+                console.warn(`Invalid preset "${name}" - expected "richardson", "ribbon" or "3d".`);
                 return;
             }
-            if (name !== '3d') {
-                console.warn(`Invalid preset "${name}" - expected "richardson" or "3d".`);
+            if (!window.py2dmolCartoon) {
+                console.warn(`Preset "${name}" requested but viewer-cartoon.js is not loaded.`);
                 return;
             }
-            // leave the richardson geometry profile if it was active
-            if (this.style === 'richardson') {
-                this.style = 'cartoon';
-                this.cartoonRichardson = false;
-            } else if (this.style !== 'cartoon') {
-                this.setStyle('cartoon');   // from ribbon
+            this.style = 'cartoon';
+            this.stylePreset = name;
+            this.cartoonRichardson = (name === 'richardson');
+            this._applyStyleDefaults(name === 'ribbon' ? 'cartoon' : name);
+            this._applyPresetBackground(name);
+            if (this.styleSelect && this.styleSelect.value !== 'cartoon') {
+                this.styleSelect.value = 'cartoon';
             }
-            this.stylePreset = '3d';
-            this._applyStyleDefaults('3d');
             if (this._syncStylePanel) this._syncStylePanel();
             this.render('setPreset');
+        }
+
+        /**
+         * A preset carries its page background: '3d' is solid shaded geometry
+         * and is meant to be seen on black, the other two are drawings on
+         * paper. Applied as part of the preset rather than left to the user,
+         * for the same reason the sliders are - a preset is a whole look.
+         * Still just a starting point: the Dark toggle stays live afterwards.
+         */
+        _applyPresetBackground(name) {
+            const want = (name === '3d') ? '#000000' : '#ffffff';
+            if (this.backgroundColor === want) return;
+            this.backgroundColor = want;
+            const dark = this.containerElement
+                ? this.containerElement.querySelector('#darkCheckbox')
+                : (typeof document !== 'undefined' ? document.getElementById('darkCheckbox') : null);
+            if (dark) dark.checked = (want === '#000000');
         }
 
         /**
@@ -2246,11 +2363,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Save current object's selection state and viewer state
             if (this.currentObjectName && this.currentObjectName !== newObjectName && this.objectsData[this.currentObjectName]) {
                 const obj = this.objectsData[this.currentObjectName];
-                obj.selectionState = {
-                    positions: new Set(this.selectionModel.positions),
-                    chains: new Set(this.selectionModel.chains),
-                    paeBoxes: this.selectionModel.paeBoxes.map(box => ({ ...box })),
-                    selectionMode: this.selectionModel.selectionMode
+                obj.visibilityState = {
+                    positions: new Set(this.visibilityModel.positions),
+                    chains: new Set(this.visibilityModel.chains),
+                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
+                    visibilityMode: this.visibilityModel.visibilityMode
                 };
                 obj.viewerState = {
                     rotation: this._deepCopyMatrix(this.viewerState.rotation),
@@ -2274,6 +2391,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Switch to new object
+            // ... and drop the residue selection with it: the selection is a set
+            // of position indices, meaningful only against the object it was
+            // made on (see clearResidueSelection).
+            if (this.currentObjectName !== newObjectName) this.clearResidueSelection();
             this.currentObjectName = newObjectName;
 
             // Get new object reference
@@ -2298,16 +2419,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Clear renderer bonds (will be restored from object data when frames load)
             this.bonds = null;
 
-            // Ensure object has selectionState initialized
+            // Ensure object has visibilityState initialized
             if (!this.objectsData[newObjectName]) {
                 this.objectsData[newObjectName] = {};
             }
-            if (!this.objectsData[newObjectName].selectionState) {
-                this.objectsData[newObjectName].selectionState = {
+            if (!this.objectsData[newObjectName].visibilityState) {
+                this.objectsData[newObjectName].visibilityState = {
                     positions: new Set(),
                     chains: new Set(),
                     paeBoxes: [],
-                    selectionMode: 'default'
+                    visibilityMode: 'default'
                 };
             }
 
@@ -2318,20 +2439,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const correctCoordsLength = firstFrame?.coords?.length || 0;
 
             // Restore selection state
-            const savedState = this.objectsData[newObjectName].selectionState;
+            const savedState = this.objectsData[newObjectName].visibilityState;
 
-            // Apply the saved selection directly to selectionModel (bypassing setSelection's normalization)
-            this.selectionModel.positions = new Set(savedState.positions);
-            this.selectionModel.chains = new Set(savedState.chains);
-            this.selectionModel.paeBoxes = savedState.paeBoxes.map(box => ({ ...box }));
-            this.selectionModel.selectionMode = savedState.selectionMode;
+            // Apply the saved selection directly to visibilityModel (bypassing setVisibility's normalization)
+            this.visibilityModel.positions = new Set(savedState.positions);
+            this.visibilityModel.chains = new Set(savedState.chains);
+            this.visibilityModel.paeBoxes = savedState.paeBoxes.map(box => ({ ...box }));
+            this.visibilityModel.visibilityMode = savedState.visibilityMode;
 
             // Only normalize if in default mode with empty positions, using correct coords length
-            if (this.selectionModel.selectionMode === 'default' &&
-                (!this.selectionModel.positions || this.selectionModel.positions.size === 0)) {
-                this.selectionModel.positions = new Set();
+            if (this.visibilityModel.visibilityMode === 'default' &&
+                (!this.visibilityModel.positions || this.visibilityModel.positions.size === 0)) {
+                this.visibilityModel.positions = new Set();
                 for (let i = 0; i < correctCoordsLength; i++) {
-                    this.selectionModel.positions.add(i);
+                    this.visibilityModel.positions.add(i);
                 }
             }
 
@@ -2353,13 +2474,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.entropy = undefined;
             }
 
-            // Save the restored selection state (setSelection would do this, but we're bypassing it)
+            // Save the restored selection state (setVisibility would do this, but we're bypassing it)
             if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
-                this.objectsData[this.currentObjectName].selectionState = {
-                    positions: new Set(this.selectionModel.positions),
-                    chains: new Set(this.selectionModel.chains),
-                    paeBoxes: this.selectionModel.paeBoxes.map(box => ({ ...box })),
-                    selectionMode: this.selectionModel.selectionMode
+                this.objectsData[this.currentObjectName].visibilityState = {
+                    positions: new Set(this.visibilityModel.positions),
+                    chains: new Set(this.visibilityModel.chains),
+                    paeBoxes: this.visibilityModel.paeBoxes.map(box => ({ ...box })),
+                    visibilityMode: this.visibilityModel.visibilityMode
                 };
             }
 
@@ -2437,7 +2558,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.objectsData[name].totalPositions = 0;
                     this.objectsData[name]._lastPlddtFrame = -1;
                     this.objectsData[name]._lastPaeFrame = -1;
-                    // Don't clear selectionState - preserve it
+                    // Don't clear visibilityState - preserve it
                     // Don't clear scatterConfig - preserve it
                     if (preservedScatterConfig) {
                         this.objectsData[name].scatterConfig = preservedScatterConfig;
@@ -2456,11 +2577,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     bonds: null,
                     contacts: null,
                     ligandGroups: new Map(),  // Per-object ligand groups
-                    selectionState: {
+                    visibilityState: {
                         positions: new Set(),
                         chains: new Set(),
                         paeBoxes: [],
-                        selectionMode: 'default'
+                        visibilityMode: 'default'
                     },
                     viewerState: {
                         rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
@@ -2593,6 +2714,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Set view to this object
             if (this.currentObjectName !== targetObjectName) {
                 this.stopAnimation(); // Stop if playing on another obj
+                this.clearResidueSelection();   // indices belong to the old object
                 this.currentObjectName = targetObjectName;
                 this.lastRenderedFrame = -1; // Reset frame tracking on object change
                 if (this.objectSelect) {
@@ -2707,6 +2829,108 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // Extract current selection to a new object
+        /**
+         * Drop the residue selection and tell the UI. The selection is a set of
+         * position indices, so it is only meaningful against the object it was
+         * made on - anything that changes which object is current must clear it
+         * rather than let stale indices be reinterpreted.
+         */
+        /**
+         * Residue index under a client-space point, or -1 for empty background.
+         *
+         * Hit-tests the backbone SEGMENTS, not the residue centres. Testing
+         * discs around each Ca leaves the chain a string of beads with gaps
+         * between them - consecutive Ca are 3.8 A apart while the disc is a
+         * quarter of the stroke width, so ~65% of the pixels the user can see
+         * inked picked nothing at all. Clicks landed in the gaps and simply
+         * did not register.
+         *
+         * FRONTMOST wins among everything under the cursor. Ranking candidates
+         * by screen distance ignores depth, so a residue on the far side of the
+         * molecule beats the one drawn on top of it - you would click what you
+         * can see and get what is behind it. Depth decides first; screen
+         * distance only separates candidates at equal depth.
+         */
+        pickResidueAt(clientX, clientY) {
+            if (!this.canvas || !this.screenX || !this.screenValid) return -1;
+            const rect = this.canvas.getBoundingClientRect();
+            const px = clientX - rect.left;
+            const py = clientY - rect.top;
+            const fid = this.screenFrameId;
+            const rotated = this.rotatedCoords;
+            const zOf = (i) => ((rotated && rotated[i]) ? rotated[i].z : 0);
+
+            let best = -1;
+            let bestZ = -Infinity;
+            let bestD2 = Infinity;
+            // +z is toward the viewer (see Coordinate System)
+            const offer = (idx, d2, z) => {
+                if (z > bestZ + 1e-6 || (Math.abs(z - bestZ) <= 1e-6 && d2 < bestD2)) {
+                    bestZ = z; bestD2 = d2; best = idx;
+                }
+            };
+
+            // The drawn ribbon is wider than the picking radius, which is
+            // derived from the tube stroke - widen the target so the fat parts
+            // of a helix or a sheet arrow are clickable, but not so far that
+            // clicking clear background stops deselecting.
+            const PICK_W = PICK_WIDTH_SCALE;
+
+            const segs = this.segmentIndices;
+            if (segs) {
+                for (let s = 0; s < segs.length; s++) {
+                    const a = segs[s].idx1; const b = segs[s].idx2;
+                    if (this.screenValid[a] !== fid || this.screenValid[b] !== fid) continue;
+                    const ax = this.screenX[a]; const ay = this.screenY[a];
+                    const bx = this.screenX[b]; const by = this.screenY[b];
+                    const vx = bx - ax; const vy = by - ay;
+                    const len2 = vx * vx + vy * vy;
+                    // clamp to the segment: t outside [0,1] means the nearest
+                    // point is an endpoint, which its own segment also covers
+                    let t = len2 > 1e-9 ? ((px - ax) * vx + (py - ay) * vy) / len2 : 0;
+                    if (t < 0) t = 0; else if (t > 1) t = 1;
+                    const cxp = ax + vx * t; const cyp = ay + vy * t;
+                    const dx = cxp - px; const dy = cyp - py;
+                    const d2 = dx * dx + dy * dy;
+                    const ra = Math.max(4, this.screenRadius[a]);
+                    const rb = Math.max(4, this.screenRadius[b]);
+                    const rad = (ra + (rb - ra) * t) * PICK_W;
+                    if (d2 > rad * rad) continue;
+                    // attribute the hit to the nearer end, and take the depth
+                    // where the cursor actually is along the segment
+                    offer(t < 0.5 ? a : b, d2, zOf(a) + (zOf(b) - zOf(a)) * t);
+                }
+            }
+
+            // Positions no segment covers: chain termini, ligands, lone atoms.
+            for (let i = 0; i < this.screenX.length; i++) {
+                if (this.screenValid[i] !== fid) continue;
+                const rad = Math.max(4, this.screenRadius[i]) * PICK_W;
+                const dx = this.screenX[i] - px;
+                const dy = this.screenY[i] - py;
+                const d2 = dx * dx + dy * dy;
+                if (d2 <= rad * rad) offer(i, d2, zOf(i));
+            }
+            return best;
+        }
+
+        /** Set the residue selection and tell every surface that draws it. */
+        setResidueSelection(positions) {
+            const next = (positions && positions.size) ? new Set(positions) : null;
+            this.residueSelection = next;
+            if (typeof document !== 'undefined') {
+                document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
+            }
+        }
+
+        clearResidueSelection() {
+            if (!this.residueSelection) return;
+            this.residueSelection = null;
+            if (typeof document !== 'undefined') {
+                document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
+            }
+        }
+
         extractSelection() {
             // Check if we have a current object and frame
             if (!this.currentObjectName) {
@@ -2727,26 +2951,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
 
-            // Get selected positions (selection is frame-independent, so use first frame to determine indices)
-            let selectedPositions = new Set();
-
-            // Check selectionModel first (explicit selection)
-            if (this.selectionModel && this.selectionModel.positions && this.selectionModel.positions.size > 0) {
-                selectedPositions = new Set(this.selectionModel.positions);
-            } else if (this.visibilityMask !== null && this.visibilityMask.size > 0) {
-                // Use visibilityMask if available
-                selectedPositions = new Set(this.visibilityMask);
-            } else {
-                // No selection - all positions visible (could extract all, but warn user)
-                console.warn("No selection found. All positions are visible. Extracting all positions.");
-                // Extract all positions
-                for (let i = 0; i < firstFrame.coords.length; i++) {
-                    selectedPositions.add(i);
-                }
-            }
+            // THE SELECTION, and only the selection. Copy used to fall back to
+            // the selection model and then to visiblePositions, so with nothing
+            // selected it silently extracted whatever happened to be on screen -
+            // an "extract" that quietly copied the whole structure. Selection
+            // and visibility are separate concepts now (a drag selects and
+            // leaves visibility alone), so falling back from one to the other
+            // cannot be right. No selection means nothing to copy.
+            const selectedPositions = (this.residueSelection && this.residueSelection.size > 0)
+                ? new Set(this.residueSelection)
+                : new Set();
 
             if (selectedPositions.size === 0) {
-                console.warn("Selection is empty. Cannot extract.");
+                console.warn("Nothing selected - select a region in the sequence view first.");
                 return;
             }
 
@@ -2993,12 +3210,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Reset selection to show all positions in extracted object
-            this.setSelection({
+            this.setVisibility({
                 positions: new Set(),
                 chains: new Set(),
                 paeBoxes: [],
-                selectionMode: 'default'
+                visibilityMode: 'default'
             });
+
+            // DROP THE SELECTION. It holds position indices into the object
+            // that was current when the drag happened, and the extracted copy
+            // is now current - the same indices name different residues there,
+            // or none at all. Carrying it over made a second Copy extract a
+            // slice of the first copy rather than the region the user could
+            // see highlighted.
+            this.clearResidueSelection();
 
             // Update UI controls to reflect new object
             this.updateUIControls();
@@ -4306,7 +4531,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Clear selection
-            this.clearSelection();
+            this.hideAll();
 
             // Update UI controls
             this.updateUIControls();
@@ -4983,12 +5208,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             if (objectChanged) {
                 // Object changed: reset to default (show all positions of new object)
-                this.resetToDefault();
+                this.showAll();
                 this.previousObjectName = this.currentObjectName; // Update tracking
-            } else if (this.selectionModel.selectionMode === 'explicit' &&
-                this.selectionModel.positions.size === 0) {
+            } else if (this.visibilityModel.visibilityMode === 'explicit' &&
+                this.visibilityModel.positions.size === 0) {
                 // Selection was explicitly cleared, reset to default
-                this.resetToDefault();
+                this.showAll();
             }
 
             // Update UI controls (but don't render yet)
@@ -5064,6 +5289,44 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *                             For ligands, one position = one heavy atom.
          * @returns {{r: number, g: number, b: number}} RGB color object
          */
+        /**
+         * The EXPLICIT colour override for a position, or null if its colour
+         * comes from a mode (chain/rainbow/plddt/ss).
+         *
+         * Exists because the cartoon plugin resolves secondary-structure colour
+         * per INTERVAL rather than per residue, and so re-derives colour itself
+         * instead of calling getAtomColor. Without this it had no way to tell a
+         * palette colour from one the user had set by hand, and overwrote the
+         * latter - a region coloured from the selection tools stayed the palette
+         * colour in ss mode.
+         * @param {number} atomIndex
+         * @returns {{r:number,g:number,b:number}|null}
+         */
+        getColorOverride(atomIndex) {
+            if (atomIndex < 0 || !this.coords || atomIndex >= this.coords.length) return null;
+            let frameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
+            if (this.overlayState?.enabled && this.overlayState.frameIdMap
+                && atomIndex < this.overlayState.frameIdMap.length) {
+                frameIndex = this.overlayState.frameIdMap[atomIndex];
+            }
+            const context = {
+                frameIndex,
+                posIndex: atomIndex,
+                chainId: this.chains[atomIndex] || 'A',
+                renderer: this,
+            };
+            const { resolvedLiteralColor } = resolveColorHierarchy(context, null);
+            if (resolvedLiteralColor === null || resolvedLiteralColor === undefined) return null;
+            if (typeof resolvedLiteralColor === 'string') {
+                if (resolvedLiteralColor.startsWith('#')) return hexToRgb(resolvedLiteralColor);
+                const hex = namedColorsMap[resolvedLiteralColor.toLowerCase()];
+                return hex ? hexToRgb(hex) : null;
+            }
+            if (typeof resolvedLiteralColor === 'object'
+                && resolvedLiteralColor.r !== undefined) return resolvedLiteralColor;
+            return null;
+        }
+
         getAtomColor(atomIndex, effectiveColorMode = null) {
             if (atomIndex < 0 || atomIndex >= this.coords.length) {
                 return DEFAULT_GREY;
@@ -5264,6 +5527,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const positionIndex = segInfo.origIndex;
                 const type = segInfo.type;
                 let color;
+
+                // An EXPLICIT colour (selection tools, or set_color from
+                // Python) wins over the pLDDT ramp. This array is built
+                // straight from the pLDDT values and used INSTEAD of
+                // _calculateSegmentColors, which is the path that consults the
+                // colour hierarchy - so without this, overriding a colour did
+                // nothing at all in plddt/deepmind mode, including the 'auto'
+                // mode that resolves to plddt for an AlphaFold model.
+                const ov = this.getColorOverride
+                    ? this.getColorOverride(positionIndex) : null;
+                if (ov) {
+                    colors[i] = ov;
+                    continue;
+                }
 
                 if (type === 'L') {
                     const plddt1 = (this.plddts[positionIndex] !== null && this.plddts[positionIndex] !== undefined) ? this.plddts[positionIndex] : 50;
@@ -5863,7 +6140,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // The cartoon renderer (viewer-cartoon.js) reuses the rotation and
             // per-segment colors computed above, plus this renderer's projection
             // parameters, and paints its own primitives (SS ribbons + tubes).
-            if ((this.style === 'cartoon' || this.style === 'richardson')
+            if (this.style === 'cartoon'
                 && window.py2dmolCartoon) {
                 window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
                 // Sequence-viewer highlight overlay, skipped during ANY active
@@ -5883,7 +6160,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // Get visibility mask early to build visible segment list
-            const visibilityMask = this.visibilityMask;
+            const visiblePositions = this.visiblePositions;
 
             // Build list of visible segment indices early - this is the key optimization
             // A segment is visible if both positions are visible (or no mask = all visible)
@@ -5893,16 +6170,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const segInfo = segments[i];
                 let isVisible = false;
 
-                if (!visibilityMask) {
+                if (!visiblePositions) {
                     // No mask = all segments visible (including overlay mode with no selection)
                     isVisible = true;
                 } else if (segInfo.type === 'C' && segInfo.contactIdx1 !== undefined && segInfo.contactIdx2 !== undefined) {
                     // For contact segments, check visibility based on original contact endpoints
-                    isVisible = visibilityMask.has(segInfo.contactIdx1) && visibilityMask.has(segInfo.contactIdx2);
+                    isVisible = visiblePositions.has(segInfo.contactIdx1) && visiblePositions.has(segInfo.contactIdx2);
                 } else {
                     // For regular segments, check visibility based on segment endpoints
                     // In overlay mode, the visibility mask has been expanded to include all corresponding positions
-                    isVisible = visibilityMask.has(segInfo.idx1) && visibilityMask.has(segInfo.idx2);
+                    isVisible = visiblePositions.has(segInfo.idx1) && visiblePositions.has(segInfo.idx2);
                 }
 
                 if (isVisible) {
@@ -5958,12 +6235,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Count visible positions for performance mode determination
             let numVisiblePositions;
-            if (!visibilityMask) {
+            if (!visiblePositions) {
                 // All positions are visible
                 numVisiblePositions = this.coords.length;
             } else {
                 // Count positions in visibility mask
-                numVisiblePositions = visibilityMask.size;
+                numVisiblePositions = visiblePositions.size;
             }
 
             // Collect z-values from visible segments only (for depth calculation)
@@ -6092,7 +6369,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Previously we sorted all N segments here, but it was never used for rendering
             // This saves O(N log N) operations and significant memory allocation
 
-            // visibilityMask already declared above for depth calculation
+            // visiblePositions already declared above for depth calculation
 
             // Determine fast/slow mode based on visible positions (not total segments)
             // Fast mode: skip expensive operations when many visible positions
@@ -6434,6 +6711,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // i=0 is furthest (start of sliced array), i=numRendered-1 is closest
                 // Distance from front: numRendered - 1 - i
                 const distFromFront = numRendered - 1 - i;
+                // SELECTION: reuse this style's own outline pass, recoloured.
+                // The cartoon plugin does the same with its ink; this is the
+                // ribbon style's equivalent, so a selection shows in every
+                // style rather than only in cartoon.
+                // Constant extra width, and drawn even when the style's outline
+                // is off - it is a UI indicator, not part of the drawing.
+                const selSet = (this.residueSelection && this.residueSelection.size)
+                    ? this.residueSelection : null;
+                const isSel = !!(selSet
+                    && (selSet.has(segments[idx].idx1) || selSet.has(segments[idx].idx2)));
 
                 let opacity = 1.0;
 
@@ -6472,6 +6759,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const y1 = screenY[idx1];
                 const x2 = screenX[idx2];
                 const y2 = screenY[idx2];
+
+                // OFF-SCREEN CULL. "Visible" above means the user has not hidden
+                // it; nothing until now asked whether it is actually on the
+                // canvas. Zoomed in, most of a structure is outside the viewport
+                // and every one of those segments was still being stroked for
+                // the canvas to clip away. The margin covers the stroke's own
+                // half-width plus its outline, so a segment whose centreline is
+                // just outside still draws the part that reaches back in.
+                {
+                    const m = (baseLineWidthPixels
+                        * this._calculateSegmentWidthMultiplier(segData[idx], segInfo)
+                        + this.relativeOutlineWidth) / 2 + 2;
+                    if ((x1 < -m && x2 < -m)
+                        || (x1 > displayWidth + m && x2 > displayWidth + m)
+                        || (y1 < -m && y2 < -m)
+                        || (y1 > displayHeight + m && y2 > displayHeight + m)) {
+                        continue;
+                    }
+                }
+
 
                 // Width Calculation: unified approach using helper
                 const s = segData[idx];
@@ -6517,38 +6824,41 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const hasOuterStart = (flags & 1) !== 0;
                 const hasOuterEnd = (flags & 2) !== 0;
 
-                if (this.outlineMode !== 'none') {
+                const outlineCol = isSel ? SELECTION_INK_CSS : gapFillerColor;
+                if (this.outlineMode !== 'none' || isSel) {
                     // --- 2-STEP DRAW (Outline) ---
-                    const totalOutlineWidth = currentLineWidth + this.relativeOutlineWidth;
+                    const totalOutlineWidth = currentLineWidth + (isSel
+                        ? Math.max(this.relativeOutlineWidth, SELECTION_INK_EXTRA)
+                        : this.relativeOutlineWidth);
 
                     // For zero-length segments, draw single outline circle
                     if (segInfo.idx1 === segInfo.idx2) {
                         const outlineRadius = totalOutlineWidth / 2;
                         ctx.beginPath();
                         ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
-                        ctx.fillStyle = gapFillerColor;
+                        ctx.fillStyle = outlineCol;
                         ctx.fill();
                     } else {
                         // Pass 1: Gap filler outline (butt caps)
                         ctx.beginPath();
                         ctx.moveTo(x1, y1);
                         ctx.lineTo(x2, y2);
-                        setCanvasProps(gapFillerColor, totalOutlineWidth, 'butt');
+                        setCanvasProps(outlineCol, totalOutlineWidth, 'butt');
                         ctx.stroke();
 
                         // Add rounded caps at outer endpoints if full outline mode
-                        if (this.outlineMode === 'full') {
+                        if (this.outlineMode === 'full' || isSel) {
                             const outlineRadius = totalOutlineWidth / 2;
                             if (hasOuterStart) {
                                 ctx.beginPath();
                                 ctx.arc(x1, y1, outlineRadius, 0, Math.PI * 2);
-                                ctx.fillStyle = gapFillerColor;
+                                ctx.fillStyle = outlineCol;
                                 ctx.fill();
                             }
                             if (hasOuterEnd) {
                                 ctx.beginPath();
                                 ctx.arc(x2, y2, outlineRadius, 0, Math.PI * 2);
-                                ctx.fillStyle = gapFillerColor;
+                                ctx.fillStyle = outlineCol;
                                 ctx.fill();
                             }
                         }
@@ -6646,11 +6956,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
                 // Count visible segments for inertia determination
                 let visibleSegmentCount = totalSegmentCount;
-                if (this.visibilityMask && this.segmentIndices) {
+                if (this.visiblePositions && this.segmentIndices) {
                     visibleSegmentCount = 0;
                     for (let i = 0; i < this.segmentIndices.length; i++) {
                         const seg = this.segmentIndices[i];
-                        if (this.visibilityMask.has(seg.idx1) && this.visibilityMask.has(seg.idx2)) {
+                        if (this.visiblePositions.has(seg.idx1) && this.visiblePositions.has(seg.idx2)) {
                             visibleSegmentCount++;
                         }
                     }
@@ -7334,13 +7644,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // Setup style control (ribbon vs cartoon) - optional element
     const styleSelect = containerElement.querySelector('#styleSelect');
     // the dropdown lists ribbon/cartoon; richardson is a PRESET of cartoon
-    const uiStyleOf = (s) => (s === 'richardson' ? 'cartoon' : (s || 'ribbon'));
+    const uiStyleOf = (s) => (s || 'tube');
     if (styleSelect) {
         styleSelect.value = uiStyleOf(renderer.style);
         styleSelect.addEventListener('change', (e) => {
-            // Cartoon's default preset is Richardson, so picking Cartoon
-            // lands there; the Preset dropdown reaches '3d'.
-            renderer.setStyle(e.target.value === 'cartoon' ? 'richardson' : e.target.value);
+            // Cartoon's default preset is Richardson, so picking Cartoon lands
+            // there; the Preset dropdown reaches Ribbon (plain cartoon) and 3D.
+            renderer.setStyle(e.target.value);
             // setStyle rejects invalid/unloaded styles; re-sync the dropdown
             if (styleSelect.value !== uiStyleOf(renderer.style)) {
                 styleSelect.value = uiStyleOf(renderer.style);
@@ -7351,7 +7661,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     }
 
     // Preset dropdown: named starting points for the cartoon style
-    // (Richardson is the default; sliders stay live under either).
+    // (Richardson is the default; sliders stay live under any of them).
     const presetSelect = containerElement.querySelector('#presetSelect');
     if (presetSelect) {
         presetSelect.value = renderer.stylePreset || 'richardson';
@@ -7371,19 +7681,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const stylePanel = containerElement.querySelector('#stylePanel');
 
     function syncStylePanel() {
-        const style = renderer.style || 'ribbon';
+        const style = renderer.style || 'tube';
         if (!stylePanel) return;
         Array.prototype.forEach.call(stylePanel.children, (row) => {
             row.hidden = false;
         });
         stylePanel.querySelectorAll('[data-style]').forEach((el) => {
             const want = el.getAttribute('data-style');
-            // Richardson is the cartoon draw path with a different profile
-            // (a PRESET in the GUI), so it wants every row the cartoon style
-            // has. Rows may name several styles, space separated.
+            // Rows may name several styles, space separated.
             const wanted = want ? want.split(/\s+/) : null;
-            const show = !wanted || wanted.includes(style)
-                || (style === 'richardson' && wanted.includes('cartoon'));
+            const show = !wanted || wanted.includes(style);
             el.hidden = !show;
         });
         // Both panels pair half-cells per row (same DOM); collapse a row once
@@ -7815,6 +8122,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         }
                     }
 
+                    // ... and secondary structure (Python's set_sse). The static
+                    // path is what a notebook/Colab cell renders from, so an
+                    // override set before show() only survives if it is read back
+                    // here, exactly like color.
+                    if (obj.sse && renderer.objectsData[obj.name]) {
+                        renderer.objectsData[obj.name].sse = obj.sse;
+                        renderer._invalidateSegmentCache();
+                    }
+
                     // Store rotation matrix and center for view transform if present
                     if (obj.rotation_matrix && obj.center) {
                         if (renderer.objectsData[obj.name]) {
@@ -7926,6 +8242,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
         if (meta.bonds) {
             obj.bonds = meta.bonds;
+            needsRerender = true;
+        }
+        // Secondary structure (Python's set_sse), keyed by position index like
+        // `color`. The cartoon's SS cache key is derived from this map, so
+        // replacing it invalidates the cached assignment and geometry by itself.
+        if (meta.sse) {
+            obj.sse = meta.sse;
             needsRerender = true;
         }
 

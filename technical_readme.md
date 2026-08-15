@@ -80,24 +80,24 @@ graph TB
 ```
 py2Dmol/
 ├── py2Dmol/                     # Python Package
-│   ├── viewer.py                # Main Python interface (2,424 lines)
+│   ├── viewer.py                # Main Python interface (3,137 lines)
 │   ├── grid.py                  # Grid layout system (271 lines)
 │   └── resources/
-│       ├── viewer.html          # Jupyter widget template (200 lines)
-│       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (6,969 lines)
-│       ├── viewer-cartoon.js    # Cartoon style plugin (SS ribbons/tubes; replaces draw stage when style="cartoon")
-│       ├── viewer-pae.js        # PAE matrix visualization (906 lines)
-│       ├── viewer-seq.js        # Sequence viewer (2,257 lines)
+│       ├── viewer.html          # Jupyter widget template (361 lines)
+│       ├── viewer-mol.js        # CORE: Pseudo3DRenderer (8,414 lines)
+│       ├── viewer-cartoon.js    # Cartoon plugin (7,072 lines): replaces the draw stage when style="cartoon"
+│       ├── viewer-pae.js        # PAE matrix visualization (783 lines)
+│       ├── viewer-seq.js        # Sequence viewer (2,493 lines)
 │       ├── viewer-msa.js        # MSA viewer (5,293 lines)
-│       └── viewer-scatter.js    # Scatter plot visualization (588 lines)
+│       └── viewer-scatter.js    # Scatter plot visualization (597 lines)
 │
 ├── web/                         # Web Application
-│   ├── app.js                   # Web app logic (6,451 lines)
-│   ├── utils.js                 # Utilities: parsing, alignment (2,797 lines)
+│   ├── app.js                   # Web app logic (6,529 lines)
+│   ├── utils.js                 # Utilities: parsing, alignment (2,840 lines)
 │   └── style.css                # Global styles
 │
-├── index.html                   # Main web app entry (463 lines)
-├── msa.html                     # Standalone MSA viewer (231 lines)
+├── index.html                   # Main web app entry (611 lines)
+├── msa.html                     # Standalone MSA viewer (330 lines)
 └── README.md                    # User documentation
 ```
 
@@ -124,7 +124,7 @@ Every major file has an AI-friendly header:
 
 **Path**: `py2Dmol/viewer.py`
 **Class**: `view`
-**Lines**: 2,424
+**Lines**: 3,137
 
 #### Core Responsibilities
 
@@ -142,7 +142,7 @@ def __init__(self,
     box=True,                 # Show bounding box
     color="auto",             # Color mode
     colorblind=False,         # Colorblind-safe palette
-    style="ribbon",           # Render style: "ribbon", "cartoon" or "richardson"
+    style="tube",             # Render style: "tube" or "cartoon"
     thickness=None,           # Cartoon slab thickness in A (default 0 flat, 0.7 for richardson)
     detail=0.5,               # Cartoon sampling density 0.15-0.5 (lower = faceted + faster)
     shadow=True,              # Enable/disable shadows
@@ -493,7 +493,7 @@ with py2Dmol.grid(cols=3) as g:
 
 **Path**: `py2Dmol/resources/viewer-mol.js`
 **Class**: `Pseudo3DRenderer`
-**Lines**: 7,447
+**Lines**: 8,414
 
 #### Global Registry
 
@@ -548,7 +548,7 @@ The `render()` method follows this flow:
 ### Web App: `app.js`
 
 **Path**: `web/app.js`
-**Lines**: 6,451
+**Lines**: 6,529
 
 #### Initialization Flow
 
@@ -575,7 +575,7 @@ DOMContentLoaded → initializeApp() → {
 ### Utilities: `utils.js`
 
 **Path**: `web/utils.js`  
-**Lines**: 2,797
+**Lines**: 2,840
 
 #### Key Functions
 
@@ -975,12 +975,20 @@ All live mode updates use the `incrementalStateUpdate` operation via BroadcastCh
 {
     "protein1": {
         color: {type: "mode", value: "plddt"},
+        sse: {"20": "H", "21": "H"},      // set_sse(); keys stringified for JSON
         contacts: [[10, 50, 1.0, {r, g, b}], ...],
         bonds: [[0, 1], [1, 2]],
         rotation_matrix: [[...], [...], [...]],
         center: [x, y, z]
     }
 }
+
+Anything added here must be applied on the JS side too, in
+`applyMetadataToObject()` (viewer-mol.js) - it handles a FIXED list of keys, so
+a field that is only sent is silently dropped. The static/Colab path reads the
+same per-object fields separately at init, and `save_state`/`load_state` are a
+third copy of the list: a new per-object field has to be added to all four or it
+will work in some modes and not others.
 ```
 
 **Legacy Message Types** (deprecated as of 2025-12-11):
@@ -1021,14 +1029,64 @@ Segments sorted by **average Z** after rotation (painter's algorithm).
 3. Segments below grid max are darkened
 4. **Shadow isolation**: Frames don't cast shadows on each other in overlay mode
 
-### Render Styles (Ribbon vs Cartoon)
+### Render Styles (Tube vs Cartoon)
 
 `config.rendering.style` selects the draw stage; everything upstream (data model, rotation, colors, selection, live updates) is shared.
 
-- **`ribbon`** (default): the segment pipeline in `viewer-mol.js` described in this section.
+- **`tube`** (default): the segment pipeline in `viewer-mol.js` described in this section.
 - **`cartoon`**: `Pseudo3DRenderer._renderToContext()` delegates to `window.py2dmolCartoon.render()` (defined in `viewer-cartoon.js`) right after rotation and per-segment colors are computed, then returns. The plugin draws secondary-structure cartoons: one strip primitive per residue interval for helices/strands (subdivided stations; edges stroked as continuous polylines, outline band as one seamless polygon), flattened plates for strands, Catmull-Rom tube polylines for loops and nucleic backbones, black outlines with paint-order-aware end caps, cross-edge caps at element ends (closing helix-to-loop junctions), and silhouette strokes at ribbon folds (cross edges stroked only where screen-space winding flips, i.e. where the ribbon turns edge-on). SS assignment is real DSSP (hydrogen-bond energies, turns, bridges) run on a backbone rebuilt from the C-alpha trace (`predictBackbone`, a PULCHRA-style binned table for C and N; O follows from sp2 geometry), so it needs no atoms beyond the trace: Q3 90.0% with 94.0% strand recall against DSSP on the true backbone, from 85.3% / 72.4% for the C-alpha-only `make_sec` it replaces; backbone dihedrals gate the assignment as in PyMOL's `dss` (still exported for `tests/ss_bench.js`). The bridge partners come back with it and are the sheet ladders. Strand frames are built from them (`buildSheetFrames`: PyMOL's peptide-plane normal and flattening cycles, then a plane fitted to each residue's patch of the sheet, then a joint relaxation along the strand and across the rungs). SS, ladders and strand frames are cached per object/frame (`renderer._cartoonSec` / `_cartoonLadder` / `_cartoonSheet`, all invalidated by `_invalidateSegmentCache()`); the frames are stored as local-frame coefficients so a render only rebuilds the frame from the rotated trace. Nucleic bases are handled the same way and from the same principle: nothing per-nucleotide is stored, and the C4'->base-centroid direction and base-plane normal are predicted from the C4' trace (`predictBaseFrames`, `NA_BASE_TABLE`, fitted by `tests/na_table.py` and scored by `tests/na_bench.js`). That prediction is weaker than the peptide one - 16.7 deg median with a 69 deg p90 tail, because the glycosidic torsion is a free degree of freedom the trace cannot see - so three things downstream compensate: the base-geometry gate on a candidate pair is widened (`NA_BASE_SEP_MAX` / `NA_COPLANAR_MIN`), a base that points away from its pair partner is flipped after pairing, and the ribbon's twist per residue is capped (`NA_TWIST_MAX`). Measured against the frames files themselves carry, before that path was removed: B-DNA and tRNA pair identically, tertiary RNA differs on a handful. Ligands, contacts, explicit bonds and lone atoms stay generic primitives and depth-sort against the cartoon. Shadows are not used in cartoon mode (depth cue is a blend toward the background instead).
-- Runtime switching: `renderer.setStyle('ribbon'|'cartoon')`, wired to the `#styleSelect` dropdown in both viewer.html and index.html.
+- Runtime switching: `renderer.setStyle('tube'|'cartoon')` - two styles because there are two draw paths - wired to the `#styleSelect` dropdown (**Tube** / **Cartoon**) in both viewer.html and index.html.
+- **Presets** are a second axis: `renderer.setPreset('ribbon'|'richardson'|'3d')`, `#presetSelect`. `richardson` is the default and owns three things: the geometry profile (`cartoonRichardson`), the slider values (`STYLE_DEFAULTS`) and the page background. `ribbon` (plain cartoon) maps to `STYLE_DEFAULTS.cartoon`. `3d` additionally sets a black background (`_applyPresetBackground`); the other two set white.
 - Python: `py2Dmol.view(style="cartoon")`; `viewer-cartoon.min.js` is always inlined next to `viewer-mol.min.js` so the dropdown works in notebooks.
+
+### Selection vs Visibility
+
+Two different things that both used to be called "selection". Keeping them apart is
+the single most important invariant in this area.
+
+| concept | property | meaning |
+|---|---|---|
+| **residue selection** | `renderer.residueSelection` | a `Set` of position indices the user has selected. Drives the colour/SSE/Show/Hide/Copy tools and the yellow outline. **Never** changes what is drawn. |
+| **visibility** | `renderer.visiblePositions` | a `Set` of position indices to *show*; `null` means everything. Owned by `setVisibility()`, which recomputes it from `visibilityModel`. |
+
+- `visibilityModel` = `{positions, chains, paeBoxes, visibilityMode}`, `visibilityMode` being `'default'` (empty means show all) or `'explicit'` (empty means show nothing).
+- API: `getVisibility()` / `setVisibility()` / `resetVisibility()` / `showAll()` / `hideAll()`; event `py2dmol-visibility-change`. The residue selection has its own event, `py2dmol-residue-selection-change`.
+- **Do not write `visiblePositions` directly** — `setVisibility()` recomputes it from the model, so a direct write survives only until the next selection change. Express visibility as a selection and go through `setVisibility()`.
+- It is a `Set`, not a per-residue byte array. The name was `visibilityMask`, which invited exactly that mistake.
+- The residue selection is keyed by position index, so it is only meaningful against the object it was made on. `clearResidueSelection()` is called from every path that changes the current object (`extractSelection`, `addObject`, the object dropdown); anything else that switches objects must call it too.
+- Persistence: the wire format keeps the historical snake_case keys (`selections_by_object`, `selection_mode`) so old state files still load. Only the JS property names changed.
+
+### Explicit Colour Beats a Mode
+
+`renderer.getColorOverride(i)` returns the explicit colour for a position (from
+`object.color`, chain, or frame) or `null` when the colour comes from a mode
+(chain/rainbow/plddt/ss). Three draw paths resolve colour themselves rather than
+calling `getAtomColor`, and each must consult it or a hand-set colour is silently
+discarded:
+
+1. `viewer-cartoon.js` SS colouring — resolves per *interval*, so it checks both ends of the interval; otherwise a run of overridden residues loses its first/last interval to the palette.
+2. `_calculatePlddtColors()` — builds a separate array from pLDDT values and is used *instead of* `_calculateSegmentColors`, the function that consults the hierarchy. `auto` resolves to `plddt` for any model carrying pLDDT, so this is the default path for AlphaFold structures.
+3. The Richardson inner-face tint (`RICH_INNER_TINT`) — skipped for explicitly coloured faces. It is a hue *substitution* (0.68 toward white), not lighting, so it made a picked colour unrecognisable. Shading and highlight still apply, as they do to palette colours.
+
+### Selection Outline
+
+The yellow selection outline reuses each style's existing outline pass rather than
+overlaying anything — so it hugs the geometry, sorts correctly by depth, and survives
+SVG export:
+
+- `viewer-cartoon.js`: selected ink curves batch under their own key, skip the depth fade, and take a constant `SELECTION_INK_WIDTH`. `inkWanted = outlineW || selection` keeps the ink pass alive when the style's outline is off; unselected curves are dropped in that case.
+- `viewer-mol.js` (tube): the per-segment outline pass is recoloured to `SELECTION_INK_CSS` at `+SELECTION_INK_EXTRA` width, drawn even when `outlineMode === 'none'`.
+- The width is constant on purpose: it is a UI indicator, so it must not follow the style's outline width — at outline 0 it would vanish, at a heavy setting it would swamp the structure.
+
+### Secondary Structure Overrides
+
+`sse` maps a position index to `'H'`/`'E'`/`'C'` and wins over the automatic
+assignment. Resolved per object first (`objectsData[current].sse`, what Python's
+`set_sse` writes), falling back to `obj.sse` (both the GUI and Python write it). Applied in
+**both** places that derive `sec` — the draw stage and `secForColor` — because those cache
+separately, and colouring from a different SS string than the geometry is the exact bug
+`secForColor` exists to prevent. The override contributes to both cache keys so edits
+invalidate cleanly.
 
 ### Outline Rendering
 
@@ -1051,23 +1109,20 @@ Drawn in two passes:
 5. **Global**: Default in `view(color=...)`
 
 **Color Modes**:
-- `auto` - Chain if multi-chain, else rainbow
+- `auto` - Chain if multi-chain, else rainbow; **pLDDT if the model carries it**
 - `chain` - Color by chain
 - `plddt` - AlphaFold confidence (B-factor)
 - `rainbow` - N→C terminus gradient
 - `entropy` - MSA entropy (if available)
 - `deepmind` - DeepMind pLDDT coloring
+- `ss` - by secondary structure, using a named palette (`ss_palette`: pymol | jmol | jr1 | jr2)
 
-**Color Resolution**:
-```javascript
-function resolveColor(position, chain, frame, object, global) {
-    return positionColors[position] 
-        || chainColors[chain]
-        || frameColor
-        || objectColor
-        || globalColor;
-}
-```
+**Color Resolution**: `resolveColorHierarchy()` in `viewer-mol.js` walks object →
+chain → position and returns either a resolved MODE or a literal colour, in that
+priority order. `getAtomColor()` returns the literal immediately when there is
+one, so **an explicit colour always beats a mode** - see *Explicit Colour Beats a
+Mode* above for the three draw paths that resolve colour themselves and must
+consult `getColorOverride()` to honour that rule.
 
 ---
 
@@ -1079,7 +1134,7 @@ The scatter plot feature allows displaying 2D scatter plots synchronized with fr
 
 **Path**: `py2Dmol/resources/viewer-scatter.js`
 **Class**: `ScatterPlotViewer`
-**Lines**: 588
+**Lines**: 597
 
 **Shared Component**: `viewer-scatter.js` is used by both Python interface (Jupyter/Colab) and web interface (browser app), just like the core renderer and other visualization components (PAE, MSA, sequence).
 
@@ -1461,14 +1516,15 @@ if self.config["scatter"]["enabled"]:
 
 | Function | Purpose | Key Parameters |
 |----------|---------|----------------|
-| `__init__(...)` | Create viewer | `size`, `color`, `shadow`, `overlay` |
+| `__init__(...)` | Create viewer | `size`, `color`, `style` (`tube`/`cartoon`), `preset` (`richardson`/`ribbon`/`3d`), `shadow`, `overlay` |
 | `add(coords, ...)` | Add frame | `coords`, `plddts`, `chains`, `name`, `color` |
 | `add_pdb(filepath, ...)` | Load PDB/CIF | `filepath`, `chains`, `name`, `use_biounit` |
 | `from_pdb(pdb_id, ...)` | Load from RCSB | `pdb_id`, `chains`, `name`, `align=True` |
 | `from_afdb(uniprot_id, ...)` | Load from AlphaFold | `uniprot_id`, `chains` |
 | `show()` | Display viewer | Mode depends on when called |
 | `new_obj(name, scatter_config)` | Create new object | `name`, `scatter_config` |
-| `set_color(color, name)` | Set object color | `color`, `name` |
+| `set_color(color, name)` | Set object color | `color`, `name`, `chain`, `position`, `frame` |
+| `set_sse(sse, name)` | Override secondary structure | `sse` (`"H"`/`"E"`/`"C"`/`None`), `chain`, `position`; stored per object as `sse`, beside `color` |
 | `_send_incremental_update()` | Send incremental update to viewer (live mode) | Tracks new frames and changed metadata |
 | `save_state(filepath)` | Save to JSON | `filepath` |
 | `load_state(filepath)` | Load from JSON | `filepath` |
@@ -1487,6 +1543,12 @@ if self.config["scatter"]["enabled"]:
 | `addFrame(data, objectName)` | Add frame to object | Frame data, object name |
 | `setFrame(index, skipRender)` | Switch frame | Frame index, skip render flag |
 | `render(reason)` | Main render loop | Reason string (for debugging) |
+| `setStyle(style)` | Switch draw path | `'tube'` or `'cartoon'` - the only two |
+| `setPreset(name)` | Select a cartoon preset | `'richardson'` (default), `'ribbon'`, `'3d'`; sets the geometry profile, the sliders and the background |
+| `getVisibility()` / `setVisibility(patch)` | Read/patch what is SHOWN | `{positions, chains, paeBoxes, visibilityMode}`; owns `visiblePositions` |
+| `showAll()` / `hideAll()` / `resetVisibility()` | Bulk visibility | - |
+| `clearResidueSelection()` | Drop the residue selection | Called by every path that changes the current object |
+| `getColorOverride(i)` | Explicit colour for a position, or null | Used by draw paths that resolve colour themselves |
 
 **Exposed API Functions** (via `window.py2dmol_viewers[viewer_id]`):
 
@@ -1533,6 +1595,7 @@ if self.config["scatter"]["enabled"]:
     "contacts": [[idx1, idx2, weight, {r,g,b}], ...],
     "bonds": [[idx1, idx2], ...],
     "color": {"type": "mode", "value": "chain"},
+    "sse": {20: "H", 21: "H", ...},       # set_sse(): position index -> H|E|C
     "scatter_config": {                           # NEW: per-object scatter configuration
         "xlabel": "RMSD (Å)",
         "ylabel": "Energy (kcal/mol)",
@@ -1552,10 +1615,23 @@ DEFAULT_CONFIG = {
         "rotate": False,
         "autoplay": False,
         "controls": True,
-        "box": True
+        "box": True,
+        "background": "white"        # "white" | "black"
     },
     "rendering": {
+        "style": "tube",             # "tube" | "cartoon"  (see Render Styles)
+        # "preset" is added only when one applies: richardson | ribbon | 3d
+        "thickness": 0,
+        "sheet_flat": 0.0,
+        "arrows": True,
+        "pencil": 0.0,
+        "detail": 4,                 # subdivisions per residue, 2-8
+        "fade": 0,
+        "smooth": True,
+        "highlight": 1.8,
+        "outline_tint": 0.0,
         "shadow": True,
+        "shade": 1.0,                # 0 = flat colour, 1 = full modelling
         "shadow_strength": 0.5,
         "outline": "full",
         "width": 3.0,
@@ -1565,6 +1641,7 @@ DEFAULT_CONFIG = {
     "color": {
         "mode": "auto",
         "colorblind": False
+        # "ss_palette" is added when set: pymol | jmol | jr1 | jr2
     },
     "pae": {
         "enabled": False,
@@ -1581,6 +1658,11 @@ DEFAULT_CONFIG = {
     },
     "overlay": {
         "enabled": False
+    },
+    "cutoffs": {
+        "protein_bond": 5.0,
+        "nucleic_bond": 7.5,
+        "ligand_bond": 2.0
     }
 }
 ```
@@ -1590,9 +1672,11 @@ DEFAULT_CONFIG = {
 // Global config (sent from Python as nested structure)
 // JavaScript receives it via window.viewerConfig
 {
-    display: { size, rotate, autoplay, controls, box },
-    rendering: { shadow, shadow_strength, outline, width, ortho, detect_cyclic },
-    color: { mode, colorblind },
+    display: { size, rotate, autoplay, controls, box, background },
+    rendering: { style, preset, thickness, sheet_flat, arrows, pencil, detail, fade,
+                 smooth, highlight, outline_tint, shade, shadow, shadow_strength,
+                 outline, width, ortho, detect_cyclic },
+    color: { mode, colorblind, ss_palette },
     pae: { enabled, size },
     scatter: { enabled, size, xlabel, ylabel, xlim, ylim },  // xlabel, ylabel, xlim, ylim can be global defaults
     overlay: { enabled }
@@ -1616,7 +1700,7 @@ const PROTEIN_CHAINBREAK = 5.0;   // CA-CA distance threshold
 const NUCLEIC_CHAINBREAK = 7.5;   // C4'-C4' distance threshold
 ```
 
-**Python**: Default distance-based bonding uses 2.0 Å cutoff (mentioned in `viewer.py:1881`)
+**Python**: `DEFAULT_CONFIG["cutoffs"]` in `viewer.py` - protein_bond 5.0, nucleic_bond 7.5, ligand_bond 2.0 Å
 
 ### Position Types
 
@@ -1629,7 +1713,7 @@ const NUCLEIC_CHAINBREAK = 7.5;   // C4'-C4' distance threshold
 
 ### Color Palettes
 
-**Chain Colors** (`viewer-mol.js:252` - PyMOL palette):
+**Chain Colors** (`pymolColors` in `viewer-mol.js`, lightened by `LIGHTEN_FACTOR`). These are also the swatches offered by the selection colour picker (`getPaletteColors`), so the palette a user can pick from is the same one chains are drawn in:
 ```javascript
 const pymolColors = [
     "#33ff33",  // Green
@@ -1641,7 +1725,7 @@ const pymolColors = [
 ];
 ```
 
-**Colorblind-Safe Palette** (`viewer-mol.js:253`):
+**Colorblind-Safe Palette** (`colorblindSafeChainColors` in `viewer-mol.js`, used for both chains and the picker when colourblind mode is on):
 ```javascript
 const colorblindSafeChainColors = [
     "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",

@@ -567,92 +567,290 @@ function setupEventListeners() {
     // Start monitoring frame changes
     requestAnimationFrame(checkFrameChange);
 
-    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); showAllResidues(); });
-    if (clearAllBtn) clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); hideAllResidues(); });
+    // ---- SELECTION TOOLS -------------------------------------------------
+    // Colour / secondary structure / visibility applied to the residues the
+    // user has selected in the sequence view. The selection model already
+    // exists (renderer.getVisibility); until now its only consumer was
+    // visibility, so these hang off the same source of truth.
+
+    // Positions the tools act on. In 'default' mode getVisibility() reports
+    // every residue as selected, which is the right answer for visibility but
+    // the WRONG one here - "colour everything because you have not selected
+    // anything" is never what was meant. So an explicit selection is required.
+    function getActiveSelection() {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.currentObjectName) return null;
+        // A drag records a selection and leaves visibility alone, so the
+        // selection - not the visible set - is what the tools act on.
+        const t = renderer.residueSelection;
+        return (t && t.size) ? Array.from(t) : null;
+    }
+
+    // Write into the object's existing colour structure, in the SAME shape
+    // Python's set_color(position=...) produces: {type:'advanced', value:
+    // {position:{idx: colour}}}. One representation means a colour set here is
+    // indistinguishable from one set in Python, saves with the object, and is
+    // understood by resolveColorHierarchy without any new code path.
+    function setSelectionColor(positions, color) {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        if (!obj) return;
+        let value = {};
+        if (obj.color && obj.color.type === 'advanced' && obj.color.value) {
+            value = obj.color.value;
+        } else if (obj.color && obj.color.type === 'mode') {
+            // preserve an object-wide mode as the base the overrides sit on
+            value = { object: obj.color.value };
+        } else if (obj.color && obj.color.type === 'literal') {
+            value = { object: obj.color.value };
+        }
+        if (!value.position) value.position = {};
+        for (const i of positions) {
+            if (color === null) delete value.position[i];
+            else value.position[i] = color;
+        }
+        if (Object.keys(value.position).length === 0) delete value.position;
+        obj.color = Object.keys(value).length ? { type: 'advanced', value } : null;
+        renderer.colorsNeedUpdate = true;
+        renderer.plddtColorsNeedUpdate = true;
+        document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+        renderer.render('selection colour');
+    }
+
+    // Secondary structure override. Lives on the renderer as a plain
+    // index -> letter map; viewer-cartoon.js applies it to BOTH the geometry
+    // and the colour pass, and its contents are part of the SS cache key so an
+    // edit invalidates cleanly.
+    function setSelectionSse(positions, letter) {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        if (!obj) return;
+        // Stored on the OBJECT as `sse`, exactly where set_color puts `color`
+        // and where Python's set_sse writes. It used to live on the renderer,
+        // which meant it was not object-scoped: its position indices would be
+        // reinterpreted against whatever object became current.
+        const ov = obj.sse ? { ...obj.sse } : {};
+        for (const i of positions) {
+            if (letter === null) delete ov[i];
+            else ov[i] = letter;
+        }
+        obj.sse = Object.keys(ov).length ? ov : null;
+        // the ribbon profile is built from sec, so the cached geometry has to go
+        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+        renderer.colorsNeedUpdate = true;
+        document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+        renderer.render('selection structure');
+    }
+
+    // VISIBILITY. Two things make this less obvious than it looks:
+    // (1) visiblePositions is a SET of visible position indices, not a per-residue
+    //     byte array, and null means "everything is visible";
+    // (2) setVisibility OWNS it - it recomputes visiblePositions from the selection
+    //     (viewer-mol.js) - so writing renderer.visiblePositions directly works
+    //     until the next selection change silently undoes it.
+    // So visibility is expressed as a selection, and set through setVisibility.
+    function setSelectionVisible(positions, visible, exclusive) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.coords) return;
+        const n = renderer.coords.length;
+        const inRange = positions.filter((i) => i >= 0 && i < n);
+        let next;
+        if (exclusive) {
+            next = new Set(inRange);
+        } else {
+            const cur = renderer.visiblePositions;
+            next = cur ? new Set(cur)
+                : new Set(Array.from({ length: n }, (_, i) => i));
+            for (const i of inRange) {
+                if (visible) next.add(i); else next.delete(i);
+            }
+        }
+        // Chains must be derived from the surviving positions, not left alone.
+        // An empty chain set means "all chains" under the default mode but
+        // "no chains" under explicit - so switching to explicit while leaving
+        // chains empty made every chain label render as unselected even though
+        // most of the structure was still visible.
+        const chains = new Set();
+        const chainOf = renderer.chains;
+        if (chainOf) {
+            for (const i of next) {
+                const c = chainOf[i];
+                if (c) chains.add(c);
+            }
+        }
+        renderer.setVisibility({ positions: next, chains, visibilityMode: 'explicit' });
+        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+        renderer.render('selection visibility');
+    }
+
+    // The restyling tools only mean anything in 'style' intent - in 'show' a
+    // drag picks what is visible and there is no target for them to act on - so
+    // they are hidden outright rather than shown inert. Within style mode they
+    // stay visible but disabled until something is actually targeted, so it is
+    // clear they exist and what enables them.
+    function updateSelectionToolsState() {
+        const tools = document.getElementById('selectionTools');
+        if (!tools) return;
+        const none = getActiveSelection() === null;
+        tools.classList.toggle('disabled', none);
+        // Also set the real disabled property, not just the class: it gives the
+        // controls their native disabled appearance and blocks keyboard focus,
+        // which a pointer-events rule alone does not.
+        for (const el of tools.querySelectorAll('button, select')) el.disabled = none;
+        // Unselect lives outside that group because it does not need a
+        // selection to be discoverable - but it does need one to do anything,
+        // so it follows the same state. Select all stays enabled either way.
+        const unselectBtn = document.getElementById('clearAllResidues');
+        if (unselectBtn) unselectBtn.disabled = none;
+    }
+    window.updateSelectionToolsState = updateSelectionToolsState;
+
+    {
+        const withSelection = (fn) => (e) => {
+            if (e) e.preventDefault();
+            const positions = getActiveSelection();
+            if (!positions) return;
+            fn(positions);
+        };
+
+        // COLOUR: a grid of PyMOL's named colours rather than an OS colour
+        // picker, so the choices are the ones a PyMOL user already knows by
+        // name. Built once from the table viewer-mol.js exports.
+        const colorBtn = document.getElementById('selColorButton');
+        const colorMenu = document.getElementById('selColorMenu');
+        const swatch = document.getElementById('selColorSwatch');
+        let currentColor = '#FF0000';
+        if (colorBtn && colorMenu) {
+            // Rebuilt each time the menu opens: the palette is the CHAIN colour
+            // set, which swaps wholesale with colourblind mode.
+            const buildSwatches = () => {
+                colorMenu.textContent = '';
+
+                // AUTO: clears the override so the residues fall back to whatever
+                // the colour mode says - chain, rainbow, pLDDT, SS palette. Not a
+                // colour, so it gets its own row rather than a swatch that would
+                // have to pretend to be one.
+                const autoRow = document.createElement('div');
+                autoRow.className = 'selection-color-row';
+                const autoBtn = document.createElement('button');
+                autoBtn.type = 'button';
+                autoBtn.className = 'selection-color-auto';
+                autoBtn.textContent = 'Auto (default colour)';
+                autoBtn.title = 'Remove the colour override and follow the colour mode';
+                autoBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    colorMenu.hidden = true;
+                    const positions = getActiveSelection();
+                    if (positions) setSelectionColor(positions, null);
+                });
+                autoRow.appendChild(autoBtn);
+                colorMenu.appendChild(autoRow);
+
+                const groups = (window.py2dmol_paletteColors
+                    ? window.py2dmol_paletteColors(!!viewerApi?.renderer?.colorblindMode)
+                    : []);
+                for (const group of groups) {
+                    const row = document.createElement('div');
+                    row.className = 'selection-color-row';
+                    for (const hex of group) {
+                        const cell = document.createElement('button');
+                        cell.type = 'button';
+                        cell.className = 'selection-color-cell';
+                        cell.style.background = hex;
+                        cell.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            currentColor = hex;
+                            if (swatch) swatch.style.background = hex;
+                            colorMenu.hidden = true;
+                            const positions = getActiveSelection();
+                            if (positions) setSelectionColor(positions, hex);
+                        });
+                        row.appendChild(cell);
+                    }
+                    colorMenu.appendChild(row);
+                }
+            };
+            buildSwatches();
+            colorBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // rebuilt on open: the chain palette swaps with colourblind mode
+                buildSwatches();
+                // a click on the button itself re-applies the current colour;
+                // the caret area opens the grid. Simpler: always open, and let
+                // a second click close it.
+                colorMenu.hidden = !colorMenu.hidden;
+            });
+            document.addEventListener('click', (e) => {
+                if (!colorMenu.hidden && !colorMenu.contains(e.target)
+                    && e.target !== colorBtn && !colorBtn.contains(e.target)) {
+                    colorMenu.hidden = true;
+                }
+            });
+            if (swatch) swatch.style.background = currentColor;
+        }
+
+        const ssSelect = document.getElementById('selSsSelect');
+        if (ssSelect) {
+            ssSelect.addEventListener('change', withSelection((positions) => {
+                const v = ssSelect.value;
+                if (v) setSelectionSse(positions, v === 'auto' ? null : v);
+                ssSelect.value = '';        // it is an action menu, not a state
+            }));
+        }
+        const on = (id, fn) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('click', withSelection(fn));
+        };
+        on('showSelectionButton', (positions) => setSelectionVisible(positions, true, false));
+        on('hideSelectionButton', (positions) => setSelectionVisible(positions, false, false));
+
+        // Every surface that draws the selection listens here, so a change made
+        // on ANY of them shows on all the others. The sequence strip used to be
+        // missing: it redrew itself when IT cleared the selection, so clearing
+        // from the 3D canvas left its yellow box behind.
+        document.addEventListener('py2dmol-residue-selection-change', () => {
+            updateSelectionToolsState();
+            // the selection is outlined by the renderer's own ink pass, so the
+            // structure has to be redrawn when the selection changes
+            if (viewerApi?.renderer) viewerApi.renderer.render('selection outline');
+            // the strip draws the yellow box round the selected run
+            if (window.SEQ?.updateColors) window.SEQ.updateColors();
+            // the MSA dims to the selection, so it follows the same signal
+            applySelectionToMSA();
+        });
+        updateSelectionToolsState();
+    }
+
+    // Select all / Unselect act on the SELECTION, not on visibility. Visibility
+    // is still reachable - Select all then Show - but it is no longer a
+    // separate pair of controls, which kept implying that selecting and showing
+    // were the same act.
+    const setWholeSelection = (all) => {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.coords) return;
+        if (all) {
+            const s = new Set();
+            for (let i = 0; i < renderer.coords.length; i++) s.add(i);
+            renderer.residueSelection = s;
+        } else {
+            renderer.residueSelection = null;
+        }
+        document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
+        if (window.SEQ?.updateColors) window.SEQ.updateColors();
+        renderer.render(all ? 'select all' : 'unselect');
+    };
+    if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); setWholeSelection(true); });
+    if (clearAllBtn) clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); setWholeSelection(false); });
 
     // Update copy selection button state when selection changes
-    function updateCopySelectionButtonState() {
-        const copyBtn = document.getElementById('copySelectionButton');
-        if (!copyBtn || !viewerApi?.renderer) return;
-
-        const renderer = viewerApi.renderer;
-        const objectName = renderer.currentObjectName;
-        if (!objectName) {
-            copyBtn.disabled = true;
-            return;
-        }
-
-        const object = renderer.objectsData[objectName];
-        if (!object || !object.frames || object.frames.length === 0) {
-            copyBtn.disabled = true;
-            return;
-        }
-
-        const frame = object.frames[renderer.currentFrame >= 0 ? renderer.currentFrame : 0];
-        if (!frame || !frame.coords) {
-            copyBtn.disabled = true;
-            return;
-        }
-
-        const totalPositions = frame.coords.length;
-        const selection = renderer.getSelection();
-
-        // In overlay mode, visibilityMask contains MERGED indices from all frames
-        // but totalPositions is from frame[0] only, causing a mismatch
-        // Use selectionModel.positions (original indices) in overlay mode instead
-        let selectedPositions = new Set();
-        if (renderer.overlayState && renderer.overlayState.enabled) {
-            // OVERLAY MODE: Use selectionModel.positions (original frame indices)
-            if (selection && selection.positions && selection.positions.size > 0) {
-                selectedPositions = new Set(selection.positions);
-            } else {
-                // No selection = all positions visible
-                for (let i = 0; i < totalPositions; i++) {
-                    selectedPositions.add(i);
-                }
-            }
-        } else {
-            // NORMAL MODE: Use visibilityMask (actual rendered positions)
-            if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
-                selectedPositions = new Set(renderer.visibilityMask);
-            } else {
-                // No mask = all positions visible
-                for (let i = 0; i < totalPositions; i++) {
-                    selectedPositions.add(i);
-                }
-            }
-        }
-
-        // Enable only if selection is non-zero and non-full-length
-        const hasSelection = selectedPositions.size > 0;
-        const isPartialSelection = selectedPositions.size > 0 && selectedPositions.size < totalPositions;
-        copyBtn.disabled = !(hasSelection && isPartialSelection);
-    }
-
-    // Update button state on selection changes
-    // Listen for selection change events (add listener globally, will work after viewer is initialized)
-    document.addEventListener('py2dmol-selection-change', updateCopySelectionButtonState);
-
-    // Also update on object/frame changes (set up after viewer is initialized)
-    function setupCopyButtonStateUpdates() {
-        if (viewerApi && viewerApi.renderer) {
-            if (viewerApi.renderer.objectSelect) {
-                viewerApi.renderer.objectSelect.addEventListener('change', updateCopySelectionButtonState);
-            }
-            // Also update when frame changes
-            const frameSlider = document.getElementById('frameSlider');
-            if (frameSlider) {
-                frameSlider.addEventListener('input', updateCopySelectionButtonState);
-                frameSlider.addEventListener('change', updateCopySelectionButtonState);
-            }
-        }
-    }
-
-    // Set up after viewer is initialized
-    setTimeout(() => {
-        setupCopyButtonStateUpdates();
-        updateCopySelectionButtonState();
-    }, 200);
+    // Copy's enabled state is handled with the rest of the selection tools
+    // (updateSelectionToolsState): it acts on the selection like they do. It
+    // used to have its own rule - enabled only when the selection was a PARTIAL
+    // subset of the visible set - which was a Show-mode notion and, kept
+    // alongside the group's state, would have fought it and left Copy stuck.
 
     // Clear all objects button
     const clearAllButton = document.getElementById('clearAllButton');
@@ -676,7 +874,7 @@ function setupEventListeners() {
     });
 
     // Listen for selection changes (including PAE selections)
-    document.addEventListener('py2dmol-selection-change', (e) => {
+    document.addEventListener('py2dmol-visibility-change', (e) => {
         // Sync chain pills with selection model
         syncChainPillsToSelection();
         // Update sequence view
@@ -837,14 +1035,14 @@ function applyBestViewRotation(animate = true) {
     }
 
     // Get current selection to determine which positions to use for orienting
-    const selection = renderer.getSelection();
+    const selection = renderer.getVisibility();
     let selectedPositionIndices = null;
 
     // Determine which positions to use: selected positions if available, otherwise all positions
     if (selection && selection.positions && selection.positions.size > 0) {
         // Use only selected positions
         selectedPositionIndices = selection.positions;
-    } else if (selection && selection.selectionMode === 'default' &&
+    } else if (selection && selection.visibilityMode === 'default' &&
         (!selection.chains || selection.chains.size === 0)) {
         // Default mode with no explicit selection: use all positions
         selectedPositionIndices = null; // Will use all positions
@@ -2298,12 +2496,12 @@ function updateChainSelectionUI() {
     const obj = r.objectsData?.[name];
     if (!obj?.frames?.length) return;
 
-    const ss = r.objectsData?.[name]?.selectionState;
+    const ss = r.objectsData?.[name]?.visibilityState;
     // Only default if there is truly no user selection saved
     const hasAnySelection =
         ss &&
         (
-            ss.selectionMode !== 'default' ||
+            ss.visibilityMode !== 'default' ||
             (ss.positions && ss.positions.size > 0) ||
             (ss.chains && ss.chains.size > 0) ||
             (ss.paeBoxes && ss.paeBoxes.length > 0)
@@ -2312,17 +2510,17 @@ function updateChainSelectionUI() {
     if (hasAnySelection) return;
 
     // Let the renderer compute the correct "all" internally
-    if (typeof r.resetToDefault === 'function') {
-        r.resetToDefault();
-    } else if (typeof r.setSelection === 'function') {
+    if (typeof r.showAll === 'function') {
+        r.showAll();
+    } else if (typeof r.setVisibility === 'function') {
         // Fallback: empty/default request which the renderer normalizes to "all"
-        r.setSelection({ selectionMode: 'default', positions: new Set(), chains: new Set() });
+        r.setVisibility({ visibilityMode: 'default', positions: new Set(), chains: new Set() });
     }
 }
 
 function setChainResiduesSelected(chain, selected) {
     if (!viewerApi?.renderer) return;
-    const current = viewerApi.renderer.getSelection();
+    const current = viewerApi.renderer.getVisibility();
     const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) return;
 
@@ -2337,13 +2535,13 @@ function setChainResiduesSelected(chain, selected) {
     // Determine current chain selection
     // If chains.size === 0 and mode is 'default', all chains are selected
     let currentChains = new Set(current.chains);
-    if (currentChains.size === 0 && current.selectionMode === 'default') {
+    if (currentChains.size === 0 && current.visibilityMode === 'default') {
         currentChains = new Set(allChains);
     }
 
     const newChains = new Set(currentChains);
 
-    // getSelection() now normalizes default mode to have all positions, so we can use it directly
+    // getVisibility() now normalizes default mode to have all positions, so we can use it directly
     const newPositions = new Set(current.positions);
 
     if (selected) {
@@ -2377,16 +2575,16 @@ function setChainResiduesSelected(chain, selected) {
 
     // Use explicit mode if we have partial selections OR if not all chains are selected OR if no positions are selected
     // This allows all chains to be deselected (empty chains set with explicit mode)
-    const selectionMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
+    const visibilityMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
 
     // If all chains are selected AND no partial selections AND we have positions, use empty chains set with default mode
     // Otherwise, keep explicit chain selection (allows empty chains)
     const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
 
-    viewerApi.renderer.setSelection({
+    viewerApi.renderer.setVisibility({
         chains: chainsToSet,
         positions: newPositions,
-        selectionMode: selectionMode,
+        visibilityMode: visibilityMode,
         paeBoxes: []  // Clear PAE boxes when editing chain selection
     });
     // Event listener will update UI, no need to call applySelection()
@@ -2402,7 +2600,7 @@ function toggleChainResidues(chain) {
     const frame = obj.frames[0];
     if (!frame?.chains) return;
 
-    const current = viewerApi.renderer.getSelection();
+    const current = viewerApi.renderer.getVisibility();
     const chainPositionIndices = [];
     for (let i = 0; i < frame.chains.length; i++) {
         if (frame.chains[i] === chain) {
@@ -2430,10 +2628,10 @@ function toggleChainResidues(chain) {
     // Determine if we have partial selections (not all positions from all chains)
     const hasPartialSelections = newPositions.size > 0 && newPositions.size < frame.chains.length;
 
-    viewerApi.renderer.setSelection({
+    viewerApi.renderer.setVisibility({
         positions: newPositions,
         chains: newChains,
-        selectionMode: hasPartialSelections ? 'explicit' : 'default',
+        visibilityMode: hasPartialSelections ? 'explicit' : 'default',
         paeBoxes: []  // Clear PAE boxes when editing sequence
     });
 }
@@ -2451,22 +2649,22 @@ function applySelection(previewPositions = null) {
 
     const objectName = viewerApi.renderer.currentObjectName;
     if (!objectName) {
-        if (viewerApi.renderer.resetSelection) {
-            viewerApi.renderer.resetSelection();
+        if (viewerApi.renderer.resetVisibility) {
+            viewerApi.renderer.resetVisibility();
         } else {
-            viewerApi.renderer.visibilityMask = null;
+            viewerApi.renderer.visiblePositions = null;
             viewerApi.renderer.render();
         }
         return;
     }
 
     // Get current selection
-    const current = viewerApi.renderer.getSelection();
+    const current = viewerApi.renderer.getVisibility();
 
     // Get visible chains from selection model (chain buttons are now on canvas)
     let visibleChains = current?.chains || new Set();
     // If in default mode with no explicit chains, all chains are visible
-    if (current?.selectionMode === 'default' && (!current.chains || current.chains.size === 0)) {
+    if (current?.visibilityMode === 'default' && (!current.chains || current.chains.size === 0)) {
         // Get all chains from renderer
         if (viewerApi.renderer.chains) {
             visibleChains = new Set(viewerApi.renderer.chains);
@@ -2476,11 +2674,15 @@ function applySelection(previewPositions = null) {
     // Use preview selection if provided, otherwise use current selection
     const positionsToUse = previewPositions !== null ? previewPositions : current.positions;
 
-    viewerApi.renderer.setSelection({
+    viewerApi.renderer.setVisibility({
         positions: positionsToUse,
         chains: visibleChains
         // Keep current PAE boxes and mode
     });
+
+    // the selection tools act on this selection, so their enabled state
+    // follows it - this is the one place every selection change passes through
+    if (window.updateSelectionToolsState) window.updateSelectionToolsState();
 
     // Note: updateSelection will be called via event listener
 }
@@ -2519,19 +2721,6 @@ function clearHighlight() {
     }
 }
 
-function showAllResidues() {
-    if (!viewerApi?.renderer) return;
-    // Reset to default (show all positions/chains) - this also clears PAE boxes
-    viewerApi.renderer.resetToDefault();
-    // UI will update via event listener
-}
-
-function hideAllResidues() {
-    if (!viewerApi?.renderer) return;
-    // Use renderer's clearSelection method to hide all
-    viewerApi.renderer.clearSelection();
-    // UI will update via event listener
-}
 
 function clearAllObjects() {
     // Clear all batched objects
@@ -4376,29 +4565,17 @@ function applySelectionToMSA() {
     if (!frame || !frame.chains) return;
 
     // Get selected positions
-    const selection = renderer.getSelection();
-    let selectedPositions = new Set();
+    // The RESIDUE SELECTION, not visibility. This used to read the visibility
+    // set, which worked only while a drag in the sequence view still set what
+    // was visible. Now that selecting and showing are separate acts, sourcing
+    // from visibility meant the MSA dimmed to whatever happened to be on screen
+    // and ignored the selection entirely.
+    const sel = renderer.residueSelection;
+    const selectedPositions = (sel && sel.size > 0) ? new Set(sel) : new Set();
 
-    // Check if we have an explicit selection mode
-    const isExplicitMode = selection && selection.selectionMode === 'explicit';
-
-    if (selection && selection.positions && selection.positions.size > 0) {
-        selectedPositions = new Set(selection.positions);
-    } else if (renderer.visibilityMask !== null && renderer.visibilityMask.size > 0) {
-        selectedPositions = new Set(renderer.visibilityMask);
-    }
-
-    // Handle empty selection in explicit mode (Hide All was clicked)
-    if (isExplicitMode && selectedPositions.size === 0) {
-        // Empty selection - dim everything
-        obj.msa.selectedPositions = new Map();
-        if (window.MSA && window.MSA.updateMSAViewSelectionState) {
-            window.MSA.updateMSAViewSelectionState();
-        }
-        return;
-    }
-
-    // If no selection or default mode, all positions are selected (no dimming)
+    // Nothing selected means nothing to point at, so no dimming - NOT "dim
+    // everything", which is what an empty explicit visibility selection used to
+    // mean here (it stood for Hide All).
     if (selectedPositions.size === 0) {
         obj.msa.selectedPositions = null; // null means all selected (no dimming)
         if (window.MSA && window.MSA.updateMSAViewSelectionState) {
@@ -5594,6 +5771,10 @@ function saveViewerState() {
             if (objectData.color) {
                 objToSave.color = objectData.color;
             }
+            // secondary structure travels with the object, like colour
+            if (objectData.sse) {
+                objToSave.sse = objectData.sse;
+            }
 
             // Add per-object viewerState if it exists
             if (objectData.viewerState) {
@@ -5650,7 +5831,7 @@ function saveViewerState() {
             // window.viewerConfig (which only ever holds the values the viewer
             // STARTED with), so saving the config alone would reload a session
             // as whatever style it was first opened in.
-            style: renderer.style || 'ribbon',
+            style: renderer.style || 'tube',
             // the preset is a separate axis from the style ('cartoon' can be
             // showing richardson or 3d values), and applying one overwrites
             // the sliders - so it is restored BEFORE them, like style
@@ -5684,12 +5865,12 @@ function saveViewerState() {
         // Get selection state for ALL objects
         const selectionsByObject = {};
         for (const [objectName, objectData] of Object.entries(renderer.objectsData)) {
-            if (objectData.selectionState) {
+            if (objectData.visibilityState) {
                 selectionsByObject[objectName] = {
-                    positions: Array.from(objectData.selectionState.positions),
-                    chains: Array.from(objectData.selectionState.chains),
-                    pae_boxes: objectData.selectionState.paeBoxes.map(box => ({ ...box })),
-                    selection_mode: objectData.selectionState.selectionMode
+                    positions: Array.from(objectData.visibilityState.positions),
+                    chains: Array.from(objectData.visibilityState.chains),
+                    pae_boxes: objectData.visibilityState.paeBoxes.map(box => ({ ...box })),
+                    selection_mode: objectData.visibilityState.visibilityMode
                 };
             }
         }
@@ -5868,6 +6049,14 @@ async function loadViewerState(stateData) {
                     renderer.objectsData[objData.name].color = objData.color;
                 }
 
+                // ... and secondary structure, which lives beside it
+                if (objData.sse) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    renderer.objectsData[objData.name].sse = objData.sse;
+                }
+
                 // Restore per-object viewerState if present
                 if (objData.viewerState) {
                     if (!renderer.objectsData[objData.name]) {
@@ -6033,8 +6222,10 @@ async function loadViewerState(stateData) {
             // values restored below.
             if (typeof vs.style === 'string' && vs.style !== renderer.style) {
                 renderer.setStyle(vs.style);   // no-ops on an unknown/unloaded style
-                const styleSelect = document.getElementById('styleSelect');
-                if (styleSelect) styleSelect.value = renderer.style;
+                // setStyle syncs the dropdown itself. Assigning renderer.style
+                // here used to leave the select BLANK, because 'richardson' was
+                // a style value with no matching option; richardson is a preset
+                // now, but letting setStyle own the dropdown is still right.
             }
             if (typeof vs.preset === 'string'
                 && vs.preset !== renderer.stylePreset
@@ -6206,13 +6397,13 @@ async function loadViewerState(stateData) {
             // New format: restore all objects' selection states
             for (const [objectName, ss] of Object.entries(stateData.selections_by_object)) {
                 if (renderer.objectsData[objectName]) {
-                    // Ensure object has selectionState initialized
-                    if (!renderer.objectsData[objectName].selectionState) {
-                        renderer.objectsData[objectName].selectionState = {
+                    // Ensure object has visibilityState initialized
+                    if (!renderer.objectsData[objectName].visibilityState) {
+                        renderer.objectsData[objectName].visibilityState = {
                             positions: new Set(),
                             chains: new Set(),
                             paeBoxes: [],
-                            selectionMode: 'default'
+                            visibilityMode: 'default'
                         };
                     }
 
@@ -6222,11 +6413,11 @@ async function loadViewerState(stateData) {
                         positions = new Set(ss.positions.filter(a => typeof a === 'number' && a >= 0));
                     }
 
-                    renderer.objectsData[objectName].selectionState = {
+                    renderer.objectsData[objectName].visibilityState = {
                         positions: positions,
                         chains: new Set(ss.chains || []),
                         paeBoxes: ss.pae_boxes || [],
-                        selectionMode: ss.selection_mode || 'default'
+                        visibilityMode: ss.selection_mode || 'default'
                     };
                 }
             }
@@ -6245,9 +6436,9 @@ async function loadViewerState(stateData) {
                     }
                 }
 
-                // Restore the current object's selection to the selectionModel
+                // Restore the current object's selection to the visibilityModel
                 // This must happen before setFrame so the selection is applied correctly
-                if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]?.selectionState) {
+                if (renderer.currentObjectName && renderer.objectsData[renderer.currentObjectName]?.visibilityState) {
                     renderer._switchToObject(renderer.currentObjectName); // This will restore the selection
                 }
 

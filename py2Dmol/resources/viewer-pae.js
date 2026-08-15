@@ -116,7 +116,7 @@
                         this.scheduleRender();
                     }
                 };
-                document.addEventListener('py2dmol-selection-change', this.selectionChangeHandler);
+                document.addEventListener('py2dmol-visibility-change', this.selectionChangeHandler);
 
                 // Listen for color mode changes to re-render PAE with new color scheme
                 this.colorChangeHandler = () => {
@@ -185,8 +185,8 @@
                 if (e.button !== 0 || !this.paeData) return;
                 this.isAdding = e.shiftKey;
                 if (!this.isAdding) {
-                    this.mainRenderer.setSelection({
-                        paeBoxes: [], positions: new Set(), chains: new Set(), selectionMode: 'explicit'
+                    this.mainRenderer.setVisibility({
+                        paeBoxes: [], positions: new Set(), chains: new Set(), visibilityMode: 'explicit'
                     }, true);
                 }
                 this.isDragging = true;
@@ -235,14 +235,14 @@
                 }
                 const isClick = (i_start === i_end && j_start === j_end);
                 if (isClick) {
-                    this.mainRenderer.setSelection({
-                        paeBoxes: [], positions: new Set(), chains: new Set(), selectionMode: 'default'
+                    this.mainRenderer.setVisibility({
+                        paeBoxes: [], positions: new Set(), chains: new Set(), visibilityMode: 'default'
                     }, false);
                     this.cachedSequencePositions = null;
                     this.selection = { x1: -1, y1: -1, x2: -1, y2: -1 };
                 } else {
                     const newBox = { i_start, i_end, j_start, j_end };
-                    const currentSelection = this.mainRenderer.getSelection();
+                    const currentSelection = this.mainRenderer.getVisibility();
                     const existingBoxes = currentSelection.paeBoxes || [];
                     const existingPositions = currentSelection.positions || new Set();
                     const newPositions = new Set();
@@ -261,9 +261,9 @@
                             }
                         }
                         const hasPartialSelections = combinedPositions.size > 0 && combinedPositions.size < (this.mainRenderer.chains?.length || 0);
-                        this.mainRenderer.setSelection({
+                        this.mainRenderer.setVisibility({
                             paeBoxes: combinedBoxes, positions: combinedPositions, chains: newChains,
-                            selectionMode: hasPartialSelections ? 'explicit' : 'default'
+                            visibilityMode: hasPartialSelections ? 'explicit' : 'default'
                         }, false);
                     } else {
                         const newChains = new Set();
@@ -273,9 +273,9 @@
                             }
                         }
                         const hasPartialSelections = expandedNewPositions.size > 0 && expandedNewPositions.size < (this.mainRenderer.chains?.length || 0);
-                        this.mainRenderer.setSelection({
+                        this.mainRenderer.setVisibility({
                             paeBoxes: [newBox], positions: expandedNewPositions, chains: newChains,
-                            selectionMode: hasPartialSelections ? 'explicit' : 'default'
+                            visibilityMode: hasPartialSelections ? 'explicit' : 'default'
                         }, false);
                     }
                     this.cachedSequencePositions = null;
@@ -292,7 +292,7 @@
                 if (e.touches.length !== 1 || !this.paeData) return;
                 e.preventDefault();
                 this.isAdding = false;
-                this.mainRenderer.setSelection({ paeBoxes: [], positions: new Set(), chains: new Set(), selectionMode: 'explicit' }, true);
+                this.mainRenderer.setVisibility({ paeBoxes: [], positions: new Set(), chains: new Set(), visibilityMode: 'explicit' }, true);
                 this.isDragging = true;
                 const { i, j } = this.getCellIndices(e);
                 this.selection.x1 = j; this.selection.y1 = i;
@@ -396,20 +396,20 @@
             const selectedPositions = new Set();
             const renderer = this.mainRenderer;
             if (!this.paeData || this.n === 0) return selectedPositions;
-            const selectionModel = renderer.selectionModel;
-            const hasPositionSelection = selectionModel.positions && selectionModel.positions.size > 0;
-            const hasChainSelection = selectionModel.chains && selectionModel.chains.size > 0;
-            const mode = selectionModel.selectionMode || 'default';
+            const visibilityModel = renderer.visibilityModel;
+            const hasPositionSelection = visibilityModel.positions && visibilityModel.positions.size > 0;
+            const hasChainSelection = visibilityModel.chains && visibilityModel.chains.size > 0;
+            const mode = visibilityModel.visibilityMode || 'default';
             if (mode === 'default') {
                 if (!hasPositionSelection) return selectedPositions;
             }
             if (!hasPositionSelection && !hasChainSelection) return selectedPositions;
-            let allowedChains = hasChainSelection ? selectionModel.chains : new Set(renderer.chains);
+            let allowedChains = hasChainSelection ? visibilityModel.chains : new Set(renderer.chains);
             const n = this.n;
             for (let r = 0; r < n; r++) {
                 if (r >= renderer.chains.length) continue;
                 const chain = renderer.chains[r];
-                if (allowedChains.has(chain) && (!hasPositionSelection || selectionModel.positions.has(r))) {
+                if (allowedChains.has(chain) && (!hasPositionSelection || visibilityModel.positions.has(r))) {
                     selectedPositions.add(r);
                 }
             }
@@ -464,11 +464,11 @@
                 this.ctx.drawImage(this.baseCanvas, 0, 0, this.size, this.size);
             }
 
-            const activeBoxes = this.mainRenderer.selectionModel.paeBoxes || [];
+            const activeBoxes = this.mainRenderer.visibilityModel.paeBoxes || [];
             const previewBox = (this.isDragging && this.selection.x1 !== -1) ? this.selection : null;
             if (this.cachedSequencePositions === null) this.cachedSequencePositions = this.getSequenceSelectedPAEPositions();
             const sequenceSelectedPositions = this.cachedSequencePositions;
-            const mode = this.mainRenderer.selectionModel?.selectionMode || 'default';
+            const mode = this.mainRenderer.visibilityModel?.visibilityMode || 'default';
             const hasSelection = activeBoxes.length > 0 || previewBox !== null || sequenceSelectedPositions.size > 0 || (mode === 'explicit');
 
             if (hasSelection) {

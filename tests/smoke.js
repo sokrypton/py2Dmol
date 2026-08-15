@@ -33,7 +33,8 @@ function mkCtx() {
         canvas: { width: 400, height: 400 },
         lineWidth: 1, lineJoin: 'round', lineCap: 'butt', miterLimit: 10,
         globalAlpha: 1, globalCompositeOperation: 'source-over',
-        beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+        ops: 0,
+        beginPath() { this.ops++; }, moveTo() {}, lineTo() {}, closePath() {},
         stroke() {}, fill() {}, arc() {},
         createLinearGradient() {
             return { addColorStop(t, c) { checkStyle(c); } };
@@ -142,9 +143,12 @@ test('cel + shade off: no NaN styles', () => {
     if (bad.length) throw new Error('bad styles: ' + bad.slice(0, 3).join(' | '));
 });
 
-// 3. loop smoothing must not cross a chain break (fix 2)
-test('sheetFlat smoothing respects chain breaks', () => {
-    // two coil chains, far apart, both all-coil; sheetFlat on
+// 3. flattening is SHEETS ONLY, as in PyMOL - loops must not be repositioned
+// at any sheetFlat. (This also covers the older cross-chain-break bug: the
+// facing termini of two coil chains are adjacent in index order, and smoothing
+// across the break used to drag them tens of Angstroms toward each other.)
+test('sheetFlat leaves loops untouched', () => {
+    // two coil chains, far apart, both all-coil; sheetFlat at maximum
     const A = coil(8, 0);
     const B = coil(8, 200);          // 200 A away
     const coords = A.concat(B);
@@ -158,15 +162,14 @@ test('sheetFlat smoothing respects chain breaks', () => {
     cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
     const pos = r._posProbe;
     if (!pos) throw new Error('no posProbe');
-    // no drawn position may move more than 2 A from its input; a cross-break
-    // average moves the facing termini tens of Angstroms
+    // not "small" - loops are not a flattening target, so exactly zero
     let worst = 0;
     for (let i = 0; i < coords.length; i++) {
         const d = Math.hypot(pos[i].x - coords[i].x,
             pos[i].y - coords[i].y, pos[i].z - coords[i].z);
         if (d > worst) worst = d;
     }
-    if (worst > 2.0) throw new Error('residue moved ' + worst.toFixed(1) + ' A');
+    if (worst > 1e-9) throw new Error('loop residue moved ' + worst.toFixed(3) + ' A');
 });
 
 // 4. protein-only structure renders fine with base frames skipped (fix 4)
@@ -248,5 +251,70 @@ test('SS palettes complete', () => {
         }
     }
 });
+
+// 7. CHIRALITY. Mirror a structure, mark every residue as a D-amino acid, and
+// the secondary structure must come back identical - the D path exists to make
+// the L-protein backbone table and the L phi/psi targets applicable to mirrored
+// geometry, so anything else means the mirror is not a true mirror. Guards both
+// halves at once: the table lookup (predictBackbone) and the dihedral gate.
+test('mirrored + D-flagged matches L', () => {
+    const L = helix(16).concat(coil(14, 30));
+    const n = L.length;
+    const mirrored = L.map((v) => ({ x: v.x, y: v.y, z: -v.z }));
+    const types = new Array(n).fill('P');
+    const ssL = cartoon.assignSecondary(L, n, types,
+        { names: new Array(n).fill('ALA') }).sec.join('');
+    const ssD = cartoon.assignSecondary(mirrored, n, types,
+        { names: new Array(n).fill('DAL') }).sec.join('');
+    if (ssL !== ssD) throw new Error(`L ${ssL} != mirrored-D ${ssD}`);
+    if (ssL.indexOf('H') < 0) throw new Error('test structure has no helix to check');
+    // ... and without the D flag the mirrored helix is lost entirely, which is
+    // the bug this guards (5KX0 drew both its helices as coil)
+    const ssNaive = cartoon.assignSecondary(mirrored, n, types).sec.join('');
+    if (ssNaive.indexOf('H') >= 0) throw new Error('expected the unflagged mirror to lose its helix');
+
+    // the all-L path must be untouched by the names argument
+    const bare = cartoon.assignSecondary(L, n, types).sec.join('');
+    if (bare !== ssL) throw new Error('L-only result changed when names were passed');
+});
+
+
+// 8. CYCLIC PEPTIDES. viewer-mol.js emits a head-to-tail bond joining a chain's
+// first and last residue; it is not index-adjacent, so the cartoon used to
+// reject it as backbone and draw it as a generic stick while the ribbon
+// terminated at both ends. The run must now close and the ribbon must take one
+// extra interval around the seam.
+test('cyclic run closes the ribbon', () => {
+    // a closed ring of C-alphas, 3.8 A apart
+    const N = 24;
+    const R = 3.8 / (2 * Math.sin(Math.PI / N));
+    const coords = [];
+    for (let i = 0; i < N; i++) {
+        const t = (2 * Math.PI * i) / N;
+        coords.push({ x: R * Math.cos(t), y: R * Math.sin(t), z: 0.4 * Math.sin(3 * t) });
+    }
+    const open = bbSegs([[0, N - 1]]);
+    // ... plus the closure bond, exactly as viewer-mol.js emits it
+    const closed = open.concat([{ type: 'P', idx1: 0, idx2: N - 1 }]);
+
+    const runOne = (segs) => {
+        const r = mkRenderer(coords, segs, { overlayState: { enabled: false } });
+        const { ctx, bad } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        if (bad.length) throw new Error('bad styles: ' + bad[0]);
+        return ctx.ops;
+    };
+    const opsOpen = runOne(open);
+    const opsClosed = runOne(closed);
+    // the seam interval is real geometry, so it costs real paint operations
+    if (!(opsClosed > opsOpen)) {
+        throw new Error(`closure drew nothing extra (${opsClosed} vs ${opsOpen})`);
+    }
+    // a bond that closes nothing must NOT be swallowed - it stays an ordinary
+    // drawn bond rather than silently turning the chain into a ring
+    const stray = open.concat([{ type: 'P', idx1: 2, idx2: N - 4 }]);
+    if (!(runOne(stray) > opsOpen)) throw new Error('a non-closure bond was dropped');
+});
+
 
 process.exit(failures ? 1 : 0);

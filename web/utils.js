@@ -1128,6 +1128,25 @@ function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResid
         }
     }
 
+    // 5. STRUCTURAL fallback: a residue carrying an N-CA-C backbone is an amino
+    // acid whatever it is called, mirroring the ribose test in
+    // isRealNucleicAcid. The dictionary above cannot list every non-standard
+    // residue, and anything it misses does not merely render wrong - it is
+    // dropped from the chain, so the backbone breaks and the gap reads as an
+    // over-length bond rather than the missing residue it is. This also matches
+    // the Python path, where gemmi's is_amino_acid() already accepts them.
+    // Connectivity is still required, so free amino-acid ligands are not swept
+    // in - it takes a CA within 5 A of an adjacent residue number in the chain.
+    if (residue.atoms
+        && residue.atoms.some(a => a.atomName === 'N')
+        && residue.atoms.some(a => a.atomName === 'CA')
+        && residue.atoms.some(a => a.atomName === 'C')) {
+        if (allResidues) {
+            return isResidueConnected(residue, allResidues, 'P');
+        }
+        return true;
+    }
+
     // No other cases - return false (removed all "last resort" checks)
     return false;
 }
@@ -1258,6 +1277,31 @@ function getModifiedResidueType(resName) {
         'HYP': { type: 'P', parent: 'PRO' }, // 4-hydroxyproline
         'PCA': { type: 'P', parent: 'GLU' }, // Pyroglutamic acid
         'ALY': { type: 'P', parent: 'LYS' }, // N-acetyllysine
+        // D-AMINO ACIDS. Deposited as HETATM with no MODRES record (5KX0), so
+        // nothing above matched and they were dropped from the chain - that
+        // structure lost 11 of its 26 residues and the backbone broke at each
+        // one. gemmi tabulates all of these as amino acids, so the Python path
+        // already handled them; this is what the web parser was missing.
+        // GLY is achiral and has no D form.
+        'DAL': { type: 'P', parent: 'ALA' }, // D-alanine
+        'DAR': { type: 'P', parent: 'ARG' }, // D-arginine
+        'DSG': { type: 'P', parent: 'ASN' }, // D-asparagine
+        'DAS': { type: 'P', parent: 'ASP' }, // D-aspartic acid
+        'DCY': { type: 'P', parent: 'CYS' }, // D-cysteine
+        'DGN': { type: 'P', parent: 'GLN' }, // D-glutamine
+        'DGL': { type: 'P', parent: 'GLU' }, // D-glutamic acid
+        'DHI': { type: 'P', parent: 'HIS' }, // D-histidine
+        'DIL': { type: 'P', parent: 'ILE' }, // D-isoleucine
+        'DLE': { type: 'P', parent: 'LEU' }, // D-leucine
+        'DLY': { type: 'P', parent: 'LYS' }, // D-lysine
+        'MED': { type: 'P', parent: 'MET' }, // D-methionine
+        'DPN': { type: 'P', parent: 'PHE' }, // D-phenylalanine
+        'DPR': { type: 'P', parent: 'PRO' }, // D-proline
+        'DSN': { type: 'P', parent: 'SER' }, // D-serine
+        'DTH': { type: 'P', parent: 'THR' }, // D-threonine
+        'DTR': { type: 'P', parent: 'TRP' }, // D-tryptophan
+        'DTY': { type: 'P', parent: 'TYR' }, // D-tyrosine
+        'DVA': { type: 'P', parent: 'VAL' }, // D-valine
         // Common modified nucleotides (DNA)
         '5MDA': { type: 'D', parent: 'DA' }, // 5-methyldeoxyadenosine
         '5MDC': { type: 'D', parent: 'DC' }, // 5-methyldeoxycytidine
@@ -2831,7 +2875,11 @@ const RESIDUE_TO_AA = {
     HIS: 'H', ILE: 'I', LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P', SER: 'S',
     THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V', SEC: 'U', PYL: 'O',
     // common modified residues → canonical letters
-    MSE: 'M', HSD: 'H', HSE: 'H', HID: 'H', HIE: 'H', HIP: 'H'
+    MSE: 'M', HSD: 'H', HSE: 'H', HID: 'H', HIE: 'H', HIP: 'H',
+    // D-amino acids → the letter of their L counterpart, as PyMOL and gemmi do
+    DAL: 'A', DAR: 'R', DSG: 'N', DAS: 'D', DCY: 'C', DGN: 'Q', DGL: 'E',
+    DHI: 'H', DIL: 'I', DLE: 'L', DLY: 'K', MED: 'M', DPN: 'F', DPR: 'P',
+    DSN: 'S', DTH: 'T', DTR: 'W', DTY: 'Y', DVA: 'V'
 };
 
 // Expose globally

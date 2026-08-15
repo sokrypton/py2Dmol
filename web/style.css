@@ -1279,6 +1279,108 @@ table.layout-table td {
     display: flex !important;
 }
 
+/* Selection tools: act on the residues selected in the sequence view. Greyed
+   out as a group while nothing is selected, so the controls are discoverable
+   but obviously inert - the alternative, hiding them, left no hint that
+   selecting a region enables anything. */
+.selection-tools {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding-right: 8px;
+    margin-right: 2px;
+    border-right: 1px solid #e5e7eb;
+}
+
+.selection-global-tools {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.selection-tools.disabled {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+/* Colour button carries a swatch of the current colour, and opens a grid of
+   PyMOL's named colours. Anchored on a positioned wrapper so the popup can sit
+   above the sequence strip without the row growing. */
+.selection-color-wrap {
+    position: relative;
+    display: inline-flex;
+}
+
+.selection-color {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.selection-swatch {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #9ca3af;
+    border-radius: 3px;
+    background: #FF0000;
+    flex-shrink: 0;
+}
+
+.selection-color-menu {
+    position: absolute;
+    bottom: 100%;
+    right: 0;
+    margin-bottom: 4px;
+    background: #ffffff;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    padding: 6px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.selection-color-menu[hidden] { display: none; }
+
+.selection-color-row {
+    display: flex;
+    gap: 3px;
+}
+
+.selection-color-cell {
+    width: 16px;
+    height: 16px;
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    border-radius: 3px;
+    padding: 0;
+    cursor: pointer;
+}
+
+.selection-color-auto {
+    flex: 1;
+    font-size: 11px;
+    line-height: 1.6;
+    padding: 1px 6px;
+    border: 1px solid #d1d5db;
+    border-radius: 3px;
+    background: #f9fafb;
+    color: #374151;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.selection-color-auto:hover {
+    background: #eef2ff;
+    border-color: #6366f1;
+}
+
+.selection-color-cell:hover {
+    outline: 2px solid #111827;
+    outline-offset: 1px;
+}
+
 /* Removed - now handled by .btn-small modifier above */
 
 /* Chain buttons and residue characters are now drawn on canvas - no CSS needed for HTML elements */

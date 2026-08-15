@@ -48,7 +48,7 @@
         highlightAtom: null,          // (positionIndex) => void
         highlightAtoms: null,         // (positionIndices) => void
         clearHighlight: null,        // () => void
-        applySelection: null          // (previewPositions) => void
+        applyResidueSelection: null          // (previewPositions) => void
     };
 
     // ============================================================================
@@ -56,6 +56,14 @@
     // ============================================================================
 
     // Get current object name from renderer
+    // A drag in the sequence strip picks a SELECTION - a set of residues the
+    // tools act on - and never changes what is visible. Visibility is its own
+    // explicit action (the Show / Hide buttons, and Show all / Hide all).
+    //
+    // These used to be the same thing: a drag set the visible set, so selecting
+    // a region in order to recolour it hid the rest of the structure. That is
+    // why selection and visibility are now separate, the way they are in PyMOL.
+
     function getCurrentObjectName() {
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         return renderer?.currentObjectName || null;
@@ -426,29 +434,36 @@
         // Clear canvas
         ctx.clearRect(0, 0, logicalWidth, logicalHeight);
 
-        // Get selection state - use selectionModel directly to avoid expensive getSelection() copy
-        const selectionModel = renderer.selectionModel;
+        // Get selection state - use visibilityModel directly to avoid expensive getVisibility() copy
+        const visibilityModel = renderer.visibilityModel;
         const previewSelectionSet = getLocalPreview();
+
+        // The drag preview describes a SELECTION, not a visibility change, so it
+        // must not feed the dim/undim path - letting it through made the
+        // structure appear to vanish while dragging out a region to recolour.
+        // It is drawn as the selection outline instead.
+        const stylePreview = previewSelectionSet;
+        const visibilityPreview = null;
 
         // Determine visible positions - avoid unnecessary Set copies
         let visiblePositions;
-        if (previewSelectionSet && previewSelectionSet.size > 0) {
+        if (visibilityPreview && visibilityPreview.size > 0) {
             // Use preview selection directly (already a Set, no need to copy)
-            visiblePositions = previewSelectionSet;
+            visiblePositions = visibilityPreview;
         } else {
-            if (selectionModel && selectionModel.positions && selectionModel.positions.size > 0) {
-                // Use selectionModel directly (no copy needed for read-only access)
-                visiblePositions = selectionModel.positions;
-            } else if (renderer.visibilityMask === null) {
+            if (visibilityModel && visibilityModel.positions && visibilityModel.positions.size > 0) {
+                // Use visibilityModel directly (no copy needed for read-only access)
+                visiblePositions = visibilityModel.positions;
+            } else if (renderer.visiblePositions === null) {
                 // All positions visible - create Set only if needed (lazy)
                 const n = renderer.coords ? renderer.coords.length : 0;
                 visiblePositions = new Set();
                 for (let i = 0; i < n; i++) {
                     visiblePositions.add(i);
                 }
-            } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
-                // Use visibilityMask directly (no copy needed for read-only access)
-                visiblePositions = renderer.visibilityMask;
+            } else if (renderer.visiblePositions && renderer.visiblePositions.size > 0) {
+                // Use visiblePositions directly (no copy needed for read-only access)
+                visiblePositions = renderer.visiblePositions;
             } else {
                 visiblePositions = new Set();
             }
@@ -458,39 +473,16 @@
 
         // Draw chain labels (with virtual scrolling)
         if (layout.chainLabelPositions) {
-            // During drag, compute chain selection from preview positions
-            let chainSelection = selectionModel?.chains;
-            let selectionMode = selectionModel?.selectionMode;
-
-            // Check if we're in a drag operation (previewSelectionSet exists, even if empty Set)
-            const isDragging = previewSelectionSet !== null;
-
-            if (isDragging) {
-                // Compute chains from preview positions during drag (even if previewSelectionSet is empty)
-                const objectName = renderer.currentObjectName;
-                const obj = renderer.objectsData[objectName];
-                const frame = obj?.frames?.[0];
-                const previewChains = new Set();
-                if (frame?.chains && previewSelectionSet) {
-                    // previewSelectionSet can be empty Set (unselect case) or have positions (select case)
-                    for (const positionIndex of previewSelectionSet) {
-                        const positionChain = frame.chains[positionIndex];
-                        if (positionChain) {
-                            previewChains.add(positionChain);
-                        }
-                    }
-                }
-                // Use preview chains for visual feedback during drag
-                // If previewSelectionSet is empty, previewChains will be empty (all chains unselected)
-                chainSelection = previewChains;
-                // Determine selection mode based on preview
-                const totalPositions = frame?.chains?.length || 0;
-                const hasPartialSelections = previewSelectionSet.size > 0 && previewSelectionSet.size < totalPositions;
-                const allChains = new Set(frame?.chains || []);
-                const allChainsSelected = previewChains.size === allChains.size &&
-                    Array.from(previewChains).every(c => allChains.has(c));
-                selectionMode = (allChainsSelected && !hasPartialSelections && previewSelectionSet.size > 0) ? 'default' : 'explicit';
-            }
+            // Chain labels show VISIBILITY, and only visibility. A drag preview
+            // describes the pending SELECTION now, so it must not touch these -
+            // this block used to rewrite chainSelection from the preview and
+            // force 'explicit', which made every chain outside the drag render
+            // as unselected. Dragging one chain appeared to fade all the others.
+            // The pending selection is shown by the yellow box instead.
+            const chainSelection = visibilityModel?.chains;
+            const visibilityMode = visibilityModel?.visibilityMode;
+            const frameChains = renderer.objectsData?.[renderer.currentObjectName]
+                ?.frames?.[0]?.chains || null;
 
             // Only render chains that are visible in the current scroll position
             for (const chainPos of layout.chainLabelPositions) {
@@ -503,8 +495,26 @@
 
                 const chainId = chainPos.chainId;
                 const isSelected = chainSelection?.has(chainId) ||
-                    (selectionMode === 'default' && (!chainSelection || chainSelection.size === 0));
-                const chainColor = renderer?.getChainColorForChainId?.(chainId) || { r: 128, g: 128, b: 128 };
+                    (visibilityMode === 'default' && (!chainSelection || chainSelection.size === 0));
+                // If the WHOLE chain carries the same explicit colour, the label
+                // shows that instead of the chain palette entry - otherwise
+                // recolouring a chain left its label advertising a colour the
+                // structure no longer uses.
+                let chainColor = renderer?.getChainColorForChainId?.(chainId)
+                    || { r: 128, g: 128, b: 128 };
+                if (renderer?.getColorOverride && frameChains) {
+                    let uniform = null;
+                    let all = true;
+                    for (let i = 0; i < frameChains.length && all; i++) {
+                        if (frameChains[i] !== chainId) continue;
+                        const ov = renderer.getColorOverride(i);
+                        if (!ov) { all = false; break; }
+                        if (uniform === null) uniform = ov;
+                        else if (ov.r !== uniform.r || ov.g !== uniform.g
+                            || ov.b !== uniform.b) { all = false; }
+                    }
+                    if (all && uniform) chainColor = uniform;
+                }
 
                 drawChainLabelOnCanvas(
                     ctx,
@@ -601,6 +611,119 @@
                         isSelected,
                         dimFactor
                     );
+                }
+            }
+
+            // STYLE TARGET OUTLINE. Drawn as a box around each contiguous run
+            // rather than per residue, so a targeted stretch reads as one
+            // region. Deliberately a different visual vocabulary from the
+            // dim/undim used for visibility - a style target and a visibility
+            // selection must never look alike.
+            // during a drag the outline tracks the pending range, so the box
+            // follows the cursor instead of only appearing on release
+            const target = (stylePreview && stylePreview.size) ? stylePreview
+                : renderer?.residueSelection;
+            if (target && target.size) {
+                const rects = new Map();
+                for (const pos of layout.residuePositions) {
+                    const rd = pos.residueData;
+                    if (!rd) continue;
+                    // A LIGAND TOKEN is one cell standing for several atoms, so
+                    // it carries positionIndices (plural) and no positionIndex -
+                    // keying only off the singular skipped ligands entirely and
+                    // a selected ligand got no box.
+                    const idxs = (rd.isLigandToken && rd.positionIndices
+                        && rd.positionIndices.length)
+                        ? rd.positionIndices
+                        : (rd.positionIndex >= 0 ? [rd.positionIndex] : []);
+                    if (!idxs.some((i) => target.has(i))) continue;
+                    const yOffset = pos.y - scrollTop;
+                    if (yOffset + pos.height < 0 || yOffset > scrollableAreaHeight) continue;
+                    // keyed by the token's FIRST index so run adjacency still
+                    // works against neighbouring residues
+                    rects.set(idxs[0], { x: pos.x, y: yOffset, w: pos.width, h: pos.height });
+                }
+                if (rects.size) {
+                    // Collect the run edges once, then stroke them TWICE: a dark
+                    // casing first, the yellow on top. The strip is rainbow /
+                    // chain coloured, so a plain yellow line disappears wherever
+                    // it crosses a yellow-green residue; the casing makes the box
+                    // read against any residue colour underneath.
+                    const edges = [];
+                    for (const [idx, r] of rects) {
+                        // An edge is drawn only where the run actually ends.
+                        // Adjacency is decided GEOMETRICALLY as well as by
+                        // index, so a run that wraps to the next line is closed
+                        // off at both ends instead of drawing a stray edge
+                        // across the strip.
+                        const prev = rects.get(idx - 1);
+                        const next = rects.get(idx + 1);
+                        const joinsPrev = prev && prev.y === r.y
+                            && Math.abs(prev.x + prev.w - r.x) < 0.5;
+                        const joinsNext = next && next.y === r.y
+                            && Math.abs(r.x + r.w - next.x) < 0.5;
+                        const x0 = r.x + 0.5, y0 = r.y + 0.5;
+                        const x1 = r.x + r.w - 0.5, y1 = r.y + r.h - 0.5;
+                        edges.push([x0, y0, x1, y0]);            // top
+                        edges.push([x0, y1, x1, y1]);            // bottom
+                        if (!joinsPrev) edges.push([x0, y0, x0, y1]);
+                        if (!joinsNext) edges.push([x1, y0, x1, y1]);
+                    }
+                    ctx.save();
+                    ctx.lineCap = 'square';
+                    const strokeEdges = (style, width) => {
+                        ctx.strokeStyle = style;
+                        ctx.lineWidth = width;
+                        ctx.beginPath();
+                        for (const [ax, ay, bx, by] of edges) {
+                            ctx.moveTo(ax, ay);
+                            ctx.lineTo(bx, by);
+                        }
+                        ctx.stroke();
+                    };
+                    strokeEdges('rgba(17, 24, 39, 0.85)', 4);
+                    strokeEdges('#ffd400', 2);
+                    ctx.restore();
+                }
+            }
+
+            // CHAIN LABELS get the same box when the whole chain is selected.
+            // In chain mode the strip shows labels rather than residues, so
+            // without this a chain click selected the chain and nothing on
+            // screen said so.
+            if (target && target.size && layout.chainLabelPositions) {
+                const obj = renderer.objectsData[renderer.currentObjectName];
+                const chains = obj?.frames?.[0]?.chains;
+                if (chains) {
+                    const total = new Map();
+                    const picked = new Map();
+                    for (let i = 0; i < chains.length; i++) {
+                        const c = chains[i];
+                        total.set(c, (total.get(c) || 0) + 1);
+                        if (target.has(i)) picked.set(c, (picked.get(c) || 0) + 1);
+                    }
+                    const boxes = layout.chainLabelPositions.filter((cp) => {
+                        const t = total.get(cp.chainId) || 0;
+                        return t > 0 && picked.get(cp.chainId) === t;
+                    });
+                    if (boxes.length) {
+                        ctx.save();
+                        ctx.lineCap = 'square';
+                        const strokeBoxes = (style, width) => {
+                            ctx.strokeStyle = style;
+                            ctx.lineWidth = width;
+                            ctx.beginPath();
+                            for (const cp of boxes) {
+                                const y = cp.y - scrollTop;
+                                if (y + cp.height < 0 || y > scrollableAreaHeight) continue;
+                                ctx.rect(cp.x + 0.5, y + 0.5, cp.width - 1, cp.height - 1);
+                            }
+                            ctx.stroke();
+                        };
+                        strokeBoxes('rgba(17, 24, 39, 0.85)', 4);
+                        strokeBoxes('#ffd400', 2);
+                        ctx.restore();
+                    }
                 }
             }
         }
@@ -733,7 +856,15 @@
         const threeToOne = {
             'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C', 'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
             'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P', 'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
-            'SEC': 'U', 'PYL': 'O'
+            'SEC': 'U', 'PYL': 'O',
+            // modified and D-amino acids resolve to their parent's letter, the
+            // same way gemmi's one_letter_code does; without these a D-peptide
+            // reads as a row of X in the sequence panel
+            'MSE': 'M', 'HSD': 'H', 'HSE': 'H', 'HID': 'H', 'HIE': 'H', 'HIP': 'H',
+            'DAL': 'A', 'DAR': 'R', 'DSG': 'N', 'DAS': 'D', 'DCY': 'C',
+            'DGN': 'Q', 'DGL': 'E', 'DHI': 'H', 'DIL': 'I', 'DLE': 'L',
+            'DLY': 'K', 'MED': 'M', 'DPN': 'F', 'DPR': 'P', 'DSN': 'S',
+            'DTH': 'T', 'DTR': 'W', 'DTY': 'Y', 'DVA': 'V'
         };
 
         // DNA nucleotide mapping
@@ -1358,11 +1489,22 @@
         }, { passive: false });
 
         // Helper: Apply selection to renderer
-        const applySelection = (positions) => {
+        const applyResidueSelection = (positions) => {
             const objectName = renderer.currentObjectName;
             const obj = renderer.objectsData[objectName];
             const frame = obj?.frames?.[0];
             if (!frame) return;
+
+            // Record the selection and stop. Deliberately does NOT call
+            // setVisibility - that is what recomputes visiblePositions, and a
+            // selection must not change what is on screen.
+            // Empty clears rather than storing an empty set, so every consumer
+            // can test the selection with a simple truthiness check.
+            renderer.residueSelection = (positions && positions.size)
+                ? new Set(positions) : null;
+            scheduleRender();
+            document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
+            return;
 
             const newChains = new Set();
             if (frame.chains) {
@@ -1379,15 +1521,39 @@
             const allChains = new Set(frame.chains);
             const allChainsSelected = newChains.size === allChains.size &&
                 Array.from(newChains).every(c => allChains.has(c));
-            const selectionMode = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? 'default' : 'explicit';
+            const visibilityMode = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? 'default' : 'explicit';
             const chainsToSet = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? new Set() : newChains;
 
-            renderer.setSelection({
+            renderer.setVisibility({
                 positions: positions,
                 chains: chainsToSet,
-                selectionMode: selectionMode,
+                visibilityMode: visibilityMode,
                 paeBoxes: []
             });
+        };
+
+        // Every position belonging to a chain, for click-a-chain-label.
+        const positionsOfChain = (chainId) => {
+            const obj = renderer.objectsData[renderer.currentObjectName];
+            const frame = obj?.frames?.[0];
+            const out = new Set();
+            if (frame?.chains) {
+                for (let i = 0; i < frame.chains.length; i++) {
+                    if (frame.chains[i] === chainId) out.add(i);
+                }
+            }
+            return out;
+        };
+
+        // What a click/drag toggles AGAINST. This has to follow the intent:
+        // in 'style' the baseline is the style target, in 'show' it is the
+        // visible set. Using the visible set for both was the bug - with
+        // everything visible, the baseline was every residue, so the clicked
+        // item counted as already-selected, unselectMode came out true, and a
+        // drag SUBTRACTED its range from the whole structure. The committed
+        // target was the exact inverse of what had been dragged over.
+        const baselinePositions = () => {
+            return renderer?.residueSelection ? new Set(renderer.residueSelection) : new Set();
         };
 
         // Helper: Toggle positions in an item
@@ -1437,9 +1603,9 @@
             // Chain buttons: toggle immediately, no drag
             if (item.type === 'chain') {
                 const chainId = item.chainId;
-                const current = renderer?.getSelection();
+                const current = renderer?.getVisibility();
                 const isSelected = current?.chains?.has(chainId) ||
-                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+                    (current?.visibilityMode === 'default' && (!current?.chains || current.chains.size === 0));
                 if (e.altKey && callbacks.toggleChainResidues) {
                     callbacks.toggleChainResidues(chainId);
                 } else if (callbacks.setChainResiduesSelected) {
@@ -1451,12 +1617,12 @@
             }
 
             // Position/ligand: toggle immediately, then set up for potential drag
-            const current = renderer?.getSelection();
-            const currentPositions = current?.positions || new Set();
+            const current = renderer?.getVisibility();
+            const currentPositions = baselinePositions();
 
             // Toggle immediately
             const toggledPositions = toggleItemPositions(item, currentPositions);
-            applySelection(toggledPositions);
+            applyResidueSelection(toggledPositions);
             lastSequenceUpdateHash = null;
             scheduleRender();
 
@@ -1509,7 +1675,7 @@
 
                 // If drag happened, apply the drag selection
                 if (dragState.active && previewSet) {
-                    applySelection(previewSet);
+                    applyResidueSelection(previewSet);
                 }
                 // Otherwise, toggle was already applied on mousedown
 
@@ -1610,9 +1776,9 @@
             // Chain buttons: toggle immediately, no drag
             if (item.type === 'chain') {
                 const chainId = item.chainId;
-                const current = renderer?.getSelection();
+                const current = renderer?.getVisibility();
                 const isSelected = current?.chains?.has(chainId) ||
-                    (current?.selectionMode === 'default' && (!current?.chains || current.chains.size === 0));
+                    (current?.visibilityMode === 'default' && (!current?.chains || current.chains.size === 0));
                 if (callbacks.setChainResiduesSelected) {
                     callbacks.setChainResiduesSelected(chainId, !isSelected);
                 }
@@ -1622,12 +1788,12 @@
             }
 
             // Position/ligand: toggle immediately, then set up for potential drag
-            const current = renderer?.getSelection();
-            const currentPositions = current?.positions || new Set();
+            const current = renderer?.getVisibility();
+            const currentPositions = baselinePositions();
 
             // Toggle immediately
             const toggledPositions = toggleItemPositions(item, currentPositions);
-            applySelection(toggledPositions);
+            applyResidueSelection(toggledPositions);
             lastSequenceUpdateHash = null;
             scheduleRender();
 
@@ -1680,7 +1846,7 @@
 
                 // If drag happened, apply the drag selection
                 if (dragState.active && previewSet) {
-                    applySelection(previewSet);
+                    applyResidueSelection(previewSet);
                 }
                 // Otherwise, toggle was already applied on touchstart
 
@@ -1754,14 +1920,28 @@
 
             // Regular selection logic (not on scrollbar)
             const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
-            if (!item) return;
+            if (!item) {
+                // Clicking empty space clears the STYLE TARGET, the way clicking
+                // the background deselects in PyMOL. Only in style intent: in
+                // show intent the selection is the visible set, and an empty
+                // explicit selection means "show nothing" - clicking a gap would
+                // blank the structure.
+                if (renderer?.residueSelection) {
+                    renderer.residueSelection = null;
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
+                    document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
+                }
+                return;
+            }
 
-            const current = renderer?.getSelection();
-            const currentPositions = current?.positions || new Set();
+            const current = renderer?.getVisibility();
+            const currentPositions = baselinePositions();
 
             dragState.active = false;
             dragState.startItem = item;
             dragState.endItemIndex = item.index;
+            dragState.endChainId = null;
             dragState.initialPositions = new Set(currentPositions);
             dragState.unselectMode = !!(item.positionIndices && item.positionIndices.length > 0 &&
                 item.positionIndices.every(pi => currentPositions.has(pi)));
@@ -1783,7 +1963,31 @@
                 const over = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
                 if (!over) return;
 
-                if (item.type === 'chain') return; // chains don't support drag range; toggle on release only
+                if (item.type === 'chain') {
+                    // DRAG ACROSS CHAINS. In chain mode the strip is a row of
+                    // chain blocks, so dragging over them is the natural way to
+                    // pick several - previously only a single click worked and a
+                    // drag did nothing at all. Selects the union of every chain
+                    // from the one the drag started on to the one under the
+                    // cursor, in the order the labels are laid out.
+                    if (over.type !== 'chain') return;
+                    dragState.active = true;
+                    if (over.chainId === dragState.endChainId) return;
+                    dragState.endChainId = over.chainId;
+                    const order = (layout.chainLabelPositions || []).map((c) => c.chainId);
+                    const a0 = order.indexOf(item.chainId);
+                    const b0 = order.indexOf(over.chainId);
+                    if (a0 < 0 || b0 < 0) return;
+                    const lo = Math.min(a0, b0), hi = Math.max(a0, b0);
+                    const picked = new Set();
+                    for (let k = lo; k <= hi; k++) {
+                        for (const i of positionsOfChain(order[k])) picked.add(i);
+                    }
+                    setLocalPreview(picked);
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
+                    return;
+                }
 
                 dragState.active = true;
                 if (over.index !== dragState.endItemIndex) {
@@ -1806,13 +2010,38 @@
                 window.removeEventListener('mouseup', handleUp);
 
                 if (dragState.startItem?.type === 'chain') {
+                    // a drag across chain blocks commits its preview; a plain
+                    // click falls through to the single-chain toggle below
+                    const dragged = getLocalPreview();
+                    if (dragState.active && dragged && dragged.size) {
+                        applyResidueSelection(dragged);
+                        setLocalPreview(null);
+                        dragState.active = false;
+                        dragState.startItem = null;
+                        dragState.endItemIndex = -1;
+                        dragState.endChainId = null;
+                        dragState.initialPositions = null;
+                        return;
+                    }
                     const upPos = getCanvasPositionFromMouse(ev, newCanvas);
                     const over = getSelectableItemAtPosition(upPos.x, upPos.y, layout, sequenceViewMode);
                     if (over && over.type === 'chain' && over.chainId === dragState.startItem.chainId) {
                         const chainId = over.chainId;
-                        const sel = renderer?.getSelection();
+                        // Select the WHOLE chain. Clicking it again clears it,
+                        // so the label toggles rather than only ever adding.
+                        const all = positionsOfChain(chainId);
+                        const cur = renderer.residueSelection;
+                        const already = all.size > 0 && cur
+                            && [...all].every((i) => cur.has(i));
+                        applyResidueSelection(already ? new Set() : all);
+                        setLocalPreview(null);
+                        dragState.active = false;
+                        dragState.startItem = null;
+                        dragState.endItemIndex = -1;
+                        dragState.initialPositions = null;
+                        return;
                         const isSelected = sel?.chains?.has(chainId) ||
-                            (sel?.selectionMode === 'default' && (!sel?.chains || sel.chains.size === 0));
+                            (sel?.visibilityMode === 'default' && (!sel?.chains || sel.chains.size === 0));
                         if (ev.altKey && callbacks.toggleChainResidues) {
                             callbacks.toggleChainResidues(chainId);
                         } else if (callbacks.setChainResiduesSelected) {
@@ -1822,10 +2051,10 @@
                 } else {
                     const previewSet = getLocalPreview();
                     if (dragState.active && previewSet) {
-                        applySelection(previewSet);
+                        applyResidueSelection(previewSet);
                     } else {
                         const toggled = toggleItemPositions(dragState.startItem, dragState.initialPositions);
-                        applySelection(toggled);
+                        applyResidueSelection(toggled);
                     }
                 }
 
@@ -1851,8 +2080,8 @@
             const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
             if (!item) return;
 
-            const current = renderer?.getSelection();
-            const currentPositions = current?.positions || new Set();
+            const current = renderer?.getVisibility();
+            const currentPositions = baselinePositions();
 
             dragState.active = false;
             dragState.startItem = item;
@@ -1905,9 +2134,9 @@
                         const over = getSelectableItemAtPosition(upPos.x, upPos.y, layout, sequenceViewMode);
                         if (over && over.type === 'chain' && over.chainId === dragState.startItem.chainId) {
                             const chainId = over.chainId;
-                            const sel = renderer?.getSelection();
+                            const sel = renderer?.getVisibility();
                             const isSelected = sel?.chains?.has(chainId) ||
-                                (sel?.selectionMode === 'default' && (!sel?.chains || sel.chains.size === 0));
+                                (sel?.visibilityMode === 'default' && (!sel?.chains || sel.chains.size === 0));
                             if (callbacks.setChainResiduesSelected) {
                                 callbacks.setChainResiduesSelected(chainId, !isSelected);
                             }
@@ -1916,10 +2145,10 @@
                 } else {
                     const previewSet = getLocalPreview();
                     if (dragState.active && previewSet) {
-                        applySelection(previewSet);
+                        applyResidueSelection(previewSet);
                     } else {
                         const toggled = toggleItemPositions(dragState.startItem, dragState.initialPositions);
-                        applySelection(toggled);
+                        applyResidueSelection(toggled);
                     }
                 }
 
@@ -1959,7 +2188,7 @@
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer) return;
 
-        // Determine what's actually visible from the unified model or visibilityMask
+        // Determine what's actually visible from the unified model or visiblePositions
         // Use previewSelectionSet during drag for live feedback
         let visiblePositions = new Set();
 
@@ -1970,24 +2199,24 @@
             visiblePositions = new Set(previewSelectionSet);
         } else {
             // Use positions directly from selection model
-            if (renderer.selectionModel && renderer.selectionModel.positions && renderer.selectionModel.positions.size > 0) {
-                visiblePositions = new Set(renderer.selectionModel.positions);
-            } else if (renderer.visibilityMask === null) {
+            if (renderer.visibilityModel && renderer.visibilityModel.positions && renderer.visibilityModel.positions.size > 0) {
+                visiblePositions = new Set(renderer.visibilityModel.positions);
+            } else if (renderer.visiblePositions === null) {
                 // null mask means all positions are visible (default mode)
                 const n = renderer.coords ? renderer.coords.length : 0;
                 for (let i = 0; i < n; i++) {
                     visiblePositions.add(i);
                 }
-            } else if (renderer.visibilityMask && renderer.visibilityMask.size > 0) {
+            } else if (renderer.visiblePositions && renderer.visiblePositions.size > 0) {
                 // Non-empty Set means some positions are visible
-                visiblePositions = new Set(renderer.visibilityMask);
+                visiblePositions = new Set(renderer.visiblePositions);
             }
         }
 
         // Create hash to detect if selection actually changed
         // Include previewSelectionSet in hash to ensure live feedback during drag
         const previewHash = previewSelectionSet ? previewSelectionSet.size : 0;
-        const currentHash = visiblePositions.size + previewHash + (renderer?.visibilityMask === null ? 'all' : 'some');
+        const currentHash = visiblePositions.size + previewHash + (renderer?.visiblePositions === null ? 'all' : 'some');
         if (currentHash === lastSequenceUpdateHash && !previewSelectionSet) {
             return; // No change, skip update (unless we have preview selection for live feedback)
         }
@@ -2124,6 +2353,8 @@
         // Highlight multiple positions if specified (preferred method)
         // [OPTIMIZATION] Phase 6: Use public API for highlights
         // This decouples the sequence viewer from the internal implementation details of the renderer
+        // These are the HOVER highlight only. The selection is outlined by the
+        // renderer's own ink pass (viewer-cartoon.js), not from here.
         if (renderer.getHighlightCoordinates) {
             const coords = renderer.getHighlightCoordinates();
             for (const pos of coords) {

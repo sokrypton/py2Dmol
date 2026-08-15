@@ -259,29 +259,35 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <div id="styleAppearanceContainer" class="control-group">
 
                             <!-- Render controls live in a collapsible Style panel. Rows and
-                                 half-cells tagged data-style="ribbon|cartoon" appear only under
+                                 half-cells tagged data-style="tube|cartoon" appear only under
                                  that style; data-needs-cel appears only while Cel is on.
                                  Filtering is done by syncStylePanel() in viewer-mol.js. -->
                             <div id="stylePanel" hidden
                                 style="display: flex; flex-direction: column; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px;">
+                                <!-- Style and Preset share a row; the Preset half is
+                                     tagged data-style="cartoon" so it only appears once a
+                                     cartoon style is selected, and the row collapses to
+                                     Style alone otherwise. -->
                                 <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <label for="styleSelect" class="font-medium text-gray-700"
-                                        style="font-size: 12px;">Style:</label>
-                                    <select id="styleSelect"
-                                        style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
-                                        <option value="ribbon">Ribbon</option>
-                                        <option value="cartoon">Cartoon</option>
-                                    </select>
-                                    
-                                </div>
-                                <div class="toggle-item" data-style="cartoon" style="display: flex; align-items: center; gap: 8px;">
-                                    <label for="presetSelect" class="font-medium text-gray-700"
-                                        style="font-size: 12px;" title="Named starting points; editing any slider flips back to Custom">Preset:</label>
-                                    <select id="presetSelect"
-                                        style="flex: 1; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
-                                                                                <option value="richardson">Richardson</option>
-                                        <option value="3d">3D</option>
-                                    </select>
+                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="styleSelect" class="font-medium text-gray-700"
+                                            style="font-size: 12px; flex-shrink: 0;">Style:</label>
+                                        <select id="styleSelect"
+                                            style="flex: 1; min-width: 0; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
+                                            <option value="tube">Tube</option>
+                                            <option value="cartoon">Cartoon</option>
+                                        </select>
+                                    </div>
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="presetSelect" class="font-medium text-gray-700"
+                                            style="font-size: 12px; flex-shrink: 0;" title="Named starting points; the sliders stay live under any of them">Preset:</label>
+                                        <select id="presetSelect"
+                                            style="flex: 1; min-width: 0; height: 28px; font-size: 12px; padding: 0 8px; border: 1px solid #d1d5db; border-radius: 8px;">
+                                            <option value="richardson">Richardson</option>
+                                            <option value="ribbon">Ribbon</option>
+                                            <option value="3d">3D</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;" data-style="cartoon">
                                     <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
@@ -321,7 +327,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                         <input type="range" id="thicknessSlider" min="0" max="1.5" value="0" step="0.05"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div data-style="cartoon richardson" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="sheetFlatSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Flatten beta strands (0 = natural pleat, 1 = flat)">Flat:</label>
                                         <input type="range" id="sheetFlatSlider" min="0" max="1" value="0" step="0.05"
@@ -344,22 +350,22 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 </div>
                                 
                                 <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <div data-style="cartoon richardson" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="pencilSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Coloured-pencil paper grain (0 = clean)">Pencil:</label>
                                         <input type="range" id="pencilSlider" min="0" max="1" value="0" step="0.05"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div data-style="ribbon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                    <div data-style="tube" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
                                         <label for="shadowSlider" class="font-medium text-gray-700"
                                             style="width: 50px; font-size: 12px; flex-shrink: 0;">Shadow:</label>
                                         <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="orthoSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
-                                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01"
+                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="outlineTintSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
+                                        <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
                                 </div>
@@ -370,10 +376,10 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                         <input type="range" id="detailSlider" min="2" max="8" value="4" step="1"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
-                                    <div data-style="cartoon" style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
-                                        <label for="outlineTintSlider" class="font-medium text-gray-700"
-                                            style="width: 50px; font-size: 12px; flex-shrink: 0;" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
-                                        <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05"
+                                    <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                        <label for="orthoSlider" class="font-medium text-gray-700"
+                                            style="width: 50px; font-size: 12px; flex-shrink: 0;">Ortho:</label>
+                                        <input type="range" id="orthoSlider" min="0" max="1" value="1.0" step="0.01"
                                             style="flex: 1; min-width: 0; outline: none;">
                                     </div>
                                 </div>
@@ -452,9 +458,45 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
                 <!-- Action buttons aligned to the right -->
                 <div class="sequence-actions" style="margin-left: auto;">
-                    <button id="selectAllResidues" class="btn btn-grey btn-small">Show all</button>
-                    <button id="clearAllResidues" class="btn btn-grey btn-small">Hide all</button>
-                    <button id="copySelectionButton" class="btn btn-grey btn-small" disabled>Copy selection</button>
+                    <!-- Acts on the CURRENT SELECTION (drag in the sequence above).
+                         Disabled while nothing is selected. -->
+                    <!-- All act on the CURRENT SELECTION (drag in the sequence
+                         above, or click a chain label). Disabled while nothing
+                         is selected. -->
+                    <span id="selectionTools" class="selection-tools" title="Applies to the selected residues">
+                        <span class="selection-color-wrap">
+                            <button type="button" id="selColorButton" class="btn btn-grey btn-small selection-color"
+                                title="Colour the selected residues (PyMOL palette)">
+                                <span id="selColorSwatch" class="selection-swatch"></span>
+                                <span>Colour</span>
+                            </button>
+                            <div id="selColorMenu" class="selection-color-menu" hidden></div>
+                        </span>
+                        <select id="selSsSelect" class="btn btn-grey btn-small"
+                            title="Force the secondary structure of the selected residues">
+                            <option value="" selected>SSE</option>
+                            <option value="H">Helix</option>
+                            <option value="E">Sheet</option>
+                            <option value="C">Loop</option>
+                            <option value="auto">Auto</option>
+                        </select>
+                        <button id="showSelectionButton" class="btn btn-grey btn-small"
+                            title="Show the selected residues">Show</button>
+                        <button id="hideSelectionButton" class="btn btn-grey btn-small"
+                            title="Hide the selected residues">Hide</button>
+                        <button id="copySelectionButton" class="btn btn-grey btn-small"
+                            title="Copy the selected residues">Copy</button>
+                    </span>
+                    <!-- Selection actions that do NOT need an existing
+                         selection, so they sit outside the group above and stay
+                         enabled. Visibility is reached through them: Select all
+                         then Show brings everything back. -->
+                    <span id="selectionGlobalTools" class="selection-global-tools">
+                        <button id="selectAllResidues" class="btn btn-grey btn-small"
+                            title="Select every residue">Select all</button>
+                        <button id="clearAllResidues" class="btn btn-grey btn-small"
+                            title="Clear the selection">Unselect</button>
+                    </span>
                 </div>
             </div>
             <div id="sequenceView" class="sequence-content hidden"></div>

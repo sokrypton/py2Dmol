@@ -3,7 +3,7 @@
 // -----------------------------------
 // AI Context: CARTOON STYLE RENDERER (config.rendering.style === "cartoon")
 // - Self-contained DRAW STAGE that replaces Pseudo3DRenderer's default
-//   "ribbon" drawing. viewer-mol.js delegates here from _renderToContext()
+//   "tube" drawing. viewer-mol.js delegates here from _renderToContext()
 //   once rotation and per-segment colors are computed; everything else
 //   (data model, gestures, color hierarchy, selection/visibility, live
 //   updates, PAE/seq/scatter sync) stays in viewer-mol.js and keeps working.
@@ -356,7 +356,13 @@
     // the geometric floor (see MIN_SUB) and reads as deliberately faceted.
     const DETAIL_DEFAULT_N = 4;
     const PENCIL_DEFAULT = 1.0;    // grain amount when the preset is selected
-    const PENCIL_STRENGTH = 0.54;  // alpha at pencil = 1 (Richardson's amount)
+    const PENCIL_STRENGTH = 0.54;
+    // Paper tooth size, as a multiplier on the grain tile. Below 1 the texture
+    // is finer; the drawings it imitates have a tight tooth, and at 1.0 the
+    // speckle read as coarse against the ribbon widths at normal zoom.
+    // Going much below this starts washing the tooth into a flat tint - the
+    // clusters stop resolving and only the broad mottle survives.
+    const GRAIN_SCALE = 0.4;  // alpha at pencil = 1 (Richardson's amount)
     const PENCIL_TOOTH = 70;       // tooth amplitude (~3 px clusters)
     const PENCIL_GRIT = 26;        // finest bite on top of the tooth
     const PENCIL_MOTTLE = 40;      // broad paper unevenness amplitude
@@ -893,8 +899,10 @@
      * mapped back out of the frame.
      *
      * Writes into a flat Float64Array (3 per residue) and only for the residues
-     * `want` accepts - in practice the strands, the only place the result is
-     * used. Both matter at ribosome scale: over 10000 residues, returning one
+     * `want` accepts. Two callers, and the filter is the difference: the
+     * secondary-structure pass asks for EVERY protein residue, because the
+     * phi/psi gate and the hydrogen-bond search both read these atoms, while
+     * the sheet-frame pass asks only for strands. Both matter at ribosome scale: over 10000 residues, returning one
      * small array per residue and computing every one of them costs 9.6 ms per
      * call; a typed array brings that to 5.2 ms, and skipping everything that
      * is not a strand to 1.4 ms. This runs once per render.
@@ -1031,7 +1039,21 @@
      * Rows stay zero where the frame is undefined: the first and last residues,
      * and across a chain break, where CA-CA is not a peptide bond.
      */
-    function predictBackbone(at, n, want, out) {
+    // D-AMINO ACIDS, by PDB code. The backbone predictor and the phi/psi gate
+    // below are both built from L-protein statistics, so a D residue has to be
+    // mirrored into that frame before either can be applied to it. GLY is
+    // achiral and has no D form.
+    const D_AMINO_ACIDS = new Set([
+        'DAL', 'DAR', 'DSG', 'DAS', 'DCY', 'DGN', 'DGL', 'DHI', 'DIL', 'DLE',
+        'DLY', 'MED', 'DPN', 'DPR', 'DSN', 'DTH', 'DTR', 'DTY', 'DVA',
+    ]);
+    // names -> (i) => is this residue a D-amino acid. Null when no names were
+    // supplied, which is every all-L path and the benchmarks.
+    const mirroredOf = (names) => (names
+        ? (i) => D_AMINO_ACIDS.has(names[i])
+        : null);
+
+    function predictBackbone(at, n, want, out, mirrored) {
         const bb = out || new Float64Array(n * 9);
         const fr = _frameTmp;
         for (let i = 1; i < n - 2; i++) {
@@ -1051,20 +1073,35 @@
             const ny = az * ex - ax * ez;
             const nz = ax * ey - ay * ex;
             const dx14 = p3.x - p0.x, dy14 = p3.y - p0.y, dz14 = p3.z - p0.z;
+            // MIRROR FOR D RESIDUES. PULCHRA's table is L-protein statistics,
+            // and a mirrored conformation does NOT map to the mirrored table
+            // entry - the negative-r14 bins hold what an L residue does when it
+            // happens to be locally left-handed, which is a different
+            // conformation, not the reflection of this one. So reflect into the
+            // table's frame instead: r14 carries the chirality, and the local
+            // frame's w = u x b is a cross product, so under reflection u and v
+            // map across unchanged while w flips. Negating both the r14 sign and
+            // the w coefficient below is therefore exactly equivalent to
+            // reflecting the four C-alphas, reading the table, and reflecting
+            // the answer back - without touching any coordinates. O is placed
+            // off C, N and CA afterwards, so it follows for free.
+            const m = (mirrored && mirrored(i)) ? -1 : 1;
             const r14 = Math.sqrt(dx14 * dx14 + dy14 * dy14 + dz14 * dz14)
-                * chiralSign(nx, ny, nz, cx, cy, cz);
+                * chiralSign(nx, ny, nz, cx, cy, cz) * m;
             let b13 = (r13 - 4.6) * (1 / 0.4) | 0;
             b13 = b13 < 0 ? 0 : (b13 > PEP_NB13 - 1 ? PEP_NB13 - 1 : b13);
             let b14 = (r14 + 11) * (1 / 0.9) | 0;
             b14 = b14 < 0 ? 0 : (b14 > PEP_NB14 - 1 ? PEP_NB14 - 1 : b14);
             const t = (b13 * PEP_NB14 + b14) * 6;
             // C(i) and N(i+1), out of the local frame and back into space
-            const ccx = p1.x + ux * PEPTIDE_TABLE[t] + vx * PEPTIDE_TABLE[t + 1] + wx * PEPTIDE_TABLE[t + 2];
-            const ccy = p1.y + uy * PEPTIDE_TABLE[t] + vy * PEPTIDE_TABLE[t + 1] + wy * PEPTIDE_TABLE[t + 2];
-            const ccz = p1.z + uz * PEPTIDE_TABLE[t] + vz * PEPTIDE_TABLE[t + 1] + wz * PEPTIDE_TABLE[t + 2];
-            const nnx = p1.x + ux * PEPTIDE_TABLE[t + 3] + vx * PEPTIDE_TABLE[t + 4] + wx * PEPTIDE_TABLE[t + 5];
-            const nny = p1.y + uy * PEPTIDE_TABLE[t + 3] + vy * PEPTIDE_TABLE[t + 4] + wy * PEPTIDE_TABLE[t + 5];
-            const nnz = p1.z + uz * PEPTIDE_TABLE[t + 3] + vz * PEPTIDE_TABLE[t + 4] + wz * PEPTIDE_TABLE[t + 5];
+            const cw = m * PEPTIDE_TABLE[t + 2];
+            const nw = m * PEPTIDE_TABLE[t + 5];
+            const ccx = p1.x + ux * PEPTIDE_TABLE[t] + vx * PEPTIDE_TABLE[t + 1] + wx * cw;
+            const ccy = p1.y + uy * PEPTIDE_TABLE[t] + vy * PEPTIDE_TABLE[t + 1] + wy * cw;
+            const ccz = p1.z + uz * PEPTIDE_TABLE[t] + vz * PEPTIDE_TABLE[t + 1] + wz * cw;
+            const nnx = p1.x + ux * PEPTIDE_TABLE[t + 3] + vx * PEPTIDE_TABLE[t + 4] + wx * nw;
+            const nny = p1.y + uy * PEPTIDE_TABLE[t + 3] + vy * PEPTIDE_TABLE[t + 4] + wy * nw;
+            const nnz = p1.z + uz * PEPTIDE_TABLE[t + 3] + vz * PEPTIDE_TABLE[t + 4] + wz * nw;
             // O opposite the CA-C / N-C bisector, in their plane (sp2 carbon)
             let a1x = p1.x - ccx, a1y = p1.y - ccy, a1z = p1.z - ccz;
             let a2x = nnx - ccx, a2y = nny - ccy, a2z = nnz - ccz;
@@ -1156,12 +1193,13 @@
         const cutoff = (opts && opts.hbCutoff !== undefined) ? opts.hbCutoff : HB_ENERGY_CUTOFF;
         const LADDER_EXTEND = (opts && opts.extendLadder !== undefined) ? opts.extendLadder : LADDER_EXTEND_DEFAULT;
         const extendGate = (opts && opts.extendGate) || LADDER_EXTEND_GATE;
+        const mirrored = mirroredOf(opts && opts.names);
         const sec = new Array(n).fill('C');
         const ladders = [];
         if (n < 5) return { sec, ladders };
         const at = (i) => coords[i];
         const isProtein = (i) => !positionTypes || positionTypes[i] === 'P';
-        const bb = predictBackbone(at, n, isProtein);
+        const bb = predictBackbone(at, n, isProtein, undefined, mirrored);
         const has = (i, k) => {
             const o = i * 9 + k;
             return bb[o] !== 0 || bb[o + 1] !== 0 || bb[o + 2] !== 0;
@@ -1233,9 +1271,16 @@
                 [bb[o], bb[o + 1], bb[o + 2]],
                 [bb[next + 6], bb[next + 7], bb[next + 8]]);
             if (phi === null || psi === null) continue;
+            // A D residue's dihedrals are genuinely the negatives of its L
+            // mirror image - that is real geometry, not a prediction artefact,
+            // so it survives the fix above. The targets are L, so reflect the
+            // measurement into them; without this the gate does not merely fail
+            // to support helix, it actively EXCLUDES it, and the H-bond
+            // evidence never gets considered.
+            const ms = (mirrored && mirrored(i)) ? -1 : 1;
             for (const cls of ['H', 'E']) {
                 const b = SS_PHI_PSI[cls];
-                const dpsi = delta(psi, b.psi), dphi = delta(phi, b.phi);
+                const dpsi = delta(ms * psi, b.psi), dphi = delta(ms * phi, b.phi);
                 if (dpsi > b.psiOut || dphi > b.phiOut) phiPsi[cls][i] = -1;
                 else if (dpsi < b.psiIn && dphi < b.phiIn) phiPsi[cls][i] = 1;
             }
@@ -1456,9 +1501,10 @@
         const relaxSweeps = (opts && opts.relax !== undefined) ? opts.relax : SHEET_FRAME_RELAX;
         const alongW = (opts && opts.along !== undefined) ? opts.along : SHEET_ALONG_W;
         const acrossW = (opts && opts.across !== undefined) ? opts.across : SHEET_ACROSS_W;
+        const mirrored = mirroredOf(opts && opts.names);
         const at = (i) => coords[i];
         const isStrand = (i) => sec[i] === 'E' && (!positionTypes || positionTypes[i] === 'P');
-        const bb = predictBackbone(at, n, isStrand);
+        const bb = predictBackbone(at, n, isStrand, undefined, mirrored);
 
         // --- 1. orientation vectors, with PyMOL's parity flip ---
         const nrm = new Array(n).fill(null);
@@ -2036,7 +2082,7 @@
             return [centerX + x * scale, centerY - y * scale, z, 1];
         };
 
-        const mask = renderer.visibilityMask;
+        const mask = renderer.visiblePositions;
         const vis = (i) => !mask || mask.has(i);
 
         // --- partition segments: backbone (drawn as cartoon) vs everything else ---
@@ -2045,11 +2091,22 @@
         // all stay generic and depth-sort against the cartoon.
         const bbSeg = new Int32Array(n).fill(-1);  // residue i -> segment index for (i, i+1)
         const genericSegs = [];
+        // HEAD-TO-TAIL CLOSURE (cyclic peptides). viewer-mol.js emits a bond
+        // between a chain's first and last polymer residue when they sit within
+        // the chainbreak cutoff. It is a real peptide bond, but it is not
+        // index-adjacent, so it used to fail the backbone test here and fall
+        // through to the generic primitives - the cartoon drew a tube stub
+        // across the seam while the ribbon terminated at both ends, and a
+        // cyclic peptide read as a linear one with a stick glued on. Held aside
+        // and matched against the runs below; a non-adjacent bond that does not
+        // close a run exactly (a user-defined bond, say) goes back to generic.
+        const closureCand = [];
         for (let s = 0; s < segments.length; s++) {
             const seg = segments[s];
-            const isBB = (seg.type === 'P' || seg.type === 'D' || seg.type === 'R')
-                && seg.idx2 === seg.idx1 + 1 && seg.contactIdx1 === undefined;
-            if (isBB) bbSeg[seg.idx1] = s;
+            const isPoly = (seg.type === 'P' || seg.type === 'D' || seg.type === 'R')
+                && seg.contactIdx1 === undefined;
+            if (isPoly && seg.idx2 === seg.idx1 + 1) bbSeg[seg.idx1] = s;
+            else if (isPoly && seg.idx2 > seg.idx1 + 1) closureCand.push(s);
             else genericSegs.push(s);
         }
 
@@ -2061,6 +2118,23 @@
             ? (renderer.relativeOutlineWidth === 0
                 ? 0 : Math.max(1, renderer.relativeOutlineWidth || 3))
             : 0;
+        // SELECTION INK. The selected residues are outlined using the ink pass
+        // itself rather than a separate overlay: the silhouette machinery
+        // already knows the exact contour of every element, so re-colouring its
+        // curves gives an outline that hugs the ribbon for free, in the right
+        // depth order, and in SVG export too.
+        // Width is a CONSTANT, not the style's outline width: this is a UI
+        // indicator, so at outline 0 it must still appear and at a heavy setting
+        // it must not swamp the structure it points at.
+        const selInk = (renderer.residueSelection && renderer.residueSelection.size)
+            ? renderer.residueSelection : null;
+        const SELECTION_INK_CSS = 'rgb(255, 190, 0)';
+        // absolute stroke width here, unlike viewer-mol.js's
+        // SELECTION_INK_EXTRA, which is ADDED to the line width
+        const SELECTION_INK_WIDTH = 2.5;
+        // ... which also means the ink pass has to RUN when the outline is off
+        // but something is selected.
+        const inkWanted = outlineW || !!selInk;
         // Edge candidates for the ink pass (hull silhouette + crease edges)
         const inkCurves = [];
         // The Shade slider sets how much directional shading is applied:
@@ -2142,6 +2216,16 @@
         const ssColor = (renderer._getEffectiveColorMode
             ? renderer._getEffectiveColorMode() : renderer.colorMode) === 'ss';
         const ssPal = ssPaletteOf(renderer);
+        // Does this object carry any explicit per-position/chain colour? Gates
+        // the per-interval override lookup below so structures without manual
+        // colouring pay nothing for the feature.
+        const hasColorOverrides = (() => {
+            const o = renderer.objectsData && renderer.currentObjectName
+                ? renderer.objectsData[renderer.currentObjectName] : null;
+            const c = o && o.color;
+            return !!(c && c.type === 'advanced' && c.value
+                && (c.value.position || c.value.chain));
+        })();
         const legacyLoop = renderer._loopStyle;
         const loopSquare = legacyLoop === 'square';
         // 'continuous': the whole protein backbone is ONE strip whose
@@ -2174,11 +2258,28 @@
                 runStart = -1;
             }
         }
+        // A run is CYCLIC when a closure bond joins exactly its two ends.
+        // Matching on both ends rather than on either one keeps an unrelated
+        // long-range bond from silently turning a chain into a ring.
+        const runClose = new Int32Array(runs.length).fill(-1);
+        if (closureCand.length) {
+            const byEnds = new Map();
+            for (const s of closureCand) {
+                byEnds.set(`${segments[s].idx1},${segments[s].idx2}`, s);
+            }
+            for (let r = 0; r < runs.length; r++) {
+                const k = `${runs[r][0]},${runs[r][1]}`;
+                if (byEnds.has(k)) { runClose[r] = byEnds.get(k); byEnds.delete(k); }
+            }
+            // whatever did not close a run is still an ordinary bond to draw
+            for (const s of byEnds.values()) genericSegs.push(s);
+        }
 
         // --- secondary structure, cached per object/frame ---
         // Distances are rotation-invariant, so this never changes with the view.
         // guarded like secForColor below: render can run before overlayState exists
-        const secKey = `${renderer.currentObjectName}|${renderer.currentFrame}|${n}|${renderer.overlayState && renderer.overlayState.enabled}`;
+        const secKey = `${renderer.currentObjectName}|${renderer.currentFrame}|${n}|${renderer.overlayState && renderer.overlayState.enabled}`
+            + sseKey(renderer);
         //
         // The assignment runs over the WHOLE structure at once rather than per
         // run: sheets pair strands from different chains, and a hydrogen bond
@@ -2187,8 +2288,9 @@
         let sec = renderer._cartoonSec;
         let ladders = renderer._cartoonLadder;
         if (!sec || renderer._cartoonSecKey !== secKey) {
-            const assigned = assignSecondary(renderer.coords, n, positionTypes);
-            sec = assigned.sec;
+            const assigned = assignSecondary(renderer.coords, n, positionTypes,
+                { names: renderer.positionNames });
+            sec = applySse(assigned.sec, renderer);
             ladders = assigned.ladders;
             renderer._cartoonSec = sec;
             renderer._cartoonSecKey = secKey;
@@ -2522,7 +2624,8 @@
         let sheet = renderer._cartoonSheet;
         if (!sheet || renderer._cartoonSheetKey !== secKey) {
             sheet = ladders.length
-                ? buildSheetFrames(renderer.coords, n, sec, positionTypes, ladders)
+                ? buildSheetFrames(renderer.coords, n, sec, positionTypes, ladders,
+                    { names: renderer.positionNames })
                 : null;
             renderer._cartoonSheet = sheet;
             renderer._cartoonSheetKey = secKey;
@@ -2569,20 +2672,16 @@
         // occluders, ink - sees the same flattened geometry and nothing has to
         // be kept in sync.
         //
-        // The strand itself is flattened END TO END, and the transition is
-        // spread OUTWARD into the flanking loop residues instead. Tapering
-        // inside the strand was the first attempt and it was wrong twice over:
-        // the weight was min(1, integer distance from the end), which is 0 at
-        // the terminal residue and 1 at its neighbour - a step, not a ramp - so
-        // the strand visibly snapped flat one residue in. And even a smooth
-        // taper there is the wrong shape: pinning the last residue while the
-        // interior goes flat puts the entire bend inside the strand, which is
-        // the one place it must not be. Loops absorb it invisibly.
+        // The strand's END RESIDUES ARE PINNED and only its interior moves, so
+        // the ribbon still meets its flanking loops exactly where it did and no
+        // loop residue has to be touched. Tapering the weight inside the strand
+        // was an earlier attempt and it was wrong: min(1, integer distance from
+        // the end) is 0 at the terminal residue and 1 at its neighbour - a step,
+        // not a ramp - so the strand visibly snapped flat one residue in.
         // 0 = untouched (pleated), 1 = fully averaged.
         const sheetFlat = Math.max(0, Math.min(1,
             renderer.cartoonSheetFlat !== undefined
                 ? renderer.cartoonSheetFlat : (rich ? SHEET_FLAT_DEFAULT : 0)));
-        const FLAT_EXT = 2;     // loop residues each side that absorb the bend
         // SHEET PROJECTION: move each strand residue onto its own sheet plane
         // (see buildSheetFrames). renderer.cartoonSheetProject is the blend, 0
         // to 1; the offset travels as local-frame coefficients so it can be
@@ -2622,25 +2721,23 @@
             }
             posArr = new Array(n);
             for (let i = 0; i < n; i++) posArr[i] = basePos[i];
-            // PROTEIN ONLY. sec defaults to 'C' for every position and only
-            // protein runs are ever assigned, so nucleic residues look exactly
-            // like loops to the test below and were being smoothed with them.
-            // That breaks base plates: the plate and base-pair geometry read
-            // rotated[] directly while the backbone reads the smoothed posArr,
-            // so moving the backbone slid it out from under its own bases.
-            // Nucleic has its own frame machinery and must keep the raw trace.
-            const isLoopSS = (t) => t !== 'H' && t !== 'E';
+            // PROTEIN ONLY, belt and braces. Nucleic residues cannot reach the
+            // strand test below anyway - sec is only ever assigned on protein
+            // runs and defaults to 'C' - but moving a nucleic backbone would
+            // break base plates: plate and base-pair geometry read rotated[]
+            // directly while the backbone would read posArr, sliding the trace
+            // out from under its own bases.
             const smoothable = (i) => !positionTypes || positionTypes[i] === 'P';
             for (let a = 0; a < n; a++) {
-                // Strands get FLATTENED (pleat removed) and loops get SMOOTHED,
-                // both off the same control: they are the same operation - damp
-                // the high-frequency wiggle - and a structure where only the
-                // strands were cleaned up looked inconsistent. Helices are never
-                // touched; smoothing a helix would unwind the coil that is the
-                // whole point of it.
+                // STRANDS ONLY, as in PyMOL: cartoon_flat_sheets flattens
+                // sheets and leaves everything else alone. Loops used to be
+                // smoothed off the same control on the reasoning that both are
+                // "damp the high-frequency wiggle", but that overloaded one
+                // setting with two effects - asking for flat sheets silently
+                // redrew every loop as well. Helices are likewise untouched;
+                // smoothing one would unwind the coil that is its whole point.
                 if (!smoothable(a)) continue;
-                const kind = sec[a] === 'E' ? 'E' : (isLoopSS(sec[a]) ? 'C' : null);
-                if (!kind) continue;
+                if (sec[a] !== 'E') continue;
                 let b = a;
                 // ... and never past the residue's own chain run: two chains
                 // whose facing termini are both coil are adjacent in index
@@ -2649,8 +2746,8 @@
                 // bent both termini toward each other whenever sheetFlat > 0.
                 while (b + 1 < n && smoothable(b + 1)
                     && (runHi[a] < 0 || b + 1 <= runHi[a])
-                    && (kind === 'E' ? sec[b + 1] === 'E' : isLoopSS(sec[b + 1]))) b++;
-                if (kind === 'E' && b - a >= 2) {
+                    && sec[b + 1] === 'E') b++;
+                if (b - a >= 2) {
                     // STRANDS: PyMOL's cartoon_flat_sheets, exactly
                     // (RepCartoonFlattenSheets, layer2/RepCartoon.cpp): per
                     // contiguous strand, flat_cycles (4) iterations of a
@@ -2711,80 +2808,6 @@
                             z: p.z + (pvE[k + 2] - v.z) * w,
                         };
                     }
-                } else if (kind === 'C' && b - a >= 2 && runLo[a] >= 0) {
-                    // LOOPS: iterated narrow smoothing. A loop keeps to its
-                    // own span - its neighbours are elements, and moving
-                    // their end residues would tear the ribbon away from the
-                    // tube - so the ramp below tapers to zero at both ends.
-                    //
-                    // A wide window (+-2) flattens real curvature and
-                    // shortens the curve; repeating a 3-point average instead
-                    // attacks exactly the alternating component - each pass
-                    // cuts it to a third, three passes to 1/27 - while low
-                    // frequency shape, and therefore arc length, is nearly
-                    // untouched.
-                    const W = 1;
-                    const PASSES = 3;
-                    const len = b - a + 1;
-                    let cur = new Float64Array(len * 3);
-                    for (let j = a; j <= b; j++) {
-                        const v = basePos[j];
-                        const o = (j - a) * 3;
-                        cur[o] = v.x; cur[o + 1] = v.y; cur[o + 2] = v.z;
-                    }
-                    let nxt = new Float64Array(len * 3);
-                    for (let pass = 0; pass < PASSES; pass++) {
-                        for (let q = 0; q < len; q++) {
-                            let sx = 0; let sy = 0; let sz = 0; let c = 0;
-                            for (let k = Math.max(0, q - W);
-                                k <= Math.min(len - 1, q + W); k++) {
-                                sx += cur[k * 3];
-                                sy += cur[k * 3 + 1];
-                                sz += cur[k * 3 + 2];
-                                c++;
-                            }
-                            nxt[q * 3] = sx / c;
-                            nxt[q * 3 + 1] = sy / c;
-                            nxt[q * 3 + 2] = sz / c;
-                        }
-                        const swap = cur; cur = nxt; nxt = swap;
-                    }
-                    const sm = cur;
-                    for (let j = a; j <= b; j++) {
-                        // taper to 0 at the loop's own ends
-                        const dEnd = Math.min(j - a, b - j);
-                        const w0 = Math.min(1, dEnd / (FLAT_EXT + 1));
-                        const ramp = w0 * w0 * (3 - 2 * w0);
-                        const w = sheetFlat * ramp;
-                        if (w <= 0) continue;
-                        const v = rotated[j];
-                        const o = (j - a) * 3;
-                        // TRANSVERSE component only: the raw average also has
-                        // a LONGITUDINAL component that shortens steps by an
-                        // amount depending on local geometry. Projecting the
-                        // displacement onto the plane perpendicular to the
-                        // local tangent damps the wiggle and leaves spacing
-                        // along the chain untouched.
-                        const pv = rotated[Math.max(a, j - 1)];
-                        const nv = rotated[Math.min(b, j + 1)];
-                        let tx = nv.x - pv.x;
-                        let ty = nv.y - pv.y;
-                        let tz = nv.z - pv.z;
-                        const tm = Math.hypot(tx, ty, tz);
-                        let dx = sm[o] - v.x;
-                        let dy = sm[o + 1] - v.y;
-                        let dz = sm[o + 2] - v.z;
-                        if (tm > 1e-9) {
-                            tx /= tm; ty /= tm; tz /= tm;
-                            const dot = dx * tx + dy * ty + dz * tz;
-                            dx -= dot * tx; dy -= dot * ty; dz -= dot * tz;
-                        }
-                        posArr[j] = {
-                            x: v.x + dx * w,
-                            y: v.y + dy * w,
-                            z: v.z + dz * w,
-                        };
-                    }
                 }
                 a = b;
             }
@@ -2810,7 +2833,7 @@
         // the honest source for which way a strand faces. Taking the frame from
         // the raw coordinates separates the two cleanly and leaves every
         // unflattened style bit-identical.
-        const sideOf = (i, lo, hi) => {
+        const sideOf = (i, lo, hi, cyc) => {
             // At run ends the centered tangent/curvature degenerate (their
             // cross vanishes and the side used to be COPIED from the
             // neighbour, losing the ~100 deg/residue rotation - visible as
@@ -2834,11 +2857,14 @@
                 if (m < 1e-9) return null;
                 return [sx / m, sy / m, sz / m];
             };
-            if (i - 1 < lo && i + 3 <= hi) return oneSided(i, 1);
-            if (i + 1 > hi && i - 3 >= lo) return oneSided(i, -1);
-            const a = atRaw(Math.max(lo, i - 1));
+            // A cyclic run has no ends, so the one-sided end stencils and the
+            // clamping below would both invent a boundary where the chain
+            // actually continues - wrap instead and the frame stays centred.
+            if (!cyc && i - 1 < lo && i + 3 <= hi) return oneSided(i, 1);
+            if (!cyc && i + 1 > hi && i - 3 >= lo) return oneSided(i, -1);
+            const a = atRaw(i - 1 < lo ? (cyc ? hi : lo) : i - 1);
             const b = atRaw(i);
-            const c = atRaw(Math.min(hi, i + 1));
+            const c = atRaw(i + 1 > hi ? (cyc ? lo : hi) : i + 1);
             const tx = c.x - a.x; const ty = c.y - a.y; const tz = c.z - a.z;
             const kx = a.x + c.x - 2 * b.x; const ky = a.y + c.y - 2 * b.y; const kz = a.z + c.z - 2 * b.z;
             let sx = ty * kz - tz * ky;
@@ -2899,9 +2925,22 @@
             return [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
         };
 
-        for (const [lo, hi] of runs) {
+        for (let runIdx = 0; runIdx < runs.length; runIdx++) {
+            const [lo, hi] = runs[runIdx];
             if (hi <= lo) continue;
             const isProt = positionTypes[lo] === 'P';
+            // head-to-tail closure segment for this run, or -1
+            const closeSeg = runClose[runIdx];
+            const cyclic = closeSeg >= 0;
+            // Neighbour lookup for the spline stencils. A ring has no ends, so
+            // clamping at lo/hi would fold a neighbour onto the point itself
+            // and flatten the curve at exactly the seam - the one interval the
+            // clamp was never meant to describe. Wraps for a cyclic run and
+            // clamps otherwise, so the linear path keeps its old behaviour.
+            const span = hi - lo + 1;
+            const wrapIdx = (k) => (cyclic
+                ? lo + (((k - lo) % span) + span) % span
+                : Math.min(hi, Math.max(lo, k)));
 
             let sides = null;
             {   // every run, nucleic included: the strip pipeline needs a
@@ -2917,7 +2956,7 @@
                 // ones already forward-fill from their predecessor).
                 const rawSides = [];
                 for (let i = lo; i <= hi; i++) {
-                    rawSides.push(sideOf(i, lo, hi));
+                    rawSides.push(sideOf(i, lo, hi, cyclic));
                 }
                 let firstDef = rawSides.findIndex((s) => s);
                 if (firstDef < 0) firstDef = 0;
@@ -2952,8 +2991,8 @@
                     const naTrack = Number.isFinite(ntRaw)
                         ? Math.min(1, Math.max(0, ntRaw)) : NA_TRACK_DEFAULT;
                     const tanAt = (i) => {
-                        const pA = rotated[Math.max(lo, i - 1)];
-                        const pC = rotated[Math.min(hi, i + 1)];
+                        const pA = rotated[wrapIdx(i - 1)];
+                        const pC = rotated[wrapIdx(i + 1)];
                         const x = pC.x - pA.x, y = pC.y - pA.y, z = pC.z - pA.z;
                         const l = Math.hypot(x, y, z);
                         return l > 1e-9 ? [x / l, y / l, z / l] : null;
@@ -3037,7 +3076,7 @@
                                 if (dl > 1e-6) return [dx / dl, dy / dl, dz / dl];
                             }
                         }
-                        const a = Math.max(lo, i - 1), b = Math.min(hi, i + 1);
+                        const a = wrapIdx(i - 1), b = wrapIdx(i + 1);
                         if (a === b) return null;
                         const pA = rotated[a], pB = rotated[i], pC = rotated[b];
                         let cx = pA.x - 2 * pB.x + pC.x;
@@ -3308,8 +3347,8 @@
                 // between.
                 if (isProt && renderer._loopFrame !== 'curvature') {
                     const tanOf = (j) => {
-                        const p0 = at(Math.max(lo, j - 1));
-                        const p1 = at(Math.min(hi, j + 1));
+                        const p0 = at(wrapIdx(j - 1));
+                        const p1 = at(wrapIdx(j + 1));
                         const v = [p1.x - p0.x, p1.y - p0.y, p1.z - p0.z];
                         const m2 = Math.hypot(v[0], v[1], v[2]) || 1;
                         return [v[0] / m2, v[1] / m2, v[2] / m2];
@@ -3385,7 +3424,7 @@
             const WIDTHS = rich ? RICH_HALF_A : SS_HALF_A;
             const halfW = (j) => {
                 if (!isProt) return naWidthA * widthScale;
-                const jj = Math.min(hi, Math.max(lo, j));
+                const jj = wrapIdx(j);
                 const t = sec[jj];
                 // Richardson loops are a SQUARE section whose side is the sheet
                 // THICKNESS: the loop reads as the same piece of card as the
@@ -3424,7 +3463,7 @@
                 ? renderer.cartoonThickness / 2 : RIBBON_TH_A);
             const halfT = (j) => {
                 if (!rich || !isProt) return thickScale;
-                const jj = Math.min(hi, Math.max(lo, j));
+                const jj = wrapIdx(j);
                 const t = sec[jj];
                 if (t === 'C') return halfW(jj);           // round-ish loop
                 const k = RICH_TH_REL[t] !== undefined ? RICH_TH_REL[t] : RICH_TH_REL.C;
@@ -3525,10 +3564,17 @@
                 tubeRun = null;
             };
 
-            for (let i = lo; i < hi; i++) {
-                const segIdx = bbSeg[i];
+            // A CYCLIC run takes one extra step, from hi back to lo, so the
+            // closure is built by the same ribbon code as every other interval
+            // rather than drawn as a separate stick. iN is the next residue,
+            // wrapping on that last step; the body below is otherwise unchanged
+            // and simply never sees the seam as special.
+            const lastStep = cyclic ? hi : hi - 1;
+            for (let i = lo; i <= lastStep; i++) {
+                const iN = (i === hi) ? lo : i + 1;
+                const segIdx = (i === hi) ? closeSeg : bbSeg[i];
                 if (segIdx < 0) { flushTubeRun(); continue; }
-                if (!vis(i) || !vis(i + 1)) { flushTubeRun(); continue; }
+                if (!vis(i) || !vis(iN)) { flushTubeRun(); continue; }
                 // SS COLOURING IS PER-INTERVAL, NOT PER-RESIDUE.
                 // viewer-mol.js gives every segment the colour of ONE residue -
                 // segInfo.origIndex, its first - which is fine for schemes that
@@ -3547,20 +3593,35 @@
                 // stub of loop colour on the end of every helix. So: both ends
                 // agree -> that class; otherwise H if either end is H; else coil.
                 const ssCls = isProt
-                    ? ((sec[i] === sec[i + 1]) ? sec[i]
-                        : ((sec[i] === 'H' || sec[i + 1] === 'H') ? 'H' : 'C'))
+                    ? ((sec[i] === sec[iN]) ? sec[i]
+                        : ((sec[i] === 'H' || sec[iN] === 'H') ? 'H' : 'C'))
                     : 'C';
+                // Is this interval's colour EXPLICIT (set by hand from the
+                // selection tools or set_color) rather than coming from a mode?
+                // Only asked when the object actually carries overrides, so the
+                // usual path costs nothing.
+                const ovCol = hasColorOverrides && renderer.getColorOverride
+                    ? (renderer.getColorOverride(i) || renderer.getColorOverride(iN))
+                    : null;
                 let col = colors[segIdx];
                 if (ssColor && isProt) {
-                    col = ssPal[ssCls] || ssPal.C || col;
+                    // An explicit per-residue/chain colour BEATS the palette:
+                    // ss colouring is a mode, and a colour the user set by hand
+                    // (selection tools, or set_color from Python) is not. Without
+                    // this the palette overwrote it and manual colouring silently
+                    // did nothing in ss mode.
+                    // Checked at BOTH ends of the interval, because a run of
+                    // overridden residues would otherwise lose its first or last
+                    // interval to the palette at each boundary.
+                    col = ovCol || ssPal[ssCls] || ssPal.C || col;
                 }
                 if (!col) { flushTubeRun(); continue; }
                 // Offscreen: contributes nothing on screen and cannot occlude
                 // anything that is - skip before building any geometry. Ends
                 // the current tube run exactly like an invisible interval.
-                if (cullSeg(at(i), at(i + 1))) { flushTubeRun(); continue; }
+                if (cullSeg(at(i), at(iN))) { flushTubeRun(); continue; }
                 const t0 = isProt ? sec[i] : 'C';
-                const t1 = isProt ? sec[i + 1] : 'C';
+                const t1 = isProt ? sec[iN] : 'C';
                 const isElem = (t0 === 'H' || t0 === 'E') && t0 === t1;
                 // In square-loop mode EVERY interval the tube branch would
                 // otherwise take is built by the strip pipeline instead
@@ -3620,22 +3681,22 @@
                     // instead of starting. Holding this interval at loop width
                     // leaves a clean step at the first strand residue, which is
                     // where the flat back face belongs (capped below).
-                    const beforeStrand = arrowsOn && isProt && i + 1 <= hi
-                        && sec[i + 1] === 'E' && sec[i] !== 'E';
+                    const beforeStrand = arrowsOn && isProt && iN <= hi
+                        && sec[iN] === 'E' && sec[i] !== 'E';
                     const hwA = profiled
-                        ? halfW(afterArrow ? i + 1 : i) : hw;
+                        ? halfW(afterArrow ? iN : i) : hw;
                     const hwB = profiled
-                        ? halfW(beforeStrand ? i : i + 1) : hw;
+                        ? halfW(beforeStrand ? i : iN) : hw;
                     const htA = profiled
-                        ? halfT(afterArrow ? i + 1 : i) : null;
+                        ? halfT(afterArrow ? iN : i) : null;
                     const htB = profiled
-                        ? halfT(beforeStrand ? i : i + 1) : null;
+                        ? halfT(beforeStrand ? i : iN) : null;
                     const arrowHead = isArrowInterval(i);
                     const arrowBase = (WIDTHS.E || SS_HALF_A.E) * widthScale;
                     const s1 = sides[i - lo];
-                    const s2 = sides[i + 1 - lo];
+                    const s2 = sides[iN - lo];
                     const pa = at(i);
-                    const pb = at(i + 1);
+                    const pb = at(iN);
                     // Ribbons have THICKNESS. An infinitely thin strip
                     // projects to a degenerate sliver at tangency, and
                     // everything downstream of that (fold detection, cusp
@@ -3654,10 +3715,10 @@
                     // Catmull-Rom tangents for the nearly straight (and
                     // flattened) strands.
                     const tanAt = (j) => {
-                        const q1 = at(Math.max(lo, j - 1));
-                        const q2 = at(Math.min(hi, j + 1));
+                        const q1 = at(wrapIdx(j - 1));
+                        const q2 = at(wrapIdx(j + 1));
                         if (t0 === 'H') {
-                            if (j - 2 < lo && j + 3 <= hi) {
+                            if (!cyclic && j - 2 < lo && j + 3 <= hi) {
                                 // one-sided forward (N-terminal end)
                                 const p0 = at(j);
                                 const pa = at(j + 1);
@@ -3669,7 +3730,7 @@
                                     HT1_A * (pa.z - p0.z) + HT1_B * (pb.z - p0.z) + HT1_C * (pc.z - p0.z),
                                 ];
                             }
-                            if (j + 2 > hi && j - 3 >= lo) {
+                            if (!cyclic && j + 2 > hi && j - 3 >= lo) {
                                 // one-sided backward (C-terminal end)
                                 const p0 = at(j);
                                 const pa = at(j - 1);
@@ -3681,8 +3742,8 @@
                                     -(HT1_A * (pa.z - p0.z) + HT1_B * (pb.z - p0.z) + HT1_C * (pc.z - p0.z)),
                                 ];
                             }
-                            const q0w = at(Math.max(lo, j - 2));
-                            const q3w = at(Math.min(hi, j + 2));
+                            const q0w = at(wrapIdx(j - 2));
+                            const q3w = at(wrapIdx(j + 2));
                             return [
                                 HTAN_A * (q2.x - q1.x) + HTAN_B * (q3w.x - q0w.x),
                                 HTAN_A * (q2.y - q1.y) + HTAN_B * (q3w.y - q0w.y),
@@ -3696,7 +3757,7 @@
                         ];
                     };
                     const mA = tanAt(i);
-                    const mB = tanAt(i + 1);
+                    const mB = tanAt(iN);
                     // seam parameter: the u at which ARROW_LEN_A of arc length
                     // remains. Chord-sampled; the interval is short and nearly
                     // straight, so 16 samples are well past converged.
@@ -3757,8 +3818,8 @@
                     // The helix stencil applies because side vectors rotate at
                     // the same 100 degrees per residue as the positions.
                     const sideTanAt = (j) => {
-                        const q1 = sides[Math.max(0, j - 1 - lo)];
-                        const q2 = sides[Math.min(hi - lo, j + 1 - lo)];
+                        const q1 = sides[wrapIdx(j - 1) - lo];
+                        const q2 = sides[wrapIdx(j + 1) - lo];
                         if (t0 === 'H') {
                             const jl = j - lo;
                             const nL = hi - lo;
@@ -3784,8 +3845,8 @@
                                     -(HT1_A * (pa[2] - p0[2]) + HT1_B * (pb[2] - p0[2]) + HT1_C * (pc[2] - p0[2])),
                                 ];
                             }
-                            const q0w = sides[Math.max(0, j - 2 - lo)];
-                            const q3w = sides[Math.min(hi - lo, j + 2 - lo)];
+                            const q0w = sides[wrapIdx(j - 2) - lo];
+                            const q3w = sides[wrapIdx(j + 2) - lo];
                             return [
                                 HTAN_A * (q2[0] - q1[0]) + HTAN_B * (q3w[0] - q0w[0]),
                                 HTAN_A * (q2[1] - q1[1]) + HTAN_B * (q3w[1] - q0w[1]),
@@ -3799,7 +3860,7 @@
                         ];
                     };
                     const nTanA = sideTanAt(i);
-                    const nTanB = sideTanAt(i + 1);
+                    const nTanB = sideTanAt(iN);
                     // Concavity of the CENTERLINE (discrete second
                     // difference, averaged over the interval ends): points
                     // toward the inside of the local curve - for a helix,
@@ -3812,10 +3873,10 @@
                     let kvy = 0;
                     let kvz = 0;
                     {
-                        const qm = at(Math.max(lo, i - 1));
+                        const qm = at(wrapIdx(i - 1));
                         const q1 = at(i);
-                        const q2 = at(i + 1);
-                        const qp = at(Math.min(hi, i + 2));
+                        const q2 = at(iN);
+                        const qp = at(wrapIdx(i + 2));
                         kvx = (qm.x + q2.x - 2 * q1.x + q1.x + qp.x - 2 * q2.x) / 2;
                         kvy = (qm.y + q2.y - 2 * q1.y + q1.y + qp.y - 2 * q2.y) / 2;
                         kvz = (qm.z + q2.z - 2 * q1.z + q1.z + qp.z - 2 * q2.z) / 2;
@@ -4044,7 +4105,7 @@
                         && (i === lo || sec[i - 1] !== 'E');
                     const capStartV = strandStart
                         || (profiled ? (i === lo) : !sameElem(i - 1, t0));
-                    const capEndV = profiled ? (i + 1 === hi) : !sameElem(i + 1, t0);
+                    const capEndV = profiled ? (iN === hi) : !sameElem(iN, t0);
                     // Quarter-interval pieces: the depth sort can only be as
                     // good as each piece's z is local. A folded-back piece that
                     // wraps toward the viewer drags its mean depth past any
@@ -4122,6 +4183,9 @@
                             // interval cannot be drawn helix-coloured but
                             // two-toned as coil.
                             ss: ssCls,
+                            // colour was set by hand, not derived from a mode -
+                            // see the inner-face tint in paintFace
+                            co: !!ovCol,
                             arrow: arrowHead,
                             Lp: Lp.slice(a0, e0 + 1),
                             Lm: Lm.slice(a0, e0 + 1),
@@ -4143,7 +4207,7 @@
                             gsStep: 1 / nsub,
                         };
                         if (a0 === 0) registerJoint(`R${i}`, prim);
-                        if (e0 === nsub) registerJoint(`R${i + 1}`, prim);
+                        if (e0 === nsub) registerJoint(`R${iN}`, prim);
                         prims.push(prim);
                     }
                     // INK as SEPARATE prims sorted at their OWN depth
@@ -4161,7 +4225,7 @@
                     // corner curves exactly where they project to the same
                     // point; interior crease corners are never extreme, so
                     // no inner line.
-                    if (outlineW) {
+                    if (inkWanted) {
                         const nsF = Lp.length;
                         const curves = [Lp, Lm, Rp, Rm];
                         const visC = [[], [], [], []];
@@ -4259,6 +4323,7 @@
                                 inkCurves.push({
                                     pts: curves[c],
                                     vis: visC[c],
+                                    sel: !!(selInk && (selInk.has(i) || selInk.has(iN))),
                                     gs0: i,
                                     gsStep: 1 / Math.max(1, nsF - 1),
                                     c: col,
@@ -4273,10 +4338,10 @@
                     // paths keeps the black outline continuous, where per-sample
                     // segments read as dashes (each neighbour's fill overpaints
                     // part of the previous sample's outline).
-                    const p0 = at(Math.max(lo, i - 1));
+                    const p0 = at(wrapIdx(i - 1));
                     const p1 = at(i);
-                    const p2 = at(i + 1);
-                    const p3 = at(Math.min(hi, i + 2));
+                    const p2 = at(iN);
+                    const p3 = at(wrapIdx(i + 2));
                     // Detail alone, like the ribbons above
                     const sub = subFloor(isProt ? SUB : NA_SUB);
                     const tubeA = (isProt ? LOOP_TUBE_A : NA_TUBE_A) * widthScale;
@@ -4327,7 +4392,7 @@
                             tubeRun.zSum += A[2];
                             tubeRun.peSum += A[3];
                         }
-                        tubeRun.i1 = i + 1;
+                        tubeRun.i1 = iN;
                         // ext is only a tangent aid; rebuilt after the merge
                         tubeRun.ext = null;
                     } else {
@@ -4349,8 +4414,14 @@
                     continue;
                 }
             }
-            const v1 = rotated[seg.idx1];
-            const v2 = rotated[seg.idx2];
+            // Endpoints follow the DRAWN backbone, so a contact or a ligand
+            // bond meets the ribbon where the ribbon actually is - flattening
+            // moves a strand up to ~2 A, which left contact lines ending in
+            // space beside the strand they point at. at() returns the raw
+            // position for anything the cartoon does not reposition (ligand
+            // atoms, lone dots), so those are unaffected.
+            const v1 = at(seg.idx1) || rotated[seg.idx1];
+            const v2 = at(seg.idx2) || rotated[seg.idx2];
             const A = project(v1.x, v1.y, v1.z);
             const B = project(v2.x, v2.y, v2.z);
             if (!A || !B) continue;
@@ -4369,8 +4440,14 @@
             // flattened screen coords, because the ink pass needs the
             // perspective attribute to occlusion-test against these - see the
             // 'line'/'dot' occluder branches.
+            // Selected? Generic prims (ligand atoms and their bonds, contacts,
+            // explicit bonds, lone dots) are not ribbon pieces, so they carry no
+            // ink curves - without this a selected ligand showed no outline at
+            // all while the backbone around it did.
+            const segSel = !!(selInk
+                && (selInk.has(seg.idx1) || selInk.has(seg.idx2)));
             if (seg.idx1 === seg.idx2) {
-                prims.push({ kind: 'dot', x1: A[0], y1: A[1], z: A[2], r: wpx / 2, c: col, pA: A });
+                prims.push({ kind: 'dot', x1: A[0], y1: A[1], z: A[2], r: wpx / 2, c: col, pA: A, sel: segSel });
             } else {
                 const prim = {
                     kind: 'line',
@@ -4380,6 +4457,7 @@
                     c: col,
                     flat: seg.type === 'C', // contacts stay bright and flat
                     pA: A, pB: B,
+                    sel: segSel,
                 };
                 registerJoint(`R${seg.idx1}`, prim);
                 registerJoint(`R${seg.idx2}`, prim);
@@ -5573,9 +5651,15 @@
                         const hue = (ssColor && ssPal.back) ? ssPal.back[g.ss] : null;
                         if (hue) {
                             fc = hue;
-                        } else if (rich && g.ss === 'H') {
+                        } else if (rich && g.ss === 'H' && !g.co) {
                             // no explicit two-tone in this palette: synthesise
-                            // one by tinting toward white. Cached on the prim -
+                            // one by tinting toward white. NOT applied when the
+                            // colour was set by hand (g.co): the tint is a heavy
+                            // 0.68 toward white, so a picked colour came back
+                            // washed out over most of a helix and did not look
+                            // like the colour that was picked. A palette colour is
+                            // a style choice and can be stylised; an explicit one
+                            // is an instruction. Cached on the prim -
                             // paintFace runs per face per piece per frame, and
                             // g.c is fixed for the piece.
                             fc = g._cIn || (g._cIn = tintWhite(g.c, RICH_INNER_TINT));
@@ -5938,13 +6022,14 @@
                 }
             } else if (g.kind === 'line') {
                 const pts = [[g.x1, g.y1], [g.x2, g.y2]];
-                if (outlineW) {
-                    const ink = inkOf(g, near);
+                if (outlineW || g.sel) {
+                    const ink = g.sel ? SELECTION_INK_CSS : inkOf(g, near);
                     ctx.lineCap = 'butt';
                     ctx.strokeStyle = ink;
-                    ctx.lineWidth = g.w + outlineW;
+                    ctx.lineWidth = g.w + (g.sel
+                        ? Math.max(outlineW, SELECTION_INK_WIDTH * 2) : outlineW);
                     strokePath(pts);
-                    const r = (g.w + outlineW) / 2;
+                    const r = ctx.lineWidth / 2;
                     if (capAt(g, g.joints[0])) blackCap(g.x1, g.y1, r, ink);
                     if (capAt(g, g.joints[1])) blackCap(g.x2, g.y2, r, ink);
                 }
@@ -5955,10 +6040,12 @@
                 ctx.lineWidth = g.w;
                 strokePath(pts);
             } else { // dot
-                if (outlineW) {
+                if (outlineW || g.sel) {
+                    const ow = g.sel
+                        ? Math.max(outlineW, SELECTION_INK_WIDTH * 2) : outlineW;
                     ctx.beginPath();
-                    ctx.arc(g.x1, g.y1, g.r + outlineW / 2, 0, Math.PI * 2);
-                    ctx.fillStyle = inkOf(g, near);
+                    ctx.arc(g.x1, g.y1, g.r + ow / 2, 0, Math.PI * 2);
+                    ctx.fillStyle = g.sel ? SELECTION_INK_CSS : inkOf(g, near);
                     ctx.fill();
                 }
                 ctx.beginPath();
@@ -5990,7 +6077,7 @@
         // clearly nearer depth. Occluders are the slab sub-quads and tube
         // capsules, indexed in a screen-space grid so each query touches a
         // handful of candidates. Pure vector: fast, and SVG-exportable.
-        if (perfectInk && outlineW && inkCurves.length) {
+        if (perfectInk && inkWanted && inkCurves.length) {
             const _pt = () => (typeof performance !== 'undefined' ? performance.now() : 0);
             const _ph = renderer._phase;
             if (_ph) _ph.inkStart = _pt();
@@ -6448,18 +6535,33 @@
             // outlines pale with their fills instead of floating full-black
             // over ghost geometry. 12 levels keeps stroke batching coarse.
             const inkGroups = new Map();
+            const selKey = '\u0000sel';   // cannot collide with a colour string
             for (const cv of inkCurves) {
-                let zSum = 0;
-                for (const q2 of cv.pts) zSum += q2[2];
-                const nearQ = Math.round(nearOf(zSum / cv.pts.length) * 11) / 11;
-                const key = inkColor(cv.c, inkTint, nearQ);
+                // Selected curves batch under one key and skip the depth fade -
+                // an indicator that pales into the background is not doing its
+                // job. Unselected curves are dropped entirely when the style
+                // has no outline, so turning the outline off still leaves the
+                // selection visible and nothing else.
+                let key;
+                if (cv.sel) {
+                    key = selKey;
+                } else if (!outlineW) {
+                    continue;
+                } else {
+                    let zSum = 0;
+                    for (const q2 of cv.pts) zSum += q2[2];
+                    const nearQ = Math.round(nearOf(zSum / cv.pts.length) * 11) / 11;
+                    key = inkColor(cv.c, inkTint, nearQ);
+                }
                 let arr = inkGroups.get(key);
                 if (!arr) { arr = []; inkGroups.set(key, arr); }
                 arr.push(cv);
             }
             let _strokeMs = 0;
             for (const [inkCss, group] of inkGroups) {
-            ctx.strokeStyle = inkCss;
+            const isSel = inkCss === selKey;
+            ctx.strokeStyle = isSel ? SELECTION_INK_CSS : inkCss;
+            ctx.lineWidth = isSel ? SELECTION_INK_WIDTH : Math.max(1.4, outlineW * 0.55);
             ctx.beginPath();
             for (const cv of group) {
                 const pts = cv.pts;
@@ -6652,6 +6754,40 @@
                     g2.clearRect(0, 0, dw, dh);
                     const pat = g2.createPattern(tile, 'repeat');
                     if (pat) {
+                        // GRAIN SCALES WITH THE VIEW, ABOUT THE CANVAS CENTRE.
+                        // The tile is a fixed pixel size, so unscaled it stays
+                        // put while the structure grows and shrinks - the same
+                        // speckle over an ever smaller drawing reads as the
+                        // noise coarsening rather than the drawing shrinking.
+                        // Scaling alone is not enough though: a bare scale is
+                        // anchored at the pattern origin (the canvas corner), so
+                        // the grain SLIDES toward or away from that corner as
+                        // you zoom, which reads as the paper translating under
+                        // the molecule. Anchoring the scale at the centre - the
+                        // point the zoom itself is about - makes the grain
+                        // expand and contract in place instead.
+                        // Clamped: below ~0.35 the tile resamples hard enough to
+                        // alias into checkering, above ~3 it smears.
+                        // GRAIN_SCALE shrinks the whole texture, all three
+                        // octaves together. Done here rather than by raising the
+                        // octave grid counts because the finest octave already
+                        // sits near one cell per 1.3 px on a 128 px tile - push
+                        // that further and it degenerates into the per-pixel
+                        // film static the octave construction exists to avoid.
+                        // Minifying a texture is filtered by the browser, so it
+                        // softens rather than aliases.
+                        const zoomK = GRAIN_SCALE * Math.max(0.35, Math.min(3,
+                            (renderer.viewerState && renderer.viewerState.zoom) || 1));
+                        if (pat.setTransform && typeof DOMMatrix !== 'undefined') {
+                            try {
+                                const cx = dw / 2;
+                                const cy = dh / 2;
+                                pat.setTransform(new DOMMatrix([
+                                    zoomK, 0, 0, zoomK,
+                                    cx - zoomK * cx, cy - zoomK * cy,
+                                ]));
+                            } catch (err) { /* unscaled grain is still fine */ }
+                        }
                         g2.fillStyle = pat;
                         g2.fillRect(0, 0, dw, dh);
                         g2.globalCompositeOperation = 'destination-in';
@@ -6690,7 +6826,14 @@
         if (renderer.screenX && renderer.screenX.length >= n) {
             for (let i = 0; i < n; i++) {
                 if (!vis(i)) { renderer.screenValid[i] = 0; continue; }
-                const v = rotated[i];
+                // The DRAWN position, not the input one. These feed hover,
+                // click-picking and the highlight overlay, and sheet flattening
+                // moves a strand up to ~2 A (median 0.89 A on 1TIM) from where
+                // its atom actually is - so picking against the raw coordinate
+                // meant the ribbon you can see and the thing you hit were in
+                // different places. `at()` falls back to the raw position for
+                // anything the cartoon does not reposition.
+                const v = at(i) || rotated[i];
                 const A = project(v.x, v.y, v.z);
                 if (!A) { renderer.screenValid[i] = 0; continue; }
                 renderer.screenX[i] = A[0];
@@ -6769,7 +6912,10 @@
             smooth: true,
         },
     };
-    STYLE_DEFAULTS.ribbon = STYLE_DEFAULTS.cartoon;
+    // The tube style starts from the plain cartoon values. (The 'ribbon' PRESET
+    // does too, but setPreset maps it to .cartoon directly rather than needing
+    // an alias of its own.)
+    STYLE_DEFAULTS.tube = STYLE_DEFAULTS.cartoon;
 
     // ---- 'ss' COLOR MODE ---------------------------------------------------
     // Colour by secondary structure, in the convention the Richardson drawings
@@ -6861,11 +7007,46 @@
         STYLE_DEFAULTS, SS_PALETTES };
     // Near-white, not pure white: a pure white edge disappears into the page.
     const SHEET_EDGE_RGB = { r: 244, g: 246, b: 240 };
+    // PER-RESIDUE SECONDARY-STRUCTURE OVERRIDE.
+    // renderer.objectsData[name].sse maps a position index to 'H', 'E' or 'C' and wins over
+    // whatever the assignment produced, so a user can force a region to draw as
+    // helix/strand/loop from the GUI (or from Python) without touching geometry.
+    // Applied in BOTH places that derive sec - the draw stage and secForColor -
+    // because those are separately cached, and colouring from a different SS
+    // string than the geometry is exactly the bug secForColor exists to prevent.
+    const SS_LETTERS = { H: 1, E: 1, C: 1 };
+    // Stored PER OBJECT as `sse`, exactly like `color`: both are keyed by
+    // position index, so both are only meaningful against the object they were
+    // set on. Python's set_sse and the GUI's SSE control write the same field.
+    const sseOf = (renderer) => {
+        if (!renderer) return null;
+        const o = renderer.objectsData && renderer.currentObjectName
+            ? renderer.objectsData[renderer.currentObjectName] : null;
+        return (o && o.sse) || null;
+    };
+    const sseKey = (renderer) => {
+        const ov = sseOf(renderer);
+        if (!ov) return '';
+        // part of the cache key, so editing the override invalidates both caches
+        const ks = Object.keys(ov);
+        return '|ss' + ks.length + ':' + ks.join(',') + ':' + ks.map((k) => ov[k]).join('');
+    };
+    const applySse = (sec, renderer) => {
+        const ov = sseOf(renderer);
+        if (!ov || !sec) return sec;
+        for (const k in ov) {
+            const i = +k;
+            if (i >= 0 && i < sec.length && SS_LETTERS[ov[k]]) sec[i] = ov[k];
+        }
+        return sec;
+    };
+
     const secForColor = (renderer) => {
         const n = renderer.coords ? renderer.coords.length : 0;
         if (!n) return null;
         const key = `${renderer.currentObjectName}|${renderer.currentFrame}|${n}`
-            + `|${renderer.overlayState && renderer.overlayState.enabled}`;
+            + `|${renderer.overlayState && renderer.overlayState.enabled}`
+            + sseKey(renderer);
         if (renderer._cartoonSec && renderer._cartoonSecKey === key) {
             return renderer._cartoonSec;
         }
@@ -6875,8 +7056,9 @@
         // Same call the draw stage makes, so the colours cannot disagree with
         // the geometry: colouring from a different pipeline used to tint the
         // last residue of every helix as coil while the ribbon drew it as helix.
-        const assigned = assignSecondary(renderer.coords, n, renderer.positionTypes);
-        const sec = assigned.sec;
+        const assigned = assignSecondary(renderer.coords, n, renderer.positionTypes,
+            { names: renderer.positionNames });
+        const sec = applySse(assigned.sec, renderer);
         renderer._ssColorSec = sec;
         renderer._ssColorKey = key;
         return sec;

@@ -53,7 +53,7 @@ py2Dmol.view(pae=True).from_afdb('Q5VSL9')                          # AlphaFold 
 ```python
 viewer = py2Dmol.view(
     size=(300, 300), color='auto', colorblind=False,
-    style='ribbon',  # or 'cartoon' for secondary-structure cartoons
+    style='tube',  # or 'cartoon' for secondary-structure cartoons
     shadow=True, outline='full', width=3.0, ortho=1.0,
     rotate=False, autoplay=False, box=True, controls=True,
 )
@@ -63,12 +63,13 @@ viewer.show()
 
 ### Render styles
 Two styles are available (switchable live via the Style dropdown in the controls):
-- **`ribbon`** (default) — the classic py2Dmol smooth backbone trace.
+- **`tube`** (default) — the classic py2Dmol smooth backbone trace.
 - **`cartoon`** — secondary-structure cartoon: twisted ribbons for helices, plates with arrowheads for strands, thin tubes for loops, with outlines.
 
 The cartoon style carries named **presets** (the Preset dropdown, or `preset=` from Python) — starting points whose values load into the normal controls, which stay live for tweaking:
-- **`richardson`** (the default) — the hand-drawn convention of Jane Richardson's protein drawings: flat wide helices, thick β-strands carrying arrowheads and white card edges, thin loops, and coloured-pencil paper grain. See below.
-- **`3d`** — solid shaded geometry: thickness 1.0, no outline, smooth shading, flat sheets.
+- **`ribbon`** (the default) — plain cartoon: smooth off, no slab thickness, ink on. The neutral starting point.
+- **`richardson`** — the hand-drawn convention of Jane Richardson's protein drawings: flat wide helices, thick β-strands carrying arrowheads and white card edges, thin loops, and coloured-pencil paper grain. See below.
+- **`3d`** — solid shaded geometry: thickness 1.0, no outline, smooth shading, flat sheets. Also switches the page to a black background, which is what that look is for; pass `bg=` explicitly to override.
 
 Both cartoon styles work on C-alpha-only models, because the backbone is rebuilt from the trace: the local geometry is binned PULCHRA-style and the peptide C and N read out of a fitted table (C to 0.21 Å rms, N to 0.17 Å). Everything else follows from that backbone:
 
@@ -79,17 +80,18 @@ Both cartoon styles work on C-alpha-only models, because the backbone is rebuilt
 Nothing per-residue is stored or shipped for either polymer — the trace is the input. See `tests/README.md`.
 
 ```python
-py2Dmol.view(style='cartoon').from_pdb('4HHB', use_biounit=True)
-py2Dmol.view(style='richardson').from_pdb('1TIM')
+py2Dmol.view(style='cartoon').from_pdb('4HHB', use_biounit=True)   # preset='richardson'
+py2Dmol.view(preset='richardson').from_pdb('1TIM')
+py2Dmol.view(style='cartoon', preset='3d').from_pdb('1TIM')        # solid, on black
 py2Dmol.view(style='cartoon', thickness=0).from_pdb('4HHB')   # flat ribbons
 ```
 
-#### Richardson style
+#### Richardson preset
 
-`style='richardson'` is not a separate renderer — it is the cartoon draw path with a preset that changes the *profile* along the chain, so everything below is reachable from the plain cartoon too.
+`preset='richardson'` is not a separate renderer — it is the cartoon draw path with a preset that changes the *profile* along the chain, so everything below is reachable from the plain cartoon too.
 
 ```python
-py2Dmol.view(style='richardson', color='ss').from_pdb('1TIM')
+py2Dmol.view(preset='richardson', color='ss').from_pdb('1TIM')
 ```
 
 What the preset changes, and why:
@@ -111,7 +113,7 @@ What the preset changes, and why:
 A preset is a starting point, not a lock: the sliders stay live showing its values. Everything is also settable from Python, and an explicit argument always wins over the preset:
 
 ```python
-py2Dmol.view(style='richardson', pencil=0, sheet_flat=0)   # no grain, natural pleat
+py2Dmol.view(preset='richardson', pencil=0, sheet_flat=0)   # no grain, natural pleat
 ```
 
 #### Shared cartoon options
@@ -225,6 +227,39 @@ viewer.set_color("red", chain="A", position=10, frame=0)
 viewer.show()
 ```
 
+An explicit colour always beats a mode. Setting one residue red keeps it red under
+`plddt`, `chain`, `rainbow` or an SSE palette — the mode only decides the colour of
+residues you have not spoken for.
+
+## Secondary structure overrides
+The automatic assignment is good but not infallible, and a figure sometimes wants a
+region drawn a particular way regardless. `set_sse` forces it, and is the same override
+the web interface's **SSE** control writes:
+
+```python
+viewer.set_sse("H", position=(20, 35))   # force 20-34 to helix
+viewer.set_sse("E", chain="B")           # all of chain B as strand
+viewer.set_sse(None, position=(20, 35))  # clear - back to automatic
+```
+
+`"H"` helix, `"E"` strand, `"C"` loop, `None` to clear. Stored on the object as
+`sse`, beside `color`, and keyed by position index - so like a colour override it
+belongs to that object's numbering.
+
+## Selecting in the web interface
+Drag across the sequence strip to select residues, or click a chain label to select the
+whole chain; a yellow outline marks the selection in both the strip and the structure.
+Clicking empty space clears it. Selecting never changes what is visible — showing and
+hiding are separate, explicit actions.
+
+The tools then act on that selection: **Colour** (the chain colour palette plus
+white/grey/black, and *Auto* to drop back to the colour mode), **SSE**
+(helix/sheet/loop/auto),
+**Show** / **Hide**, and **Copy**, which extracts the selection into a new object.
+`Select all` and `Unselect` are next to them. Everything here writes the same
+structures `set_color` and `set_sse` write from Python, so a session set up either way
+looks the same.
+
 # Super Advanced
 
 ## custom `add()` payloads
@@ -301,6 +336,9 @@ Control output cell behavior with the `persistence` parameter:
 ## Reference
 **Atom codes**: Protein=P (CA), DNA=D (C4'), RNA=R (C4'), Ligand=L (heavy atoms)  
 **Bond thresholds**: Protein CA-CA 5.0 Å; DNA/RNA C4'-C4' 7.5 Å; Ligand 2.0 Å  
-**Color modes**: `auto`, `rainbow`, `plddt`, `chain`  
+**Color modes**: `auto`, `rainbow`, `plddt`, `chain`, `ss`, `entropy`, `deepmind`  
+**Styles**: `tube`, `cartoon`, `richardson`  
+**Cartoon presets**: `richardson` (default), `ribbon`, `3d`  
+**SSE palettes**: `pymol` (default), `jmol`, `jr1`, `jr2`  
 **Outline modes**: `none`, `partial`, `full` (default)  
 **Formats**: PDB (.pdb), mmCIF (.cif); multi-model files load as frames.
