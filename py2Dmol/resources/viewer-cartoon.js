@@ -460,7 +460,7 @@
     // speckle read as coarse against the ribbon widths at normal zoom.
     // Going much below this starts washing the tooth into a flat tint - the
     // clusters stop resolving and only the broad mottle survives.
-    const GRAIN_SCALE = 0.4;  // alpha at pencil = 1 (Richardson's amount)
+    const GRAIN_SCALE = 0.4;       // texture scale: <1 minifies, so finer
     const PENCIL_TOOTH = 70;       // tooth amplitude (~3 px clusters)
     const PENCIL_GRIT = 26;        // finest bite on top of the tooth
     const PENCIL_MOTTLE = 40;      // broad paper unevenness amplitude
@@ -488,6 +488,14 @@
     const NA_HALF_A = 1.55;
     const LOOP_TUBE_A = 0.35;              // loop tube radius
     const RIBBON_TH_A = 0.25;              // slab half-thickness (total 0.5 A)
+    // NUCLEIC GEOMETRY IS THICKER THAN PROTEIN. A duplex is drawn as two thin
+    // rails carrying a ladder of rungs, and at the ribbon's own 0.7-1.0 the
+    // rails read as tape rather than as the backbone of something with a
+    // diameter. 1.5 gives them body without touching protein, which needs none.
+    // Same rule the ligand section follows: a preset asking for FLAT still gets
+    // flat, so the ribbon preset is unaffected, and the Thickness control takes
+    // over the moment the user moves it.
+    const NA_THICK_DEFAULT = 1.5;
     const NA_TUBE_A = 1.0;                 // nucleic backbone tube radius
     // BASE PLATES. Only the C4' atom survives parsing (viewer.py keeps one
     // point per nucleotide), so there is no glycosidic vector and no base
@@ -547,7 +555,9 @@
     const NA_PLATE_SEG = 4;      // rung depth-sort pieces at detail 1
     const NA_JOINT_CLEAR = 0.02; // A, min offset from the backbone face
     const NA_PLATE_W = 3.6;     // plate width along the helix axis, A (~the 3.4 A rise)
-    const NA_PLATE_TH = 0.30;   // plate half-thickness, A
+    // (A rung's thickness is no longer its own number: it follows the
+    // backbone at half, so renderer.cartoonNaPlateTh no longer has an
+    // effect. NA_PLATE_W still sets the rung's WIDTH at the pair.)
     // NEGATIVE: the outline stroke is wider than the plate (thPx + outlineW),
     // so it has to be painted BEHIND the fills, which then cover its middle
     // and leave only the rim. Biased in front it simply swallows the plate.
@@ -560,10 +570,11 @@
     // N1/N3 H-bond being under 3.2 A) the C4'-C4' span is 14.61 A with sd 0.33
     // in both 1BNA and 355D - a tight enough band to identify pairs on its own.
     // An earlier guess of 10.5 A here excluded every real pair.
-    const NA_PAIR_MIN = 12.5;   // A, C4'-C4' across a pair
+    const NA_PAIR_MIN = 11.0;   // A, C4'-C4' across a pair
     const NA_PAIR_MAX = 16.5;
     const NA_PAIR_IDEAL = 14.6;
     const NA_RUN_W = 0.6;         // weight on contiguous register length
+    const NA_WOBBLE_RUN_W = 0.5;  // what a bridging G.U contributes to that
     // 6.8, not 7.5. True pairs sit at ~5.9-6.4 A; the false ones that survive
     // cluster at 6.9-7.5, so the looser cutoff was letting exactly those in
     // (measured on 9FOG and 5H0R). Tightening loses no true pairs.
@@ -587,6 +598,85 @@
     // everything on screen - enough to let elements come forward, not enough
     // to bleach the rest.
     const LOOP_DIM = 0.85;
+    // How hard a ligand models, against the backbone tube's 1.0. Enough to say
+    // "this is round and lit from over there" and no more: a ligand is a detail
+    // inside the picture, and modelling it as strongly as the backbone made it
+    // the loudest thing on screen.
+    const LIGAND_MODEL = 0.35;
+    // --- LIGAND STICKS -----------------------------------------------------
+    // A bond is drawn as a BOX: two square end faces of half-side
+    // LIGAND_STICK_H, joined by four faces. Just under the Richardson loop's
+    // 0.35 A, so a ligand reads as finer than the backbone it hangs off.
+    // tests/junction_math.py derives everything here and checks it numerically.
+    const LIGAND_STICK_H = 0.30;
+    // A LIGAND KEEPS ITS OWN WIDTH. The Line Width control sets how heavy the
+    // BACKBONE is drawn, and a ligand is not part of that: sticks that grew and
+    // shrank with it stopped reading as a small thing sitting in a big one.
+    // 2.5 on the same scale the control uses, so the section no longer depends
+    // on it at all.
+    const LIGAND_WIDTH = 2.5;
+    // ...and its own THICKNESS, for the same reason. 0.5 A total against the
+    // 0.5 A width the line above works out to, so the section is square. The
+    // control still takes it over the moment the user moves it (0 included,
+    // which is the flat single-face path); what this replaces is the ribbon
+    // PRESET reaching in - plain cartoon asks for 0 because it wants a flat
+    // ribbon, and a ligand followed it into being a sheet, so the same molecule
+    // changed shape between cartoon and richardson.
+    const LIGAND_TH_DEFAULT = 0.5;
+    // Thickness DOES reach the ligand, from the same control the ribbon uses,
+    // and carries the same unit it does there: the value is the TOTAL thickness
+    // in Angstrom, so the half is thickness/2 and Thickness 1 is a stick 1 A
+    // thick. Zero is honoured exactly rather than floored - see stickIsFlat.
+    // Vertices are (+u+v, +u-v, -u-v, -u+v) at each end - a CYCLE round the
+    // square, not a bit pattern. Every face below is then a simple quad; the
+    // bow-ties in the previous attempt came from indexing corners in the
+    // ribbon's (+n+b, +n-b, -n+b, -n-b) order, where opposite corners are
+    // adjacent in the array.
+    //   ax 0 = u, 1 = v, 2 = t   sgn = which way the face looks
+    const STICK_FACES = [
+        { q: [0, 1, 5, 4], ax: 0, sgn: 1 },     // +u
+        { q: [1, 2, 6, 5], ax: 1, sgn: -1 },    // -v
+        { q: [2, 3, 7, 6], ax: 0, sgn: -1 },    // -u
+        { q: [3, 0, 4, 7], ax: 1, sgn: 1 },     // +v
+        { q: [0, 3, 2, 1], ax: 2, sgn: -1 },    // cap at the first atom
+        { q: [4, 5, 6, 7], ax: 2, sgn: 1 },     // cap at the second
+    ];
+    // The twelve edges, each with the two faces that meet along it. `end` is 0
+    // or 1 for the rings round the two caps and -1 for the four running along
+    // the bond - which is how a cap ring is suppressed at an atom where other
+    // bonds arrive, without any geometric test.
+    // AT ZERO THICKNESS THE BOX IS A SHEET. The +u and -u faces land on each
+    // other and the remaining four have no area, so the solid's six faces
+    // collapse to one quad that has to be drawn from both sides. Its outline is
+    // simply its own four edges - with one face there is no front/back pair to
+    // test, and no interior crease to exclude, because there is no interior.
+    // `end` keeps the meaning it has for the box: those edges are the cap ring,
+    // and are inked only where the atom carries nothing else.
+    const STICK_FACES_FLAT = [{ q: [0, 1, 5, 4], ax: 0, sgn: 1, two: true }];
+    const STICK_EDGES_FLAT = [
+        { a: 0, b: 1, f0: 0, f1: 0, end: 0 },
+        { a: 4, b: 5, f0: 0, f1: 0, end: 1 },
+        { a: 1, b: 5, f0: 0, f1: 0, end: -1 },
+        { a: 0, b: 4, f0: 0, f1: 0, end: -1 },
+    ];
+    const STICK_EDGES = [
+        { a: 0, b: 1, f0: 0, f1: 4, end: 0 },
+        { a: 1, b: 2, f0: 1, f1: 4, end: 0 },
+        { a: 2, b: 3, f0: 2, f1: 4, end: 0 },
+        { a: 3, b: 0, f0: 3, f1: 4, end: 0 },
+        { a: 4, b: 5, f0: 0, f1: 5, end: 1 },
+        { a: 5, b: 6, f0: 1, f1: 5, end: 1 },
+        { a: 6, b: 7, f0: 2, f1: 5, end: 1 },
+        { a: 7, b: 4, f0: 3, f1: 5, end: 1 },
+        { a: 0, b: 4, f0: 0, f1: 3, end: -1 },
+        { a: 1, b: 5, f0: 0, f1: 1, end: -1 },
+        { a: 2, b: 6, f0: 1, f1: 2, end: -1 },
+        { a: 3, b: 7, f0: 2, f1: 3, end: -1 },
+    ];
+    // Screen width, in pixels, over which round shading fades in. Under the
+    // first there is less than a band's worth of line to shade.
+    const SHADE_W_MIN = 2.0;
+    const SHADE_W_FULL = 5.0;
     // A helix turns every ~3.6 residues; one quad per residue facets visibly.
     // Subdivision is cheap since a whole interval is one primitive, so sample
     // finely enough that edges read as curves rather than chords.
@@ -2494,6 +2584,8 @@
     // pipeline already computed (respects the full 5-level color hierarchy).
     // ------------------------------------------------------------------------
     function render(renderer, ctx, displayWidth, displayHeight, colors) {
+        const _t0 = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now() : Date.now();
         const rotated = renderer.rotatedCoords;   // Vec3, rotated + centered, Angstroms
         const n = renderer.coords.length;
         const segments = renderer.segmentIndices;
@@ -2586,9 +2678,26 @@
         // outline should look like. A floor of 1 here (with the ink floor
         // below) made the whole bottom half of the slider draw identically,
         // so the outline appeared to stop thinning and then snap off at 0.
+        // THE OUTLINE SCALES WITH ZOOM, like everything else in the drawing.
+        // The ribbon's own width is baseLineWidthPixels = lineWidth * scale, and
+        // `scale` carries vs.zoom - so zooming out shrank the ribbon while the
+        // outline stayed a fixed pixel width, and the ink took over the drawing
+        // until a zoomed-out structure read as a mass of black. Anchored at
+        // zoom 1, which is the fit-to-view scale, so the default look is
+        // unchanged and only zooming away from it moves the weight.
+        //
+        // Clamped, and ASYMMETRICALLY, because the two failure modes are not
+        // the same size. Zoomed out, a fixed-width outline swamps a shrinking
+        // ribbon and the drawing turns into a mass of ink - that is the fault
+        // being fixed, so real thinning is allowed, down to about a third.
+        // Zoomed in, a fixed outline is merely a little fine, and following the
+        // ribbon all the way up turns a drawn LINE into a band: 3 px would
+        // reach 7.5 at 2.5x. So growth stops at 1.5x.
+        const zoomW = Math.max(0.35, Math.min(1.5,
+            (renderer.viewerState && renderer.viewerState.zoom) || 1));
         const outlineW = renderer.outlineMode !== 'none'
             ? (renderer.relativeOutlineWidth === 0
-                ? 0 : (renderer.relativeOutlineWidth || 3) * pxScale)
+                ? 0 : (renderer.relativeOutlineWidth || 3) * pxScale * zoomW)
             : 0;
         // HAND-DRAWN BUILD-UP. Null on every normal render, so all of this
         // costs one property read. When the drawing animation is running
@@ -2703,15 +2812,75 @@
         // The floor exists so a hairline cannot vanish entirely; it is far
         // below any useful setting and, being a floor on a fraction, it never
         // makes a line thicker than the outline the user asked for.
+        const gestureInk = renderer.cartoonGestureInk;
+        const INK_GESTURE_MS = (typeof gestureInk === 'number') ? gestureInk : 25;
+        // how far back under the budget the cost has to fall before the outline
+        // comes back - see the hysteresis note at dropInk
+        const INK_RESTORE_FRAC = 0.7;
+        // inked frames needed before the degrade may fire at all
+        const INK_MIN_SAMPLES = 3;
+        // What a full frame costs relative to a bare one, until this structure
+        // has been measured both ways. Measured at 900px: 1TIM 1.6x, 3A3A 2.3x,
+        // 1BNA 2.6x. Guessing here only costs a frame - if the guess is low the
+        // outline comes back, gets measured, and goes off again with the real
+        // number; if it is high the outline stays off one gesture longer.
+        const INK_COST_RATIO_DEFAULT = 2.0;
+        const gesturing = !!(renderer.isDragging || renderer.isZooming);
+        // the pencil is TRACED from the ink pass, so a sketch must keep it
+        // HYSTERESIS. A structure whose cost sits near the budget would
+        // otherwise flip between drags - outline on, outline off, outline on -
+        // which reads as the viewer being unreliable rather than as it adapting.
+        // Once dropped, the outline stays dropped until the cost falls clearly
+        // back under; once kept, it is kept until the cost clearly exceeds.
+        // Kept on its OWN field rather than reusing _inkSkipped: viewer-mol
+        // clears that one on every settle, which would reset the hysteresis
+        // between gestures - exactly where the flip-flop is visible.
+        // WHAT A FULL-QUALITY FRAME WOULD COST RIGHT NOW. While the outline is
+        // off there is no inked frame to measure, so it is estimated from the
+        // bare frame that IS being measured every frame, times what the ink is
+        // known to cost on this structure. That is what lets the outline come
+        // back mid-gesture once the machine has warmed up, instead of the
+        // decision standing on a measurement taken before it was made.
+        let inkCost = renderer._lastInkedMs || 0;
+        if (renderer._inkDegraded && renderer._lastBareMs !== undefined) {
+            inkCost = renderer._lastBareMs
+                * (renderer._inkRatio || INK_COST_RATIO_DEFAULT);
+        }
+        // ENOUGH SAMPLES TO HAVE AN OPINION. With one sample the "median of
+        // five" is that one sample, and the first inked frame of a drag is a
+        // warm-up: on 1TIM it costs 34 ms where every frame after it costs 11.
+        // Degrading on it latched the outline off for the whole gesture, and
+        // nothing could correct it - while the ink is off, no new sample is
+        // taken. Waiting for three lets the warm-up be outvoted, and a
+        // structure that really is slow simply degrades three frames later.
+        const inkSamples = renderer._inkedMs ? renderer._inkedMs.length : 0;
+        const dropInk = gesturing && !anim && gestureInk !== false
+            && inkSamples >= INK_MIN_SAMPLES
+            && (renderer._inkDegraded
+                ? inkCost > INK_GESTURE_MS * INK_RESTORE_FRAC
+                : inkCost > INK_GESTURE_MS);
+        if (gesturing) renderer._inkDegraded = dropInk;
+        // read by viewer-mol.js, which re-renders once the gesture settles -
+        // otherwise the last degraded frame is what stays on screen
+        renderer._inkSkipped = dropInk;
         const inkW = Math.max(0.35 * pxScale, outlineW * 0.55);
-        // NO INK ANYWHERE WHILE A DRAWING IS UP. Switching the ink PASS off was
-        // not enough: ink is also laid down in the paint loop, as the rim
-        // across the end of an element, the outline under a tube or a ligand
-        // bond, and the long edges of a base plate. Those kept drawing through
-        // the watercolour - most visibly as a dark line across the tip of every
-        // strand, which is where a cap rim is. Selection ink is not ink in this
-        // sense and is exempt: it is an indicator and has to stay legible.
-        const paintInkW = anim ? 0 : outlineW;
+        // NO INK ANYWHERE WHILE A DRAWING IS UP, OR WHILE A GESTURE HAS DROPPED
+        // IT. Switching the ink PASS off is not enough: ink is also laid down in
+        // the paint loop, as the rim across the end of an element, the outline
+        // under a tube or a ligand bond, and the long edges of a base plate.
+        // Those kept drawing through the watercolour - most visibly as a dark
+        // line across the tip of every strand, which is where a cap rim is.
+        //
+        // The gesture degrade had exactly the same hole, and in the same places:
+        // a strand's C-terminal arrow and every nucleic base plate kept their
+        // outlines through a rotation while the ribbon around them lost theirs,
+        // so the drawing came apart into outlined and un-outlined halves rather
+        // than simply going quieter. dropInk is decided above this line for that
+        // reason.
+        //
+        // Selection ink is not ink in this sense and is exempt from the drawing
+        // case: it is an indicator and has to stay legible.
+        const paintInkW = (anim || dropInk) ? 0 : outlineW;
         // SELECTION INK. The selected residues are outlined using the ink pass
         // itself rather than a separate overlay: the silhouette machinery
         // already knows the exact contour of every element, so re-colouring its
@@ -2731,9 +2900,225 @@
         // The pencil is traced from the ink pass's own visibility (see the
         // sketch collection there), so that pass has to RUN while a drawing is
         // being sketched even if the style has no outline at all.
-        const inkWanted = outlineW || !!selInk || !!anim;
+        // DROP THE OUTLINE WHILE A GESTURE IS IN FLIGHT, on big structures.
+        // Measured with the ink pass on and off, interleaved, minimum of 9:
+        //   1k residues 20.8 -> 7.4 ms, 3k 32.3 -> 14.8, 8k 96.4 -> 41.9,
+        //   20k 253.7 -> 109.5. The outline is 55-64% of the frame throughout,
+        //   so this is a 2.2-2.8x speedup and nothing else comes close.
+        //
+        // This was deliberately REMOVED once before, because switching quality
+        // mid-drag changes the drawing and snaps back when you stop, which
+        // reads as the render breaking rather than adapting. That objection is
+        // real and the threshold is the answer to it: below it nothing changes,
+        // and it is set where the frame is already past ~2x the 60fps budget -
+        // at which point the drag is visibly stuttering anyway, and a stable
+        // drawing nobody can turn smoothly is the worse trade.
+        //
+        // THE TRIGGER IS THE MEASURED COST, not the size of the structure. A
+        // segment count is a bad proxy for it: 5H0R draws 1736 segments in
+        // 40 ms while 4HHB draws 738 in 15 ms, so any count that catches the
+        // first also catches structures that never needed help. Cost also
+        // accounts for canvas size, detail and the machine, none of which a
+        // count knows about.
+        //
+        // renderer.cartoonGestureInk = false turns the degrade off; a NUMBER
+        // sets the budget in milliseconds.
+        const inkWanted = (outlineW || !!selInk || !!anim) && !dropInk;
+        renderer._inkRan = inkWanted;
         // Edge candidates for the ink pass (hull silhouette + crease edges)
         const inkCurves = [];
+    // THE SILHOUETTE OF A SLAB STRIP, as ink prims. Lifted out of the ribbon
+    // interval so the nucleic RUNGS can use it too: a rung is the same shape - a
+    // slab swept along a path - and hand-rolling a second outline for it is what
+    // left the base edges dashed, every subdivision cut being a place for the
+    // line to break. It needs only the four corner curves and the facing terms,
+    // so anything that can build those gets the ribbon's own outline.
+    // `square` picks the loop rule (corners extreme across the chain) over the
+    // hull rule; a rung is a flat slab like a ribbon, so it passes false.
+    const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
+        squareLoop) => {
+                        const nsF = Lp.length;
+                        const curves = [Lp, Lm, Rp, Rm];
+                        const visC = [[], [], [], []];
+                        // SILHOUETTE BY CONVEX HULL: per segment, project the
+                        // eight corner points (4 corners x 2 stations); a
+                        // corner is silhouette iff one of its points lies on
+                        // (or within ~1px of) the hull of those eight. This
+                        // is orientation-free - a single-axis extreme test
+                        // (perpendicular to the chain direction) misses the
+                        // boundary on TWISTING DIVES, where the silhouette
+                        // wraps around the piece; the hull cannot. Interior
+                        // crease corners are never on the hull, so no inner
+                        // line.
+                        const hx = new Array(8);
+                        const hy = new Array(8);
+                        const cross = (ox, oy, ax, ay, bx, by) =>
+                            (ax - ox) * (by - oy) - (ay - oy) * (bx - ox);
+                        for (let s = 0; s + 1 < nsF; s++) {
+                            for (let c = 0; c < 4; c++) {
+                                hx[c * 2] = curves[c][s][0];
+                                hy[c * 2] = curves[c][s][1];
+                                hx[c * 2 + 1] = curves[c][s + 1][0];
+                                hy[c * 2 + 1] = curves[c][s + 1][1];
+                                visC[c].push(false);
+                            }
+                            // monotone chain on 8 points (indices sorted)
+                            const idx = [0, 1, 2, 3, 4, 5, 6, 7];
+                            idx.sort((a, b) => (hx[a] - hx[b]) || (hy[a] - hy[b]));
+                            const hull = [];
+                            for (const iP of idx) {
+                                while (hull.length >= 2 && cross(
+                                    hx[hull[hull.length - 2]], hy[hull[hull.length - 2]],
+                                    hx[hull[hull.length - 1]], hy[hull[hull.length - 1]],
+                                    hx[iP], hy[iP]) <= 0) hull.pop();
+                                hull.push(iP);
+                            }
+                            const lower = hull.length + 1;
+                            for (let k = idx.length - 2; k >= 0; k--) {
+                                const iP = idx[k];
+                                while (hull.length >= lower && cross(
+                                    hx[hull[hull.length - 2]], hy[hull[hull.length - 2]],
+                                    hx[hull[hull.length - 1]], hy[hull[hull.length - 1]],
+                                    hx[iP], hy[iP]) <= 0) hull.pop();
+                                hull.push(iP);
+                            }
+                            hull.pop();
+                            // mark corners whose points are on or near the
+                            // hull boundary (near-tie: coincident twins)
+                            const TOL2 = (1.5 * pxScale) * (1.5 * pxScale);
+                            for (let c8 = 0; c8 < 8; c8++) {
+                                let on = false;
+                                for (let h = 0; h < hull.length && !on; h++) {
+                                    const a = hull[h];
+                                    if (a === c8) { on = true; break; }
+                                    const b = hull[(h + 1) % hull.length];
+                                    const abx = hx[b] - hx[a];
+                                    const aby = hy[b] - hy[a];
+                                    const L2 = abx * abx + aby * aby;
+                                    let t = L2 > 1e-9
+                                        ? ((hx[c8] - hx[a]) * abx + (hy[c8] - hy[a]) * aby) / L2
+                                        : 0;
+                                    if (t < 0) t = 0;
+                                    else if (t > 1) t = 1;
+                                    const ex = hx[a] + t * abx - hx[c8];
+                                    const ey = hy[a] + t * aby - hy[c8];
+                                    if (ex * ex + ey * ey <= TOL2) on = true;
+                                }
+                                if (on) visC[c8 >> 1][s] = true;
+                            }
+                            // CREASE EDGES: an edge whose adjacent SIDE
+                            // face clearly faces the viewer (the up/down
+                            // thickness band at a helix flank) or whose
+                            // OUTER face does (concavity-gated so the inner
+                            // face's rim does not add hook noise). These sit
+                            // exposed on the side of the ribbon - they were
+                            // never candidates in the hull-only build.
+                            const nMid = (oN[s] + oN[s + 1]) / 2;
+                            const bMid2 = (oB[s] + oB[s + 1]) / 2;
+                            const kMid = (oK[s] + oK[s + 1]) / 2;
+                            const CE = 0.25;
+                            const topOuter = bMid2 > CE && kMid <= 0.15;
+                            const botOuter = bMid2 < -CE && kMid >= -0.15;
+                            if (nMid > CE || topOuter) visC[0][s] = true;
+                            if (nMid > CE || botOuter) visC[1][s] = true;
+                            if (nMid < -CE || topOuter) visC[2][s] = true;
+                            if (nMid < -CE || botOuter) visC[3][s] = true;
+                            // LOOPS: OUTER LINES ONLY. A slab seen at an angle
+                            // puts three lines on screen - the two silhouette
+                            // edges, plus the crease where the visible wide
+                            // face meets the visible side face. On a helix or
+                            // strand that crease is worth drawing: it is what
+                            // separates a wide face from its thin edge. On a
+                            // loop it is not. The section is square at the
+                            // defaults (0.35 A half-side either way), so the
+                            // crease runs a hair inside the silhouette and
+                            // reads as a doubled line rather than as structure.
+                            // Keeping only the corners that are EXTREME across
+                            // the chain leaves the silhouette exact and the
+                            // crease unlined, carried by shading alone.
+                            //
+                            // Gated on squareLoop rather than on ssCls: a
+                            // transition interval is BUILT as a loop but is
+                            // classed 'H' next to a helix (see ssCls - the
+                            // helix wins its transitions so the spiral is not
+                            // cut a residue early), and the question here is
+                            // geometric, not what colour the interval takes.
+                            //
+                            // Extremes are taken at EACH station and unioned,
+                            // which normally keeps 2 corners and keeps 3 across
+                            // a handoff - where the outer edge passes from the
+                            // top corner to the bottom one. A single winner per
+                            // segment unlines the incoming curve for exactly
+                            // the segment in which it becomes the silhouette,
+                            // which shows as a nick in the outer line at every
+                            // turn. No tolerance on the comparison: a handoff
+                            // mid-step already reads as two different winners
+                            // at the two ends, so a tolerance adds nothing but
+                            // corners a pixel inside the edge, and those stroke
+                            // as the second line this is here to remove.
+                            if (squareLoop) {
+                                // Across-chain direction: the segment's mean
+                                // step, turned 90 degrees. Unnormalised - only
+                                // the ORDER of the projections matters.
+                                let mx0 = 0; let my0 = 0; let mx1 = 0; let my1 = 0;
+                                for (let c = 0; c < 4; c++) {
+                                    mx0 += curves[c][s][0]; my0 += curves[c][s][1];
+                                    mx1 += curves[c][s + 1][0]; my1 += curves[c][s + 1][1];
+                                }
+                                const perpX = (my0 - my1) / 4;
+                                const perpY = (mx1 - mx0) / 4;
+                                // Chain running at the viewer: the step projects
+                                // to under a hundredth of a pixel and "across"
+                                // is undefined, so leave the hull's answer -
+                                // which needs no chain direction - in place.
+                                if (perpX * perpX + perpY * perpY > 1e-4) {
+                                    const v0 = new Array(4);   // offset at s
+                                    const v1 = new Array(4);   // offset at s+1
+                                    let hi0 = -Infinity; let lo0 = Infinity;
+                                    let hi1 = -Infinity; let lo1 = Infinity;
+                                    for (let c = 0; c < 4; c++) {
+                                        const a = curves[c][s][0] * perpX
+                                            + curves[c][s][1] * perpY;
+                                        const b = curves[c][s + 1][0] * perpX
+                                            + curves[c][s + 1][1] * perpY;
+                                        v0[c] = a; v1[c] = b;
+                                        if (a > hi0) hi0 = a;
+                                        if (a < lo0) lo0 = a;
+                                        if (b > hi1) hi1 = b;
+                                        if (b < lo1) lo1 = b;
+                                    }
+                                    for (let c = 0; c < 4; c++) {
+                                        // >= and <=, so exact ties keep both
+                                        const keep = v0[c] >= hi0 || v1[c] >= hi1
+                                            || v0[c] <= lo0 || v1[c] <= lo1;
+                                        if (!keep) visC[c][s] = false;
+                                    }
+                                }
+                            }
+                        }
+
+                        for (let c = 0; c < 4; c++) {
+                            let any = false;
+                            for (let s = 0; s < visC[c].length; s++) {
+                                if (visC[c][s]) { any = true; break; }
+                            }
+                            if (any) {
+                                inkCurves.push({
+                                    // stable identity for the pencil's wobble,
+                                    // so its wander does not reshuffle between
+                                    // frames of the same view
+                                    id: inkCurves.length,
+                                    pts: curves[c],
+                                    vis: visC[c],
+                                    sel: selFlag,
+                                    gs0: gs0In,
+                                    gsStep: 1 / Math.max(1, nsF - 1),
+                                    c: col,
+                                });
+                            }
+                        }
+    };
+
         // The Shade slider sets how much directional shading is applied:
         // 0 = flat colour, 1 = full modelling. It replaced an on/off switch,
         // and every lighting term below already had a neutral value it returned
@@ -2755,10 +3140,35 @@
         const numOr = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
         // per-residue ribbon frame for nucleic runs, shared with the plates
         const naFrames = {};
-        if (renderer._naDebug) { renderer._naFrame = {}; renderer._naTwist = []; }
+        if (renderer._naDebug) {
+            renderer._naFrame = {}; renderer._naTwist = []; renderer._naAxis = [];
+        }
         const naWidthA = numOr(renderer.cartoonNaWidth, NA_HALF_A);
         const naPlateWA = numOr(renderer.cartoonNaPlateW, NA_PLATE_W);
-        const naPlateThA = numOr(renderer.cartoonNaPlateTh, NA_PLATE_TH);
+        // WHAT THE NUCLEIC SLAB ACTUALLY CAME OUT AS, recorded by the ribbon
+        // run below and read by the rungs. The rung starts where the rail's face
+        // is, so it needs the rail's REAL half-thickness - which is not the
+        // number requested but that number after the zoom fade (thickZoom), and
+        // under some paths it came from thickScaleRaw rather than from naHalfT
+        // at all. Two independent numbers meant the rung started at one offset
+        // while the rail's face was at another: the plates sat off the backbone
+        // until the Thickness slider was touched, at which point the two
+        // happened to agree again and everything jumped into place.
+        let naSlabHalfT = null;
+        // WHERE EACH BASE PLATE IS ON SCREEN, so a click can land on one. The
+        // pick otherwise only knows the backbone segments, and a rung reaches
+        // several Angstrom away from those - clicking a plate either missed or
+        // picked whatever backbone happened to be nearest. One entry per HALF,
+        // tagged with that half's own residue, so a click selects the base it
+        // is over and not its partner across the pair.
+        renderer._naPick = [];
+        // half-thickness for everything nucleic - both rails and rungs
+        const naHalfT = (() => {
+            const t = renderer.cartoonThickness;
+            if (renderer._thicknessUserSet && t !== undefined) return t / 2;
+            if (t === 0) return 0;                // a preset that wants it flat
+            return NA_THICK_DEFAULT / 2;
+        })();
         // TONE is the facing ramp: it pales grazing surfaces toward the paper.
         // That is a brightness cue like the lum terms, so it has to switch off
         // with the light too - otherwise shadow-off still shows a pale rim
@@ -2890,9 +3300,17 @@
         // bridge partners come back with it, and are the sheet ladders. What it
         // is told, below, is which residues are one POLYMER and which may bond
         // at all - two different questions, and neither of them "same chain".
+        // DID THIS FRAME PAY THE ONE-OFF BUILD? Secondary structure, base
+        // pairing and sheet frames are cached on secKey, which a gesture never
+        // changes - so the frame that rebuilds them costs several times what
+        // every following frame costs, and that cost will never be paid again
+        // during the drag. It must NOT be timed as if it were a normal frame:
+        // see the record at the end of render().
+        let cacheRebuilt = false;
         let sec = renderer._cartoonSec;
         let ladders = renderer._cartoonLadder;
         if (!sec || renderer._cartoonSecKey !== secKey) {
+            if (renderer._cartoonSecKey !== secKey) cacheRebuilt = true;
             // In overlay mode every frame of the trajectory is in `coords` at
             // once, so the frame index each position belongs to is handed over
             // as a bonding group: a residue may only bond within its own frame.
@@ -2956,6 +3374,7 @@
         // DP's O(n^3), which matters on ribosome-sized inputs.
         let pairOf = renderer._cartoonPair;
         if (!pairOf || renderer._cartoonPairKey !== secKey) {
+            if (renderer._cartoonPairKey !== secKey) cacheRebuilt = true;
             pairOf = new Int32Array(n).fill(-1);
             const coords = renderer.coords;
             const names = renderer.positionNames || [];
@@ -3014,6 +3433,7 @@
                     arr.push(i);
                 }
                 const cand = new Map();          // i*n+j (i<j) -> distance cost
+                const wob = new Set();           // of those, the G.U wobbles
                 for (const i of idx) {
                     const ci = coords[i];
                     const bi = baseOf(names[i]);
@@ -3034,7 +3454,31 @@
                                     // global gap test wrongly blocked the pairs
                                     // either side of the chain boundary
                                     if (runOf[i] === runOf[j] && j - i <= NA_PAIR_SEQ_GAP) continue;
-                                    if (!complementary(bi, baseOf(names[j]))) continue;
+                                    // A wobble is admitted as a candidate but
+                                    // NOT as an assignable pair (it is filtered
+                                    // out again at the scoring loop below). It
+                                    // is here only so that it can SUPPORT its
+                                    // neighbours' register.
+                                    //
+                                    // Keeping wobbles out of pass 1 entirely -
+                                    // which is what this did - is right for
+                                    // assignment but wrong for the run-length
+                                    // score, because a G.U inside a stem then
+                                    // punches a hole in the true register's
+                                    // candidate run while leaving a shifted
+                                    // register's run intact. Measured on 3A3A
+                                    // (tRNA-Sec, whose 9 bp acceptor stem
+                                    // carries a G6.U81 wobble): the true A7-U80
+                                    // fell to runLen 1 and was dropped as
+                                    // "isolated", the shifted A7-U81 kept a
+                                    // neighbour and took the slot, and pass 2
+                                    // could not repair it because both residues
+                                    // were then spoken for. One wobble cost
+                                    // three real pairs and added a wrong one.
+                                    const bj = baseOf(names[j]);
+                                    const isWob = !complementary(bi, bj)
+                                        && wobble(bi, bj);
+                                    if (!complementary(bi, bj) && !isWob) continue;
                                     const cj = coords[j];
                                     const d = Math.hypot(cj.x - ci.x, cj.y - ci.y, cj.z - ci.z);
                                     if (d < NA_PAIR_MIN || d > NA_PAIR_MAX) continue;
@@ -3087,6 +3531,7 @@
                                         }
                                     }
                                     cand.set(i * n + j, score);
+                                    if (isWob) wob.add(i * n + j);
                                 }
                             }
                         }
@@ -3114,10 +3559,28 @@
                         let a2 = i + da, b2 = j + db;
                         while (a2 >= 0 && b2 >= 0 && a2 < n && b2 < n
                             && cand.has(a2 < b2 ? a2 * n + b2 : b2 * n + a2)) {
-                            runLen++; a2 += da; b2 += db;
+                            // A wobble BRIDGES the run but only half counts
+                            // toward it. Letting the walk step over a G.U is
+                            // the whole point - a wobble mid-stem otherwise
+                            // splits the true register in two and a shifted one
+                            // wins. But scoring it as a full pair over-rewards
+                            // the registers that a wobble happens to bridge by
+                            // chance. Measured over 84 chains against H-bond
+                            // geometry: bridging at weight 1 gains 25 true pairs
+                            // for 23 false, at 0.5 it gains 22 for 8 (F1 81.49
+                            // -> 81.89%). Anything in 0.25..0.75 measures the
+                            // same, so the bridging is what matters, not the
+                            // size of the increment.
+                            runLen += wob.has(a2 < b2 ? a2 * n + b2
+                                : b2 * n + a2) ? NA_WOBBLE_RUN_W : 1;
+                            a2 += da; b2 += db;
                         }
                     }
                     if (runLen < 2) continue;     // isolated: not a helix
+                    // wobbles supported their neighbours' run above; they are
+                    // not assigned here. Pass 2 will take them once the stem
+                    // they belong to exists, where the axis test can guard them.
+                    if (wob.has(k)) continue;
                     scored.push([s - NA_RUN_W * runLen, i, j]);
                 }
                 scored.sort((a, b) => a[0] - b[0]);
@@ -3243,6 +3706,12 @@
         // every style did before this existed.
         let sheet = renderer._cartoonSheet;
         if (!sheet || renderer._cartoonSheetKey !== secKey) {
+            // KEY, not the cache being falsy. `sheet` is legitimately null when
+            // the structure has no ladders, so `!sheet` re-enters this branch on
+            // every frame of an all-helix protein - and flagging that as a
+            // rebuild switched the frame timer off entirely for those
+            // structures, so the degrade could never fire on them at all.
+            if (renderer._cartoonSheetKey !== secKey) cacheRebuilt = true;
             sheet = ladders.length
                 ? buildSheetFrames(renderer.coords, n, sec, positionTypes, ladders,
                     { names: renderer.positionNames, rings: ringRuns })
@@ -4318,8 +4787,11 @@
             // cannot express. Each class scales the Thick control by its own
             // factor - a helix is 0, so it stays a flat ribbon whatever the
             // slider says.
-            const thickScaleRaw = (renderer.cartoonThickness !== undefined
-                ? renderer.cartoonThickness / 2 : RIBBON_TH_A);
+            // nucleic carries its own default, so the preset reaches the rails
+            // through the same value the rungs use
+            const thickScaleRaw = !isProt ? naHalfT
+                : (renderer.cartoonThickness !== undefined
+                    ? renderer.cartoonThickness / 2 : RIBBON_TH_A);
 
             // THICKNESS TAPERS OFF AS YOU ZOOM OUT. Thickness is only readable
             // while the band is a few pixels wide; below that it stops being a
@@ -4344,6 +4816,7 @@
             const thickZoom = Math.max(0, Math.min(1,
                 (thPx - THICK_FADE_MIN_PX) / (THICK_FADE_FULL_PX - THICK_FADE_MIN_PX)));
             const thickScale = thickScaleRaw * thickZoom;
+            if (!isProt) naSlabHalfT = thickScale;
 
             const halfT = (j) => {
                 if (!rich || !isProt) return thickScale;
@@ -4559,7 +5032,19 @@
                     // drawn as a loop, so the width must come from the LOOP
                     // entry, not from t0 - otherwise the stub leaving a helix
                     // is drawn at full helix width.
-                    const hw = (squareLoop ? SS_HALF_A.C : SS_HALF_A[t0])
+                    // A NUCLEIC RAIL IS A SQUARE SECTION, so its thickness and
+                    // its width are the same number - which is why the Thickness
+                    // control never appeared to reach it. For nucleic that one
+                    // number is naHalfT, so the rail has the body a duplex
+                    // backbone needs instead of the 0.42 coil half-width it
+                    // inherited from protein loops.
+                    // ...floored at the coil half-width it used to have, so a
+                    // rail keeps its WIDTH when the thickness goes to zero.
+                    // Without the floor a flat preset took the whole section to
+                    // nothing and the nucleic backbone disappeared: thickness 0
+                    // means flat, not absent.
+                    const hw = (!isProt ? Math.max(SS_HALF_A.C, naHalfT)
+                        : (squareLoop ? SS_HALF_A.C : SS_HALF_A[t0]))
                         * widthScale;
                     // Profile endpoints for this interval. halfW/halfT are
                     // keyed on the RESIDUE, not the interval, so the value at
@@ -4822,10 +5307,19 @@
                     // so the slab is a square-section tube and reads as a
                     // loop rather than a flattened ribbon. Helices and
                     // strands keep the user's thickness setting.
-                    const ht = squareLoop ? hw
-                        : (renderer.cartoonThickness !== undefined
-                            ? renderer.cartoonThickness / 2
-                            : RIBBON_TH_A);
+                    // A NUCLEIC RAIL IS NOT LOCKED SQUARE. Protein loops are -
+                    // ht = hw is what makes a coil read as a tube - but tying
+                    // the two together for nucleic means thickness 0 can only
+                    // be reached by taking the width to 0 as well, and the
+                    // backbone vanishes instead of going flat. Width and
+                    // thickness are separate here, so ribbon mode gives a flat
+                    // rail of full width and the extra faces have no area at
+                    // all (see the zero-thickness guard in the painter).
+                    const ht = !isProt ? (naSlabHalfT !== null ? naSlabHalfT : naHalfT)
+                        : (squareLoop ? hw
+                            : (renderer.cartoonThickness !== undefined
+                                ? renderer.cartoonThickness / 2
+                                : RIBBON_TH_A));
                     const evalSlab = (u, afterSeam) => {
                         hermiteV(pa, pb, mA, mB, u, q0);
                         const t2 = u * u;
@@ -5158,188 +5652,11 @@
                     // corner curves exactly where they project to the same
                     // point; interior crease corners are never extreme, so
                     // no inner line.
-                    if (inkWanted) {
-                        const nsF = Lp.length;
-                        const curves = [Lp, Lm, Rp, Rm];
-                        const visC = [[], [], [], []];
-                        // SILHOUETTE BY CONVEX HULL: per segment, project the
-                        // eight corner points (4 corners x 2 stations); a
-                        // corner is silhouette iff one of its points lies on
-                        // (or within ~1px of) the hull of those eight. This
-                        // is orientation-free - a single-axis extreme test
-                        // (perpendicular to the chain direction) misses the
-                        // boundary on TWISTING DIVES, where the silhouette
-                        // wraps around the piece; the hull cannot. Interior
-                        // crease corners are never on the hull, so no inner
-                        // line.
-                        const hx = new Array(8);
-                        const hy = new Array(8);
-                        const cross = (ox, oy, ax, ay, bx, by) =>
-                            (ax - ox) * (by - oy) - (ay - oy) * (bx - ox);
-                        for (let s = 0; s + 1 < nsF; s++) {
-                            for (let c = 0; c < 4; c++) {
-                                hx[c * 2] = curves[c][s][0];
-                                hy[c * 2] = curves[c][s][1];
-                                hx[c * 2 + 1] = curves[c][s + 1][0];
-                                hy[c * 2 + 1] = curves[c][s + 1][1];
-                                visC[c].push(false);
-                            }
-                            // monotone chain on 8 points (indices sorted)
-                            const idx = [0, 1, 2, 3, 4, 5, 6, 7];
-                            idx.sort((a, b) => (hx[a] - hx[b]) || (hy[a] - hy[b]));
-                            const hull = [];
-                            for (const iP of idx) {
-                                while (hull.length >= 2 && cross(
-                                    hx[hull[hull.length - 2]], hy[hull[hull.length - 2]],
-                                    hx[hull[hull.length - 1]], hy[hull[hull.length - 1]],
-                                    hx[iP], hy[iP]) <= 0) hull.pop();
-                                hull.push(iP);
-                            }
-                            const lower = hull.length + 1;
-                            for (let k = idx.length - 2; k >= 0; k--) {
-                                const iP = idx[k];
-                                while (hull.length >= lower && cross(
-                                    hx[hull[hull.length - 2]], hy[hull[hull.length - 2]],
-                                    hx[hull[hull.length - 1]], hy[hull[hull.length - 1]],
-                                    hx[iP], hy[iP]) <= 0) hull.pop();
-                                hull.push(iP);
-                            }
-                            hull.pop();
-                            // mark corners whose points are on or near the
-                            // hull boundary (near-tie: coincident twins)
-                            const TOL2 = (1.5 * pxScale) * (1.5 * pxScale);
-                            for (let c8 = 0; c8 < 8; c8++) {
-                                let on = false;
-                                for (let h = 0; h < hull.length && !on; h++) {
-                                    const a = hull[h];
-                                    if (a === c8) { on = true; break; }
-                                    const b = hull[(h + 1) % hull.length];
-                                    const abx = hx[b] - hx[a];
-                                    const aby = hy[b] - hy[a];
-                                    const L2 = abx * abx + aby * aby;
-                                    let t = L2 > 1e-9
-                                        ? ((hx[c8] - hx[a]) * abx + (hy[c8] - hy[a]) * aby) / L2
-                                        : 0;
-                                    if (t < 0) t = 0;
-                                    else if (t > 1) t = 1;
-                                    const ex = hx[a] + t * abx - hx[c8];
-                                    const ey = hy[a] + t * aby - hy[c8];
-                                    if (ex * ex + ey * ey <= TOL2) on = true;
-                                }
-                                if (on) visC[c8 >> 1][s] = true;
-                            }
-                            // CREASE EDGES: an edge whose adjacent SIDE
-                            // face clearly faces the viewer (the up/down
-                            // thickness band at a helix flank) or whose
-                            // OUTER face does (concavity-gated so the inner
-                            // face's rim does not add hook noise). These sit
-                            // exposed on the side of the ribbon - they were
-                            // never candidates in the hull-only build.
-                            const nMid = (oN[s] + oN[s + 1]) / 2;
-                            const bMid2 = (oB[s] + oB[s + 1]) / 2;
-                            const kMid = (oK[s] + oK[s + 1]) / 2;
-                            const CE = 0.25;
-                            const topOuter = bMid2 > CE && kMid <= 0.15;
-                            const botOuter = bMid2 < -CE && kMid >= -0.15;
-                            if (nMid > CE || topOuter) visC[0][s] = true;
-                            if (nMid > CE || botOuter) visC[1][s] = true;
-                            if (nMid < -CE || topOuter) visC[2][s] = true;
-                            if (nMid < -CE || botOuter) visC[3][s] = true;
-                            // LOOPS: OUTER LINES ONLY. A slab seen at an angle
-                            // puts three lines on screen - the two silhouette
-                            // edges, plus the crease where the visible wide
-                            // face meets the visible side face. On a helix or
-                            // strand that crease is worth drawing: it is what
-                            // separates a wide face from its thin edge. On a
-                            // loop it is not. The section is square at the
-                            // defaults (0.35 A half-side either way), so the
-                            // crease runs a hair inside the silhouette and
-                            // reads as a doubled line rather than as structure.
-                            // Keeping only the corners that are EXTREME across
-                            // the chain leaves the silhouette exact and the
-                            // crease unlined, carried by shading alone.
-                            //
-                            // Gated on squareLoop rather than on ssCls: a
-                            // transition interval is BUILT as a loop but is
-                            // classed 'H' next to a helix (see ssCls - the
-                            // helix wins its transitions so the spiral is not
-                            // cut a residue early), and the question here is
-                            // geometric, not what colour the interval takes.
-                            //
-                            // Extremes are taken at EACH station and unioned,
-                            // which normally keeps 2 corners and keeps 3 across
-                            // a handoff - where the outer edge passes from the
-                            // top corner to the bottom one. A single winner per
-                            // segment unlines the incoming curve for exactly
-                            // the segment in which it becomes the silhouette,
-                            // which shows as a nick in the outer line at every
-                            // turn. No tolerance on the comparison: a handoff
-                            // mid-step already reads as two different winners
-                            // at the two ends, so a tolerance adds nothing but
-                            // corners a pixel inside the edge, and those stroke
-                            // as the second line this is here to remove.
-                            if (squareLoop) {
-                                // Across-chain direction: the segment's mean
-                                // step, turned 90 degrees. Unnormalised - only
-                                // the ORDER of the projections matters.
-                                let mx0 = 0; let my0 = 0; let mx1 = 0; let my1 = 0;
-                                for (let c = 0; c < 4; c++) {
-                                    mx0 += curves[c][s][0]; my0 += curves[c][s][1];
-                                    mx1 += curves[c][s + 1][0]; my1 += curves[c][s + 1][1];
-                                }
-                                const perpX = (my0 - my1) / 4;
-                                const perpY = (mx1 - mx0) / 4;
-                                // Chain running at the viewer: the step projects
-                                // to under a hundredth of a pixel and "across"
-                                // is undefined, so leave the hull's answer -
-                                // which needs no chain direction - in place.
-                                if (perpX * perpX + perpY * perpY > 1e-4) {
-                                    const v0 = new Array(4);   // offset at s
-                                    const v1 = new Array(4);   // offset at s+1
-                                    let hi0 = -Infinity; let lo0 = Infinity;
-                                    let hi1 = -Infinity; let lo1 = Infinity;
-                                    for (let c = 0; c < 4; c++) {
-                                        const a = curves[c][s][0] * perpX
-                                            + curves[c][s][1] * perpY;
-                                        const b = curves[c][s + 1][0] * perpX
-                                            + curves[c][s + 1][1] * perpY;
-                                        v0[c] = a; v1[c] = b;
-                                        if (a > hi0) hi0 = a;
-                                        if (a < lo0) lo0 = a;
-                                        if (b > hi1) hi1 = b;
-                                        if (b < lo1) lo1 = b;
-                                    }
-                                    for (let c = 0; c < 4; c++) {
-                                        // >= and <=, so exact ties keep both
-                                        const keep = v0[c] >= hi0 || v1[c] >= hi1
-                                            || v0[c] <= lo0 || v1[c] <= lo1;
-                                        if (!keep) visC[c][s] = false;
-                                    }
-                                }
-                            }
-                        }
-
-                        for (let c = 0; c < 4; c++) {
-                            let any = false;
-                            for (let s = 0; s < visC[c].length; s++) {
-                                if (visC[c][s]) { any = true; break; }
-                            }
-                            if (any) {
-                                inkCurves.push({
-                                    // stable identity for the pencil's wobble,
-                                    // so its wander does not reshuffle between
-                                    // frames of the same view
-                                    id: inkCurves.length,
-                                    pts: curves[c],
-                                    vis: visC[c],
-                                    sel: !!(selInk && (selInk.has(i) || selInk.has(iN))),
-                                    gs0: i,
-                                    gsStep: 1 / Math.max(1, nsF - 1),
-                                    c: col,
-                                });
-                            }
-                        }
-                    }
+                if (inkWanted) {
+                    emitSlabInk(Lp, Lm, Rp, Rm, oN, oB, oK, col,
+                        !!(selInk && (selInk.has(i) || selInk.has(iN))), i,
+                        squareLoop);
+                }
                 } else {
                     // Loop, or the junction between two different elements:
                     // round tube, Catmull-Rom smoothed. The whole interval is ONE
@@ -5414,6 +5731,7 @@
 
         // --- generic segments: ligands, explicit bonds, cyclic closures,
         //     contacts, lone-position dots. Same widths as the ribbon style. ---
+        const bondList = [];
         for (const s of genericSegs) {
             const seg = segments[s];
             if (mask) {
@@ -5459,21 +5777,1630 @@
                 prims.push({ kind: 'dot', x1: A[0], y1: A[1], z: A[2],
                     r: wpx / 2, c: col, pA: A, sel: segSel, gs0: seg.idx1 });
             } else {
+                bondList.push({
+                    a: seg.idx1, b: seg.idx2, A, B, w: wpx, c: col,
+                    flat: seg.type === 'C', sel: segSel,
+                    va: v1, vb: v2,      // 3D: the box is built in Angstroms
+                });
+            }
+        }
+
+        // BONDS JOIN UP INTO RUNS before they are drawn, the same way the
+        // backbone's intervals do. One primitive per bond meant one round cap
+        // per bond END: at every junction the later-painted bond laid its
+        // full-width shadow band over its neighbour's narrow highlight, so each
+        // bond read as a separate capsule and a ligand came out as a string of
+        // sausages. A run is a single polyline, stroked once per band, so the
+        // joints inside it are lineJoin's problem and simply disappear.
+        //
+        // A run stops where the chain branches (an atom with three bonds is a
+        // fork, and there is no single polyline through it), and wherever
+        // colour, width or kind changes - a run has one of each.
+        // How many bonds each atom carries, and which they are. Needed by the
+        // sticks (a cap ring is drawn only where an atom has ONE bond, and the
+        // section's roll is read off the neighbours) and by the run merging
+        // below, so both read one copy.
+        const deg = new Map();
+        const inc = new Map();
+        // ...and the same count over the bonds that actually become BOXES. A
+        // contact is a flat annotation stroke, not a solid, so it covers
+        // nothing: an end with only a contact leaving it is still an open end
+        // and has to keep its cap and the ink round it.
+        const boxDeg = new Map();
+        for (const bd of bondList) {
+            deg.set(bd.a, (deg.get(bd.a) || 0) + 1);
+            deg.set(bd.b, (deg.get(bd.b) || 0) + 1);
+            if (!bd.flat) {
+                boxDeg.set(bd.a, (boxDeg.get(bd.a) || 0) + 1);
+                boxDeg.set(bd.b, (boxDeg.get(bd.b) || 0) + 1);
+            }
+            if (!inc.has(bd.a)) inc.set(bd.a, []);
+            if (!inc.has(bd.b)) inc.set(bd.b, []);
+            inc.get(bd.a).push(bd);
+            inc.get(bd.b).push(bd);
+        }
+        // --- LIGAND STICKS ---------------------------------------------------
+        // One box per bond, running atom to atom. Boxes at a shared atom simply
+        // OVERLAP: the union of two opaque solids is a solid, and every part of
+        // one that lies inside the other is behind its surface, so the ink
+        // pass removes it. There is no junction geometry, so there is nothing
+        // at a junction to get wrong.
+        //
+        // The section's ROLL comes from the local plane normal - the sum of
+        // t x (q - mid) over the bonded neighbours of both atoms. Each term is
+        // perpendicular to the bond and to the plane through it and that
+        // neighbour, so bonds sharing a plane come out sharing their face
+        // planes exactly (measured: 0.0 degrees around an aromatic ring).
+        // It is built from the molecule, so it turns with it.
+        // HALF-WIDTH is fixed to the ligand's own width, independent of the
+        // Line Width control; HALF-THICKNESS follows the Thickness control.
+        // The section is a rectangle: v spans the width, u the thickness - u
+        // being the axis a mitre rolls onto its junction plane, which is what
+        // makes it the thickness direction everywhere below.
+        const stickHW = LIGAND_STICK_H * (LIGAND_WIDTH / 3);
+        // THE CONTROL IS A THICKNESS IN ANGSTROM - the value is the TOTAL
+        // thickness, so the half is thickness/2, the same as the ribbon's own
+        // expression. One number means one distance everywhere.
+        //
+        // A LIGAND KEEPS ITS OWN SECTION, the way it keeps its own width: a
+        // preset does not get to reshape it just because it reshaped the
+        // ribbon. So richardson's 0.7 and 3d's 0.5 both leave the stick at its
+        // own LIGAND_TH_DEFAULT, and a ligand looks the same under either.
+        //
+        // THE ONE EXCEPTION IS A PRESET THAT ASKS FOR FLAT. Ribbon (plain
+        // cartoon) sets thickness 0 because flatness IS the look it means, not
+        // as a side effect, and a solid stick sitting in flat ribbons reads
+        // wrong. So a preset 0 does reach the ligand; every other preset value
+        // does not.
+        //
+        // And the user outranks all of it: once the Thickness control has been
+        // touched it owns the section, 0 included, which is the flat
+        // single-face path.
+        const thPreset = renderer.cartoonThickness;
+        const thLig = (renderer._thicknessUserSet && thPreset !== undefined)
+            ? thPreset
+            : (thPreset === 0 ? 0 : LIGAND_TH_DEFAULT);
+        const stickHT = Math.max(0, thLig / 2);
+        // At zero the box has no interior: the +u and -u faces land on each
+        // other and the other four have no area. Drawing it as a solid then
+        // costs six faces, four of them degenerate, to paint one quad. FLAT
+        // draws that quad once, double-sided - which is the whole point of
+        // taking the thickness to zero on a preset: fewer faces.
+        const stickFlatEps = 0.5 * stickHW * 0.02;
+        const stickIsFlat = stickHT <= stickFlatEps;
+        // A face is kept while it still looks at the eye, plus a margin: a
+        // projected quad undercovers its own outline at grazing, so culling
+        // exactly at zero leaves a hairline of paper along the silhouette.
+        const STICK_CULL = 0.02;
+        // The section frame of one bond: axis, and the two section axes. Split
+        // out of the box builder because the junctions below have to be solved
+        // BEFORE any box is built - a mitred end is not a square.
+        const stickFrame = (bd) => {
+            const va = bd.va;
+            const vb = bd.vb;
+            let tx = vb.x - va.x;
+            let ty = vb.y - va.y;
+            let tz = vb.z - va.z;
+            const tl = Math.hypot(tx, ty, tz);
+            if (tl < 1e-6) return null;
+            tx /= tl; ty /= tl; tz /= tl;
+            const mx = (va.x + vb.x) / 2;
+            const my = (va.y + vb.y) / 2;
+            const mz = (va.z + vb.z) / 2;
+            // Each neighbour gives t x (q - mid), which is perpendicular to
+            // the bond and to the plane through it and that neighbour. They are
+            // summed to average out of a noisy environment - but the sign of
+            // each term depends on WHICH SIDE the neighbour is on, so a
+            // symmetrically substituted centre (the commonest kind: a trigonal
+            // carbon with two neighbours either side) cancels to nothing and
+            // the rule falls through to its fallback, leaving the section
+            // rolled arbitrarily. So each term is flipped to agree with the
+            // first before adding: a plane has a normal, not a signed normal.
+            // Each neighbour gives t x (q - mid), which names a PLANE through
+            // the bond - a direction with no sign to it. Averaging such things
+            // by flipping each term to agree with the running total works until
+            // a term lands square across that total: the sign is then decided
+            // by whichever way the rounding fell, and at a tetrahedral centre,
+            // where the remaining neighbours sit symmetrically about the bond,
+            // that is exactly what happens. The inputs are ROTATED coordinates,
+            // so it fell differently at different viewing angles and the roll
+            // jumped between two answers 60 degrees apart - the boxes spun and
+            // flickered as the structure turned.
+            //
+            // Undirected directions are averaged by DOUBLING THE ANGLE, where
+            // a direction and its opposite land on the same place and there is
+            // no sign to get wrong. The basis it is measured in cancels out of
+            // the answer, so any perpendicular pair will do.
+            const perp = (x, y, z) => {
+                const d = x * tx + y * ty + z * tz;
+                const ax = x - tx * d;
+                const ay = y - ty * d;
+                const az = z - tz * d;
+                const l = Math.hypot(ax, ay, az);
+                return l > 1e-6 ? [ax / l, ay / l, az / l] : null;
+            };
+            const e1 = perp(1, 0, 0) || perp(0, 1, 0) || perp(0, 0, 1);
+            if (!e1) return null;
+            const e2 = [ty * e1[2] - tz * e1[1], tz * e1[0] - tx * e1[2],
+                tx * e1[1] - ty * e1[0]];
+            let accX = 0; let accY = 0; let accW = 0;
+            let pick = null; let pickIdx = Infinity;
+            for (const [atom, other] of [[bd.a, bd.b], [bd.b, bd.a]]) {
+                for (const nb of (inc.get(atom) || [])) {
+                    const far = (nb.a === atom) ? nb.b : nb.a;
+                    if (far === other || nb === bd) continue;
+                    const q = at(far) || rotated[far];
+                    if (!q) continue;
+                    let qx = q.x - mx; let qy = q.y - my; let qz = q.z - mz;
+                    const ql = Math.hypot(qx, qy, qz) || 1;
+                    qx /= ql; qy /= ql; qz /= ql;
+                    // the lowest-numbered neighbour, kept as a fallback that is
+                    // a real direction in the MOLECULE rather than in the view
+                    if (far < pickIdx) { pickIdx = far; pick = [qx, qy, qz]; }
+                    const cx = ty * qz - tz * qy;
+                    const cy = tz * qx - tx * qz;
+                    const cz = tx * qy - ty * qx;
+                    const w = Math.hypot(cx, cy, cz);
+                    if (w < 1e-9) continue;
+                    const th = Math.atan2(cx * e2[0] + cy * e2[1] + cz * e2[2],
+                        cx * e1[0] + cy * e1[1] + cz * e1[2]);
+                    accX += w * Math.cos(2 * th);
+                    accY += w * Math.sin(2 * th);
+                    accW += w;
+                }
+            }
+            // A SET OF PLANES THAT CANCELS NAMES NO PLANE. Judged against what
+            // went in, not against zero: a residue left by symmetry is small
+            // but not tiny, and its direction is meaningless either way. The
+            // tetrahedral centre lands here, and takes a neighbour instead.
+            let sx = 0; let sy = 0; let sz = 0;
+            if (accW > 0 && Math.hypot(accX, accY) > 0.05 * accW) {
+                const half = Math.atan2(accY, accX) / 2;
+                const ch = Math.cos(half); const sh = Math.sin(half);
+                sx = e1[0] * ch + e2[0] * sh;
+                sy = e1[1] * ch + e2[1] * sh;
+                sz = e1[2] * ch + e2[2] * sh;
+            }
+            // ...and if there are no neighbours to read - an isolated bond -
+            // there is nothing in the neighbourhood to read a roll from. A
+            // section still has to be rolled SOMEHOW, and the one thing that
+            // must not decide it is the view: a square has only four-fold
+            // symmetry, so a roll taken off a screen axis stays put while the
+            // structure turns under it, and the rod visibly refuses to rotate.
+            // Measured on a lone centred bond: 34 degrees of drift across 16
+            // viewing angles.
+            //
+            // So the choice is made in MODEL space, where the molecule sits
+            // still, and carried into view space by the same rotation that put
+            // the coordinates there. Any fixed axis will do as the seed - what
+            // matters is only that it is fixed in the MOLECULE.
+            const R3 = vs && vs.rotation;
+            let modelRoll = null;
+            if (R3 && renderer.coords) {
+                const A = renderer.coords[bd.a];
+                const B = renderer.coords[bd.b];
+                if (A && B) {
+                    let dxm = B.x - A.x; let dym = B.y - A.y; let dzm = B.z - A.z;
+                    const dl = Math.hypot(dxm, dym, dzm);
+                    if (dl > 1e-9) {
+                        dxm /= dl; dym /= dl; dzm /= dl;
+                        // the world axis least parallel to the bond, so the
+                        // projection below never lands on nothing
+                        const ax = (Math.abs(dxm) < 0.9) ? [1, 0, 0] : [0, 1, 0];
+                        const d0 = ax[0] * dxm + ax[1] * dym + ax[2] * dzm;
+                        const px = ax[0] - dxm * d0;
+                        const py = ax[1] - dym * d0;
+                        const pz = ax[2] - dzm * d0;
+                        const pl = Math.hypot(px, py, pz);
+                        if (pl > 1e-9) {
+                            const mxr = px / pl; const myr = py / pl; const mzr = pz / pl;
+                            modelRoll = [
+                                R3[0][0] * mxr + R3[0][1] * myr + R3[0][2] * mzr,
+                                R3[1][0] * mxr + R3[1][1] * myr + R3[1][2] * mzr,
+                                R3[2][0] * mxr + R3[2][1] * myr + R3[2][2] * mzr];
+                        }
+                    }
+                }
+            }
+            // Each fallback is a direction the MOLECULE supplies, so it turns
+            // with the structure: a neighbour first, then the line back to the
+            // centre of the view volume. The axis triple at the end is fixed in
+            // VIEW space and so does not - but by then the bond has no
+            // neighbours and no offset from the centre, and a lone rod on the
+            // axis looks the same whichever way its square is rolled.
+            const u = perp(sx, sy, sz)
+                || (pick && perp(pick[0], pick[1], pick[2]))
+                || (modelRoll && perp(modelRoll[0], modelRoll[1], modelRoll[2]))
+                || perp(-mx, -my, -mz)
+                || perp(1, 0, 0) || perp(0, 1, 0) || perp(0, 0, 1);
+            if (!u) return null;
+            const vv = [ty * u[2] - tz * u[1], tz * u[0] - tx * u[2],
+                tx * u[1] - ty * u[0]];
+            return { t: [tx, ty, tz], u, v: vv, mid: [mx, my, mz] };
+        };
+
+        const stickBox = (bd) => {
+            const fr = bd.fr;
+            if (!fr) return false;
+            const va = bd.va;
+            const vb = bd.vb;
+            const tx = fr.t[0]; const ty = fr.t[1]; const tz = fr.t[2];
+            const u = fr.u; const vv = fr.v;
+            const mx = fr.mid[0]; const my = fr.mid[1]; const mz = fr.mid[2];
+            // The four corners at each end: the mitred quad where a junction
+            // solved one, otherwise the plain square section.
+            // ONE SECTION FRAME PER END, not one per bond. A mitred end is
+            // rolled onto its own junction's plane, and a bond running between
+            // two junctions in different planes has to TWIST from one to the
+            // other along its length - the ruled side faces do exactly that.
+            // The half turn is a symmetry of a square, so the far end's sign is
+            // flipped where that turns it the shorter way, keeping the twist
+            // under 90 degrees; past that a square prism starts to pinch. That
+            // flip relabels the corners by two places, so a mitred quad already
+            // written in the other sign is rotated to match rather than being
+            // rebuilt.
+            // AN UNPINNED END TAKES THE OTHER END'S ROLL. Only a junction or a
+            // sweep fixes a section; an end with neither is free to sit any way
+            // round, and the value the roll rule produced there is arbitrary.
+            // Keeping it anyway is twist for nothing: the bond turns from that
+            // arbitrary roll to whatever the pinned end needs. A terminal bond
+            // off a junction is the common case - measured on an ILE with its
+            // sp3 centre mitred, CA-CB turned 28 degrees and CB-CG2 24, both
+            // with a free far end that could simply have matched.
+            const alongT = (v) => {
+                const d = v[0] * tx + v[1] * ty + v[2] * tz;
+                const ax = v[0] - tx * d;
+                const ay = v[1] - ty * d;
+                const az = v[2] - tz * d;
+                const l = Math.hypot(ax, ay, az);
+                return l > 1e-6 ? [ax / l, ay / l, az / l] : null;
+            };
+            let u0 = bd.roll0 || (bd.roll1 ? (alongT(bd.roll1) || u) : u);
+            let u1 = bd.roll1 || (bd.roll0 ? (alongT(bd.roll0) || u) : u);
+            let cut1 = bd.cut1;
+            if (u1[0] * u0[0] + u1[1] * u0[1] + u1[2] * u0[2] < 0) {
+                u1 = [-u1[0], -u1[1], -u1[2]];
+                if (cut1) cut1 = [cut1[2], cut1[3], cut1[0], cut1[1]];
+            }
+            const vOf = (uu) => [ty * uu[2] - tz * uu[1], tz * uu[0] - tx * uu[2],
+                tx * uu[1] - ty * uu[0]];
+            const v0 = vOf(u0);           // vOf(fr.u) is fr.v, so an unmitred
+            const v1 = vOf(u1);           // end reproduces the old frame exactly
+            const emitSeg = (secA, secB, firstSeg, lastSeg) => {
+            const V = [];
+            const W = [];                       // the same eight, in Angstroms
+            for (const sec of [secA, secB]) {
+                for (let k = 0; k < 4; k++) {
+                    const w = sec[k];
+                    const q = project(w[0], w[1], w[2]);
+                    if (!q) return false;
+                    W.push(w);
+                    V.push(q);
+                }
+            }
+            // Orientation against the EYE RAY, taken once at the bond's middle
+            // - the same quantity the ribbon uses, for the same reason: under
+            // perspective the rays diverge, so a face near the edge of the
+            // canvas can look at the eye while its normal's raw z is negative.
+            //
+            // IN VIEW SPACE, WHERE THE NORMALS LIVE. The camera sits at
+            // (0, 0, fl) in Angstroms, so the ray from a point to the eye is
+            // simply (-x, -y, fl - z) there. Feeding the PROJECTED point in
+            // instead mixes spaces: screen x and y carry the canvas-centre
+            // offset and the pixel scale while z stays in Angstroms, so the
+            // centre offset dominates and the "eye ray" points off sideways.
+            // Faces that plainly face the viewer then test as back-facing and
+            // are culled - whole sides of a stick go missing, but only under
+            // perspective, because ortho never evaluates this branch.
+            let smx = 0; let smy = 0; let smz = 0;
+            for (const w of W) { smx += w[0]; smy += w[1]; smz += w[2]; }
+            smx /= 8; smy /= 8; smz /= 8;
+            if (!project(smx, smy, smz)) return false;  // behind the camera?
+            let ex = 0; let ey = 0; let ez = 1;
+            if (persp) {
+                ex = -smx; ey = -smy; ez = fl - smz;
+                const em = Math.hypot(ex, ey, ez) || 1;
+                ex /= em; ey /= em; ez /= em;
+            }
+            // ONE NORMAL PER FACE, taken from the face's own corners rather
+            // than from the box's axes. A mitred end is an OBLIQUE cut, so its
+            // outward normal is the mitre plane's, not the bond axis: culling
+            // and lighting it as though it faced along the bond drops it at the
+            // wrong angles, which shows as a hole where the junction should be.
+            // The cross product of the diagonals also copes with a face that is
+            // slightly non-planar, which a twisted box has.
+            // the mean of all eight, which is inside any convex solid; the
+            // midpoint of two opposite corners is not, once an end is cut
+            // obliquely, and a centre outside the box flips some of its
+            // normals inward
+            let cx3 = 0; let cy3 = 0; let cz3 = 0;
+            for (const w of W) { cx3 += w[0]; cy3 += w[1]; cz3 += w[2]; }
+            cx3 /= 8; cy3 /= 8; cz3 /= 8;
+            const o = [];
+            const l = [];
+            const SF = stickIsFlat ? STICK_FACES_FLAT : STICK_FACES;
+            for (const f of SF) {
+                const p0 = W[f.q[0]]; const p1 = W[f.q[1]];
+                const p2 = W[f.q[2]]; const p3 = W[f.q[3]];
+                const d1 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+                const d2 = [p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]];
+                let nx2 = d1[1] * d2[2] - d1[2] * d2[1];
+                let ny2 = d1[2] * d2[0] - d1[0] * d2[2];
+                let nz2 = d1[0] * d2[1] - d1[1] * d2[0];
+                const nl2 = Math.hypot(nx2, ny2, nz2);
+                if (nl2 < 1e-9) { o.push(0); l.push(0); continue; }
+                nx2 /= nl2; ny2 /= nl2; nz2 /= nl2;
+                // point it away from the box's middle - except on a sheet,
+                // where the face centroid IS the middle and that difference is
+                // zero, so the test would be deciding on rounding noise. A
+                // double-sided face has no outward direction to find: orient it
+                // at the eye, which both keeps it lit and makes it always drawn.
+                if (f.two) {
+                    if (nx2 * ex + ny2 * ey + nz2 * ez < 0) {
+                        nx2 = -nx2; ny2 = -ny2; nz2 = -nz2;
+                    }
+                } else {
+                    const gx = (p0[0] + p1[0] + p2[0] + p3[0]) / 4 - cx3;
+                    const gy = (p0[1] + p1[1] + p2[1] + p3[1]) / 4 - cy3;
+                    const gz = (p0[2] + p1[2] + p2[2] + p3[2]) / 4 - cz3;
+                    if (nx2 * gx + ny2 * gy + nz2 * gz < 0) {
+                        nx2 = -nx2; ny2 = -ny2; nz2 = -nz2;
+                    }
+                }
+                // A TWISTED BOX HAS NON-PLANAR SIDES. Once an end is rolled onto
+                // its junction's plane the bond turns along its length, and a
+                // side face is then a ruled surface, not a flat quad: it can
+                // face the eye down one half and away down the other. Culling
+                // it on the averaged normal alone throws the whole face away
+                // and takes the visible half with it. So the face is kept if
+                // EITHER of its triangles faces the eye, while the averaged
+                // normal - which is what the surface does on the whole - still
+                // decides how the face is lit and how squarely it reads.
+                let best = nx2 * ex + ny2 * ey + nz2 * ez;
+                for (const [A, B, C] of [[p0, p1, p2], [p0, p2, p3]]) {
+                    const e1 = [B[0] - A[0], B[1] - A[1], B[2] - A[2]];
+                    const e2 = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+                    let X = e1[1] * e2[2] - e1[2] * e2[1];
+                    let Y = e1[2] * e2[0] - e1[0] * e2[2];
+                    let Z = e1[0] * e2[1] - e1[1] * e2[0];
+                    const m = Math.hypot(X, Y, Z);
+                    if (m < 1e-9) continue;
+                    X /= m; Y /= m; Z /= m;
+                    if (X * nx2 + Y * ny2 + Z * nz2 < 0) { X = -X; Y = -Y; Z = -Z; }
+                    const ot = X * ex + Y * ey + Z * ez;
+                    if (ot > best) best = ot;
+                }
+                o.push(best);
+                l.push(nx2 * LIGHT[0] + ny2 * LIGHT[1] + nz2 * LIGHT[2]);
+            }
+            const prim = {
+                // only the bond's OWN ends can be free; a cut made inside the
+                // bond has the next segment on the other side of it
+                free0: firstSeg && (boxDeg.get(bd.a) || 0) === 1,
+                free1: lastSeg && (boxDeg.get(bd.b) || 0) === 1,
+                gs0: Math.min(bd.a, bd.b),
+            };
+            // ONE PRIMITIVE PER FACE, not per box. Prims carry a single depth
+            // key and are painted in that order, and a whole box is far too big
+            // to have one: where two boxes overlap at an atom their ends
+            // interleave, so sorting by box paints a surface that is behind
+            // over one in front. Measured on a real heme, 3.3% of the pixels
+            // where sticks overlap had a farther face painted last - which is
+            // seen as a chunk of the stick missing. A face is small and flat,
+            // so its own centroid depth is an honest key.
+            //
+            // Every face is emitted, including the ones turned away. They are
+            // not painted, but they belong in the occluder sets: the cap faces
+            // at a shared atom are what hides the neighbouring box's buried
+            // edges.
+            for (let fi = 0; fi < SF.length; fi++) {
+                const f = SF[fi];
+                // A CAP IS INTERIOR EXACTLY WHEN ITS END WAS CUT. An interior
+                // face has material on both sides, and painting one is a fault
+                // no depth sort can repair: it is front-facing for exactly one
+                // of the two solids that share it, and that one paints it over
+                // its neighbour. From behind a bend it read as a panel laid
+                // across the joint.
+                //
+                // An end is cut in exactly two situations, and both put solid
+                // on the far side:
+                //   MERGED SEAM  - the neighbouring box holds the identical
+                //                  polygon, so the two are face to face;
+                //   MITRED JOINT - the cut quad is the side wall of the little
+                //                  prism in the middle, which is solid and is
+                //                  filled top and bottom.
+                // Checked rather than assumed: with the cut quads dropped, the
+                // remaining faces use every edge exactly twice - a closed
+                // surface - for 3-way and 4-way junctions alike, so nothing can
+                // show through. See tests/junction_math.py.
+                //
+                // An end that is FREE, or that merely OVERLAPS its neighbours
+                // (a tetrahedral centre, where there is no shared plane and so
+                // no prism), is never cut, and its cap is boundary. Suppressing
+                // those by degree alone opened real holes - 2.7% of a three-way
+                // planar centre's area, 3.1% of a heme's.
+                const buried = f.ax === 2
+                    && (f.sgn < 0 ? (!firstSeg || !!bd.cut0)
+                        : (!lastSeg || !!bd.cut1));
+                const fq = f.q.map((vi) => V[vi]);
+                let zf = 0;
+                for (const p2 of fq) zf += p2[2];
+                prims.push({
+                    kind: 'stickFace',
+                    q: fq,
+                    z: zf / 4,
+                    c: bd.c,
+                    key: o[fi],
+                    nl: l[fi],
+                    draw: o[fi] > -STICK_CULL && !buried,
+                    gs0: prim.gs0,
+                    gsStep: 0,
+                });
+            }
+
+            // INK: THE SILHOUETTE, AND NOTHING ELSE. An edge is drawn only
+            // where one of the two faces meeting along it faces the viewer and
+            // the other does not. An interior crease - both faces visible, the
+            // edge you see running along a stick - fails that test by
+            // construction, so no line can ever cross a face. There is no
+            // fallback branch here for foreshortened bonds: when a bond points
+            // at the viewer the test simply yields fewer edges, which is right,
+            // because there is less outline to draw.
+            //
+            // Cap rings are dropped at any atom that carries another bond:
+            // there the ring is inside the neighbouring box, and inking it is
+            // exactly the line ruled across the stick that this whole rewrite
+            // is about.
+            if (inkWanted) {
+                const front = SF.map((f, fi) => o[fi] > 0);
+                // Set renderer._stickProbe = [] before a render to collect each
+                // box and the edges it inked. The property worth testing is
+                // local to one box - that no edge of it lands inside its own
+                // outline - and that cannot be seen from the finished canvas,
+                // where a stick legitimately draws over whatever is behind it.
+                const probe = renderer._stickProbe
+                    ? {
+                        V: V.map((q) => [q[0], q[1]]),
+                        // the same eight in Angstroms, and which atom each end
+                        // belongs to: a merged run is tested by checking that
+                        // consecutive boxes share their end face exactly
+                        W: W.map((w) => [w[0], w[1], w[2]]),
+                        a: firstSeg ? bd.a : -1,
+                        b: lastSeg ? bd.b : -1,
+                        // was either end cut by a MITRE? such a section is
+                        // oblique by construction, and its corners sit turned
+                        // from a perpendicular one without the bond twisting
+                        mitre0: firstSeg && !!bd.cut0 && !bd.seam0,
+                        mitre1: lastSeg && !!bd.cut1 && !bd.seam1,
+                        edges: [],
+                        // every face with the flag that decides whether it is
+                        // painted, so a test can check that the painted ones
+                        // still cover the box's whole outline
+                        faces: SF.map((f, fi) => ({
+                            q: f.q.map((vi) => [V[vi][0], V[vi][1]]),
+                            drawn: o[fi] > -STICK_CULL,
+                        })),
+                    } : null;
+                if (probe) renderer._stickProbe.push(probe);
+                // A SILHOUETTE EDGE LIES ON THE OUTLINE. That is what the word
+                // means, and for a convex box with flat faces the front/back
+                // test below delivers it. A junction solved out of plane does
+                // not give a box like that: its section is rolled onto the
+                // junction's plane at one end and carried at the other, so the
+                // side faces are RULED and the test can pass for an edge that
+                // sits well inside the shape. Drawn, it is a line ruled across
+                // the face - the exact fault this whole construction exists to
+                // avoid. Measured on a 3-legged centre lifted out of plane, it
+                // reached 12 px inside at 25 degrees of pyramidalisation.
+                //
+                // So the rule is checked against the outline itself: the hull
+                // of the box's own eight projected corners. An edge both of
+                // whose ends lie clearly inside it is not a silhouette, whatever
+                // the face test says.
+                const hullPts = (() => {
+                    const p = V.map((q) => [q[0], q[1]])
+                        .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+                    const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1])
+                        - (a[1] - o[1]) * (b[0] - o[0]);
+                    const lo = []; const hi = [];
+                    for (const q of p) {
+                        while (hi.length > 1
+                            && cr(hi[hi.length - 2], hi[hi.length - 1], q) <= 0) hi.pop();
+                        hi.push(q);
+                    }
+                    for (let i = p.length - 1; i >= 0; i--) {
+                        const q = p[i];
+                        while (lo.length > 1
+                            && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop();
+                        lo.push(q);
+                    }
+                    hi.pop(); lo.pop();
+                    return hi.concat(lo);
+                })();
+                const insideBy = (pt) => {
+                    let m = Infinity;
+                    for (let i = 0; i < hullPts.length; i++) {
+                        const a = hullPts[i];
+                        const b = hullPts[(i + 1) % hullPts.length];
+                        const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+                        m = Math.min(m, ((b[0] - a[0]) * (pt[1] - a[1])
+                            - (b[1] - a[1]) * (pt[0] - a[0])) / L);
+                    }
+                    return m;
+                };
+                const ON_OUTLINE = 0.5;                  // px
+                for (const e of (stickIsFlat ? STICK_EDGES_FLAT : STICK_EDGES)) {
+                    if (!stickIsFlat && front[e.f0] === front[e.f1]) continue;
+                    if (e.end === 0 && !prim.free0) continue;
+                    if (e.end === 1 && !prim.free1) continue;
+                    if (hullPts.length > 2
+                        && insideBy(V[e.a]) > ON_OUTLINE
+                        && insideBy(V[e.b]) > ON_OUTLINE) continue;
+                    if (probe) probe.edges.push([e.a, e.b]);
+                    inkCurves.push({
+                        id: inkCurves.length,
+                        pts: [V[e.a], V[e.b]],
+                        vis: [true],
+                        sel: !!bd.sel,
+                        gs0: prim.gs0,
+                        gsStep: 0,
+                        c: bd.c,
+                    });
+                }
+            }
+            return true;
+            };
+
+            // BREAK THE BOND UP TO GIVE THE TWIST SOMEWHERE TO GO. The two ends
+            // of a bond can be pinned by different things - a junction's plane
+            // at one, a sweep's carried frame at the other - and where those
+            // disagree the section has to turn on the way across. Over a single
+            // box that turn happens all at once, and the stick reads as wrung.
+            // Split into enough pieces and the same total turn is shared out:
+            // each piece carries the SAME shape, only less of the rotation, and
+            // consecutive pieces hold the identical section polygon between
+            // them so no seam can open.
+            //
+            // The count comes from the turn itself, so a straight bond stays a
+            // single box and pays nothing. Only the interior sections are new
+            // geometry; the two ends are exactly what they were, mitre or
+            // sweep or square.
+            const squareAt = (px, py, pz, uu) => {
+                const vvv = vOf(uu);
+                return [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([su, sv]) => [
+                    px + uu[0] * su * stickHT + vvv[0] * sv * stickHW,
+                    py + uu[1] * su * stickHT + vvv[1] * sv * stickHW,
+                    pz + uu[2] * su * stickHT + vvv[2] * sv * stickHW]);
+            };
+            const secA = bd.cut0 || squareAt(va.x, va.y, va.z, u0);
+            const secB = cut1 || squareAt(vb.x, vb.y, vb.z, u1);
+            // THE TURN IS READ OFF THE SECTIONS, NOT OFF THE ROLLS. Where an end
+            // is cut by a junction its corners come from the corner solve, and
+            // the roll is only the axis that solve was built on - at an oblique
+            // cut the two are not the same, and the roll angle can read as
+            // nothing while the corners are most of a quarter turn apart. Since
+            // it is the CORNERS that the side faces connect, and the corners the
+            // eye sees, the section is asked directly: corners 0 and 1 are the
+            // +u pair, so their midpoint marks that face, and the angle between
+            // those marks across the bond is the turn to be shared out.
+            const faceMark = (sec) => {
+                let cx3 = 0; let cy3 = 0; let cz3 = 0;
+                for (const q of sec) { cx3 += q[0]; cy3 += q[1]; cz3 += q[2]; }
+                return alongT([(sec[0][0] + sec[1][0]) / 2 - cx3 / 4,
+                    (sec[0][1] + sec[1][1]) / 2 - cy3 / 4,
+                    (sec[0][2] + sec[1][2]) / 2 - cz3 / 4]);
+            };
+            const mA = faceMark(secA);
+            const mB = faceMark(secB);
+            let tw = 0;
+            if (mA && mB) {
+                const vA = vOf(mA);
+                tw = Math.atan2(
+                    mB[0] * vA[0] + mB[1] * vA[1] + mB[2] * vA[2],
+                    Math.max(-1, Math.min(1,
+                        mB[0] * mA[0] + mB[1] * mA[1] + mB[2] * mA[2])));
+            }
+            const MAX_SEG_TWIST = 18 * Math.PI / 180;
+            const K = Math.max(1, Math.min(8,
+                Math.ceil(Math.abs(tw) / MAX_SEG_TWIST)));
+            const secs = [secA];
+            for (let k = 1; k < K; k++) {
+                const f = k / K;
+                const ang = tw * f;
+                const ca = Math.cos(ang); const sa = Math.sin(ang);
+                const vA = vOf(mA);
+                const uk = [mA[0] * ca + vA[0] * sa, mA[1] * ca + vA[1] * sa,
+                    mA[2] * ca + vA[2] * sa];
+                secs.push(squareAt(va.x + (vb.x - va.x) * f,
+                    va.y + (vb.y - va.y) * f,
+                    va.z + (vb.z - va.z) * f, uk));
+            }
+            secs.push(secB);
+            let any = false;
+            for (let k = 0; k < K; k++) {
+                if (emitSeg(secs[k], secs[k + 1], k === 0, k === K - 1)) any = true;
+            }
+            return any;
+        };
+
+        {
+            const sameStyle = (p, q) => p.w === q.w && p.flat === q.flat
+                && p.sel === q.sel && p.c.r === q.c.r && p.c.g === q.c.g
+                && p.c.b === q.c.b;
+            const used = new Set();
+            // Extend from `bd` away from atom `from`, while the far atom has
+            // exactly two bonds and the next one matches.
+            const walk = (bd, from, pts, idxs) => {
+                let cur = bd;
+                let at2 = (cur.a === from) ? cur.b : cur.a;
+                for (;;) {
+                    if ((deg.get(at2) || 0) !== 2) break;
+                    const next = (inc.get(at2) || []).find((o) => o !== cur
+                        && !used.has(o) && sameStyle(o, cur));
+                    if (!next) break;
+                    used.add(next);
+                    const far = (next.a === at2) ? next.b : next.a;
+                    pts.push((next.a === at2) ? next.B : next.A);
+                    idxs.push(far);
+                    cur = next;
+                    at2 = far;
+                }
+                return at2;
+            };
+            // --- MITRED JUNCTIONS ------------------------------------------
+            // Two legs meeting at an atom share the corner where their facing
+            // side faces cross, at d = h*cot(theta/2) along each of them. The
+            // corners bound each leg's end - which is why a mitred end is a
+            // trapezoid and not a square - and for three or more legs they also
+            // bound the polygon left in the middle, which is filled above and
+            // below to close the joint.
+            //
+            // This is exact for legs that SHARE A PLANE and undefined for legs
+            // that do not: a tetrahedral centre has no plane, so there is no
+            // above and below to fill. So it runs only there. Everywhere else
+            // the boxes run to the atom and overlap, which needs no geometry
+            // and cannot be wrong. tests/junction_math.py has the derivation.
+            for (const bd of bondList) {
+                if (!bd.flat) bd.fr = stickFrame(bd);
+            }
+            // which atoms the mitre actually solved: the run pass below may
+            // carry a path THROUGH any junction it did not
+            const mitredAtoms = new Set();
+            for (const [atom, arr] of inc) {
+                let legs = arr.filter((bd) => !bd.flat && bd.fr);
+                // Three legs or more. An atom with exactly two is the interior
+                // of a linear run and belongs to the sweep below, which joins it
+                // without pinning its roll; mitring it here as well would put
+                // the twist straight back in.
+                if (legs.length < 3) continue;
+                const pA = at(atom) || rotated[atom];
+                if (!pA) continue;
+                // each leg's direction AWAY from this atom
+                const dirAll = legs.map((bd) => {
+                    const s = (bd.a === atom) ? 1 : -1;
+                    return [bd.fr.t[0] * s, bd.fr.t[1] * s, bd.fr.t[2] * s];
+                });
+                let dir = dirAll;
+                // A TETRAHEDRAL CENTRE IS THREE LEGS PLUS ONE. The mitre below
+                // walks the legs in angular order about an axis, which is a
+                // two-dimensional idea: an sp3 centre has no such order, and
+                // forcing one puts the two corners that are meant to be a single
+                // point 0.36 A apart - most of a stick's width - which snapping
+                // then paints over. So it used to give up here and let the boxes
+                // overlap.
+                //
+                // But four sp3 directions SUM TO ZERO, so the sum of any three
+                // is exactly minus the fourth. The mitre's axis for a triple is
+                // that sum, therefore the leg left out points exactly back down
+                // the axis - straight through the middle of the bottom triangle
+                // the mitre already leaves behind. Nothing has to be invented:
+                // mitre three (exact, unchanged), and run a COLLAR from that
+                // triangle to the fourth leg's section instead of filling it.
+                // Measured in tests/junction_sp3.py: the leg leaves 0.00 deg off
+                // axis on an ideal centre and 1.1 / 10.6 deg on GDP's two real
+                // phosphates, and the mitre's residual goes 0.36 A -> 0.010 A.
+                let collarBd = null;
+                let collarDir = null;
+                let forcedAx = null;
+                // ONLY WHERE THE MITRE CANNOT REACH. A PLANAR four-way - a
+                // haem's iron, a square-planar metal - stands around its own
+                // plane normal and mitres exactly, and must be left alone. It
+                // also passes the collar's own test with full marks, because in
+                // a planar cross the three remaining legs sum to the opposite of
+                // the one left out, so the omitted leg reads as leaving straight
+                // down the axis. Gating on "four legs" alone therefore stole
+                // every planar centre and distorted the iron. The collar is for
+                // centres with NO plane.
+                let hasPlane = false;
+                if (legs.length === 4) {
+                    let px = 0; let py = 0; let pz = 0;
+                    for (let i2 = 0; i2 < dirAll.length; i2++) {
+                        for (let j2 = i2 + 1; j2 < dirAll.length; j2++) {
+                            let cx = dirAll[i2][1] * dirAll[j2][2] - dirAll[i2][2] * dirAll[j2][1];
+                            let cy = dirAll[i2][2] * dirAll[j2][0] - dirAll[i2][0] * dirAll[j2][2];
+                            let cz = dirAll[i2][0] * dirAll[j2][1] - dirAll[i2][1] * dirAll[j2][0];
+                            if (px * cx + py * cy + pz * cz < 0) { cx = -cx; cy = -cy; cz = -cz; }
+                            px += cx; py += cy; pz += cz;
+                        }
+                    }
+                    const pl = Math.hypot(px, py, pz);
+                    if (pl > 1e-6) {
+                        let tilt = 0;
+                        for (const d of dirAll) {
+                            tilt = Math.max(tilt, Math.abs(
+                                (d[0] * px + d[1] * py + d[2] * pz) / pl));
+                        }
+                        if (tilt < 0.50) hasPlane = true;
+                    }
+                }
+                if (legs.length === 4 && !hasPlane) {
+                    // WHICH LEG TO LEAVE OUT IS A PROPERTY OF THE MOLECULE, and
+                    // has to be decided like one. An IDEAL tetrahedron ties all
+                    // four triples at exactly 1, and this runs on ROTATED
+                    // coordinates, so picking the numerical maximum let rounding
+                    // choose - a different triple per view, and the section
+                    // visibly rolled 38 deg as the structure turned. So near-ties
+                    // are broken by the bonded atom's own index, which no camera
+                    // can change.
+                    const cand = [];
+                    for (let k = 0; k < 4; k++) {
+                        let sx = 0; let sy = 0; let sz = 0;
+                        for (let i2 = 0; i2 < 4; i2++) {
+                            if (i2 === k) continue;
+                            sx += dirAll[i2][0]; sy += dirAll[i2][1]; sz += dirAll[i2][2];
+                        }
+                        const sl = Math.hypot(sx, sy, sz);
+                        if (sl < 1e-6) continue;
+                        const a3 = [sx / sl, sy / sl, sz / sl];
+                        // want the omitted leg to point back ALONG the axis
+                        const dt = -(dirAll[k][0] * a3[0] + dirAll[k][1] * a3[1]
+                            + dirAll[k][2] * a3[2]);
+                        const far = (legs[k].a === atom) ? legs[k].b : legs[k].a;
+                        cand.push({ k, dt, a3, far });
+                    }
+                    let bestK = -1; let bestDot = -2; let bestAx = null;
+                    if (cand.length) {
+                        let top = -2;
+                        for (const c of cand) if (c.dt > top) top = c.dt;
+                        let pick = null;
+                        for (const c of cand) {
+                            if (c.dt < top - 1e-3) continue;
+                            if (!pick || c.far < pick.far) pick = c;
+                        }
+                        bestK = pick.k; bestDot = top; bestAx = pick.a3;
+                    }
+                    // cos 40 deg: past that the leg is not leaving down the hole
+                    // and the collar would have to double back on itself
+                    if (bestK >= 0 && bestDot > 0.766) {
+                        collarBd = legs[bestK];
+                        collarDir = dirAll[bestK];
+                        legs = legs.filter((_, i2) => i2 !== bestK);
+                        dir = dirAll.filter((_, i2) => i2 !== bestK);
+                        forcedAx = bestAx;
+                    }
+                }
+                // THE LEGS STOP WHERE THEY MEET, AND A POLYGON FILLS THE REST.
+                // Each leg is cut by the BISECTOR plane it shares with every
+                // neighbour - the same rule a two-way bend already uses - so the
+                // boxes cut EACH OTHER rather than being set back from the atom.
+                // Where two legs meet, their top faces meet along a ridge; the
+                // ridges meet three at a time, and the corners collapse to one
+                // point per pair. What is left open is a single polygon at each
+                // end - a triangle for three legs, a quadrilateral for four.
+                //
+                // Checked in tests/junction_math.py: every edge of the finished
+                // solid is used exactly twice, for a planar centre, a shallow
+                // pyramid and a full sp3 one alike. Nothing is widened, narrowed
+                // or sheared: each leg keeps its own square section, and its
+                // cut is where the neighbour actually is.
+                //
+                // THE AXIS the sections are rolled onto is the PLANE'S NORMAL
+                // wherever the legs have a plane, and only otherwise the way the
+                // tripod points.
+                //
+                // Deciding that by whether the legs sum to zero is wrong, and
+                // wrong in the worst way: a real planar centre is not perfectly
+                // symmetric - a haem's ring carbons come out at 127/124/106 -
+                // so its legs sum to something appreciable, lying IN the plane.
+                // Rolling the sections onto that stands every one of them on
+                // edge, and a flat porphyrin comes out twisted.
+                //
+                // So the plane is looked for first: fit a normal, and if every
+                // leg lies near it, that is the axis. A tripod that genuinely
+                // has no plane - an sp3 centre, 50 degrees out - falls through
+                // to the sum, which is what points along its apex.
+                let ax = forcedAx;
+                if (!ax) {
+                    let nx3 = 0; let ny3 = 0; let nz3 = 0;
+                    for (let i2 = 0; i2 < dir.length; i2++) {
+                        for (let j2 = i2 + 1; j2 < dir.length; j2++) {
+                            let cx = dir[i2][1] * dir[j2][2] - dir[i2][2] * dir[j2][1];
+                            let cy = dir[i2][2] * dir[j2][0] - dir[i2][0] * dir[j2][2];
+                            let cz = dir[i2][0] * dir[j2][1] - dir[i2][1] * dir[j2][0];
+                            // a plane has a normal, not a signed one: agree with
+                            // the running sum before adding, or a symmetric
+                            // centre cancels itself to nothing
+                            if (nx3 * cx + ny3 * cy + nz3 * cz < 0) {
+                                cx = -cx; cy = -cy; cz = -cz;
+                            }
+                            nx3 += cx; ny3 += cy; nz3 += cz;
+                        }
+                    }
+                    const nl3 = Math.hypot(nx3, ny3, nz3);
+                    if (nl3 > 1e-6) {
+                        const n3 = [nx3 / nl3, ny3 / nl3, nz3 / nl3];
+                        let tilt = 0;
+                        for (const d of dir) {
+                            tilt = Math.max(tilt, Math.abs(d[0] * n3[0]
+                                + d[1] * n3[1] + d[2] * n3[2]));
+                        }
+                        if (tilt < 0.50) ax = n3;        // they share a plane
+                    }
+                    if (!ax) {                            // no plane: the apex
+                        let sx = 0; let sy = 0; let sz = 0;
+                        for (const d of dir) { sx += d[0]; sy += d[1]; sz += d[2]; }
+                        const sl = Math.hypot(sx, sy, sz);
+                        if (sl > 0.2) ax = [sx / sl, sy / sl, sz / sl];
+                    }
+                    if (!ax) continue;                    // collinear
+                }
+                // four or more legs must stand around that axis for the ring
+                // below to walk them in order; a tetrahedral centre does not
+                if (!collarBd && legs.length > 3) {
+                    let tilt = 0;
+                    for (const d of dir) {
+                        tilt = Math.max(tilt, Math.abs(d[0] * ax[0] + d[1] * ax[1]
+                            + d[2] * ax[2]));
+                    }
+                    if (tilt > 0.50) continue;
+                }
+                let e1a = null;
+                for (let i2 = 0; i2 < dir.length && !e1a; i2++) {
+                    const cx = ax[1] * dir[i2][2] - ax[2] * dir[i2][1];
+                    const cy = ax[2] * dir[i2][0] - ax[0] * dir[i2][2];
+                    const cz = ax[0] * dir[i2][1] - ax[1] * dir[i2][0];
+                    const cl = Math.hypot(cx, cy, cz);
+                    if (cl > 1e-6) e1a = [cx / cl, cy / cl, cz / cl];
+                }
+                if (!e1a) continue;
+                const e2a = [ax[1] * e1a[2] - ax[2] * e1a[1],
+                    ax[2] * e1a[0] - ax[0] * e1a[2],
+                    ax[0] * e1a[1] - ax[1] * e1a[0]];
+                // where each corner ray of each leg meets the nearest bisector
+                const corner = []; const uOf = []; const ang = [];
+                let cutOk = true;
+                for (let i2 = 0; i2 < legs.length && cutOk; i2++) {
+                    const d = dir[i2];
+                    const dax = d[0] * ax[0] + d[1] * ax[1] + d[2] * ax[2];
+                    let u = [ax[0] - d[0] * dax, ax[1] - d[1] * dax, ax[2] - d[2] * dax];
+                    let ul = Math.hypot(u[0], u[1], u[2]);
+                    if (ul < 1e-6) {
+                        const r = (Math.abs(d[2]) < 0.9) ? [0, 0, 1] : [1, 0, 0];
+                        const rd = r[0] * d[0] + r[1] * d[1] + r[2] * d[2];
+                        u = [r[0] - d[0] * rd, r[1] - d[1] * rd, r[2] - d[2] * rd];
+                        ul = Math.hypot(u[0], u[1], u[2]);
+                        if (ul < 1e-6) { cutOk = false; break; }
+                    }
+                    u = [u[0] / ul, u[1] / ul, u[2] / ul];
+                    const v = [d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2],
+                        d[0] * u[1] - d[1] * u[0]];
+                    const q = (legs[i2].a === atom) ? legs[i2].vb : legs[i2].va;
+                    const len = Math.hypot(q.x - pA.x, q.y - pA.y, q.z - pA.z);
+                    const four = [];
+                    for (const [su, sv] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
+                        const off = [u[0] * su * stickHT + v[0] * sv * stickHW,
+                            u[1] * su * stickHT + v[1] * sv * stickHW,
+                            u[2] * su * stickHT + v[2] * sv * stickHW];
+                        let t = 0;
+                        for (let j2 = 0; j2 < dir.length; j2++) {
+                            if (i2 === j2) continue;
+                            const nx3 = d[0] - dir[j2][0];
+                            const ny3 = d[1] - dir[j2][1];
+                            const nz3 = d[2] - dir[j2][2];
+                            const den = d[0] * nx3 + d[1] * ny3 + d[2] * nz3;
+                            if (Math.abs(den) < 1e-9) continue;
+                            const tj = -(off[0] * nx3 + off[1] * ny3 + off[2] * nz3) / den;
+                            if (tj > t) t = tj;
+                        }
+                        if (t > 0.35 * len) { cutOk = false; break; }
+                        four.push([pA.x + d[0] * t + off[0], pA.y + d[1] * t + off[1],
+                            pA.z + d[2] * t + off[2]]);
+                    }
+                    if (!cutOk) break;
+                    corner.push(four);
+                    uOf.push(u);
+                    ang.push(Math.atan2(
+                        d[0] * e2a[0] + d[1] * e2a[1] + d[2] * e2a[2],
+                        d[0] * e1a[0] + d[1] * e1a[1] + d[2] * e1a[2]));
+                }
+                if (!cutOk) continue;
+                const ord = legs.map((_, i2) => i2).sort((x, y) => ang[x] - ang[y]);
+                const kk = ord.length;
+                // NEIGHBOURS ARE SNAPPED TOGETHER. Two legs' cuts land on the
+                // same point only where they are mirror images about their
+                // bisector; a real side chain is not that even, and the pair
+                // came out about 0.03 A apart - a hairline at the ridge. Each
+                // shared corner is moved to the midpoint of the two, which costs
+                // nothing visible and makes the faces meet exactly.
+                const dist2 = (p, q) => (p[0] - q[0]) * (p[0] - q[0])
+                    + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
+                const shareTop = []; const shareBot = [];
+                for (let a2 = 0; a2 < kk; a2++) {
+                    const i2 = ord[a2]; const j2 = ord[(a2 + 1) % kk];
+                    for (const [ci, cj, store] of [[[0, 1], [0, 1], shareTop],
+                        [[3, 2], [3, 2], shareBot]]) {
+                        let best = Infinity; let bi = ci[0]; let bj = cj[0];
+                        for (const x of ci) {
+                            for (const y of cj) {
+                                const dd = dist2(corner[i2][x], corner[j2][y]);
+                                if (dd < best) { best = dd; bi = x; bj = y; }
+                            }
+                        }
+                        const mid = [(corner[i2][bi][0] + corner[j2][bj][0]) / 2,
+                            (corner[i2][bi][1] + corner[j2][bj][1]) / 2,
+                            (corner[i2][bi][2] + corner[j2][bj][2]) / 2];
+                        corner[i2][bi] = mid; corner[j2][bj] = mid;
+                        store.push(mid);
+                    }
+                }
+                // hand each leg its cut, in ITS OWN corner cycle
+                for (let i2 = 0; i2 < legs.length; i2++) {
+                    const bd = legs[i2];
+                    const C4 = corner[i2];
+                    const quad = (bd.a === atom) ? C4 : [C4[1], C4[0], C4[3], C4[2]];
+                    mitredAtoms.add(atom);
+                    if (bd.a === atom) { bd.cut0 = quad; bd.roll0 = uOf[i2]; }
+                    else { bd.cut1 = quad; bd.roll1 = uOf[i2]; }
+                }
+                // and the hole each end is left with: one polygon through the
+                // points the legs now share
+                const emitEnd = (pts, nrm) => {
+                    if (pts.length < 3) return;
+                    const poly = [];
+                    for (const w of pts) {
+                        const q2 = project(w[0], w[1], w[2]);
+                        if (!q2) return;
+                        poly.push(q2);
+                    }
+                    let zs = 0;
+                    for (const q2 of poly) zs += q2[2];
+                    let nx = nrm[0]; let ny = nrm[1]; let nz = nrm[2];
+                    // A SHEET'S JOINT IS SEEN FROM BOTH SIDES. ax's sign comes
+                    // from sign-aligned cross products of the legs, so which way
+                    // it points is a property of the leg ORDER, not of the view.
+                    // A solid gets away with that because it emits the polygon
+                    // twice and the wrong-facing copy is inside the solid; the
+                    // sheet emits it once, and then that arbitrary sign decides
+                    // whether the junction is lit or sits at bare ambient.
+                    // Measured on a flat haem: 10 of 23 joints came out dark -
+                    // the triangles and squares visible at the junctions. So
+                    // orient it at the eye, the same rule the flat faces use.
+                    if (stickIsFlat) {
+                        let jx = 0; let jy = 0; let jz = 0;
+                        for (const w of pts) { jx += w[0]; jy += w[1]; jz += w[2]; }
+                        jx /= pts.length; jy /= pts.length; jz /= pts.length;
+                        let gx = 0; let gy = 0; let gz = 1;
+                        if (persp) {
+                            gx = -jx; gy = -jy; gz = fl - jz;
+                            const gm = Math.hypot(gx, gy, gz) || 1;
+                            gx /= gm; gy /= gm; gz /= gm;
+                        }
+                        if (nx * gx + ny * gy + nz * gz < 0) {
+                            nx = -nx; ny = -ny; nz = -nz;
+                        }
+                    }
+                    prims.push({
+                        kind: 'joint', q: poly, z: zs / poly.length,
+                        c: legs[0].c, gs0: atom,
+                        nl: nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2],
+                        face: Math.abs(nz),
+                    });
+                    // set renderer._jointProbe = [] to collect the junction
+                    // fills: which way each one ended up facing is not visible
+                    // on the finished canvas, only in how it is lit
+                    if (renderer._jointProbe) {
+                        renderer._jointProbe.push({ at: atom, n: [nx, ny, nz] });
+                    }
+                };
+                // THE COLLAR. The fourth leg leaves down the axis, through the
+                // bottom triangle, so that triangle is not filled: it is the far
+                // rim of a band running to the fourth leg's own section. Three
+                // points to four, stitched by angle about the leg - seven
+                // triangles, and every edge of the finished solid still used
+                // exactly twice (tests/junction_sp3.py, stage 8).
+                // ...but only where there is a solid to collar. At zero
+                // thickness the fourth leg's section is a LINE, not a square,
+                // and a band stitched from a triangle to a line is degenerate.
+                // The three mitred legs still join perfectly well, so the leg is
+                // simply left to overlap - what must NOT happen is losing the
+                // whole junction, which is what gating the TRIPLE on flatness
+                // did: collarBd stayed null, the four-way then hit the tilt
+                // bail, and a joined phosphate came apart the moment the
+                // Thickness control reached 0.
+                let collared = false;
+                if (collarBd && !stickIsFlat) {
+                    const d4 = collarDir;
+                    const d4ax = d4[0] * ax[0] + d4[1] * ax[1] + d4[2] * ax[2];
+                    let u4 = [ax[0] - d4[0] * d4ax, ax[1] - d4[1] * d4ax,
+                        ax[2] - d4[2] * d4ax];
+                    let u4l = Math.hypot(u4[0], u4[1], u4[2]);
+                    if (u4l < 1e-6) {
+                        // THE FOURTH LEG LIES ON THE AXIS - which is the whole
+                        // point of choosing it, and exactly so on an ideal sp3
+                        // centre, so this branch is the NORMAL case and not an
+                        // edge one. There is no "ax across the leg" left to roll
+                        // onto, so the roll has to come from somewhere else -
+                        // and it must be the MOLECULE. A screen axis here keyed
+                        // the section to the camera and it rolled 38 deg as the
+                        // structure turned (smoke test 13). Take it from a
+                        // sibling leg instead: about 109 deg away, so never
+                        // parallel, and it turns with the structure.
+                        const r = dir[0];
+                        const rd = r[0] * d4[0] + r[1] * d4[1] + r[2] * d4[2];
+                        u4 = [r[0] - d4[0] * rd, r[1] - d4[1] * rd, r[2] - d4[2] * rd];
+                        u4l = Math.hypot(u4[0], u4[1], u4[2]);
+                    }
+                    if (u4l > 1e-6) {
+                        u4 = [u4[0] / u4l, u4[1] / u4l, u4[2] / u4l];
+                        const v4 = [d4[1] * u4[2] - d4[2] * u4[1],
+                            d4[2] * u4[0] - d4[0] * u4[2],
+                            d4[0] * u4[1] - d4[1] * u4[0]];
+                        // ONE setback for the whole section, not one per corner:
+                        // the collar's near rim has to be a flat quad or the band
+                        // twists. Clear of all three legs, and clear of the
+                        // triangle it runs from.
+                        let t4 = 0;
+                        const sig4 = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
+                        for (const [su, sv] of sig4) {
+                            const off = [u4[0] * su * stickHT + v4[0] * sv * stickHW,
+                                u4[1] * su * stickHT + v4[1] * sv * stickHW,
+                                u4[2] * su * stickHT + v4[2] * sv * stickHW];
+                            for (let j2 = 0; j2 < dir.length; j2++) {
+                                const nx3 = d4[0] - dir[j2][0];
+                                const ny3 = d4[1] - dir[j2][1];
+                                const nz3 = d4[2] - dir[j2][2];
+                                const den = d4[0] * nx3 + d4[1] * ny3 + d4[2] * nz3;
+                                if (Math.abs(den) < 1e-9) continue;
+                                const tj = -(off[0] * nx3 + off[1] * ny3
+                                    + off[2] * nz3) / den;
+                                if (tj > t4) t4 = tj;
+                            }
+                        }
+                        for (const w of shareBot) {
+                            const pr = (w[0] - pA.x) * d4[0] + (w[1] - pA.y) * d4[1]
+                                + (w[2] - pA.z) * d4[2];
+                            if (pr + 0.001 > t4) t4 = pr + 0.001;
+                        }
+                        const q4 = (collarBd.a === atom) ? collarBd.vb : collarBd.va;
+                        const len4 = Math.hypot(q4.x - pA.x, q4.y - pA.y, q4.z - pA.z);
+                        if (t4 <= 0.35 * len4) {
+                            const sec4 = sig4.map(([su, sv]) => [
+                                pA.x + d4[0] * t4 + u4[0] * su * stickHT
+                                    + v4[0] * sv * stickHW,
+                                pA.y + d4[1] * t4 + u4[1] * su * stickHT
+                                    + v4[1] * sv * stickHW,
+                                pA.z + d4[2] * t4 + u4[2] * su * stickHT
+                                    + v4[2] * sv * stickHW]);
+                            const qq = (collarBd.a === atom) ? sec4
+                                : [sec4[1], sec4[0], sec4[3], sec4[2]];
+                            if (collarBd.a === atom) {
+                                collarBd.cut0 = qq; collarBd.roll0 = u4;
+                            } else {
+                                collarBd.cut1 = qq; collarBd.roll1 = u4;
+                            }
+                            // stitch the two rings by angle about the leg
+                            const cen = (ring) => {
+                                let x = 0; let y = 0; let z = 0;
+                                for (const w of ring) { x += w[0]; y += w[1]; z += w[2]; }
+                                return [x / ring.length, y / ring.length, z / ring.length];
+                            };
+                            const cB = cen(shareBot); const c4 = cen(sec4);
+                            let f1 = [shareBot[0][0] - cB[0], shareBot[0][1] - cB[1],
+                                shareBot[0][2] - cB[2]];
+                            const f1d = f1[0] * d4[0] + f1[1] * d4[1] + f1[2] * d4[2];
+                            f1 = [f1[0] - d4[0] * f1d, f1[1] - d4[1] * f1d,
+                                f1[2] - d4[2] * f1d];
+                            const f1l = Math.hypot(f1[0], f1[1], f1[2]);
+                            if (f1l > 1e-9) {
+                                f1 = [f1[0] / f1l, f1[1] / f1l, f1[2] / f1l];
+                                const f2 = [d4[1] * f1[2] - d4[2] * f1[1],
+                                    d4[2] * f1[0] - d4[0] * f1[2],
+                                    d4[0] * f1[1] - d4[1] * f1[0]];
+                                const angOf = (w, c) => {
+                                    const rx = w[0] - c[0]; const ry = w[1] - c[1];
+                                    const rz = w[2] - c[2];
+                                    return Math.atan2(rx * f2[0] + ry * f2[1] + rz * f2[2],
+                                        rx * f1[0] + ry * f1[1] + rz * f1[2]);
+                                };
+                                const aA = shareBot.map((w) => angOf(w, cB));
+                                const aB = sec4.map((w) => angOf(w, c4));
+                                const A4 = shareBot.map((_, i2) => i2)
+                                    .sort((x, y) => aA[x] - aA[y]);
+                                const TAU = Math.PI * 2;
+                                const a0 = aA[A4[0]];
+                                const nrm2 = (x) => {
+                                    let y = (x - a0) % TAU;
+                                    if (y < 0) y += TAU;
+                                    return y;
+                                };
+                                const B4 = sec4.map((_, i2) => i2)
+                                    .sort((x, y) => nrm2(aB[x]) - nrm2(aB[y]));
+                                const na = A4.length; const nb = B4.length;
+                                let i3 = 0; let j3 = 0;
+                                const tris = [];
+                                while (i3 < na || j3 < nb) {
+                                    const ai = A4[i3 % na]; const bj = B4[j3 % nb];
+                                    const an = A4[(i3 + 1) % na];
+                                    const bn = B4[(j3 + 1) % nb];
+                                    const da = (i3 < na) ? nrm2(aA[an]) : Infinity;
+                                    const db = (j3 < nb) ? nrm2(aB[bn]) : Infinity;
+                                    if (i3 < na && (j3 >= nb || da <= db)) {
+                                        tris.push([shareBot[ai], sec4[bj], shareBot[an]]);
+                                        i3++;
+                                    } else {
+                                        tris.push([sec4[bj], sec4[bn], shareBot[ai]]);
+                                        j3++;
+                                    }
+                                }
+                                for (const tri of tris) {
+                                    const e1t = [tri[1][0] - tri[0][0], tri[1][1] - tri[0][1],
+                                        tri[1][2] - tri[0][2]];
+                                    const e2t = [tri[2][0] - tri[0][0], tri[2][1] - tri[0][1],
+                                        tri[2][2] - tri[0][2]];
+                                    let nx4 = e1t[1] * e2t[2] - e1t[2] * e2t[1];
+                                    let ny4 = e1t[2] * e2t[0] - e1t[0] * e2t[2];
+                                    let nz4 = e1t[0] * e2t[1] - e1t[1] * e2t[0];
+                                    const nl4 = Math.hypot(nx4, ny4, nz4);
+                                    if (nl4 < 1e-12) continue;
+                                    nx4 /= nl4; ny4 /= nl4; nz4 /= nl4;
+                                    // outward = away from the leg's own axis
+                                    const tc = cen(tri);
+                                    let rx = tc[0] - pA.x; let ry = tc[1] - pA.y;
+                                    let rz = tc[2] - pA.z;
+                                    const rd = rx * d4[0] + ry * d4[1] + rz * d4[2];
+                                    rx -= d4[0] * rd; ry -= d4[1] * rd; rz -= d4[2] * rd;
+                                    if (nx4 * rx + ny4 * ry + nz4 * rz < 0) {
+                                        nx4 = -nx4; ny4 = -ny4; nz4 = -nz4;
+                                    }
+                                    emitEnd(tri, [nx4, ny4, nz4]);
+                                }
+                                collared = true;
+                            }
+                        }
+                    }
+                }
+                // at zero thickness the two share polygons are the same points
+                emitEnd(shareTop, ax);
+                if (!stickIsFlat && !collared) {
+                    emitEnd(shareBot.slice().reverse(), [-ax[0], -ax[1], -ax[2]]);
+                }
+            }
+
+            // A LINEAR RUN IS MERGED, THE WAY A LOOP IS. A chain of atoms each
+            // carrying exactly two sticks - a propionate, a vinyl - is one path,
+            // and mitring it bond by bond is what wrings it. An exact mitre of
+            // SQUARE sections only closes when a section axis is perpendicular
+            // to both legs, so each bend pins the roll to its own local plane;
+            // along a zig-zag those planes swing, and the box twists to follow.
+            // Measured on a heme: 5 bonds twisting 25 to 66 degrees, every one
+            // of them touching a two-stick atom.
+            //
+            // So the run stops being mitred and starts being SWEPT. One section
+            // is built per station, perpendicular to the bisector of the two
+            // bonds there, and the SAME polygon is handed to both of them: they
+            // share a face by construction, which needs no alignment at all and
+            // frees the roll. The roll is then carried along by minimal
+            // rotation, and whatever residual the far end's junction demands is
+            // spread evenly over the run rather than dumped into one bond.
+            // Worst twist per bond drops from 40 degrees to 12.
+            {
+                const legsOf = (a) => (inc.get(a) || []).filter(
+                    (b) => !b.flat && b.fr);
+                // THE PATH THROUGH A THREE-WAY ATOM IS A TOPOLOGICAL QUESTION,
+                // not a geometric one. A ring carbon carrying a substituent is
+                // trigonal: its three angles come out around 127/124/106, a
+                // spread of twenty degrees, so there is no "straight through"
+                // pair to pick out by angle - measured on a haem, the widest
+                // pair at C2A is a ring bond paired with the PROPIONATE arm,
+                // and at NA it is a ring bond paired with the bond to the IRON.
+                // Both read as the branch being smoothed into the ring.
+                //
+                // What distinguishes the ring path is that its two legs lie on
+                // a common cycle, and on the SMALLEST one: at NA every pair
+                // lies on some cycle, because the macrocycle joins everything,
+                // and only ring size separates the five-membered pyrrole from
+                // the way round through the iron. So for each pair of legs,
+                // measure the shortest way back from one neighbour to the other
+                // WITHOUT passing through this atom - that plus one is the
+                // smallest ring through both - and take the pair with the
+                // smallest, when it is a strict winner.
+                //
+                // Only where the mitre did not already solve the junction: a
+                // mitred one is exact and its legs already share their corners,
+                // so there is nothing to gain. And only for exactly three legs
+                // - with four the choice is genuinely ambiguous (an iron has
+                // two trans pairs, and no run can fork to take both).
+                const throughPair = new Map();
+                for (const [atom, arr] of inc) {
+                    const legs = arr.filter((b) => !b.flat && b.fr);
+                    if (legs.length < 3 || mitredAtoms.has(atom)) continue;
+                    const far = (bd) => (bd.a === atom ? bd.b : bd.a);
+                    // shortest path between two neighbours with `atom` removed
+                    const hop = (from, to) => {
+                        const seen = new Set([atom, from]);
+                        let front = [from];
+                        for (let d = 1; d <= 12 && front.length; d++) {
+                            const next = [];
+                            for (const v of front) {
+                                for (const nb of legsOf(v)) {
+                                    const w = (nb.a === v) ? nb.b : nb.a;
+                                    if (w === to) return d;
+                                    if (seen.has(w)) continue;
+                                    seen.add(w); next.push(w);
+                                }
+                            }
+                            front = next;
+                        }
+                        return Infinity;
+                    };
+                    let best = Infinity; let bestPair = null; let ties = 0;
+                    for (let i = 0; i < 3; i++) {
+                        for (let j = i + 1; j < 3; j++) {
+                            const d = hop(far(legs[i]), far(legs[j]));
+                            if (d < best) { best = d; bestPair = [legs[i], legs[j]]; ties = 1; }
+                            else if (d === best) ties++;
+                        }
+                    }
+                    if (bestPair && best < Infinity && ties === 1) {
+                        throughPair.set(atom, bestPair);
+                        continue;
+                    }
+                    // NO CYCLE HERE: THE PATH IS THE TWO LEGS CARRYING MOST.
+                    // An acyclic branch point has no ring to appeal to, but it
+                    // is still a chain with something hanging off it, and what
+                    // separates them is how much structure each leg leads to.
+                    // Rank every leg by the size of what lies beyond it and take
+                    // the two largest: on a phosphate that picks the two oxygens
+                    // continuing the backbone over the two loose ones, and on an
+                    // ILE it picks CG1 - which carries CD1 - over the bare CG2.
+                    //
+                    // EVERY leg is ranked, not only the ones leading onward. A
+                    // terminal methyl is still a bond that should flow out of
+                    // the chain rather than sit against it, and on a trimmed
+                    // side chain there may be only one leg leading anywhere at
+                    // all: ILE, LEU, VAL and THR all have sp3 branch points with
+                    // one onward leg or none, and asking for two left them as
+                    // loose boxes. Ties are broken by the lower atom index -
+                    // a symmetric centre has no better answer, and any answer
+                    // beats none as long as it is the same one every frame.
+                    const reach = (bd) => {
+                        const start = (bd.a === atom) ? bd.b : bd.a;
+                        const seen = new Set([atom, start]);
+                        const st = [start];
+                        while (st.length) {
+                            for (const nb of legsOf(st.pop())) {
+                                const w = (nb.a === atom || nb.b === atom) ? null
+                                    : ((seen.has(nb.a)) ? nb.b : nb.a);
+                                if (w === null || seen.has(w)) continue;
+                                seen.add(w); st.push(w);
+                            }
+                        }
+                        return seen.size - 1;            // not counting `atom`
+                    };
+                    const sized = legs.map((bd) => ({ bd, n: reach(bd),
+                        i: (bd.a === atom) ? bd.b : bd.a }))
+                        .sort((x, y) => (y.n - x.n) || (x.i - y.i));
+                    throughPair.set(atom, [sized[0].bd, sized[1].bd]);
+                }
+                const un = (v) => {
+                    const m = Math.hypot(v[0], v[1], v[2]);
+                    return m > 1e-9 ? [v[0] / m, v[1] / m, v[2] / m] : null;
+                };
+                const crs = (p, q) => [p[1] * q[2] - p[2] * q[1],
+                    p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+                const dot = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+                const rej = (v, t) => {           // the part of v across t
+                    const d = dot(v, t);
+                    return un([v[0] - t[0] * d, v[1] - t[1] * d, v[2] - t[2] * d]);
+                };
+                const rot = (v, ax, ang) => {     // Rodrigues, about a unit axis
+                    const c = Math.cos(ang); const s = Math.sin(ang);
+                    const k = crs(ax, v); const d = dot(ax, v) * (1 - c);
+                    return [v[0] * c + k[0] * s + ax[0] * d,
+                        v[1] * c + k[1] * s + ax[1] * d,
+                        v[2] * c + k[2] * s + ax[2] * d];
+                };
+                const pos = (a) => at(a) || rotated[a];
+                const runSeen = new Set();
+                for (const seed of bondList) {
+                    if (seed.flat || !seed.fr || runSeen.has(seed)) continue;
+                    // grow the path both ways through two-stick atoms
+                    const bonds = [seed];
+                    const atoms = [seed.a, seed.b];
+                    runSeen.add(seed);
+                    let closed = false;
+                    for (const dirn of [1, 0]) {
+                        for (;;) {
+                            const end = dirn ? atoms[atoms.length - 1] : atoms[0];
+                            const here = dirn ? bonds[bonds.length - 1] : bonds[0];
+                            const L = legsOf(end);
+                            // two legs: the only way on is the other one.
+                            // three, with a ring path through them: carry on
+                            // along the ring and leave the branch to overlap.
+                            let nb = null;
+                            if (L.length === 2) {
+                                nb = (L[0] === here) ? L[1] : L[0];
+                            } else {
+                                const pair = throughPair.get(end);
+                                if (!pair) break;
+                                if (pair[0] === here) nb = pair[1];
+                                else if (pair[1] === here) nb = pair[0];
+                                else break;         // we arrived on the branch
+                            }
+                            if (!nb || nb.flat || !nb.fr) break;
+                            const nxt = (nb.a === end) ? nb.b : nb.a;
+                            if (runSeen.has(nb)) {
+                                // came back round: a ring of two-stick atoms
+                                if (nb === bonds[0] || nb === bonds[bonds.length - 1]) {
+                                    closed = true;
+                                }
+                                break;
+                            }
+                            runSeen.add(nb);
+                            if (dirn) { bonds.push(nb); atoms.push(nxt); }
+                            else { bonds.unshift(nb); atoms.unshift(nxt); }
+                            if (nxt === (dirn ? atoms[0] : atoms[atoms.length - 1])) {
+                                closed = true; break;
+                            }
+                        }
+                    }
+                    if (bonds.length < 2) continue;   // no interior station
+                    // COMING BACK TO THE START IS NOT THE SAME AS CLOSING ON IT.
+                    // A ring hanging off a junction - an imidazole on its CG, a
+                    // phenyl on its CG - is walked out of that atom, round, and
+                    // back to it, so the walk returns to where it began. But the
+                    // atom is a JUNCTION, already solved by the mitre, and
+                    // treating the run as closed makes the sweep join there too:
+                    // it overwrote the mitre's cut on the two ring legs and left
+                    // the third carrying the mitre's, so one junction was built
+                    // by two constructions that disagree. It is only closed if
+                    // the atom it closes on is a station the sweep may own.
+                    if (closed && !(legsOf(atoms[0]).length === 2
+                        || throughPair.has(atoms[0]))) {
+                        closed = false;
+                    }
+                    const nB = bonds.length;
+                    const P = atoms.map(pos);
+                    if (P.some((p) => !p)) continue;
+                    const T = [];
+                    for (let i = 0; i < nB; i++) {
+                        const t = un([P[i + 1].x - P[i].x, P[i + 1].y - P[i].y,
+                            P[i + 1].z - P[i].z]);
+                        if (!t) { T.length = 0; break; }
+                        T.push(t);
+                    }
+                    if (T.length !== nB) continue;
+                    // the roll this run starts from: whatever the junction at
+                    // its first atom already fixed, else the bond's own rule
+                    const endRoll = (bd, atom) => ((bd.a === atom)
+                        ? bd.roll0 : bd.roll1) || null;
+                    const u0 = rej(endRoll(bonds[0], atoms[0]) || bonds[0].fr.u, T[0]);
+                    if (!u0) continue;
+                    // carry it along by minimal rotation, station by station
+                    const U = [u0];
+                    for (let i = 1; i < nB; i++) {
+                        const ax = un(crs(T[i - 1], T[i]));
+                        let u = U[i - 1];
+                        if (ax) {
+                            const c = Math.max(-1, Math.min(1, dot(T[i - 1], T[i])));
+                            u = rot(u, ax, Math.acos(c));
+                        }
+                        const r = rej(u, T[i]);
+                        if (!r) { U.length = 0; break; }
+                        U.push(r);
+                    }
+                    if (U.length !== nB) continue;
+                    // ...and spread the far junction's demand over the whole run
+                    const uEndPin = closed ? null
+                        : endRoll(bonds[nB - 1], atoms[nB]);
+                    if (uEndPin) {
+                        const w = rej(uEndPin, T[nB - 1]);
+                        if (w) {
+                            const vN = crs(T[nB - 1], U[nB - 1]);
+                            let a = Math.atan2(dot(vN, w),
+                                Math.max(-1, Math.min(1, dot(U[nB - 1], w))));
+                            // A QUARTER TURN IS NOT NOTHING. The square's
+                            // OUTLINE repeats every 90 degrees, but its four
+                            // faces do not - they carry different normals, so a
+                            // section turned a quarter of the way round is lit
+                            // differently all along the bond, and reads as a
+                            // twist however little the silhouette moved.
+                            // Folding the residual to 45 degrees therefore
+                            // threw away up to a quarter turn per run and left
+                            // it in the geometry: across 53 real ligands the
+                            // worst bond twisted 94 degrees, every one of the
+                            // worst ten running from a merged seam to a mitred
+                            // junction. Only the HALF turn is free, because a
+                            // mitred end needs its section on the junction's
+                            // plane and either way round satisfies that.
+                            while (a > Math.PI / 2) a -= Math.PI;
+                            while (a < -Math.PI / 2) a += Math.PI;
+                            // A FREE START IS NOT A CONSTRAINT, SO TURN THE
+                            // WHOLE RUN. Only a junction pins a roll; at an open
+                            // end the section may sit any way round, and the
+                            // value the roll rule produced there is arbitrary.
+                            // So when a run starts free there is nothing to
+                            // spread the residual BETWEEN - rotating every
+                            // station by the same amount lands the far end on
+                            // its pin and leaves no twist anywhere. Relative
+                            // twist is untouched, since each station turns by
+                            // the same angle about its own tangent.
+                            //
+                            // This is what a side chain is: HIS runs CA-CB-CG,
+                            // free at CA and pinned at the imidazole, and
+                            // sharing the residual out gave 39 degrees on one
+                            // bond and 51 on the other where none was needed.
+                            //
+                            // SPREAD OVER THE BONDS when BOTH ends are pinned
+                            // and the residual has to go somewhere. There are
+                            // nB bonds and nB - 1 interior stations, and it is
+                            // the BONDS that carry it: station i takes i/nB, so
+                            // every bond turns the same a/nB, the last one
+                            // included. Dividing by nB - 1 instead brought the
+                            // last station all the way onto the pin, leaving
+                            // the final bond flat and cramming the residual into
+                            // the ones before it - on a two-bond run, all of it
+                            // into the first. The closed-run case divides by nB.
+                            if (!endRoll(bonds[0], atoms[0])) {
+                                for (let i = 0; i < nB; i++) {
+                                    U[i] = rej(rot(U[i], T[i], a), T[i]) || U[i];
+                                }
+                            } else {
+                                for (let i = 1; i < nB; i++) {
+                                    U[i] = rej(rot(U[i], T[i], a * i / nB), T[i])
+                                        || U[i];
+                                }
+                            }
+                        }
+                    }
+                    // A CLOSED RUN HAS TO CLOSE. Carrying the frame round a ring
+                    // and back lands it somewhere near - but not on - where it
+                    // started, and that leftover has to be spread around the
+                    // loop rather than dumped at the seam.
+                    if (closed) {
+                        const ax = un(crs(T[nB - 1], T[0]));
+                        let uBack = U[nB - 1];
+                        if (ax) {
+                            const c = Math.max(-1, Math.min(1, dot(T[nB - 1], T[0])));
+                            uBack = rot(uBack, ax, Math.acos(c));
+                        }
+                        const w = rej(uBack, T[0]);
+                        if (w) {
+                            const vN = crs(T[0], U[0]);
+                            let a = Math.atan2(dot(vN, w),
+                                Math.max(-1, Math.min(1, dot(U[0], w))));
+                            while (a > Math.PI / 2) a -= Math.PI;   // half turns only
+                            while (a < -Math.PI / 2) a += Math.PI;
+                            for (let i = 1; i < nB; i++) {
+                                U[i] = rej(rot(U[i], T[i], a * i / nB), T[i]) || U[i];
+                            }
+                        }
+                    }
+                    // One shared section per station, square in the plane that
+                    // bisects the two bonds meeting there. A closed run also
+                    // joins at the seam it was grown from - the walk leaves the
+                    // start atom at BOTH ends of the path, so stopping at nB - 1
+                    // leaves exactly one vertex of a ring unjoined, which shows
+                    // as a wedge of daylight at one corner of a benzene.
+                    const stations = [];
+                    for (let i = 1; i < nB; i++) {
+                        stations.push({ i, at: atoms[i], p: P[i],
+                            tIn: T[i - 1], tOut: T[i], L: bonds[i - 1], R: bonds[i],
+                            pPrev: P[i - 1], pNext: P[i + 1], u: U[i] });
+                    }
+                    if (closed) {
+                        stations.push({ i: 0, at: atoms[0], p: P[0],
+                            tIn: T[nB - 1], tOut: T[0],
+                            L: bonds[nB - 1], R: bonds[0],
+                            pPrev: P[nB - 1], pNext: P[1], u: U[0] });
+                    }
+                    for (const st of stations) {
+                        const b = un([st.tIn[0] + st.tOut[0], st.tIn[1] + st.tOut[1],
+                            st.tIn[2] + st.tOut[2]]);
+                        if (!b) continue;
+                        // the oblique cut reaches h*tan(theta/2) along each
+                        // bond, and must not eat the bond it is cutting
+                        const c = Math.max(-1, Math.min(1, dot(st.tIn, st.tOut)));
+                        const half = Math.acos(c) / 2;
+                        const reach = Math.max(stickHW, stickHT) * Math.tan(half);
+                        const lenL = Math.hypot(st.p.x - st.pPrev.x,
+                            st.p.y - st.pPrev.y, st.p.z - st.pPrev.z);
+                        const lenR = Math.hypot(st.pNext.x - st.p.x,
+                            st.pNext.y - st.p.y, st.pNext.z - st.p.z);
+                        if (reach > 0.30 * Math.min(lenL, lenR)) continue;
+                        const uS = rej(st.u, b);
+                        if (!uS) continue;
+                        // ONE POLYGON, TRAVERSED TWO WAYS. The section is built
+                        // once, in the plane bisecting the two bonds, so both
+                        // boxes end on the very same four points and the seam
+                        // is a shared face rather than two faces that have to
+                        // agree. Taking v from each bond's own tangent instead
+                        // would rotate one quad against the other by the bend
+                        // angle - measured 0.32 A of daylight at the join.
+                        //
+                        // What does differ per bond is the ORDER. A bond is
+                        // stored with whatever endpoints it came with, so its
+                        // tangent may run into this station rather than out of
+                        // it, which reverses the corner cycle; walking it the
+                        // wrong way turns the box inside out and culls every
+                        // face. Reversing v maps the cycle (+u+v, +u-v, -u-v,
+                        // -u+v) onto indices 1, 0, 3, 2 of the forward one.
+                        const vS = un(crs(b, uS));
+                        if (!vS) continue;
+                        const Q = [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(
+                            ([su, sv]) => [
+                                st.p.x + uS[0] * su * stickHT + vS[0] * sv * stickHW,
+                                st.p.y + uS[1] * su * stickHT + vS[1] * sv * stickHW,
+                                st.p.z + uS[2] * su * stickHT + vS[2] * sv * stickHW]);
+                        const QR = [Q[1], Q[0], Q[3], Q[2]];
+                        const L = st.L; const R = st.R;
+                        const qL = dot(L.fr.t, b) > 0 ? Q : QR;
+                        const qR = dot(R.fr.t, b) > 0 ? Q : QR;
+                        // flagged as a SEAM: both boxes hold this polygon, so it
+                        // is inside the solid and neither may paint it
+                        if (L.a === st.at) { L.cut0 = qL; L.roll0 = uS; L.seam0 = true; }
+                        else { L.cut1 = qL; L.roll1 = uS; L.seam1 = true; }
+                        if (R.a === st.at) { R.cut0 = qR; R.roll0 = uS; R.seam0 = true; }
+                        else { R.cut1 = qR; R.roll1 = uS; R.seam1 = true; }
+                    }
+                    // a free end keeps a square section on the carried frame
+                    if (!closed) {
+                        for (const [bd, atom, u] of [[bonds[0], atoms[0], U[0]],
+                            [bonds[nB - 1], atoms[nB], U[nB - 1]]]) {
+                            if (endRoll(bd, atom)) continue;
+                            if (bd.a === atom) bd.roll0 = u; else bd.roll1 = u;
+                        }
+                    }
+                }
+            }
+
+            for (const bd of bondList) {
+                if (used.has(bd)) continue;
+                used.add(bd);
+                // A real bond is a box. Contacts are not - they are an
+                // annotation drawn over the structure, and they keep the flat
+                // bright stroke the 'line' path gives them.
+                if (!bd.flat && stickBox(bd)) continue;
+                // grow backwards from a, then forwards from b
+                const back = [bd.A];
+                const backIdx = [bd.a];
+                const endA = walk(bd, bd.b, back, backIdx);
+                const fwd = [bd.B];
+                const fwdIdx = [bd.b];
+                const endB = walk(bd, bd.a, fwd, fwdIdx);
+                back.reverse(); backIdx.reverse();
+                const pts = back.concat(fwd);
+                const idxs = backIdx.concat(fwdIdx);
+                let zSum = 0;
+                for (const q of pts) zSum += q[2];
                 const prim = {
                     kind: 'line',
-                    x1: A[0], y1: A[1], x2: B[0], y2: B[1],
-                    z: (A[2] + B[2]) / 2,
-                    w: wpx,
-                    c: col,
-                    flat: seg.type === 'C', // contacts stay bright and flat
-                    pA: A, pB: B,
-                    sel: segSel,
-                    gs0: seg.idx1,
+                    pts,
+                    x1: pts[0][0], y1: pts[0][1],
+                    x2: pts[pts.length - 1][0], y2: pts[pts.length - 1][1],
+                    z: zSum / pts.length,
+                    w: bd.w,
+                    c: bd.c,
+                    flat: bd.flat,
+                    pA: pts[0], pB: pts[pts.length - 1],
+                    sel: bd.sel,
+                    gs0: Math.min.apply(null, idxs),
                 };
-                registerJoint(`R${seg.idx1}`, prim);
-                registerJoint(`R${seg.idx2}`, prim);
+                registerJoint(`R${endA}`, prim);
+                registerJoint(`R${endB}`, prim);
                 prims.push(prim);
             }
+
         }
 
         // --- depth range for shading ---
@@ -5567,15 +7494,18 @@
                 const a = rotated[i], b = rotated[j];
                 return [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
             };
-            for (let i = 0; i < n; i++) {
-                const j = pairOf[i];
-                if (j < 0 || j < i) continue;          // emit each pair once
-                if (!vis(i) || !vis(j)) continue;
-                const pi = rotated[i], pj = rotated[j];
-                let lx = pj.x - pi.x, ly = pj.y - pi.y, lz = pj.z - pi.z;
-                const ll = Math.hypot(lx, ly, lz);
-                if (ll < 1e-3) continue;
-                lx /= ll; ly /= ll; lz /= ll;
+            // ---- ONE AXIS PER PAIR, THEN SMOOTHED ALONG THE STEM ----------
+            // The axis is what the whole plate hangs off: the pair plane is
+            // normal to it, so an axis that is d degrees wrong tilts the plate
+            // by d degrees. It is computed for every pair first and smoothed
+            // afterwards, because a pair on its own has only local evidence and
+            // that evidence is weakest exactly where it matters most - at the
+            // END of a helix, where the fitting window runs off the stem into a
+            // loop and the predicted base normals stop being helical. Measured
+            // against base planes fitted to the real ring atoms of 3A3A:
+            // helix-interior pairs 10.0 deg median, helix-end pairs 18.5 deg,
+            // and all three worst plates in the structure were end pairs.
+            const rawAxis = (i, j) => {
                 // local axis from the neighbouring pairs' midpoints
                 // HELIX AXIS by least squares through a window of pair
                 // midpoints. Two adjacent midpoints are not enough: a pair's
@@ -5590,7 +7520,7 @@
                     const mm = mid(i + d);
                     if (mm) pts.push(mm);
                 }
-                if (pts.length < 2) continue;
+                if (pts.length < 2) return null;
                 let cx0 = 0, cy0 = 0, cz0 = 0;
                 for (const q of pts) { cx0 += q[0]; cy0 += q[1]; cz0 += q[2]; }
                 cx0 /= pts.length; cy0 /= pts.length; cz0 /= pts.length;
@@ -5614,10 +7544,10 @@
                     }
                     ax = vx; ay = vy; az = vz;
                 }
-                if (!Number.isFinite(ax) || Math.hypot(ax, ay, az) < 1e-9) continue;
-                // Prefer the REAL base-plane normals when stored: the rung then
-                // lies in the plane the bases actually occupy, instead of a
-                // plane inferred from a fitted helix axis (~20 deg off).
+                if (!Number.isFinite(ax) || Math.hypot(ax, ay, az) < 1e-9) return null;
+                // Prefer the base-plane normals where the prediction gave us
+                // some: the rung then lies in the plane the bases occupy rather
+                // than one inferred from a fitted helix axis (~20 deg off).
                 if (rbfP) {
                     const oi = i * 6, oj = j * 6;
                     let px2 = rbfP[oi + 3], py2 = rbfP[oi + 4], pz2 = rbfP[oi + 5];
@@ -5631,12 +7561,75 @@
                         if (pl2 > 1e-6) { ax = px2 / pl2; ay = py2 / pl2; az = pz2 / pl2; }
                     }
                 }
+                return [ax, ay, az];
+            };
+            const axRaw = new Map();          // pair leader (lower index) -> axis
+            for (let i = 0; i < n; i++) {
+                const j = pairOf[i];
+                if (j < 0 || j < i) continue;
+                if (!vis(i) || !vis(j)) continue;
+                const a = rawAxis(i, j);
+                if (a) axRaw.set(i, a);
+            }
+            // Plain average with whichever register neighbours exist - the pair
+            // one step along each strand in opposite directions, which is the
+            // next pair UP THE SAME STEM. A terminal pair has one neighbour and
+            // is pulled halfway toward it; an interior pair has two and barely
+            // moves, which is what we want since it was already the reliable
+            // case. Weighting the neighbours below 1 recovers less and a second
+            // round recovers almost nothing more, so this stays a flat mean over
+            // at most three pairs.
+            //
+            // tests/na_axis.js scores this against the real ring-atom base
+            // planes, 98 chains / 4697 pairs:
+            //                    median    p90    mean   >30deg
+            //   stem ends     18.8->15.6  56->49  25->23  25.8->20.5%
+            //   stem interior 12.0->11.3  20->19  13->13   1.3-> 1.7%
+            //   all pairs     14.2->13.0  36->32  19->18  13.1->10.8%
+            // The ends are where it pays, which is the point. Interior pairs
+            // barely move and a few get marginally worse, pulled toward a bad
+            // neighbour - worth it for a fifth off the end-pair failures.
+            // 3A3A's worst plate, the anticodon stem's closing pair U28-A46,
+            // goes 43.9 -> 24.9 deg.
+            const axSm = new Map();
+            for (const [i, a] of axRaw) {
+                const j = pairOf[i];
+                let sx = a[0], sy = a[1], sz = a[2];
+                for (const d of [-1, 1]) {
+                    const c = i + d, e = j - d;
+                    if (c < 0 || c >= n || e < 0 || e >= n) continue;
+                    if (pairOf[c] !== e) continue;      // not the same stem
+                    const b = axRaw.get(c < e ? c : e);
+                    if (!b) continue;
+                    // an axis has no sign; align before averaging or they cancel
+                    const sg = (b[0] * a[0] + b[1] * a[1] + b[2] * a[2]) < 0 ? -1 : 1;
+                    sx += sg * b[0]; sy += sg * b[1]; sz += sg * b[2];
+                }
+                const sl = Math.hypot(sx, sy, sz);
+                if (sl > 1e-9) axSm.set(i, [sx / sl, sy / sl, sz / sl]);
+            }
+            for (let i = 0; i < n; i++) {
+                const j = pairOf[i];
+                if (j < 0 || j < i) continue;          // emit each pair once
+                if (!vis(i) || !vis(j)) continue;
+                const pi = rotated[i], pj = rotated[j];
+                let lx = pj.x - pi.x, ly = pj.y - pi.y, lz = pj.z - pi.z;
+                const ll = Math.hypot(lx, ly, lz);
+                if (ll < 1e-3) continue;
+                lx /= ll; ly /= ll; lz /= ll;
+                const aSm = axSm.get(i);
+                if (!aSm) continue;
+                let ax = aSm[0], ay = aSm[1], az = aSm[2];
                 // perpendicular component only: the pair plane is normal to the axis
                 const ad = ax * lx + ay * ly + az * lz;
                 ax -= lx * ad; ay -= ly * ad; az -= lz * ad;
                 const al = Math.hypot(ax, ay, az);
                 if (al < 1e-4) continue;
                 ax /= al; ay /= al; az /= al;
+                if (renderer._naDebug) {
+                    (renderer._naAxis || (renderer._naAxis = []))
+                        .push({ i, j, a: [ax, ay, az] });
+                }
                 // in-plane width axis
                 const wx = ay * lz - az * ly;
                 const wy = az * lx - ax * lz;
@@ -5652,9 +7645,21 @@
                 // (Plain Angstroms, matching halfT(): halfW() is the one scaled
                 // by widthScale, and mixing the two is what broke the clearance
                 // before.)
-                const th = 0;
-                const ribHalfT = (renderer.cartoonThickness !== undefined
-                    ? renderer.cartoonThickness / 2 : RIBBON_TH_A);
+                // the rail this rung leaves, so the two match by construction
+                const ribHalfT = (naSlabHalfT !== null) ? naSlabHalfT : naHalfT;
+                // HALF THE BACKBONE'S THICKNESS. A base is a thinner thing
+                // than the strand it hangs off, but it is not a sheet: drawn
+                // perfectly flat it vanished to a hairline whenever the duplex
+                // turned edge-on and the rungs read as sticks. Following the
+                // backbone means the Thick control drives both, and a preset
+                // that asks for a flat ribbon still gets flat rungs.
+                //
+                // Carried in ANGSTROM and dilated at paint time rather than
+                // built as a box: stroking the piece's own outline widens it by
+                // exactly this much in every direction, which is what thickness
+                // looks like edge-on, and six real faces would cost 6x the fills
+                // for a difference only visible at grazing.
+                const th = ribHalfT / 2;
                 const half = ll / 2;
                 // SUBDIVIDED along its length. A pair rung is ~14.6 A end to
                 // end, so a half-rung spans a good fraction of the duplex; as a
@@ -5698,7 +7703,11 @@
                 // so the two halves meet. The ~16 deg the helix pitch puts
                 // between those frames is spread along the rung instead of
                 // landing at either end.
-                const mk = (base, fr, col) => {
+                // `res` is WHOSE HALF THIS IS. Both halves of a pair are built
+                // inside the same i/j loop, so using `i` for both made the two
+                // indistinguishable downstream: selecting one residue lit the
+                // whole rung, right across to its partner's backbone.
+                const mk = (base, fr, col, res) => {
                     const n0x = fr.t[1] * fr.s[2] - fr.t[2] * fr.s[1];
                     const n0y = fr.t[2] * fr.s[0] - fr.t[0] * fr.s[2];
                     const n0z = fr.t[0] * fr.s[1] - fr.t[1] * fr.s[0];
@@ -5731,19 +7740,6 @@
                         (renderer._naTwist || (renderer._naTwist = []))
                             .push(Math.acos(c) * 180 / Math.PI);
                     }
-                    const corner = (u, sgn) => {
-                        const cxu = ncx + (midP.x - ncx) * u;
-                        const cyu = ncy + (midP.y - ncy) * u;
-                        const czu = ncz + (midP.z - ncz) * u;
-                        let ax2 = ux + (vx2 - ux) * u;
-                        let ay2 = uy + (vy2 - uy) * u;
-                        let az2 = uz + (vz2 - uz) * u;
-                        const al2 = Math.hypot(ax2, ay2, az2) || 1;
-                        const hwu = (nearHW + (hw - nearHW) * u) * sgn;
-                        return project(cxu + (ax2 / al2) * hwu,
-                            cyu + (ay2 / al2) * hwu,
-                            czu + (az2 / al2) * hwu);
-                    };
                     // SUBDIVIDED, for DEPTH. As one quad a rung carries a single
                     // sort key across ~7 A, so it cannot order correctly against
                     // everything it overlaps and rungs crossed each other wrongly.
@@ -5751,31 +7747,194 @@
                     // instead of flattening it.)
                     // The seams this used to leave are handled where the pieces
                     // are drawn - see the hairline stroke in the plate branch.
+                    // A RUNG IS A SLAB, SO IT IS BUILT AS ONE. It used to be a
+                    // flat quad with its thickness faked at paint time by
+                    // dilating the outline, which cannot be right in principle:
+                    // a stroke grows a shape in every direction, and a slab has
+                    // thickness in exactly one. That showed as the rung spilling
+                    // past the backbone at its joint and as its long edge
+                    // breaking into dashes where the pieces met.
+                    //
+                    // Now it produces the same four corner curves the ribbon
+                    // does and goes through the same painter and the same
+                    // silhouette (emitSlabInk), which is what the ligand boxes
+                    // taught: build the solid and let the existing machinery
+                    // draw it, rather than faking the look of one.
+                    //
+                    // Its geometry is SIMPLER than a ribbon interval's - the
+                    // centre line is straight, so there is no curve to evaluate
+                    // and the concavity term oK is 0 throughout.
                     const nseg = subFloor(NA_PLATE_SEG);
-                    for (let s = 0; s < nseg; s++) {
-                        const u0 = s / nseg, u1 = (s + 1) / nseg;
-                        const quad = [corner(u0, -1), corner(u0, 1),
-                            corner(u1, 1), corner(u1, -1)];
-                        if (quad.some((q) => !q)) continue;
-                        // offscreen pieces are skipped: exact corners, so the
-                        // pad only needs the outline stroke's reach
-                        {
-                            const m2 = outlineW + 4;
-                            let x0c = Infinity, y0c = Infinity;
-                            let x1c = -Infinity, y1c = -Infinity;
-                            for (const q of quad) {
-                                if (q[0] < x0c) x0c = q[0];
-                                if (q[0] > x1c) x1c = q[0];
-                                if (q[1] < y0c) y0c = q[1];
-                                if (q[1] > y1c) y1c = q[1];
-                            }
-                            if (x1c < -m2 || x0c > displayWidth + m2
-                                || y1c < -m2 || y0c > displayHeight + m2) continue;
+                    const Lp = []; const Lm = []; const Rp = []; const Rm = [];
+                    const oN = []; const oB = []; const oT = []; const oK = [];
+                    const oLb = []; const oLn = []; const oLt = [];
+                    // the rung runs straight from the backbone face to the pair
+                    // centre, so its tangent is constant
+                    let ttx = midP.x - ncx; let tty = midP.y - ncy;
+                    let ttz = midP.z - ncz;
+                    const ttm = Math.hypot(ttx, tty, ttz) || 1;
+                    ttx /= ttm; tty /= ttm; ttz /= ttm;
+                    let zSum = 0; let okRung = true;
+                    for (let k = 0; k <= nseg && okRung; k++) {
+                        const u = k / nseg;
+                        const cx2 = ncx + (midP.x - ncx) * u;
+                        const cy2 = ncy + (midP.y - ncy) * u;
+                        const cz2 = ncz + (midP.z - ncz) * u;
+                        // Width axis turns from the backbone's own side vector
+                        // to the shared pair axis. BOTH ENDS ARE FIXED: the side
+                        // vector is what makes the base edge line up with the
+                        // ribbon's own cross-section rather than merely lie in
+                        // its plane (projecting the pair axis into that plane
+                        // keeps it flush but turns it WITHIN the face, which
+                        // misaligns the joint), and the pair axis is what makes
+                        // the two halves meet.
+                        //
+                        // What is free is the RATE. The two strands' side
+                        // vectors sit ~78 deg apart even after the best 180 deg
+                        // flip - the frames genuinely differ - so a rung
+                        // blending linearly is still turning through most of
+                        // that halfway along, and the two halves of a pair meet
+                        // the eye visibly rotated against each other: measured
+                        // 51.5 deg between their face normals over the OUTER
+                        // half of the rung, which is the part that reads as the
+                        // base. Easing the blend puts the turn where the rung is
+                        // buried against the backbone and leaves the visible
+                        // plate flat: 51.5 -> 11.7 deg, with u = 0 and u = 1
+                        // both untouched, so the joint is bit-identical.
+                        const fB = 1 - (1 - u) * (1 - u) * (1 - u);
+                        let wax = ux + (vx2 - ux) * fB;
+                        let way = uy + (vy2 - uy) * fB;
+                        let waz = uz + (vz2 - uz) * fB;
+                        const wam = Math.hypot(wax, way, waz) || 1;
+                        wax /= wam; way /= wam; waz /= wam;
+                        // face normal: across both the length and the width
+                        let fnx = tty * waz - ttz * way;
+                        let fny = ttz * wax - ttx * waz;
+                        let fnz = ttx * way - tty * wax;
+                        const fnm = Math.hypot(fnx, fny, fnz) || 1;
+                        fnx /= fnm; fny /= fnm; fnz /= fnm;
+                        const hwU = nearHW + (hw - nearHW) * u;
+                        // THE END THAT MEETS THE BACKBONE IS CUT IN ITS FACE.
+                        // A rung leaves the ribbon at an angle - measured, its
+                        // own thickness axis sits ~62 deg from the ribbon's face
+                        // normal - so a square end cut carries one corner DOWN
+                        // into the slab and lifts the opposite one OUT of it. At
+                        // thickness 0 the end is a line lying in the face and
+                        // the joint is exact, which is why it only shows once
+                        // the rung is given depth: the error is the thickness
+                        // offset's component along the face normal.
+                        //
+                        // So at the joint the thickness offset is taken IN THE
+                        // FACE PLANE - the same oblique cut a mitred ligand
+                        // junction uses, for the same reason. Only the first
+                        // station: everywhere else the section stays square to
+                        // the rung.
+                        let ofx = fnx; let ofy = fny; let ofz = fnz;
+                        if (k === 0) {
+                            const fd2 = ofx * (n0x / n0l) + ofy * (n0y / n0l)
+                                + ofz * (n0z / n0l);
+                            ofx -= (n0x / n0l) * fd2;
+                            ofy -= (n0y / n0l) * fd2;
+                            ofz -= (n0z / n0l) * fd2;
                         }
-                        let zs = 0, pes = 0;
-                        for (const q of quad) { zs += q[2]; pes += q[3]; }
-                        prims.push({ kind: 'plate', q: quad, z: zs / 4, c: col,
-                            pe: pes / 4, face: Math.abs(az), th });
+                        const P = (sw, sf) => project(
+                            cx2 + wax * hwU * sw + ofx * th * sf,
+                            cy2 + way * hwU * sw + ofy * th * sf,
+                            cz2 + waz * hwU * sw + ofz * th * sf);
+                        const lp = P(1, 1); const lm = P(1, -1);
+                        const rp = P(-1, 1); const rm = P(-1, -1);
+                        if (!lp || !lm || !rp || !rm) { okRung = false; break; }
+                        Lp.push(lp); Lm.push(lm); Rp.push(rp); Rm.push(rm);
+                        // facing terms, in the same order evalSlab returns them
+                        let vx3 = 0; let vy3 = 0; let vz3 = 1;
+                        if (persp) {
+                            vx3 = -cx2; vy3 = -cy2; vz3 = fl - cz2;
+                            const vm = Math.hypot(vx3, vy3, vz3) || 1;
+                            vx3 /= vm; vy3 /= vm; vz3 /= vm;
+                        }
+                        oN.push(wax * vx3 + way * vy3 + waz * vz3);
+                        oB.push(fnx * vx3 + fny * vy3 + fnz * vz3);
+                        oT.push(ttx * vx3 + tty * vy3 + ttz * vz3);
+                        oK.push(0);          // a straight rung has no concavity
+                        oLb.push(fnx * LIGHT[0] + fny * LIGHT[1] + fnz * LIGHT[2]);
+                        oLn.push(wax * LIGHT[0] + way * LIGHT[1] + waz * LIGHT[2]);
+                        oLt.push(ttx * LIGHT[0] + tty * LIGHT[1] + ttz * LIGHT[2]);
+                        zSum += (lp[2] + lm[2] + rp[2] + rm[2]) / 4;
+                    }
+                    if (!okRung || Lp.length < 2) return;
+                    // FILL IN PIECES, INK IN ONE RUN - the ribbon's own split.
+                    // A rung spans ~7 A, so a single prim carries one sort key
+                    // across the whole of it and cannot order against everything
+                    // it crosses; that is why this was subdivided in the first
+                    // place. But the OUTLINE must not be cut with it: an ink run
+                    // per piece is what left the long edge dashed, each piece's
+                    // fill painting over the previous piece's edge. So the fills
+                    // are sliced per station and the silhouette is emitted once,
+                    // over every station at once.
+                    for (let s = 0; s + 1 < Lp.length; s++) {
+                        const zPiece = (Lp[s][2] + Lm[s][2] + Rp[s][2] + Rm[s][2]
+                            + Lp[s + 1][2] + Lm[s + 1][2] + Rp[s + 1][2]
+                            + Rm[s + 1][2]) / 8;
+                        prims.push({
+                            kind: 'rib',
+                            ss: 'C',
+                            // it IS a rib, and is drawn as one; the flag is only
+                            // so a rung can be told from a backbone downstream
+                            naRung: true,
+                            // colour is the base's own, already chosen
+                            co: true,
+                            arrow: false,
+                            Lp: Lp.slice(s, s + 2), Lm: Lm.slice(s, s + 2),
+                            Rp: Rp.slice(s, s + 2), Rm: Rm.slice(s, s + 2),
+                            oN: oN.slice(s, s + 2), oB: oB.slice(s, s + 2),
+                            oT: oT.slice(s, s + 2), oK: oK.slice(s, s + 2),
+                            oLb: oLb.slice(s, s + 2), oLn: oLn.slice(s, s + 2),
+                            oLt: oLt.slice(s, s + 2),
+                            z: zPiece,
+                            zShade: zPiece,
+                            c: col,
+                            // the near end is buried in the backbone slab and the
+                            // far end meets its partner's rung exactly, so
+                            // neither is a boundary wanting a cross-section
+                            capStart: false,
+                            capEnd: false,
+                            gs0: res + s / Math.max(1, nseg),
+                            gsStep: 1 / Math.max(1, nseg),
+                        });
+                    }
+                    // the boundary of the top face, at EVERY station rather than
+                    // just the four extreme corners. A rung that twists on its
+                    // way out - which is most of them in a folded RNA - projects
+                    // to a shape the corner quad gets wrong, and where the twist
+                    // passes edge-on the corner quad self-intersects into a
+                    // bowtie, so the point-in-polygon test reports the middle of
+                    // the plate as outside it. Walking the rails costs a handful
+                    // of points and is exact for what is painted.
+                    const pickPoly = [];
+                    for (let s = 0; s < Lp.length; s++) {
+                        pickPoly.push([Lp[s][0], Lp[s][1]]);
+                    }
+                    for (let s = Rp.length - 1; s >= 0; s--) {
+                        pickPoly.push([Rp[s][0], Rp[s][1]]);
+                    }
+                    renderer._naPick.push({
+                        res,
+                        z: zSum / Lp.length,
+                        poly: pickPoly,
+                    });
+                    if (inkWanted) {
+                        // THE LOOP RULE, so the rung carries no INNER line.
+                        // The hull test finds every silhouette corner, and on a
+                        // section with real depth the interior crease - where
+                        // the broad face turns into the thin edge - runs a hair
+                        // inside that silhouette and is picked up with it, which
+                        // draws as a second line down the rung rather than as
+                        // structure. Keeping only the corners extreme ACROSS the
+                        // rung leaves the outline exact and lets shading carry
+                        // the crease, which is what loops and strands already do
+                        // (see the same flag at the ribbon's own call).
+                        emitSlabInk(Lp, Lm, Rp, Rm, oN, oB, oK, col,
+                            !!(selInk && selInk.has(res)), res, true);
                     }
                 };
                 const fi = naFrames[i], fj = naFrames[j];
@@ -5802,8 +7961,8 @@
                 // gave a perfect joint but left the two halves 16 deg apart at
                 // the middle - measured - and a rung that does not meet its
                 // partner stops reading as a base pair.
-                if (ci) mk(pi, fi, ci);
-                if (cj) mk(pj, fj, cj);
+                if (ci) mk(pi, fi, ci, i);
+                if (cj) mk(pj, fj, cj, j);
             }
         }
 
@@ -6119,11 +8278,18 @@
                     for (let j = 0; j + 1 < g.pts.length; j++) {
                         cap2(g.pts[j], g.pts[j + 1], rr);
                     }
-                } else if (g.kind === 'plate') {
+                } else if (g.kind === 'line' && g.pts) {
+                    // a run: every leg of it occludes
+                    for (let j = 0; j + 1 < g.pts.length; j++) {
+                        cap2(g.pts[j], g.pts[j + 1], (g.w + outlineW) / 2 - 1);
+                    }
+                } else if (g.kind === 'joint') {
+                    for (let k2 = 1; k2 + 1 < g.q.length; k2++) {
+                        tri2(g.q[0], g.q[k2], g.q[k2 + 1]);
+                    }
+                } else if (g.kind === 'stickFace') {
                     tri2(g.q[0], g.q[1], g.q[2]);
                     tri2(g.q[0], g.q[2], g.q[3]);
-                } else if (g.kind === 'line' && g.pA && g.pB) {
-                    cap2(g.pA, g.pB, (g.w + outlineW) / 2 - 1);
                 } else if (g.kind === 'dot' && g.pA) {
                     cap2(g.pA, g.pA, g.r + outlineW / 2 - 1);
                 }
@@ -6138,13 +8304,157 @@
                 return zOf2(d) > pt[2] + EPS2;
             };
         }
+        // THE MIDDLE IS SAMPLED TOO, not just the four corner curves. A piece
+        // is dropped only when every sample is behind something else, so a
+        // sample set that covers only the RIM will drop a piece whose edges are
+        // occluded while its wide face is in plain view - the ribbon passes
+        // behind something that hides its two borders and not its middle. The
+        // test is a conservative one by design (a single visible sample keeps
+        // the piece), and adding samples can only keep more, never fewer.
         const ribHidden = (g) => {
             const nsH = g.Lp.length;
+            const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2,
+                (a[2] + b[2]) / 2];
             for (let s = 0; s < nsH; s++) {
                 if (!exportHidden(g.Lp[s]) || !exportHidden(g.Lm[s])
                     || !exportHidden(g.Rp[s]) || !exportHidden(g.Rm[s])) return false;
+                // the centre of the section, and the middle of each wide face
+                if (!exportHidden(mid(g.Lp[s], g.Rm[s]))
+                    || !exportHidden(mid(g.Lp[s], g.Rp[s]))
+                    || !exportHidden(mid(g.Lm[s], g.Rm[s]))) return false;
             }
             return true;
+        };
+        // Same reasoning for a flat quad: its corners can all be covered while
+        // the middle shows through.
+        const quadHidden = (q) => {
+            if (!q.every(exportHidden)) return false;
+            let cx = 0; let cy = 0; let cz = 0;
+            for (const p of q) { cx += p[0]; cy += p[1]; cz += p[2]; }
+            const k = q.length || 1;
+            return exportHidden([cx / k, cy / k, cz / k]);
+        };
+
+        // ROUND SHADING FOR ANYTHING STROKED AS A CYLINDER: the backbone
+        // tube, and now ligand bonds too. A run of nested strokes, each
+        // narrower than the last and pushed further toward the light, reads as
+        // a round section - no gradients, so it survives the SVG export the way
+        // a gradient fill would not.
+        //
+        // Factored out of the tube branch rather than reimplemented: the
+        // fiddly parts (per-point normals signed toward the light, and the
+        // longitudinal extension that stops a narrow band being erased at a
+        // joint by the next primitive's full-width band) are exactly as
+        // necessary for a bond meeting another bond as for two tube pieces.
+        //
+        // `ext` carries one extension point beyond each end where the caller
+        // has them, for a true central difference at the ends.
+        // `gain` scales how far the modelling goes, in tone AND in how much of
+        // the section the lit core covers. The tube uses the full amount; a
+        // ligand uses a fraction of it, because a stick that models as hard as
+        // the backbone stops reading as a small thing in front of a big one and
+        // starts competing with the structure it sits in.
+        const strokeRound = (P, lw, col, near, dim, ext, gain) => {
+            // Modelling FADES IN with width rather than switching on at a
+            // threshold. Bond widths vary with perspective and with the width
+            // control, so a fixed cutoff put some bonds of one ligand either
+            // side of it: half the sticks came out round and half flat, and
+            // zooming flipped them. Below MIN a band is thinner than the line
+            // it sits in and there is nothing to show; above FULL it is the
+            // full effect; between, the bands converge in tone, which reads as
+            // the same shape lit more softly.
+            const wG = Math.max(0, Math.min(1,
+                (lw - SHADE_W_MIN) / (SHADE_W_FULL - SHADE_W_MIN)));
+            const gn = (gain === undefined ? 1 : gain) * wG;
+            const bands = (!lightOn || gn < 0.02) ? 0 : (cel ? celLevels : 4);
+            ctx.lineCap = 'round';
+            if (bands < 2) {
+                ctx.strokeStyle = shade(col, near, dim);
+                ctx.lineWidth = lw;
+                strokePath(P);
+                return;
+            }
+            const last = P.length - 1;
+            const push = new Array(P.length);
+            const E = (ext && ext.length === P.length + 2 && ext.every(Boolean))
+                ? ext : null;
+            for (let i = 0; i <= last; i++) {
+                const a = E ? E[i] : P[Math.max(0, i - 1)];
+                const b = E ? E[i + 2] : P[Math.min(last, i + 1)];
+                let tx = b[0] - a[0];
+                let ty = b[1] - a[1];
+                const m = Math.hypot(tx, ty);
+                if (m < 1e-6) { push[i] = [0, 0, 0, 0, 0]; continue; }
+                tx /= m; ty /= m;
+                const nx = -ty;
+                const ny = tx;
+                const d = nx * LIGHT_SCREEN[0] + ny * LIGHT_SCREEN[1];
+                push[i] = [nx * Math.sign(d), ny * Math.sign(d),
+                    Math.abs(d), tx, ty];
+            }
+            const half = lw / 2;
+            for (let k = 0; k < bands; k++) {
+                const t2 = k / (bands - 1);            // 0 shadow -> 1 lit
+                let q = LIGHT_AMB + LIGHT_DIFF * gn * t2;
+                if (hiGain > 0 && t2 > 0.999) q += LIGHT_HI * hiGain * gn;
+                if (cel) {
+                    q = quant(q, LIGHT_AMB,
+                        LIGHT_AMB + (LIGHT_DIFF + LIGHT_HI * hiGain) * gn);
+                }
+                ctx.strokeStyle = shade(col, near, dim, 1, q);
+                ctx.lineWidth = Math.max(1, lw * (1 - 0.8 * gn * t2));
+                const bandHalf = ctx.lineWidth / 2;
+                if (k === 0) { strokePath(P); continue; }
+                const off = (half - bandHalf) * t2;
+                const shifted = P.map((q2, i) => [
+                    q2[0] + push[i][0] * push[i][2] * off,
+                    q2[1] + push[i][1] * push[i][2] * off,
+                ]);
+                const e = half - bandHalf;
+                if (e > 0.01) {
+                    const p0 = shifted[0];
+                    const t0 = push[0];
+                    const pN = shifted[last];
+                    const tN = push[last];
+                    shifted.unshift([p0[0] - t0[3] * e, p0[1] - t0[4] * e]);
+                    shifted.push([pN[0] + tN[3] * e, pN[1] + tN[4] * e]);
+                }
+                strokePath(shifted);
+            }
+        };
+
+        // ...and the same idea for a lone atom, which is a SPHERE rather than a
+        // cylinder: concentric discs shrinking toward a centre offset along the
+        // light, which is the 2D read of a highlight sitting off-centre on a
+        // ball. Discs, not a radial gradient, for the same export reason.
+        const fillRound = (x, y, r, col, near, dim, gain) => {
+            const wG = Math.max(0, Math.min(1,
+                (2 * r - SHADE_W_MIN) / (SHADE_W_FULL - SHADE_W_MIN)));
+            const gn = (gain === undefined ? 1 : gain) * wG;
+            const bands = (!lightOn || gn < 0.02) ? 0 : (cel ? celLevels : 4);
+            if (bands < 2) {
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, Math.PI * 2);
+                ctx.fillStyle = shade(col, near, dim);
+                ctx.fill();
+                return;
+            }
+            for (let k = 0; k < bands; k++) {
+                const t2 = k / (bands - 1);
+                let q = LIGHT_AMB + LIGHT_DIFF * gn * t2;
+                if (hiGain > 0 && t2 > 0.999) q += LIGHT_HI * hiGain * gn;
+                if (cel) {
+                    q = quant(q, LIGHT_AMB,
+                        LIGHT_AMB + (LIGHT_DIFF + LIGHT_HI * hiGain) * gn);
+                }
+                const rr = r * (1 - 0.75 * gn * t2);
+                const off = (r - rr) * t2;
+                ctx.beginPath();
+                ctx.arc(x + LIGHT_SCREEN[0] * off, y + LIGHT_SCREEN[1] * off,
+                    rr, 0, Math.PI * 2);
+                ctx.fillStyle = shade(col, near, dim, 1, q);
+                ctx.fill();
+            }
         };
 
         ctx.lineJoin = 'round';
@@ -6190,13 +8500,6 @@
                     for (let s = B.length - 1; s >= 0; s--) ctx.lineTo(B[s][0], B[s][1]);
                     ctx.closePath();
                     ctx.fill();
-                } else if (g.kind === 'plate' && g.q) {
-                    ctx.fillStyle = `rgb(${g.c.r},${g.c.g},${g.c.b})`;
-                    ctx.beginPath();
-                    ctx.moveTo(g.q[0][0], g.q[0][1]);
-                    for (let k = 1; k < g.q.length; k++) ctx.lineTo(g.q[k][0], g.q[k][1]);
-                    ctx.closePath();
-                    ctx.fill();
                 }
             }
             ctx.restore();
@@ -6225,7 +8528,8 @@
             // behind other geometry paints nothing visible - skip it entirely
             if (exportHidden) {
                 if (g.kind === 'rib' && ribHidden(g)) continue;
-                if (g.kind === 'plate' && g.q.every(exportHidden)) continue;
+                if (g.kind === 'stickFace' && quadHidden(g.q)) continue;
+                if (g.kind === 'joint' && quadHidden(g.q)) continue;
                 // strokes kept by the interval culling's safety pad but lying
                 // fully outside the canvas: nothing of them can show
                 if (g.kind === 'tube' || (g.kind === 'line' && g.pA && g.pB)
@@ -6234,8 +8538,8 @@
                         : g.kind === 'line' ? g.w / 2
                             : Math.max(1.5, g.tubeA * 2 * scale * g.pe) / 2)
                         + outlineW + 2;
-                    const P = g.kind === 'tube' ? g.pts
-                        : g.kind === 'line' ? [g.pA, g.pB] : [g.pA];
+                    const P = (g.kind === 'tube' || g.kind === 'line')
+                        ? g.pts : [g.pA];
                     let x0b = Infinity; let y0b = Infinity;
                     let x1b = -Infinity; let y1b = -Infinity;
                     for (const q of P) {
@@ -6330,7 +8634,13 @@
                     // face, and the pale rim is what separates strands where
                     // they overlap in a crowded sheet. Only the THICKNESS
                     // faces change - the broad faces keep the element colour.
-                    const gc = (rich && g.ss === 'E') ? SHEET_EDGE_RGB : g.c;
+                    //
+                    // A BASE PLATE IS THE SAME OBJECT: a card with a coloured
+                    // face, stacked against its neighbours up the duplex, where
+                    // a pale rim is what keeps one rung from merging into the
+                    // next. So it takes the same edge.
+                    const gc = (rich && (g.ss === 'E' || g.naRung))
+                        ? SHEET_EDGE_RGB : g.c;
                     ctx.lineWidth = 1;
                     ctx.lineJoin = 'round';
                     // Export: whole band as one path + one multi-stop
@@ -6501,6 +8811,42 @@
                 let showR = nMin < CULL_EPS;         // right outward = -n
                 let showTop = bMax > -CULL_EPS;      // top outward = +b
                 let showBot = bMin < CULL_EPS;       // bottom outward = -b
+                // A SLAB OF NO THICKNESS HAS NO EXTRA FACES. At thickness 0 the
+                // +b and -b faces land on each other and the two thickness
+                // bands and both caps have no area at all, so drawing them is
+                // one fill painted twice over and four more that cover nothing.
+                // Flat means flat: one face, no sides, no caps.
+                const flatSlab = (() => {
+                    for (let s2 = 0; s2 < ns; s2++) {
+                        const a2 = Lp[s2]; const b2 = Lm[s2];
+                        if (Math.hypot(a2[0] - b2[0], a2[1] - b2[1]) > 0.25) {
+                            return false;                     // a quarter pixel
+                        }
+                    }
+                    return true;
+                })();
+                if (flatSlab) {
+                    // The two bands have no area, and the two faces are the SAME
+                    // quad - so exactly one is drawn, and WHICH one is not a free
+                    // choice. Top and bottom carry different colours (a helix's
+                    // inner face is tinted pale, its outer face is not) and
+                    // different shading, so picking the wrong one paints the
+                    // inside of a helix in the outside's colour.
+                    //
+                    // Pick by the MEAN facing over the piece, which is the face
+                    // actually turned toward the viewer. `if (showTop) showBot =
+                    // false` was wrong twice over: on a curved piece oB straddles
+                    // zero, so both flags are set and top won regardless of which
+                    // way the piece really faced; and CULL_EPS keeps a face alive
+                    // until it is CLEARLY turned away, which is right when both
+                    // faces are drawn and wrong when it decides between them.
+                    showL = false;
+                    showR = false;
+                    let bSum = 0;
+                    for (let s2 = 0; s2 < ns; s2++) bSum += g.oB[s2];
+                    showTop = bSum >= 0;
+                    showBot = !showTop;
+                }
                 // ARROWHEAD BARB FACES. Backface culling assumes a surface's
                 // outward direction is +-n or +-b, which holds for a plain slab.
                 // A head breaks that: the barb step is a quad whose two stations
@@ -6560,7 +8906,8 @@
                 // and the cross-section at the arrow tip are the same white card
                 // as the thickness bands. Colouring them with the element colour
                 // left a green end on an otherwise white-edged plate.
-                const capCol = shade((rich && g.ss === 'E') ? SHEET_EDGE_RGB : g.c,
+                const capCol = shade((rich && (g.ss === 'E' || g.naRung))
+                    ? SHEET_EDGE_RGB : g.c,
                     nearS, 1, edgeTone(), capLum());
                 // start cap outward = -T, end cap outward = +T
                 const showCapStart = g.capStart && g.oT[0] < CULL_EPS;
@@ -6925,58 +9272,6 @@
                     ctx.lineJoin = 'round';
                     strokePath(g.pts);
                 }
-            } else if (g.kind === 'plate') {
-                // Flat quad: fill, then ink the rim. Tone follows how face-on
-                // the plate is (same 0.72-1.0 ramp the slab faces use) so a
-                // plate seen edge-on pales into the page instead of staying a
-                // hard slab, and lum follows the light like every other
-                // surface - both gated by lightOn via faceTone's own switch.
-                const a = Math.min(1, Math.max(0, g.face));
-                const tv = soft(0.72 + 0.28 * a);
-                const lv = soft(LIGHT_AMB + LIGHT_DIFF * (0.35 + 0.65 * a));
-                const body = shade(g.c, near, 1, tv, lv);
-                // THICKNESS by stroke dilation rather than a 6-face box. A
-                // base plate is thin, and viewed along the helix axis it is
-                // seen almost edge-on - as a zero-width quad it collapses to a
-                // hairline and reads as a stick. Stroking the quad outline
-                // with the fill colour at the plate's thickness widens it by
-                // exactly that amount in every direction, so edge-on it is a
-                // solid band and face-on it is unchanged. Six real faces would
-                // cost 6x the fills for a difference only visible at grazing.
-                // Ink the two LONG edges only. A cross edge at the centre drew a
-                // line straight across every rung where its two halves meet -
-                // they are one base pair, so there is nothing to divide - and one
-                // at the backbone drew over a join already covered by the slab.
-                // With no cross edges the subdivision cuts are invisible too:
-                // neighbouring segments simply continue the same two edges.
-                const longEdges = () => {
-                    ctx.beginPath();
-                    ctx.moveTo(g.q[1][0], g.q[1][1]); ctx.lineTo(g.q[2][0], g.q[2][1]);
-                    ctx.moveTo(g.q[3][0], g.q[3][1]); ctx.lineTo(g.q[0][0], g.q[0][1]);
-                };
-                ctx.lineJoin = 'miter';
-                ctx.miterLimit = 2;
-                ctx.lineCap = 'butt';
-                if (paintInkW) {
-                    ctx.strokeStyle = inkOf(g, near);
-                    ctx.lineWidth = paintInkW;
-                    longEdges();
-                    ctx.stroke();
-                }
-                // Fill AND hairline-stroke in the same colour. Neighbouring
-                // pieces share an edge exactly, and two abutting fills still let
-                // the background through as an antialiasing seam - a thin line
-                // ruled across the rung. The ribbon's own quads are painted this
-                // way for the same reason (see fillQuadSafe).
-                ctx.fillStyle = body;
-                ctx.strokeStyle = body;
-                ctx.beginPath();
-                ctx.moveTo(g.q[0][0], g.q[0][1]);
-                for (let k = 1; k < 4; k++) ctx.lineTo(g.q[k][0], g.q[k][1]);
-                ctx.closePath();
-                ctx.fill();
-                ctx.lineWidth = 1;
-                ctx.stroke();
             } else if (g.kind === 'tube') {
                 const lw = Math.max(1.5, g.tubeA * 2 * scale * g.pe);
                 if (paintInkW) {
@@ -7010,104 +9305,9 @@
                 // comic treatment and reuses the same cel levels the ribbon
                 // faces use. Falls back to the old flat stroke when the light
                 // is off or the tube is too thin for bands to resolve.
-                const tubeBands = (!lightOn || lw < 3)
-                    ? 0 : (cel ? celLevels : 4);
-                ctx.lineCap = 'round';
-                if (tubeBands < 2) {
-                    ctx.strokeStyle = shade(g.c, near, LOOP_DIM);
-                    ctx.lineWidth = lw;
-                    strokePath(g.pts);
-                } else {
-                    // Per-point screen normal, signed toward the light.
-                    // The tube's own points carry the direction dependence,
-                    // so the GEOMETRY (how far each band is pushed toward the
-                    // light) varies smoothly along and ACROSS primitives.
-                    //
-                    // The band TONES are deliberately constant - identical for
-                    // every tube in the scene. An earlier version scaled them
-                    // by the primitive's mean |n.L|, which made each residue
-                    // interval a slightly different tone; once quantized, that
-                    // stepped at whichever intervals happened to straddle a
-                    // level boundary, and the loops read as a chain of visibly
-                    // separate segments. Tone must not depend on anything
-                    // per-primitive, or the seams come back.
-                    const P = g.pts;
-                    const last = P.length - 1;
-                    const push = new Array(P.length);
-                    // ext[i+1] === P[i] when every sample projected; then the
-                    // ends get a true central difference from the neighbour
-                    // interval's territory instead of a one-sided one.
-                    const E = (g.ext && g.ext.length === P.length + 2
-                        && g.ext.every(Boolean)) ? g.ext : null;
-                    for (let i = 0; i <= last; i++) {
-                        const a = E ? E[i] : P[Math.max(0, i - 1)];
-                        const b = E ? E[i + 2] : P[Math.min(last, i + 1)];
-                        let tx = b[0] - a[0];
-                        let ty = b[1] - a[1];
-                        const m = Math.hypot(tx, ty);
-                        if (m < 1e-6) { push[i] = [0, 0, 0, 0, 0]; continue; }
-                        tx /= m; ty /= m;
-                        // screen normal (perpendicular), signed toward light
-                        const nx = -ty;
-                        const ny = tx;
-                        const d = nx * LIGHT_SCREEN[0] + ny * LIGHT_SCREEN[1];
-                        push[i] = [nx * Math.sign(d), ny * Math.sign(d),
-                            Math.abs(d), tx, ty];
-                    }
-                    // band 0 = full width at the shadow tone, then inward
-                    const half = lw / 2;
-                    for (let k = 0; k < tubeBands; k++) {
-                        const t = k / (tubeBands - 1);          // 0 shadow -> 1 lit
-                        let q = LIGHT_AMB + LIGHT_DIFF * t;
-                        if (hiGain > 0 && t > 0.999) {
-                            q += LIGHT_HI * hiGain;
-                        }
-                        if (cel) {
-                            q = quant(q, LIGHT_AMB,
-                                LIGHT_AMB + LIGHT_DIFF + LIGHT_HI * hiGain);
-                        }
-                        ctx.strokeStyle = shade(g.c, near, LOOP_DIM, 1, q);
-                        ctx.lineWidth = Math.max(1, lw * (1 - 0.8 * t));
-                        const bandHalf = ctx.lineWidth / 2;
-                        if (k === 0) {
-                            strokePath(P);
-                        } else {
-                            // offset stays inside the tube: the band's own
-                            // half-width never crosses the silhouette, so the
-                            // black outline is never overpainted.
-                            const off = (half - bandHalf) * t;
-                            const shifted = P.map((p, i) => [
-                                p[0] + push[i][0] * push[i][2] * off,
-                                p[1] + push[i][1] * push[i][2] * off,
-                            ]);
-                            // LONGITUDINAL EXTENSION. Round caps reach half a
-                            // LINE WIDTH past each end, so a narrow highlight
-                            // band covers far less of the joint than the
-                            // full-width shadow band beneath it. The next
-                            // tube's shadow band then erased the previous
-                            // tube's highlight over the difference, dashing
-                            // the stripe. Extending each narrow band along the
-                            // tangent by exactly that difference makes every
-                            // band span the same arc, so a tube always repaints
-                            // a COMPLETE cylinder over any joint it covers.
-                            // Butt caps fixed the dashes too, but left wedge
-                            // gaps on the outside of every turn, because
-                            // lineJoin does not apply between separate paths.
-                            const e = half - bandHalf;
-                            if (e > 0.01) {
-                                const p0 = shifted[0];
-                                const t0 = push[0];
-                                const pN = shifted[last];
-                                const tN = push[last];
-                                shifted.unshift([p0[0] - t0[3] * e, p0[1] - t0[4] * e]);
-                                shifted.push([pN[0] + tN[3] * e, pN[1] + tN[4] * e]);
-                            }
-                            strokePath(shifted);
-                        }
-                    }
-                }
+                strokeRound(g.pts, lw, g.c, near, LOOP_DIM, g.ext);
             } else if (g.kind === 'line') {
-                const pts = [[g.x1, g.y1], [g.x2, g.y2]];
+                const pts = g.pts.map((q2) => [q2[0], q2[1]]);
                 if (paintInkW || g.sel) {
                     const ink = g.sel ? SELECTION_INK_CSS : inkOf(g, near);
                     ctx.lineCap = 'butt';
@@ -7116,15 +9316,96 @@
                         ? Math.max(paintInkW, SELECTION_INK_WIDTH * 2) : paintInkW);
                     strokePath(pts);
                     const r = ctx.lineWidth / 2;
+                    // only the run's own ends can be free ends
                     if (capAt(g, g.joints[0])) blackCap(g.x1, g.y1, r, ink);
                     if (capAt(g, g.joints[1])) blackCap(g.x2, g.y2, r, ink);
                 }
+                // What reaches here is a contact - an annotation drawn over
+                // the structure, which stays flat and bright because lighting
+                // one makes it read as another bond - or a bond whose box could
+                // not be built (a zero-length or unprojectable one), which is
+                // better as a plain stroke than as nothing.
                 ctx.lineCap = 'round';
                 ctx.strokeStyle = g.flat
                     ? `rgb(${g.c.r},${g.c.g},${g.c.b})`
                     : shade(g.c, near, 1);
                 ctx.lineWidth = g.w;
                 strokePath(pts);
+            } else if (g.kind === 'joint') {
+                // The polygon a mitred junction leaves in the middle, above and
+                // below. Its edges are all shared with the legs' own faces, so
+                // none of them is ever a silhouette and it carries no ink of
+                // its own - it is simply the top of the joint.
+                const nearS = nearOf(g.z);
+                // Same material as the legs it bridges, so the same rule: no
+                // facing wash. A joint lies between two sticks that keep their
+                // full tone, and fading only this one toward the paper as the
+                // junction turns edge-on made it read as a hole between them.
+                const tv = 1;
+                let qv = LIGHT_AMB + LIGHT_DIFF * Math.max(0, g.nl);
+                if (hiGain > 0 && g.nl > HI_KNEE) {
+                    qv += LIGHT_HI * hiGain * (g.nl - HI_KNEE) / (1 - HI_KNEE);
+                }
+                if (cel) {
+                    qv = quant(qv, LIGHT_AMB,
+                        LIGHT_AMB + LIGHT_DIFF + LIGHT_HI * hiGain);
+                }
+                const body = shade(g.c, nearS, 1, tv, soft(qv));
+                ctx.fillStyle = body;
+                ctx.strokeStyle = body;
+                ctx.lineWidth = 1;
+                ctx.lineJoin = 'round';
+                ctx.beginPath();
+                ctx.moveTo(g.q[0][0], g.q[0][1]);
+                for (let k2 = 1; k2 < g.q.length; k2++) {
+                    ctx.lineTo(g.q[k2][0], g.q[k2][1]);
+                }
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            } else if (g.kind === 'stickFace') {
+                // ONE FACE OF A LIGAND BOND, lit the way a ribbon face is lit -
+                // same shade(), same facing ramp, same response to the Shade
+                // and Hilite controls - so a ligand is made of the same
+                // material as the structure it sits in.
+                //
+                // NOTHING HERE DRAWS INK. Every line a stick carries comes from
+                // the silhouette curves emitted when its box was built. In
+                // particular there is no cross-section rim: that stroke is what
+                // ruled a line across every stick in the previous attempt.
+                if (!g.draw) continue;
+                const nearS = nearOf(g.z);
+                // NO FACING WASH. The ribbon fades toward the paper as it turns
+                // edge-on, which is what makes a ribbon look thin and airy. A
+                // stick is a solid rod, and its SIDE faces are near edge-on at
+                // every angle - so that same ramp bleaches precisely the faces
+                // that should read as the shaded sides, and the stick loses its
+                // dark side and its depth with it. A solid keeps its full tone
+                // and lets the light alone decide how dark a face is.
+                const tv = 1;
+                let qv = LIGHT_AMB + LIGHT_DIFF * Math.max(0, g.nl);
+                if (hiGain > 0 && g.nl > HI_KNEE) {
+                    qv += LIGHT_HI * hiGain * (g.nl - HI_KNEE) / (1 - HI_KNEE);
+                }
+                if (cel) {
+                    qv = quant(qv, LIGHT_AMB,
+                        LIGHT_AMB + LIGHT_DIFF + LIGHT_HI * hiGain);
+                }
+                const body = shade(g.c, nearS, 1, tv, soft(qv));
+                ctx.fillStyle = body;
+                // stroked in its own colour at 1px, like the base plates: two
+                // abutting fills otherwise let the paper through as a hairline,
+                // which on a box reads as a ruled crease
+                ctx.strokeStyle = body;
+                ctx.lineWidth = 1;
+                ctx.lineJoin = 'round';
+                ctx.lineCap = 'butt';
+                ctx.beginPath();
+                ctx.moveTo(g.q[0][0], g.q[0][1]);
+                for (let k2 = 1; k2 < 4; k2++) ctx.lineTo(g.q[k2][0], g.q[k2][1]);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
             } else { // dot
                 if (paintInkW || g.sel) {
                     const ow = g.sel
@@ -7134,10 +9415,10 @@
                     ctx.fillStyle = g.sel ? SELECTION_INK_CSS : inkOf(g, near);
                     ctx.fill();
                 }
-                ctx.beginPath();
-                ctx.arc(g.x1, g.y1, g.r, 0, Math.PI * 2);
-                ctx.fillStyle = shade(g.c, near, 1);
-                ctx.fill();
+                // A lone atom is the one thing here with no axis, so it stays
+                // round: a box drawn for it would take its roll from nowhere
+                // and read as a die rolled onto the page.
+                fillRound(g.x1, g.y1, g.r, g.c, near, 1, LIGAND_MODEL);
             }
         }
         if (anim) ctx.restore();   // end of the off-register colour layer
@@ -7443,15 +9724,7 @@
                     for (let j = 0; j + 1 < g.pts.length; j++) {
                         addCapsule(g.pts[j], g.pts[j + 1], rr);
                     }
-                } else if (g.kind === 'plate') {
-                    // Base plates OCCLUDE. Without this the grid only knows
-                    // about ribbons and tubes, so the backbone's outline - drawn
-                    // in this final pass and tested only against what the grid
-                    // holds - stayed visible straight through any rung in front
-                    // of it. The plate quad is already four projected corners,
-                    // which is exactly what addQuad consumes.
-                    addQuad(g.q, 0);
-                } else if (g.kind === 'line' && g.pA && g.pB) {
+                } else if (g.kind === 'line' && g.pts) {
                     // GENERIC SEGMENTS OCCLUDE: ligand bonds, explicit bonds,
                     // cyclic closures and contacts. They are painted as opaque
                     // strokes (width w, plus their own outline), but were never
@@ -7465,7 +9738,18 @@
                     // other stroke. Radius matches the painted extent (stroke +
                     // outline), shrunk by 1 like tubes so a bond touching the
                     // ribbon does not eat the ribbon's own edge.
-                    addCapsule(g.pA, g.pB, (g.w + outlineW) / 2 - 1);
+                    for (let k2 = 0; k2 + 1 < g.pts.length; k2++) {
+                        addCapsule(g.pts[k2], g.pts[k2 + 1], (g.w + outlineW) / 2 - 1);
+                    }
+                } else if (g.kind === 'joint') {
+                    for (let k2 = 1; k2 + 1 < g.q.length; k2++) {
+                        addQuad([g.q[0], g.q[k2], g.q[k2 + 1], g.q[0]], g.gs0);
+                    }
+                } else if (g.kind === 'stickFace') {
+                    // every face, turned away or not: a box's back faces and
+                    // its caps at a shared atom are what hide the neighbouring
+                    // box's buried edges
+                    addQuad(g.q, g.gs0);
                 } else if (g.kind === 'dot' && g.pA) {
                     // lone-position dot: a capsule of zero length is a disc
                     addCapsule(g.pA, g.pA, g.r + outlineW / 2 - 1);
@@ -7880,20 +10164,22 @@
                     g2.clearRect(0, 0, dw, dh);
                     const pat = g2.createPattern(tile, 'repeat');
                     if (pat) {
-                        // GRAIN SCALES WITH THE VIEW, ABOUT THE CANVAS CENTRE.
-                        // The tile is a fixed pixel size, so unscaled it stays
-                        // put while the structure grows and shrinks - the same
-                        // speckle over an ever smaller drawing reads as the
+                        // THE GRAIN DOES NOT ZOOM. The paper is the MEDIUM, not
+                        // part of the subject: a drawing is made on one sheet at
+                        // one tooth, and moving closer to it does not coarsen the
+                        // tooth. So the tile is pinned to the canvas and stays
+                        // fine at every zoom.
+                        //
+                        // It used to scale with the view, on the argument that a
+                        // fixed speckle over a shrinking drawing reads as the
                         // noise coarsening rather than the drawing shrinking.
-                        // Scaling alone is not enough though: a bare scale is
-                        // anchored at the pattern origin (the canvas corner), so
-                        // the grain SLIDES toward or away from that corner as
-                        // you zoom, which reads as the paper translating under
-                        // the molecule. Anchoring the scale at the centre - the
-                        // point the zoom itself is about - makes the grain
-                        // expand and contract in place instead.
-                        // Clamped: below ~0.35 the tile resamples hard enough to
-                        // alias into checkering, above ~3 it smears.
+                        // That is true of the zoomed-OUT end and wrong at the
+                        // other: following the zoom up multiplied the tile by as
+                        // much as 3, and grain that coarse stops being paper and
+                        // becomes a visible texture laid over the picture, which
+                        // is the more damaging of the two. It also meant the same
+                        // structure never looked like the same sheet twice.
+                        //
                         // GRAIN_SCALE shrinks the whole texture, all three
                         // octaves together. Done here rather than by raising the
                         // octave grid counts because the finest octave already
@@ -7902,8 +10188,7 @@
                         // film static the octave construction exists to avoid.
                         // Minifying a texture is filtered by the browser, so it
                         // softens rather than aliases.
-                        const zoomK = GRAIN_SCALE * Math.max(0.35, Math.min(3,
-                            (renderer.viewerState && renderer.viewerState.zoom) || 1));
+                        const zoomK = GRAIN_SCALE;
                         if (pat.setTransform && typeof DOMMatrix !== 'undefined') {
                             try {
                                 const cx = dw / 2;
@@ -7968,6 +10253,92 @@
                 renderer.screenValid[i] = fid;
             }
         }
+        // WHAT A FULL-QUALITY FRAME COSTS, which is what the gesture degrade
+        // decides on. Recorded ONLY when the ink actually ran: measuring every
+        // frame would feed the decision its own result - drop the ink, the
+        // frame gets fast, the ink comes straight back - and the outline would
+        // flicker on and off through the drag.
+        // A frame that REBUILT the caches is not a sample of what a gesture
+        // frame costs. Secondary structure, pairing and sheet frames are keyed
+        // on secKey, which a drag never changes, so that work happens once and
+        // then never again for the whole gesture - but it lands in the same
+        // timer. Measured at 900px, Richardson, ink on:
+        //     1TIM (494 residues)  cold 46.0, 49.6, 38.3, 30.1, 23.1 ms
+        //                          warm 11.2 ms median
+        //     3A3A ( 86 residues)  cold 22.7 ms   warm  3.5 ms
+        // The median of five was meant to absorb exactly this, and cannot: the
+        // cold frames arrive CONSECUTIVELY, so right after any cache
+        // invalidation the whole history is cold and its median is 38 ms. A drag
+        // started at that moment dropped the outline on a 494-residue protein,
+        // and - because nothing is recorded while the ink is off - stayed
+        // degraded for the entire gesture. A drag started a second later saw a
+        // median of 11 ms and behaved perfectly. That is the whole of the
+        // reported "sometimes fine, sometimes not": the decision was reading the
+        // cost of building the structure, not the cost of drawing it.
+        // THE HISTORY BELONGS TO A STRUCTURE. It used to persist across loads,
+        // so opening a ribosome and then a small protein left the small one
+        // carrying the ribosome's 260 ms samples - and since it takes three new
+        // samples to shift the median of five, the small protein spent its first
+        // drags degraded for no reason. Keyed on the object rather than on
+        // secKey, which also changes per FRAME: a trajectory step is the same
+        // structure at the same cost, and resetting there would mean the history
+        // never fills during playback.
+        {
+            const costKey = `${renderer.currentObjectName}|${n}`;
+            if (renderer._inkedMsKey !== costKey) {
+                renderer._inkedMsKey = costKey;
+                renderer._inkedMs = [];
+                renderer._bareMs = [];
+                renderer._lastInkedMs = undefined;
+                renderer._lastBareMs = undefined;
+                renderer._inkRatio = undefined;
+                renderer._inkDegraded = false;
+            }
+        }
+        if (!cacheRebuilt) {
+            const _t1 = (typeof performance !== 'undefined' && performance.now)
+                ? performance.now() : Date.now();
+            // MEDIAN OF THE LAST FIVE, not the last one. A single frame is a
+            // bad estimate - the first render after any change pays JIT and
+            // cache costs (measured 52 and 60 ms on a structure that settles at
+            // 16), and a GC can land anywhere. Deciding on one sample let a
+            // transient spike degrade an entire drag on a structure that never
+            // needed it.
+            //
+            // BOTH KINDS OF FRAME ARE TIMED, into their own histories. Timing
+            // only the inked ones was a one-way door: the moment the outline
+            // came off, the estimate froze at whatever had just been measured -
+            // and what had just been measured was the warm-up, since the drag's
+            // first inked frames are its most expensive. On 1TIM those first
+            // frames cost 27 ms against a 25 ms budget while frame 30 of the
+            // same drag cost 9, so the estimate latched 3x high and the outline
+            // stayed off for a gesture that could easily have carried it.
+            // Timing the bare frames too means the estimate keeps tracking while
+            // degraded and the outline can come back.
+            const inked = renderer._inkRan;
+            const hist = inked
+                ? (renderer._inkedMs || (renderer._inkedMs = []))
+                : (renderer._bareMs || (renderer._bareMs = []));
+            hist.push(_t1 - _t0);
+            if (hist.length > 5) hist.shift();
+            const sorted = hist.slice().sort((x, y) => x - y);
+            const med = sorted[sorted.length >> 1];
+            if (inked) renderer._lastInkedMs = med;
+            else renderer._lastBareMs = med;
+            // What the ink COSTS, as a multiplier on a bare frame. Measured at
+            // 900px: 1BNA 2.6x, 3A3A 2.3x, 1TIM 1.6x - it falls as the structure
+            // grows, because the fills grow faster than the silhouette does.
+            // Taken from this structure's own two histories once both are real,
+            // so it needs no constant.
+            // Updated ONLY on a frame where the ink actually ran, so the two
+            // sides of the ratio are contemporaneous. Recomputing it every frame
+            // was circular and did nothing: while degraded the inked median is
+            // frozen, so bare x (frozenInked / bare) is just frozenInked again.
+            if (inked && renderer._lastBareMs > 0.01
+                && renderer._inkedMs.length >= 3 && renderer._bareMs.length >= 3) {
+                renderer._inkRatio = renderer._lastInkedMs / renderer._lastBareMs;
+            }
+        }
     }
 
     // extendSec is exported alongside makeSec/smoothSec so tests/ss_bench.js can
@@ -7986,7 +10357,7 @@
         // the user drags the slider, because ribbon shares it.)
         richardson: {
             width: RICH_WIDTH_DEFAULT,
-            outlineWidth: 3.0,
+            outlineWidth: 2.0,
             thickness: RICH_THICK_DEFAULT,
             outlineTint: RICH_TINT_DEFAULT,
             highlight: RICH_HILITE_DEFAULT,
@@ -8006,7 +10377,7 @@
         },
         cartoon: {
             width: 3.0,
-            outlineWidth: 3.0,
+            outlineWidth: 2.0,
             thickness: 0,
             outlineTint: 0,
             highlight: 1.8,
@@ -8026,6 +10397,16 @@
         '3d': {
             width: 3.0,
             outlineWidth: 0,
+            // 1.0 A of slab - a half-thickness of 0.5, four times the ribbon's
+            // usual RIBBON_TH_A. This preset is solid shaded geometry rather
+            // than a drawing, and a thin slab under full highlight reads as a
+            // lit sheet of paper rather than as an object.
+            //
+            // The control is a TOTAL thickness in Angstrom. It used to sit at
+            // 0.5 so that the LIGAND sticks, which followed it, came out square;
+            // that is no longer a consideration - a ligand keeps its own section
+            // and only a preset asking for 0 reaches it - so this value now
+            // describes the ribbon alone.
             thickness: 1.0,
             outlineTint: 0,
             highlight: 2.0,
@@ -8041,7 +10422,27 @@
     // The tube style starts from the plain cartoon values. (The 'ribbon' PRESET
     // does too, but setPreset maps it to .cartoon directly rather than needing
     // an alias of its own.)
-    STYLE_DEFAULTS.tube = STYLE_DEFAULTS.cartoon;
+    // TUBE STARTS FROM THE PLAIN CARTOON VALUES, but it is a STYLE in its own
+    // right - tube and cartoon are the two the Style control offers - so it
+    // needs its own table, not a reference to someone else's.
+    //
+    // This used to be `STYLE_DEFAULTS.tube = STYLE_DEFAULTS.cartoon`, which
+    // shares the OBJECT rather than the values: the two could never hold
+    // different settings, and an edit meant for one silently moved the other.
+    // Giving Ribbon a 2.0 outline moved tube's with it, twice.
+    //
+    // A COPY OF EVERYTHING, not a lean table of the few keys tube actually
+    // draws with (width and outline; the cartoon* keys belong to the plugin,
+    // which only draws the cartoon style). That is the rule at the top of
+    // STYLE_DEFAULTS and it is load-bearing: _applyStyleDefaults guards the
+    // optional keys with `!== undefined`, so a key left out here is not
+    // defaulted, it is SKIPPED - and the previous style's value survives into
+    // this one. Spelling out only what differs keeps the two in step as the
+    // table grows.
+    STYLE_DEFAULTS.tube = Object.assign({}, STYLE_DEFAULTS.cartoon, {
+        // the heavier outline tube has always had; Ribbon and Richardson are 2.0
+        outlineWidth: 3.0,
+    });
 
     // ---- 'ss' COLOR MODE ---------------------------------------------------
     // Colour by secondary structure, in the convention the Richardson drawings

@@ -1338,6 +1338,23 @@ function applyBestViewRotation(animate = true) {
     if (renderer) {
         renderer.isOrientAnimating = true;
     }
+    // A BIG STRUCTURE JUMPS INSTEAD OF FLYING. A one-second orient is only a
+    // fly-to if the frames arrive; at 80 ms each it is twelve of them, which
+    // reads as the viewer stalling rather than as a camera move - and it is a
+    // second of the most expensive rendering the viewer ever does, for an
+    // effect nobody sees. renderer.smoothAnimationOk() is the same test that
+    // vetoes inertia: measured frame cost, with a segment count as the floor.
+    //
+    // Rather than skip the animation, START IT ALREADY FINISHED - wind the
+    // clock back by its own duration, so the first frame takes the normal
+    // completion path. Every bit of end-of-orient bookkeeping (final rotation,
+    // centre, extent, focal length, shadow and tint invalidation) then runs
+    // exactly as it always does, in one frame, instead of being duplicated here
+    // and drifting out of step with it later.
+    if (renderer && renderer.smoothAnimationOk && !renderer.smoothAnimationOk()) {
+        rotationAnimation.startTime = performance.now()
+            - (rotationAnimation.duration || 0);
+    }
     requestAnimationFrame(animateRotation);
 }
 

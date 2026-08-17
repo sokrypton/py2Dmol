@@ -62,93 +62,74 @@ viewer.show()
 ```
 
 ### Render styles
-Two styles are available (switchable live via the Style dropdown in the controls):
+Two styles, switchable live from the Style dropdown:
 - **`tube`** (default) — the classic py2Dmol smooth backbone trace.
-- **`cartoon`** — secondary-structure cartoon: twisted ribbons for helices, plates with arrowheads for strands, thin tubes for loops, with outlines.
+- **`cartoon`** — secondary-structure cartoon: twisted ribbons for helices, arrowhead plates for strands, thin tubes for loops.
 
-The cartoon style carries named **presets** (the Preset dropdown, or `preset=` from Python) — starting points whose values load into the normal controls, which stay live for tweaking:
-- **`ribbon`** (the default) — plain cartoon: smooth off, no slab thickness, ink on. The neutral starting point.
-- **`richardson`** — the hand-drawn convention of Jane Richardson's protein drawings: flat wide helices, thick β-strands carrying arrowheads and white card edges, thin loops, and coloured-pencil paper grain. See below.
-- **`3d`** — solid shaded geometry: thickness 1.0, no outline, smooth shading, flat sheets. Also switches the page to a black background, which is what that look is for; pass `bg=` explicitly to override.
-
-Both cartoon styles work on C-alpha-only models, because the backbone is rebuilt from the trace: the local geometry is binned PULCHRA-style and the peptide C and N read out of a fitted table (C to 0.21 Å rms, N to 0.17 Å). Everything else follows from that backbone:
-
-- **Secondary structure** is real DSSP — hydrogen-bond energies, turns and bridges — run on the rebuilt backbone. Measured against DSSP on the true backbones of 151 native chains: **Q3 90.0%** with **94.0% strand recall**, against 85.3% / 72.4% for the C-alpha-only assignment it replaces. Backbone dihedrals gate the assignment the way PyMOL's `dss` does, and ladders are extended by one rung where φ/ψ allows: strict DSSP boundaries score a higher Q3 (91.3%) but only 86.9% strand recall, and a strand drawn as a loop is the more visible error in a cartoon.
-- **Which way a strand faces** comes from the sheet itself: the bridge partners give the ladders, and each strand residue's ribbon normal is fitted to a patch of the sheet spanning its own neighbourhood and its partners', then relaxed along the strand and across the rungs. The angle between the ribbon faces of two paired residues drops from 38.9° to 21.2° — which is the floor, since the sheets themselves twist 20.0° between paired residues.
-- **Nucleic bases** work the same way from the C4′ trace: where a base points, and the plane it lies in, come from a fitted table (16.7° median, 99.9% coverage). This one has a real tail — a base can sit *anti* or *syn* on an identical backbone and the trace cannot tell which — so the base-pair test is widened, a base pointing away from its partner is flipped once pairing is known, and the ribbon's twist per residue is capped. Against files that do carry the geometry, B-DNA and tRNA pair identically; tertiary RNA differs on a handful of pairs.
-
-Nothing per-residue is stored or shipped for either polymer — the trace is the input. See `tests/README.md`.
+The cartoon style carries named **presets** — starting points that load into the
+normal controls, which stay live for tweaking:
+- **`richardson`** (default) — the hand-drawn look of Jane Richardson's protein drawings: flat wide helices, thick arrowheaded strands with white card edges, and coloured-pencil paper grain.
+- **`ribbon`** — plain flat cartoon, with none of the above.
+- **`3d`** — solid shaded geometry, on a black background. Pass `bg=` to override.
 
 ```python
-py2Dmol.view(style='cartoon').from_pdb('4HHB', use_biounit=True)   # preset='richardson'
-py2Dmol.view(preset='richardson').from_pdb('1TIM')
-py2Dmol.view(style='cartoon', preset='3d').from_pdb('1TIM')        # solid, on black
-py2Dmol.view(style='cartoon', thickness=0).from_pdb('4HHB')   # flat ribbons
+py2Dmol.view(style='cartoon').from_pdb('4HHB', use_biounit=True)   # Richardson
+py2Dmol.view(style='cartoon', color='ss').from_pdb('1TIM')
+py2Dmol.view(preset='ribbon').from_pdb('1TIM')                     # plain cartoon
+py2Dmol.view(preset='3d').from_pdb('1TIM')                         # solid, on black
+py2Dmol.view(style='cartoon', pencil=0, sheet_flat=0).from_pdb('1TIM')
 ```
 
-#### Richardson preset
+Naming a preset implies `style='cartoon'`, and an explicit argument always wins
+over the preset. Both styles work on C-alpha-only models — the backbone, its secondary structure, and where nucleic
+bases point are all rebuilt from the trace, with nothing per-residue stored or
+shipped. `tests/README.md` has the accuracy numbers.
 
-`preset='richardson'` is not a separate renderer — it is the cartoon draw path with a preset that changes the *profile* along the chain, so everything below is reachable from the plain cartoon too.
+#### Cartoon options
+All are `view()` arguments and all have a slider in the panel:
 
-```python
-py2Dmol.view(preset='richardson', color='ss').from_pdb('1TIM')
-```
+| | |
+| --- | --- |
+| `thickness` | slab thickness in Å (`0` = flat ribbons). Tapers off as you zoom out. |
+| `width` | overall ribbon scale |
+| `shade` | 0–1, how much directional modelling: `0` is flat colour, `1` full light and inner shadow |
+| `highlight` | specular band, *not* scaled by `shade` — so `shade=0, highlight=2` is flat colour with a highlight on top |
+| `detail` | 2–8 subdivisions per residue. An upper bound: a structure drawn small quietly uses less. |
+| `arrows` | arrowhead on each strand's C-terminal end (default on) |
+| `sheet_flat` | 0–1, damps the β-pleat and smooths loops |
+| `pencil` | 0–1, coloured-pencil paper grain, on the structure only |
+| `outline` | width in pixels; fractional values are real, and it thins to a hairline before `0` turns it off |
 
-What the preset changes, and why:
+`color='ss'` colours by secondary structure, with the palette set by `ss_palette`
+or the SSE dropdown: `pymol` (default), `jmol`, or Richardson's own `jr1` and
+`jr2`. It works with any style.
 
-| | Richardson | cartoon | rationale |
-| --- | --- | --- | --- |
-| helix thickness | ~0 (flat) | uniform | a helix is a paper streamer coiling in space; thickness fights the coil |
-| strand thickness | full | uniform | the sheet has to read as a slab you could stack |
-| loop section | square at the defaults | narrow | the loop is the same card seen end-on; width and thickness are separate controls, and the default width is calibrated so the section comes out square |
-| sheet edges | white | element colour | the pale rim is what separates strands where they overlap |
-| `sheet_flat` | `1.0` | `0.0` | real strands pleat; the drawings show them flat |
-| `pencil` | `1.0` | `0.0` | paper grain |
-| `outline_tint` | `0.8` | `0.0` | outlines are a dark tint of the element colour, not black |
-| `highlight` | `3.0` | `1.8` | a stronger specular band |
-| `width` | `2.0` | `3.0` | overall scale |
-| `smooth` | on | off | Richardson shades smoothly; the grain supplies the texture |
-| `shade` | `0.7` | `1.0` | pencil on paper models more lightly than a rendered solid |
-
-A preset is a starting point, not a lock: the sliders stay live showing its values. Everything is also settable from Python, and an explicit argument always wins over the preset:
-
-```python
-py2Dmol.view(preset='richardson', pencil=0, sheet_flat=0)   # no grain, natural pleat
-```
-
-#### Shared cartoon options
-
-`thickness` (Ångströms, default `0` for cartoon, `0.7` for Richardson) sets slab thickness; `thickness=0` draws flat single-sheet ribbons. It tapers off as you zoom out, since an edge thinner than a pixel reads as a grey fringe rather than as depth. On the `Thick:` slider.
-
-`shade` (0–1, default `1.0`; `0.7` for Richardson) sets how much directional modelling is applied: `0` is flat colour, `1` is full light and inner shadow. `highlight` is a separate control and is **not** scaled by it, so `shade=0, highlight=2` gives flat colour with a specular band still on top. Paired with `Hilite:` in the panel, since the two split the lighting between them.
-
-`detail` (integer 2–8, default `4`) sets subdivisions per residue, on the `Detail:` slider. It is an upper bound: nothing is sampled finer than the output can show, so a structure drawn small quietly uses less. Lower is deliberately faceted and proportionally faster; 6–8 give the smoothest curves for a still frame. 2 is the geometric floor — below it a helix cannot represent its own coil.
-
-`arrows` (default `True`) draws an arrowhead on the C-terminal end of each β-strand, half a Cα–Cα step long, and squares off the N-terminal end. `arrows=False` lets strands flow continuously out of their loops at both ends.
-
-`sheet_flat` (0–1) damps the β-pleat and smooths loops; `pencil` (0–1) adds coloured-pencil paper grain, applied to the structure only and never to the background.
-
-The `Outline:` slider is a width in pixels; fractional values are real, and it thins to a hairline before `0` turns the outline off.
-
-Element edges are always lit directionally, so a thickness band reads as a rounded section rather than a flat facet. This used to be a `loop_round` slider, but its only useful setting was full — anything less just reintroduced the facets it exists to remove.
-
-`color='ss'` colours by secondary structure. The palette is picked by `ss_palette` / the SSE dropdown: `pymol` (default: red helices, yellow strands, green loops), `jmol`, or the Jane Richardson schemes `jr1` (blue/green) and `jr2` (the 1981 hand-coloured drawings). It works with any style.
-
-Both **SVG and PNG export** reproduce all of this, including the pencil grain (as an `feTurbulence` filter in SVG) and the gradient shading.
+**SVG and PNG export** reproduce all of this, grain and gradients included.
 
 #### Draw
-
-**Draw** (in the Style panel, beside Colorblind and Dark) builds the picture up the way an illustrator makes one: a pencil line first, then colour over it, slightly off register and running past its edge here and there. It ends on watercolour over pencil and stays there — turning Draw off returns the ordinary picture, pressing it again replays from blank paper. The view stays live while it draws. Cartoon style only.
+**Draw** (in the Style panel) builds the picture up the way an illustrator makes
+one: a pencil line first, then colour over it, slightly off register. It ends on
+watercolour over pencil and stays there; turning it off returns the ordinary
+picture, pressing it again replays from blank paper. The view stays live while it
+draws. Cartoon style only.
 
 #### Saving
+The camera button writes a PNG or SVG. PNG takes a DPI — 300 dpi on a 600px view
+renders at 1875x1875 rather than scaling up — and the background is always
+transparent. Shift-click skips the panel.
 
-The camera button writes a PNG or SVG. PNG takes a DPI — 300 dpi on a 600px view gives 1875x1875, rendered at that size rather than scaled up, so the curves get finer and not just bigger. The background is always transparent. Shift-click skips the panel.
+With **Rotate** or **Draw** on, the same button records a video instead: one
+seamless full turn, or the drawing being made.
 
-With **Rotate** or **Draw** on, the same button records a video instead — one full turn, looping seamlessly, or the drawing being made. Opening the panel pauses the animation so you can set seconds and frame rate, and the camera there grabs the frame on screen.
+#### Getting around
+**Moving the view.** Drag to rotate, scroll to zoom, middle-drag or
+Cmd/Ctrl-drag to pan, as in PyMOL. Panning moves the rotation centre, so
+rotation and zoom keep working about the point you dragged to.
 
-**Moving the view.** Drag to rotate, scroll to zoom, and **middle-drag or Cmd/Ctrl-drag to pan**, as in PyMOL. A pan moves the rotation centre rather than the picture, so rotation, zoom and ortho keep working about the point you dragged to.
-
-**Fetching a chain.** The fetch box takes a chain suffix as well as a plain ID: `1timA`, `1TIM_A`, `1tim_AB` (one chain per character) or `1tim:A,B` (commas for multi-character chain IDs). Only four-character PDB IDs take a suffix, which is what keeps a UniProt accession like `Q5VSL9` from being read as an ID plus chains.
+**Fetching a chain.** The fetch box takes a chain suffix: `1timA`, `1TIM_A`,
+`1tim_AB` (one chain per character) or `1tim:A,B` (commas for multi-character
+chain IDs). Only four-character PDB IDs take a suffix, which keeps a UniProt
+accession like `Q5VSL9` from being read as an ID plus chains.
 
 ## Layouts & multiple objects
 
@@ -353,7 +334,7 @@ Control output cell behavior with the `persistence` parameter:
 **Atom codes**: Protein=P (CA), DNA=D (C4'), RNA=R (C4'), Ligand=L (heavy atoms)  
 **Bond thresholds**: Protein CA-CA 5.0 Å; DNA/RNA C4'-C4' 7.5 Å; Ligand 2.0 Å  
 **Color modes**: `auto`, `rainbow`, `plddt`, `chain`, `ss`, `entropy`, `deepmind`  
-**Styles**: `tube`, `cartoon`, `richardson`  
+**Styles**: `tube` (default), `cartoon`  
 **Cartoon presets**: `richardson` (default), `ribbon`, `3d`  
 **SSE palettes**: `pymol` (default), `jmol`, `jr1`, `jr2`  
 **Outline modes**: `none`, `partial`, `full` (default)  

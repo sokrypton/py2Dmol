@@ -31,6 +31,21 @@ by the packaged Python path.
 | `richardson_test.html` | Richardson preset beside the plain cartoon on four SS compositions (3CHY, 1TIM, 2POR, 1BBH). 1TIM is the control — it is the subject of the original drawing. |
 | `ribosome.html` | 4UG0, the large-structure performance case (17,789 positions). Built separately: `python tests/make_ribosome.py`. |
 
+## Assertions — `smoke.js` / `interaction.js`
+
+Unlike the pages above, these assert, and need no browser:
+
+    node tests/smoke.js                                          # source
+    node tests/smoke.js py2Dmol/resources/viewer-cartoon.min.js  # bundle
+    node tests/interaction.js
+
+`smoke.js` renders synthetic structures through a mock 2D context and checks
+properties of what gets painted: closed solids, no inked edge crossing its own
+face, junction construction, and the flat-slab and gesture-budget rules. Run it
+against the bundle too — a mangler can break what the source proves.
+`interaction.js` runs the gesture and animation predicates from `viewer-mol.js`
+against a mock canvas.
+
 ## Debug knobs
 
 The renderer reads several overrides off the renderer instance, all settable
@@ -54,34 +69,44 @@ from the console (`window.py2dmol_viewers[id].renderer`):
     python tests/make_bench.py                 # build tests/out/bench.html
     node tests/bench.js [--quick]              # time every config x length
 
-`make_bench.py` emits one viewer per chain length (50 -> 10000 residues) holding
-a synthetic helix/loop trace. `bench.js` drives `renderer.render()` directly
-through `window.py2dmol_viewers[<id>].renderer`, so the numbers are the draw
-stage only. Each cell is a median over repeated renders after warmup.
+One viewer per chain length (50 -> 10000 residues) on a synthetic trace.
+`bench.js` drives `renderer.render()` directly, so the numbers are the draw
+stage only; each cell is a median after warmup. Needs playwright — if it is not
+installed in the repo, run with `NODE_PATH=/path/to/node_modules`.
 
-Needs playwright; if it is not installed in the repo, run with
-`NODE_PATH=/path/to/node_modules node tests/bench.js`.
+See `PERF_NOTES.md` for the phase breakdown, the cost equation
+(`fills ≈ stations × surfaces`), and the optimisations that did NOT work.
 
-## Nucleic frame benchmark
+## Ligand sticks — `junction_math.py`
 
-    python tests/na_bench.py                      # score at the shipped default
-    python tests/na_bench.py --sweep              # across tracking gains
-    python tests/na_bench.py --target base+sign   # compare alternatives
+    python tests/junction_math.py
 
-Scores the derived backbone frame against ground truth the viewer never sees:
-the angle between the ribbon's face normal and `C4' -> base centroid`, taken
-from ring atoms in full-atom structures. Lower is better.
+A ligand bond is drawn as a box, and the derivation is worked in stages, each
+checked numerically. Where bonds meet, the geometry decides between three cases:
 
-Use this rather than the `facing%` column, which only checks the SIGN of a dot
-product against the partner's C4'. It read 100% while every face sat ~40 deg off
-the base, and the partner reference is itself unreliable where pairing is weak
-(true base agrees with partner: 100% on B-DNA, 98% tRNA, only 83% on 2R8S).
+* **mitred** — adjacent legs share the corner where their side faces cross, at
+  `d = h·cot(θ/2)`, and the polygon left in the middle is filled above and
+  below. There is deliberately no coplanarity test: real ligands pucker, and a
+  junction that comes out slightly odd beats one that falls apart. Where it
+  genuinely cannot be solved the corner determinant goes to zero and it declines
+  on its own.
+* **swept** — a run of atoms each carrying two sticks (a propionate, a vinyl) is
+  one path. Mitring it bond by bond pins the roll to each local plane, and along
+  a zig-zag those planes swing. One section per station, shared by both bonds,
+  frees the roll: worst twist per bond on a haem 38° -> 18°.
+* **overlapping** — anything else. A tetrahedral centre has no plane, so there
+  is no above and below to fill; the boxes interpenetrate and the hidden-line
+  pass removes what is inside.
 
-The frame construction is a REPLICA of viewer-cartoon.js, not the renderer
-itself; if the two ever diverge the facing numbers here and in the browser will
-disagree.
+An sp3 centre gets a collar instead — see `junction_sp3.py`, which derives it in
+the same staged way.
 
-## Secondary-structure benchmark
+Smoke tests 9-11 are the executable form: no inked edge inside its own box, the
+box is closed, and no side goes missing under perspective. Test 11 has to run
+with `ortho: 0` — the culling bug it guards lives in a branch the orthographic
+default never executes.
+
+## Secondary structure — `ss_bench.py` / `ss_bench.js`
 
     pip install pydssp
     python tests/ss_bench.py --build     # DSSP ground truth -> tests/out/ss_truth.json
@@ -89,30 +114,20 @@ disagree.
     node tests/ss_bench.js --per-chain   # worst chains
     node tests/ss_tune.js                # sweep the thresholds
 
-Scores the renderer's secondary structure against real DSSP over 151 native
-chains / 16,749 residues from `natives.zip` in the repo root. The shipped
-assignment runs DSSP itself - hydrogen-bond energies, turns and bridges, gated on
-backbone dihedrals as in PyMOL's `dss` - on a backbone rebuilt from the C-alpha
-trace. The superseded CA-only assignment (TM-align's `make_sec`, plus smoothing,
-strand pruning and hysteresis extension) is still scored alongside it, as are the
-ablations of each choice in the shipped one.
+Scores the renderer's assignment against real DSSP over 151 native chains /
+16,749 residues from `natives.zip`. The shipped assignment runs DSSP itself on a
+backbone rebuilt from the C-alpha trace; the superseded CA-only pipeline is
+scored alongside it, as are the ablations of each choice.
 
-Both sides must see the SAME residue list: pydssp needs all four backbone atoms,
-so residues missing any are dropped, and the CA trace handed to the renderer is
-built from exactly the survivors. Scoring a different index set silently
-invalidates everything.
+Both sides must see the same residue list — pydssp needs all four backbone
+atoms, so residues missing any are dropped and the trace is built from the
+survivors. `ss_bench.js` calls the renderer's exported `assignSecondary`, so it
+cannot score a stale reimplementation.
 
-`ss_bench.js` loads `viewer-cartoon.js` directly and calls its exported
-`assignSecondary` (and `makeSec`/`smoothSec`/`extendSec` for the old pipeline),
-so unlike `na_bench.py` it can never score a stale reimplementation.
-
-Current: **Q3 90.0%** (helix recall 92%, strand 94%, coil 86%) for DSSP on the rebuilt
-backbone; the superseded C-alpha-only pipeline scores 85.3% (helix 93%, strand 72%).
-The ablations printed alongside show what each choice costs.
-The old note, still true of that pipeline: its strands run
-about a residue short of DSSP at each end; that is a limit of the CA-only
-feature, not of the thresholds — see the note in `viewer-cartoon.js` above
-`maxGrowE`.
+Current: **Q3 89.76%** (recall: helix 91.8%, strand 92.6%, coil 86.1%); the
+CA-only pipeline scores 85.31%, its strands running about a residue short at
+each end. Quote the *shipped* row — the ablations printed below it score higher
+on Q3 alone.
 
 ## Cyclic peptides — `cyclic_bench.py` / `cyclic_bench.js`
 
@@ -121,78 +136,27 @@ feature, not of the thresholds — see the note in `viewer-cartoon.js` above
     node tests/cyclic_bench.js             # overall and seam-only Q3
     node tests/cyclic_bench.js --per-chain # which chains moved
 
-Head-to-tail cyclic peptides have no terminus: the backbone closes into a ring.
-Every SS assigner here walks the chain by index — the backbone frame needs
-i-1..i+2, DSSP's turns step i to i+n, bridges compare index separation — so the
-closure is invisible and an element spanning it is cut in two. This benchmark
-measures exactly that, over 24 cyclic chains / 1,079 residues fetched from RCSB:
-cyclotides and theta-defensins (beta, seam usually in a loop) and the AS-48
-family of cyclic bacteriocins (all-alpha, 60-70 residues, **seam inside a
-helix** — the case the others do not cover).
+A head-to-tail cyclic peptide has no terminus, but every assigner here walks the
+chain by index, so the closure is invisible and an element spanning it is cut in
+two. Measured over 24 cyclic chains / 1,079 residues: cyclotides,
+theta-defensins, and the AS-48 bacteriocins, whose seam sits mid-helix.
 
-The reference cannot be plain DSSP, which is linear and would bake the same bug
-into the truth. Each chain is instead assigned under TWO rotations of its
-residue order and merged, keeping every residue from the rotation where it sits
-furthest from the artificial break. Rotating a ring gives a different but
-equally valid linear chain — no coordinate moves, only where the break falls.
-The renderer's own ring handling (`opts.rings`) uses the same construction, for
-the same reason.
+The reference cannot be plain DSSP, which would bake the same bug into the
+truth: each chain is assigned under two rotations of its residue order and
+merged, keeping every residue from the rotation where it sits furthest from the
+artificial break. Read the **seam** column — most of a cyclic peptide is nowhere
+near its closure and drowns the effect.
 
-Read the SEAM column, not overall Q3: most of a cyclic peptide is nowhere near
-its closure and scores like any other chain, which drowns the effect.
-
-Current, at 4 residues each side of the closure:
-
-| | overall Q3 | seam Q3 |
+| at 4 residues each side | overall Q3 | seam Q3 |
 | --- | --- | --- |
 | walked as a linear chain | 82.1% | 51.0% |
 | told the run is cyclic | **88.7%** | **87.0%** |
 
-14 of 24 chains improve, none regress. The AS-48 family and carnocyclin A go
-25% -> 100% at the seam: their closure sits mid-helix, which is the worst case.
-Overall then matches what `ss_bench` gets on ordinary proteins (89.8%), i.e.
-cyclic chains stop being a special case.
-
-The report also measures the RIBBON FRAME, which is a different thing from the
-classification: the side vector the strip is built from. Two consecutive sides
-pointing opposite ways make the strip cross itself - a bow-tie - pinching
-through zero width on the way. Inside a run the sign pass keeps that from
-happening by flipping each side to agree with the last; the closure is the one
-step it never sees, so a whole ring's accumulated sign landed there.
-
-The fix routes frame slack through the LOOPS. Elements own their faces - a
-strand's lies in its sheet, a helix's points at its axis, neither is negotiable
-- and each loop reconciles the two elements it joins, so nothing accumulates
-around the ring. Where the cycle cannot close, the leftover goes to the longest
-loop: in the Richardson preset a loop's section is square at the default width,
-so its face has no observable orientation and the leftover is free.
-
-| | worst interval | worst closure | intervals over 90 deg |
-| --- | --- | --- | --- |
-| loops dictating element signs | 178 deg | 178 deg | 22, over 15 chains |
-| elements first, loops absorb | **128 deg** | **128 deg** | **1** |
-
-An "element" here is a residue with a face worth keeping, which is not the same
-as its SS letter: a helix always has one, a strand only where the sheet frame
-reached it. A strand residue the sheet missed has nothing but the pleat normal,
-which alternates side every residue and says nothing about the sheet's plane -
-pinning the ribbon to it is worse than leaving it free, so it is framed as loop.
-A lone 'E' between two single-residue loops (1YP8 model 14, residues 1-3) forced
-the frame out to that noise and back within one step each way, which is a
-visible twist even though no single interval exceeded 90 degrees.
-
-The one left is `1JBL` (SFTI-1, 14 residues), coil end to end: no elements to
-pin a face and nothing to reconcile against. An all-loop ring wants a closed
-rotation-minimising frame instead, and in Richardson its face is unobservable
-anyway.
-
-The last line of the report is a CONTROL, and the strongest thing here: a ring
-has no canonical first residue, so cutting it somewhere else must give the same
-answer, rotated. Cuts are taken mid-element, where a linear assigner is worst.
-Currently **63/75 cuts** reproduce their assignment exactly (18/23 chains); the
-failures are 1-3 residues at element edges in the smallest peptides (n = 18-34),
-where no rotation puts the break a full DSSP neighbourhood away. This control is
-what set the rotation count: two passes scored 51/73.
+14 of 24 chains improve, none regress. The report also measures the ribbon
+frame, where a sign flip at the closure makes the strip cross itself: worst
+interval 178° -> **128°**, intervals over 90° 22 -> **1**. The last line is a
+control — a ring has no canonical first residue, so cutting it elsewhere must
+give the same answer. Currently **63/75 cuts** reproduce exactly.
 
 ## Sheet frames — `sheet_bench.py` / `sheet_bench.js`
 
@@ -201,19 +165,15 @@ what set the rotation count: two passes scored 51/73.
     node tests/sheet_bench.js             # score the strand frames
     node tests/sheet_bench.js --sweep     # try other relaxation settings
 
-`--fit` fits the table the backbone rebuild reads (C and N offsets in a local
-frame, binned PULCHRA-style) on half the chains and reports the other half: C to
-0.21 Å rms, N to 0.17 Å, the C=O direction to 8.8°. Paste its output back into
-`viewer-cartoon.js` to regenerate `PEPTIDE_TABLE`.
+`--fit` fits the table the backbone rebuild reads, on half the chains, reporting
+the other half: C to 0.21 Å rms, N to 0.17 Å, C=O direction to 8.8°. Paste its
+output back into `viewer-cartoon.js` as `PEPTIDE_TABLE`.
 
-`sheet_bench.js` scores the strand frames in degrees, over residues of real
-H-bonded ladders: **partner face** (how far apart the ribbon faces of two paired
-residues are — "do neighbouring strands stack edge to edge") and **strand twist**
-(how far the face rolls between consecutive residues). Current: **22.2°** and
-**11.3°**, against 38.8° and 21.3° for the C-alpha curvature frames these
-replaced. The partner-face figure is at its floor — the sheets themselves twist
-20.0° between paired residues, given each ribbon's face is perpendicular to its
-own strand.
+`sheet_bench.js` scores strand frames in degrees over real H-bonded ladders:
+**partner face** (do neighbouring strands stack edge to edge) and **strand
+twist** (how far the face rolls between consecutive residues). Current
+**22.2°** and **11.3°**, against 38.8° and 21.3° for the curvature frames these
+replaced. Partner face is at its floor — the sheets themselves twist 20°.
 
 ## Nucleic base frames — `na_table.py` / `na_bench.js`
 
@@ -222,19 +182,26 @@ own strand.
     node tests/na_bench.js             # score the predictor the renderer ships
 
 py2Dmol keeps one atom per nucleotide (the C4'), so where a base points is
-predicted from the trace, exactly as the peptide backbone is. `--fit` fits on
-half the chains and reports the other half; paste its output back into
-`viewer-cartoon.js` as `NA_BASE_TABLE`.
+predicted from the trace. `--fit` fits on half the chains and reports the other
+half; paste its output back as `NA_BASE_TABLE`.
 
-Current: direction **16.7°** median (p90 69°), normal 16.6° (p90 62°), coverage
-99.9% of nucleotides. The tail is physical rather than a fitting limit — a base
-can sit anti or syn on an identical backbone — which is why the renderer widens
-its pairing gate, flips bases that point away from their partner, and caps the
-per-residue ribbon twist. `na_bench.py` is the older benchmark of the ribbon
-face and carries its own replica of the frame construction.
+Current: direction **17.5°** median (p90 77°), normal 17.6°, coverage 99.9% of
+16,748 nucleotides over 153 chains. The tail is physical, not a fitting limit — a base can sit anti or syn on an
+identical backbone — which is why the renderer widens its pairing gate, flips
+bases that point away from their partner, and caps the per-residue twist.
 
-## Performance
+`na_bench.py` is the older benchmark of the ribbon face and carries its own
+replica of the frame construction, so it can drift from the renderer.
 
-See `PERF_NOTES.md` — measured phase breakdown, the cost equation
-(`fills ≈ stations × surfaces`), and a table of optimisations that were tried
-and did NOT work, so they are not retried.
+## Nucleic pair axis — `na_axis.js`
+
+    node tests/na_axis.js              # needs tests/out/na_truth.json (above)
+
+Every base plate hangs off one vector, the pair axis: the pair plane is normal
+to it, so an axis d degrees wrong tilts the plate by d degrees. Scored against
+the true base-plane normals, taking the worse of a pair's two bases.
+
+The report splits stem-interior pairs from stem ends, which is where they
+differ: at the end of a helix the fitting window runs off the stem into a loop.
+Current, 98 chains / 4697 pairs: **13.0°** median overall, 11.3° interior,
+15.6° at the ends.

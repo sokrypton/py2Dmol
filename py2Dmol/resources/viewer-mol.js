@@ -1018,6 +1018,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // it, so richardson kept ribbon's 3.0 while taking every other
             // preset value.
             this._lineWidthUserSet = false;
+            // Same idea for THICKNESS, and for the ligand's sake. The plain
+            // cartoon preset sets thickness 0 because a flat ribbon is the look
+            // it means; a ligand stick at 0 is not a thinner stick, it is a
+            // sheet. So a ligand falls back to the richardson default whenever
+            // the 0 came from a preset rather than from the user - see
+            // viewer-cartoon.js. Once the control has been touched, it is the
+            // user's, 0 included.
+            this._thicknessUserSet = false;
             this.relativeOutlineWidth = 3.0; // Default outline width relative to line width
             this.shadowIntensity = 0.95;
 
@@ -1589,6 +1597,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         setupInteraction() {
             // Add inertia logic
+            // HOVER READOUT. Moving over a residue names it in the same box the
+            // sequence view uses (see setHoveredResidue in viewer-seq.js) rather
+            // than growing a second tooltip beside it. Skipped while a gesture
+            // is running: the pick is a per-move cost nobody is reading mid-drag.
+            this.canvas.addEventListener('mousemove', (e) => {
+                if (this.isDragging || this.isZooming) return;
+                if (!(window.SEQ && window.SEQ.setHoveredResidue)) return;
+                const i = this.pickResidueAt(e.clientX, e.clientY);
+                if (i === this._hoverIdx) return;      // only on a change
+                this._hoverIdx = i;
+                if (i < 0) { window.SEQ.setHoveredResidue(null); return; }
+                const num = this.residueNumbers && this.residueNumbers[i];
+                window.SEQ.setHoveredResidue({
+                    chain: (this.chains && this.chains[i]) || '?',
+                    resName: (this.positionNames && this.positionNames[i]) || 'UNK',
+                    resSeq: (num === undefined || num === null) ? i : num,
+                });
+            });
+            this.canvas.addEventListener('mouseleave', () => {
+                this._hoverIdx = -1;
+                if (window.SEQ && window.SEQ.setHoveredResidue) {
+                    window.SEQ.setHoveredResidue(null);
+                }
+            });
+
             this.canvas.addEventListener('mousedown', (e) => {
                 // Only start dragging if we clicked directly on the canvas or the highlight overlay
                 // (the overlay has pointer-events: none, but we check for it just in case)
@@ -1686,23 +1719,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         return; // No movement, skip render
                     }
 
-                    // Store velocity for inertia (disabled for large molecules based on visible segments)
-                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const totalSegmentCount = object && object.frames && object.frames[this.currentFrame]
-                        ? (this.segmentIndices ? this.segmentIndices.length : 0)
-                        : 0;
-                    // Count visible segments for inertia determination
-                    let visibleSegmentCount = totalSegmentCount;
-                    if (this.visiblePositions && this.segmentIndices) {
-                        visibleSegmentCount = 0;
-                        for (let i = 0; i < this.segmentIndices.length; i++) {
-                            const seg = this.segmentIndices[i];
-                            if (this.visiblePositions.has(seg.idx1) && this.visiblePositions.has(seg.idx2)) {
-                                visibleSegmentCount++;
-                            }
-                        }
-                    }
-                    const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
+                    const enableInertia = this._inertiaAllowed();
 
                     if (enableInertia && timeDelta > 0) {
                         // Weighted average to smooth out jerky movements
@@ -1780,12 +1797,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         } else if (e.shiftKey) {
                             // shift extends, as in PyMOL - otherwise a click
                             // replaces, so picking residues one at a time does
-                            // not silently accumulate
+                            // not silently accumulate. A ligand toggles as ONE
+                            // thing: already fully selected means remove it,
+                            // anything less means take all of it.
+                            const pick = this.pickGroupAt(i);
                             const next = new Set(this.residueSelection || []);
-                            if (next.has(i)) next.delete(i); else next.add(i);
+                            const whole = pick.every((k) => next.has(k));
+                            for (const k of pick) {
+                                if (whole) next.delete(k); else next.add(k);
+                            }
                             this.setResidueSelection(next);
                         } else {
-                            this.setResidueSelection(new Set([i]));
+                            this.setResidueSelection(new Set(this.pickGroupAt(i)));
                         }
                     }
                 }
@@ -1884,23 +1907,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (dy !== 0) { const rot = rotationMatrixX(dy * 0.01); this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation); }
                     if (dx !== 0) { const rot = rotationMatrixY(dx * 0.01); this.viewerState.rotation = multiplyMatrices(rot, this.viewerState.rotation); }
 
-                    // Store velocity for inertia (disabled for large molecules based on visible segments)
-                    const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                    const totalSegmentCount = object && object.frames && object.frames[this.currentFrame]
-                        ? (this.segmentIndices ? this.segmentIndices.length : 0)
-                        : 0;
-                    // Count visible segments for inertia determination
-                    let visibleSegmentCount = totalSegmentCount;
-                    if (this.visiblePositions && this.segmentIndices) {
-                        visibleSegmentCount = 0;
-                        for (let i = 0; i < this.segmentIndices.length; i++) {
-                            const seg = this.segmentIndices[i];
-                            if (this.visiblePositions.has(seg.idx1) && this.visiblePositions.has(seg.idx2)) {
-                                visibleSegmentCount++;
-                            }
-                        }
-                    }
-                    const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
+                    const enableInertia = this._inertiaAllowed();
 
                     if (enableInertia && timeDelta > 0) {
                         const smoothing = 0.5;
@@ -2064,7 +2071,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.orthoSlider = orthoSlider;
             this.shadowSlider = shadowSlider;
             this.lineWidth = this.lineWidthSlider ? parseFloat(this.lineWidthSlider.value) : (this.lineWidth || 3.0); // Read default from slider or use existing/default
-            this.relativeOutlineWidth = this.outlineWidthSlider ? parseFloat(this.outlineWidthSlider.value) : (this.relativeOutlineWidth || 3.0); // Read default from slider or use existing/default
+            // ?? not ||, for the same reason as the slider sync below: with no
+            // slider in the DOM (an embedded viewer with the controls hidden)
+            // this is the only seed, and || would raise a deliberate 0 to 1.0.
+            this.relativeOutlineWidth = this.outlineWidthSlider ? parseFloat(this.outlineWidthSlider.value) : (this.relativeOutlineWidth ?? 3.0);
             this.autoRotate = this.rotationCheckbox ? this.rotationCheckbox.checked : false; // Read default from checkbox
             this.shadowStrength = this.shadowSlider ? parseFloat(this.shadowSlider.value) : 0.5; // Read default from slider or use 0.5
 
@@ -3054,7 +3064,80 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const d2 = dx * dx + dy * dy;
                 if (d2 <= rad * rad) offer(i, d2, zOf(i));
             }
+
+            // NUCLEIC BASE PLATES. A rung reaches several Angstrom off the
+            // backbone, so the segment test above cannot see it: clicking a
+            // plate missed, or picked whichever backbone was nearest. The
+            // cartoon records one screen outline per HALF rung, each tagged
+            // with its own residue, so a click selects the base it is actually
+            // over rather than its partner across the pair.
+            const naPick = this._naPick;
+            if (naPick && naPick.length) {
+                for (let k = 0; k < naPick.length; k++) {
+                    const e = naPick[k];
+                    const q = e.poly;
+                    let inside = false;
+                    for (let a2 = 0, b2 = q.length - 1; a2 < q.length; b2 = a2++) {
+                        if (((q[a2][1] > py) !== (q[b2][1] > py))
+                            && (px < (q[b2][0] - q[a2][0]) * (py - q[a2][1])
+                                / (q[b2][1] - q[a2][1]) + q[a2][0])) {
+                            inside = !inside;
+                        }
+                    }
+                    if (inside) offer(e.res, 0, e.z);
+                }
+            }
             return best;
+        }
+
+        /**
+         * The positions a pick should really select. A residue is one thing to
+         * click on, and so is a LIGAND - but a ligand is stored as loose atoms,
+         * so picking one returns a single atom and selected one bond's worth of
+         * it. Ligand groups are already known (the bonding search uses them), so
+         * a pick inside one widens to the whole group; anything else is itself.
+         */
+        pickGroupAt(i) {
+            if (i < 0) return [];
+            const types = this.positionTypes;
+            if (types && types[i] !== 'L') return [i];   // a residue is itself
+            // WHOLE MOLECULE = THE CONNECTED COMPONENT over ligand bonds. Not
+            // the parsed ligand group: that exists only for ligands read out of
+            // a structure file, and a ligand handed straight to add() has none,
+            // so grouping by it would still select one atom there. Connectivity
+            // is what "this molecule" means, and it is already computed.
+            const segs = this.segmentIndices;
+            if (segs && segs.length) {
+                const adj = new Map();
+                for (const s of segs) {
+                    if (s.type !== 'L' || s.idx1 === s.idx2) continue;
+                    if (!adj.has(s.idx1)) adj.set(s.idx1, []);
+                    if (!adj.has(s.idx2)) adj.set(s.idx2, []);
+                    adj.get(s.idx1).push(s.idx2);
+                    adj.get(s.idx2).push(s.idx1);
+                }
+                if (adj.has(i)) {
+                    const seen = new Set([i]);
+                    const stack = [i];
+                    while (stack.length) {
+                        for (const nb of adj.get(stack.pop()) || []) {
+                            if (seen.has(nb)) continue;
+                            seen.add(nb); stack.push(nb);
+                        }
+                    }
+                    return Array.from(seen);
+                }
+            }
+            // a lone atom with no bonds still belongs to its parsed group
+            const obj = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const groups = obj && obj.ligandGroups;
+            if (groups && groups.size) {
+                for (const members of groups.values()) {
+                    if (members.indexOf(i) >= 0) return members.slice();
+                }
+            }
+            return [i];
         }
 
         /** Set the residue selection and tell every surface that draws it. */
@@ -5042,6 +5125,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
 
+                // ONE SEGMENT PER BOND. The explicit list below and the ligand
+                // distance search further down routinely find the SAME pair -
+                // a PDB ligand usually arrives with both CONECT records and
+                // atoms close enough to bond - and emitting it twice is not
+                // merely wasteful. The cartoon style reads connectivity off
+                // these segments to decide how bonds meet: a duplicate doubles
+                // every atom's apparent degree, so a two-bond atom looks like a
+                // four-way junction and never joins as a run, while a junction's
+                // mitre gets pairs of IDENTICAL leg directions, its determinant
+                // vanishes and it gives up. Every bond then draws as a loose box
+                // with square ends. On a heme: 99 segments for 50 real bonds.
+                const emittedBondKeys = new Set();
+                const bondKey = (i, j) => (i < j ? i + '-' + j : j + '-' + i);
+
                 // Compute explicit bonds (from user input or structure file)
                 // These can be between ANY position types (P, D, R, L, etc.)
                 if (this.bonds && Array.isArray(this.bonds) && this.bonds.length > 0) {
@@ -5074,6 +5171,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             ((type1 === 'D' || type2 === 'D') ? 'D' :
                                 ((type1 === 'R' || type2 === 'R') ? 'R' : 'L'));
 
+                        if (emittedBondKeys.has(bondKey(idx1, idx2))) continue;
+                        emittedBondKeys.add(bondKey(idx1, idx2));
+
                         this.segmentIndices.push({
                             idx1: idx1,
                             idx2: idx2,
@@ -5087,10 +5187,50 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
 
                 // === Generate ligand bonds ===
+                // DISTANCE BONDING IS A GUESS, AND ONLY FILLS IN WHERE THE FILE
+                // SAID NOTHING. A structure that carries its own connectivity -
+                // CONECT records, or a chemical component definition - has
+                // already been believed above; re-deriving the same ligand from
+                // a 2.0 A cutoff can only agree with it or contradict it, and
+                // where it contradicts, the file is right. A cutoff has no way
+                // to know a bond is dative, or that two atoms sit close without
+                // being bonded. Measured on 4HHB's haem: dropping the guess
+                // loses O1A-O2A (1.54 A) and O1D-O2D (1.94 A) - the paired
+                // oxygens of a carboxylate, never bonded to each other - and
+                // gains the four Fe-N coordinations (2.15-2.23 A, past the
+                // cutoff) plus two stretched propionate C-C. Better both ways.
+                // On BEN (3PTB) and G3A (9FOG) the two sets are identical.
+                //
+                // The test is per LIGAND, not per structure: a file may name the
+                // bonds of one ligand and say nothing about the next, and that
+                // next one still needs them derived.
+                //
+                // "Provided" has to mean the whole ligand, not one atom of it.
+                // _struct_conn records INTER-residue links - a metal
+                // coordination, a covalent tether to the protein - so a haem
+                // whose file mentions only the Fe-His bond would pass a
+                // does-any-atom-have-a-bond test and lose all 50 of its real
+                // ones. So: count only bonds with BOTH ends inside the ligand,
+                // and require every atom to have at least one. Partial
+                // connectivity falls through and is supplemented by distance,
+                // which the dedupe above keeps from restating what we have.
+                const fileKnowsIt = (indices) => {
+                    if (!indices || indices.length < 2) return false;
+                    const inGroup = new Set(indices);
+                    const touched = new Set();
+                    for (const [b1, b2] of (this.bonds || [])) {
+                        if (inGroup.has(b1) && inGroup.has(b2)) {
+                            touched.add(b1);
+                            touched.add(b2);
+                        }
+                    }
+                    return touched.size === inGroup.size;
+                };
                 const obj = this.objectsData[this.currentObjectName];
                 if (obj?.ligandGroups?.size > 0) {
                     // Use ligand groups: only compute distances within each group
                     for (const [groupKey, ligandPositionIndices] of obj.ligandGroups.entries()) {
+                        if (fileKnowsIt(ligandPositionIndices)) continue;
                         // Compute pairwise distances only within this ligand group
                         for (let i = 0; i < ligandPositionIndices.length; i++) {
                             for (let j = i + 1; j < ligandPositionIndices.length; j++) {
@@ -5107,6 +5247,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 const end = this.coords[idx2];
                                 const distSq = start.distanceToSq(end);
                                 if (distSq < ligandBondCutoffSq) {
+                                    // already found as an explicit bond?
+                                    if (emittedBondKeys.has(bondKey(idx1, idx2))) continue;
+                                    emittedBondKeys.add(bondKey(idx1, idx2));
                                     const chainId = this.chains[idx1] || 'A';
                                     this.segmentIndices.push({
                                         idx1: idx1,
@@ -5124,6 +5267,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 } else {
                     // Fallback: iterate over each chain's ligands separately (old behavior)
                     for (const [chainId, ligandIndices] of ligandIndicesByChain.entries()) {
+                        if (fileKnowsIt(ligandIndices)) continue;
                         for (let i = 0; i < ligandIndices.length; i++) {
                             for (let j = i + 1; j < ligandIndices.length; j++) {
                                 const idx1 = ligandIndices[i];
@@ -5135,6 +5279,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                                 const end = this.coords[idx2];
                                 const distSq = start.distanceToSq(end);
                                 if (distSq < ligandBondCutoffSq) {
+                                    // already found as an explicit bond?
+                                    if (emittedBondKeys.has(bondKey(idx1, idx2))) continue;
+                                    emittedBondKeys.add(bondKey(idx1, idx2));
                                     this.segmentIndices.push({
                                         idx1: idx1,
                                         idx2: idx2,
@@ -6179,6 +6326,110 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // RENDER (Core drawing logic)
+        /**
+         * May a throw keep spinning after the user lets go?
+         *
+         * Two tests, and the second is the one that matters. A COASTING SPIN IS
+         * NOT A GESTURE: isDragging is already false while it runs, so the
+         * cartoon's gesture degrade does not apply and every coasting frame is
+         * drawn at FULL cost - outline and all. On a structure that was only
+         * just keeping up during the drag, letting go is therefore the most
+         * expensive thing that can happen, and it goes on redrawing for a
+         * second or more after the user has stopped asking for anything.
+         *
+         * So inertia is allowed only where a full-quality frame is actually
+         * affordable, measured the same way the ink degrade measures it
+         * (median of the last five inked frames), and never above the segment
+         * cutoff. Cost is the honest test - a segment count says nothing about
+         * canvas size, detail or the machine - but the count stays as a floor
+         * for styles that never report a time.
+         */
+        _inertiaAllowed() {
+            return this.smoothAnimationOk();
+        }
+
+        /**
+         * Can this structure carry a SMOOTH ANIMATION - one that draws many
+         * frames in a row at full quality and is judged on whether it flows?
+         *
+         * Three things ask: inertia after a throw, the orient fly-to, and any
+         * future tween. They all fail the same way. An animation that cannot
+         * hold a frame rate does not read as slow, it reads as BROKEN - a
+         * one-second orient at 80 ms a frame is twelve frames, which is a
+         * slideshow, and a throw that stutters feels like the viewer has locked
+         * up. Jumping straight to the answer is not a degraded version of the
+         * animation, it is the better outcome.
+         *
+         * Two tests, because they catch different things. The measured cost is
+         * the honest one - it knows about canvas size, detail and the machine,
+         * none of which a count does. The segment count is a floor for the
+         * styles and first frames that have never reported a cost.
+         */
+        smoothAnimationOk() {
+            let visible = this.segmentIndices ? this.segmentIndices.length : 0;
+            if (this.visiblePositions && this.segmentIndices) {
+                visible = 0;
+                for (let i = 0; i < this.segmentIndices.length; i++) {
+                    const seg = this.segmentIndices[i];
+                    if (this.visiblePositions.has(seg.idx1)
+                        && this.visiblePositions.has(seg.idx2)) {
+                        visible++;
+                    }
+                }
+            }
+            if (visible > this.LARGE_MOLECULE_CUTOFF) return false;
+            return !this._frameOverBudget();
+        }
+
+        /**
+         * Is a full-quality frame too expensive to draw during a gesture?
+         * The cartoon plugin records the median of the last five INKED frames
+         * as _lastInkedMs; undefined means nothing has reported a cost yet (a
+         * style that does not measure, or the very first frame), and an unknown
+         * cost is not evidence of a slow one.
+         */
+        _frameOverBudget() {
+            const budget = (typeof this.cartoonGestureInk === 'number')
+                ? this.cartoonGestureInk : 25;
+            // The same three-sample rule the ink degrade uses. A drag's or an
+            // orient's FIRST full-quality frame is its most expensive - JIT and
+            // cold caches - and vetoing the animation on that one sample is how
+            // a structure that animates perfectly well got jumped instead of
+            // flown. The plugin excludes cache-building frames from the history
+            // outright; this guards the warm-up frames that follow one.
+            const hist = this._inkedMs;
+            if (!hist || hist.length < 3) return false;
+            return this._lastInkedMs !== undefined && this._lastInkedMs > budget;
+        }
+
+        /**
+         * A gesture that dropped the outline has to put it back. Without this
+         * the last degraded frame is simply what stays on screen once the
+         * gesture ends, and the outline never returns until something else
+         * happens to redraw. One settle rather than a hook in each gesture
+         * handler - there are four (mouseup, two touch paths, and the zoom
+         * timeout, which does not re-render at all), and one settle also covers
+         * gestures none of them know about.
+         *
+         * It RESCHEDULES while a gesture is still running rather than returning.
+         * Bailing out was a real bug: the timer only has to land inside a
+         * still-running gesture once - trivial during a slow scroll or a long
+         * drag - and the settle was then lost for good, leaving the outline off
+         * until something unrelated redrew.
+         */
+        _scheduleSettle() {
+            clearTimeout(this._inkSettleTimer);
+            this._inkSettleTimer = setTimeout(() => {
+                if (this.isDragging || this.isZooming) {
+                    this._scheduleSettle();
+                    return;
+                }
+                if (!this._inkSkipped) return;
+                this._inkSkipped = false;
+                this.render('gestureSettle');
+            }, 140);
+        }
+
         render(reason = 'Unknown') {
             if (this.currentFrame < 0) {
                 // Clear canvas if no frame is set
@@ -6186,6 +6437,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
             this._renderToContext(this.ctx, this.displayWidth, this.displayHeight);
+            if (this._inkSkipped) this._scheduleSettle();
         }
 
         // Core rendering logic - can render to any context (canvas, SVG, etc.)
@@ -8779,6 +9031,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             ? renderer.cartoonThickness : 0;
         thicknessSlider.addEventListener('input', (e) => {
             renderer.cartoonThickness = parseFloat(e.target.value);
+            renderer._thicknessUserSet = true;
             renderer.render('thicknessSlider');
         });
     }
@@ -8862,8 +9115,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     // outline/shadow are OFF at slider zero, so seed each from the live state
     if (outlineWidthSlider) {
+        // ?? not ||: an outline deliberately set to 0 is not an unset one, and
+        // || turned it back on at the default. Reachable through the 3d preset,
+        // whose outlineWidth IS 0 - _applyStyleDefaults only forces outlineMode
+        // to 'none' when there is no mode control, so with one present the width
+        // sat at 0 while this put 1.0 on the slider.
         outlineWidthSlider.value = renderer.outlineMode === 'none'
-            ? 0 : (renderer.relativeOutlineWidth || 3.0);
+            ? 0 : (renderer.relativeOutlineWidth ?? 3.0);
     }
     if (shadowSlider) {
         shadowSlider.value = renderer.shadowEnabled === false

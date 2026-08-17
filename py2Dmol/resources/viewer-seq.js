@@ -2470,6 +2470,16 @@
         updateColors: updateSequenceViewColors,
         updateSelection: updateSequenceViewSelectionState,
 
+        // HOVERING THE 3D VIEW USES THE SAME READOUT as hovering the sequence.
+        // The box is drawn from hoveredResidueInfo inside drawHighlights, which
+        // is module-local, so the structure canvas needs a way in - otherwise it
+        // would have to grow a second tooltip that could drift out of step with
+        // this one. Pass null to clear.
+        setHoveredResidue: function (info) {
+            hoveredResidueInfo = info || null;
+            drawHighlights();
+        },
+
         // Highlight overlay functions
         drawHighlights: drawHighlights,
         updateHighlightOverlaySize: updateHighlightOverlaySize,
