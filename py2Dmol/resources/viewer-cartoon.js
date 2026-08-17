@@ -4180,11 +4180,24 @@
                     const naTrack = Number.isFinite(ntRaw)
                         ? Math.min(1, Math.max(0, ntRaw)) : NA_TRACK_DEFAULT;
                     const tanAt = (i) => {
-                        const pA = rotated[wrapIdx(i - 1)];
-                        const pC = rotated[wrapIdx(i + 1)];
-                        const x = pC.x - pA.x, y = pC.y - pA.y, z = pC.z - pA.z;
-                        const l = Math.hypot(x, y, z);
-                        return l > 1e-9 ? [x / l, y / l, z / l] : null;
+                        // PyMOL builds the tangent from the sum of the two
+                        // normalized chord directions.  A centered raw
+                        // difference gives a different answer when adjacent
+                        // C4' steps have unequal lengths, which is common at
+                        // the ends of a crystallographic strand.
+                        const p0 = rotated[wrapIdx(i - 1)];
+                        const p1 = rotated[wrapIdx(i)];
+                        const p2 = rotated[wrapIdx(i + 1)];
+                        const x0 = p1.x - p0.x, y0 = p1.y - p0.y, z0 = p1.z - p0.z;
+                        const x1 = p2.x - p1.x, y1 = p2.y - p1.y, z1 = p2.z - p1.z;
+                        const l0 = Math.hypot(x0, y0, z0), l1 = Math.hypot(x1, y1, z1);
+                        if (l0 < 1e-9 && l1 < 1e-9) return null;
+                        const d0 = l0 > 1e-9 ? [x0 / l0, y0 / l0, z0 / l0] : [0, 0, 0];
+                        const d1 = l1 > 1e-9 ? [x1 / l1, y1 / l1, z1 / l1] : [0, 0, 0];
+                        const sx = d0[0] + d1[0], sy = d0[1] + d1[1], sz = d0[2] + d1[2];
+                        const sl = Math.hypot(sx, sy, sz);
+                        if (sl < 1e-9) return l1 > 1e-9 ? d1 : d0;
+                        return [sx / sl, sy / sl, sz / sl];
                     };
                     // C4'->base direction predicted from the local curvature
                     // frame (see NA_BASE_DIR_*). Independent of the pairing, so
@@ -4298,6 +4311,26 @@
                     for (let k = 0; k < sides.length; k++) {
                         const tv = tanAt(lo + k);
                         if (!tv) continue;
+                        const pairIdx = pairOf[lo + k];
+                        let pairSide = null;
+                        if (pairIdx >= 0 && pairIdx < n) {
+                            const aPair = rotated[lo + k], bPair = rotated[pairIdx];
+                            const towardPair = ortho([
+                                bPair.x - aPair.x, bPair.y - aPair.y, bPair.z - aPair.z], tv);
+                            if (towardPair) {
+                                // Solve t x side = direction-to-partner.
+                                // On the antiparallel strand both the tangent
+                                // and pair direction reverse, so this produces
+                                // the SAME side axis for the paired rails.
+                                pairSide = [
+                                    towardPair[1] * tv[2] - towardPair[2] * tv[1],
+                                    towardPair[2] * tv[0] - towardPair[0] * tv[2],
+                                    towardPair[0] * tv[1] - towardPair[1] * tv[0],
+                                ];
+                            }
+                        }
+                        const hasPairFrame = !!pairSide;
+                        if (pairSide) s = pairSide;
                         if (!s) {
                             // SEED from the base pair, not from curvature: the
                             // face normal is tangent x side, so taking the side as
@@ -4326,7 +4359,7 @@
                             }
                             if (!s) s = ortho(sides[k], tv);   // unpaired: curvature
                             if (!s) { prevT = tv; continue; }
-                        } else if (prevT) {
+                        } else if (prevT && !hasPairFrame) {
                             // rotate the carried vector by the same rotation that
                             // takes the previous tangent onto this one (Rodrigues)
                             const ax = prevT[1] * tv[2] - prevT[2] * tv[1];
@@ -4359,7 +4392,7 @@
                         // aimed but turns the duplex's whole 36 deg per residue,
                         // which is the over-twisted look. In between, the frame
                         // turns at a fraction of that and stays roughly aimed.
-                        if (naTrack > 0) {
+                        if (naTrack > 0 && !hasPairFrame) {
                             const j2 = pairOf[lo + k];
                             if (j2 >= 0 && j2 < n) {
                                 const a2 = rotated[lo + k], b2 = rotated[j2];
@@ -4429,7 +4462,7 @@
                         // artefact; it is real geometry that a ribbon cannot
                         // show. Capping the step lets the frame keep tracking
                         // and catch up over the next residue or two instead.
-                        if (k > 0 && sides[k - 1]) {
+                        if (k > 0 && sides[k - 1] && !hasPairFrame) {
                             const pS = sides[k - 1];
                             const cs = Math.max(-1, Math.min(1,
                                 pS[0] * s[0] + pS[1] * s[1] + pS[2] * s[2]));
@@ -4466,6 +4499,28 @@
                             };
                         }
                         prevT = tv;
+                    }
+                }
+                // FINAL NUCLEIC FRAME SIGN PASS. The tracking and twist-cap
+                // stages above can change a side after the initial continuity
+                // pass. Reconcile the final frame here, before the slab and
+                // base-plate geometry consume it. Otherwise one interval can
+                // negate its second side locally while the next interval still
+                // starts from the old sign, exchanging the four box corners at
+                // the residue boundary.
+                if (!isProt) {
+                    let finalSide = null;
+                    for (let k = 0; k < sides.length; k++) {
+                        let sv = sides[k];
+                        if (!sv) continue;
+                        if (finalSide && (sv[0] * finalSide[0]
+                            + sv[1] * finalSide[1] + sv[2] * finalSide[2]) < 0) {
+                            sv = [-sv[0], -sv[1], -sv[2]];
+                            sides[k] = sv;
+                        }
+                        finalSide = sv;
+                        const f = naFrames[lo + k];
+                        if (f) f.s = [sv[0], sv[1], sv[2]];
                     }
                 }
                 // STRAND FRAMES FROM THE SHEET, where the carbonyls gave us one.
@@ -5341,6 +5396,31 @@
                         const tx = d00 * pa.x + d10 * mA[0] + d01 * pb.x + d11 * mB[0];
                         const ty = d00 * pa.y + d10 * mA[1] + d01 * pb.y + d11 * mB[1];
                         const tz = d00 * pa.z + d10 * mA[2] + d01 * pb.z + d11 * mB[2];
+                        if (!isProt && s1 && s2) {
+                            // A cubic interpolation of frame vectors is not
+                            // a rotation: it overshoots between residues and
+                            // creates a small roll/bulge at every boundary.
+                            // Interpolate on the unit sphere, then make the
+                            // result exactly perpendicular to the centerline.
+                            let fd = s1[0] * s2[0] + s1[1] * s2[1] + s1[2] * s2[2];
+                            fd = Math.max(-1, Math.min(1, fd));
+                            let fw0 = 1 - u;
+                            let fw1 = u;
+                            const fa = Math.acos(fd);
+                            const fs = Math.sin(fa);
+                            if (fs > 1e-6) {
+                                fw0 = Math.sin((1 - u) * fa) / fs;
+                                fw1 = Math.sin(u * fa) / fs;
+                            }
+                            nx = fw0 * s1[0] + fw1 * s2[0];
+                            ny = fw0 * s1[1] + fw1 * s2[1];
+                            nz = fw0 * s1[2] + fw1 * s2[2];
+                            const tl = Math.hypot(tx, ty, tz) || 1;
+                            const td = (nx * tx + ny * ty + nz * tz) / (tl * tl);
+                            nx -= tx * td; ny -= ty * td; nz -= tz * td;
+                            const nl = Math.hypot(nx, ny, nz) || 1;
+                            nx /= nl; ny /= nl; nz /= nl;
+                        }
                         let bx = ty * nz - tz * ny;
                         let by = tz * nx - tx * nz;
                         let bz = tx * ny - ty * nx;
@@ -7712,6 +7792,18 @@
                     const n0y = fr.t[2] * fr.s[0] - fr.t[0] * fr.s[2];
                     const n0z = fr.t[0] * fr.s[1] - fr.t[1] * fr.s[0];
                     const n0l = Math.hypot(n0x, n0y, n0z) || 1;
+                    // The face sign is not a property of the strand order.
+                    // Choose the slab face geometrically: a rung must leave
+                    // through the face that points toward the pair midpoint.
+                    // A fixed t x s sign selects the outer face on one strand
+                    // whenever the two antiparallel frames have opposite roll.
+                    const towardX = midP.x - base.x;
+                    const towardY = midP.y - base.y;
+                    const towardZ = midP.z - base.z;
+                    const faceSign = (n0x * towardX + n0y * towardY + n0z * towardZ) >= 0 ? 1 : -1;
+                    const faceX = faceSign * n0x / n0l;
+                    const faceY = faceSign * n0y / n0l;
+                    const faceZ = faceSign * n0z / n0l;
                     // near edge: clear of the ribbon's face. Normally that is
                     // just the slab's half-thickness, but at thickness 0 the slab
                     // IS a plane and the rung would start exactly on it -
@@ -7719,9 +7811,9 @@
                     // arbitrary and the rung's ink bled through the backbone.
                     // A floor of NA_JOINT_CLEAR keeps them separable in depth.
                     const off = Math.max(ribHalfT, NA_JOINT_CLEAR);
-                    const ncx = base.x + (n0x / n0l) * off;
-                    const ncy = base.y + (n0y / n0l) * off;
-                    const ncz = base.z + (n0z / n0l) * off;
+                    const ncx = base.x + faceX * off;
+                    const ncy = base.y + faceY * off;
+                    const ncz = base.z + faceZ * off;
                     const nearHW = naWidthA * widthScale;
                     // far edge: the SHARED pair axis, taken with the same sign
                     // for both halves. Flipping it per half - to agree with that
@@ -7801,10 +7893,28 @@
                         // buried against the backbone and leaves the visible
                         // plate flat: 51.5 -> 11.7 deg, with u = 0 and u = 1
                         // both untouched, so the joint is bit-identical.
+                        // The rung is one shared base-pair plane.  Use the
+                        // same pair-plane width axis at every station and on
+                        // both halves; blending each rail's frame toward it
+                        // made the two halves twist before meeting.
+                        // Preserve the exact rail frame at u=0, but make both
+                        // halves arrive on the SAME pair-plane axis at u=1.
+                        // The paired rail frames are synchronized above, so
+                        // these two rotations now follow matching paths rather
+                        // than twisting independently as the old code did.
                         const fB = 1 - (1 - u) * (1 - u) * (1 - u);
-                        let wax = ux + (vx2 - ux) * fB;
-                        let way = uy + (vy2 - uy) * fB;
-                        let waz = uz + (vz2 - uz) * fB;
+                        let cd = Math.max(-1, Math.min(1,
+                            ux * vx2 + uy * vy2 + uz * vz2));
+                        const ca = Math.acos(cd);
+                        const cs = Math.sin(ca);
+                        let cw0 = 1 - fB; let cw1 = fB;
+                        if (cs > 1e-6) {
+                            cw0 = Math.sin((1 - fB) * ca) / cs;
+                            cw1 = Math.sin(fB * ca) / cs;
+                        }
+                        let wax = cw0 * ux + cw1 * vx2;
+                        let way = cw0 * uy + cw1 * vy2;
+                        let waz = cw0 * uz + cw1 * vz2;
                         const wam = Math.hypot(wax, way, waz) || 1;
                         wax /= wam; way /= wam; waz /= wam;
                         // face normal: across both the length and the width
