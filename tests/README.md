@@ -258,184 +258,135 @@ them:
    overhangs by ~0.19 Å at p90. Containing it fully would need loops as wide as
    helices (1.67 Å), so it stays.
 
-   **Contacts meet the ribbon the same way, but flat.** A contact is stored
-   between two residues, so it was drawn CA to CA — and a CA is the *centre* of
-   the slab, so both ends began buried in the ribbon they point at. Identical
-   fault, identical symptom: the line and the slab interpenetrate, no paint
-   order is right for both, and the contact reads as passing *through* the
-   backbone rather than touching it.
+   **Contacts run CA to CA and the ribbon crops them.** A contact is stored
+   between two residues, so it was drawn CA to CA with nothing removed — and a
+   CA is the *centre* of the slab, so both ends began buried in the ribbon they
+   point at. Identical fault to the side chains', identical symptom: line and
+   slab interpenetrate, no paint order is right for both, and the contact reads
+   as passing *through* the backbone rather than touching it.
 
-   A side chain fixes this by having the slab cut its end square. A contact is
-   drawn **flat** — one stroke, no box, no end face — so there is nothing to cut
-   and nothing to make flush. It is **trimmed along its own axis** instead,
-   which moves two points, adds no geometry, and cannot tilt the line off the
-   two residues it names. `ribbonSlabAt` is shared by both paths so the frame is
-   built once.
+   The line keeps its full CA-to-CA axis and each end is cut back to where it
+   leaves the slab — the same thing the backbone does to a side chain, but flat:
+   one stroke, no box, no end face to make flush. Cropping along its own
+   direction cannot tilt it off the two residues it names.
 
-   The exit uses **all three axes**, unlike the side-chain case. A CA–CB bond
-   never runs along the chain, but a contact between *i* and *i+4* in a helix
-   very nearly does, and then it meets neither face nor side squarely and both
-   distances run away; the residue's own half-step bounds it, so the line leaves
-   through the end of this residue's slice of ribbon.
+   **Where the crop falls reads both thickness and width**, because the slab has
+   both: the exit is the nearer of `halfT/|d·n|` and `halfW/|d·s|`, bounded by
+   the residue's own half-step along the chain. That third axis is needed here
+   and not for side chains — a CA–CB bond never runs along the chain, but a
+   contact between *i* and *i+4* in a helix very nearly does, and would meet
+   neither face nor side squarely. The half-step is taken from the **nearer**
+   neighbour and capped at `SS.chainMax / 2`: the `pB − pA` span is the obvious
+   source and is wrong at a chain break, where one "neighbour" is not one, the
+   span reads tens of Ångström, and the crop reached **10.4 Å**.
 
-   That half-step is taken from the **nearer neighbour**, capped at
-   `SS.chainMax / 2`. The obvious source — the `pB − pA` span already in hand —
-   is wrong at a chain break, where one "neighbour" is not one: the span reads
-   tens of Ångström and the trim reached **10.4 Å**, starting the contact well
-   outside the ribbon. Measured over 3,907 contacts, before → after:
+   Crop per end, 3,907 contacts:
 
-   | | median | p90 | p99 | max |
+   | thickness | median | p90 | max | hits the 80% guard |
    |---|---|---|---|---|
-   | trim per end (Å) | 0.98 | 1.62 → 1.90 | 1.89 → 2.11 | **10.42 → 2.76** |
+   | 0.6 | 0.71 Å | 1.60 | 2.76 | 0 |
+   | 0.9 | 0.98 Å | 1.90 | 2.76 | 0 |
+   | 1.4 | 1.26 Å | 1.94 | 2.76 | 0 |
 
-   Both trims together take a median 28% of the line; the guard that stops them
-   eating it (they are scaled back together past 80%) fires **0 of 3,907**. Exit
-   surface at the default thickness: face 3,725, side 3,335, end-of-slice 754.
+   Two designs were built and rejected before this one, and both are pinned by
+   the test because both look reasonable:
 
-   **The stroke has width**, so putting its centre on the surface still leaves
-   one edge of the end buried and the other short of it wherever the line
-   arrives obliquely. A face exit is pushed out by a further
-   `halfWidth / tan(angle)` — the flat-stroke equivalent of the oblique end face
-   a side chain's box gets cut. Straight out of the face that term is zero and
-   nothing moves; at 50° it is most of an Ångström.
+   * **Anchor each end at the surface point straight out from the CA.** Puts
+     every joint in the same place — the wander below goes to zero — but the
+     line then no longer points at its partner, each end being displaced by up
+     to the ribbon's half-extent, about 23° of bearing over a 6 Å contact. A
+     contact's whole job is to say *which two residues*, so the bearing wins.
+   * **Restrict a helix to its two faces**, to stop the attachment jumping
+     between surfaces. That was measured under the anchor design (27% of helix
+     ends were landing on an edge) and does **not** survive cropping: a line
+     that genuinely leaves through the edge has no face to be cropped at, so
+     `halfT/|d·n|` runs away — >50 Å at 90° off the face normal, 2.59 Å at 80°
+     against a true 1.32 Å, and past 80° the guard clamps and eats the contact.
 
-   **Faces only**, and the cot is capped at `CONTACT_FLUSH_MAX_COT` = 2.0
-   (26.6° to the surface), past which a flat end is a long ellipse no single
-   push along the axis can seat. The stroke is treated as *round* rather than as
-   a screen-facing ribbon: which way its width lies depends on the camera, and a
-   trim that changed as you rotated would be worse than a slightly generous one.
+   The attachment point does therefore still slide with the direction to the
+   partner — that is inherent in staying collinear, since a ray from the centre
+   of a box exits wherever it hits. Measured as a fraction of the way from the
+   centre of a surface to its rim: helix face exits median 0.49, sheet 0.37,
+   loop 0.46. It is the accepted cost of the line pointing where it says.
 
-   What the push costs, same 3,907 contacts, without → with:
+   The guard that remains: two residues can sit closer than their two
+   half-ribbons, and the crops would then cross and draw the line backwards, so
+   both are scaled back together past 80% of the length.
 
-   | | median | p90 | max |
-   |---|---|---|---|
-   | trim per end (Å) | 0.98 → 1.35 | 1.90 → 2.30 | 2.76 → 3.54 |
-   | both trims / length | 0.28 → 0.38 | 0.53 → 0.58 | 0.65 → 0.93 |
-   | hits the 80% guard | 0 → 33 | | (0.84%) |
+   Its test mutates four ways — no crop, a fixed inset, a crop that reads only
+   thickness and not width, and an end anchored sideways instead of cropped —
+   and all four fail. Two fixture notes, each of which cost a false pass:
+   the strand is **tilted out of the screen plane**, because a flat strand's
+   side vector points nearly along the view axis and the sideways displacement
+   that distinguishes an anchor from a crop then projects to under a third of a
+   pixel; and the thickness check is made **at 0.9 only**, because below that
+   the ribbon's thickness fades with projected size (`thickZoom`) and
+   `crop == thickness/2` stops holding — a first draft asserted it at 0.4 and
+   failed on the fade rather than on the crop.
 
-   The push itself is a median 0.68 Å over the 3,725 face exits, capped at 1.18.
+   **A contact sorts on its near surface, and the ink pass agrees.** It is drawn
+   flat but stands for something with thickness, so what should sort is the
+   surface facing the viewer: `zBias = max(0, CONTACT_TUBE_R − thickness/2)`,
+   which lets a contact win against a thin ribbon and lose to one that genuinely
+   stands proud of it.
 
-   Its test mutates six ways — no trim, a constant inset, trimming a ligand end
-   that has no ribbon, moving the end sideways instead of along the axis, no
-   width push, and a push applied to every surface — and all six fail. Two are
-   load-bearing and nothing else catches them: *a thicker ribbon must trim more*
-   (a constant inset passes everything else), and the **edge** ratio, checked as
-   72° against 90° so the ribbon's half-width cancels and the expectation
-   carries no shipped constant.
+   That bias lives **in the depth channel** of the projected points, not on the
+   sort key. `project()` returns `[x, y, z, pe]` with `z` the world depth in
+   Ångström, and that third slot is what the painter sorts on *and* what the ink
+   pass registers as an occluder — via `addCapsule` / `cap2`, which take the
+   stroke's full **width** but read depth off the centre line. Biasing only the
+   sort key, as an earlier version did, left the two modelling different solids:
+   the painter drew the contact over a ribbon while the ink pass still believed
+   the ribbon was in front, so the ribbon's outline showed through the contact.
+   It also missed short contacts entirely — the bias sat inside the subdivision
+   branch, and a contact under one segment long never entered it.
 
-   Three measurement traps here, all of which produced a passing test that
-   checked nothing:
+   Testing this has a trap of its own: a contact between two **residues** is also
+   anchored onto their ribbon surfaces, and that displacement has a depth
+   component that reads as bias. The measurement is made on a **ligand-to-ligand**
+   contact, which has no ribbon to anchor on, so the only difference left is the
+   bias. Three mutations fail: sort-key-only (the original bug), no bias, and a
+   bias that ignores ribbon thickness.
 
-   * a side chain aimed at a *guessed* normal leaves nearly along the surface,
-     so the cut has almost no effect and the numbers match with and without it.
-     The test runs **two passes**, the first only to read the ribbon's frame.
-   * a prim's own corners are **projected** — screen pixels. Comparing them to
-     an Ångström position reads ~379 "Å" at every angle, normal ones included,
-     which looks exactly like a blow-up and is really the canvas. World-space
-     corners come from `_stickProbe`. That false reading then produced a *second*
-     wrong conclusion — a distance bound was removed as never-firing, on a
-     follow-up measurement reporting the cut "well behaved down to
-     `|axis·normal|` = 0.002". The real law is 0.37/|d·n| Å, so 0.002 is 185 Å;
-     the measurement had sampled bonds whose offset happened to be tiny. A
-     travel bound is back.
-   * a side-plane cut and a *declined* cut both leave the end square's normal
-     along the bond, so asserting on that **direction** cannot tell the fix from
-     either bug. The first draft of the surface test passed under all three
-     mutations for this reason. The square's perpendicular **offset** separates
-     them: at the half-thickness (face), at the half-width (side), or on the CA
-     itself (declined, drawn perpendicular).
+   **A helix offers its two faces and not its edges; everything else offers
+   every surface.** Letting the exit test roam all four made the attachment jump
+   around a single helix — on 1TIM 27% of helix ends landed on an *edge*, and an
+   edge sits at the half-**width** rather than the half-thickness, 1.3 Å against
+   0.45, so the anchor moved a median 1.38 Å (max 2.60) between one partner and
+   the next on the **same residue**.
 
-   Stick thickness **caps at `LIGAND_TH_MAX` = 0.5 Å**. A stick is 0.3 Å wide,
-   so past that it stops reading as a stick and becomes a square rod as deep as
-   it is wide, while the ribbon is still thickening usefully. The control still
-   reaches them below the cap — a flat preset must still flatten them — and the
-   backbone carries on past it. `SIDECHAIN_WIDTH` is 0.5 — heavier than a
-   ligand, lighter than the chain they hang off — stated on the same scale as
-   `TYPE_BASELINES` rather than as a multiplier on the ligand's 0.4, so retuning
-   the ligand width cannot silently drag side chains with it. They are **appended, never inserted**, so every position index
-   already in use — selections, colour and sse overrides, PAE rows, the sequence
-   strip — keeps its meaning.
+   | | anchor spread across partners | edge use |
+   |---|---|---|
+   | helix | 1.38 → **0.90 Å** (max 2.60 → 0.90) | 27% → **0%** |
+   | sheet | 1.19 Å, unchanged | 27%, unchanged |
+   | loop | 0.84 Å, unchanged | 48%, unchanged |
 
-   Appending has three consequences that are invisible from everywhere except
-   the screen, and each one shipped as a bug before it was covered:
-   - the visibility set is *not* empty in the default "show everything" mode —
-     it is filled with every index that existed at the time, so the new atoms
-     have to be added to it or they are built, sorted, and then filtered out;
-   - the segment cache keys on frame and object name, neither of which moves
-     when a side chain is toggled, so it has to be invalidated by hand;
-   - **every per-position array has to grow together.** `setCoords` feeds
-     `plddts`, `chains`, `position_types`, `position_names` and
-     `residue_numbers` through `_setDataField`, which *silently* replaces an
-     array whose length does not match the coordinate count with a default —
-     no warning, no error. Missing `plddts` that way filled every position with
-     50, the low-confidence band, and an AlphaFold model turned entirely red the
-     moment a side chain was shown. Adding a sixth array to `_setDataField`
-     means adding it to `_materialiseSidechains` too;
-   - **`setCoords` persists the bond list onto the object**
-     (`objectsData[name].bonds = bonds`) and `_loadFrameData` reads it back, so
-     a pass that appends to whatever it is handed appends to the *previous*
-     pass's list. Hiding leaves those bonds behind harmlessly — they are out of
-     range and skipped — and showing again brings them back into range pointing
-     at **different** atoms. That was the show/hide/show corruption. The strip
-     is exact rather than a guess: a frame's own bonds cannot reference a
-     position the frame does not have, so anything touching an index at or past
-     the base count came from a previous pass.
-4. **Leave them alone** — the cartoon moves its backbone after that (sheet
-   projection, flattening) and side chains deliberately do **not** follow.
-   Flattening takes the pleat out of a strand so the ribbon reads cleanly, but
-   the pleat decides which *face* of the sheet each side chain points at, and
-   consecutive residues alternate. Rebuilding a side chain in the flattened
-   frame turns it away from where the molecule puts it: measured on 1TIM, a
-   median of **73°** and a maximum of **154°** — side chains on the wrong face.
-   The cost of not following is a visible offset between a flattened strand and
-   its side chains, the flattening distance itself, median 1.2 Å and at most
-   2.1 Å. The ribbon is an abstraction and can be idealised; the atoms are the
-   measurement and cannot. Nothing outside a strand moves either way.
+   The residual 0.90 Å on a helix is exactly twice the half-thickness — it is
+   the two faces, and it is meant to be there. Which face a contact leaves by
+   says whether its partner sits inside the bundle or outside it, so both stay
+   available and only the edges are removed. A **strand keeps its edges** for
+   the same kind of reason: it genuinely has two sides, its residues alternate
+   between them, and side-by-side strands in a sheet are exactly where an edge
+   attachment is the truthful one.
 
-Capture round-trips to 3e-7 Å.
+   Its tests mutate five ways in total — no anchoring, trim-along-the-line (the
+   design it replaced), a fixed inset ignoring which surface was chosen, a helix
+   allowed its edges back, and a helix pinned to a single face — and all five
+   fail.
 
-**Being ligand positions is an implementation detail, and must not leak into
-what a click means.** `pickGroupAt` maps a side-chain atom back to its residue,
-so clicking a leucine's side chain selects the leucine and the sequence strip
-highlights it — falling through to the ligand branch would select loose atoms,
-which have no row in the strip, and the click would appear to do nothing.
-Highlighting goes the other way through `selectionInk()`: `residueSelection`
-stays residues only (the strip maps its entries to rows, the tools act on them
-one residue at a time, and the side-chain toggle asks whether its own set
-contains them), and both styles ink from the expanded set instead, so a residue
-and the sticks growing out of it are outlined as one thing however the selection
-was made. `interaction.js` covers both directions.
+   A fixture note that cost a pass: the helix bearings must be built from the
+   **side vector the renderer actually chose**, not from an arbitrary basis
+   perpendicular to the tangent. A first draft used the latter, none of its four
+   bearings happened to point edge-ward, and the edges-back mutation sailed
+   through. The load-bearing assertion is that the anchor sits the *same*
+   distance out whatever direction the partner is in; under the trim that
+   distance ran 0.45 Å to 1.40 Å between a square and a 50° approach.
 
-Cost: `convertParsedToFrameData` 0.8 → 1.4 ms on 1TIM, a 57 KB table beside a
-12 KB coordinate array. Nothing reads it until a residue is switched on.
-
-**Saved sessions carry the WHOLE table**, not just the residues that were
-showing. Storing only those made a smaller file and a session you could not
-change your mind in: reload it and no other residue could ever be turned on,
-because its atoms were never written down and the file they came from is gone.
-Being able to enable one later is most of the point of the control.
-
-Trimmed instead, by `trimSidechainTable`: `names` and `elements` are dropped —
-nothing reads them to *draw*, they exist so the connectivity table can be
-applied at capture, which has already happened — and coefficients round to
-0.01 Å, far finer than a side chain drawn a few pixels wide. That takes 1TIM's
-table from 145 KB to **56 KB**, against 11 KB of coordinates, per frame. That
-ratio is the price of the feature. `reviveSidechainTable` puts the numeric
-columns back into typed arrays on load, and
-`objectsData[name].sidechains` / `.sidechainColor` go alongside.
-
-The CA is **not** in the table. It is already a drawn position, so a copy would
-put two coincident positions on top of each other — a fifth of the table, 534 of
-2618 atoms on 4HHB — with the CA–CB bond drawn to the duplicate rather than to
-the backbone. The atoms that bond to it are listed in `toBackbone` and joined to
-the owning position itself.
-
-**Colour** is keyed by RESIDUE (`objectsData[name].sidechainColor`), never by
-atom: side-chain atoms are positions only while they are drawn and their indices
-are reissued whenever the set changes, so a colour stored against one would come
-back on another. Unset means *follow the residue*, so recolouring a main chain
-carries its side chains with it unless they were given a colour of their own —
-`getColorOverride` and `getAtomColor` both resolve through the owner.
+   One fixture note: the strand is **tilted out of the screen plane** first. A
+   flat strand's side vector points nearly along the view axis, so a side offset
+   projects to under half a pixel and reads as *smaller* than the face one —
+   the canvas, not the geometry, and it failed the test for the wrong reason
+   until the tilt went in.
 
 ## Debug knobs
 

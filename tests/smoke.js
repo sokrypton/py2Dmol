@@ -1355,7 +1355,7 @@ test('a contact is cut into pieces so it sorts along its length', () => {
     const r = mkRenderer(coords, segs, {
         overlayState: { enabled: false },
         residueNumbers: coords.map((_, i) => i + 1),
-        _primProbe: null,
+        _primProbe: null, _posProbe: null,
     });
     const { ctx, bad } = mkCtx();
     // this also covers the ink pass over a contact at all - no fixture here had
@@ -1377,41 +1377,62 @@ test('a contact is cut into pieces so it sorts along its length', () => {
             + ' but the contact runs from +14 to -14 - they are not sorting'
             + ' along its length');
     }
-    // Each piece's key must match its own geometry, plus ONE shared bias: a
-    // contact is drawn as a line but stands for something with thickness, so
-    // its near surface sorts rather than its centre line. The bias is the same
-    // for every piece, so the ordering ALONG the contact is untouched.
-    const biases = flats.map((p) => p.z
-        - (p.pts[0][2] + p.pts[p.pts.length - 1][2]) / 2);
-    const b0 = biases[0];
-    for (const b of biases) {
-        if (Math.abs(b - b0) > 1e-6) {
-            throw new Error('the pieces are biased by different amounts ('
-                + b0.toFixed(3) + ' vs ' + b.toFixed(3) + ') - that reorders the'
-                + ' contact against itself');
-        }
-    }
+    // A contact is drawn as a line but stands for something with thickness, so
+    // its NEAR SURFACE sorts rather than its centre line. Joining two parts at
+    // the same depth - two strands of a flat sheet above all - the centre lines
+    // coincide and the order would be a coin toss.
+    //
+    // MEASURED AGAINST THE RESIDUE'S OWN DRAWN DEPTH, not against the piece's
+    // own points. The bias lives IN the depth channel of those points, because
+    // that channel is what the painter sorts on AND what the ink pass registers
+    // as an occluder - biasing only the sort key left the two modelling
+    // different solids. So differencing the key against its own pts now reads
+    // zero by construction and would test nothing.
+    // MEASURED ON A LIGAND-TO-LIGAND CONTACT. A contact between two RESIDUES is
+    // also anchored onto their ribbon surfaces, and that displacement has a
+    // depth component of its own which would be counted as bias. A ligand has
+    // no ribbon, so its end stays exactly on its position and the only
+    // difference left is the bias itself.
+    const biasAt = (th) => {
+        const cs = strand(6);
+        cs.push({ x: 0, y: 8, z: 4 });          // two loose atoms, well apart
+        cs.push({ x: 12, y: 8, z: -4 });
+        const ty = new Array(6).fill('P'); ty.push('L'); ty.push('L');
+        const sg = [];
+        for (let i = 0; i + 1 < 6; i++) sg.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        sg.push({ type: 'C', idx1: 6, idx2: 7, origIndex: 6,
+            contactIdx1: 6, contactIdx2: 7, contactWeight: 1.0, len: 50 });
+        const rr = mkRenderer(cs, sg, {
+            overlayState: { enabled: false }, positionTypes: ty,
+            residueNumbers: cs.map((_, i) => i + 1),
+            cartoonThickness: th, _primProbe: null, _posProbe: null,
+        });
+        const mm = mkCtx();
+        cartoon.render(rr, mm.ctx, 400, 400, sg.map(() => COL));
+        const ff = (rr._primProbe || []).filter((q) => q.kind === 'line' && q.flat);
+        if (!ff.length) throw new Error('no ligand-ligand contact at ' + th);
+        const hd = ff.find((q) => q.joints && q.joints[0]) || ff[0];
+        return hd.pts[0][2] - (rr._posProbe[6] || cs[6]).z;
+    };
+    const b0 = biasAt(0.9);
     if (!(b0 > 0)) {
         throw new Error('the contact is keyed at its centre line (' + b0.toFixed(3)
-            + ') - joining two parts at the same depth it is then a coin toss'
-            + ' whether it is drawn over them');
+            + ' from the residue it starts at) - joining two parts at the same'
+            + ' depth it is then a coin toss whether it is drawn over them');
+    }
+    // ...by the SAME amount all along it, or the pieces reorder against each
+    // other. Compared piece to piece against their own interpolated depth.
+    const step = flats.map((p) => p.z - (p.pts[0][2] + p.pts[1][2]) / 2);
+    for (const q of step) {
+        if (Math.abs(q) > 1e-6) {
+            throw new Error('a piece is keyed ' + q.toFixed(3) + ' off its own'
+                + ' geometry - the bias belongs in the shared depth channel, not'
+                + ' on individual keys, or the ink pass sees a different solid');
+        }
     }
     // ...AND THE RIBBON WINS WHEN IT IS THICKER. A slab has a near surface too;
     // once it stands proud of the contact's, it genuinely is in front and
     // should cover it, which is what a thickness control is for.
-    const biasAt = (th) => {
-        const r2 = mkRenderer(coords, segs, {
-            overlayState: { enabled: false },
-            residueNumbers: coords.map((_, i) => i + 1),
-            cartoonThickness: th,
-            _primProbe: null,
-        });
-        const m = mkCtx();
-        cartoon.render(r2, m.ctx, 400, 400, segs.map(() => COL));
-        const f2 = (r2._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
-        if (!f2.length) throw new Error('no contact at thickness ' + th);
-        return f2[0].z - (f2[0].pts[0][2] + f2[0].pts[1][2]) / 2;
-    };
     const thin = biasAt(0.4); const fat = biasAt(2.0);
     if (!(thin > 0)) throw new Error('a thin ribbon does not let the contact through');
     // exactly zero, not merely non-positive: a NEGATIVE bias would push the
@@ -1997,216 +2018,158 @@ test('the cut uses the surface the side chain leaves through', () => {
     }
 });
 
-test('a contact meets the ribbon at its surface, not at the CA', () => {
-    // A contact is stored between two residues and so was drawn from CA to CA -
-    // and a CA is the CENTRE of the slab, so both ends began buried inside the
-    // ribbon they point at. Same fault side chains had, and it reads the same
-    // way: line and slab interpenetrate, no paint order is right for both, and
-    // the contact looks like it passes THROUGH the backbone rather than
-    // touching it.
+test('a contact runs CA to CA and the ribbon crops it', () => {
+    // A contact was drawn CA to CA with nothing removed, and a CA is the CENTRE
+    // of the slab, so both ends began buried in the ribbon they point at - line
+    // and slab interpenetrate, no paint order is right for both, and the
+    // contact reads as passing THROUGH the backbone.
     //
-    // A side chain fixes this by having the slab cut its end square. A contact
-    // is FLAT - one stroke, no box, no end face - so there is nothing to cut.
-    // It is trimmed along its own axis instead, which cannot tilt it off the
-    // line between the two residues it names.
-    const N = 20; const A = 4; const B = 15;
-    const runAt = (thickness, ligandEnd) => {
-        const coords = strand(N);
-        // pull the two apart in depth so the contact is a real span
-        coords[A] = { x: coords[A].x, y: coords[A].y, z: 9 };
-        coords[B] = { x: coords[B].x, y: coords[B].y, z: -9 };
+    // The line keeps its full CA-to-CA axis and each end is cut back to where
+    // it leaves the slab, the same thing the backbone does to a side chain.
+    // Cropping along its own direction cannot tilt it off the two residues it
+    // names, which is the property an ANCHOR at the surface point would lose -
+    // that was tried, and displaced each end by up to the ribbon's half-extent,
+    // about 23 degrees of bearing over a 6 A contact.
+    const N = 20; const OWN = 6; const LEN = 8;
+    // TILTED OUT OF THE SCREEN PLANE. A flat strand's side vector points very
+    // nearly along the view axis, so a sideways displacement of the end - which
+    // is exactly what distinguishes an anchor from a crop - projects to under
+    // a third of a pixel and hides inside any sane tolerance.
+    const tilt = (q) => {
+        const c = Math.cos(0.9); const sn = Math.sin(0.9);
+        return { x: q.x, y: q.y * c - q.z * sn, z: q.y * sn + q.z * c };
+    };
+    const bent = () => strand(N).map(tilt);
+    const F = (() => {
+        const coords = bent();
         const segs = [];
         for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
-        const types = new Array(N).fill('P');
-        let far = B;
-        if (ligandEnd) {
-            // a LIGAND end has no ribbon frame at all, so it must stay on its
-            // own position - the trim is a protein-ribbon thing
-            coords.push({ x: coords[B].x, y: coords[B].y + 6, z: -9 });
-            types.push('L'); far = N;
-        }
-        segs.push({ type: 'C', idx1: A, idx2: far, origIndex: A,
-            contactIdx1: A, contactIdx2: far, contactWeight: 1.0, len: 50 });
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false }, _forceSec: 'E'.repeat(N),
+            cartoonThickness: 0.9, _sideProbe: null, _posProbe: null,
+        });
+        cartoon.render(r, mkCtx().ctx, 400, 400, segs.map(() => COL));
+        const sv = r._sideProbe[OWN]; const pos = r._posProbe;
+        if (!sv || !pos) throw new Error('no ribbon frame recorded');
+        let t = [pos[OWN + 1].x - pos[OWN - 1].x, pos[OWN + 1].y - pos[OWN - 1].y,
+            pos[OWN + 1].z - pos[OWN - 1].z];
+        const tl = Math.hypot(t[0], t[1], t[2]); t = t.map((q) => q / tl);
+        let n = [t[1] * sv[2] - t[2] * sv[1], t[2] * sv[0] - t[0] * sv[2],
+            t[0] * sv[1] - t[1] * sv[0]];
+        const nl = Math.hypot(n[0], n[1], n[2]); n = n.map((q) => q / nl);
+        const svl = Math.hypot(sv[0], sv[1], sv[2]);
+        return { n, s: sv.map((q) => q / svl), o: pos[OWN] };
+    })();
+
+    // `deg` is measured off the face normal toward the side vector, so 0 leaves
+    // through the FACE and 90 through the EDGE - and the crop has to come from
+    // whichever of the two the line actually reaches.
+    const aim = (deg, thickness, ss) => {
+        const th = deg * Math.PI / 180;
+        const dir = [0, 1, 2].map((k) => F.n[k] * Math.cos(th) + F.s[k] * Math.sin(th));
+        const coords = bent();
+        coords.push({ x: F.o.x + dir[0] * LEN, y: F.o.y + dir[1] * LEN,
+            z: F.o.z + dir[2] * LEN });
+        const types = new Array(N).fill('P'); types.push('L');
+        const segs = [];
+        for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        segs.push({ type: 'C', idx1: OWN, idx2: N, origIndex: OWN,
+            contactIdx1: OWN, contactIdx2: N, contactWeight: 1.0, len: 50 });
         const r = mkRenderer(coords, segs, {
             overlayState: { enabled: false }, positionTypes: types,
             residueNumbers: coords.map((_, i) => i + 1),
-            _forceSec: 'E'.repeat(N) + (ligandEnd ? 'C' : ''),
-            cartoonThickness: thickness,
+            _forceSec: (ss || 'E').repeat(N) + 'C', cartoonThickness: thickness,
             _primProbe: null,
         });
         const { ctx, bad } = mkCtx();
         cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
         if (bad.length) throw new Error('bad styles: ' + bad[0]);
-        // The pieces are POSITIONAL: joints[0] is set only on the piece that
-        // starts the contact, joints[1] only on the one that ends it. That is
-        // what identifies the two real ends among the subdivisions.
         const flats = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
         const head = flats.find((p) => p.joints && p.joints[0]);
         const tail = flats.find((p) => p.joints && p.joints[1]);
         if (!head || !tail) throw new Error('the contact drew no end pieces');
-        // Everything here is in PROJECTED units and compared only against other
-        // projected units - screenX/screenY are where the residues were drawn.
-        // Mixing these with Angstrom positions is the trap that once read a
-        // 379 "A" blow-up off the canvas.
-        const p0 = [r.screenX[A], r.screenY[A]];
-        const p1 = [r.screenX[far], r.screenY[far]];
+        // Projected pixels throughout, compared only against projected pixels.
+        const p0 = [r.screenX[OWN], r.screenY[OWN]];
+        const p1 = [r.screenX[N], r.screenY[N]];
         const vx = p1[0] - p0[0]; const vy = p1[1] - p0[1];
         const vv = vx * vx + vy * vy;
-        const start = head.pts[0];
-        const end = tail.pts[tail.pts.length - 1];
-        // how far along the CA->CA line each drawn end sits, as a fraction
-        const tOf = (q) => ((q[0] - p0[0]) * vx + (q[1] - p0[1]) * vy) / vv;
-        // ...and how far OFF that line, in pixels - the trim runs along the
-        // axis, so this must stay at zero
-        const offOf = (q) => Math.abs((q[0] - p0[0]) * vy - (q[1] - p0[1]) * vx)
+        const st = head.pts[0]; const en = tail.pts[tail.pts.length - 1];
+        // how far along the CA->partner line the drawn end sits, as a fraction,
+        // and how far OFF that line it strays
+        const along = (q) => ((q[0] - p0[0]) * vx + (q[1] - p0[1]) * vy) / vv;
+        const off = (q) => Math.abs((q[0] - p0[0]) * vy - (q[1] - p0[1]) * vx)
             / Math.sqrt(vv);
-        return { tStart: tOf(start), tEnd: 1 - tOf(end),
-            off: Math.max(offOf(start), offOf(end)) };
+        return { crop: along(st) * LEN, ligand: 1 - along(en),
+            off: Math.max(off(st), off(en)) };
     };
 
-    const mid = runAt(0.9, false);
-    // 1. BOTH ENDS PULL BACK OFF THE CA.
-    if (!(mid.tStart > 0.01) || !(mid.tEnd > 0.01)) {
-        throw new Error('the contact still starts on the CA (' 
-            + mid.tStart.toFixed(3) + ' / ' + mid.tEnd.toFixed(3) + ' along its'
-            + ' length) - it begins at the centre of the slab and is drawn from'
-            + ' inside the ribbon');
+    const face = aim(0, 0.9);
+    // 1. THE END LEAVES THE CA.
+    if (!(face.crop > 0.05)) {
+        throw new Error('the contact still starts on the CA (' + face.crop.toFixed(2)
+            + ' A along its length) - it begins at the centre of the slab');
     }
-    // 2. AND STAYS ON ITS OWN AXIS. Moving an end out along the surface normal
-    //    instead - which is what the side-chain path first did - shifts it
-    //    SIDEWAYS off the line between the two residues.
-    if (!(mid.off < 0.5)) {
-        throw new Error('the trimmed contact sits ' + mid.off.toFixed(2)
-            + ' px off the line between its two residues - it was moved'
-            + ' sideways rather than trimmed along its axis');
-    }
-    // 3. AND IT IS STILL A LINE. Two trims that meet in the middle draw
-    //    backwards.
-    if (!(mid.tStart + mid.tEnd < 0.9)) {
-        throw new Error('the two trims eat ' 
-            + ((mid.tStart + mid.tEnd) * 100).toFixed(0) + '% of the contact');
-    }
-    // 4. A THICKER RIBBON TRIMS MORE, because its surface is further from the
-    //    CA. This is what separates a real trim from a constant inset: the
-    //    amount has to come from the slab the contact is leaving.
-    const thin = runAt(0.3, false);
-    const thick = runAt(1.4, false);
-    if (!(thick.tStart > thin.tStart + 1e-4)) {
-        throw new Error('a ribbon at thickness 1.4 trims the contact by '
-            + thick.tStart.toFixed(3) + ', no more than the 0.3 ribbon\'s '
-            + thin.tStart.toFixed(3) + ' - the inset is not coming from the'
-            + ' slab\'s actual surface');
-    }
-    // 5. AN END WITH NO RIBBON KEEPS ITS POSITION. A contact to a ligand has no
-    //    protein slab to leave, so that end must stay exactly where it is
-    //    rather than be trimmed by some default.
-    const lig = runAt(0.9, true);
-    if (!(Math.abs(lig.tEnd) < 0.01)) {
-        throw new Error('the ligand end of a contact was trimmed by '
-            + lig.tEnd.toFixed(3) + ' of its length, but a ligand has no ribbon'
-            + ' surface to leave');
-    }
-    if (!(lig.tStart > 0.01)) {
-        throw new Error('the protein end of a ligand contact was not trimmed');
-    }
-
-    // 6. THE STROKE HAS WIDTH. Putting its CENTRE on the surface leaves one
-    //    edge of the end buried and the other short of it wherever the line
-    //    arrives obliquely, so a face exit is pushed out by a further
-    //    halfWidth/tan(angle). Perpendicular to the face that term is zero and
-    //    nothing changes; at 50 degrees off it is most of an Angstrom.
+    // 2. AND STAYS ON THE CA-TO-CA LINE. This is what separates a crop from an
+    //    anchor: an anchor moves the end sideways onto the surface point and
+    //    the line stops pointing at the partner.
     //
-    //    The partner is a LIGAND, so only the protein end is trimmed and
-    //    tStart is that end's trim alone.
-    const TH2 = 0.9; const LEN = 8;
-    const aim = (deg) => {
-        const N2 = 20; const OWN = 6;
-        // read the ribbon frame first - a contact aimed at a guessed normal
-        // does not leave through the face at all and measures nothing
-        const base = strand(N2);
-        const bsegs = [];
-        for (let i = 0; i + 1 < N2; i++) bsegs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
-        const b = mkRenderer(base, bsegs, {
-            overlayState: { enabled: false }, _forceSec: 'E'.repeat(N2),
-            cartoonThickness: TH2, _sideProbe: null, _posProbe: null,
-        });
-        cartoon.render(b, mkCtx().ctx, 400, 400, bsegs.map(() => COL));
-        const sv = b._sideProbe[OWN]; const bp = b._posProbe;
-        if (!sv || !bp) throw new Error('no ribbon frame for the contact test');
-        let t = [bp[OWN + 1].x - bp[OWN - 1].x, bp[OWN + 1].y - bp[OWN - 1].y,
-            bp[OWN + 1].z - bp[OWN - 1].z];
-        const tl = Math.hypot(t[0], t[1], t[2]); t = t.map((q) => q / tl);
-        let nf = [t[1] * sv[2] - t[2] * sv[1], t[2] * sv[0] - t[0] * sv[2],
-            t[0] * sv[1] - t[1] * sv[0]];
-        const nl = Math.hypot(nf[0], nf[1], nf[2]); nf = nf.map((q) => q / nl);
-        const svl = Math.hypot(sv[0], sv[1], sv[2]);
-        const sn = sv.map((q) => q / svl);
-        const th = deg * Math.PI / 180;
-        const dir = [0, 1, 2].map((k) => nf[k] * Math.cos(th) + sn[k] * Math.sin(th));
-        const coords = strand(N2);
-        const o = bp[OWN];
-        coords.push({ x: o.x + dir[0] * LEN, y: o.y + dir[1] * LEN,
-            z: o.z + dir[2] * LEN });
-        const types = new Array(N2).fill('P'); types.push('L');
-        const segs2 = [];
-        for (let i = 0; i + 1 < N2; i++) segs2.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
-        segs2.push({ type: 'C', idx1: OWN, idx2: N2, origIndex: OWN,
-            contactIdx1: OWN, contactIdx2: N2, contactWeight: 1.0, len: 50 });
-        const r2 = mkRenderer(coords, segs2, {
-            overlayState: { enabled: false }, positionTypes: types,
-            residueNumbers: coords.map((_, i) => i + 1),
-            _forceSec: 'E'.repeat(N2) + 'C', cartoonThickness: TH2, _primProbe: null,
-        });
-        cartoon.render(r2, mkCtx().ctx, 400, 400, segs2.map(() => COL));
-        const fl = (r2._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
-        const h2 = fl.find((p) => p.joints && p.joints[0]);
-        if (!h2) throw new Error('no contact head piece at ' + deg + ' deg');
-        const q0 = [r2.screenX[OWN], r2.screenY[OWN]];
-        const q1 = [r2.screenX[N2], r2.screenY[N2]];
-        const wx = q1[0] - q0[0]; const wy = q1[1] - q0[1];
-        const ww = wx * wx + wy * wy;
-        const st = h2.pts[0];
-        // fraction of the line, times its known length, is the trim in Angstrom
-        return (((st[0] - q0[0]) * wx + (st[1] - q0[1]) * wy) / ww) * LEN;
-    };
-    // Straight out of the face: the push term is zero, so this is the bare
-    // exit - the half-thickness, which comes from the test's own input.
-    const square = aim(0);
-    if (Math.abs(square - TH2 / 2) > 0.08) {
-        throw new Error('a contact leaving square to the face was trimmed '
-            + square.toFixed(2) + ' A, not the ' + (TH2 / 2) + ' A half-thickness'
-            + ' - with no obliquity there is nothing for the width push to add');
+    //    CHECKED OBLIQUELY, not just square on. Aimed straight at the face the
+    //    anchor point lies ON the line already - the partner is in the normal's
+    //    own direction - so the two designs coincide there and the check passes
+    //    either way. It has to be asked where they differ.
+    for (const deg of [0, 45, 60, 120]) {
+        const q = aim(deg, 0.9);
+        if (!(q.off < 0.05)) {
+            throw new Error('at ' + deg + ' deg the drawn end sits '
+                + q.off.toFixed(2) + ' px off the line between its two residues'
+                + ' - it was moved sideways onto the surface rather than'
+                + ' cropped along its own axis');
+        }
     }
-    // At 50 degrees the bare exit is halfT/cos(50) and the push is most of a
-    // half-width on top. Both numbers come from the fixture, not from the code.
-    const bare = (TH2 / 2) / Math.cos(50 * Math.PI / 180);
-    const oblique = aim(50);
-    if (!(oblique > bare + 0.3)) {
-        throw new Error('a contact meeting the face at 50 deg was trimmed '
-            + oblique.toFixed(2) + ' A, barely past the ' + bare.toFixed(2)
-            + ' A that puts its CENTRE on the surface - half the stroke\'s'
-            + ' width is still buried in the ribbon');
+    // 3. THICKNESS FEEDS THE CROP. Leaving square through the FACE, the crop
+    //    is the half-thickness. Checked exactly at 0.9 and only there: below
+    //    that the ribbon's thickness FADES with projected size (see thickZoom),
+    //    so a thin ribbon really is drawn thinner than the control says and
+    //    crop == thickness/2 stops holding. A first draft asserted it at 0.4
+    //    too and failed on the fade, not on the crop.
+    if (Math.abs(face.crop - 0.45) > 0.06) {
+        throw new Error('leaving square through the face at thickness 0.9 the'
+            + ' contact was cropped ' + face.crop.toFixed(2) + ' A, not the'
+            + ' 0.45 A half-thickness');
     }
-
-    // 7. ...AND ONLY ON THE FACES. An edge is a fraction of a ribbon's width
-    //    and a chain-end exit runs straight into the neighbouring residue's
-    //    slab, so pushing there buys nothing and only costs the contact length.
-    //
-    //    Compared as a RATIO of two SIDE exits, 72 deg against 90 deg, so the
-    //    ribbon's half-width cancels and the expectation carries no shipped
-    //    constant. Bare, the ratio is 1/cos(18 deg) = 1.05; with the push
-    //    wrongly applied to a side it is ~1.23.
-    const flat90 = aim(90);
-    const flat72 = aim(72);
-    if (!(flat90 > 0.2)) {
-        throw new Error('the 90 deg fixture did not leave through the side at'
-            + ' all (' + flat90.toFixed(2) + ' A) - it measures nothing');
+    //    ...and it has to keep tracking the control upward, where no fade
+    //    applies.
+    const thickCrop = aim(0, 1.6).crop;
+    if (!(thickCrop > face.crop + 0.1)) {
+        throw new Error('a ribbon at thickness 1.6 cropped the contact '
+            + thickCrop.toFixed(2) + ' A against ' + face.crop.toFixed(2)
+            + ' A at 0.9 - the crop is not coming from the slab');
     }
-    if (!(flat72 / flat90 < 1.12)) {
-        throw new Error('a contact leaving through the ribbon\'s EDGE was pushed'
-            + ' out for its stroke width too (72/90 deg trim ratio '
-            + (flat72 / flat90).toFixed(2) + ', bare geometry gives 1.05) - the'
-            + ' push is meant for the faces only');
+    // 4. ...AND SO DOES WIDTH. Leaving through the EDGE the crop is the
+    //    half-WIDTH instead, which is a property of the secondary structure:
+    //    a strand is 1.1 A half-wide against a loop's 0.42, so the same bearing
+    //    on the two must not give the same crop.
+    const edgeE = aim(88, 0.9, 'E').crop;
+    const edgeC = aim(88, 0.9, 'C').crop;
+    if (!(edgeE > edgeC * 1.8)) {
+        throw new Error('a strand cropped the edge-on contact ' + edgeE.toFixed(2)
+            + ' A and a loop ' + edgeC.toFixed(2) + ' A - nearly the same, so'
+            + ' the crop is not reading the ribbon\'s WIDTH');
+    }
+    // 5. NOTHING RUNS AWAY. Every bearing right round the ribbon, including the
+    //    grazing ones that made the old face-only rule diverge.
+    for (const deg of [0, 30, 60, 80, 88, 90, 120, 150, 180]) {
+        const q = aim(deg, 0.9);
+        if (!(q.crop >= 0 && q.crop < 2.5)) {
+            throw new Error('at ' + deg + ' deg off the face normal the contact'
+                + ' was cropped ' + q.crop.toFixed(2) + ' A - the slab is at most'
+                + ' 1.1 A across, so nothing here may reach that');
+        }
+    }
+    // 6. AN END WITH NO RIBBON IS NOT CROPPED.
+    if (!(Math.abs(face.ligand) < 0.01)) {
+        throw new Error('the ligand end was cropped by ' + face.ligand.toFixed(3)
+            + ' of the line, but a ligand has no ribbon to be cropped by');
     }
 });
 

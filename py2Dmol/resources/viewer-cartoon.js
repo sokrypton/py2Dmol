@@ -654,10 +654,6 @@
     // the point where the ribbon is fatter than the contact the ribbon wins,
     // which is what a thickness control is for.
     const CONTACT_TUBE_R = 0.5;
-    // Ceiling on the flush push's cot factor - see the contact trim. 2.0 is
-    // 26.6 degrees to the surface, past which a flat stroke's end is a long
-    // ellipse that no single push along the axis can seat.
-    const CONTACT_FLUSH_MAX_COT = 2.0;
     const LIGAND_TH_DEFAULT = 0.5;
     // Ceiling on that, in Angstrom, TOTAL thickness. Sticks are 0.3 A wide, so
     // past this they stop reading as sticks; the ribbon has no such limit and
@@ -6019,17 +6015,6 @@
         // from outside reads it - side-chain sticks and contact lines alike -
         // so there is one construction of the frame rather than one per caller.
         //
-        // The half-extent ALONG THE CHAIN is half a CA-CA step, which is the
-        // slice of ribbon this residue owns: its slab runs from the midpoint
-        // behind it to the midpoint ahead.
-        //
-        // Taken from the NEARER neighbour and capped at half the chain-break
-        // distance. The span pB - pA looks like the obvious source and is wrong
-        // at a break: there one "neighbour" is not a neighbour at all, the span
-        // reads tens of Angstrom, and a contact leaving along the chain was
-        // trimmed by up to 10.4 A - it started well outside the ribbon instead
-        // of on it. The nearer step is a real step whenever either side is
-        // intact, and the cap covers a residue stranded between two breaks.
         const ribbonSlabAt = (j) => {
             const sv = protSide[j];
             const o = at(j) || rotated[j];
@@ -6048,6 +6033,12 @@
             nx /= nl; ny /= nl; nz /= nl;
             const svl = Math.hypot(sv[0], sv[1], sv[2]);
             if (svl < 1e-6) return null;
+            // HOW FAR THE SLAB REACHES ALONG THE CHAIN - half a CA-CA step,
+            // this residue's own slice of ribbon. Taken from the NEARER
+            // neighbour and capped at half the chain-break distance: the span
+            // pB - pA is the obvious source and is wrong at a break, where one
+            // "neighbour" is not one, the span reads tens of Angstrom, and a
+            // contact leaving along the chain was cropped by up to 10.4 A.
             const step = Math.min(
                 Math.hypot(o.x - pA.x, o.y - pA.y, o.z - pA.z) || Infinity,
                 Math.hypot(pB.x - o.x, pB.y - o.y, pB.z - o.z) || Infinity);
@@ -6108,6 +6099,23 @@
             const dl = Math.hypot(dx, dy, dz) || 1;
             const onFace = Math.abs((dx * nx + dy * ny + dz * nz) / dl);
             const onSide = Math.abs((dx * ux + dy * uy + dz * uz) / dl);
+
+            // EVERY SURFACE IS AVAILABLE, on every element.
+            //
+            // A helix was briefly restricted to its two faces, to stop the
+            // ATTACHMENT POINT jumping between surfaces when contacts anchored
+            // on them. That restriction does not survive the move to cropping,
+            // and cannot: a line that genuinely leaves through the EDGE has no
+            // face to be cropped at, so halfT/|d.n| runs away with it. Measured
+            // on a helix slab, faces-only against the true exit:
+            //
+            //     90 deg off the face normal   >50 A   against  1.30 A
+            //     80 deg                        2.59 A          1.32 A
+            //     70 deg                        1.32 A          1.32 A
+            //
+            // and past 80 degrees the crop guard clamps, taking most of the
+            // contact with it.
+            //
             // compared as 1/t, so a surface the bond runs parallel to is one it
             // never reaches rather than a division to guard. Both cannot be
             // zero: d is a unit vector, and the two axes span everything but
@@ -6130,60 +6138,25 @@
             // wrong one would plant the cutting plane inside the ribbon or well
             // outside it.
             const off = useSide ? slab.hW : slab.hT;
+            // WHERE THE RAY LEAVES THE SLAB ALTOGETHER, which is the surface it
+            // was cut against OR the end of this residue's slice, whichever
+            // comes first. A side chain ignores this and uses the plane above;
+            // a CONTACT crops itself here, and needs the third axis because a
+            // contact between i and i+4 in a helix runs very nearly along the
+            // chain and would otherwise meet no surface squarely at all.
+            const onChain = Math.abs((dx * slab.t[0] + dy * slab.t[1]
+                + dz * slab.t[2]) / dl);
+            const cross = onFace > 1e-6 || onSide > 1e-6 || onChain > 1e-6;
+            let exit = off / Math.max(useSide ? onSide : onFace, 1e-6);
+            if (onChain > 1e-6) exit = Math.min(exit, slab.hL / onChain);
             return {
+                exit: cross ? exit : 0,
                 x: o.x + sgn * nx * off, y: o.y + sgn * ny * off,
                 z: o.z + sgn * nz * off,
                 // the outward normal of the surface it leaves through, for the
                 // stick to roll its section onto - see rollN in stickFrame
                 n: [sgn * nx, sgn * ny, sgn * nz],
             };
-        };
-
-        // HOW FAR OUT OF THE RIBBON A LINE LEAVING RESIDUE j TRAVELS before it
-        // is clear of it - the full ray/box exit, all three axes.
-        //
-        // A CONTACT STARTS AT THE CA, which is the CENTRE of the slab, so both
-        // of its ends begin buried inside the ribbon they point at. That is the
-        // same fault side chains had, and it reads the same way: the line and
-        // the slab interpenetrate, and no paint order is right for both, so the
-        // contact appears to pass through the backbone rather than to touch it.
-        //
-        // A side chain solves it by having the slab CUT its end square. A
-        // contact is drawn FLAT - one stroke, no box, no end face - so there is
-        // nothing to cut and nothing to make flush. What it needs is simply to
-        // START where it leaves the ribbon, which is a trim along its own axis
-        // and so cannot tilt it off the line between the two residues.
-        //
-        // The third axis matters here in a way it does not for a side chain. A
-        // CA-CB bond never runs along the chain, but a contact between i and
-        // i+4 in a helix very nearly does, and then it meets neither the face
-        // nor the side squarely and both of those distances run away. Bounding
-        // by the residue's own half-step closes that: the line leaves through
-        // the END of this residue's slice of ribbon, which is where it really
-        // does emerge.
-        const ribbonExitToward = (j, target) => {
-            const slab = ribbonSlabAt(j);
-            if (!slab) return null;
-            const dx = target.x - slab.o.x;
-            const dy = target.y - slab.o.y;
-            const dz = target.z - slab.o.z;
-            const dl = Math.hypot(dx, dy, dz);
-            if (dl < 1e-6) return null;
-            const ux = dx / dl, uy = dy / dl, uz = dz / dl;
-            let best = Infinity; let bestC = 0; let onFace = false;
-            const axes = [[slab.n, slab.hT, true], [slab.s, slab.hW, false],
-                [slab.t, slab.hL, false]];
-            for (const [ax, h, isFace] of axes) {
-                const c = Math.abs(ux * ax[0] + uy * ax[1] + uz * ax[2]);
-                // a surface the line runs parallel to is never reached, so it
-                // does not bound anything
-                if (c > 1e-6 && h / c < best) { best = h / c; bestC = c; onFace = isFace; }
-            }
-            if (!Number.isFinite(best)) return null;
-            // `c` is sin of the angle the line makes with the surface, which is
-            // what the flush push below needs; there is no second place to
-            // recompute it from.
-            return { d: best, onFace, sin: bestC };
         };
 
         // THE STICK SECTION'S THICKNESS, resolved here because two passes need
@@ -6304,58 +6277,42 @@
                     }
                 }
             }
-            // A CONTACT MEETS THE BACKBONE AT ITS SURFACE, not at its centre.
-            // Trimmed along its OWN axis at both ends, so the line still joins
-            // the two residues it names - it just starts where it leaves the
-            // first ribbon and stops where it reaches the second. Kept FLAT:
-            // this moves two points and adds no geometry, so a contact is still
-            // one stroke and the tube style is untouched.
+            // A CONTACT RUNS CA TO CA AND THE RIBBON CROPS IT - the same
+            // thing the backbone does to a side chain, and for the same reason.
             //
-            // Cartoon only, and only for the two ends that HAVE a ribbon. A
-            // contact to a ligand or a nucleotide has no protein slab at that
-            // end - protSide is filled for protein runs - so ribbonExitToward
-            // declines and that end stays on its position, exactly as before.
+            // It used to be drawn from CA to CA with nothing removed, and a CA
+            // is the CENTRE of the slab, so both ends began buried inside the
+            // ribbon they point at: line and slab interpenetrate, no paint
+            // order is right for both, and the contact reads as passing THROUGH
+            // the backbone. So the line keeps its full CA-to-CA axis and each
+            // end is cut back to where it leaves the slab - a crop along its
+            // own direction, which cannot tilt it off the two residues it
+            // names.
+            //
+            // WHERE THE CROP FALLS DEPENDS ON THICKNESS AND WIDTH, because the
+            // slab it is leaving has both: the exit is the nearer of
+            // halfT/|d.n| and halfW/|d.s|, bounded by the residue's own
+            // half-step along the chain. A thicker or wider ribbon swallows
+            // more of the contact, which is what those controls are for.
+            //
+            // Anchoring each end at the surface point straight out from the CA
+            // was tried instead. It puts every joint at the same spot, but the
+            // line then no longer points at the partner - each end is displaced
+            // by up to the ribbon's half-extent, about 23 degrees of bearing
+            // over a 6 A contact - and a contact's whole job is to say WHICH
+            // TWO residues are in contact.
             if (seg.type === 'C' && v1 && v2) {
-                // THE STROKE HAS WIDTH, so putting its CENTRE on the surface
-                // leaves one edge of the end inside the ribbon and the other
-                // short of it wherever the line arrives obliquely. Pushing out
-                // by a further halfWidth/tan(angle) clears the whole width -
-                // the flat-stroke equivalent of the oblique end face a side
-                // chain's box gets cut.
-                //
-                // FACES ONLY. The two flat faces are where a contact visibly
-                // lands on a sheet or a helix and where the overhang shows; the
-                // edges are a fraction of a ribbon's width and the chain-end
-                // exits run into the neighbouring residue's slab anyway, so
-                // pushing there buys nothing and costs length.
-                //
-                // The stroke is treated as round rather than as a screen-facing
-                // ribbon: which way its width lies depends on the camera, and a
-                // trim that changed when you rotated the view would be worse
-                // than a slightly generous one.
-                const hwA = CONTACT_WIDTH * (seg.contactWeight !== undefined
-                    ? seg.contactWeight : 1) / 2;
-                const flush = (e) => {
-                    if (!e) return 0;
-                    if (!e.onFace) return e.d;
-                    // cot, capped: at a grazing angle it runs away exactly as
-                    // the corner slide did, and no single push makes a long
-                    // oblique end flush anyway. Past the cap the end keeps a
-                    // little overlap, which is the harmless direction.
-                    const sn = Math.max(e.sin, 1e-6);
-                    const cot = Math.min(Math.sqrt(Math.max(0, 1 - sn * sn)) / sn,
-                        CONTACT_FLUSH_MAX_COT);
-                    return e.d + hwA * cot;
-                };
-                const ta = flush(ribbonExitToward(seg.idx1, v2));
-                const tb = flush(ribbonExitToward(seg.idx2, v1));
+                const e1 = ribbonSurfaceToward(seg.idx1, v2);
+                const e2 = ribbonSurfaceToward(seg.idx2, v1);
+                const ta = e1 ? e1.exit : 0;
+                const tb = e2 ? e2.exit : 0;
                 const dxc = v2.x - v1.x, dyc = v2.y - v1.y, dzc = v2.z - v1.z;
                 const len = Math.hypot(dxc, dyc, dzc);
-                // NEVER TRIM THE CONTACT AWAY. Two residues packed against each
+                // NEVER CROP THE CONTACT AWAY. Two residues packed against each
                 // other can sit closer than the two half-ribbons between them,
                 // and the ends would cross over and draw the line backwards.
-                // Both trims are scaled back together so the line keeps most of
-                // its length and its direction.
+                // Both crops are scaled back together so the line keeps most of
+                // its length and all of its direction.
                 if (len > 1e-6 && ta + tb > 0) {
                     const room = 0.8 * len;
                     const k = (ta + tb) > room ? room / (ta + tb) : 1;
@@ -6368,6 +6325,32 @@
             }
             const A = project(v1.x, v1.y, v1.z);
             const B = project(v2.x, v2.y, v2.z);
+            // A CONTACT SORTS ON ITS NEAR SURFACE. It is drawn as a flat stroke
+            // but stands for something with thickness, so what should sort is
+            // the surface facing the viewer, not the centre line. The case that
+            // matters is a contact joining two parts at the same depth - two
+            // strands of a flat sheet above all - where the centre lines
+            // coincide and the order is a coin toss.
+            //
+            // ...UNLESS THE RIBBON IS THICKER, in which case it genuinely is in
+            // front and should cover the contact. So the bias is the difference
+            // of the two radii and never negative.
+            //
+            // IT GOES IN THE DEPTH CHANNEL, not on the sort key. project()
+            // returns [x, y, z, pe] with z the world depth in Angstrom, and
+            // that third slot is what the painter sorts on AND what the ink
+            // pass registers as an occluder. Biasing only the sort key - as
+            // this used to - left the two modelling different solids: the
+            // painter drew the contact over a ribbon while the ink pass still
+            // believed the ribbon was in front, so the ribbon's outline showed
+            // through the contact. Biasing the channel keeps them agreed, and
+            // costs nothing: x and y are already fixed, so the drawn line does
+            // not move.
+            const zBias = seg.type === 'C'
+                ? Math.max(0, CONTACT_TUBE_R - (renderer.cartoonThickness || 0) / 2)
+                : 0;
+            if (zBias && A) A[2] += zBias;
+            if (zBias && B) B[2] += zBias;
             if (!A || !B) continue;
             const col = colors[s];
             if (!col) continue;
@@ -6417,6 +6400,7 @@
                     rollP: scRollP,      // ...a point on the cutting plane
                     rollAt: scRollAt,    // ...and which end sits against it
                     rollFlush: scRollFlush,  // ...and whether its square lies in it
+                    zBias,               // contacts: sort on the near surface
                 });
             }
         }
@@ -8077,11 +8061,6 @@
                 // Cartoon only - this file is the cartoon. The tube path draws
                 // its contacts as one stroke and stays that way.
                 if (bd.flat && bd.va && bd.vb) {
-                    // the slab's half-thickness is what the Thickness control
-                    // sets; a ribbon fatter than the contact tube covers it
-                    const slabR = (renderer.cartoonThickness !== undefined
-                        ? renderer.cartoonThickness : 0) / 2;
-                    const contactBias = Math.max(0, CONTACT_TUBE_R - slabR);
                     const dxc = bd.vb.x - bd.va.x;
                     const dyc = bd.vb.y - bd.va.y;
                     const dzc = bd.vb.z - bd.va.z;
@@ -8095,6 +8074,9 @@
                             const q = project(bd.va.x + dxc * u, bd.va.y + dyc * u,
                                 bd.va.z + dzc * u);
                             if (!q) { proj.length = 0; break; }
+                            // the same near-surface bias the whole contact
+                            // carries, in the same depth channel - see zBias
+                            q[2] += bd.zBias || 0;
                             proj.push(q);
                         }
                         if (proj.length === nC + 1) {
@@ -8104,7 +8086,7 @@
                                     kind: 'line',
                                     pts: [p1, p2],
                                     x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
-                                    z: (p1[2] + p2[2]) / 2 + contactBias,
+                                    z: (p1[2] + p2[2]) / 2,
                                     w: bd.w, c: bd.c, flat: true,
                                     pA: p1, pB: p2,
                                     sel: bd.sel,
