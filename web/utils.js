@@ -899,13 +899,14 @@ function parseCIF(text) {
         // Skip semicolon lines
         if (lineLen > 0 && line[0] === ';') continue;
 
-        // Use faster tokenizer instead of regex for better performance
+        // Minimum required tokens length is based on essential atom properties (coordinates, chain, resSeq, names)
+        const minReqLen = Math.max(idxX, idxY, idxZ, idxChain, idxResSeq, idxResName, idxAtomName) + 1;
         const values = tokenizeCIFLine_light(line);
-        if (!values || values.length < headerLen) continue;
+        if (!values || values.length < minReqLen) continue;
 
         // Direct array access - much faster than function calls
         // Update modelID if needed
-        if (idxModelID >= 0) {
+        if (idxModelID >= 0 && idxModelID < values.length) {
             const newModelID = +values[idxModelID] || modelID; // Unary + is faster than parseInt
             if (newModelID !== modelID) {
                 modelID = newModelID;
@@ -928,11 +929,11 @@ function parseCIF(text) {
 
         // Create atom object with direct array access and optimized number parsing
         // Use unary + operator for numbers (faster than parseFloat/parseInt)
-        const resNameVal = idxResName >= 0 ? values[idxResName] : '';
+        const resNameVal = (idxResName >= 0 && idxResName < values.length) ? values[idxResName] : '';
         // Parse residue sequence number, handling missing values ("?") by falling back to auth_seq_id
         // Use label_seq_id (PDB numbering) for SIFTS mapping compatibility
         let resSeqVal = 0;
-        if (idxResSeq >= 0) {
+        if (idxResSeq >= 0 && idxResSeq < values.length) {
             const labelSeqStr = values[idxResSeq];
             // Check if label_seq_id is missing ("?" or empty), fall back to auth_seq_id
             if (labelSeqStr === '?' || labelSeqStr === '' || labelSeqStr === null || labelSeqStr === undefined) {
@@ -948,16 +949,16 @@ function parseCIF(text) {
         }
 
         const atom = {
-            record: idxRecord >= 0 ? values[idxRecord] : 'ATOM',
-            atomName: idxAtomName >= 0 ? values[idxAtomName] : '',
+            record: (idxRecord >= 0 && idxRecord < values.length) ? values[idxRecord] : 'ATOM',
+            atomName: (idxAtomName >= 0 && idxAtomName < values.length) ? values[idxAtomName] : '',
             resName: resNameVal,
-            chain: idxChain >= 0 ? values[idxChain] : '',
+            chain: (idxChain >= 0 && idxChain < values.length) ? values[idxChain] : '',
             resSeq: resSeqVal,
-            x: idxX >= 0 ? (+values[idxX] || 0) : 0,
-            y: idxY >= 0 ? (+values[idxY] || 0) : 0,
-            z: idxZ >= 0 ? (+values[idxZ] || 0) : 0,
-            b: idxB >= 0 ? (+values[idxB] || 0) : 0,
-            element: idxElement >= 0 ? values[idxElement] : '',
+            x: (idxX >= 0 && idxX < values.length) ? (+values[idxX] || 0) : 0,
+            y: (idxY >= 0 && idxY < values.length) ? (+values[idxY] || 0) : 0,
+            z: (idxZ >= 0 && idxZ < values.length) ? (+values[idxZ] || 0) : 0,
+            b: (idxB >= 0 && idxB < values.length) ? (+values[idxB] || 0) : 0,
+            element: (idxElement >= 0 && idxElement < values.length) ? values[idxElement] : '',
             res_name: resNameVal, // Duplicate for compatibility
             res_seq: resSeqVal // Duplicate for compatibility
         };
