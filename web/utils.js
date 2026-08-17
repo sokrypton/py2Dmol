@@ -1225,6 +1225,397 @@ function resolveChainNucleicTypes(allResidues) {
     return out;
 }
 
+// Backbone. Everything else heavy is side chain - "CB and up". OXT is the
+// terminal carboxylate oxygen, backbone by any reading.
+const PROTEIN_BACKBONE_ATOMS = new Set(['N', 'CA', 'C', 'O', 'OXT']);
+// WHAT IS ACTUALLY BONDED TO WHAT, per residue type.
+//
+// A side chain's connectivity is a property of the amino acid, not of the
+// coordinates, so it does not have to be guessed from distances at all. The
+// distance rule below is kept as a FALLBACK for residues not in this table -
+// modified and non-standard ones - but wherever the residue is recognised its
+// real bonds are used, and then a bond is right however stretched the geometry
+// is. That is what the distance rule could not do: 4HHB has real bonds out at
+// 2.2 A while non-bonded pairs in the same residue start at 2.41 A, so no
+// single threshold separates them.
+//
+// Backbone bonds are omitted - only CA outwards is drawn. PRO's CD-N ring
+// closure is a backbone bond and so is left out; the ring reads as open at the
+// N, which is where the drawn side chain genuinely stops.
+const PROTEIN_SIDECHAIN_BONDS = {
+    ALA: [['CA', 'CB']],
+    ARG: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD'], ['CD', 'NE'], ['NE', 'CZ'],
+        ['CZ', 'NH1'], ['CZ', 'NH2']],
+    ASN: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'OD1'], ['CG', 'ND2']],
+    ASP: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'OD1'], ['CG', 'OD2']],
+    CYS: [['CA', 'CB'], ['CB', 'SG']],
+    GLN: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD'], ['CD', 'OE1'], ['CD', 'NE2']],
+    GLU: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD'], ['CD', 'OE1'], ['CD', 'OE2']],
+    GLY: [],
+    HIS: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'ND1'], ['CG', 'CD2'],
+        ['ND1', 'CE1'], ['CD2', 'NE2'], ['CE1', 'NE2']],
+    ILE: [['CA', 'CB'], ['CB', 'CG1'], ['CB', 'CG2'], ['CG1', 'CD1']],
+    LEU: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD1'], ['CG', 'CD2']],
+    LYS: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD'], ['CD', 'CE'], ['CE', 'NZ']],
+    MET: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'SD'], ['SD', 'CE']],
+    MSE: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'SE'], ['SE', 'CE']],
+    PHE: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD1'], ['CG', 'CD2'],
+        ['CD1', 'CE1'], ['CD2', 'CE2'], ['CE1', 'CZ'], ['CE2', 'CZ']],
+    PRO: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD']],
+    SER: [['CA', 'CB'], ['CB', 'OG']],
+    THR: [['CA', 'CB'], ['CB', 'OG1'], ['CB', 'CG2']],
+    TRP: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD1'], ['CG', 'CD2'],
+        ['CD1', 'NE1'], ['NE1', 'CE2'], ['CD2', 'CE2'], ['CD2', 'CE3'],
+        ['CE2', 'CZ2'], ['CE3', 'CZ3'], ['CZ2', 'CH2'], ['CZ3', 'CH2']],
+    TYR: [['CA', 'CB'], ['CB', 'CG'], ['CG', 'CD1'], ['CG', 'CD2'],
+        ['CD1', 'CE1'], ['CD2', 'CE2'], ['CE1', 'CZ'], ['CE2', 'CZ'],
+        ['CZ', 'OH']],
+    VAL: [['CA', 'CB'], ['CB', 'CG1'], ['CB', 'CG2']],
+};
+
+// NAMES THAT MEAN THE SAME ATOM. The table is written in PDB v3 names, and
+// older files use v2 for a handful of heavy atoms - isoleucine's terminal
+// carbon is CD1 in v3 and CD in v2, and selenomethionine's selenium is written
+// both SE and SED. Without this an ILE from a v2 file loses its CD1 bond and
+// the tip comes away. Symmetric pairs that merely swap between files - ASP's
+// OD1/OD2, PHE's CD1/CD2 - need nothing here: both bond to the same parent, so
+// which is which does not change the connectivity.
+const SIDECHAIN_ATOM_ALIASES = {
+    ILE: { CD: 'CD1' },
+    MSE: { SED: 'SE' },
+};
+
+// WHERE A BOND STOPS BEING A BOND.
+//
+// Ideal side-chain bonds run 1.43 (C-O) to 1.81 (C-S), so a 1.9 cutoff looks
+// generous - and is not. Refined geometry scatters, and older structures
+// scatter further: on 4HHB, 69 atoms came out with no bond at all, their
+// nearest neighbour sitting at 1.90-1.94 A. CA-CB, CD-CE, CE-NZ - real bonds,
+// just long. Each drew as an isolated sphere beside a gap.
+//
+// The ceiling is the shortest NON-bonded distance in a residue: two atoms one
+// bond apart from a common neighbour. Tetrahedral that is 2*1.53*sin(54.75) =
+// 2.50 A, aromatic 2*1.39*sin(60) = 2.41 A. Measured over 25,946 side-chain
+// atoms, atoms with an impossible number of neighbours stay flat to 2.10 and
+// then break sharply - 3 at 1.90, 6 at 2.10, 109 at 2.20, 3004 at 2.40 - so a
+// single threshold cannot both catch a 2.2 A bond and avoid inventing them.
+//
+// So there are TWO numbers. The threshold below is deliberately tight, tight
+// enough that it never bonds a 1,3 pair; what it misses is repaired afterwards
+// by joining each detached fragment to the rest through its single SHORTEST
+// link (see the reachability pass). One shortest link per fragment cannot
+// over-coordinate anything, which is what lets the repair reach further than
+// the threshold safely.
+//
+// The repair also makes this threshold uncritical: 1.9, 2.0 and 2.1 all give
+// the identical table on 4HHB, because whatever the threshold misses the
+// repair puts back. It is the repair's reach below that decides the answer,
+// which is where the tests are pointed.
+const SIDECHAIN_BOND_MAX = 2.0;
+const SIDECHAIN_BOND_MAX_SQ = SIDECHAIN_BOND_MAX * SIDECHAIN_BOND_MAX;
+// The repair's reach. Below the 2.41 A aromatic 1,3 distance, so a fragment
+// separated by a genuinely UNMODELLED atom - a residue whose CG was never
+// built while its CD was - stays detached and is dropped rather than joined by
+// a bond that does not exist.
+const SIDECHAIN_LINK_MAX_SQ = 2.35 * 2.35;
+
+/**
+ * Side chains, stored so they FOLLOW THE BACKBONE WHEREVER IT GOES.
+ *
+ * py2Dmol keeps one position per residue, and the cartoon renderer then moves
+ * that position: it is re-centred at load, rotated to face the viewer, and -
+ * in the richardson preset - projected onto its sheet plane and flattened
+ * (see sheetProject / sheetFlat in viewer-cartoon.js). A side chain held as a
+ * world coordinate would be right only in the raw file's frame and would tear
+ * away from its own CA everywhere else.
+ *
+ * So nothing here is stored in world space. Each atom is three coefficients in
+ * its residue's own backbone frame - the frame built from the CA trace by
+ * localFrame() - which is invariant under translation and rotation alike. At
+ * draw time the renderer rebuilds the same frame from the FINAL positions and
+ * reads the coefficients back out, so the side chain arrives wherever the CA
+ * ended up, at the right orientation, with no transform to keep in step.
+ *
+ * That frame is deliberately the renderer's own function rather than a copy of
+ * it: capture and reconstruction have to agree exactly, and two
+ * implementations of the same 20 lines is how they stop agreeing.
+ *
+ * Terminal residues have no frame of their own (localFrame needs a neighbour
+ * on each side), so they borrow the nearest one that does and are stored in
+ * that. It is a rigid frame either way; all it costs is that a terminus
+ * follows its neighbour's flattening rather than its own, and flattening does
+ * not move chain ends.
+ *
+ * THE CA IS NOT IN THE TABLE. It is already a drawn position - the backbone
+ * runs through it - so carrying a copy would put two coincident positions on
+ * top of each other, a fifth of the table (534 of 2618 atoms on 4HHB) spent
+ * duplicating something the renderer had already placed, with the CA-CB bond
+ * drawn to the copy rather than to the backbone. Instead the atoms that bond
+ * to it are listed in `toBackbone`, and the renderer joins them to the owning
+ * position itself, so the side chain hangs off the backbone that is really
+ * there. The CA still takes part in the graph while the table is being built,
+ * as the root everything must reach; it is simply not emitted.
+ *
+ * @param {Array<Array<number>>} coords - final position coordinates
+ * @param {Array<object>} entries - {pos, residue} per emitted protein position
+ * @returns {object|null} - the side-chain table, or null if there is nothing
+ */
+function buildSidechainTable(coords, entries) {
+    const localFrame = (typeof window !== 'undefined' && window.py2dmolCartoon)
+        ? window.py2dmolCartoon.localFrame : null;
+    if (!localFrame || !entries.length) return null;
+
+    const n = coords.length;
+    const at = (i) => ({ x: coords[i][0], y: coords[i][1], z: coords[i][2] });
+    // which residues can carry a frame at all
+    const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const hasFrame = new Uint8Array(n);
+    for (const e of entries) {
+        if (localFrame(at, n, e.pos, fr, null)) hasFrame[e.pos] = 1;
+    }
+    // nearest framed position, searching outward - only used at chain ends
+    const framedNear = (pos) => {
+        if (hasFrame[pos]) return pos;
+        for (let d = 1; d <= 3; d++) {
+            if (pos - d >= 0 && hasFrame[pos - d]) return pos - d;
+            if (pos + d < n && hasFrame[pos + d]) return pos + d;
+        }
+        return -1;
+    };
+
+    const pos = []; const frameOf = []; const coef = [];
+    const names = []; const elements = []; const bonds = [];
+    // table rows bonded to their residue's own backbone position, not to
+    // another row - the CA end of the side chain
+    const toBackbone = [];
+    for (const e of entries) {
+        const ca = e.residue.caAtom;
+        if (!ca) continue;
+        const anchor = framedNear(e.pos);
+        if (anchor < 0) continue;                 // too short to frame: skip
+        if (!localFrame(at, n, anchor, fr, null)) continue;
+        const o = at(anchor);
+
+        // ONE CONFORMER, THE FIRST. A residue modelled in two positions writes
+        // each of its atoms twice - alt A and alt B - and taking both gives a
+        // side chain with two of every atom, bonded to each other by the
+        // distance rule below into a tangle that is not any real conformer.
+        // First-wins by atom NAME rather than by reading the alt-loc column:
+        // it needs nothing from the parser, and it matches what the BACKBONE
+        // already does - residue.caAtom is the first CA seen - so the side
+        // chain comes from the same conformer as the position it hangs off
+        // rather than mixing alt B's CB onto alt A's CA.
+        // HYDROGEN, EVEN WITHOUT AN ELEMENT COLUMN. Columns 77-78 of a PDB
+        // ATOM record are optional and older files leave them blank, so the
+        // element test alone lets hydrogens through. A residue in the
+        // connectivity table shrugs that off - the table never names a
+        // hydrogen, so it attaches to nothing and the reachability pass drops
+        // it - but the distance FALLBACK bonds it to its parent and draws it.
+        // Measured on a hydrogen-bearing file with no element column: standard
+        // residues came out clean, a non-standard one kept HB2, HG and 1HB.
+        //
+        // So the name decides it when the column is silent: PDB names
+        // hydrogens H..., and v2 puts the count first (1HB, 2HB). Only
+        // consulted when `element` is empty, so a ligand atom that really is
+        // mercury keeps its element, and only inside a residue already
+        // classified as protein, where an H-name cannot be anything else.
+        const isHydrogen = (a) => (a.element
+            ? (a.element === 'H' || a.element === 'D')
+            : /^[0-9]?[HD]/.test(a.atomName || ''));
+        const group = [];
+        const seen = new Set();
+        for (const a of e.residue.atoms) {
+            if (isHydrogen(a)) continue;
+            if (a.atomName !== 'CA' && PROTEIN_BACKBONE_ATOMS.has(a.atomName)) continue;
+            if (seen.has(a.atomName)) continue;
+            seen.add(a.atomName);
+            group.push(a);
+        }
+        // CA first, so index 0 of every group is the anchor
+        group.sort((a, b) => (a.atomName === 'CA' ? -1 : b.atomName === 'CA' ? 1 : 0));
+        if (group.length < 2) continue;           // glycine: nothing to draw
+        const base = pos.length;
+        // CONNECTIVITY. From the residue's chemistry where we recognise it,
+        // and only otherwise from distances.
+        const link = [];
+        const adj = group.map(() => []);
+        const join = (i, j) => {
+            link.push(i, j);
+            adj[i].push(j); adj[j].push(i);
+        };
+        const known = PROTEIN_SIDECHAIN_BONDS[e.residue.resName];
+        if (known) {
+            const alias = SIDECHAIN_ATOM_ALIASES[e.residue.resName];
+            const row = new Map();
+            for (let i = 0; i < group.length; i++) {
+                const n0 = group[i].atomName;
+                row.set((alias && alias[n0]) || n0, i);
+            }
+            for (const [n1, n2] of known) {
+                const i = row.get(n1); const j = row.get(n2);
+                // an atom the file never modelled simply has no bond to make
+                if (i !== undefined && j !== undefined) join(i, j);
+            }
+        } else {
+            for (let i = 0; i < group.length; i++) {
+                for (let j = i + 1; j < group.length; j++) {
+                    const a = group[i], b = group[j];
+                    const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+                    if (dx * dx + dy * dy + dz * dz < SIDECHAIN_BOND_MAX_SQ) {
+                        join(i, j);
+                    }
+                }
+            }
+        }
+        // ONLY WHAT HANGS OFF THE CA. A side chain is a tree rooted at its CA,
+        // so an atom the cutoff could not reach from there is not attached to
+        // anything we are drawing - it is a fragment left by missing density,
+        // a residue whose CG was never modelled while its CD was. Drawn anyway
+        // it appears as a sphere floating beside a gap, which reads as a broken
+        // bond rather than as the absent atom it really is. Dropping it says
+        // the honest thing: nothing is drawn where nothing was measured.
+        const reach = new Set([0]);          // index 0 is the CA anchor
+        const grow = (from) => {
+            const stack = [from];
+            while (stack.length) {
+                for (const nb of adj[stack.pop()]) {
+                    if (reach.has(nb)) continue;
+                    reach.add(nb); stack.push(nb);
+                }
+            }
+        };
+        grow(0);
+        // REPAIR, FALLBACK RESIDUES ONLY. Where the chemistry is known a
+        // detached fragment means an atom the file never modelled, and guessing
+        // a bond across the hole would draw one that does not exist. Only the
+        // distance rule needs rescuing from itself: there a fragment is either
+        // a bond the tight threshold missed or an atom whose neighbour was
+        // never modelled, and the two look completely different - the first
+        // sits a little past the threshold, the second past any bond length at
+        // all. So each detached fragment is offered ONE link, its shortest, and
+        // joined if that link is short enough to be a bond. A single link per
+        // fragment cannot over-coordinate anything, which is why it may reach
+        // further than the threshold does.
+        while (!known) {
+            let bd = SIDECHAIN_LINK_MAX_SQ; let bi = -1; let bj = -1;
+            for (let i = 0; i < group.length; i++) {
+                if (!reach.has(i)) continue;
+                for (let j = 0; j < group.length; j++) {
+                    if (reach.has(j)) continue;
+                    const a = group[i], b = group[j];
+                    const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+                    const d2 = dx * dx + dy * dy + dz * dz;
+                    if (d2 < bd) { bd = d2; bi = i; bj = j; }
+                }
+            }
+            if (bi < 0) break;
+            link.push(bi, bj);
+            adj[bi].push(bj); adj[bj].push(bi);
+            reach.add(bj);
+            grow(bj);
+        }
+        // Whatever is STILL detached is dropped, for the reason above.
+        if (reach.size < 2) continue;        // nothing reached the CA at all
+        // renumber the survivors, since the rows are written in group order
+        const keep = [];
+        for (let i = 0; i < group.length; i++) if (reach.has(i)) keep.push(i);
+        const rowOf = new Map();
+        // the CA (group index 0) is the backbone position, so it is not emitted
+        const emitted = keep.filter((i) => i !== 0);
+        for (let i = 0; i < emitted.length; i++) rowOf.set(emitted[i], base + i);
+        for (const i of emitted) {
+            const a = group[i];
+            const dx = a.x - o.x, dy = a.y - o.y, dz = a.z - o.z;
+            pos.push(e.pos);
+            frameOf.push(anchor);
+            coef.push(dx * fr[0] + dy * fr[1] + dz * fr[2]);
+            coef.push(dx * fr[3] + dy * fr[4] + dz * fr[5]);
+            coef.push(dx * fr[6] + dy * fr[7] + dz * fr[8]);
+            names.push(a.atomName);
+            elements.push(a.element || '');
+        }
+        for (let k = 0; k + 1 < link.length; k += 2) {
+            const p1 = link[k]; const p2 = link[k + 1];
+            // a bond touching the CA becomes a bond to the OWNING POSITION,
+            // recorded separately because it crosses out of the table
+            if (p1 === 0 || p2 === 0) {
+                const other = rowOf.get(p1 === 0 ? p2 : p1);
+                if (other !== undefined) toBackbone.push(other);
+                continue;
+            }
+            const a = rowOf.get(p1); const b = rowOf.get(p2);
+            if (a !== undefined && b !== undefined) bonds.push(a, b);
+        }
+    }
+    if (!pos.length) return null;
+    return {
+        pos: new Int32Array(pos),
+        frameOf: new Int32Array(frameOf),
+        coef: new Float32Array(coef),
+        bonds: new Int32Array(bonds),
+        toBackbone: new Int32Array(toBackbone),
+        names,
+        elements,
+    };
+}
+
+/**
+ * A side-chain table trimmed for SAVING - every residue kept, nothing that the
+ * drawing does not need.
+ *
+ * The whole table goes in, not just the residues that were showing. Storing
+ * only those made a smaller file and a session you could not change your mind
+ * in: reload it and the side chains you had are there, but no others can ever
+ * be turned on, because their atoms were never written down and the file they
+ * came from is long gone. Being able to enable a residue later is most of the
+ * point of the control.
+ *
+ * What is dropped is `names` and `elements`. Nothing reads them to draw - they
+ * exist so the connectivity table can be applied at capture, which has already
+ * happened by now - and they are a third of the bytes. Coefficients round to
+ * 0.01 A, which is far finer than a side chain drawn a few pixels wide.
+ *
+ * Cost on 1TIM: 56 KB against 11 KB of coordinates, per frame. That ratio is
+ * the price of the feature; it was 145 KB before this trimming.
+ *
+ * @param {object} sc - the full table
+ * @returns {object|null}
+ */
+function trimSidechainTable(sc) {
+    if (!sc || !sc.pos || !sc.pos.length) return null;
+    const coef = new Array(sc.coef.length);
+    for (let i = 0; i < sc.coef.length; i++) {
+        coef[i] = Math.round(sc.coef[i] * 100) / 100;
+    }
+    return {
+        pos: Array.from(sc.pos),
+        frameOf: Array.from(sc.frameOf),
+        coef,
+        bonds: Array.from(sc.bonds),
+        toBackbone: Array.from(sc.toBackbone || []),
+    };
+}
+
+/**
+ * Rebuild a table read back from a saved session. JSON has no typed arrays, so
+ * the numeric columns come back as plain ones and are put back into the shapes
+ * the renderer indexes.
+ */
+function reviveSidechainTable(raw) {
+    if (!raw || !raw.pos || !raw.pos.length) return null;
+    return {
+        pos: new Int32Array(raw.pos),
+        frameOf: new Int32Array(raw.frameOf),
+        coef: new Float32Array(raw.coef),
+        bonds: new Int32Array(raw.bonds || []),
+        toBackbone: new Int32Array(raw.toBackbone || []),
+        // absent in a saved table: nothing reads them to draw, and they were
+        // dropped to save the bytes - see trimSidechainTable
+        names: raw.names || [],
+        elements: raw.elements || [],
+    };
+}
+
 /**
  * Check if a residue is a real nucleic acid (standard or modified)
  * Simplified: only canonical DNA/RNA + common modifications + MODRES/CIF-defined if connected
@@ -1661,6 +2052,13 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     // One DNA/RNA answer per chain - see resolveChainNucleicTypes.
     const chainNucleic = resolveChainNucleicTypes(allResidues);
 
+    // Side-chain capture. Recorded here because this is the only moment the
+    // atoms exist: the loop below keeps one CA per residue and everything else
+    // is dropped, and the file text is not retained, so an atom not taken now
+    // cannot be recovered later. The table it builds is never read by the
+    // draw path unless a residue is actually selected - see buildSidechainTable.
+    const sidechainEntries = [];
+
     for (let idx = 0; idx < allResidues.length; idx++) {
         const residue = allResidues[idx];
 
@@ -1697,6 +2095,7 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                 position_types.push('P');
                 residues.push(ca.res_name || ca.resName || residue.resName);
                 residue_numbers.push(ca.res_seq || ca.resSeq || residue.resSeq);
+                sidechainEntries.push({ pos: newIndex, residue });
 
                 // Map serial/ID to new index
                 if (ca.serial !== undefined) atomSerialToIndex.set(ca.serial, newIndex);
@@ -1904,6 +2303,11 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     }
     if (residue_numbers.some(i => !isNaN(i))) {
         result.residue_numbers = residue_numbers;
+    }
+
+    const sidechains = buildSidechainTable(coords, sidechainEntries);
+    if (sidechains) {
+        result.sidechains = sidechains;
     }
 
     return result;

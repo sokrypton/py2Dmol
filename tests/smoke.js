@@ -74,6 +74,16 @@ function coil(n, x0) {
     return out;
 }
 
+// pleated beta strand: the zig-zag is what cartoon_flat_sheets exists to
+// smooth out, so this is a chain flattening demonstrably MOVES
+function strand(n) {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+        out.push({ x: 3.3 * i, y: (i % 2 ? 1.0 : -1.0), z: 0.4 * Math.sin(i * 0.6) });
+    }
+    return out;
+}
+
 function mkRenderer(coords, segments, opts) {
     const n = coords.length;
     const r = {
@@ -838,11 +848,22 @@ test('ligand sticks: thickness is in Angstrom, and zero draws one face', () => {
     // half-thickness read off the box: corners 0 and 3 differ only in u
     const halfT = (bx) => 0.5 * Math.hypot(bx.W[0][0] - bx.W[3][0],
         bx.W[0][1] - bx.W[3][1], bx.W[0][2] - bx.W[3][2]);
-    // the control, once the USER has moved it, is a thickness in Angstrom
-    for (const th of [0.5, 1.0, 1.5]) {
+    // The control, once the USER has moved it, is a thickness in Angstrom -
+    // up to a CEILING. A stick is 0.3 A wide, so past about half an Angstrom it
+    // stops reading as a stick and becomes a square rod as deep as it is wide,
+    // while the ribbon is still thickening usefully. The ribbon has no such
+    // limit; this is only about what a stick can carry.
+    for (const th of [0.2, 0.35, 0.5]) {
         const got = 2 * halfT(mkBond(th, true));
         if (Math.abs(got - th) > 1e-6) {
             throw new Error(`thickness ${th} drew ${got.toFixed(3)} A`);
+        }
+    }
+    for (const th of [0.6, 1.0, 1.5]) {
+        const got = 2 * halfT(mkBond(th, true));
+        if (Math.abs(got - 0.5) > 1e-6) {
+            throw new Error(`thickness ${th} drew ${got.toFixed(3)} A - it should`
+                + ` cap at 0.5 and leave the rest to the backbone`);
         }
     }
     // A LIGAND KEEPS ITS OWN SECTION AND A PRESET DOES NOT RESHAPE IT just
@@ -1153,6 +1174,1039 @@ test('gesture budget needs more than one sample to degrade', () => {
     if (bare < 1) {
         throw new Error('nothing was measured while the outline was off - the'
             + ' estimate can never recover');
+    }
+});
+
+// ---- SIDE CHAINS ------------------------------------------------------------
+// By the time the cartoon sees them, side-chain atoms are ordinary 'L'
+// positions with ordinary bonds - _materialiseSidechains (viewer-mol.js) put
+// them there, against the FILE's backbone. What the cartoon owns is the one
+// thing that cannot be done earlier: it moves the backbone after that point,
+// so it has to move them with it. That is what these pin down.
+
+// two extra 'L' positions hanging off residue `pos`, in that residue's frame
+function withSidechain(coords, pos) {
+    const n = coords.length;
+    const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    if (!cartoon.localFrame((i) => coords[i], n, pos, fr, null)) {
+        throw new Error('no frame at ' + pos);
+    }
+    const o = coords[pos];
+    const map = new Map();
+    const out = coords.slice();
+    // CB, then CG further out
+    for (const c of [[0.6, 1.2, 0.5], [1.1, 2.3, 1.0]]) {
+        map.set(out.length, { anchor: pos, cx: c[0], cy: c[1], cz: c[2], owner: pos });
+        out.push({
+            x: o.x + fr[0] * c[0] + fr[3] * c[1] + fr[6] * c[2],
+            y: o.y + fr[1] * c[0] + fr[4] * c[1] + fr[7] * c[2],
+            z: o.z + fr[2] * c[0] + fr[5] * c[1] + fr[8] * c[2],
+        });
+    }
+    return { coords: out, map };
+}
+
+
+test('a coloured residue paints the ribbon around it, not after it', () => {
+    // colors[segIdx] is getAtomColor(idx1) - a segment takes its FIRST
+    // residue's colour - so colouring residue 10 used to paint 10 to 11 and
+    // leave 9 to 10 alone: a band the right width but half a residue late,
+    // sitting between residues instead of around the one that was picked.
+    // The interval is cut at its midpoint now, so each half takes its own
+    // end's colour.
+    const N = 20; const TARGET = 10;
+    const RED = { r: 255, g: 0, b: 0 };
+    const coords = strand(N);
+    const segs = [];
+    for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+    const r = mkRenderer(coords, segs, {
+        overlayState: { enabled: false },
+        _forceSec: 'E'.repeat(N),
+        cartoonSheetFlat: 0,
+        // hasColorOverrides reads this, and without it the split never runs
+        objectsData: { obj: { maxExtent: 30,
+            color: { type: 'advanced', value: { position: { [TARGET]: '#ff0000' } } } } },
+        currentObjectName: 'obj',
+        getColorOverride: (k) => (k === TARGET ? RED : null),
+        getAtomColor: (k) => (k === TARGET ? RED : COL),
+        _primProbe: null,
+    });
+    const { ctx } = mkCtx();
+    // colors[] as viewer-mol builds it: the segment takes idx1's colour
+    cartoon.render(r, ctx, 400, 400, segs.map((g) => (g.origIndex === TARGET ? RED : COL)));
+    const prims = r._primProbe || [];
+    let lo = Infinity; let hi = -Infinity;
+    for (const p of prims) {
+        if (p.kind !== 'rib' || !p.c || p.gs0 === undefined) continue;
+        if (p.c.r !== 255 || p.c.g !== 0) continue;
+        const len = (p.Lp ? p.Lp.length : 1) - 1;
+        lo = Math.min(lo, p.gs0);
+        hi = Math.max(hi, p.gs0 + (p.gsStep || 0) * len);
+    }
+    if (!isFinite(lo)) throw new Error('the coloured residue painted nothing');
+    const width = hi - lo;
+    const centre = (lo + hi) / 2;
+    if (Math.abs(width - 1) > 0.2) {
+        throw new Error('coloured band is ' + width.toFixed(2)
+            + ' residues wide, expected 1');
+    }
+    // the whole point: centred ON the residue. Stations are integers, so an
+    // odd subdivision count has none exactly at the midpoint and the boundary
+    // lands on the nearest - within half a station. Half a RESIDUE out is the
+    // old behaviour and is what this rejects.
+    if (Math.abs(centre - TARGET) > 0.25) {
+        throw new Error('coloured band is centred at ' + centre.toFixed(2)
+            + ', residue ' + TARGET + ' was the one picked');
+    }
+});
+
+
+
+
+
+
+
+test('the Line Width control does not reach contacts', () => {
+    // It sets how heavy the BACKBONE is drawn. A contact is an annotation over
+    // the structure rather than part of it, and one that grew and shrank with
+    // the backbone stopped reading as a separate mark - the same reason a
+    // ligand keeps its own width. What DOES size it is its own stored weight.
+    const N = 12;
+    const coords = strand(N);
+    const segs = [];
+    for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+    const contact = { type: 'C', idx1: 1, idx2: 9, origIndex: 1,
+        contactIdx1: 1, contactIdx2: 9, contactWeight: 1.0, len: 26 };
+    segs.push(contact);
+    const widthOf = (lineWidth, weight) => {
+        contact.contactWeight = weight;
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false },
+            lineWidth,
+            residueNumbers: coords.map((_, i) => i + 1),
+            _primProbe: null,
+        });
+        const { ctx } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        const flats = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
+        if (!flats.length) throw new Error('no contact was drawn');
+        return flats[0].w;
+    };
+    // ...AND IT IS IN ANGSTROM, so it grows and shrinks with the structure. The
+    // widths here are all `something * scale`, scale being pixels per Angstrom;
+    // substituting a bare constant for baseLineWidthPixels drops that
+    // conversion, and the contact comes out a couple of RAW pixels wide at any
+    // zoom - which is what "too thin even at maximum" looked like.
+    const atZoom = (zoom) => {
+        contact.contactWeight = 1.0;
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false },
+            residueNumbers: coords.map((_, i) => i + 1),
+            _primProbe: null,
+        });
+        r.viewerState.zoom = zoom;
+        const { ctx } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        const f2 = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
+        if (!f2.length) throw new Error('no contact at zoom ' + zoom);
+        return f2[0].w;
+    };
+    const z1 = atZoom(1); const z2 = atZoom(2);
+    if (!(z2 > z1 * 1.8)) {
+        throw new Error('the contact is ' + z1.toFixed(1) + ' px at zoom 1 and '
+            + z2.toFixed(1) + ' at zoom 2 - its width is not in Angstrom, so it'
+            + ' stays a few raw pixels however far you zoom in');
+    }
+
+    const thin = widthOf(2.0, 1.0);
+    const fat = widthOf(6.0, 1.0);
+    if (Math.abs(thin - fat) > 1e-6) {
+        throw new Error('the contact went from ' + thin.toFixed(2) + ' to '
+            + fat.toFixed(2) + ' with the Line Width control - it should keep'
+            + ' its own width');
+    }
+    // its own weight DOES size it, or there would be no per-contact control
+    const heavy = widthOf(2.0, 2.0);
+    if (!(heavy > thin * 1.5)) {
+        throw new Error('doubling the contact\'s own weight took it from '
+            + thin.toFixed(2) + ' to ' + heavy.toFixed(2));
+    }
+});
+
+test('a contact is cut into pieces so it sorts along its length', () => {
+    // A contact joins two residues anywhere in the structure, so as ONE prim it
+    // carries a single depth key across the whole span and sorts as though it
+    // were all at its midpoint - passing in front of what it should go behind
+    // and behind what it should cross in front of. Same reason a base plate is
+    // cut: "as one quad a rung carries a single sort key across ~7 A".
+    //
+    // The fixture runs the contact THROUGH the backbone in depth, one end well
+    // in front and the other well behind, which is the case a single key cannot
+    // represent at all.
+    const N = 20;
+    const coords = strand(N);
+    coords[2] = { x: coords[2].x, y: coords[2].y, z: 14 };
+    coords[17] = { x: coords[17].x, y: coords[17].y, z: -14 };
+    const segs = [];
+    for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+    segs.push({ type: 'C', idx1: 2, idx2: 17, origIndex: 2,
+        contactIdx1: 2, contactIdx2: 17, contactWeight: 1.0,
+        contactColor: { r: 255, g: 255, b: 0 }, len: 50 });
+    const r = mkRenderer(coords, segs, {
+        overlayState: { enabled: false },
+        residueNumbers: coords.map((_, i) => i + 1),
+        _primProbe: null,
+    });
+    const { ctx, bad } = mkCtx();
+    // this also covers the ink pass over a contact at all - no fixture here had
+    // one before, and the first version of the cut crashed it
+    cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+    if (bad.length) throw new Error('bad styles: ' + bad[0]);
+    const flats = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
+    if (flats.length < 2) {
+        throw new Error('the contact was drawn as ' + flats.length + ' prim(s) -'
+            + ' one key for its whole span, so it sorts as if it were all at its'
+            + ' midpoint');
+    }
+    // the pieces must sort where they really are: their keys have to span the
+    // contact's actual depth range, not sit together at the middle
+    const zs = flats.map((p) => p.z);
+    const span = Math.max(...zs) - Math.min(...zs);
+    if (span < 20) {
+        throw new Error('the pieces span only ' + span.toFixed(1) + ' in depth,'
+            + ' but the contact runs from +14 to -14 - they are not sorting'
+            + ' along its length');
+    }
+    // Each piece's key must match its own geometry, plus ONE shared bias: a
+    // contact is drawn as a line but stands for something with thickness, so
+    // its near surface sorts rather than its centre line. The bias is the same
+    // for every piece, so the ordering ALONG the contact is untouched.
+    const biases = flats.map((p) => p.z
+        - (p.pts[0][2] + p.pts[p.pts.length - 1][2]) / 2);
+    const b0 = biases[0];
+    for (const b of biases) {
+        if (Math.abs(b - b0) > 1e-6) {
+            throw new Error('the pieces are biased by different amounts ('
+                + b0.toFixed(3) + ' vs ' + b.toFixed(3) + ') - that reorders the'
+                + ' contact against itself');
+        }
+    }
+    if (!(b0 > 0)) {
+        throw new Error('the contact is keyed at its centre line (' + b0.toFixed(3)
+            + ') - joining two parts at the same depth it is then a coin toss'
+            + ' whether it is drawn over them');
+    }
+    // ...AND THE RIBBON WINS WHEN IT IS THICKER. A slab has a near surface too;
+    // once it stands proud of the contact's, it genuinely is in front and
+    // should cover it, which is what a thickness control is for.
+    const biasAt = (th) => {
+        const r2 = mkRenderer(coords, segs, {
+            overlayState: { enabled: false },
+            residueNumbers: coords.map((_, i) => i + 1),
+            cartoonThickness: th,
+            _primProbe: null,
+        });
+        const m = mkCtx();
+        cartoon.render(r2, m.ctx, 400, 400, segs.map(() => COL));
+        const f2 = (r2._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
+        if (!f2.length) throw new Error('no contact at thickness ' + th);
+        return f2[0].z - (f2[0].pts[0][2] + f2[0].pts[1][2]) / 2;
+    };
+    const thin = biasAt(0.4); const fat = biasAt(2.0);
+    if (!(thin > 0)) throw new Error('a thin ribbon does not let the contact through');
+    // exactly zero, not merely non-positive: a NEGATIVE bias would push the
+    // contact behind where it actually is, which is worse than not biasing it
+    if (Math.abs(fat) > 1e-9) {
+        throw new Error('a ribbon thicker than the contact tube gives a bias of '
+            + fat.toFixed(3) + ' - it should be exactly 0 there: positive lets'
+            + ' the contact sort in front of a surface that is genuinely nearer,'
+            + ' negative pushes it behind where it actually is');
+    }
+    if (!(thin > fat)) throw new Error('thickness does not reduce the bias');
+    // ONLY THE TWO REAL ENDS CAP. A cap fills the gap an angled joint leaves,
+    // and a contact is a straight line - a cap at an internal cut is a dark
+    // tick across it. The slots are POSITIONAL, [0] the start point and [1] the
+    // end, so a piece that caps one end has to say which; getting that wrong
+    // capped the last piece at its start, which is an internal cut.
+    let capKeys = 0;
+    for (const p of flats) {
+        if (!p.joints || p.joints.length !== 2) {
+            throw new Error('a contact piece carries ' + (p.joints || []).length
+                + ' joint slots - the ink pass reads both by position');
+        }
+        for (const k of p.joints) if (k) capKeys++;
+    }
+    if (capKeys !== 2) {
+        throw new Error(capKeys + ' of the contact\'s ends ask for a cap -'
+            + ' exactly the two real ends should, and the internal cuts none');
+    }
+    const withStart = flats.filter((p) => p.joints[0]);
+    const withEnd = flats.filter((p) => p.joints[1]);
+    if (withStart.length !== 1 || withEnd.length !== 1) {
+        throw new Error('the cap is on ' + withStart.length + ' start(s) and '
+            + withEnd.length + ' end(s) - it belongs on one of each');
+    }
+    // NOT ASSERTED: that no stray cap is drawn. `joints` slots are left EMPTY
+    // at internal cuts and the registration loop skips them, because an empty
+    // slot must not become a Map key - `undefined` and `null` are perfectly
+    // good ones, so every prim's empty slots would collide on a single key and
+    // whichever landed lowest would draw a cap. That guard is right, but at
+    // most one stray cap could result and no fixture here reproduces it, so
+    // nothing below would fail if it were removed. Said rather than dressed up
+    // as coverage.
+});
+
+test('a side chain\'s end square lies flat on the backbone', () => {
+    // A stick's end section is perpendicular to the STICK, which where it meets
+    // the ribbon is the wrong plane: unless the side chain leaves exactly along
+    // the face normal, that cap cuts down through the surface on one side and
+    // lifts off it on the other. No amount of placing or rolling the box makes
+    // that edge sit flat - what lies flat is a section in the RIBBON's plane,
+    // so the corners are slid along the bond until they reach it.
+    //
+    // TWO PASSES. The first exists only to read the ribbon's frame, because a
+    // side chain aimed at a guessed normal is the whole trap here: aimed wrong
+    // it leaves nearly ALONG the surface, the cut declines as unsolvable (the
+    // corners would travel arbitrarily far), and the test passes having
+    // measured nothing. Real side chains leave at |axis.normal| ~ 0.6; only
+    // about a tenth fall below the 0.35 floor.
+    const N = 14; const OWNER = 6;
+    const base = strand(N);
+    const build = (extra) => {
+        const coords = base.concat(extra);
+        const n = coords.length;
+        const segs = [];
+        for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        const types = new Array(n).fill('P');
+        const map = new Map();
+        // one segment per atom handed in: ONE makes a lone bond, two or more
+        // make a run, and a run shares one section across the whole path
+        for (let k = 0; k < extra.length; k++) {
+            segs.push({ type: 'L', idx1: k === 0 ? OWNER : N + k - 1,
+                idx2: N + k, origIndex: k === 0 ? OWNER : N + k - 1 });
+            types[N + k] = 'L';
+            map.set(N + k, { owner: OWNER });
+        }
+        return mkRenderer(coords, segs, {
+            overlayState: { enabled: false },
+            positionTypes: types,
+            _forceSec: 'E'.repeat(N) + 'C'.repeat(extra.length),
+            cartoonThickness: 0.9,
+            sidechainMap: extra.length ? map : null,
+            _sideProbe: null, _posProbe: null, _stickProbe: [],
+        });
+    };
+    const draw = (r) => {
+        const { ctx, bad } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, r.segmentIndices.map(() => COL));
+        if (bad.length) throw new Error('bad styles: ' + bad[0]);
+        return r;
+    };
+    const p1 = draw(build([]));
+    const side = p1._sideProbe[OWNER]; const pos = p1._posProbe;
+    if (!side || !pos) throw new Error('no frame recorded for the owning residue');
+    const pA = pos[OWNER - 1]; const pB = pos[OWNER + 1];
+    let t = [pB.x - pA.x, pB.y - pA.y, pB.z - pA.z];
+    const tl = Math.hypot(t[0], t[1], t[2]);
+    t = [t[0] / tl, t[1] / tl, t[2] / tl];
+    let nr = [t[1] * side[2] - t[2] * side[1], t[2] * side[0] - t[0] * side[2],
+        t[0] * side[1] - t[1] * side[0]];
+    const nl = Math.hypot(nr[0], nr[1], nr[2]);
+    nr = [nr[0] / nl, nr[1] / nl, nr[2] / nl];
+    const o = pos[OWNER];
+    const atom = (k) => ({
+        x: o.x + nr[0] * 1.5 * k + t[0] * 1.2 * k,
+        y: o.y + nr[1] * 1.5 * k + t[1] * 1.2 * k,
+        z: o.z + nr[2] * 1.5 * k + t[2] * 1.2 * k,
+    });
+    // THE BOND KEEPS ITS OWN AXIS AND THE BACKBONE CUTS IT. The stick runs all
+    // the way to the CA; the slab's surface takes a slice off the end. So the
+    // cut has to do two things: land in the ribbon's plane, and land FURTHER
+    // ALONG THE BOND as the ribbon thickens - a thicker ribbon swallows more of
+    // it. Moving the end point out to the surface instead, as an earlier
+    // version did, is a shift along the face normal - sideways to the bond - so
+    // the stick leans off the axis it is supposed to represent.
+    let lastAlong = -Infinity;
+    for (const th of [0.3, 0.6, 0.9, 1.2]) {
+        const r2 = build([atom(1), atom(2)]);
+        r2.cartoonThickness = th;
+        draw(r2);
+        const bx = (r2._stickProbe || []).find((b) => b);
+        if (!bx) throw new Error('no stick box was built at thickness ' + th);
+        // in the ribbon's plane: the four corners must not spread along its normal
+        const d = bx.W.slice(0, 4).map((c) => c[0] * nr[0] + c[1] * nr[1] + c[2] * nr[2]);
+        const spread = Math.max(...d) - Math.min(...d);
+        if (spread > 1e-6) {
+            throw new Error('at thickness ' + th + ' the end square departs from'
+                + ' the ribbon surface by ' + spread.toFixed(3) + ' A - it is cut'
+                + ' perpendicular to the stick instead of into the ribbon plane,'
+                + ' so one edge digs in and the opposite one lifts off');
+        }
+        // ...and further along the bond each time
+        const ca = pos[OWNER]; const cb = atom(1);
+        let ax = [cb.x - ca.x, cb.y - ca.y, cb.z - ca.z];
+        const al = Math.hypot(ax[0], ax[1], ax[2]);
+        ax = [ax[0] / al, ax[1] / al, ax[2] / al];
+        const ctr = [0, 1, 2].map((k) => bx.W.slice(0, 4)
+            .reduce((acc, c) => acc + c[k], 0) / 4);
+        const along = (ctr[0] - ca.x) * ax[0] + (ctr[1] - ca.y) * ax[1]
+            + (ctr[2] - ca.z) * ax[2];
+        if (!(along > lastAlong)) {
+            throw new Error('at thickness ' + th + ' the cut fell '
+                + along.toFixed(3) + ' A along the bond, no further than the'
+                + ' thinner ribbon before it - the backbone is not cutting the'
+                + ' stick, the stick is being moved');
+        }
+        lastAlong = along;
+    }
+});
+
+test('the end square is drawn, at every angle it leaves at', () => {
+    // The cap is the square lying on the backbone, so drawing it is what closes
+    // the box - drop it and you see in through the end. But that is only true
+    // once it has been cut INTO the ribbon's plane. Where the bond runs too
+    // nearly along the surface to solve, the cap reverts to perpendicular - a
+    // lid at the wrong angle over the join - and is suppressed instead.
+    //
+    // Both cases are built from the same fixture, aimed differently: along the
+    // ribbon's own face normal (solvable) and along its surface (not). The
+    // first pass exists only to read that frame.
+    const N = 14; const OWNER = 6;
+    const base = strand(N);
+    const build = (extra) => {
+        const coords = base.concat(extra);
+        const n = coords.length;
+        const segs = [];
+        for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        const types = new Array(n).fill('P');
+        const map = new Map();
+        if (extra.length) {
+            segs.push({ type: 'L', idx1: OWNER, idx2: N, origIndex: OWNER });
+            segs.push({ type: 'L', idx1: N, idx2: N + 1, origIndex: N });
+            types[N] = 'L'; types[N + 1] = 'L';
+            map.set(N, { owner: OWNER }); map.set(N + 1, { owner: OWNER });
+        }
+        return mkRenderer(coords, segs, {
+            overlayState: { enabled: false },
+            positionTypes: types,
+            _forceSec: 'E'.repeat(N) + (extra.length ? 'CC' : ''),
+            cartoonThickness: 0.9,
+            sidechainMap: extra.length ? map : null,
+            _sideProbe: null, _posProbe: null, _primProbe: null,
+        });
+    };
+    const draw = (r) => {
+        const { ctx, bad } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, r.segmentIndices.map(() => COL));
+        if (bad.length) throw new Error('bad styles: ' + bad[0]);
+        return r;
+    };
+    const p1 = draw(build([]));
+    const side = p1._sideProbe[OWNER]; const pos = p1._posProbe;
+    const pA = pos[OWNER - 1]; const pB = pos[OWNER + 1];
+    let t = [pB.x - pA.x, pB.y - pA.y, pB.z - pA.z];
+    const tl = Math.hypot(t[0], t[1], t[2]);
+    t = [t[0] / tl, t[1] / tl, t[2] / tl];
+    let nr = [t[1] * side[2] - t[2] * side[1], t[2] * side[0] - t[0] * side[2],
+        t[0] * side[1] - t[1] * side[0]];
+    const nl = Math.hypot(nr[0], nr[1], nr[2]);
+    nr = [nr[0] / nl, nr[1] / nl, nr[2] / nl];
+    const o = pos[OWNER];
+    // `k` weights the face normal against the surface direction: 1.5 leaves
+    // steeply (as a real side chain does), 0.05 almost flat.
+    const caps = (steep) => {
+        const atom = (m) => ({
+            x: o.x + nr[0] * steep * m + t[0] * 1.2 * m,
+            y: o.y + nr[1] * steep * m + t[1] * 1.2 * m,
+            z: o.z + nr[2] * steep * m + t[2] * 1.2 * m,
+        });
+        const r = draw(build([atom(1), atom(2)]));
+        const faces = (r._primProbe || []).filter((p) => p.kind === 'stickFace');
+        if (!faces.length) throw new Error('no side-chain sticks were drawn');
+        // the cap at the ribbon end: the face whose corners are all nearest the
+        // backbone along the normal
+        let capDrawn = null; let best = Infinity;
+        for (const p of faces) {
+            let d = 0;
+            for (const q of p.q) d += q[0] * nr[0] + q[1] * nr[1] + q[2] * nr[2];
+            d /= p.q.length;
+            const off = d - (o.x * nr[0] + o.y * nr[1] + o.z * nr[2]);
+            if (off < best) { best = off; capDrawn = p.draw; }
+        }
+        return capDrawn;
+    };
+    // BOTH ORIENTATIONS. A cap facing away from the viewer is backface-culled
+    // whatever else is true, so testing one direction alone cannot tell culling
+    // apart from suppression: what is asserted is that the cap is drawn from
+    // the side it faces.
+    //
+    // At EVERY angle, steep or shallow. There is no longer a floor below which
+    // the cut is skipped - a shallow side chain gets the same treatment as a
+    // steep one, which is the point of removing it.
+    for (const steep of [1.5, 0.35, 0.05]) {
+        if (!(caps(steep) || caps(-steep))) {
+            throw new Error('at ' + steep + ' the end square is drawn from'
+                + ' neither side - the box is left open and you see in through'
+                + ' the end');
+        }
+    }
+    // AND IT MUST NOT RUN AWAY. With no angle floor left, a bond running very
+    // nearly along the surface meets its plane only very far off, so the corner
+    // slide is bounded. Unbounded, those corners go to infinity and take the
+    // box, its silhouette and the depth sort with them - not a shallower joint
+    // but a broken frame. 0.002 is far past anything real; the median side
+    // chain leaves at 0.6.
+    // Every angle a side chain could leave at, down to far past anything real:
+    // the median is 0.6 and the shallowest tenth sit near 0.3.
+    for (const SHALLOW of [0.3, 0.15, 0.05, 0.02, 0.002]) {
+        const atom = (m) => ({
+            x: o.x + nr[0] * SHALLOW * m + t[0] * 1.5 * m,
+            y: o.y + nr[1] * SHALLOW * m + t[1] * 1.5 * m,
+            z: o.z + nr[2] * SHALLOW * m + t[2] * 1.5 * m,
+        });
+        // WORLD space, from the stick probe. A prim's own corners are
+        // PROJECTED - screen pixels - and comparing those to an Angstrom
+        // position reads ~379 at every angle, normal ones included, which is
+        // the canvas rather than the geometry. That mistake looked exactly like
+        // a blow-up.
+        const r = draw(build([atom(1), atom(2)]));
+        let far = 0;
+        for (const bx2 of (r._stickProbe || [])) {
+            if (!bx2) continue;
+            for (const c of bx2.W) {
+                if (!isFinite(c[0]) || !isFinite(c[1]) || !isFinite(c[2])) {
+                    throw new Error('a shallow side chain produced a non-finite'
+                        + ' corner at ' + SHALLOW);
+                }
+                far = Math.max(far, Math.hypot(c[0] - o.x, c[1] - o.y, c[2] - o.z));
+            }
+        }
+        // the side chain reaches ~3 A; anything far past that is the cut
+        // stretching the section instead of ending it
+        if (far > 8) {
+            throw new Error('at ' + SHALLOW + ' a corner landed ' + far.toFixed(1)
+                + ' A from the residue - the slide to the ribbon plane is'
+                + ' running away');
+        }
+    }
+});
+
+// NO TEST FOR THE SECTION ROLL. There was one, and it stopped being able to
+// fail: the roll hint (bd.rollN, taken as the section's thickness axis) is
+// overridden by the SWEEP for any side chain of two bonds or more - "one
+// section per station, shared by both bonds, frees the roll" - and for a lone
+// bond it lands on the same answer as the fallback it replaces. Since the end
+// square is now cut into the ribbon's plane, the joint is flush whatever the
+// roll does, so the hint no longer carries the property it was added for. It is
+// left in place because it costs nothing and may still help a lone bond, but
+// nothing here verifies it, and a test that cannot fail is worse than none.
+
+test('a side chain leaves through the ribbon face it is on', () => {
+    // A side chain used to start at the CA, which is the CENTRE of the slab, so
+    // the two solids interpenetrated and no paint order was right for both -
+    // seen along a sheet the side chains printed over the backbone. It now
+    // leaves from the ribbon's surface, the way a base plate does. Which of the
+    // two faces is decided by where the side chain actually is: a fixed sign
+    // would send half of them out through the back.
+    const N = 14; const OWNER = 6;
+    const run = (sign) => {
+        const coords = strand(N);
+        coords.push({ x: coords[OWNER].x, y: coords[OWNER].y, z: sign * 1.5 });
+        coords.push({ x: coords[OWNER].x, y: coords[OWNER].y, z: sign * 3.0 });
+        const n = coords.length;
+        const segs = [];
+        for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        segs.push({ type: 'L', idx1: OWNER, idx2: N, origIndex: OWNER });
+        segs.push({ type: 'L', idx1: N, idx2: N + 1, origIndex: N });
+        const types = new Array(n).fill('P'); types[N] = 'L'; types[N + 1] = 'L';
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false },
+            positionTypes: types,
+            _forceSec: 'E'.repeat(N) + 'CC',
+            // a REAL thickness: at 0 the ribbon is a plane, there is no surface
+            // to start from, and this would pass without testing anything
+            cartoonThickness: 0.9,
+            sidechainMap: new Map([[N, { owner: OWNER }], [N + 1, { owner: OWNER }]]),
+            _primProbe: null, _posProbe: null,
+        });
+        const { ctx, bad } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        if (bad.length) throw new Error('bad styles: ' + bad[0]);
+        const faces = (r._primProbe || []).filter((p) => p.kind === 'stickFace');
+        if (!faces.length) throw new Error('no side-chain sticks were drawn');
+        // HOW FAR THE STICK REACHES BACK PAST THE BACKBONE. Averaging over the
+        // corners tells you nothing here - it is dominated by the atom
+        // positions, which the fixture chose - so what is measured is the
+        // extreme corner on the far side. A stick that starts at the ribbon's
+        // SURFACE barely crosses the centre line; one that starts at the CA
+        // reaches a whole half-width past it, which is the interpenetration
+        // that had no correct paint order.
+        const o = r._posProbe[OWNER];
+        let lo2 = Infinity; let hi2 = -Infinity;
+        for (const p of faces) {
+            for (const q of p.q) {
+                lo2 = Math.min(lo2, q[2] - o.z);
+                hi2 = Math.max(hi2, q[2] - o.z);
+            }
+        }
+        return { lo: lo2, hi: hi2 };
+    };
+    const up = run(1); const down = run(-1);
+    // it must REACH its atoms, so the far extreme is well out
+    if (!(up.hi > 1)) throw new Error('the +z side chain does not reach its atoms');
+    if (!(down.lo < -1)) throw new Error('the -z side chain does not reach its atoms');
+    // ...and stay on that side: a stick drawn from the +z face down to a -z
+    // atom would span the whole slab
+    if (!(up.lo > -1)) throw new Error('the +z side chain spans the backbone');
+    if (!(down.hi < 1)) throw new Error('the -z side chain spans the backbone');
+    // What is NOT asserted: how far back the box reaches. The stick starts on
+    // the ribbon's surface and its box straddles that surface, deliberately -
+    // overlapping the slab is what makes the joint look attached, and the
+    // hidden-line pass removes whatever ends up inside. So the extreme corner
+    // sits a hair either side of the centre line whether the offset is applied
+    // or not (-0.064 against 0.000 on this fixture), and asserting on it would
+    // be asserting on noise. The side the stick is on is the part that carries
+    // meaning, and it is the part checked above.
+});
+
+test('side chains keep the original CA through sheet flattening', () => {
+    // Flattening takes the pleat out of a strand so the ribbon reads cleanly.
+    // The pleat is real chemistry - it decides which FACE of the sheet each
+    // side chain points at, and consecutive residues alternate - so rebuilding
+    // a side chain in the flattened frame turns it away from where the molecule
+    // puts it. Measured on 1TIM that error runs to a median of 73 deg and a
+    // maximum of 154: side chains on the wrong face of the sheet. The atoms
+    // stay put instead, and the ribbon is the thing that has been idealised.
+    const base = strand(14);
+    const { coords, map } = withSidechain(base, 6);
+    const segs = bbSegs([[0, 13]]);
+    segs.push({ type: 'L', idx1: 6, idx2: 14 });
+    segs.push({ type: 'L', idx1: 14, idx2: 15 });
+    const types = new Array(coords.length).fill('P');
+    types[14] = 'L'; types[15] = 'L';
+    const r = mkRenderer(coords, segs, {
+        overlayState: { enabled: false },
+        positionTypes: types,
+        sidechainMap: map,
+        cartoonSheetFlat: 1.0,
+        _forceSec: 'E'.repeat(14) + 'CC',
+        _posProbe: null,
+    });
+    const { ctx, bad } = mkCtx();
+    cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+    if (bad.length) throw new Error('bad styles: ' + bad[0]);
+    const pos = r._posProbe;
+    if (!pos) throw new Error('no posProbe');
+    const moved = Math.hypot(pos[6].x - base[6].x, pos[6].y - base[6].y,
+        pos[6].z - base[6].z);
+    if (moved < 0.05) {
+        throw new Error('flattening did not move the residue, so this proves'
+            + ' nothing (moved ' + moved.toFixed(3) + ' A)');
+    }
+    // the side-chain atoms must be exactly where they were placed
+    for (const idx of [14, 15]) {
+        const d = Math.hypot(pos[idx].x - coords[idx].x,
+            pos[idx].y - coords[idx].y, pos[idx].z - coords[idx].z);
+        if (d > 1e-9) {
+            throw new Error('side-chain atom ' + idx + ' was moved ' + d.toFixed(3)
+                + ' A by flattening - its direction is measured geometry, not'
+                + ' something the ribbon gets to idealise');
+        }
+    }
+    // ...which necessarily means it no longer sits on the drawn ribbon, by
+    // exactly the flattening distance. That offset is the deliberate cost.
+    const offset = Math.hypot(pos[14].x - pos[6].x, pos[14].y - pos[6].y,
+        pos[14].z - pos[6].z);
+    const trueBond = Math.hypot(coords[14].x - base[6].x,
+        coords[14].y - base[6].y, coords[14].z - base[6].z);
+    if (Math.abs(offset - trueBond) > moved + 1e-6) {
+        throw new Error('offset from the drawn CA is larger than the flattening'
+            + ' distance can explain');
+    }
+});
+
+test('side chains cost nothing when no residue asks for them', () => {
+    // no sidechainMap: the pass must not run, and posArr must not be copied
+    const coords = strand(14);
+    const segs = bbSegs([[0, 13]]);
+    const r = mkRenderer(coords, segs, {
+        overlayState: { enabled: false },
+        _forceSec: 'E'.repeat(14),
+        _posProbe: null,
+    });
+    const { ctx, bad } = mkCtx();
+    cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+    if (bad.length) throw new Error('bad styles: ' + bad[0]);
+    if (!r._posProbe) throw new Error('no posProbe');
+});
+
+test('the cut uses the surface the side chain leaves through', () => {
+    // A slab has two FACES at the half-thickness and two SIDES at the
+    // half-width, and a side chain leaves through whichever one it points at.
+    //
+    // Cutting every stick against the FACE is very nearly right - side chains
+    // do come out of the faces wherever the ribbon's roll means something - and
+    // wrong where it does not. Measured over 21,274 CA-CB bonds: no helix
+    // residue and 2 strand residues leave edge-on, against 9.5% of LOOP
+    // residues, whose roll is a free choice made for smoothness. Edge-on the
+    // corner slide (offset)/(d.n) runs away - 0.37/|d.n| Angstrom, which at the
+    // observed minimum of 0.0004 is 1009 A. Those were the long lines across
+    // the screen.
+    //
+    // THE ASSERTION IS THE OFFSET, not the cut plane's direction. A square cut
+    // into the side plane and a square the code DECLINED to cut both end up
+    // with their normal along the bond, so a direction test cannot tell the fix
+    // from the bug - a first draft of this test passed under every mutation
+    // below for exactly that reason. Where the square sits separates all three:
+    // at the half-thickness (face), at the half-width (side), or on the CA
+    // itself (declined, and drawn perpendicular).
+    const N = 14; const OWNER = 6; const TH = 0.9;
+    // Read the ribbon's own frame first: a side chain aimed at a guessed normal
+    // is the trap this area keeps falling into, since aimed wrong it lands
+    // edge-on by accident and the test measures something else entirely.
+    const F = (() => {
+        const coords = strand(N);
+        const segs = [];
+        for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false },
+            _forceSec: 'E'.repeat(N), cartoonThickness: TH,
+            _sideProbe: null, _posProbe: null,
+        });
+        cartoon.render(r, mkCtx().ctx, 400, 400, segs.map(() => COL));
+        const sv = r._sideProbe[OWNER]; const pos = r._posProbe;
+        if (!sv || !pos) throw new Error('no ribbon frame recorded');
+        const pA = pos[OWNER - 1]; const pB = pos[OWNER + 1];
+        let t = [pB.x - pA.x, pB.y - pA.y, pB.z - pA.z];
+        const tl = Math.hypot(t[0], t[1], t[2]); t = t.map((q) => q / tl);
+        let nr = [t[1] * sv[2] - t[2] * sv[1], t[2] * sv[0] - t[0] * sv[2],
+            t[0] * sv[1] - t[1] * sv[0]];
+        const nl = Math.hypot(nr[0], nr[1], nr[2]); nr = nr.map((q) => q / nl);
+        const svl = Math.hypot(sv[0], sv[1], sv[2]);
+        return { t, n: nr, s: sv.map((q) => q / svl), o: pos[OWNER] };
+    })();
+
+    const L = 1.53;                              // a real CA-CB bond
+    // one side chain, leaving at `deg` from the face normal toward the side
+    // vector, plus an optional lean ALONG the chain
+    const run = (deg, alongT) => {
+        const th = deg * Math.PI / 180;
+        const c = Math.cos(th); const s = Math.sin(th); const g = alongT || 0;
+        let dir = [0, 1, 2].map((k) => F.n[k] * c + F.s[k] * s + F.t[k] * g);
+        const dl = Math.hypot(dir[0], dir[1], dir[2]); dir = dir.map((q) => q / dl);
+        const coords = strand(N);
+        coords.push({ x: F.o.x + dir[0] * L, y: F.o.y + dir[1] * L, z: F.o.z + dir[2] * L });
+        const n = coords.length;
+        const segs = [];
+        for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        segs.push({ type: 'L', idx1: OWNER, idx2: N, origIndex: OWNER });
+        const types = new Array(n).fill('P'); types[N] = 'L';
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false }, positionTypes: types,
+            _forceSec: 'E'.repeat(N) + 'C', cartoonThickness: TH,
+            sidechainMap: new Map([[N, { owner: OWNER }]]),
+            _stickProbe: [], _posProbe: null,
+        });
+        const { ctx, bad } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        if (bad.length) throw new Error('bad styles: ' + bad[0]);
+        const bx = (r._stickProbe || [])[0];
+        if (!bx) throw new Error('no stick box was built at ' + deg + ' deg');
+        const ca = r._posProbe[OWNER]; const tip = coords[N];
+        const q = bx.W.slice(0, 4);          // the CA-end square
+        // ...and does any corner run away from the bond it is cutting?
+        let travel = 0;
+        for (const w of bx.W) {
+            travel = Math.max(travel, Math.min(
+                Math.hypot(w[0] - ca.x, w[1] - ca.y, w[2] - ca.z),
+                Math.hypot(w[0] - tip.x, w[1] - tip.y, w[2] - tip.z)));
+        }
+        // the square's own plane, to say which surface it lies in
+        const e1 = [q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2]];
+        const e2 = [q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2]];
+        let nq = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0]];
+        const nql = Math.hypot(nq[0], nq[1], nq[2]);
+        nq = nql > 1e-9 ? nq.map((x) => x / nql) : [0, 0, 0];
+        const onFace = Math.abs(nq[0] * F.n[0] + nq[1] * F.n[1] + nq[2] * F.n[2]);
+        // HOW FAR OUT THE SQUARE'S PLANE SITS, perpendicular - which is the
+        // surface's own half-extent and nothing else. Not the mean distance to
+        // its corners: an oblique cut stretches the square along the bond, so
+        // that number grows with the angle and says nothing about which surface
+        // was used.
+        const off = Math.abs((q[0][0] - ca.x) * nq[0] + (q[0][1] - ca.y) * nq[1]
+            + (q[0][2] - ca.z) * nq[2]);
+        return { off, travel, onFace };
+    };
+
+    // The half-thickness comes from the test's OWN input, not from the code
+    // under test: cartoonThickness is a total, so the face sits at half of it.
+    const halfT = TH / 2;
+    const isFaceCut = (x) => Math.abs(x.off - halfT) < 0.05 && x.onFace > 0.9;
+
+    // 1. STRAIGHT OUT THROUGH THE FACE. The common case, and the one that has
+    //    to stay flush.
+    const face = run(0, 0);
+    if (!isFaceCut(face)) {
+        throw new Error('a side chain leaving straight through the face was not'
+            + ' cut into the face plane (square sits ' + face.off.toFixed(2)
+            + ' A from the CA, normal . face = ' + face.onFace.toFixed(2)
+            + '; the face is at ' + halfT + ' A)');
+    }
+
+    // 2. A HELIX-LIKE 55 DEGREES, which is where the two candidate rules
+    //    DISAGREE. This ribbon is 1.1 A half-wide and 0.45 A half-thick, so a
+    //    bond at 55 deg leans more toward the side vector (|d.s| = 0.82 against
+    //    |d.n| = 0.57) while still exiting through the FACE, which is 2.4x
+    //    nearer. Picking the plane the bond meets most squarely - the obvious
+    //    fix, and the one that shipped for an afternoon - cuts this against the
+    //    side, moving the joint out to the ribbon's edge. Helix side chains
+    //    leave at a median 50 deg, so that is most of a helix.
+    const lean = run(55, 0);
+    if (!isFaceCut(lean)) {
+        throw new Error('a side chain at 55 deg was cut against the ribbon\'s'
+            + ' SIDE (square sits ' + lean.off.toFixed(2) + ' A from the CA,'
+            + ' normal . face = ' + lean.onFace.toFixed(2) + ') - it leans that'
+            + ' way but exits through the face, which is far nearer. This is'
+            + ' what stopped helix side chains sitting flush');
+    }
+
+    // 3. EDGE-ON. 88 rather than 90 degrees: at exactly 90 the face cut divides
+    //    by ~0 and declines on its own, so the bug never fired.
+    const edge = run(88, 0);
+    if (!(edge.off > halfT + 0.4)) {
+        throw new Error('a side chain leaving through the ribbon\'s EDGE was not'
+            + ' cut into the side plane - its square sits ' + edge.off.toFixed(2)
+            + ' A from the CA, which is the face at ' + halfT + ' A, or the CA'
+            + ' itself if the cut was declined');
+    }
+    if (!(edge.travel <= L)) {
+        throw new Error('an edge-on side chain slid a box corner '
+            + edge.travel.toFixed(1) + ' A from its own atoms, past the ' + L
+            + ' A bond it is cutting - the runaway that drew long lines');
+    }
+
+    // 4. ALONG THE CHAIN, where NEITHER surface is met squarely and no choice
+    //    of plane helps. The cut has to be declined rather than made badly, and
+    //    that is the travel guard's job - without it the corners slide 4.5 A.
+    const skew = run(6, 8);
+    if (!(skew.travel <= L)) {
+        throw new Error('a side chain running along the chain slid a corner '
+            + skew.travel.toFixed(1) + ' A from its atoms - it meets no surface'
+            + ' squarely, so the cut must be declined, not made anyway');
+    }
+});
+
+test('a contact meets the ribbon at its surface, not at the CA', () => {
+    // A contact is stored between two residues and so was drawn from CA to CA -
+    // and a CA is the CENTRE of the slab, so both ends began buried inside the
+    // ribbon they point at. Same fault side chains had, and it reads the same
+    // way: line and slab interpenetrate, no paint order is right for both, and
+    // the contact looks like it passes THROUGH the backbone rather than
+    // touching it.
+    //
+    // A side chain fixes this by having the slab cut its end square. A contact
+    // is FLAT - one stroke, no box, no end face - so there is nothing to cut.
+    // It is trimmed along its own axis instead, which cannot tilt it off the
+    // line between the two residues it names.
+    const N = 20; const A = 4; const B = 15;
+    const runAt = (thickness, ligandEnd) => {
+        const coords = strand(N);
+        // pull the two apart in depth so the contact is a real span
+        coords[A] = { x: coords[A].x, y: coords[A].y, z: 9 };
+        coords[B] = { x: coords[B].x, y: coords[B].y, z: -9 };
+        const segs = [];
+        for (let i = 0; i + 1 < N; i++) segs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        const types = new Array(N).fill('P');
+        let far = B;
+        if (ligandEnd) {
+            // a LIGAND end has no ribbon frame at all, so it must stay on its
+            // own position - the trim is a protein-ribbon thing
+            coords.push({ x: coords[B].x, y: coords[B].y + 6, z: -9 });
+            types.push('L'); far = N;
+        }
+        segs.push({ type: 'C', idx1: A, idx2: far, origIndex: A,
+            contactIdx1: A, contactIdx2: far, contactWeight: 1.0, len: 50 });
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false }, positionTypes: types,
+            residueNumbers: coords.map((_, i) => i + 1),
+            _forceSec: 'E'.repeat(N) + (ligandEnd ? 'C' : ''),
+            cartoonThickness: thickness,
+            _primProbe: null,
+        });
+        const { ctx, bad } = mkCtx();
+        cartoon.render(r, ctx, 400, 400, segs.map(() => COL));
+        if (bad.length) throw new Error('bad styles: ' + bad[0]);
+        // The pieces are POSITIONAL: joints[0] is set only on the piece that
+        // starts the contact, joints[1] only on the one that ends it. That is
+        // what identifies the two real ends among the subdivisions.
+        const flats = (r._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
+        const head = flats.find((p) => p.joints && p.joints[0]);
+        const tail = flats.find((p) => p.joints && p.joints[1]);
+        if (!head || !tail) throw new Error('the contact drew no end pieces');
+        // Everything here is in PROJECTED units and compared only against other
+        // projected units - screenX/screenY are where the residues were drawn.
+        // Mixing these with Angstrom positions is the trap that once read a
+        // 379 "A" blow-up off the canvas.
+        const p0 = [r.screenX[A], r.screenY[A]];
+        const p1 = [r.screenX[far], r.screenY[far]];
+        const vx = p1[0] - p0[0]; const vy = p1[1] - p0[1];
+        const vv = vx * vx + vy * vy;
+        const start = head.pts[0];
+        const end = tail.pts[tail.pts.length - 1];
+        // how far along the CA->CA line each drawn end sits, as a fraction
+        const tOf = (q) => ((q[0] - p0[0]) * vx + (q[1] - p0[1]) * vy) / vv;
+        // ...and how far OFF that line, in pixels - the trim runs along the
+        // axis, so this must stay at zero
+        const offOf = (q) => Math.abs((q[0] - p0[0]) * vy - (q[1] - p0[1]) * vx)
+            / Math.sqrt(vv);
+        return { tStart: tOf(start), tEnd: 1 - tOf(end),
+            off: Math.max(offOf(start), offOf(end)) };
+    };
+
+    const mid = runAt(0.9, false);
+    // 1. BOTH ENDS PULL BACK OFF THE CA.
+    if (!(mid.tStart > 0.01) || !(mid.tEnd > 0.01)) {
+        throw new Error('the contact still starts on the CA (' 
+            + mid.tStart.toFixed(3) + ' / ' + mid.tEnd.toFixed(3) + ' along its'
+            + ' length) - it begins at the centre of the slab and is drawn from'
+            + ' inside the ribbon');
+    }
+    // 2. AND STAYS ON ITS OWN AXIS. Moving an end out along the surface normal
+    //    instead - which is what the side-chain path first did - shifts it
+    //    SIDEWAYS off the line between the two residues.
+    if (!(mid.off < 0.5)) {
+        throw new Error('the trimmed contact sits ' + mid.off.toFixed(2)
+            + ' px off the line between its two residues - it was moved'
+            + ' sideways rather than trimmed along its axis');
+    }
+    // 3. AND IT IS STILL A LINE. Two trims that meet in the middle draw
+    //    backwards.
+    if (!(mid.tStart + mid.tEnd < 0.9)) {
+        throw new Error('the two trims eat ' 
+            + ((mid.tStart + mid.tEnd) * 100).toFixed(0) + '% of the contact');
+    }
+    // 4. A THICKER RIBBON TRIMS MORE, because its surface is further from the
+    //    CA. This is what separates a real trim from a constant inset: the
+    //    amount has to come from the slab the contact is leaving.
+    const thin = runAt(0.3, false);
+    const thick = runAt(1.4, false);
+    if (!(thick.tStart > thin.tStart + 1e-4)) {
+        throw new Error('a ribbon at thickness 1.4 trims the contact by '
+            + thick.tStart.toFixed(3) + ', no more than the 0.3 ribbon\'s '
+            + thin.tStart.toFixed(3) + ' - the inset is not coming from the'
+            + ' slab\'s actual surface');
+    }
+    // 5. AN END WITH NO RIBBON KEEPS ITS POSITION. A contact to a ligand has no
+    //    protein slab to leave, so that end must stay exactly where it is
+    //    rather than be trimmed by some default.
+    const lig = runAt(0.9, true);
+    if (!(Math.abs(lig.tEnd) < 0.01)) {
+        throw new Error('the ligand end of a contact was trimmed by '
+            + lig.tEnd.toFixed(3) + ' of its length, but a ligand has no ribbon'
+            + ' surface to leave');
+    }
+    if (!(lig.tStart > 0.01)) {
+        throw new Error('the protein end of a ligand contact was not trimmed');
+    }
+
+    // 6. THE STROKE HAS WIDTH. Putting its CENTRE on the surface leaves one
+    //    edge of the end buried and the other short of it wherever the line
+    //    arrives obliquely, so a face exit is pushed out by a further
+    //    halfWidth/tan(angle). Perpendicular to the face that term is zero and
+    //    nothing changes; at 50 degrees off it is most of an Angstrom.
+    //
+    //    The partner is a LIGAND, so only the protein end is trimmed and
+    //    tStart is that end's trim alone.
+    const TH2 = 0.9; const LEN = 8;
+    const aim = (deg) => {
+        const N2 = 20; const OWN = 6;
+        // read the ribbon frame first - a contact aimed at a guessed normal
+        // does not leave through the face at all and measures nothing
+        const base = strand(N2);
+        const bsegs = [];
+        for (let i = 0; i + 1 < N2; i++) bsegs.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        const b = mkRenderer(base, bsegs, {
+            overlayState: { enabled: false }, _forceSec: 'E'.repeat(N2),
+            cartoonThickness: TH2, _sideProbe: null, _posProbe: null,
+        });
+        cartoon.render(b, mkCtx().ctx, 400, 400, bsegs.map(() => COL));
+        const sv = b._sideProbe[OWN]; const bp = b._posProbe;
+        if (!sv || !bp) throw new Error('no ribbon frame for the contact test');
+        let t = [bp[OWN + 1].x - bp[OWN - 1].x, bp[OWN + 1].y - bp[OWN - 1].y,
+            bp[OWN + 1].z - bp[OWN - 1].z];
+        const tl = Math.hypot(t[0], t[1], t[2]); t = t.map((q) => q / tl);
+        let nf = [t[1] * sv[2] - t[2] * sv[1], t[2] * sv[0] - t[0] * sv[2],
+            t[0] * sv[1] - t[1] * sv[0]];
+        const nl = Math.hypot(nf[0], nf[1], nf[2]); nf = nf.map((q) => q / nl);
+        const svl = Math.hypot(sv[0], sv[1], sv[2]);
+        const sn = sv.map((q) => q / svl);
+        const th = deg * Math.PI / 180;
+        const dir = [0, 1, 2].map((k) => nf[k] * Math.cos(th) + sn[k] * Math.sin(th));
+        const coords = strand(N2);
+        const o = bp[OWN];
+        coords.push({ x: o.x + dir[0] * LEN, y: o.y + dir[1] * LEN,
+            z: o.z + dir[2] * LEN });
+        const types = new Array(N2).fill('P'); types.push('L');
+        const segs2 = [];
+        for (let i = 0; i + 1 < N2; i++) segs2.push({ type: 'P', idx1: i, idx2: i + 1, origIndex: i });
+        segs2.push({ type: 'C', idx1: OWN, idx2: N2, origIndex: OWN,
+            contactIdx1: OWN, contactIdx2: N2, contactWeight: 1.0, len: 50 });
+        const r2 = mkRenderer(coords, segs2, {
+            overlayState: { enabled: false }, positionTypes: types,
+            residueNumbers: coords.map((_, i) => i + 1),
+            _forceSec: 'E'.repeat(N2) + 'C', cartoonThickness: TH2, _primProbe: null,
+        });
+        cartoon.render(r2, mkCtx().ctx, 400, 400, segs2.map(() => COL));
+        const fl = (r2._primProbe || []).filter((p) => p.kind === 'line' && p.flat);
+        const h2 = fl.find((p) => p.joints && p.joints[0]);
+        if (!h2) throw new Error('no contact head piece at ' + deg + ' deg');
+        const q0 = [r2.screenX[OWN], r2.screenY[OWN]];
+        const q1 = [r2.screenX[N2], r2.screenY[N2]];
+        const wx = q1[0] - q0[0]; const wy = q1[1] - q0[1];
+        const ww = wx * wx + wy * wy;
+        const st = h2.pts[0];
+        // fraction of the line, times its known length, is the trim in Angstrom
+        return (((st[0] - q0[0]) * wx + (st[1] - q0[1]) * wy) / ww) * LEN;
+    };
+    // Straight out of the face: the push term is zero, so this is the bare
+    // exit - the half-thickness, which comes from the test's own input.
+    const square = aim(0);
+    if (Math.abs(square - TH2 / 2) > 0.08) {
+        throw new Error('a contact leaving square to the face was trimmed '
+            + square.toFixed(2) + ' A, not the ' + (TH2 / 2) + ' A half-thickness'
+            + ' - with no obliquity there is nothing for the width push to add');
+    }
+    // At 50 degrees the bare exit is halfT/cos(50) and the push is most of a
+    // half-width on top. Both numbers come from the fixture, not from the code.
+    const bare = (TH2 / 2) / Math.cos(50 * Math.PI / 180);
+    const oblique = aim(50);
+    if (!(oblique > bare + 0.3)) {
+        throw new Error('a contact meeting the face at 50 deg was trimmed '
+            + oblique.toFixed(2) + ' A, barely past the ' + bare.toFixed(2)
+            + ' A that puts its CENTRE on the surface - half the stroke\'s'
+            + ' width is still buried in the ribbon');
+    }
+
+    // 7. ...AND ONLY ON THE FACES. An edge is a fraction of a ribbon's width
+    //    and a chain-end exit runs straight into the neighbouring residue's
+    //    slab, so pushing there buys nothing and only costs the contact length.
+    //
+    //    Compared as a RATIO of two SIDE exits, 72 deg against 90 deg, so the
+    //    ribbon's half-width cancels and the expectation carries no shipped
+    //    constant. Bare, the ratio is 1/cos(18 deg) = 1.05; with the push
+    //    wrongly applied to a side it is ~1.23.
+    const flat90 = aim(90);
+    const flat72 = aim(72);
+    if (!(flat90 > 0.2)) {
+        throw new Error('the 90 deg fixture did not leave through the side at'
+            + ' all (' + flat90.toFixed(2) + ' A) - it measures nothing');
+    }
+    if (!(flat72 / flat90 < 1.12)) {
+        throw new Error('a contact leaving through the ribbon\'s EDGE was pushed'
+            + ' out for its stroke width too (72/90 deg trim ratio '
+            + (flat72 / flat90).toFixed(2) + ', bare geometry gives 1.05) - the'
+            + ' push is meant for the faces only');
     }
 });
 

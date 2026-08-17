@@ -1294,19 +1294,104 @@ table.layout-table td {
     display: flex !important;
 }
 
-/* Selection tools: act on the residues selected in the sequence view. Greyed
-   out as a group while nothing is selected, so the controls are discoverable
-   but obviously inert - the alternative, hiding them, left no hint that
-   selecting a region enables anything. */
-.selection-tools {
+/* SELECTION PANEL. Sits under the right-hand buttons, beside the structure the
+   tools act on, and appears only when there is a selection - with nothing
+   picked every control in it is a no-op.
+   It used to live in the sequence header, which was never quite its home: the
+   tools act on the 3D structure rather than on the sequence, and a selection
+   can be made by clicking the canvas or the PAE map just as well as by dragging
+   the strip. */
+.selection-panel {
+    width: 340px;
     display: flex;
+    flex-direction: column;
     gap: 8px;
-    align-items: center;
-    padding-right: 8px;
-    margin-right: 2px;
-    border-right: 1px solid #e5e7eb;
 }
 
+.selection-panel[hidden] { display: none; }
+
+.selection-panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.selection-panel-title {
+    font-weight: 600;
+    color: #374151;
+    font-size: 13px;
+}
+
+/* How many residues are in play. The panel appearing says THAT there is a
+   selection; this says how big it is, which is the thing you cannot see from
+   the buttons and the one number that changes what pressing them does. */
+.selection-panel-count {
+    font-size: 12px;
+    color: #6b7280;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Selection tools: act on the residues currently selected. Stacked as labelled
+   rows - Side chains, Main chain - because the two parts are independent and a
+   flat row of buttons gives no clue which button touches which. */
+.selection-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.selection-panel-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.selection-panel-row[hidden] { display: none; }
+
+/* Fixed width so the two rows' controls line up under each other; without it
+   "Side chains" and "Main chain" push their buttons to different columns and
+   the pairing stops being legible at a glance. */
+.selection-panel-label {
+    width: 74px;
+    flex: 0 0 74px;
+    font-size: 12px;
+    color: #4b5563;
+}
+
+/* +/- buttons. A word costs a third of the row in a 340px panel, and with six
+   of them across three rows the labels were most of the panel. The symbol has
+   to carry the meaning, so each keeps a title and an aria-label - see the
+   colour buttons, which lost their text the same way. Square, so a lone glyph
+   does not sit in a wide slab. */
+.btn-pm {
+    width: 26px;
+    padding: 0;
+    text-align: center;
+    font-weight: 600;
+}
+
+/* Per-contact width. Narrow enough to share a row with a swatch and two
+   buttons, which is the whole reason it is a slider and not a number box. */
+.selection-mini-slider {
+    width: 64px;
+    flex: 0 0 64px;
+    margin: 0;
+}
+
+.selection-mini-slider[hidden] { display: none; }
+
+/* An empty swatch means the selection has no single colour to show - nothing
+   selected, or the renderer could not resolve one. A hollow square reads as
+   "no answer"; a filled one would be a claim. */
+.selection-swatch.is-empty {
+    background: transparent !important;
+    border-style: dashed;
+}
+
+/* Select all / Unselect stay in the sequence header: they CREATE a selection,
+   so they cannot live in a panel that only exists once there is one. */
 .selection-global-tools {
     display: flex;
     gap: 8px;
@@ -1319,17 +1404,28 @@ table.layout-table td {
 }
 
 /* Colour button carries a swatch of the current colour, and opens a grid of
-   PyMOL's named colours. Anchored on a positioned wrapper so the popup can sit
-   above the sequence strip without the row growing. */
+   PyMOL's named colours. Anchored on a positioned wrapper so the popup floats
+   without the row growing - which matters more now the tools wrap: a popup in
+   flow would reflow the whole panel every time it opened. */
 .selection-color-wrap {
     position: relative;
     display: inline-flex;
 }
 
+/* Swatch only, no word - see the markup. A button whose whole content is a
+   14px square would collapse to a sliver at the default padding, so it gets a
+   square footprint of its own and grows the swatch to carry the click. */
 .selection-color {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    justify-content: center;
+    padding: 0;
+    width: 30px;
+}
+
+.selection-color .selection-swatch {
+    width: 18px;
+    height: 18px;
 }
 
 .selection-swatch {
@@ -1343,9 +1439,13 @@ table.layout-table td {
 
 .selection-color-menu {
     position: absolute;
-    bottom: 100%;
-    right: 0;
-    margin-bottom: 4px;
+    /* Opens DOWNWARD and left-aligned. It used to open upward because it sat
+       at the bottom of the page under the sequence strip; in the selection
+       panel there is room below and the button is at the panel's top-left, so
+       upward would have taken it off over the style controls. */
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
     background: #ffffff;
     border: 1px solid #d1d5db;
     border-radius: 6px;

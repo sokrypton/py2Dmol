@@ -50,8 +50,12 @@ AI Context: STANDALONE WEB APP ENTRY POINT
             </button>
         </div>
         <h1 class="text-4xl font-extrabold text-gray-900 mb-2">2Dmol</h1>
-        <p class="text-gray-500 mb-4">Load a PDB/CIF file or fetch from RCSB PDB (4-char ID, optionally with chains: <code>1timA</code>, <code>1tim_AB</code>) / AlphaFold DB (UniProt ID)
-            to visualize protein structures.</p>
+        <!-- The chain suffixes are the only part a user cannot guess, so they
+             are what the line keeps. Which database a PDB or UniProt ID goes to
+             follows from the ID, and "to visualize protein structures" is what
+             the page evidently does. -->
+        <p class="text-gray-500 mb-4">Upload a PDB/CIF file, or fetch by PDB ID
+            (<code>1tim</code>, <code>1timA</code>, <code>1tim_AB</code>) or UniProt ID.</p>
 
         <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
 
@@ -95,14 +99,21 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             <div style="flex: 1;">
                                 <label
                                     style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Example</label>
-                                <div style="display: flex; gap: 8px;">
-                                    <button class="btn btn-success" data-example-value="Q5VSL9">
+                                <!-- btn-small, and one more of them: four
+                                     full-size buttons no longer fit the column.
+                                     Wired generically off data-example-value,
+                                     so adding one needs no JS. -->
+                                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                    <button class="btn btn-success btn-small" data-example-value="6MRR">
+                                        <span>6MRR</span>
+                                    </button>
+                                    <button class="btn btn-success btn-small" data-example-value="Q5VSL9">
                                         <span>Q5VSL9</span>
                                     </button>
-                                    <button class="btn btn-success" data-example-value="1YNE">
+                                    <button class="btn btn-success btn-small" data-example-value="1YNE">
                                         <span>1YNE</span>
                                     </button>
-                                    <button class="btn btn-success" data-example-value="4HHB">
+                                    <button class="btn btn-success btn-small" data-example-value="4HHB">
                                         <span>4HHB</span>
                                     </button>
                                 </div>
@@ -136,6 +147,25 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                         <span class="slider-toggle"></span>
                                     </label>
                                     <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
+                                </div>
+
+                                <!-- Detect Cyclic. OFF by default, unlike the
+                                     Python side: the test is a distance one -
+                                     first and last residue of a chain closer
+                                     than the chain-break cutoff - and a linear
+                                     chain whose two ends happen to fold
+                                     together passes it. That draws a bond that
+                                     is not there and wraps the rainbow ramp all
+                                     the way round, so the N and C termini come
+                                     out the same colour. Cyclic peptides are
+                                     rare enough that the user should ask. -->
+                                <div class="upload-toggle-item">
+                                    <label class="switch">
+                                        <input type="checkbox" id="detectCyclicCheckbox">
+                                        <span class="slider-toggle"></span>
+                                    </label>
+                                    <label for="detectCyclicCheckbox" class="upload-toggle-label"
+                                        title="Join a chain's first and last residue when they are close enough to be bonded, and wrap the rainbow ramp around the ring">Detect Cyclic</label>
                                 </div>
 
                             </div>
@@ -433,6 +463,125 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
                     </div>
 
+                    <!-- SELECTION PANEL. These tools act on the 3D structure,
+                         not on the sequence, and a selection can just as well be
+                         made by clicking the canvas or the PAE map - so their
+                         home in the sequence header was never quite right.
+                         Here they sit beside the thing they change.
+                         Hidden until something is selected: with nothing picked
+                         every one of them is a no-op. -->
+                    <div id="selectionPanel" class="container-box selection-panel" hidden>
+                        <div class="selection-panel-head">
+                            <span class="selection-panel-title">Selection</span>
+                            <span id="selectionPanelCount" class="selection-panel-count"></span>
+                        </div>
+                        <!-- WHAT IS DRAWN, one labelled row per part, because
+                             the two are independent: a residue can show its main
+                             chain, its side chain, both or neither.
+                             Show and Hide are separate buttons rather than one
+                             toggle - a toggle has to name the state to be usable
+                             ("Hide side chains"), and with two rows you would be
+                             reading two labels to work out what the selection
+                             currently looks like. Two buttons say what they do
+                             and leave the state to the drawing. -->
+                        <div id="selectionTools" class="selection-tools" title="Applies to the selected residues">
+                            <!-- Hidden when the selection has no side chains to
+                                 show - all glycine, nucleic acid, or a
+                                 backbone-only model. See hasSidechainsFor. -->
+                            <div class="selection-panel-row" id="sidechainRow">
+                                <span class="selection-panel-label">Side chains</span>
+                                <span class="selection-color-wrap">
+                                    <!-- The swatch IS the label: a coloured square
+                                         next to Show/Hide reads as "colour"
+                                         without saying so, and the word cost a
+                                         third of the row in a 340px panel. -->
+                                    <button type="button" id="scColorButton" class="btn btn-grey btn-small selection-color"
+                                        aria-label="Colour the selected side chains"
+                                        title="Colour the selected side chains">
+                                        <span id="scColorSwatch" class="selection-swatch"></span>
+                                    </button>
+                                    <div id="scColorMenu" class="selection-color-menu" hidden></div>
+                                </span>
+                                <button id="sidechainShowButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Draw side chains for the selected residues" title="Draw side chains for the selected residues">+</button>
+                                <button id="sidechainHideButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Stop drawing side chains for the selected residues" title="Stop drawing side chains for the selected residues">&minus;</button>
+                            </div>
+                            <div class="selection-panel-row">
+                                <span class="selection-panel-label">Main chain</span>
+                                <span class="selection-color-wrap">
+                                    <!-- aria-label because the button has no text
+                                         left: title is only a fallback for an
+                                         accessible name, so dropping the word
+                                         would otherwise have left these two
+                                         unnamed to a screen reader. -->
+                                    <button type="button" id="selColorButton" class="btn btn-grey btn-small selection-color"
+                                        aria-label="Colour the selected residues"
+                                        title="Colour the selected residues (PyMOL palette)">
+                                        <span id="selColorSwatch" class="selection-swatch"></span>
+                                    </button>
+                                    <div id="selColorMenu" class="selection-color-menu" hidden></div>
+                                </span>
+                                <button id="mainchainShowButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Show the selected residues" title="Show the selected residues">+</button>
+                                <button id="mainchainHideButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Hide the selected residues" title="Hide the selected residues">&minus;</button>
+                            </div>
+                            <!-- CONTACTS need exactly two residues, so this row
+                                 appears only then - a contact is a line between
+                                 a pair and there is nothing to draw for one
+                                 residue or for five. -->
+                            <div class="selection-panel-row" id="contactRow" hidden>
+                                <span class="selection-panel-label">Contact</span>
+                                <span class="selection-color-wrap">
+                                    <button type="button" id="contactColorButton"
+                                        class="btn btn-grey btn-small selection-color"
+                                        aria-label="Colour the contact between the selected residues"
+                                        title="Colour the contact between the selected residues">
+                                        <span id="contactColorSwatch" class="selection-swatch"></span>
+                                    </button>
+                                    <div id="contactColorMenu" class="selection-color-menu" hidden></div>
+                                </span>
+                                <button id="contactAddButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Draw a contact between the two selected residues"
+                                    title="Draw a contact between the two selected residues">+</button>
+                                <button id="contactRemoveButton" class="btn btn-grey btn-small btn-pm" hidden
+                                    aria-label="Remove the contact between the two selected residues"
+                                    title="Remove the contact between the two selected residues">&minus;</button>
+                                <!-- Per contact, not global: the stored entry
+                                     carries its own weight, so two contacts in
+                                     one picture can differ. Narrow, to keep the
+                                     row to one line.
+                                     FULL WIDTH IS THE MAXIMUM. The slider only
+                                     takes a contact down from the width it is
+                                     drawn at, rather than letting it grow past
+                                     it - an annotation that can outweigh the
+                                     structure it annotates is not useful. -->
+                                <input type="range" id="contactWidthSlider" class="selection-mini-slider"
+                                    min="0.15" max="1" step="0.05" value="1" hidden
+                                    aria-label="Width of this contact"
+                                    title="Width of this contact (full width is the maximum)">
+                            </div>
+                            <!-- Whole-selection actions. SSE is a BACKBONE
+                                 property - a side chain has no secondary
+                                 structure - but it is not a show/hide, and
+                                 keeping the two part rows to the same three
+                                 controls is what makes them scan as a pair. -->
+                            <div class="selection-panel-row">
+                                <select id="selSsSelect" class="btn btn-grey btn-small"
+                                    title="Force the secondary structure of the selected residues">
+                                    <option value="" selected>SSE</option>
+                                    <option value="H">Helix</option>
+                                    <option value="E">Sheet</option>
+                                    <option value="C">Loop</option>
+                                    <option value="auto">Auto</option>
+                                </select>
+                                <button id="copySelectionButton" class="btn btn-grey btn-small"
+                                    title="Copy the selected residues into a new object">Copy</button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- PAE Canvas Container -->
                     <div id="paeContainer" class="container-box" style="display: none;">
                         <canvas id="paeCanvas" style="cursor: crosshair;"></canvas>
@@ -463,39 +612,9 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
                 <!-- Action buttons aligned to the right -->
                 <div class="sequence-actions" style="margin-left: auto;">
-                    <!-- Acts on the CURRENT SELECTION (drag in the sequence above).
-                         Disabled while nothing is selected. -->
-                    <!-- All act on the CURRENT SELECTION (drag in the sequence
-                         above, or click a chain label). Disabled while nothing
-                         is selected. -->
-                    <span id="selectionTools" class="selection-tools" title="Applies to the selected residues">
-                        <span class="selection-color-wrap">
-                            <button type="button" id="selColorButton" class="btn btn-grey btn-small selection-color"
-                                title="Colour the selected residues (PyMOL palette)">
-                                <span id="selColorSwatch" class="selection-swatch"></span>
-                                <span>Colour</span>
-                            </button>
-                            <div id="selColorMenu" class="selection-color-menu" hidden></div>
-                        </span>
-                        <select id="selSsSelect" class="btn btn-grey btn-small"
-                            title="Force the secondary structure of the selected residues">
-                            <option value="" selected>SSE</option>
-                            <option value="H">Helix</option>
-                            <option value="E">Sheet</option>
-                            <option value="C">Loop</option>
-                            <option value="auto">Auto</option>
-                        </select>
-                        <button id="showSelectionButton" class="btn btn-grey btn-small"
-                            title="Show the selected residues">Show</button>
-                        <button id="hideSelectionButton" class="btn btn-grey btn-small"
-                            title="Hide the selected residues">Hide</button>
-                        <button id="copySelectionButton" class="btn btn-grey btn-small"
-                            title="Copy the selected residues">Copy</button>
-                    </span>
-                    <!-- Selection actions that do NOT need an existing
-                         selection, so they sit outside the group above and stay
-                         enabled. Visibility is reached through them: Select all
-                         then Show brings everything back. -->
+                    <!-- These CREATE a selection, so they cannot live in the
+                         selection panel - that panel only exists once there is
+                         one. They stay next to the strip you select in. -->
                     <span id="selectionGlobalTools" class="selection-global-tools">
                         <button id="selectAllResidues" class="btn btn-grey btn-small"
                             title="Select every residue">Select all</button>

@@ -75,7 +75,15 @@
         return name ? (previewByObject.get(name) || null) : null;
     }
 
-    // Set preview selection for current object
+    // Set preview selection for current object.
+    //
+    // ALSO pushes it to the 3D view, live. A drag only commits on mouseup, so
+    // the band in the viewer used to sit still until you let go; the renderer
+    // shows a preview for the cost of a blit (it snapshots the finished frame
+    // and repaints just the halo), so this is cheap enough to do on every
+    // pointer move regardless of how big the structure is. Every drag path -
+    // residues, chains, touch - goes through here, so hooking it once covers
+    // all of them.
     function setLocalPreview(setOrNull) {
         const name = getCurrentObjectName();
         if (!name) return;
@@ -84,6 +92,18 @@
             previewByObject.set(name, new Set(setOrNull));
         } else {
             previewByObject.delete(name);
+        }
+        const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
+        if (!renderer || !renderer.updateSelectionPreview) return;
+        if (setOrNull && setOrNull.size > 0) {
+            renderer.updateSelectionPreview(setOrNull);
+        } else {
+            // cleared: hand the view back to the committed selection. The
+            // caller that clears is either committing (a render follows) or
+            // cancelling (this restores it), so a repaint here is the safe end.
+            const wasLive = renderer._previewLive;
+            renderer.endSelectionPreview();
+            if (wasLive) renderer.render('selection preview end');
         }
     }
 

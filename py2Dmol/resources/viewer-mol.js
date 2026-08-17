@@ -437,6 +437,44 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
     const SELECTION_INK_CSS = 'rgb(255, 190, 0)';
     const SELECTION_INK_EXTRA = 5;
+    // SELECTION HALO. Painted as a translucent band OVER the finished drawing
+    // rather than inked into the geometry, so it does not go behind anything.
+    // The old indicator was part of the depth sort - a selected residue on the
+    // far side of the molecule was hidden by everything in front of it, which
+    // is exactly when you most need to see where it is.
+    // The SAME yellow the sequence viewer uses for its hover highlight
+    // (rgba(255,255,0) in viewer-seq.js), so pointing at a residue there and
+    // selecting it here read as the same colour of feedback rather than two
+    // different signals. Lower alpha than the hover: this one lies over the
+    // structure and has to leave it legible, where hover marks bare canvas.
+    // A side chain rides the ligand path but is part of its residue, so it is
+    // drawn heavier than a ligand - and thinner than the backbone it hangs off,
+    // so the backbone still reads as the main line.
+    //
+    // An ABSOLUTE baseline, on the same scale as TYPE_BASELINES ('P' is 1.0),
+    // rather than a multiplier on the ligand's 0.4: this number is the thing
+    // anyone would want to tune, and expressing it as a boost meant retuning
+    // the LIGAND width would silently move side chains with it.
+    const SIDECHAIN_WIDTH = 0.5;
+    // A CONTACT IS ONE WIDTH IN BOTH STYLES, and does not follow the Line Width
+    // control in either. That control sets how heavy the BACKBONE is drawn; a
+    // contact is an annotation over the structure, and one that changed weight
+    // with the backbone stopped reading as a separate mark.
+    //
+    // HALF of what tube used to draw at its widest: the Line Width slider tops
+    // out at 4.7 and TYPE_BASELINES gives a contact half of that, so 2.35, and
+    // half again is 1.175. That is what a weight of 1.0 means - full width for
+    // a contact - and the per-contact slider only takes it down from there.
+    //
+    // viewer-cartoon.js carries the same number as CONTACT_WIDTH; the two are
+    // checked against each other in tests/interaction.js, since a contact that
+    // changes width when you switch style is exactly what this exists to stop.
+    const CONTACT_WIDTH_A = 1.175;
+    const SELECTION_HALO_CSS = 'rgba(255, 255, 0, 0.45)';
+    // Half-width in screen pixels at unit perspective, before the per-residue
+    // radius is added. Wide enough to read as a band around the ribbon rather
+    // than a line on it.
+    const SELECTION_HALO_PX = 7;
 
     const namedColorsMap = {
         "red": "#ff0000", "green": "#00ff00", "blue": "#0000ff", "yellow": "#ffff00", "cyan": "#00ffff", "magenta": "#ff00ff",
@@ -1164,6 +1202,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // paeBoxes: Array of selection rectangles in PAE position space {i_start,i_end,j_start,j_end}
             // visibilityMode: 'default' = empty selection means "show all" (initial state)
             //                'explicit' = empty selection means "show nothing" (user cleared)
+            // CLICK-SELECTION IS OFF UNLESS SOMETHING TURNS IT ON.
+            //
+            // The Python path loads viewer-mol.js and the cartoon plugin and
+            // nothing else - no sequence strip, no selection panel - so a click
+            // there changed a selection with no way to see it, act on it or
+            // clear it except by clicking the background again. Selection is
+            // done in Python by scripting, which does not go through the mouse.
+            //
+            // The web app turns it on when it wires the selection tools, so the
+            // switch is owned by whoever can actually show the result.
+            this.selectionEnabled = false;
             this.visibilityModel = {
                 positions: new Set(), // Position indices: 0, 1, 2, ... (one position per entry in frame data)
                 chains: new Set(),
@@ -1761,6 +1810,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // shift extends a single-residue click - otherwise picking a second
             // chain would throw away the first.
             this.canvas.addEventListener('dblclick', (e) => {
+                if (!this.selectionEnabled) return;
                 if (e.target !== this.canvas) return;
                 const i = this.pickResidueAt(e.clientX, e.clientY);
                 if (i < 0 || !this.chains) return;
@@ -1786,7 +1836,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // clearing it out from under a tool the user is about to use.
                 // A pan gesture is never a selection click, even if it happened
                 // not to move: middle-click and Cmd-click mean "grab", not "pick".
-                if (e && this._pressX !== undefined && !this.isPanning) {
+                if (this.selectionEnabled
+                    && e && this._pressX !== undefined && !this.isPanning) {
                     const moved = Math.hypot(e.clientX - this._pressX,
                         e.clientY - this._pressY);
                     if (moved < 4) {
@@ -3016,10 +3067,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             let best = -1;
             let bestZ = -Infinity;
             let bestD2 = Infinity;
+            // WHICH SEGMENT WON, kept so a CONTACT can be picked as one thing.
+            // The loop below already tests contact segments - it has to, or the
+            // line would not be clickable at all - but it attributes the hit to
+            // the nearer END, so clicking a contact selected one of its two
+            // residues and the fact that it was a contact was thrown away.
+            // Recording the winner lets pickGroupAt widen it to the pair.
+            let bestSeg = null;
             // +z is toward the viewer (see Coordinate System)
-            const offer = (idx, d2, z) => {
+            const offer = (idx, d2, z, seg) => {
                 if (z > bestZ + 1e-6 || (Math.abs(z - bestZ) <= 1e-6 && d2 < bestD2)) {
-                    bestZ = z; bestD2 = d2; best = idx;
+                    bestZ = z; bestD2 = d2; best = idx; bestSeg = seg || null;
                 }
             };
 
@@ -3051,7 +3109,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (d2 > rad * rad) continue;
                     // attribute the hit to the nearer end, and take the depth
                     // where the cursor actually is along the segment
-                    offer(t < 0.5 ? a : b, d2, zOf(a) + (zOf(b) - zOf(a)) * t);
+                    offer(t < 0.5 ? a : b, d2, zOf(a) + (zOf(b) - zOf(a)) * t, segs[s]);
                 }
             }
 
@@ -3087,6 +3145,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (inside) offer(e.res, 0, e.z);
                 }
             }
+            // Cleared unless a CONTACT won, so a later pick cannot inherit it.
+            this._pickedContact = (bestSeg && bestSeg.type === 'C'
+                && bestSeg.contactIdx1 !== undefined)
+                ? [bestSeg.contactIdx1, bestSeg.contactIdx2] : null;
             return best;
         }
 
@@ -3099,6 +3161,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         pickGroupAt(i) {
             if (i < 0) return [];
+            // A CONTACT IS ONE THING TO CLICK, and what it names is the pair it
+            // joins - selecting one end of it says nothing you did not already
+            // know from where you clicked. Only when the contact is what was
+            // actually hit: a click on a residue that happens to be a contact
+            // endpoint is a click on the residue, and the segment test in
+            // pickResidueAt has already decided which of the two was nearer.
+            const pc = this._pickedContact;
+            if (pc && (pc[0] === i || pc[1] === i)) return [pc[0], pc[1]];
+            // A SIDE CHAIN IS PART OF ITS RESIDUE, not a molecule of its own.
+            // It is stored as ligand positions so the ligand machinery draws it
+            // (see _materialiseSidechains), but that is an implementation
+            // detail and it must not leak into what a click means: clicking a
+            // leucine's side chain has to select the leucine, so the sequence
+            // strip highlights it and every selection tool acts on it. Falling
+            // through to the ligand branch below would instead select the loose
+            // atoms - which are not residues, so the sequence strip would show
+            // nothing at all and the click would appear to do nothing.
+            const sc = this.sidechainMap;
+            if (sc && sc.has(i)) return [sc.get(i).owner];
             const types = this.positionTypes;
             if (types && types[i] !== 'L') return [i];   // a residue is itself
             // WHOLE MOLECULE = THE CONNECTED COMPONENT over ligand bonds. Not
@@ -3140,6 +3221,42 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return [i];
         }
 
+        /**
+         * The selection AS DRAWN: the residue selection, plus the side-chain
+         * atoms of every selected residue.
+         *
+         * `residueSelection` stays residues and nothing else, because that is
+         * what everything reading it expects - the sequence strip maps its
+         * entries to rows, the selection tools act on them one residue at a
+         * time, and the side-chain toggle asks whether its own set already
+         * contains them. Putting loose atoms in there breaks all three.
+         *
+         * But the OUTLINE has to cover the side chain too, or selecting a
+         * residue highlights its backbone and leaves the sticks growing out of
+         * it unmarked - and worse, the two ways in disagree: clicking a side
+         * chain would light up the ribbon and not the thing you clicked. Both
+         * styles ink from this instead, so both agree however the selection was
+         * made.
+         *
+         * Cached against the selection and the map it expands through, since it
+         * is asked for on every frame and changes only when one of those does.
+         */
+        selectionInk() {
+            const sel = (this.residueSelection && this.residueSelection.size)
+                ? this.residueSelection : null;
+            const sc = this.sidechainMap;
+            if (!sel || !sc || !sc.size) return sel;
+            if (this._selInkFor === sel && this._selInkMap === sc) return this._selInk;
+            const out = new Set(sel);
+            for (const [idx, e] of sc) {
+                if (sel.has(e.owner)) out.add(idx);
+            }
+            this._selInkFor = sel;
+            this._selInkMap = sc;
+            this._selInk = out;
+            return out;
+        }
+
         /** Set the residue selection and tell every surface that draws it. */
         setResidueSelection(positions) {
             const next = (positions && positions.size) ? new Set(positions) : null;
@@ -3155,6 +3272,76 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (typeof document !== 'undefined') {
                 document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
             }
+        }
+
+        /**
+         * The side-chain table, rewritten for an extracted sub-structure.
+         *
+         * The table is keyed by POSITION INDEX, and a copy renumbers every
+         * position - so it can neither be dropped (the copy then has no side
+         * chains at all, and asking for them does nothing) nor carried across
+         * unchanged (its indices would name whichever residues happen to land
+         * on those numbers). It has to be remapped.
+         *
+         * A row needs BOTH its residue and its anchor to survive: the
+         * coefficients are expressed in the anchor's backbone frame, and
+         * without that residue there is no frame to rebuild them in. At the
+         * edge of a selection an anchor can fall outside it, so a residue on
+         * the boundary may come across without its side chain. That is honest -
+         * the alternative is re-anchoring it to a frame the coefficients were
+         * never measured against, which would point the side chain somewhere
+         * arbitrary.
+         *
+         * @param {object} sc - the source table, or null
+         * @param {Array<number>} selectedIndices - old indices, ascending
+         * @returns {object|null} the remapped table
+         */
+        _remapSidechains(sc, selectedIndices) {
+            if (!sc || !sc.pos || !sc.pos.length) return null;
+            const renumber = new Map();
+            for (let i = 0; i < selectedIndices.length; i++) {
+                renumber.set(selectedIndices[i], i);
+            }
+            const pos = []; const frameOf = []; const coef = [];
+            const names = []; const elements = [];
+            const rowOf = new Map();          // old table row -> new table row
+            for (let k = 0; k < sc.pos.length; k++) {
+                const owner = renumber.get(sc.pos[k]);
+                const anchor = renumber.get(sc.frameOf[k]);
+                if (owner === undefined || anchor === undefined) continue;
+                rowOf.set(k, pos.length);
+                pos.push(owner);
+                frameOf.push(anchor);
+                coef.push(sc.coef[k * 3], sc.coef[k * 3 + 1], sc.coef[k * 3 + 2]);
+                names.push(sc.names[k]);
+                elements.push(sc.elements[k]);
+            }
+            if (!pos.length) return null;
+            // bonds are TABLE ROWS, not positions, so they renumber separately
+            const bonds = [];
+            for (let e = 0; e + 1 < sc.bonds.length; e += 2) {
+                const a = rowOf.get(sc.bonds[e]);
+                const b = rowOf.get(sc.bonds[e + 1]);
+                if (a !== undefined && b !== undefined) bonds.push(a, b);
+            }
+            // The CA end is a row index too and renumbers the same way. Losing
+            // it would leave a copied side chain floating free of its ribbon
+            // with nothing joining them, while every atom and every other bond
+            // came across intact.
+            const toBackbone = [];
+            for (const row of (sc.toBackbone || [])) {
+                const a = rowOf.get(row);
+                if (a !== undefined) toBackbone.push(a);
+            }
+            return {
+                pos: new Int32Array(pos),
+                frameOf: new Int32Array(frameOf),
+                coef: new Float32Array(coef),
+                bonds: new Int32Array(bonds),
+                toBackbone: new Int32Array(toBackbone),
+                names,
+                elements,
+            };
         }
 
         extractSelection() {
@@ -3292,7 +3479,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     position_names: frame.position_names ? [] : undefined,
                     residue_numbers: frame.residue_numbers ? [] : undefined,
                     pae: undefined, // Will be handled separately
-                    bonds: undefined // Will be handled separately
+                    bonds: undefined, // Will be handled separately
+                    // Keyed by position index, so a copy has to renumber it -
+                    // see _remapSidechains. Named here because this object is
+                    // built field by field and anything left out is dropped in
+                    // silence, which is how the copy came to have no side
+                    // chains at all.
+                    sidechains: this._remapSidechains(frame.sidechains, selectedIndices),
                 };
 
                 // Extract data for each selected position
@@ -4768,8 +4961,182 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.render();
         }
 
+        /**
+         * SIDE CHAINS BECOME LIGAND POSITIONS.
+         *
+         * The atoms arrive as a side table of local-frame coefficients (see
+         * buildSidechainTable in web/utils.js) which no hot path reads. When a
+         * residue is switched on, its atoms are materialised here into ordinary
+         * positions of type 'L' with ordinary bonds between them - which is to
+         * say, into a ligand. Everything downstream then works with no new code
+         * at all: both styles draw them, both depth-sort them correctly against
+         * the backbone, picking and selection reach them, and the cartoon draws
+         * them as the same sticks it gives a real ligand.
+         *
+         * They are APPENDED, never inserted. Every position index already in
+         * use - selection sets, colour overrides, sse overrides, PAE rows,
+         * the sequence strip - keeps its meaning, and a trailing run of 'L'
+         * positions is what a file with ligands in it looks like anyway.
+         *
+         * Coordinates are rebuilt in the file's own frame here, which is exact
+         * for the tube style. The cartoon moves its backbone after this point
+         * (sheet projection, flattening) and re-derives them from the moved
+         * positions - see the side-chain pass in viewer-cartoon.js.
+         *
+         * @returns {object} a NEW data object with the atoms appended; `data`
+         *   itself is left alone. The visibility sets are the exception - they
+         *   outlive the frame load and are updated in place, both to drop a
+         *   previous pass's indices and to follow the residues switched on.
+         */
+        _materialiseSidechains(data) {
+            const sc = data.sidechains;
+            const obj = this.objectsData?.[this.currentObjectName];
+            const show = obj && obj.sidechains;
+            this.sidechainMap = null;
+            // Drop anything a PREVIOUS materialisation added. Visibility sets
+            // outlive a frame load, so turning side chains off would otherwise
+            // leave indices in them that now point past the end of the
+            // coordinate array - and those get saved into the object's
+            // visibilityState and carried forward.
+            const nBase = data.coords.length;
+            for (const set of [this.visiblePositions,
+                this.visibilityModel && this.visibilityModel.positions]) {
+                if (!set) continue;
+                for (const i of set) if (i >= nBase) set.delete(i);
+            }
+            // ...and any bond a previous materialisation added. This is not
+            // belt and braces: setCoords PERSISTS the bond list onto the object
+            // (`objectsData[name].bonds = bonds`) and _loadFrameData reads it
+            // back, so without this each show appends to the previous show's
+            // list. Hiding leaves those bonds behind - harmlessly, since they
+            // are then out of range and skipped - and showing again brings them
+            // back into range pointing at DIFFERENT atoms, which draws bonds
+            // between unrelated side chains. That is the show/hide/show
+            // corruption.
+            //
+            // The test is exact rather than a guess: a frame's own bonds cannot
+            // reference a position the frame does not have, so anything
+            // touching an index at or past nBase came from a previous pass.
+            let bonds = data.bonds || null;
+            if (bonds && bonds.some(([a, b]) => a >= nBase || b >= nBase)) {
+                bonds = bonds.filter(([a, b]) => a < nBase && b < nBase);
+                data = { ...data, bonds };
+            }
+            if (!sc || !show || !show.size || !sc.pos.length) return data;
+            const localFrame = window.py2dmolCartoon && window.py2dmolCartoon.localFrame;
+            if (!localFrame) return data;
+
+            const n = data.coords.length;
+            const at = (i) => ({ x: data.coords[i][0], y: data.coords[i][1], z: data.coords[i][2] });
+            const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+            const frames = new Map();
+            const frameAt = (i) => {
+                if (!frames.has(i)) {
+                    frames.set(i, localFrame(at, n, i, fr, null) ? fr.slice() : null);
+                }
+                return frames.get(i);
+            };
+
+            // EVERY per-position array has to grow together. setCoords feeds
+            // each one through _setDataField, which silently replaces an array
+            // whose length does not match the coordinate count with a default -
+            // it does not warn, and it does not fail. Missing plddts that way
+            // filled every position with 50, the low-confidence band, and an
+            // AlphaFold model turned entirely red the moment a side chain was
+            // shown. The five here are exactly the five _setDataField handles;
+            // adding a sixth there means adding it here.
+            const coords = data.coords.slice();
+            const types = (data.position_types || []).slice();
+            const chains = (data.chains || []).slice();
+            const names = (data.position_names || []).slice();
+            const numbers = (data.residue_numbers || []).slice();
+            const plddts = data.plddts ? data.plddts.slice() : null;
+            const bondsOut = (data.bonds || []).slice();
+            // position index -> {anchor, cx, cy, cz}, so the cartoon can put
+            // these back where the flattened backbone actually is
+            const map = new Map();
+            const idxOf = new Map();       // table row -> new position index
+
+            for (let k = 0; k < sc.pos.length; k++) {
+                const owner = sc.pos[k];
+                if (!show.has(owner)) continue;
+                const anchor = sc.frameOf[k];
+                const f = frameAt(anchor);
+                if (!f) continue;
+                const o = at(anchor);
+                const cx = sc.coef[k * 3], cy = sc.coef[k * 3 + 1], cz = sc.coef[k * 3 + 2];
+                const idx = coords.length;
+                coords.push([
+                    o.x + f[0] * cx + f[3] * cy + f[6] * cz,
+                    o.y + f[1] * cx + f[4] * cy + f[7] * cz,
+                    o.z + f[2] * cx + f[5] * cy + f[8] * cz,
+                ]);
+                types.push('L');
+                chains.push(chains[owner] !== undefined ? chains[owner] : '');
+                names.push(names[owner] !== undefined ? names[owner] : '');
+                numbers.push(numbers[owner] !== undefined ? numbers[owner] : 0);
+                // pLDDT is a per-RESIDUE confidence, so an atom of that residue
+                // carries the residue's own value - which also keeps a side
+                // chain the same colour as the backbone it grows out of.
+                if (plddts) plddts.push(plddts[owner] !== undefined ? plddts[owner] : 50);
+                map.set(idx, { anchor, cx, cy, cz, owner });
+                idxOf.set(k, idx);
+            }
+            if (!idxOf.size) return data;
+            // A SIDE CHAIN IS VISIBLE EXACTLY WHEN ITS RESIDUE IS. Visibility is
+            // a Set of position indices, and in the DEFAULT "show everything"
+            // mode it is not empty - it is filled with every index there was at
+            // the time. Appending positions without extending it therefore hides
+            // them: they are drawn, sorted and then filtered out for not being
+            // in a set that was written before they existed. That is invisible
+            // from every angle except the screen, so it is done here, next to
+            // the append, rather than left to a caller to remember.
+            const follow = (set) => {
+                if (!set || !set.size) return;
+                for (const [idx, e] of map) {
+                    if (set.has(e.owner)) set.add(idx);
+                }
+            };
+            follow(this.visiblePositions);
+            follow(this.visibilityModel && this.visibilityModel.positions);
+            // EXPLICIT bonds, so the distance guess never runs on them: a side
+            // chain's connectivity is known, and letting a 2.0 A cutoff re-derive
+            // it would bond atoms across a fold that merely sit close.
+            for (let e = 0; e + 1 < sc.bonds.length; e += 2) {
+                const a = idxOf.get(sc.bonds[e]);
+                const b = idxOf.get(sc.bonds[e + 1]);
+                if (a !== undefined && b !== undefined) bondsOut.push([a, b]);
+            }
+            // ...and the CA end joins the BACKBONE POSITION itself. The CA is
+            // already drawn - the backbone runs through it - so the table does
+            // not carry a copy, and the side chain hangs off the position that
+            // is really there rather than off a coincident duplicate of it.
+            for (const row of (sc.toBackbone || [])) {
+                const a = idxOf.get(row);
+                if (a === undefined) continue;
+                const owner = sc.pos[row];
+                if (owner >= 0 && owner < nBase) bondsOut.push([owner, a]);
+            }
+            this.sidechainMap = map;
+            // The coordinate array just changed length, so segments built for
+            // the old one are wrong. The cache keys on frame and object name,
+            // neither of which moves when a side chain is toggled, so it would
+            // happily be reused and none of this would ever be drawn.
+            if (this._invalidateSegmentCache) this._invalidateSegmentCache();
+            return {
+                ...data,
+                coords, position_types: types, chains,
+                position_names: names, residue_numbers: numbers, bonds: bondsOut,
+                plddts: plddts || data.plddts,
+            };
+        }
+
         _loadDataIntoRenderer(data, skipRender = false) {
             if (data && data.coords && data.coords.length > 0) {
+                // The side table itself is kept as-is; _materialiseSidechains
+                // turns the switched-on part of it into real positions.
+                this.sidechains = data.sidechains || null;
+                data = this._materialiseSidechains(data);
                 const coords = data.coords.map(c => new Vec3(c[0], c[1], c[2]));
                 // Pass other data fields directly, allowing them to be undefined
                 this.setCoords(
@@ -5599,8 +5966,232 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {number} atomIndex
          * @returns {{r:number,g:number,b:number}|null}
          */
+        /**
+         * A side-chain atom's colour, resolved through the RESIDUE it belongs
+         * to. Side-chain atoms are positions only while they are drawn, and
+         * their indices are reissued whenever the set changes, so nothing can
+         * be stored against them; `sidechainColor` is keyed by residue instead.
+         * Unset means follow the residue, so recolouring a main chain carries
+         * its side chains with it unless they were given a colour of their own.
+         * @returns {number} the position index to resolve colour from
+         */
+        _colorPositionFor(atomIndex) {
+            const e = this.sidechainMap && this.sidechainMap.get(atomIndex);
+            return e ? e.owner : atomIndex;
+        }
+
+        /** An explicit side-chain colour for this atom, if one was set. */
+        _sidechainColorOf(atomIndex) {
+            const e = this.sidechainMap && this.sidechainMap.get(atomIndex);
+            if (!e) return null;
+            const obj = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const hex = obj && obj.sidechainColor && obj.sidechainColor[e.owner];
+            return hex ? hexToRgb(hex) : null;
+        }
+
+        /**
+         * Which residues have side-chain atoms to show at all.
+         *
+         * Glycine has none, nor does a nucleotide, nor any residue in a
+         * backbone-only model - so "show side chains" is meaningless for a
+         * selection made entirely of those, and the control for it should not
+         * be offered. Cached against the table's identity rather than rebuilt
+         * per call: it is asked on every selection change and the table can run
+         * to tens of thousands of atoms.
+         *
+         * @returns {Set<number>|null} owning position indices, or null if the
+         *          structure carries no side-chain data at all
+         */
+        sidechainOwners() {
+            const sc = this.sidechains;
+            if (!sc || !sc.pos || !sc.pos.length) return null;
+            if (this._scOwnersFor !== sc) {
+                this._scOwnersFor = sc;
+                this._scOwners = new Set(sc.pos);
+            }
+            return this._scOwners;
+        }
+
+        /** Does any of `positions` have a side chain to draw? */
+        hasSidechainsFor(positions) {
+            const owners = this.sidechainOwners();
+            if (!owners) return false;
+            for (const i of positions) if (owners.has(i)) return true;
+            return false;
+        }
+
+        /**
+         * LIVE SELECTION PREVIEW, for the cost of a blit.
+         *
+         * A drag in the sequence strip only commits its selection on mouseup,
+         * so the band in the 3D view used to sit still until you let go. Simply
+         * committing on every mousemove is not the answer: that is a full
+         * re-render of the molecule per pointer event, which is fine on a
+         * peptide and hopeless on a ribosome.
+         *
+         * The molecule does not change during such a drag - only which residues
+         * are marked - so the finished frame is snapshotted once at the start
+         * and each update is that image blitted back plus one halo pass. Cost
+         * is independent of structure size.
+         *
+         * The snapshot is dropped by any real render (see _invalidateSelectionPreview),
+         * so a rotation, a frame step or a colour change during a preview cannot
+         * leave a stale picture behind - the next update just re-snapshots.
+         */
+        beginSelectionPreview() {
+            const c = this.canvas;
+            if (!c || !c.width || !c.height) return false;
+            if (typeof document === 'undefined' || !document.createElement) return false;
+            if (!this._previewCanvas) this._previewCanvas = document.createElement('canvas');
+            const snap = this._previewCanvas;
+            if (snap.width !== c.width || snap.height !== c.height) {
+                snap.width = c.width;
+                snap.height = c.height;
+            }
+            const sctx = snap.getContext('2d');
+            if (!sctx) return false;
+            sctx.setTransform(1, 0, 0, 1, 0, 0);
+            sctx.clearRect(0, 0, snap.width, snap.height);
+            sctx.drawImage(c, 0, 0);
+            this._previewLive = true;
+            return true;
+        }
+
+        /**
+         * Show `set` as the selection without touching the real one. Falls back
+         * to a normal render if there is no usable snapshot, so a caller never
+         * has to decide which path it is on.
+         */
+        updateSelectionPreview(set) {
+            if (!this._previewLive && !this.beginSelectionPreview()) {
+                this._selectionPreview = set || null;
+                this.render('selection preview');
+                return;
+            }
+            this._selectionPreview = set || null;
+            const ctx = this.ctx || (this.canvas && this.canvas.getContext('2d'));
+            if (!ctx) return;
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            ctx.drawImage(this._previewCanvas, 0, 0);
+            ctx.restore();
+            this._paintSelectionHalo(ctx, this._exportPxScale || 1);
+        }
+
+        /** Drop the preview; the next real render draws the committed selection. */
+        endSelectionPreview() {
+            this._previewLive = false;
+            this._selectionPreview = null;
+        }
+
+        _invalidateSelectionPreview() {
+            this._previewLive = false;
+        }
+
+        /**
+         * Paint the selection as a translucent band over the finished drawing.
+         *
+         * NOT depth-sorted, and deliberately so: this is a UI indicator, not
+         * part of the molecule, and its whole job is to say WHERE the selection
+         * is - including when it is behind something. Inked into the geometry
+         * (the old way) a selection on the far side was occluded by everything
+         * in front of it, which is the case you most need it for.
+         *
+         * Drawn INSIDE the render rather than on the sequence viewer's DOM
+         * overlay, because that overlay is a separate canvas: it is skipped
+         * during drags, has to be kept in size-sync with the main one, and is
+         * not part of a saved image. Compositing here costs one pass and gives
+         * the live view, gestures and exports the same answer.
+         *
+         * The band follows the DRAWN positions (screenX/screenY are written at
+         * the flattened, projected coordinates), so it sits on the ribbon you
+         * can see rather than on the raw trace.
+         */
+        _paintSelectionHalo(ctx, pxScale = 1) {
+            // a live drag preview wins: it is what the user is pointing at
+            const sel = this._selectionPreview
+                || (this.selectionInk ? this.selectionInk() : this.residueSelection);
+            if (!sel || !sel.size) return;
+            const fid = this.screenFrameId;
+            const sx = this.screenX; const sy = this.screenY;
+            const sr = this.screenRadius; const sv = this.screenValid;
+            if (!sx || !sv) return;
+            const drawn = (i) => i >= 0 && i < sv.length && sv[i] === fid && sel.has(i);
+            const idx = Array.from(sel).filter(drawn);
+            if (!idx.length) return;
+            idx.sort((a, b) => a - b);
+            const chains = this.chains;
+            const sc = this.sidechainMap;
+
+            // THE BAND FOLLOWS WHAT IS ACTUALLY CONNECTED.
+            //
+            // A backbone is a linear chain, so consecutive residues of the same
+            // chain join up. A SIDE CHAIN is not: it is a tree - a leucine
+            // branches at CG - and its atoms are appended positions whose index
+            // order says nothing about which are bonded. Joining those by index
+            // would draw a bond from CD1 to CD2 that does not exist, and would
+            // run a band from the last atom of one residue's side chain to the
+            // first of the next straight through empty space. So side-chain
+            // atoms are joined along their BONDS instead - the same
+            // connectivity the sticks themselves are drawn from.
+            const edges = [];
+            const touched = new Set();
+            const addEdge = (a, b) => {
+                edges.push(a, b);
+                touched.add(a); touched.add(b);
+            };
+            for (let k = 1; k < idx.length; k++) {
+                const a = idx[k - 1]; const b = idx[k];
+                if (b !== a + 1) continue;                     // a gap
+                if (sc && (sc.has(a) || sc.has(b))) continue;   // bonds decide these
+                if (chains && chains[a] !== chains[b]) continue;
+                addEdge(a, b);
+            }
+            if (sc && sc.size && this.bonds) {
+                for (const [a, b] of this.bonds) {
+                    if (!drawn(a) || !drawn(b)) continue;
+                    if (!sc.has(a) && !sc.has(b)) continue;
+                    addEdge(a, b);
+                }
+            }
+
+            ctx.save();
+            ctx.strokeStyle = SELECTION_HALO_CSS;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            // ONE path, stroked ONCE. A translucent colour composites per draw
+            // call, so anything drawn twice comes out darker where it overlaps:
+            // a selected stretch would be banded light and dark residue by
+            // residue, and every branch point would show as a blot. A single
+            // stroked path composites the whole union in one go and comes out
+            // flat. That is also why an isolated atom is a ZERO-LENGTH segment
+            // rather than a filled arc - with a round cap it draws the same
+            // circle, but inside the same path and the same single stroke.
+            let w = 0;
+            for (const i of idx) w = Math.max(w, sr[i] || 2);
+            ctx.lineWidth = 2 * ((SELECTION_HALO_PX * pxScale) + w);
+            ctx.beginPath();
+            for (let k = 0; k + 1 < edges.length; k += 2) {
+                ctx.moveTo(sx[edges[k]], sy[edges[k]]);
+                ctx.lineTo(sx[edges[k + 1]], sy[edges[k + 1]]);
+            }
+            for (const i of idx) {
+                if (touched.has(i)) continue;
+                // a hair of length, so a round cap has something to cap
+                ctx.moveTo(sx[i], sy[i]);
+                ctx.lineTo(sx[i] + 0.01, sy[i]);
+            }
+            ctx.stroke();
+            ctx.restore();
+        }
+
         getColorOverride(atomIndex) {
             if (atomIndex < 0 || !this.coords || atomIndex >= this.coords.length) return null;
+            const own = this._sidechainColorOf(atomIndex);
+            if (own) return own;
+            atomIndex = this._colorPositionFor(atomIndex);
             let frameIndex = this.currentFrame >= 0 ? this.currentFrame : 0;
             if (this.overlayState?.enabled && this.overlayState.frameIdMap
                 && atomIndex < this.overlayState.frameIdMap.length) {
@@ -5628,6 +6219,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (atomIndex < 0 || atomIndex >= this.coords.length) {
                 return DEFAULT_GREY;
             }
+            // same rule as getColorOverride: a side chain is coloured as its
+            // residue unless it was given a colour of its own
+            const ownSc = this._sidechainColorOf(atomIndex);
+            if (ownSc) return ownSc;
+            atomIndex = this._colorPositionFor(atomIndex);
 
             // Resolve color through the unified hierarchy
             // In overlay mode, determine which frame this atom belongs to from frameIdMap
@@ -6001,9 +6597,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const type = segInfo.type;
             const baseMultiplier = this.typeWidthMultipliers?.[type] ?? this._calculateTypeWidthMultiplier(type);
 
-            // For contacts, apply weight multiplier if available
-            if (type === 'C' && segInfo.contactWeight !== undefined) {
-                return baseMultiplier * segInfo.contactWeight;
+            // CONTACTS: a fixed width, divided back out of the Line Width the
+            // caller is about to multiply by, so the control cannot reach them.
+            // Their own stored weight still scales it.
+            if (type === 'C') {
+                const lw = this.lineWidth || 3.0;
+                const w = segInfo.contactWeight !== undefined ? segInfo.contactWeight : 1;
+                return (CONTACT_WIDTH_A / lw) * w;
+            }
+
+            // A SIDE CHAIN IS NOT A LIGAND, even though it is drawn as ligand
+            // positions so the ligand machinery can build it. TYPE_BASELINES
+            // gives 'L' a deliberately thin 0.4 - a ligand is a guest and
+            // should not out-weigh the chain it sits in - but a side chain is
+            // part of its residue, and at 0.4 it came out as a hairline hanging
+            // off a full-width backbone. This is what "side chains do not work
+            // in tube mode" looked like: they were drawn all along, just far
+            // too faint to read as part of the structure. See SIDECHAIN_WIDTH.
+            if (type === 'L' && this.sidechainMap && this.sidechainMap.size
+                && (this.sidechainMap.has(segInfo.idx1)
+                    || this.sidechainMap.has(segInfo.idx2))) {
+                return SIDECHAIN_WIDTH;
             }
 
             return baseMultiplier;
@@ -6018,6 +6632,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {object} segInfo2 - Segment info for s2 (has type, idx1, idx2)
          * @returns {{shadow: number, tint: number}}
          */
+        /**
+         * Should this pair exchange shadow at all? `recv` is the segment being
+         * shaded, `cast` the one in front of it.
+         *
+         * Two things are excluded, and the reason is the same both times: they
+         * are drawn ON the structure rather than being part of it.
+         *
+         *  - CONTACTS are annotation. A contact line darkening the backbone it
+         *    points at would read as geometry.
+         *  - SIDE CHAINS cast nothing onto the backbone. They are thin sticks
+         *    at a fifth of its weight, sitting right against it, so every one
+         *    would print a hard little shadow on the chain it grows out of -
+         *    and the eye reads that as the backbone being dented, not as the
+         *    side chain being in front. The backbone still shades THEM, which
+         *    is the direction that carries depth.
+         *
+         * Was duplicated at both call sites; one copy so the two cannot drift.
+         */
+        _shadowPairExcluded(recv, cast) {
+            const isMolecule = (t) => t === 'P' || t === 'D' || t === 'R';
+            if ((recv.type === 'C' && isMolecule(cast.type))
+                || (isMolecule(recv.type) && cast.type === 'C')) return true;
+            const sc = this.sidechainMap;
+            if (sc && sc.size && isMolecule(recv.type)
+                && (sc.has(cast.idx1) || sc.has(cast.idx2))) return true;
+            return false;
+        }
+
         _calculateShadowTint(s1, s2, segInfo1, segInfo2) {
             // Fast approximation: skip expensive calculations (sqrt, sigmoid, width)
             // Uses rational function approximation: cutoff² / (cutoff² + dist² * alpha)
@@ -6148,8 +6790,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 let maxTint = 0;
                 const s1 = segData[i];
                 const segInfoI = segments[i];
-                const isContactI = segInfoI.type === 'C';
-                const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
 
                 // Check against all segments in front
                 for (let j_idx = i_idx + 1; j_idx < segmentList.length; j_idx++) {
@@ -6158,12 +6798,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                     const s2 = segData[j];
                     const segInfo2 = segments[j];
-                    const isContactJ = segInfo2.type === 'C';
-                    const isMoleculeJ = segInfo2.type === 'P' || segInfo2.type === 'D' || segInfo2.type === 'R';
-
-                    if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
-                        continue;
-                    }
+                    if (this._shadowPairExcluded(segInfoI, segInfo2)) continue;
 
                     const { shadow, tint } = this._calculateShadowTint(s1, s2, segInfoI, segInfo2);
                     shadowSum = Math.min(shadowSum + shadow, MAX_SHADOW_SUM);
@@ -6253,8 +6888,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const gx1 = s1.gx;
                 const gy1 = s1.gy;
                 const segInfoI = segments[i];
-                const isContactI = segInfoI.type === 'C';
-                const isMoleculeI = segInfoI.type === 'P' || segInfoI.type === 'D' || segInfoI.type === 'R';
 
                 if (gx1 < 0) {
                     shadows[i] = 1.0;
@@ -6283,12 +6916,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                             const s2 = segData[j];
                             const segInfoJ = segments[j];
-                            const isContactJ = segInfoJ.type === 'C';
-                            const isMoleculeJ = segInfoJ.type === 'P' || segInfoJ.type === 'D' || segInfoJ.type === 'R';
-
-                            if ((isContactI && isMoleculeJ) || (isMoleculeI && isContactJ)) {
-                                continue;
-                            }
+                            if (this._shadowPairExcluded(segInfoI, segInfoJ)) continue;
 
                             if (s2.z <= s1.z) break;
                             if (shadowSum >= MAX_SHADOW_SUM) break;
@@ -6551,6 +7179,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.style === 'cartoon'
                 && window.py2dmolCartoon) {
                 window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
+                // A real frame supersedes any snapshot taken from an older one.
+                this._invalidateSelectionPreview();
+                // over the finished drawing, so it is never occluded
+                this._paintSelectionHalo(ctx, this._exportPxScale || 1);
                 // Sequence-viewer highlight overlay, skipped during ANY active
                 // gesture. drawHighlights() resizes its overlay canvas and
                 // reads getBoundingClientRect twice, forcing a synchronous
@@ -7130,14 +7762,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // i=0 is furthest (start of sliced array), i=numRendered-1 is closest
                 // Distance from front: numRendered - 1 - i
                 const distFromFront = numRendered - 1 - i;
-                // SELECTION: reuse this style's own outline pass, recoloured.
-                // The cartoon plugin does the same with its ink; this is the
-                // ribbon style's equivalent, so a selection shows in every
-                // style rather than only in cartoon.
-                // Constant extra width, and drawn even when the style's outline
-                // is off - it is a UI indicator, not part of the drawing.
-                const selSet = (this.residueSelection && this.residueSelection.size)
-                    ? this.residueSelection : null;
+                // NO IN-GEOMETRY SELECTION INK. This used to recolour the
+                // style's own outline pass, which put the selection into the
+                // depth sort: a selected residue behind anything was hidden by
+                // it. _paintSelectionHalo draws over the finished frame
+                // instead and cannot be occluded.
+                //
+                // Kept as a null rather than torn out, matching selInk in
+                // viewer-cartoon.js - both go when the ink path does.
+                const selSet = null;
                 const isSel = !!(selSet
                     && (selSet.has(segments[idx].idx1) || selSet.has(segments[idx].idx2)));
 
@@ -7313,6 +7946,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Screen positions are already computed in SoA arrays (screenX, screenY, screenRadius)
             // during the projection phase above.
             // The sequence viewer will access these arrays directly.
+
+            // A real frame supersedes any snapshot taken from an older one.
+            this._invalidateSelectionPreview();
+            // over the finished drawing, so it is never occluded
+            this._paintSelectionHalo(ctx, this._exportPxScale || 1);
 
             // Draw highlights on overlay canvas (doesn't require full render)
             // Highlight overlay is now managed by sequence viewer

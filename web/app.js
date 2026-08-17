@@ -244,6 +244,7 @@ function initializeViewerConfig() {
     // Get DOM elements for config sync
     const biounitEl = document.getElementById('biounitCheckbox');
     const loadLigandsEl = document.getElementById('loadLigandsCheckbox');
+    const detectCyclicEl = document.getElementById('detectCyclicCheckbox');
 
     // Initialize global viewer config (nested structure matching Python)
     window.viewerConfig = {
@@ -258,7 +259,16 @@ function initializeViewerConfig() {
             shadow: true,
             outline: "full",  // "none", "partial", or "full"
             width: 3.0,
-            ortho: 0.5  // Normalized 0-1 range (1.0 = full orthographic)
+            ortho: 0.5,  // Normalized 0-1 range (1.0 = full orthographic)
+            // OFF here, though the renderer's own default (and Python's) is on.
+            // The test is a distance one - a chain's first and last residue
+            // within the chain-break cutoff - so a linear chain whose termini
+            // happen to fold together passes it, and gets a bond drawn where
+            // there is none plus a rainbow ramp wrapped right round, which
+            // paints its N and C ends the same colour. Python is scripted by
+            // someone who knows what they loaded; the web app takes whatever is
+            // dropped on it, so here it is asked for.
+            detect_cyclic: false
         },
         color: {
             mode: "auto",
@@ -316,6 +326,34 @@ function initializeViewerConfig() {
     if (loadLigandsEl) {
         loadLigandsEl.addEventListener('change', () => {
             window.viewerConfig.ui.loadLigands = loadLigandsEl.checked;
+        });
+    }
+
+    // DETECT CYCLIC is not a load option, though it sits among them: nothing is
+    // re-fetched and nothing is re-parsed, so it applies to what is ALREADY on
+    // screen rather than only to the next structure. Its neighbours here are
+    // load-time by necessity - you cannot add a biounit you did not download -
+    // and this one has no such excuse, so flipping it shows the answer.
+    //
+    // The ring is closed in setCoords, not in render, so a repaint alone would
+    // change nothing at all: the frame has to be reloaded. Same trap the
+    // side-chain and contact toggles hit.
+    if (detectCyclicEl) {
+        detectCyclicEl.checked = !!window.viewerConfig.rendering.detect_cyclic;
+        detectCyclicEl.addEventListener('change', () => {
+            // The renderer normalises window.viewerConfig in place and keeps
+            // THAT object as its own this.config, so writing here reaches it.
+            if (!window.viewerConfig.rendering) window.viewerConfig.rendering = {};
+            window.viewerConfig.rendering.detect_cyclic = detectCyclicEl.checked;
+            if (window.syncViewerConfig) window.syncViewerConfig();
+            const renderer = viewerApi?.renderer;
+            if (!renderer || !renderer.currentObjectName) return;
+            if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+            renderer.cachedSegmentIndices = null;
+            if (renderer._loadFrameData) {
+                renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+            }
+            renderer.render('detect cyclic');
         });
     }
 }
@@ -628,6 +666,35 @@ function setupEventListeners() {
         renderer.render('selection colour');
     }
 
+    // SIDE-CHAIN COLOUR, kept apart from `color` and keyed by RESIDUE.
+    //
+    // It cannot go in the ordinary position colour map: side-chain atoms are
+    // positions only while they are being drawn, and their indices are handed
+    // out afresh every time the set changes, so a colour stored against one
+    // would come back pointing at a different atom. The residue index is the
+    // stable name for "this side chain", so that is what it is stored under,
+    // and the renderer resolves an atom's colour through its owner.
+    //
+    // Unset means FOLLOW THE RESIDUE, which is why this is a separate map
+    // rather than a copy of the residue's colour taken at the time: recolour
+    // the main chain and side chains that were never given their own colour
+    // come along, which is what you would expect of a part of the same residue.
+    function setSelectionSidechainColor(positions, color) {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        if (!obj) return;
+        const map = obj.sidechainColor ? { ...obj.sidechainColor } : {};
+        for (const i of positions) {
+            if (color === null) delete map[i];
+            else map[i] = color;
+        }
+        obj.sidechainColor = Object.keys(map).length ? map : null;
+        renderer.colorsNeedUpdate = true;
+        renderer.plddtColorsNeedUpdate = true;
+        document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+        renderer.render('selection sidechain colour');
+    }
+
     // Secondary structure override. Lives on the renderer as a plain
     // index -> letter map; viewer-cartoon.js applies it to BOTH the geometry
     // and the colour pass, and its contents are part of the SS cache key so an
@@ -651,6 +718,156 @@ function setupEventListeners() {
         renderer.colorsNeedUpdate = true;
         document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
         renderer.render('selection structure');
+    }
+
+    // CONTACTS, between exactly two residues. Stored on the object as
+    // `contacts`, which already existed and is already saved and restored - the
+    // renderer turns each entry into a segment of type 'C'. Written in the
+    // CHAIN + RESIDUE form rather than as position indices: indices are a
+    // property of the current frame's arrays, and a copied sub-structure
+    // renumbers them, while a chain and residue number name the same pair
+    // whatever happens to the arrays.
+    //
+    // A contact is a line between a PAIR, so all of this needs exactly two
+    // residues; the row is not offered otherwise.
+    const contactKeyOf = (positions) => {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.chains || positions.length !== 2) return null;
+        const [a, b] = positions;
+        const rn = renderer.residueNumbers;
+        if (!rn || rn[a] === undefined || rn[b] === undefined) return null;
+        return [renderer.chains[a], rn[a], renderer.chains[b], rn[b]];
+    };
+    // Does this stored contact name that pair? Either way round: a contact has
+    // no direction, and the user may have selected the two in any order.
+    //
+    // BOTH STORED FORMS. parseContactsFile writes the same entries the panel
+    // does, and it has two: "A 10 B 50 0.5" and the bare-index "10 50 0.5".
+    // Understanding only the first made a file written in indices invisible
+    // here - clicking the pair offered Add and made a duplicate, while Remove,
+    // colour and width all failed to find it. The panel keeps WRITING the chain
+    // form, which survives renumbering; it just has to read both.
+    const contactMatches = (c, key, positions) => {
+        if (!Array.isArray(c) || c.length < 3) return false;
+        if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+            if (!positions || positions.length !== 2) return false;
+            const [p1, p2] = positions;
+            return (c[0] === p1 && c[1] === p2) || (c[0] === p2 && c[1] === p1);
+        }
+        if (c.length < 4 || typeof c[0] !== 'string') return false;
+        return (c[0] === key[0] && c[1] === key[1] && c[2] === key[2] && c[3] === key[3])
+            || (c[0] === key[2] && c[1] === key[3] && c[2] === key[0] && c[3] === key[1]);
+    };
+    // WHERE THE WEIGHT AND COLOUR SIT depends on the form. "A 10 B 50 0.5 red"
+    // puts them at 4 and 5; the bare-index "10 50 0.5 red" at 2 and 3. Reading
+    // both forms and then writing to the chain form's slots would have put a
+    // colour where the index form keeps nothing and left a hole behind it.
+    const contactSlots = (c) => ((typeof c[0] === 'number' && typeof c[1] === 'number')
+        ? { w: 2, col: 3 } : { w: 4, col: 5 });
+    const findContact = (positions) => {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        const key = contactKeyOf(positions);
+        if (!obj || !key || !Array.isArray(obj.contacts)) return null;
+        const i = obj.contacts.findIndex((c) => contactMatches(c, key, positions));
+        return i < 0 ? null : { obj, key, i };
+    };
+    const commitContacts = (renderer, obj, contacts) => {
+        obj.contacts = contacts.length ? contacts : null;
+        // A RELOAD, not a repaint. Contacts become segments, and the segment
+        // list - contact block included - is built inside setCoords, not inside
+        // render. Invalidating the cache and repainting therefore changes
+        // nothing at all: the contact is stored correctly, resolves correctly,
+        // and never appears. Same trap the side-chain toggle hit.
+        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+        if (renderer._loadFrameData) {
+            renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+        }
+        renderer.render('selection contact');
+        if (window.updateSelectionToolsState) window.updateSelectionToolsState();
+    };
+    function addSelectionContact(positions) {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        const key = contactKeyOf(positions);
+        if (!obj || !key) return;
+        const contacts = Array.isArray(obj.contacts) ? obj.contacts.slice() : [];
+        if (contacts.some((c) => contactMatches(c, key, positions))) return;  // already there
+        // Weight 1, and no colour - which the renderer draws as its default
+        // yellow. Left off rather than written in, so a contact that was never
+        // given a colour keeps following that default if it ever changes.
+        contacts.push([key[0], key[1], key[2], key[3], 1.0]);
+        commitContacts(renderer, obj, contacts);
+    }
+    function removeSelectionContact(positions) {
+        const found = findContact(positions);
+        if (!found) return;
+        const contacts = found.obj.contacts.slice();
+        contacts.splice(found.i, 1);
+        commitContacts(viewerApi.renderer, found.obj, contacts);
+    }
+    // The stored colour is an {r,g,b} object, which is what the segment builder
+    // reads straight through as contactColor.
+    function setSelectionContactColor(positions, hex) {
+        const found = findContact(positions);
+        if (!found) return;
+        const contacts = found.obj.contacts.slice();
+        const c = contacts[found.i].slice();
+        const sl = contactSlots(c);
+        c[sl.w] = typeof c[sl.w] === 'number' ? c[sl.w] : 1.0;
+        if (hex === null) c.length = sl.col;
+        else {
+            c[sl.col] = { r: parseInt(hex.slice(1, 3), 16), g: parseInt(hex.slice(3, 5), 16),
+                b: parseInt(hex.slice(5, 7), 16) };
+        }
+        contacts[found.i] = c;
+        commitContacts(viewerApi.renderer, found.obj, contacts);
+    }
+
+    // Per-contact WIDTH, which is the entry's existing weight slot - the
+    // renderer already scales a contact's stroke by contactWeight, so this
+    // needs nothing new in the drawing, only a control.
+    function setSelectionContactWidth(positions, w) {
+        const found = findContact(positions);
+        if (!found) return;
+        const contacts = found.obj.contacts.slice();
+        const c = contacts[found.i].slice();
+        c[contactSlots(c).w] = w;
+        contacts[found.i] = c;
+        commitContacts(viewerApi.renderer, found.obj, contacts);
+    }
+
+    // SIDE CHAINS, per residue. Stored on the OBJECT as `sidechains`, a Set of
+    // position indices, exactly where `color` and `sse` live and for the same
+    // reason: position indices only mean anything against the object they were
+    // set on, so putting this on the renderer would reinterpret them the moment
+    // another object became current.
+    //
+    // Nothing is computed here. The atoms were captured at load
+    // (buildSidechainTable in utils.js), so this only ever writes down WHICH
+    // residues; a structure with no side-chain data simply draws nothing.
+    function setSelectionSidechains(positions, on) {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        if (!obj) return;
+        if (on && !renderer.sidechains) {
+            setStatus('No side-chain atoms in this structure (a backbone-only model has none).');
+            return;
+        }
+        const cur = obj.sidechains instanceof Set ? new Set(obj.sidechains) : new Set();
+        let changed = false;
+        for (const i of positions) {
+            if (on ? !cur.has(i) : cur.has(i)) changed = true;
+            if (on) cur.add(i); else cur.delete(i);
+        }
+        if (!changed) return;               // nothing to redraw for
+        obj.sidechains = cur.size ? cur : null;
+        // The atoms become real positions, so this is a RELOAD, not a repaint:
+        // _materialiseSidechains runs inside the frame load and nothing shorter
+        // than that rebuilds the coordinate array it appends to.
+        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+        renderer._loadFrameData(renderer.currentFrame >= 0 ? renderer.currentFrame : 0);
+        renderer.render('selection sidechains');
     }
 
     // VISIBILITY. Two things make this less obvious than it looks:
@@ -694,25 +911,89 @@ function setupEventListeners() {
         renderer.render('selection visibility');
     }
 
-    // The restyling tools only mean anything in 'style' intent - in 'show' a
-    // drag picks what is visible and there is no target for them to act on - so
-    // they are hidden outright rather than shown inert. Within style mode they
-    // stay visible but disabled until something is actually targeted, so it is
-    // clear they exist and what enables them.
+    // The restyling tools only mean anything with something selected, so the
+    // panel they live in is hidden outright rather than shown inert. They are
+    // disabled as well as hidden - a hidden control is still focusable by
+    // keyboard, and `disabled` is what actually takes it out of the tab order.
+    //
+    // CLICK-SELECTION IS THE WEB APP'S. It is off in the renderer by default:
+    // the Python path loads viewer-mol.js and the cartoon plugin and nothing
+    // else, so a click there changed a selection with no strip to show it and
+    // no panel to act on it. Turned on here, where both exist.
+    if (viewerApi?.renderer) viewerApi.renderer.selectionEnabled = true;
+
     function updateSelectionToolsState() {
         const tools = document.getElementById('selectionTools');
         if (!tools) return;
-        const none = getActiveSelection() === null;
+        const picked = getActiveSelection();
+        const none = picked === null;
+        // THE PANEL IS THE STATE. It appears with a selection and goes away
+        // without one, so there is never a row of controls that do nothing.
+        // The old arrangement kept them visible but greyed, on the argument
+        // that hiding them left no hint they existed - but they now live in
+        // their own panel beside the structure, and a panel sliding in is a
+        // louder cue than five buttons changing opacity in a header.
+        const panel = document.getElementById('selectionPanel');
+        if (panel) panel.hidden = none;
+        // The count is the one thing the buttons cannot tell you, and it
+        // changes what pressing them does.
+        const count = document.getElementById('selectionPanelCount');
+        if (count) {
+            count.textContent = none ? ''
+                : `${picked.length} residue${picked.length === 1 ? '' : 's'}`;
+        }
+        // A contact is a line between a PAIR: nothing to draw for one residue or
+        // for five, so the row is offered only for exactly two. Within it, Add
+        // and Remove are offered according to whether there IS one - an Add
+        // that would do nothing and a Remove with nothing to remove are both
+        // just clutter, and between them they say whether the pair is joined.
+        const contactRow = document.getElementById('contactRow');
+        const pair = !none && picked.length === 2;
+        if (contactRow) contactRow.hidden = !pair;
+        if (pair) {
+            const found = findContact(picked);
+            const has = !!found;
+            const addBtn = document.getElementById('contactAddButton');
+            const rmBtn = document.getElementById('contactRemoveButton');
+            const swatch = document.getElementById('contactColorButton');
+            if (addBtn) addBtn.hidden = has;
+            if (rmBtn) rmBtn.hidden = !has;
+            // nothing to colour or size until there is a contact
+            if (swatch) swatch.parentElement.hidden = !has;
+            const wSlider = document.getElementById('contactWidthSlider');
+            if (wSlider) {
+                wSlider.hidden = !has;
+                if (has) {
+                    const entry = found.obj.contacts[found.i];
+                    const w = entry && entry[contactSlots(entry).w];
+                    wSlider.value = typeof w === 'number' ? w : 1;
+                }
+            }
+        }
+        // The side-chain row is offered only when there is something to show:
+        // glycine has no side chain, nor does a nucleotide, nor any residue in
+        // a backbone-only model, and a control that cannot do anything is worse
+        // than no control.
+        const scRow = document.getElementById('sidechainRow');
+        if (scRow) {
+            const renderer = viewerApi?.renderer;
+            scRow.hidden = none || !renderer || !renderer.hasSidechainsFor
+                || !renderer.hasSidechainsFor(picked);
+        }
         tools.classList.toggle('disabled', none);
-        // Also set the real disabled property, not just the class: it gives the
-        // controls their native disabled appearance and blocks keyboard focus,
-        // which a pointer-events rule alone does not.
+        // Also set the real disabled property, not just the class: hiding the
+        // panel takes it off the screen but leaves its buttons in the tab
+        // order, and `disabled` is what removes them from it.
         for (const el of tools.querySelectorAll('button, select')) el.disabled = none;
         // Unselect lives outside that group because it does not need a
         // selection to be discoverable - but it does need one to do anything,
         // so it follows the same state. Select all stays enabled either way.
         const unselectBtn = document.getElementById('clearAllResidues');
         if (unselectBtn) unselectBtn.disabled = none;
+        // The swatches show the SELECTION's colour rather than the last colour
+        // picked, so they are refreshed from the same place the enabled state
+        // is and never go stale.
+        if (window.refreshSelectionSwatches) window.refreshSelectionSwatches();
     }
     window.updateSelectionToolsState = updateSelectionToolsState;
 
@@ -726,17 +1007,22 @@ function setupEventListeners() {
 
         // COLOUR: a grid of PyMOL's named colours rather than an OS colour
         // picker, so the choices are the ones a PyMOL user already knows by
-        // name. Built once from the table viewer-mol.js exports.
-        const colorBtn = document.getElementById('selColorButton');
-        const colorMenu = document.getElementById('selColorMenu');
-        const swatch = document.getElementById('selColorSwatch');
-        let currentColor = '#FF0000';
-        if (colorBtn && colorMenu) {
+        // name. Built from the table viewer-mol.js exports.
+        //
+        // ONE implementation, two pickers - main chain and side chains colour
+        // independently, and a second copy of this would drift from the first.
+        // `apply` says where the colour goes; `current` says what the swatch
+        // should show.
+        const colorPickers = [];
+        const wireColorPicker = ({ btnId, menuId, swatchId, apply, current }) => {
+            const btn = document.getElementById(btnId);
+            const menu = document.getElementById(menuId);
+            const swatch = document.getElementById(swatchId);
+            if (!btn || !menu) return;
             // Rebuilt each time the menu opens: the palette is the CHAIN colour
             // set, which swaps wholesale with colourblind mode.
             const buildSwatches = () => {
-                colorMenu.textContent = '';
-
+                menu.textContent = '';
                 // AUTO: clears the override so the residues fall back to whatever
                 // the colour mode says - chain, rainbow, pLDDT, SS palette. Not a
                 // colour, so it gets its own row rather than a swatch that would
@@ -751,12 +1037,13 @@ function setupEventListeners() {
                 autoBtn.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    colorMenu.hidden = true;
+                    menu.hidden = true;
                     const positions = getActiveSelection();
-                    if (positions) setSelectionColor(positions, null);
+                    if (positions) apply(positions, null);
+                    refresh();
                 });
                 autoRow.appendChild(autoBtn);
-                colorMenu.appendChild(autoRow);
+                menu.appendChild(autoRow);
 
                 const groups = (window.py2dmol_paletteColors
                     ? window.py2dmol_paletteColors(!!viewerApi?.renderer?.colorblindMode)
@@ -772,36 +1059,97 @@ function setupEventListeners() {
                         cell.addEventListener('click', (e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            currentColor = hex;
-                            if (swatch) swatch.style.background = hex;
-                            colorMenu.hidden = true;
+                            menu.hidden = true;
                             const positions = getActiveSelection();
-                            if (positions) setSelectionColor(positions, hex);
+                            if (positions) apply(positions, hex);
+                            refresh();
                         });
                         row.appendChild(cell);
                     }
-                    colorMenu.appendChild(row);
+                    menu.appendChild(row);
                 }
             };
+            // THE SWATCH SHOWS THE SELECTION, not the last colour picked. A
+            // remembered colour is a statement about the tool; what you want to
+            // know when you click a residue is what colour THAT residue is. A
+            // mixed selection shows the first, since one square cannot show two.
+            const refresh = () => {
+                if (!swatch) return;
+                const positions = getActiveSelection();
+                const hex = positions && positions.length ? current(positions) : null;
+                swatch.style.background = hex || 'transparent';
+                swatch.classList.toggle('is-empty', !hex);
+            };
             buildSwatches();
-            colorBtn.addEventListener('click', (e) => {
+            btn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 // rebuilt on open: the chain palette swaps with colourblind mode
                 buildSwatches();
-                // a click on the button itself re-applies the current colour;
-                // the caret area opens the grid. Simpler: always open, and let
-                // a second click close it.
-                colorMenu.hidden = !colorMenu.hidden;
+                const wasHidden = menu.hidden;
+                // only one grid open at a time - two overlapping popups in a
+                // 340px panel is unreadable
+                for (const other of document.querySelectorAll('.selection-color-menu')) {
+                    other.hidden = true;
+                }
+                menu.hidden = !wasHidden;
             });
             document.addEventListener('click', (e) => {
-                if (!colorMenu.hidden && !colorMenu.contains(e.target)
-                    && e.target !== colorBtn && !colorBtn.contains(e.target)) {
-                    colorMenu.hidden = true;
+                if (!menu.hidden && !menu.contains(e.target)
+                    && e.target !== btn && !btn.contains(e.target)) {
+                    menu.hidden = true;
                 }
             });
-            if (swatch) swatch.style.background = currentColor;
-        }
+            colorPickers.push(refresh);
+            refresh();
+        };
+
+        // What colour a residue is RIGHT NOW, as the renderer resolves it -
+        // override, colour mode, palette and all - so the swatch matches the
+        // pixels rather than a setting.
+        const rgbToHex = (c) => (c && c.r !== undefined)
+            ? '#' + [c.r, c.g, c.b].map((v) => {
+                const n = Math.max(0, Math.min(255, Math.round(v > 1 ? v : v * 255)));
+                return n.toString(16).padStart(2, '0');
+            }).join('')
+            : null;
+        const mainChainColorOf = (positions) => {
+            const renderer = viewerApi?.renderer;
+            if (!renderer || !renderer.getAtomColor) return null;
+            return rgbToHex(renderer.getAtomColor(positions[0]));
+        };
+
+        wireColorPicker({
+            btnId: 'selColorButton', menuId: 'selColorMenu', swatchId: 'selColorSwatch',
+            apply: setSelectionColor, current: mainChainColorOf,
+        });
+        wireColorPicker({
+            btnId: 'scColorButton', menuId: 'scColorMenu', swatchId: 'scColorSwatch',
+            apply: setSelectionSidechainColor,
+            // an unset side chain follows its residue, so that is what it shows
+            current: (positions) => {
+                const renderer = viewerApi?.renderer;
+                const obj = renderer?.objectsData?.[renderer.currentObjectName];
+                const own = obj && obj.sidechainColor && obj.sidechainColor[positions[0]];
+                return own || mainChainColorOf(positions);
+            },
+        });
+        wireColorPicker({
+            btnId: 'contactColorButton', menuId: 'contactColorMenu',
+            swatchId: 'contactColorSwatch',
+            apply: setSelectionContactColor,
+            // a contact with no colour of its own draws in the default yellow,
+            // so that is what the swatch shows rather than nothing
+            current: (positions) => {
+                const found = findContact(positions);
+                if (!found) return null;
+                const c = found.obj.contacts[found.i];
+                const col = c && c[contactSlots(c).col];
+                return (col && col.r !== undefined)
+                    ? rgbToHex(col) : '#ffff00';
+            },
+        });
+        window.refreshSelectionSwatches = () => { for (const f of colorPickers) f(); };
 
         const ssSelect = document.getElementById('selSsSelect');
         if (ssSelect) {
@@ -815,8 +1163,29 @@ function setupEventListeners() {
             const el = document.getElementById(id);
             if (el) el.addEventListener('click', withSelection(fn));
         };
-        on('showSelectionButton', (positions) => setSelectionVisible(positions, true, false));
-        on('hideSelectionButton', (positions) => setSelectionVisible(positions, false, false));
+        // ONE visibility button. Which way it goes is read off the structure,
+        // not remembered: if any of the selection is currently hidden the press
+        // shows it, otherwise it hides it. That makes "show what I picked" the
+        // behaviour for a selection that is partly hidden, which is what a user
+        // reaching for this after a Hide actually wants.
+        {
+            const ws = document.getElementById('contactWidthSlider');
+            if (ws) {
+                // `input`, not `change`: the contact should follow the drag.
+                // Redrawing per event is affordable here - one contact is a
+                // handful of prims - where a residue-level control would not be.
+                ws.addEventListener('input', () => {
+                    const positions = getActiveSelection();
+                    if (positions) setSelectionContactWidth(positions, +ws.value);
+                });
+            }
+        }
+        on('contactAddButton', (positions) => addSelectionContact(positions));
+        on('contactRemoveButton', (positions) => removeSelectionContact(positions));
+        on('sidechainShowButton', (positions) => setSelectionSidechains(positions, true));
+        on('sidechainHideButton', (positions) => setSelectionSidechains(positions, false));
+        on('mainchainShowButton', (positions) => setSelectionVisible(positions, true, false));
+        on('mainchainHideButton', (positions) => setSelectionVisible(positions, false, false));
 
         // Every surface that draws the selection listens here, so a change made
         // on ANY of them shows on all the others. The sequence strip used to be
@@ -1138,7 +1507,19 @@ function applyBestViewRotation(animate = true) {
             if (distSq > maxDistSq) maxDistSq = distSq;
             sumDistSq += distSq;
         }
-        visibleExtent = Math.sqrt(maxDistSq);
+        // A SINGLE POSITION HAS NO EXTENT, and one residue is a perfectly
+        // ordinary thing to orient on - it is the whole point of picking one.
+        // Its extent is exactly 0, which is FALSY, so the target-centre branch
+        // below was skipped and orienting on one residue quietly did nothing
+        // at all. Two adjacent residues are barely better: 1.9 A of extent
+        // would ask the renderer for a magnification nothing is legible at.
+        //
+        // The floor is a residue's own reach - an arginine's tip sits ~7 A from
+        // its CA - so orienting on one residue frames that residue and its side
+        // chain, drawn or not, with a little of what surrounds it. Anything
+        // larger than that reaches the floor on its own and is unaffected.
+        const ORIENT_MIN_EXTENT_A = 8;
+        visibleExtent = Math.max(Math.sqrt(maxDistSq), ORIENT_MIN_EXTENT_A);
         frameExtent = visibleExtent;
 
         // Calculate standard deviation for selected positions
@@ -1178,7 +1559,10 @@ function applyBestViewRotation(animate = true) {
     // Get canvas dimensions for zoom calculation (already retrieved above, but keep for clarity)
     // canvasWidth and canvasHeight are already available from above
 
-    if (visibleCenter && visibleExtent && coordsForBestView.length > 0) {
+    // `visibleExtent > 0`, not a truthiness test: a zero extent is a real
+    // answer (one position), not a missing one, and treating it as missing is
+    // what broke orienting on a single residue.
+    if (visibleCenter && visibleExtent > 0 && coordsForBestView.length > 0) {
         // Center is the same regardless of rotation (it's a 3D point)
         // Use center and extent calculated from selected positions
         targetCenter = visibleCenter;
@@ -2221,7 +2605,18 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
             plddts: frameData.plddts ? [...frameData.plddts] : undefined,
             position_names: frameData.position_names ? [...frameData.position_names] : undefined,
             residue_numbers: frameData.residue_numbers ? [...frameData.residue_numbers] : undefined,
-            pae: frameData.pae
+            pae: frameData.pae,
+            // Carried by REFERENCE, not copied. This is a read-only table of
+            // typed arrays, rebuilt from scratch on every parse and never
+            // mutated, so copying it would double the memory to no end. It has
+            // to be listed here at all because this object is assembled field by
+            // field - anything not named is silently dropped, which is how side
+            // chains came to be captured, stored and then lost before the
+            // renderer ever saw them.
+            //
+            // Coefficients are relative to the residue's own backbone frame, so
+            // the re-centring that happens to coords below does not touch them.
+            sidechains: frameData.sidechains
         };
 
         // Only include bond data if it differs from previous frame (optimization)
@@ -5814,6 +6209,14 @@ function saveViewerState() {
                     }
                 }
 
+                // SIDE CHAINS - the WHOLE table, so a reloaded session can turn
+                // one on that was not showing when it was saved. Trimmed rather
+                // than cut down: see trimSidechainTable.
+                if (frame.sidechains && typeof trimSidechainTable === 'function') {
+                    const trimmed = trimSidechainTable(frame.sidechains);
+                    if (trimmed) frameData.sidechains = trimmed;
+                }
+
                 frameDataList.push(frameData);
             }
 
@@ -5881,6 +6284,15 @@ function saveViewerState() {
             const scatterCfg = objectData.scatterConfig;
             if (scatterCfg) {
                 objToSave.scatter_config = scatterCfg;
+            }
+
+            // Which residues show a side chain, and any colour of their own.
+            // A Set does not survive JSON, so it goes as an array.
+            if (objectData.sidechains && objectData.sidechains.size) {
+                objToSave.sidechains = Array.from(objectData.sidechains);
+            }
+            if (objectData.sidechainColor) {
+                objToSave.sidechain_color = objectData.sidechainColor;
             }
 
             // Add color overrides if they exist
@@ -5992,10 +6404,54 @@ function saveViewerState() {
         }
 
         // Create state object
+        // THE CONFIG IS BROUGHT UP TO DATE BEFORE IT IS WRITTEN.
+        //
+        // window.viewerConfig holds the values the viewer STARTED with, and
+        // saving it as-is put a stale copy of every render setting in the file
+        // beside the live one: a session showing a cartoon recorded
+        // `config.rendering.style: "tube"` next to `viewer_state.style:
+        // "cartoon"`, which reads as a bug in the file and is the first thing
+        // anyone opening it notices.
+        //
+        // It cannot simply be dropped: py2Dmol/viewer.py does
+        // `self.config = state_data["config"]` when it loads a state, so a
+        // session opened in Python takes its whole configuration from here.
+        // Made to AGREE instead - one set of values, written twice for two
+        // readers, rather than two sets that disagree.
+        const savedConfig = window.viewerConfig
+            ? JSON.parse(JSON.stringify(window.viewerConfig)) : {};
+        savedConfig.rendering = { ...(savedConfig.rendering || {}),
+            style: viewerState.style,
+            preset: viewerState.preset,
+            thickness: viewerState.thickness,
+            detail: viewerState.detail,
+            smooth: viewerState.smooth,
+            arrows: viewerState.arrows,
+            sheet_flat: viewerState.sheet_flat,
+            pencil: viewerState.pencil,
+            highlight: viewerState.highlight,
+            outline_tint: viewerState.outline_tint,
+            outline: viewerState.outline_mode,
+            width: viewerState.line_width,
+            shade: viewerState.shade,
+            shadow: viewerState.shadow_enabled,
+            ortho: viewerState.ortho_slider_value,
+        };
+        savedConfig.color = { ...(savedConfig.color || {}),
+            mode: viewerState.color_mode,
+            colorblind: viewerState.colorblind_mode,
+        };
+
         const stateData = {
             version: "2.0",  // Version for nested config format
-            config: window.viewerConfig,  // Save nested config
+            config: savedConfig,
             objects: objects,
+            // `current_object` is what py2Dmol/viewer.py reads; the web reads
+            // viewer_state.current_object_name. Both are written so a file
+            // saved here opens in Python on the right object - the two sides
+            // claimed the same version "2.0" while disagreeing about the
+            // envelope, so neither could open the other's files properly.
+            current_object: renderer.currentObjectName || null,
             viewer_state: viewerState,
             selections_by_object: selectionsByObject
         };
@@ -6093,7 +6549,13 @@ async function loadViewerState(stateData) {
                         scatter: frameData.scatter,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
                         residue_numbers: frameData.residue_numbers,  // undefined if missing (will default)
-                        bonds: frameData.bonds || objBonds  // undefined if both missing
+                        bonds: frameData.bonds || objBonds,  // undefined if both missing
+                        // The THIRD field-by-field frame build in this codebase
+                        // (frameObj on load, extractedFrame on copy, this one on
+                        // restore), and side chains have been dropped by two of
+                        // them already. JSON has no typed arrays, so the numeric
+                        // columns come back plain and are put back into shape.
+                        sidechains: reviveSidechainTable(frameData.sidechains),
                     };
 
                     renderer.addFrame(resolvedFrame, objData.name);
@@ -6171,6 +6633,24 @@ async function loadViewerState(stateData) {
                         renderer.objectsData[objData.name] = {};
                     }
                     renderer.objectsData[objData.name].sse = objData.sse;
+                }
+
+                // ... and which residues were showing a side chain. Back to a
+                // Set: everything downstream asks it .has(). Only the residues
+                // whose ATOMS were saved can be shown, and the panel already
+                // reflects that on its own - hasSidechainsFor finds nothing for
+                // the others, so the Side chains row is simply not offered.
+                if (objData.sidechains && objData.sidechains.length) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    renderer.objectsData[objData.name].sidechains = new Set(objData.sidechains);
+                }
+                if (objData.sidechain_color) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    renderer.objectsData[objData.name].sidechainColor = objData.sidechain_color;
                 }
 
                 // Restore per-object viewerState if present
@@ -6461,6 +6941,12 @@ async function loadViewerState(stateData) {
                 }
                 window.viewerConfig.rendering.detect_cyclic = detectCyclicValue;
             }
+            // ...and the toggle that shows it, or the panel claims one thing
+            // while the drawing does another. Set directly rather than by
+            // dispatching 'change': the handler reloads the frame, which the
+            // restore is in the middle of doing anyway.
+            const detectCyclicEl = document.getElementById('detectCyclicCheckbox');
+            if (detectCyclicEl) detectCyclicEl.checked = detectCyclicValue;
             // Invalidate segment cache to trigger rebuild with new setting
             renderer.cachedSegmentIndices = null;
 

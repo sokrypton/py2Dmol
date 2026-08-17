@@ -78,6 +78,30 @@ DEFAULT_CONFIG = {
 }
 
 
+# config["rendering"] key  ->  viewer_state key, the web app's names for the
+# same settings. ONE table, read in both directions: save_state writes
+# viewer_state from it and load_state reads viewer_state back through it, and
+# two copies would eventually disagree about a key and drop a setting in one
+# direction only.
+_RENDER_STATE_KEYS = (
+    ("style", "style"),
+    ("preset", "preset"),
+    ("thickness", "thickness"),
+    ("detail", "detail"),
+    ("smooth", "smooth"),
+    ("arrows", "arrows"),
+    ("sheet_flat", "sheet_flat"),
+    ("pencil", "pencil"),
+    ("highlight", "highlight"),
+    ("outline_tint", "outline_tint"),
+    ("outline", "outline_mode"),
+    ("width", "line_width"),
+    ("shade", "shade"),
+    ("shadow", "shadow_enabled"),
+    ("ortho", "ortho_slider_value"),
+)
+
+
 def _nest_config(**flat):
     """Convert flat kwargs to nested config."""
     config = json.loads(json.dumps(DEFAULT_CONFIG))  # Deep copy
@@ -3015,12 +3039,34 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 obj_to_serialize["scatter_metadata"] = obj["scatter_metadata"]
             objects.append(obj_to_serialize)
         
-        # Create state object with nested config
+        # Create state object with nested config.
+        #
+        # THE ENVELOPE MATCHES THE WEB APP'S. Both sides wrote "version": "2.0"
+        # while disagreeing about what was in it - this side wrote
+        # `current_object`, the web wrote `viewer_state` and
+        # `selections_by_object`, and neither read the other's - so a file saved
+        # in one opened in the other with its settings quietly reset. The keys
+        # are the union now, and each side reads what it understands.
+        #
+        # `viewer_state` is derived from the config rather than held separately:
+        # this side has no camera of its own to record (no rotation or zoom in
+        # DEFAULT_CONFIG), so what it can supply is the render settings, and
+        # that is what stops a Python-saved session opening as a grey tube.
+        rendering = self.config.get("rendering", {})
+        color_cfg = self.config.get("color", {})
+        viewer_state = {
+            "current_object_name": self.objects[-1]["name"] if self.objects else None,
+            "color_mode": color_cfg.get("mode"),
+            "colorblind_mode": color_cfg.get("colorblind"),
+        }
+        for cfg_key, state_key in _RENDER_STATE_KEYS:
+            viewer_state[state_key] = rendering.get(cfg_key)
         state_data = {
             "version": "2.0",  # Version for nested config format
             "config": self.config,  # Save nested config directly
             "objects": objects,
-            "current_object": self.objects[-1]["name"] if self.objects else None
+            "current_object": self.objects[-1]["name"] if self.objects else None,
+            "viewer_state": viewer_state,
         }
         
         # Write to file
@@ -3131,6 +3177,24 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 rend.setdefault("preset", "richardson")
             elif rend.get("style") == "ribbon":
                 rend["style"] = "tube"
+
+        # A file written by the WEB APP carries its live settings in
+        # `viewer_state`. It also syncs them into `config` before saving, so
+        # these normally agree - but a file written by an older build, or by
+        # anything that fills one and not the other, would come back on the
+        # values the session STARTED with rather than the ones it was showing.
+        # viewer_state is the live record, so it wins where it says anything.
+        vs = state_data.get("viewer_state")
+        if isinstance(vs, dict):
+            rend = self.config.setdefault("rendering", {})
+            color_cfg = self.config.setdefault("color", {})
+            for cfg_key, state_key in _RENDER_STATE_KEYS:
+                if vs.get(state_key) is not None:
+                    rend[cfg_key] = vs[state_key]
+            if vs.get("color_mode") is not None:
+                color_cfg["mode"] = vs["color_mode"]
+            if vs.get("colorblind_mode") is not None:
+                color_cfg["colorblind"] = vs["colorblind_mode"]
         
         # State loaded - user must call show() to display
         if not self.objects:
