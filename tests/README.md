@@ -205,3 +205,32 @@ The report splits stem-interior pairs from stem ends, which is where they
 differ: at the end of a helix the fitting window runs off the stem into a loop.
 Current, 98 chains / 4697 pairs: **13.0°** median overall, 11.3° interior,
 15.6° at the ends.
+
+## Nucleic rail frame — `na_frame.js`
+
+    node tests/na_frame.js                                       # source
+    node tests/na_frame.js py2Dmol/resources/viewer-cartoon.min.js
+
+The pair axis above decides where a plate lies; this scores the frame the
+backbone rail itself is swept along, read back from `_naFrame` after a render:
+
+* **aim** — angle between the rail's face axis and the direction to its
+  pairing partner. A paired residue solves its side against that direction, so
+  this is 0 by construction and the row is there to catch it stopping.
+* **twist** — signed rotation of the side about the tangent, step to step,
+  inside a stem. A duplex really turns, so read the **spread** and the
+  reversals: a step that goes backward is the frame jumping, which is what
+  reads as a wavy, bumpy duplex.
+* **partner** — how far apart the two rails' side vectors sit. Expect ~82°.
+  The rails wind at ~59° to the helix axis, so their tangents are nowhere near
+  antiparallel and the two sides cannot coincide; what they share is each
+  aiming at the other.
+
+Current, 153 chains / 16,748 residues: aim **0.0°**, twist stdev **8.7°** with
+**4.1%** reversals, rung turn 46.0° median. Against the frame this replaced:
+aim 17.6° median / 49.5° p90, twist stdev 28.9°, reversals 22.2%.
+
+**Run it against the bundle too.** The packaged Python path loads
+`viewer-cartoon.min.js`, and a bundle committed without being rebuilt scores
+exactly like the code it was meant to replace — which is how a shipped fix
+came to be source-only for a day.

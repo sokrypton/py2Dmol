@@ -4163,7 +4163,18 @@
                     sides.push(sv);
                     prevSide = sv;
                 }
-                // NUCLEIC: PARALLEL-TRANSPORT the frame.
+                // NUCLEIC FRAME. A PAIRED residue takes its frame from its
+                // partner outright (see pairSide below): the face normal is
+                // SOLVED to point at the partner, exactly, with no tracking and
+                // nothing carried in from the previous residue, so it cannot
+                // accumulate or jitter. Measured over 153 chains the face aims
+                // within 0.0 deg where it used to be 17.6 median / 49.5 p90,
+                // and the twist per residue inside a stem drops from stdev 28.9
+                // to 8.6 with frame reversals 22.2% -> 4.1%. That reversal rate
+                // is the visible waviness on a duplex.
+                //
+                // An UNPAIRED residue has no partner to solve against, so it
+                // keeps the older construction: PARALLEL TRANSPORT.
                 // The curvature normal of a helix points at the axis, so any
                 // curvature-derived side spins with the helix - a full 36 deg per
                 // residue for a duplex. That is the frame's true rotation rate,
@@ -4176,6 +4187,10 @@
                     // renderer.cartoonNaTrack: 0 = pure parallel transport (least
                     // twist, face drifts off the partner), 1 = track the partner
                     // exactly (faces always aimed, full 36 deg/residue twist).
+                    // UNPAIRED RESIDUES ONLY. A paired one is solved against its
+                    // partner and neither this nor the twist cap below applies -
+                    // the knob cannot damp a stem any more, which is the point:
+                    // damping was what made the frame lag and then catch up.
                     const ntRaw = Number(renderer.cartoonNaTrack);
                     const naTrack = Number.isFinite(ntRaw)
                         ? Math.min(1, Math.max(0, ntRaw)) : NA_TRACK_DEFAULT;
@@ -4318,10 +4333,23 @@
                             const towardPair = ortho([
                                 bPair.x - aPair.x, bPair.y - aPair.y, bPair.z - aPair.z], tv);
                             if (towardPair) {
-                                // Solve t x side = direction-to-partner.
-                                // On the antiparallel strand both the tangent
-                                // and pair direction reverse, so this produces
-                                // the SAME side axis for the paired rails.
+                                // Solve t x side = direction-to-partner, which
+                                // has the closed form side = direction x t:
+                                // t x (d x t) = d(t.t) - t(t.d) = d, since
+                                // ortho() already took d perpendicular to t.
+                                // So the ribbon face looks straight at the
+                                // partner - not approximately, exactly.
+                                //
+                                // The two rails do NOT come out with a common
+                                // side axis: measured, theirs sit 82 deg apart.
+                                // They cannot - the two C4' traces wind at
+                                // ~59 deg to the helix axis, so the strands'
+                                // tangents are nowhere near antiparallel, and
+                                // a side perpendicular to both its own tangent
+                                // and its own partner direction is necessarily
+                                // a different vector on each rail. What the two
+                                // share is the PROPERTY, each aiming at the
+                                // other, and that is what the plate needs.
                                 pairSide = [
                                     towardPair[1] * tv[2] - towardPair[2] * tv[1],
                                     towardPair[2] * tv[0] - towardPair[0] * tv[2],
@@ -4490,24 +4518,19 @@
                         // The plates are built from THIS frame, so record it.
                         naFrames[lo + k] = { s: [s[0], s[1], s[2]],
                             t: [tv[0], tv[1], tv[2]] };
-                        if (renderer._naDebug) {
-                            (renderer._naFrame || (renderer._naFrame = {}))[lo + k] = {
-                                s: [s[0], s[1], s[2]],
-                                t: [tv[0], tv[1], tv[2]],
-                                p: [rotated[lo + k].x, rotated[lo + k].y, rotated[lo + k].z],
-                                j: pairOf[lo + k],
-                            };
-                        }
                         prevT = tv;
                     }
                 }
-                // FINAL NUCLEIC FRAME SIGN PASS. The tracking and twist-cap
-                // stages above can change a side after the initial continuity
-                // pass. Reconcile the final frame here, before the slab and
-                // base-plate geometry consume it. Otherwise one interval can
-                // negate its second side locally while the next interval still
-                // starts from the old sign, exchanging the four box corners at
-                // the residue boundary.
+                // FINAL NUCLEIC FRAME SIGN PASS. Solving each side against its
+                // own partner fixes its DIRECTION but says nothing about its
+                // sign relative to the neighbour, and the interpolator between
+                // two residues slerps from one side to the next: given a pair
+                // that reads as opposed it takes the long way round and wrings
+                // the rail through most of a half turn inside one residue.
+                // Make the whole run agree instead. Only the relative sign
+                // matters - the slab is symmetric under s -> -s, and the plate
+                // picks its own face geometrically (see faceSign in mk) - so
+                // negating the tail of a run costs nothing.
                 if (!isProt) {
                     let finalSide = null;
                     for (let k = 0; k < sides.length; k++) {
@@ -4521,6 +4544,19 @@
                         finalSide = sv;
                         const f = naFrames[lo + k];
                         if (f) f.s = [sv[0], sv[1], sv[2]];
+                        // AFTER the sign pass, so _naDebug reports the frame
+                        // the geometry is actually built from. Recording it
+                        // where the side is first computed made the debug
+                        // output disagree with the drawing for ~45% of
+                        // residues, which is exactly the case you reach for it.
+                        if (renderer._naDebug && f) {
+                            (renderer._naFrame || (renderer._naFrame = {}))[lo + k] = {
+                                s: [sv[0], sv[1], sv[2]],
+                                t: [f.t[0], f.t[1], f.t[2]],
+                                p: [rotated[lo + k].x, rotated[lo + k].y, rotated[lo + k].z],
+                                j: pairOf[lo + k],
+                            };
+                        }
                     }
                 }
                 // STRAND FRAMES FROM THE SHEET, where the carbonyls gave us one.
@@ -7760,8 +7796,10 @@
                 // ribbon's own side vector, so its base edge lies exactly on a
                 // ribbon face - two boxes sharing a face, with no pitch-angle
                 // wedge to bury or taper away. Only valid because the face normal
-                // is now measured to point at the partner in 100% of pairs; aimed
-                // the old way it would have sent rungs out sideways.
+                // is solved to point at the partner; aimed the old way it would
+                // have sent rungs out sideways. Which of the slab's two faces
+                // that is depends on the sign the run settled on, so mk picks it
+                // geometrically rather than assuming t x s - see faceSign.
                 // ---- one half-rung, ONE primitive -------------------------
                 // Rewritten. Every artifact this went through - dashed edges,
                 // outlines going missing, ink drawn over the backbone - traced
@@ -7882,26 +7920,24 @@
                         // the two halves meet.
                         //
                         // What is free is the RATE. The two strands' side
-                        // vectors sit ~78 deg apart even after the best 180 deg
-                        // flip - the frames genuinely differ - so a rung
-                        // blending linearly is still turning through most of
-                        // that halfway along, and the two halves of a pair meet
-                        // the eye visibly rotated against each other: measured
-                        // 51.5 deg between their face normals over the OUTER
-                        // half of the rung, which is the part that reads as the
-                        // base. Easing the blend puts the turn where the rung is
-                        // buried against the backbone and leaves the visible
-                        // plate flat: 51.5 -> 11.7 deg, with u = 0 and u = 1
-                        // both untouched, so the joint is bit-identical.
-                        // The rung is one shared base-pair plane.  Use the
-                        // same pair-plane width axis at every station and on
-                        // both halves; blending each rail's frame toward it
-                        // made the two halves twist before meeting.
-                        // Preserve the exact rail frame at u=0, but make both
-                        // halves arrive on the SAME pair-plane axis at u=1.
-                        // The paired rail frames are synchronized above, so
-                        // these two rotations now follow matching paths rather
-                        // than twisting independently as the old code did.
+                        // vectors genuinely differ - the rails wind at ~59 deg
+                        // to the helix axis, so neither their tangents nor
+                        // their sides are antiparallel - and the turn each half
+                        // makes on its way in is 46 deg at the median. Blending
+                        // linearly is still most of the way through that
+                        // halfway along, so the two halves of a pair meet the
+                        // eye visibly rotated against each other. Easing puts
+                        // the turn where the rung is buried against the
+                        // backbone and leaves the visible plate flat, with
+                        // u = 0 and u = 1 both untouched.
+                        //
+                        // SLERP, not lerp: a straight blend of two unit vectors
+                        // is not a rotation, it slows in the middle and dips
+                        // toward the origin, which the renormalise then turns
+                        // into an uneven turn rate along the rung. ux is
+                        // sign-matched to vx2 just above, so the arc is always
+                        // the short one and never approaches the 180 deg
+                        // degenerate case.
                         const fB = 1 - (1 - u) * (1 - u) * (1 - u);
                         let cd = Math.max(-1, Math.min(1,
                             ux * vx2 + uy * vy2 + uz * vz2));

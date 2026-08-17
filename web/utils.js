@@ -875,7 +875,11 @@ function parseCIF(text) {
     const idxModelID = modelIDKey ? headerMap[modelIDKey] : -1;
 
     // Parse data - optimized for performance
-    const headerLen = headers.length;
+    // A row only has to reach the columns we actually read. Requiring the full
+    // declared header width dropped every short row, and integrative-model
+    // files write ragged ones: 9a9o omits pdbx_PDB_model_num and ihm_model_id
+    // on ~2000 of its 16740 atoms, all of them past the last column we need.
+    const minReqLen = Math.max(idxX, idxY, idxZ, idxChain, idxResSeq, idxResName, idxAtomName) + 1;
     let currentModelArray = null;
 
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
@@ -899,8 +903,6 @@ function parseCIF(text) {
         // Skip semicolon lines
         if (lineLen > 0 && line[0] === ';') continue;
 
-        // Minimum required tokens length is based on essential atom properties (coordinates, chain, resSeq, names)
-        const minReqLen = Math.max(idxX, idxY, idxZ, idxChain, idxResSeq, idxResName, idxAtomName) + 1;
         const values = tokenizeCIFLine_light(line);
         if (!values || values.length < minReqLen) continue;
 
@@ -1152,6 +1154,77 @@ function isRealAminoAcid(residue, modresMap = null, chemCompMap = null, allResid
     return false;
 }
 
+// The 2' position, which is the only thing that tells DNA from RNA. Ribose
+// carries a hydroxyl there (O2', plus its proton HO2'); deoxyribose carries a
+// second hydrogen instead (H2''). Old files spell the prime as * and put the
+// count first, so both conventions are listed.
+const RIBOSE_2OH_ATOMS = new Set(["O2'", 'O2*', "HO2'", 'HO2*', "2HO'", '2HO*']);
+const DEOXY_2H_ATOMS = new Set(["H2''", "H2'*", 'H2**', "2H2'", '2H2*']);
+
+/**
+ * DNA or RNA for one STANDARD nucleotide, or null when the file does not say.
+ *
+ * The base name alone cannot answer this. "A", "C", "G" and "I" are used for
+ * both sugars - fibre models and older files write a whole B-DNA duplex as
+ * "A C G T" - and taking the name at face value split one duplex into RNA
+ * (A/C/G) plus DNA (T), so the renderer fed the A-form prediction to three
+ * quarters of a B-form helix and the B-form one to its thymines.
+ *
+ * Only POSITIVE evidence counts. Concluding deoxy from a missing O2' looks
+ * equivalent and is not: 1P79 models the 2'-hydroxyl's proton but omits the
+ * oxygen itself, and that one absence turned a G in the middle of an RNA
+ * chain into DNA. An unmodelled atom means the file is quiet, not that the
+ * atom is absent - hence null, which the caller resolves per chain.
+ *
+ * T and U are decided by the base: thymine is DNA and uracil is RNA whatever
+ * the sugar looks like, and a D or R prefix is the author saying so outright.
+ */
+function nucleicSugarVote(resName, residue) {
+    if (resName === 'T' || resName === 'DI' || resName.startsWith('D')) return 'D';
+    if (resName === 'U' || resName.startsWith('R')) return 'R';
+    // bare A, C, G, I - ask the sugar
+    const atoms = residue && residue.atoms;
+    if (!atoms) return null;
+    for (const a of atoms) {
+        if (RIBOSE_2OH_ATOMS.has(a.atomName)) return 'R';
+        if (DEOXY_2H_ATOMS.has(a.atomName)) return 'D';
+    }
+    return null;
+}
+
+/**
+ * Same, but always answering. Used where there is no chain to consult; the
+ * fallback is the historical one, so a bare name with no sugar reads as RNA.
+ */
+function standardNucleicType(resName, residue) {
+    return nucleicSugarVote(resName, residue) || 'R';
+}
+
+/**
+ * ONE SUGAR PER CHAIN. A duplex is one molecule and must get one answer: the
+ * renderer picks its base-direction prediction and its helix geometry from
+ * this letter, so a chain split between D and R is drawn as two different
+ * kinds of helix interleaved. Residues that voted decide it for the residues
+ * that could not.
+ *
+ * @param {Array<object>} allResidues - residues, each with .chain and .atoms
+ * @returns {Map<string,string>} chain -> 'D' | 'R', only for chains that voted
+ */
+function resolveChainNucleicTypes(allResidues) {
+    const tally = new Map();
+    for (const residue of allResidues) {
+        if (!STANDARD_NUCLEIC_ACIDS.has(residue.resName)) continue;
+        const vote = nucleicSugarVote(residue.resName, residue);
+        if (!vote) continue;
+        let t = tally.get(residue.chain);
+        if (!t) { t = { D: 0, R: 0 }; tally.set(residue.chain, t); }
+        t[vote]++;
+    }
+    const out = new Map();
+    for (const [chain, t] of tally) out.set(chain, t.D > t.R ? 'D' : 'R');
+    return out;
+}
+
 /**
  * Check if a residue is a real nucleic acid (standard or modified)
  * Simplified: only canonical DNA/RNA + common modifications + MODRES/CIF-defined if connected
@@ -1166,14 +1239,7 @@ function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allRes
 
     // 1. Check if it's a standard nucleic acid (always allowed, no connectivity check needed)
     if (STANDARD_NUCLEIC_ACIDS.has(resName)) {
-        // Determine DNA vs RNA
-        // DNA-specific codes: T (thymine), DA, DC, DG, DT, DI (deoxyinosine)
-        // RNA-specific codes: U (uracil), A, C, G (when not prefixed with D), RA, RC, RG, RU
-        if (resName === 'T' || resName.startsWith('D') || resName === 'DI') {
-            return 'D';
-        }
-        // RNA codes: U, A, C, G (without D prefix), RA, RC, RG, RU, I (inosine, more common in RNA)
-        return 'R';
+        return standardNucleicType(resName, residue);
     }
 
     // 2. Check common modifications dictionary - requires connectivity
@@ -1194,13 +1260,8 @@ function isRealNucleicAcid(residue, modresMap = null, chemCompMap = null, allRes
     if (modresMap && modresMap.has(resName)) {
         const stdResName = modresMap.get(resName);
         if (STANDARD_NUCLEIC_ACIDS.has(stdResName)) {
-            // Determine DNA vs RNA
-            let nucleicType;
-            if (stdResName === 'T' || stdResName.startsWith('D') || stdResName === 'DI') {
-                nucleicType = 'D';
-            } else {
-                nucleicType = 'R';
-            }
+            // the modified residue carries its own sugar, so read it there
+            const nucleicType = standardNucleicType(stdResName, residue);
             // MODRES-defined modifications require connectivity check
             if (allResidues) {
                 if (isResidueConnected(residue, allResidues, nucleicType)) {
@@ -1597,6 +1658,9 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
         return a.resSeq - b.resSeq;
     });
 
+    // One DNA/RNA answer per chain - see resolveChainNucleicTypes.
+    const chainNucleic = resolveChainNucleicTypes(allResidues);
+
     for (let idx = 0; idx < allResidues.length; idx++) {
         const residue = allResidues[idx];
 
@@ -1612,6 +1676,14 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
             // Normal mode: use connectivity checks
             is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, idx);
             nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, idx);
+        }
+        // Whether it IS a nucleotide is per residue; which KIND it is falls
+        // back to the chain when the residue itself gave no evidence. A
+        // residue that did keep its own answer, so a genuine chimera - the
+        // deoxyadenosine in 1VQ8's CCdA-p-Puro inhibitor - survives intact.
+        if (nucleicType && !nucleicSugarVote(residue.resName, residue)
+            && chainNucleic.has(residue.chain)) {
+            nucleicType = chainNucleic.get(residue.chain);
         }
 
         if (is_protein) {
