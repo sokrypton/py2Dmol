@@ -2173,4 +2173,121 @@ test('a contact runs CA to CA and the ribbon crops it', () => {
     }
 });
 
+
+// A BOND BETWEEN TWO ELEMENTS IS CUT AT ITS MIDPOINT, each half its own atom's
+// colour - PyMOL's colour-by-element.
+//
+// IT REUSES THE CUT THAT WAS ALREADY THERE. A stick box is built as K pieces
+// that SHARE their sections - that is how twist along a bond is handled - so
+// colouring the pieces either side of the middle cuts the bond in two without
+// cutting the solid: one box, no second record, no abutting caps, no seam to
+// ink, and nothing added to any graph. K is forced even so a boundary lands
+// exactly at the middle.
+//
+// Three earlier shapes are pinned here by what they broke:
+//   * two bond records naming the SAME pair of atoms lied to the incidence map,
+//     and bonds went missing;
+//   * a real midpoint POSITION drew correctly but put a drawing artefact into
+//     the data, where the distance-bonding rule webbed the midpoints together;
+//   * a synthetic midpoint NODE worked, but carried its own junction, cap and
+//     seam bookkeeping for something the box already knew how to do.
+test('a two-element bond is cut into two coloured halves', () => {
+    const GOLD = { r: 229, g: 198, b: 64 };
+    const GREY = { r: 120, g: 140, b: 175 };
+    const coords = [{ x: 0, y: 0, z: 0 }, { x: 1.8, y: 0, z: 0 }];
+    const segs = [{ type: 'L', idx1: 0, idx2: 1, origIndex: 0 }];
+    const run = (halves) => {
+        const r = mkRenderer(coords, segs, {
+            overlayState: { enabled: false }, positionTypes: ['L', 'L'],
+            viewerState: { extent: 5, zoom: 1, ortho: 1, focalLength: 100 },
+            objectsData: { obj: { maxExtent: 5 } },
+            cartoonThickness: 0.5, _thicknessUserSet: true,
+            _primProbe: null, _stickProbe: [],
+        });
+        const { ctx, bad } = mkCtx();
+        // the half-colours ride ON the colour array, so they cannot be served
+        // beside a stale segment list
+        const cols = [GREY]; cols.halves = halves;
+        cartoon.render(r, ctx, 600, 500, cols);
+        if (bad.length) throw new Error('bad styles: ' + bad[0]);
+        return {
+            faces: (r._primProbe || []).filter((p) => p.kind === 'stickFace'),
+            boxes: (r._stickProbe || []).length,
+            inked: (r._stickProbe || []).reduce((n, b) => n + ((b.edges || []).length), 0),
+        };
+    };
+    const plain = run([null]);
+    const split = run([{ a: GREY, b: GOLD }]);
+
+    if (plain.boxes !== 1) throw new Error('the control bond is not one piece');
+    if (split.boxes !== 2) {
+        throw new Error('a two-element bond made ' + split.boxes + ' pieces, not'
+            + ' two - K must be even so a boundary lands at the middle');
+    }
+    const cols = new Set(split.faces.map((f) => f.c.r + ',' + f.c.g + ',' + f.c.b));
+    if (cols.size !== 2) throw new Error('the halves share one colour');
+
+    // each half covers HALF the bond, or one is drawn over the other
+    const span = (red) => {
+        const xs = split.faces.filter((f) => f.c.r === red).flatMap((f) => f.q.map((p) => p[0]));
+        return [Math.min(...xs), Math.max(...xs)];
+    };
+    const g = span(GOLD.r); const y = span(GREY.r);
+    const whole = g[1] - y[0];
+    if (!(g[1] - g[0] < whole * 0.65) || !(y[1] - y[0] < whole * 0.65)) {
+        throw new Error('a half spans ' + (g[1] - g[0]).toFixed(0) + '/'
+            + (y[1] - y[0]).toFixed(0) + ' px of a ' + whole.toFixed(0) + ' px bond');
+    }
+    if (Math.abs(g[0] - y[1]) > 2) {
+        throw new Error('the halves do not meet: grey ends at ' + y[1].toFixed(0)
+            + ', gold starts at ' + g[0].toFixed(0));
+    }
+    // ...AND BOTH HALVES KEEP THE SAME SECTION. The square section's roll is
+    // seeded in MODEL space off the bond's own direction, and a half-bond's
+    // graph endpoint is a midpoint with NO coordinate - so the seed is taken
+    // from `seedA`/`seedB`, the real atoms, or the halves roll independently and
+    // their corners do not line up at the seam.
+    //
+    // WHAT THIS DOES NOT COVER, honestly: deleting seedA/seedB does not fail
+    // here. Both endpoints of a half are partly synthetic, so without the seed
+    // both halves fall back TOGETHER - they stay aligned with each other while
+    // drifting away from what the same bond drawn whole would do. Catching that
+    // needs a measure of the section's ORIENTATION; y-extent is not one, since
+    // for any bond not along x it is dominated by the bond's own travel. That
+    // mistake passed here for a while precisely because this fixture's bond
+    // runs along x.
+    {
+        const rot = [[0.8, -0.6, 0], [0.6, 0.8, 0], [0, 0, 1]];
+        const r2 = mkRenderer(coords, segs, {
+            overlayState: { enabled: false }, positionTypes: ['L', 'L'],
+            viewerState: { extent: 5, zoom: 1, ortho: 1, focalLength: 100, rotation: rot },
+            objectsData: { obj: { maxExtent: 5 } },
+            cartoonThickness: 0.5, _thicknessUserSet: true,
+            _primProbe: null,
+        });
+        const c2 = [GREY]; c2.halves = [{ a: GREY, b: GOLD }];
+        cartoon.render(r2, mkCtx().ctx, 600, 500, c2);
+        const fs2 = (r2._primProbe || []).filter((p) => p.kind === 'stickFace');
+        const spread = (red) => {
+            const ys = fs2.filter((f) => f.c.r === red).flatMap((f) => f.q.map((p) => p[1]));
+            return Math.max(...ys) - Math.min(...ys);
+        };
+        const a2 = spread(GOLD.r); const b2 = spread(GREY.r);
+        if (!(a2 > 0) || !(b2 > 0) || Math.abs(a2 - b2) > 0.75) {
+            throw new Error('the halves have sections ' + a2.toFixed(2) + ' and '
+                + b2.toFixed(2) + ' px across - they were rolled independently,'
+                + ' so their corners do not meet at the seam');
+        }
+    }
+
+    // THE SEAM IS NOT A FREE END. A midpoint has two legs, so the junction rules
+    // treat it as a straight joint - no cap, and no outline ruled across the
+    // middle of the stick. Two halves ink one outer end each.
+    if (split.inked !== plain.inked + 2) {
+        throw new Error('the cut bond inks ' + split.inked + ' edges against '
+            + plain.inked + ' whole; the extra two are the second box\'s long'
+            + ' sides, and anything more is a seam drawn across it');
+    }
+});
+
 process.exit(failures ? 1 : 0);

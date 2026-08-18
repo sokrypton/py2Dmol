@@ -48,14 +48,11 @@ input[type="range"] { border: none !important; outline: none !important; box-sha
 }
 .btn-toggle { padding: 0; border: none; background: transparent; }
 .btn-toggle:hover { border: none; background: transparent; }
-#recordButton, #overlayButton, #playButton { min-width: 28px; padding: 0 5px; }
+#overlayButton, #playButton { min-width: 28px; padding: 0 5px; }
 #overlayButton { font-size: 14px; line-height: 1; }
 .btn { border: 1px solid transparent; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
 .btn-secondary { background: transparent; color: inherit; border-color: transparent; }
 .btn-secondary:hover:not(:disabled) { background: #f3f4f6; }
-#recordButton { color: #ef4444; font-size: 14px; line-height: 1; }
-#recordButton:hover:not(:disabled) { color: #dc2626; background: #fef2f2; }
-#recordButton:active:not(:disabled) { color: #b91c1c; background: #fee2e2; }
 .btn-toggle { overflow: hidden; padding: 0; display: block; width: 100%; }
 .btn-toggle input[type="checkbox"] { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
 /* The toggle face is the span AFTER the checkbox. Matched by position, not by
@@ -200,7 +197,6 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
         </div>
         <div id="controlsContainer">
             <button id="playButton" class="controlButton">▶</button>
-            <button id="recordButton" class="controlButton" title="Record animation to video file">●</button>
             <input type="range" id="frameSlider" min="0" max="0" value="0">
             <span id="frameCounter">0 / 0</span>
             <button id="speedButton" class="controlButton" title="Cycle playback speed">1x</button>
@@ -219,7 +215,7 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
             <div class="btn-row auto">
                 <button id="styleToggle" class="controlButton" aria-expanded="false" aria-controls="stylePanel"
                     title="Render style and its settings">Style</button>
-                <button id="saveImageButton" class="controlButton" title="Save image (SVG or PNG)">Save Image</button>
+                <button id="saveImageButton" class="controlButton" title="Save an image or a video">Save</button>
             </div>
             <!-- MIRRORS index.html's #stylePanel row for row: same rows, same
                  pairing, same ids and data-style / data-needs-* attributes, so

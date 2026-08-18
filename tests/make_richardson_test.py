@@ -31,15 +31,15 @@ CASES = [
 parts = []
 first = True
 for pdb, label in CASES:
-    for style in ("richardson", "cartoon"):
-        v = py2Dmol.view(size=(520, 520), style=style,
-                         color="ss" if style == "richardson" else "auto")
+    for preset in ("richardson", "ribbon"):
+        v = py2Dmol.view(size=(520, 520), preset=preset,
+                         color="ss" if preset == "richardson" else "auto")
         try:
-            v.from_pdb(pdb, show=False, name=f"{pdb}-{style}")
+            v.from_pdb(pdb, show=False, name=f"{pdb}-{preset}")
         except Exception as exc:            # network or parse failure
-            print(f"  skip {pdb} ({style}): {exc}")
+            print(f"  skip {pdb} ({preset}): {exc}")
             continue
-        parts.append((f"{label} - {style}",
+        parts.append((f"{label} - {preset}",
                       v._display_viewer(static_data=v.objects, include_libs=first)))
         first = False
 

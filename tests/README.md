@@ -25,6 +25,7 @@ by the packaged Python path.
 | `box_test.html` | Slab ladder: one box (2 res), a straight beam (4 res, tests joints without curvature), a minimal 3-residue curve, and a 6-residue helix piece. Forces secondary structure via `renderer._forceSec`, so it exercises slab geometry with nothing else in the scene. |
 | `helix_big.html` | Ideal 12-residue alpha helix. Smallest case that shows a full winding. |
 | `helix_test.html` | Ideal 30-residue alpha helix on a 900px canvas. The main case for thickness-band paint order — the ribbon twists ~100°/residue, so every winding sweeps the width normal through the viewer. |
+| `paint_order_lab.html` | Standalone, dependency-free ribbon/side-chain sorting lab. Compares the shipped body-centroid order, global per-surface order, one depth-sorted shared seam rail, adaptive ribbon and stick tiling, triangle primitives, and a triangle z-buffer reference. Includes two stress presets, independent tile sweeps, and a ribbon×stick error grid. Open this source file directly; `build.py` does not generate it. |
 | `cartoon_test.html` | Real structures (1YNE, 1UBQ, 1BJP) with ribbon and cartoon side by side. Fetches from RCSB on first run. |
 | `na_test.html` | Nucleic acids: B-DNA duplex, tRNA, nucleosome, poly(A)·poly(U), a modified-base complex. Base-pair plates and backbone frames. |
 | `ligand_test.html` | Ligand occlusion (4HHB, 3PTB, 1HVR). Generic segments are painted as opaque strokes but are easy to leave out of the ink pass's occluder set, which shows as the backbone outline drawing straight through a ligand. |
@@ -55,6 +56,53 @@ one residue silently did nothing. The extent is floored at 8 Å — a residue's 
 reach, an arginine's tip sitting ~7 Å from its CA — so one residue frames itself
 and its side chain rather than asking for a magnification nothing is legible at.
 Anything bigger clears the floor on its own and is untouched.
+
+## Paint order — `paint_order_audit.js`
+
+    CARTOON=py2Dmol/resources/viewer-cartoon.js node tests/paint_order_audit.js
+    CARTOON=... SC_ALL=1 node tests/paint_order_audit.js     # a side chain per residue
+
+**Nothing else in this repo measures paint order**, which is why every failure
+in it has been found by eye. This rasterises every face the painter emits and,
+at each covered pixel, compares the face that ENDS UP on top with the face that
+actually IS on top, over 200 view directions. Errors are bucketed: side chain
+over ribbon, ribbon over side chain, ribbon over ribbon.
+
+Baselines it must reproduce, or it is broken: **94047** wrong pixels for the
+shipped renderer with `SC_ALL=1`, **16085** with one side chain.
+
+Three things it gets right that earlier versions of it did not, all of which
+produced confidently wrong answers first:
+
+- the painter's order INSIDE a rib prim — surfaces by facing, then stations in
+  chain order. Giving them one order measures the harness's tie-break instead,
+  and reported 100% of errors in the wrong category.
+- **a single side chain cannot show ribbon-over-side-chain at all** — there is
+  nothing for the ribbon to wrongly hide. Use `SC_ALL=1` before believing that
+  category.
+- clipped geometry still counts toward the truth while being excluded from what
+  was painted, so erasing something that should have been visible scores as the
+  error it is rather than as a perfect frame.
+
+`paint_order_bench.js` and `paint_order_lab.html` sit alongside it and explore
+approaches the audit does not: width tiling, a shared seam rail, triangle
+primitives and a triangle z-buffer reference. Both are **standalone models** —
+they reimplement the geometry rather than driving the renderer — so their
+numbers are internally comparable and not comparable with the audit's. Width
+tiling is the only approach measured anywhere that improves both side-chain
+error categories at once.
+
+The full history — six approaches, what each measured, and why each failed — is
+in `PAINT_ORDER.md` at the repo root. The work itself is on the `paint-order/*` branches.
+
+## Side-chain clearance — `bleed.py`
+
+Analytic, no renderer and no pixels: does a side chain's solid actually
+intersect the ribbon slab? Rotation-invariant, so it is asked once per
+thickness. Yields the closed form for when the bond clears the ribbon,
+`1.53·μ − halfT ≥ 0.25·√(1−μ²)`, whose predicted onsets match measurement to
+about 0.15 of thickness. Distinct from paint order: where the solids genuinely
+overlap, no paint order is correct.
 
 ## Side chains — `sidechain_chain.js`
 

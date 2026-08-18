@@ -2140,14 +2140,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 });
             }
 
+            // A page may still supply a record button; recording now lives in
+            // the Save panel, so its absence is the normal case and not a
+            // warning. toggleRecording() stays public either way.
             if (this.recordButton) {
                 this.recordButton.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     this.toggleRecording();
                 });
-            } else {
-                console.warn("Record button not found - recording will not be available");
             }
 
             if (this.saveImageButton) {
@@ -4998,8 +4999,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // leave indices in them that now point past the end of the
             // coordinate array - and those get saved into the object's
             // visibilityState and carried forward.
+            //
+            // THE SELECTION IS ONE OF THOSE SETS. A click in the 3D view can
+            // land on a side-chain atom, which selects an APPENDED index; hide
+            // the side chains and that index points past the end. Everything
+            // that reads the selection then asks about a position that no
+            // longer exists - the panel's toggles tally it as not-visible and
+            // the main chain read as half hidden the moment side chains went.
             const nBase = data.coords.length;
-            for (const set of [this.visiblePositions,
+            for (const set of [this.visiblePositions, this.residueSelection,
                 this.visibilityModel && this.visibilityModel.positions]) {
                 if (!set) continue;
                 for (const i of set) if (i >= nBase) set.delete(i);
@@ -5079,7 +5087,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // carries the residue's own value - which also keeps a side
                 // chain the same colour as the backbone it grows out of.
                 if (plddts) plddts.push(plddts[owner] !== undefined ? plddts[owner] : 50);
-                map.set(idx, { anchor, cx, cy, cz, owner });
+                // el: the atom's ELEMENT, carried so a bond can be coloured by
+                // what it joins. Nothing else knows it - the side-chain table
+                // has it, but by the time a segment is coloured the table row
+                // is long gone and only the position index remains.
+                map.set(idx, { anchor, cx, cy, cz, owner,
+                    el: (sc.elements && sc.elements[k]) || '' });
                 idxOf.set(k, idx);
             }
             if (!idxOf.size) return data;
@@ -5097,8 +5110,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (set.has(e.owner)) set.add(idx);
                 }
             };
-            follow(this.visiblePositions);
-            follow(this.visibilityModel && this.visibilityModel.positions);
+            // EXPLICIT bonds, so the distance guess never runs on them: a side
+            // chain's connectivity is known, and letting a 2.0 A cutoff re-derive
+            // it would bond atoms across a fold that merely sit close.
             // EXPLICIT bonds, so the distance guess never runs on them: a side
             // chain's connectivity is known, and letting a 2.0 A cutoff re-derive
             // it would bond atoms across a fold that merely sit close.
@@ -5117,6 +5131,77 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const owner = sc.pos[row];
                 if (owner >= 0 && owner < nBase) bondsOut.push([owner, a]);
             }
+            // DISULFIDES, FOUND IN THE GEOMETRY, between the cysteines whose
+            // side chains are actually drawn.
+            //
+            // The file's own record is no use here. `_struct_conn` is parsed
+            // and its `disulf` rows reach convertParsedToFrameData, but they
+            // name atoms - chain:seq:SG - and a protein's positions are one per
+            // residue, so the lookup finds no SG and the bond is dropped in
+            // silence. Measured on 3PTB: six disulf records in, zero bonds out,
+            // every bond that reached the renderer belonging to the ligand.
+            // Detecting them here instead also covers PDB files with no SSBOND
+            // records and CIFs with no struct_conn at all.
+            //
+            // 2.5 A, and the number is not a guess. Over every SG-SG pair in
+            // the corpus the bonded ones run 1.79-2.09 A and the next pair is
+            // at 3.36 - a 1.3 A gap, so anything from 2.1 to 3.3 finds exactly
+            // the same 16 disulfides. 2.5 sits in the middle of it.
+            //
+            // ONLY BETWEEN MATERIALISED ATOMS, which is what makes "if both are
+            // enabled" fall out for free: an SG exists as a position only while
+            // its cysteine's side chain is shown, so a bond to a hidden partner
+            // has nothing to attach to and is simply not found. It is also why
+            // this is redone on every materialisation rather than stored -
+            // indices are reissued whenever the set changes, and a remembered
+            // pair would point at the wrong atoms.
+            const SS_MAX = 2.5;
+            // idxOf is table row -> position index, which is the way round
+            // needed to ask an atom its NAME: sidechainMap carries the frame
+            // it was rebuilt in, not its row.
+            const sgIdx = [];
+            for (const [row, idx] of idxOf) {
+                if (sc.names[row] === 'SG') sgIdx.push(idx);
+            }
+            // Recorded as well as bonded, because nothing downstream can tell a
+            // disulfide from the CB-SG bond beside it - both join two appended
+            // atoms and both are about 2 A long - so without this the feature
+            // cannot be tested or inspected at all.
+            const ssFound = [];
+            for (let a = 0; a < sgIdx.length; a++) {
+                for (let b = a + 1; b < sgIdx.length; b++) {
+                    // [x, y, z] ARRAYS, which is what this function appends -
+                    // not the Vector3 objects the base coords are. Reading .x
+                    // off one gives undefined, every comparison is NaN, and the
+                    // detector silently finds nothing: measured, 0 of 3PTB's 6.
+                    const p1 = coords[sgIdx[a]]; const p2 = coords[sgIdx[b]];
+                    if (!p1 || !p2) continue;
+                    // NEVER A RESIDUE TO ITSELF. Alt-loc conformers of one
+                    // cysteine sit ~1.8 A apart - measured on 2R8S, whose CYS
+                    // L194 and H148 are each modelled twice - which is well
+                    // inside the cutoff and would draw a bond from a residue to
+                    // itself. Capture already keeps only the first conformer,
+                    // so this cannot fire today; it costs a comparison and
+                    // stops the day that changes from being a mystery.
+                    const o1 = map.get(sgIdx[a]); const o2 = map.get(sgIdx[b]);
+                    if (o1 && o2 && o1.owner === o2.owner) continue;
+                    const dx = p1[0] - p2[0];
+                    const dy = p1[1] - p2[1];
+                    const dz = p1[2] - p2[2];
+                    if (dx * dx + dy * dy + dz * dz <= SS_MAX * SS_MAX) {
+                        bondsOut.push([sgIdx[a], sgIdx[b]]);
+                        ssFound.push([sgIdx[a], sgIdx[b]]);
+                    }
+                }
+            }
+            this.disulfides = ssFound;
+            // VISIBILITY LAST, once every appended position exists. It walks the
+            // side-chain map and gives each atom its owner's visibility, and the
+            // midpoints created by bond splitting are appended AFTER the atoms -
+            // so running it earlier left them out of the visible set and they
+            // vanished from the drawing.
+            follow(this.visiblePositions);
+            follow(this.visibilityModel && this.visibilityModel.positions);
             this.sidechainMap = map;
             // The coordinate array just changed length, so segments built for
             // the old one are wrong. The cache keys on frame and object name,
@@ -5980,6 +6065,130 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return e ? e.owner : atomIndex;
         }
 
+        /**
+         * PyMOL's element colours, for the atoms a side chain can contain.
+         *
+         * Sulfur is the gold this exists for: a disulfide drawn in the residue's
+         * own colour is indistinguishable from the carbon skeleton either side
+         * of it, and the whole point of drawing one is that it reads as a
+         * cross-link. The rest are here because a table with one entry invites
+         * the next one to be added somewhere else.
+         *
+         * SELENIUM for selenomethionine - the connectivity table already knows
+         * MSE, and a structure phased that way has Se where a methionine's S
+         * would be. No MSE in this repo's corpus, so it is untested on real
+         * data and is deliberately the same family of colour as sulfur.
+         *
+         * CARBON IS ABSENT ON PURPOSE. It follows the residue's own colour, the
+         * way PyMOL's colour-by-element leaves the carbon skeleton alone: a
+         * side chain that turned grey when you coloured its residue would lose
+         * the thing the colour was for.
+         */
+        static get ELEMENT_COLORS() {
+            return {
+                N: { r: 51, g: 51, b: 255 },      // blue
+                O: { r: 255, g: 76, b: 76 },      // red
+                S: { r: 229, g: 198, b: 64 },     // gold
+                SE: { r: 240, g: 161, b: 54 },    // a warmer gold
+            };
+        }
+
+        /**
+         * A segment's colour when BOTH its ends are the same non-carbon element.
+         *
+         * Both ends, deliberately. This renderer draws a bond as ONE stick with
+         * one colour, where PyMOL splits it at the midpoint and gives each half
+         * its own atom's colour. Colouring a mixed bond by either end would be
+         * a coin toss - a CB-SG bond is half carbon - so only a bond whose two
+         * ends agree takes an element colour. For the atoms a side chain
+         * actually contains that means exactly one thing: the S-S of a
+         * disulfide.
+         */
+        /**
+         * What each END of a bond should be coloured, by its atom's element.
+         *
+         * PyMOL cuts a bond at its midpoint and gives each half its own atom's
+         * colour. This says what the two halves should be; the renderer does the
+         * cutting, because it is a drawing decision and nothing outside the
+         * drawing should have to know about it. An earlier attempt put a real
+         * midpoint POSITION in the coordinate array instead, and then every
+         * data-level pass - distance bonding, picking, visibility, saving - had
+         * to be taught to ignore it. A midpoint is not an atom.
+         *
+         * NULL FOR CARBON, so it follows the residue's own colour: a side chain
+         * that was coloured stays coloured, with only its heteroatoms standing
+         * out. That is PyMOL's colour-by-element too.
+         */
+        _segmentElementHalves(segInfo) {
+            const map = this.sidechainMap;
+            if (!map) return null;
+            const a = map.get(segInfo.idx1);
+            const b = map.get(segInfo.idx2);
+            if (!a || !b) return null;
+            // ...unless this residue's elements were switched off. Absent means
+            // ON for everything, so a structure nobody has touched keeps them.
+            const obj = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const only = obj && obj.elements instanceof Set ? obj.elements : null;
+            if (only && !only.has(a.owner)) return null;
+            const T = this.constructor.ELEMENT_COLORS;
+            const ca = T[(a.el || '').toUpperCase()] || null;
+            const cb = T[(b.el || '').toUpperCase()] || null;
+            if (!ca && !cb) return null;
+            return { a: ca, b: cb };
+        }
+
+        /**
+         * A segment's colour when its own atom is a coloured element.
+         *
+         * PyMOL cuts a bond at its midpoint and gives each half its atom's
+         * colour. That is done here by CUTTING THE BOND ITSELF, in
+         * _materialiseSidechains: a bond between two different elements is
+         * emitted as two bonds meeting at a real midpoint position, each
+         * running from ITS atom to the middle. So by the time a segment is
+         * coloured it already has one atom and one meaning, and this is just
+         * "what element is idx1".
+         *
+         * Splitting there rather than in the renderer is the whole trick. A
+         * half-bond that is an ordinary bond between two ordinary positions is
+         * seen consistently by everything downstream - the incidence map, the
+         * run-joining, the degree and mitre logic, the ink pass, picking. An
+         * earlier version instead emitted two BOND RECORDS naming the same pair
+         * of atoms, which lies to all of that, and bonds went missing.
+         *
+         * NULL FOR CARBON and for a midpoint, so those follow the residue's own
+         * colour: a side chain that was coloured stays coloured, with only its
+         * heteroatoms standing out. That is PyMOL's colour-by-element too.
+         */
+        _segmentElementColor(segInfo) {
+            const h = this._segmentElementHalves(segInfo);
+            if (!h || !h.a || !h.b) return null;
+            return (h.a === h.b) ? h.a : null;
+        }
+
+        /**
+         * Which position a SEGMENT resolves its colour from.
+         *
+         * A segment normally takes `origIndex`, which is its first index. That
+         * is wrong for the bond joining a side chain to its backbone: it is
+         * emitted as [owner, CB], so origIndex is the BACKBONE alpha carbon and
+         * the bond kept the main chain's colour while every other bond of the
+         * same side chain took the side chain's. Reported as colouring a side
+         * chain leaving its CA-CB bond behind.
+         *
+         * A bond with one end on a side-chain atom is part of that side chain,
+         * so it resolves through that end. Safe where no side-chain colour is
+         * set: `_colorPositionFor` sends a side-chain atom back to its owner,
+         * which is the position it would have used anyway.
+         */
+        _colorSegmentPosition(segInfo) {
+            if (this.sidechainMap) {
+                if (this.sidechainMap.has(segInfo.idx2)) return segInfo.idx2;
+                if (this.sidechainMap.has(segInfo.idx1)) return segInfo.idx1;
+            }
+            return segInfo.origIndex;
+        }
+
         /** An explicit side-chain colour for this atom, if one was set. */
         _sidechainColorOf(atomIndex) {
             const e = this.sidechainMap && this.sidechainMap.get(atomIndex);
@@ -6019,6 +6228,101 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (!owners) return false;
             for (const i of positions) if (owners.has(i)) return true;
             return false;
+        }
+
+        /**
+         * Is there anything here whose elements could be coloured? Side-chain
+         * atoms are the only things that carry an element, so the row is
+         * offered exactly where the Side chains row is.
+         */
+        hasElementsFor(positions) {
+            return this.hasSidechainsFor(positions);
+        }
+
+        /**
+         * Show or hide element colours for these residues.
+         *
+         * NULL MEANS ALL, the same way `bases` reads it and the opposite of
+         * `sidechains`: element colouring is on by default, so an object nobody
+         * has touched has it everywhere. An EMPTY set means none, which is what
+         * selecting everything and hiding it gives, and has to be
+         * distinguishable from "never asked". Materialising from the full set
+         * of side-chain owners is what makes hiding a few work.
+         *
+         * @returns {boolean} whether anything changed and a redraw is due
+         */
+        setElementsFor(positions, on) {
+            const obj = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            if (!obj) return false;
+            const owners = this.sidechainOwners();
+            if (!owners) return false;
+            let cur;
+            if (obj.elements instanceof Set) cur = new Set(obj.elements);
+            else cur = new Set(owners);
+            let changed = false;
+            for (const i of positions) {
+                if (!owners.has(i)) continue;
+                if (on ? !cur.has(i) : cur.has(i)) changed = true;
+                if (on) cur.add(i); else cur.delete(i);
+            }
+            if (!changed) return false;
+            obj.elements = cur;
+            // colours are cached; this changes them
+            this.colorsNeedUpdate = true;
+            this.plddtColorsNeedUpdate = true;
+            return true;
+        }
+
+        /**
+         * Are any of these positions nucleotides - i.e. is there a base to show
+         * or hide? The Bases row is offered only where the answer is yes, the
+         * same way the Side chains row is hidden for a selection that has none.
+         * Position types 'D' and 'R' are DNA and RNA.
+         */
+        hasBasesFor(positions) {
+            const t = this.positionTypes;
+            if (!t) return false;
+            for (const i of positions) {
+                if (t[i] === 'D' || t[i] === 'R') return true;
+            }
+            return false;
+        }
+
+        /**
+         * Show or hide the base plates of these positions.
+         *
+         * NULL MEANS ALL, unlike `sidechains` where null means none. A duplex
+         * has always been drawn with its rungs, so an object nobody has touched
+         * keeps them; an EMPTY set means none, which is what selecting
+         * everything and hiding it has to give. Materialising the set on first
+         * use from "every nucleotide" is what makes hiding a few work: the set
+         * has to start full, or hiding three bases would hide all but three.
+         *
+         * @returns {boolean} whether anything changed and a redraw is due
+         */
+        setBasesFor(positions, on) {
+            const obj = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            if (!obj) return false;
+            const t = this.positionTypes || [];
+            const isBase = (i) => t[i] === 'D' || t[i] === 'R';
+            let cur;
+            if (obj.bases instanceof Set) {
+                cur = new Set(obj.bases);
+            } else {
+                cur = new Set();
+                for (let i = 0; i < t.length; i++) if (isBase(i)) cur.add(i);
+            }
+            let changed = false;
+            for (const i of positions) {
+                if (!isBase(i)) continue;
+                if (on ? !cur.has(i) : cur.has(i)) changed = true;
+                if (on) cur.add(i); else cur.delete(i);
+            }
+            if (!changed) return false;
+            obj.bases = cur;
+            return true;
         }
 
         /**
@@ -6381,8 +6685,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 effectiveColorMode = this._getEffectiveColorMode();
             }
 
-            // Use getAtomColor() for each segment - ensures consistency and eliminates duplicate logic
-            return this.segmentIndices.map(segInfo => {
+            // ...and, alongside them, what each END should be where the two
+            // differ. The renderer cuts such a bond at its middle and paints the
+            // halves from this.
+            //
+            // CARRIED ON THE COLOUR ARRAY, not in a field of its own. Colour
+            // arrays are CACHED - recomputed only when one is missing, changes
+            // length, or is explicitly invalidated - and there are two of them,
+            // the plain one and the pLDDT one. A separate field is written only
+            // by whichever function last ran, so a cached array would be served
+            // beside halves belonging to a different segment list, or to the
+            // other colour mode, and the half-colours landed on whatever bond
+            // now sat at that index: carbon bonds coming out red. Riding on the
+            // array makes that impossible - they are cached and invalidated as
+            // one thing.
+            const halves = new Array(m).fill(null);
+            const out = this.segmentIndices.map((segInfo, segI) => {
                 // Contacts use custom color if provided, otherwise yellow
                 if (segInfo.type === 'C') {
                     if (segInfo.contactColor) {
@@ -6391,11 +6709,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     return DEFAULT_CONTACT_COLOR; // Default yellow
                 }
 
-                const positionIndex = segInfo.origIndex;
+                const h = this._segmentElementHalves(segInfo);
+                if (h && h.a && h.b && h.a === h.b) return h.a;
+                const positionIndex = this._colorSegmentPosition(segInfo);
                 // In overlay mode with per-frame colors, pass null so getAtomColor resolves per-atom
                 const colorMode = usePerAtomColorMode ? null : effectiveColorMode;
-                return this.getAtomColor(positionIndex, colorMode);
+                const base = this.getAtomColor(positionIndex, colorMode);
+                if (h && h.a !== h.b) halves[segI] = { a: h.a || base, b: h.b || base };
+                return base;
             });
+            out.halves = halves;
+            return out;
         }
 
         // Calculate pLDDT colors
@@ -6404,6 +6728,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (m === 0) return [];
 
             const colors = new Array(m);
+            // see _calculateSegmentColors: the halves ride on the array
+            colors.halves = new Array(m).fill(null);
             const effectiveMode = this._getEffectiveColorMode();
 
             // Select the appropriate plddt color function based on effective color mode
@@ -6419,7 +6745,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     continue;
                 }
 
-                const positionIndex = segInfo.origIndex;
+                const elc = this._segmentElementColor(segInfo);
+                if (elc) { colors[i] = elc; continue; }
+                const hp = this._segmentElementHalves(segInfo);
+                const positionIndex = this._colorSegmentPosition(segInfo);
                 const type = segInfo.type;
                 let color;
 
@@ -6448,6 +6777,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     color = plddtFunc((plddt1 + plddt2) / 2, this.colorblindMode);
                 }
 
+                if (hp && hp.a !== hp.b) {
+                    colors.halves[i] = { a: hp.a || color, b: hp.b || color };
+                }
                 colors[i] = color;
             }
             return colors;
@@ -8665,28 +8997,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _syncSaveButtonMode() {
             const b = this.saveImageButton;
             if (!b) return;
-            // Either running animation turns the button into a recorder. Draw
-            // wins when both are on: a drawing that also turns is still a
-            // drawing, and saveDrawingVideo handles the turn itself.
+            // ONE CONTROL, ONE NAME. It used to relabel itself "Save Video"
+            // whenever Rotate or Draw was on, and swap its icon - so the same
+            // button in the same place meant different things depending on
+            // state, next to a record button that meant a third thing. What is
+            // offered is decided INSIDE the panel, where the options are
+            // visible and can be read; the button is just the way in.
             const video = !!this.autoRotate || !!this.drawMode;
             const span = b.querySelector('span');
             const icon = b.querySelector('i');
             if (icon) {
-                icon.classList.toggle('fa-camera', !video);
-                icon.classList.toggle('fa-video', video);
+                icon.classList.add('fa-camera');
+                icon.classList.remove('fa-video');
             }
             if (span) {
-                const label = video ? 'Save Video' : 'Save Image';
-                // replace only the text node, so the icon element survives
                 let replaced = false;
                 span.childNodes.forEach((n) => {
-                    if (n.nodeType === 3 && n.textContent.trim()) { n.textContent = label; replaced = true; }
+                    if (n.nodeType === 3 && n.textContent.trim()) { n.textContent = 'Save'; replaced = true; }
                 });
-                if (!replaced) span.appendChild(document.createTextNode(label));
+                if (!replaced) span.appendChild(document.createTextNode('Save'));
             }
-            b.title = video
-                ? 'Record it, or grab the frame on screen'
-                : 'Save image, PNG or SVG (shift-click to skip the panel)';
+            b.title = 'Save an image or a video (shift-click saves a PNG straight away)';
             // the open panel belongs to the other mode now
             if (this._savePanel) {
                 this._savePanel.remove();
@@ -8705,12 +9036,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 else this._resumeFromSavePanel();
                 return;
             }
+            // WHAT CAN BE RECORDED FROM HERE. Three different videos, and the
+            // panel offers whichever the viewer can actually make right now:
+            //   * a drawing, if Draw is on   * a turn, if Rotate is on
+            //   * the trajectory, if the object has frames to play
+            // The last one used to belong to a separate record button in the
+            // controls bar. Two entry points for "make a video" - one of which
+            // silently did nothing on a single-frame structure - is what made
+            // this confusing, so there is one now: Save.
+            const obj = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const canTraj = !!(obj && obj.frames && obj.frames.length > 1);
             const video = !!this.autoRotate || !!this.drawMode;
             if (video) this._pauseForSavePanel();
             const prev = this._saveOpts || { format: 'png', dpi: 300 };
             const prevV = this._videoOpts || { seconds: 6, fps: 30 };
-            const SEL = 'flex:1; min-width:0; height:28px; font-size:12px; padding:0 8px;'
-                + ' border:1px solid #d1d5db; border-radius:8px; background:#fff;';
             // WRAPS. The embedded viewer's panel is 180px wide, and a row of
             // two labelled numbers plus a button wants about 210 - so it hung
             // out of the panel there while fitting fine in the standalone
@@ -8748,17 +9088,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // line a fraction of a pixel wide, paint sitting off register and
             // translucent stains.
             const svgOk = !video && !this.drawMode;
-            const NUM = 'width:46px; flex:0 0 auto; min-width:0; height:24px; font-size:12px;'
-                + ' padding:0 4px; border:1px solid #d1d5db; border-radius:6px;'
-                + ' background:#fff;';
-            const CAP = 'font-size:11px; color:#6b7280; flex:0 0 auto;';
+            // ONE SIZE FOR EVERY CONTROL IN THE PANEL, and big enough to read.
+            // The numbers were 46x24 at 12px, which is a cramped target and
+            // genuinely hard to make out - worst when a video row and the still
+            // row are both up, because then the two rows sat at different
+            // weights and the eye had to work out which number belonged to
+            // which output. Same height everywhere, so the rows line up
+            // whatever combination is showing.
+            const H = 28;
+            const NUM = `width:62px; flex:0 0 auto; min-width:0; height:${H}px;`
+                + ' font-size:13px; padding:0 6px; border:1px solid #d1d5db;'
+                + ' border-radius:6px; background:#fff;';
+            const CAP = 'font-size:12px; color:#6b7280; flex:0 0 auto;';
             // Styled inline rather than by copying the toolbar button's class:
             // the two pages skin their buttons differently (and index.html's
             // toggle skin lives on a span that follows a checkbox, which these
             // do not have), so borrowing it renders one of them invisible.
-            const BTN = 'flex:0 0 auto; width:30px; min-width:0; padding:0;'
-                + ' height:24px; line-height:1; cursor:pointer; font-size:12px;'
+            const BTN = `flex:0 0 auto; width:${H + 8}px; min-width:0; padding:0;`
+                + ` height:${H}px; line-height:1; cursor:pointer; font-size:15px;`
                 + ' border:1px solid #d1d5db; border-radius:6px; background:#fff;';
+            // EACH ROW SAYS WHAT IT MAKES. With a video row and the still row
+            // both up, the fields alone did not say which output they belonged
+            // to - the reported "hard to see when both options are available".
+            // A fixed-width name at the head of every row lines them up and
+            // answers it without another glance.
+            const NAME = 'font-size:12px; font-weight:600; color:#374151;'
+                + ' flex:0 0 auto; width:46px;';
             const cell = (id, label, min, max, stepv) =>
                 `<label for="${id}" style="${CAP}">${label}</label>`
                 + `<input id="${id}" type="number" min="${min}" max="${max}"`
@@ -8766,20 +9121,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             let html = '';
             if (video) {
                 html += `<div style="${ROW}">`
+                    + `<span style="${NAME}">${this.drawMode ? 'Draw' : 'Turn'}</span>`
                     + cell('saveSecondsInput', this.drawMode ? 'Sec' : 'Turn', 1, 60, 1)
                     + cell('saveFpsInput', 'FPS', 5, 60, 1)
                     + '<span style="flex:1 1 auto;"></span>'
                     + `<button data-rec style="${BTN} color:#ef4444;"`
                     + ' title="Record to a video file"><span>&#9679;</span></button></div>';
-            } else if (svgOk) {
+            }
+            if (canTraj) {
                 html += `<div style="${ROW}">`
-                    + `<select id="saveFormatSelect" style="${NUM} width:auto; flex:1 1 auto;">`
+                    + `<span style="${NAME}">Frames</span>`
+                    + `<span style="${CAP}">${obj.frames.length}</span>`
+                    + '<span style="flex:1 1 auto;"></span>'
+                    + `<button data-traj style="${BTN} color:#ef4444;"`
+                    + ' title="Record the frames playing through, as a video">'
+                    + '<span>&#9679;</span></button></div>';
+            }
+            if (!video && svgOk) {
+                html += `<div style="${ROW}">`
+                    + `<span style="${NAME}">Format</span>`
+                    + `<select id="saveFormatSelect" style="${NUM} width:auto; flex:1 1 auto;`
+                    + ' padding-right:4px;">'
                     + '<option value="png">PNG</option>'
                     + '<option value="svg">SVG</option>'
                     + '<option value="svgz">SVG.gz</option>'
                     + '</select></div>';
             }
             html += `<div style="${ROW}">`
+                + `<span style="${NAME}">Image</span>`
                 + `<span data-dpicell style="${ROW}">`
                 + cell('saveDpiInput', 'DPI', 36, 1200, 12) + '</span>'
                 + '<span style="flex:1 1 auto;"></span>'
@@ -8836,6 +9205,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // has no beginning.
                     if (this.drawMode) this.saveDrawingVideo(vo);
                     else this.saveRotationVideo(vo);
+                });
+            }
+
+            const trajB = p.querySelector('[data-traj]');
+            if (trajB) {
+                trajB.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    p.style.display = 'none';
+                    if (anchorEl) anchorEl.setAttribute('aria-expanded', 'false');
+                    // the recorder drives its own playback, so the panel's
+                    // pause is lifted without resuming anything
+                    this._uiPaused = false;
+                    this.toggleRecording();
                 });
             }
 
