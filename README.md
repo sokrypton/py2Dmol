@@ -2,7 +2,9 @@
 
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for Google Colab and Jupyter.
 
-<img width="535" height="344" alt="image" src="https://github.com/user-attachments/assets/81fb0b9e-32a5-4fc7-ac28-921cf52f696e" />
+<img width="905" height="391" alt="image" src="https://github.com/user-attachments/assets/9eaf329f-e8ab-4338-be62-f5878aa25f96" />
+
+
 
 Bonus: [online interactive version](http://py2dmol.solab.org/)  
 <a href="https://colab.research.google.com/github/sokrypton/py2Dmol/blob/main/py2Dmol_demo.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
