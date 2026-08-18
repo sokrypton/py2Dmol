@@ -5,18 +5,21 @@ with the measurement that killed it, so nobody spends a day rediscovering why.
 
 ## Status
 
-**Nothing is applied.** The tree is at `2c9f670` and green (32 smoke source and
-bundle, 54 interaction, 23 structures, benchmarks unchanged). Every attempt
-below is recorded with its measurement so nobody spends a day rediscovering why
-it fails.
+**None of it is applied.** The paint-order problem below is still open on
+`main`; the side-chain and UI work committed alongside this document is
+unrelated to it. Every attempt is recorded with the measurement that killed it,
+so nobody spends a day rediscovering why.
 
-Three stashes hold the work, newest first:
+Three branches hold the work — `git checkout <branch>` to get any of them back:
 
-| stash | what it is |
+| branch | what it is |
 |---|---|
-| `stash@{0}` | side-chain clamp + `_scClamp` knob + 3 paint-order tests. **The best measured result**, §3.6 |
-| `stash@{1}` | rib surface-split (per-surface, then near/far). Caused 4 visual regressions, §3.3–3.4 |
-| `stash@{2}` | contact trapezoid ends + an earlier sort experiment |
+| `paint-order/clamp` | side-chain clamp + `_scClamp` knob + 3 paint-order tests. **The best measured result**, §3.6 |
+| `paint-order/surface-split` | rib surface-split (per-surface, then near/far). Caused 4 visual regressions, §3.3–3.4 |
+| `paint-order/contact-trapezoid` | contact trapezoid ends + an earlier sort experiment |
+
+They were stashes; branches outlive `git stash clear`, which a document telling
+you to look in the stash does not survive.
 
 Two changes were deliberately **kept** in the working tree because they are
 unrelated bug fixes, not paint-order work: `tests/make_test_html.py`,
@@ -39,7 +42,7 @@ face that is actually on top, measured on the finished drawing.
 | piece keyed at its nearest face | 55284\* | 9\* | — | wrecks ribbon-vs-ribbon, §3.2 |
 | rib split per surface | 1972\* | 1096\* | — | dark line down every helix edge, §3.3 |
 | rib split near/far | — | — | — | traded the categories, broke the outline, §3.4 |
-| **side-chain clamp** | **85587** | 55398 | 19395 | best measured; `stash@{0}`, §3.6 |
+| **side-chain clamp** | **85587** | 55398 | 19395 | best measured; `paint-order/clamp`, §3.6 |
 | clip the side chain | 209473 | 52635 | **119207** | erases visible geometry, §3.7 |
 
 \* measured on the single-side-chain fixture, which cannot show
@@ -276,7 +279,7 @@ likewise fire once per piece, not once per prim.
 
 ---
 
-### 3.6 The side-chain clamp — best measured, `stash@{0}`
+### 3.6 The side-chain clamp — best measured, `paint-order/clamp`
 
 Seven lines in the `stickFace` builder, no change to the `rib` prim:
 
