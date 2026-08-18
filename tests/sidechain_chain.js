@@ -509,12 +509,31 @@ const vm2=fs.readFileSync(ROOT+'/py2Dmol/resources/viewer-mol.js','utf8');
 const k=vm2.indexOf('\n        _materialiseSidechains(');
 let a=vm2.indexOf('{',k),d=0,b=a;
 for(;b<vm2.length;b++){if(vm2[b]==='{')d++;else if(vm2[b]==='}'){d--;if(!d)break;}}
-const Cls=new Function('window','return class V {'+vm2.slice(k,b+1)+'}')(sb.window);
+// ...plus the element-colour pair, so the gold a disulfide is drawn in is
+// checked against the shipped table rather than a copy of it
+const lift=(name)=>{
+  const i=vm2.indexOf('\n        '+name+'(');
+  if(i<0) throw new Error('cannot lift '+name+' from viewer-mol.js');
+  let x=vm2.indexOf('{',i),dd=0,y=x;
+  for(;y<vm2.length;y++){if(vm2[y]==='{')dd++;else if(vm2[y]==='}'){dd--;if(!dd)break;}}
+  return vm2.slice(i,y+1);
+};
+const elStatic=vm2.match(/\n        static get ELEMENT_COLORS\(\)[\s\S]*?\n        \}/);
+if(!elStatic) throw new Error('ELEMENT_COLORS is gone from viewer-mol.js');
+const Cls=new Function('window','return class V {'+vm2.slice(k,b+1)
+  +elStatic[0]+lift('_segmentElementColor')+lift('_segmentElementHalves')+'}')(sb.window);
 const v=new Cls(); v.currentObjectName='o';
 v._invalidateSegmentCache=function(){ this.cachedSegmentIndices=null; this._invalidated=true; };
 v.cachedSegmentIndices=[{stale:true}];
-const owners=[...new Set(Array.from(fd.sidechains.pos))].slice(0,5);
+// FIVE RESIDUES, PLUS EVERY CYSTEINE. The sample is deliberately small - this
+// walks a 17,789-position ribosome - but a disulfide needs BOTH its cysteines
+// materialised, and five arbitrary residues will not contain a pair. Without
+// this the disulfide expectations below never fire and pass on an empty set.
+const allOwners=[...new Set(Array.from(fd.sidechains.pos))];
+const cysOwners=allOwners.filter((i)=>(fd.position_names||[])[i]==='CYS');
+const owners=[...new Set([...allOwners.slice(0,5), ...cysOwners])];
 v.objectsData={o:{sidechains:new Set(owners)}};
+let ss='';
 const out=v._materialiseSidechains(fo);
 const added=out.coords.length - fo.coords.length;
 if(added<owners.length){
@@ -575,6 +594,106 @@ if(!v._invalidated){
       +` reach a side-chain atom`); failures++; return;
   }
 }
+// DISULFIDES, found in the geometry between the cysteines actually drawn.
+//
+// The file's own record is no help: _struct_conn's `disulf` rows are parsed and
+// reach convertParsedToFrameData, but they name atoms - chain:seq:SG - and a
+// protein's positions are one per residue, so the SG lookup fails and the bond
+// is dropped in silence. Measured before this existed: 3PTB's six records in,
+// ZERO bonds out, every bond that reached the renderer belonging to the ligand.
+//
+// The cutoff is 2.5 A and is not a guess. Over every SG-SG pair in this corpus
+// the bonded ones run 1.79-2.09 A and the next pair is at 3.36 - a 1.3 A gap,
+// so anything from 2.1 to 3.3 finds the same disulfides.
+const SS_EXPECT = { '3PTB': 6, '2R8S': 5, '4HHB': 0, '1UBQ': 0 };
+{
+  const want = SS_EXPECT[name];
+  const got = (v.disulfides || []).length;
+  if (want !== undefined && got !== want) {
+    // 2R8S is the one to read twice: the file carries SEVEN disulf records but
+    // has FIVE disulfides. CYS L194 and H148 are each modelled in two alt-loc
+    // conformers and the file records the bond once per conformer. Capture
+    // keeps the first conformer only, so five is the honest count.
+    console.log(`FAIL ${name}: ${got} disulfides, expected ${want}`);
+    failures++; return;
+  }
+  // every one found must be a real BOND, or it is detected and then not drawn
+  const key = (p) => Math.min(p[0], p[1]) + '-' + Math.max(p[0], p[1]);
+  const bondSet = new Set(out.bonds.map(key));
+  for (const p of (v.disulfides || [])) {
+    if (!bondSet.has(key(p))) {
+      console.log(`FAIL ${name}: a disulfide was found but never bonded`);
+      failures++; return;
+    }
+    // ...and never a residue to itself: alt-loc conformers of one cysteine sit
+    // ~1.8 A apart, inside the cutoff
+    const o1 = v.sidechainMap.get(p[0]); const o2 = v.sidechainMap.get(p[1]);
+    if (o1 && o2 && o1.owner === o2.owner) {
+      console.log(`FAIL ${name}: a disulfide joined a residue to itself`);
+      failures++; return;
+    }
+  }
+  // ...AND IT MUST BECOME A DRAWN SEGMENT, not just an entry in a bond list.
+  // The renderer's explicit-bond loop is what turns one into the other, and it
+  // is reproduced here rather than described: a bond that never becomes a
+  // segment is never drawn, which is a failure no bond-list assertion can see.
+  // Both ends are side-chain atoms, position type 'L', so the segment comes out
+  // 'L' - the ligand-stick path, the same one the rest of the side chain uses.
+  for (const p of (v.disulfides || [])) {
+    const t1 = out.position_types[p[0]];
+    const t2 = out.position_types[p[1]];
+    if (t1 !== 'L' || t2 !== 'L') {
+      console.log(`FAIL ${name}: a disulfide joins position types ${t1}/${t2},`
+        + ` so it would not be drawn as a stick`);
+      failures++; return;
+    }
+    const c1 = out.coords[p[0]]; const c2 = out.coords[p[1]];
+    const d = Math.hypot(c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2]);
+    if (!(d > 1.5 && d < 2.5)) {
+      console.log(`FAIL ${name}: a disulfide is ${d.toFixed(2)} A long`);
+      failures++; return;
+    }
+  }
+  // GOLD, following PyMOL. A disulfide drawn in the residue's own colour is
+  // indistinguishable from the carbon skeleton either side of it, and reading
+  // as a cross-link is the whole point of drawing one.
+  for (const p of (v.disulfides || [])) {
+    const c = v._segmentElementColor({ idx1: p[0], idx2: p[1] });
+    if (!c) {
+      console.log(`FAIL ${name}: a disulfide takes no element colour`);
+      failures++; return;
+    }
+    // GOLD, TESTED AS A COLOUR AND NOT AGAINST THE TABLE IT CAME FROM. The
+    // first version of this compared the result with Cls.ELEMENT_COLORS.S -
+    // the same table the code reads - so recolouring sulfur battleship grey
+    // passed. It has to be an independent statement about the hue: warm,
+    // bright, and not grey.
+    const warm = c.r > 200 && c.g > 150 && c.b < 130;
+    const notGrey = (Math.max(c.r, c.g) - c.b) > 60;
+    if (!warm || !notGrey) {
+      console.log(`FAIL ${name}: a disulfide is rgb(${c.r},${c.g},${c.b}),`
+        + ` which is not the gold PyMOL draws sulfur in`);
+      failures++; return;
+    }
+  }
+  // ...and a MIXED bond is not. This renderer draws a bond as one stick with
+  // one colour, where PyMOL splits it at the midpoint - so colouring a CB-SG
+  // bond by either end would be a coin toss. Only a bond whose two ends agree
+  // takes an element colour.
+  {
+    let mixed = null;
+    for (const [x, y] of out.bonds) {
+      const ex = (v.sidechainMap.get(x) || {}).el;
+      const ey = (v.sidechainMap.get(y) || {}).el;
+      if (ex && ey && ex !== ey && (ex === 'S' || ey === 'S')) { mixed = [x, y]; break; }
+    }
+    if (mixed && v._segmentElementColor({ idx1: mixed[0], idx2: mixed[1] })) {
+      console.log(`FAIL ${name}: a mixed carbon/sulfur bond took an element colour`);
+      failures++; return;
+    }
+  }
+  if (got) ss = ` ${got} disulfide${got > 1 ? 's' : ''} in gold`;
+}
 console.log(`PASS ${name.padEnd(12)} ${String(fd.coords.length).padStart(5)} positions, `
-  +`${String(nAt).padStart(5)} side-chain atoms carried, ${added} appended for ${owners.length} residues`);
+  +`${String(nAt).padStart(5)} side-chain atoms carried, ${added} appended for ${owners.length} residues${ss}`);
 }

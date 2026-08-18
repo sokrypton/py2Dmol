@@ -475,9 +475,9 @@ function setupEventListeners() {
         saveStateButton.addEventListener('click', saveViewerState);
     }
 
-    // Save Image button (camera button)
-    // Handled by viewer-mol.js via setUIControls (same as Record button)
-    // No need to set up listener here - renderer handles it
+    // Save button (camera). Handled by viewer-mol.js via setUIControls: it
+    // opens the Save panel, which is now the ONE way to make a still or a
+    // video. The separate record button it used to sit beside is gone.
 
     // Copy selection button (moved to sequence actions)
     const copySelectionButton = document.getElementById('copySelectionButton');
@@ -870,6 +870,29 @@ function setupEventListeners() {
         renderer.render('selection sidechains');
     }
 
+    // Element colours, per residue. A pure repaint - the atoms and bonds are
+    // already there, only what colour a bond's halves take changes.
+    function setSelectionElements(positions, on) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.setElementsFor) return;
+        if (!renderer.setElementsFor(positions, on)) return;   // nothing to redraw
+        renderer.render('selection elements');
+    }
+
+    // Base plates, per nucleotide. Unlike side chains this is a pure DRAWING
+    // change - the bases are already positions, nothing is materialised - so it
+    // is a repaint, not a frame reload.
+    function setSelectionBases(positions, on) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.setBasesFor) return;
+        if (on && renderer.cartoonBasePlates === false) {
+            setStatus('Base plates are switched off for this view.');
+            return;
+        }
+        if (!renderer.setBasesFor(positions, on)) return;   // nothing to redraw
+        renderer.render('selection bases');
+    }
+
     // VISIBILITY. Two things make this less obvious than it looks:
     // (1) visiblePositions is a SET of visible position indices, not a per-residue
     //     byte array, and null means "everything is visible";
@@ -979,6 +1002,21 @@ function setupEventListeners() {
             const renderer = viewerApi?.renderer;
             scRow.hidden = none || !renderer || !renderer.hasSidechainsFor
                 || !renderer.hasSidechainsFor(picked);
+        }
+        // ...and the Bases row on the same rule, from the other side: it is
+        // offered only where the selection HAS nucleotides. A protein selection
+        // gets Side chains, a nucleic one gets Bases, a mixed one gets both.
+        const eRow = document.getElementById('elementsRow');
+        if (eRow) {
+            const renderer = viewerApi?.renderer;
+            eRow.hidden = none || !renderer || !renderer.hasElementsFor
+                || !renderer.hasElementsFor(picked);
+        }
+        const bRow = document.getElementById('basesRow');
+        if (bRow) {
+            const renderer = viewerApi?.renderer;
+            bRow.hidden = none || !renderer || !renderer.hasBasesFor
+                || !renderer.hasBasesFor(picked);
         }
         tools.classList.toggle('disabled', none);
         // Also set the real disabled property, not just the class: hiding the
@@ -1184,6 +1222,10 @@ function setupEventListeners() {
         on('contactRemoveButton', (positions) => removeSelectionContact(positions));
         on('sidechainShowButton', (positions) => setSelectionSidechains(positions, true));
         on('sidechainHideButton', (positions) => setSelectionSidechains(positions, false));
+        on('elementsShowButton', (positions) => setSelectionElements(positions, true));
+        on('elementsHideButton', (positions) => setSelectionElements(positions, false));
+        on('basesShowButton', (positions) => setSelectionBases(positions, true));
+        on('basesHideButton', (positions) => setSelectionBases(positions, false));
         on('mainchainShowButton', (positions) => setSelectionVisible(positions, true, false));
         on('mainchainHideButton', (positions) => setSelectionVisible(positions, false, false));
 
@@ -6291,6 +6333,19 @@ function saveViewerState() {
             if (objectData.sidechains && objectData.sidechains.size) {
                 objToSave.sidechains = Array.from(objectData.sidechains);
             }
+            // Which nucleotides show a base plate. Saved whenever the set
+            // EXISTS, empty included: an empty set means "none", which is a
+            // real choice and the opposite of the absent-means-all default. The
+            // side-chain line above can test `.size` because there null and
+            // empty mean the same thing there; here they do not.
+            if (objectData.bases instanceof Set) {
+                objToSave.bases = Array.from(objectData.bases);
+            }
+            // ...and which residues show element colours. Same rule: saved
+            // whenever the set EXISTS, empty included, because absent means all.
+            if (objectData.elements instanceof Set) {
+                objToSave.elements = Array.from(objectData.elements);
+            }
             if (objectData.sidechainColor) {
                 objToSave.sidechain_color = objectData.sidechainColor;
             }
@@ -6645,6 +6700,20 @@ async function loadViewerState(stateData) {
                         renderer.objectsData[objData.name] = {};
                     }
                     renderer.objectsData[objData.name].sidechains = new Set(objData.sidechains);
+                }
+                // ...and the bases, where an empty array is meaningful: it
+                // says every plate was hidden, which absent does not.
+                if (Array.isArray(objData.elements)) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    renderer.objectsData[objData.name].elements = new Set(objData.elements);
+                }
+                if (Array.isArray(objData.bases)) {
+                    if (!renderer.objectsData[objData.name]) {
+                        renderer.objectsData[objData.name] = {};
+                    }
+                    renderer.objectsData[objData.name].bases = new Set(objData.bases);
                 }
                 if (objData.sidechain_color) {
                     if (!renderer.objectsData[objData.name]) {

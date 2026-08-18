@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ribbon / side-chain paint-order lab</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f4f0e7;
+      --ink: #252724;
+      --muted: #666b64;
+      --line: #c9c4b9;
+      --panel: #fffdf8;
+      --accent: #165f75;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    header, main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    header { padding: 24px 0 14px; }
+    h1 { margin: 0 0 6px; font: 700 23px/1.2 system-ui, sans-serif; }
+    p { margin: 0; color: var(--muted); }
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 12px 18px;
+      padding: 14px;
+      margin: 0 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    label { display: grid; grid-template-columns: 1fr auto; gap: 6px; color: var(--muted); }
+    label output { color: var(--ink); }
+    input[type="range"], select { grid-column: 1 / -1; width: 100%; }
+    .buttons { display: flex; align-items: end; gap: 8px; grid-column: span 2; }
+    button, select {
+      border: 1px solid #aaa69c;
+      border-radius: 5px;
+      background: #fff;
+      color: var(--ink);
+      padding: 6px 9px;
+      font: inherit;
+    }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      padding-bottom: 24px;
+    }
+    figure {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    canvas { display: block; width: 100%; height: auto; background: #fff; }
+    figcaption { min-height: 59px; padding: 9px 11px; border-top: 1px solid var(--line); }
+    figcaption strong { display: block; font-family: system-ui, sans-serif; }
+    figcaption span { color: var(--muted); font-size: 12px; }
+    .legend { margin: 0 0 16px; color: var(--muted); }
+    .matrix { margin: -5px 0 16px; color: var(--muted); white-space: pre-wrap; }
+    .swatch { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 12px; }
+    @media (max-width: 820px) {
+      .controls, .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 520px) {
+      .controls, .grid { grid-template-columns: 1fr; }
+      .buttons { grid-column: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Ribbon / side-chain paint-order lab</h1>
+    <p>A disposable Canvas 2D model. It separates global depth ordering from the seam stroke used to hide antialiasing gaps.</p>
+  </header>
+  <main>
+    <section class="controls">
+      <label>Yaw <output id="yawOut"></output><input id="yaw" type="range" min="-180" max="180" step="1" value="-19"></label>
+      <label>Pitch <output id="pitchOut"></output><input id="pitch" type="range" min="-90" max="90" step="1" value="-75"></label>
+      <label>Half-thickness <output id="thicknessOut"></output><input id="thickness" type="range" min="0.05" max="0.75" step="0.05" value="0.38"></label>
+      <label>Cull epsilon <output id="cullOut"></output><input id="cull" type="range" min="0" max="0.4" step="0.01" value="0.12"></label>
+      <label>Width tiles <output id="tileCountOut"></output><input id="tileCount" type="range" min="1" max="6" step="1" value="2"></label>
+      <label>Stick tiles <output id="stickCountOut"></output><input id="stickCount" type="range" min="1" max="8" step="1" value="2"></label>
+      <label>Seam width <output id="strokeOut"></output><input id="stroke" type="range" min="0.5" max="3" step="0.5" value="1"></label>
+      <div class="buttons">
+        <button id="reported" type="button">Reported view</button>
+        <button id="silhouette" type="button">Silhouette stress</button>
+        <button id="scan" type="button">Search rotations</button>
+        <button id="reset" type="button">Reset</button>
+      </div>
+      <label>Error map
+        <select id="errorMode">
+          <option value="body">Current centroid</option>
+          <option value="surface">Per surface</option>
+          <option value="tiles">Width tiles</option>
+          <option value="adaptive">Adaptive tiles</option>
+          <option value="hybrid">Ribbon + stick tiles</option>
+          <option value="triangles">Triangle primitives</option>
+          <option value="patch">Local depth patch</option>
+        </select>
+      </label>
+    </section>
+    <div class="legend">
+      Surface colours identify geometry, not final styling.
+      <span class="swatch" style="background:#438bb8"></span>ribbon face
+      <span class="swatch" style="background:#27526d"></span>edge band
+      <span class="swatch" style="background:#e27d38"></span>side chain
+    </div>
+    <p class="legend" id="tileSweep"></p>
+    <p class="legend" id="stickSweep"></p>
+    <p class="matrix" id="pairGrid"></p>
+    <p class="legend" id="triangleMetric"></p>
+    <p class="matrix" id="scanResult">Rotation search not run.</p>
+    <section class="grid">
+      <figure><canvas id="body" width="340" height="270"></canvas><figcaption><strong>Current: one body key</strong><span id="bodyMetric"></span></figcaption></figure>
+      <figure><canvas id="surface" width="340" height="270"></canvas><figcaption><strong>Per surface: current seam stroke</strong><span id="surfaceMetric"></span></figcaption></figure>
+      <figure><canvas id="rails" width="340" height="270"></canvas><figcaption><strong>Per surface: one shared rail</strong><span id="railsMetric"></span></figcaption></figure>
+      <figure><canvas id="tiles" width="340" height="270"></canvas><figcaption><strong>Adaptive ribbon + stick tiles</strong><span id="tilesMetric"></span></figcaption></figure>
+      <figure><canvas id="patched" width="340" height="270"></canvas><figcaption><strong>Local depth-buffer patch</strong><span id="patchMetric"></span></figcaption></figure>
+      <figure><canvas id="reference" width="340" height="270"></canvas><figcaption><strong>Triangle z-buffer reference</strong><span>Nearest interpolated surface at every pixel.</span></figcaption></figure>
+      <figure><canvas id="error" width="340" height="270"></canvas><figcaption><strong>Error map</strong><span id="errorMetric"></span></figcaption></figure>
+    </section>
+  </main>
+  <script>
+  (() => {
+    'use strict';
+    const W = 340, H = 270, SCALE = 27;
+    const BG = [255, 255, 255, 255];
+    const COLORS = {
+      top: '#438bb8', bottom: '#86b9d1', side: '#27526d', cap: '#638ba0',
+      stick: '#e27d38'
+    };
+    const $ = (id) => document.getElementById(id);
+    const vadd = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    const vsub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const vmul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+    const lerp = (a, b, t) => vadd(vmul(a, 1 - t), vmul(b, t));
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const norm = (a) => { const d = Math.hypot(a[0], a[1], a[2]) || 1; return vmul(a, 1 / d); };
+    const meanZ = (p) => p.reduce((s, q) => s + q[2], 0) / p.length;
+    const radians = (d) => d * Math.PI / 180;
+
+    function rotate(p, yaw, pitch) {
+      const cy = Math.cos(yaw), sy = Math.sin(yaw);
+      const cp = Math.cos(pitch), sp = Math.sin(pitch);
+      const x = cy * p[0] + sy * p[2];
+      const z = -sy * p[0] + cy * p[2];
+      return [x, cp * p[1] - sp * z, sp * p[1] + cp * z];
+    }
+
+    // Put the synthetic helix axis on the reported view ray. The production
+    // renderer receives an already-oriented molecule, so its yaw/pitch values
+    // alone do not define the molecule's world-space axis. This fixed inverse
+    // alignment makes the named preset exercise the same "look down the helix"
+    // geometry instead of merely copying two otherwise meaningless numbers.
+    function alignToReportedView(p) {
+      const yaw = radians(-19), pitch = radians(-75);
+      const cy = Math.cos(yaw), sy = Math.sin(yaw);
+      const cp = Math.cos(pitch), sp = Math.sin(pitch);
+      const x1 = p[0];
+      const y1 = cp * p[1] + sp * p[2];
+      const z1 = -sp * p[1] + cp * p[2];
+      return [cy * x1 - sy * z1, y1, sy * x1 + cy * z1];
+    }
+
+    function station(theta, halfW, halfT) {
+      const rise = 1.5 / radians(100);
+      const c = [2.3 * Math.cos(theta), 2.3 * Math.sin(theta), rise * theta];
+      const t = norm([-2.3 * Math.sin(theta), 2.3 * Math.cos(theta), rise]);
+      const n = norm([Math.cos(theta), Math.sin(theta), 0]);
+      const b = norm(cross(t, n));
+      return {
+        c, t, n, b,
+        Lp: vadd(vadd(c, vmul(n, halfW)), vmul(b, halfT)),
+        Lm: vadd(vadd(c, vmul(n, halfW)), vmul(b, -halfT)),
+        Rp: vadd(vadd(c, vmul(n, -halfW)), vmul(b, halfT)),
+        Rm: vadd(vadd(c, vmul(n, -halfW)), vmul(b, -halfT))
+      };
+    }
+
+    function surface(name, pts, normal, piece) {
+      const tone = name === 'left' || name === 'right' ? 'side' : name.startsWith('cap') ? 'cap' : name;
+      return { name, pts, normal: norm(normal), piece, kind: 'rib', color: COLORS[tone] };
+    }
+
+    function makeGeometry(halfT) {
+      const pieces = [];
+      let nextId = 1;
+      const step = radians(25);
+      const phase = radians(12);
+      for (let i = -7; i < 8; i++) {
+        const a = station(phase + i * step, 1.3, halfT);
+        const b = station(phase + (i + 1) * step, 1.3, halfT);
+        const n = norm(vadd(a.n, b.n));
+        const bn = norm(vadd(a.b, b.b));
+        const tn = norm(vadd(a.t, b.t));
+        const surfaces = [
+          surface('top', [a.Lp, b.Lp, b.Rp, a.Rp], bn, i),
+          surface('bottom', [a.Lm, a.Rm, b.Rm, b.Lm], vmul(bn, -1), i),
+          surface('left', [a.Lp, a.Lm, b.Lm, b.Lp], n, i),
+          surface('right', [a.Rp, b.Rp, b.Rm, a.Rm], vmul(n, -1), i)
+        ];
+        if (i === -7) surfaces.push(surface('cap0', [a.Lp, a.Rp, a.Rm, a.Lm], vmul(tn, -1), i));
+        if (i === 7) surfaces.push(surface('cap1', [b.Lp, b.Lm, b.Rm, b.Rp], tn, i));
+        for (const s of surfaces) s.id = nextId++;
+        const all = [a.Lp, a.Lm, a.Rp, a.Rm, b.Lp, b.Lm, b.Rp, b.Rm];
+        pieces.push({ id: i, surfaces, centroidZ: meanZ(all) });
+      }
+
+      // A deliberately diagnostic side-chain probe. At the reported view its
+      // centre lies just in front of the ribbon BODY centroid but behind the
+      // nearest broad face. It then runs tangentially until it emerges past
+      // the silhouette. That is exactly the interval in which one body key and
+      // one surface key disagree, without relying on a particular PDB frame.
+      const thetaProbe = phase + step * 0.35;
+      const root = station(thetaProbe, 1.3, halfT);
+      const dir = norm([-Math.sin(thetaProbe), Math.cos(thetaProbe), 0]);
+      const start = [root.c[0], root.c[1], root.c[2] + halfT * 0.12];
+      const end = vadd(start, vmul(dir, 3.8));
+      const u = norm([Math.cos(thetaProbe), Math.sin(thetaProbe), 0]);
+      const v = [0, 0, 1];
+      const r = 0.25;
+      const ring = (c) => [
+        vadd(vadd(c, vmul(u, r)), vmul(v, r)),
+        vadd(vadd(c, vmul(u, -r)), vmul(v, r)),
+        vadd(vadd(c, vmul(u, -r)), vmul(v, -r)),
+        vadd(vadd(c, vmul(u, r)), vmul(v, -r))
+      ];
+      const q0 = ring(start), q1 = ring(end);
+      const stick = [];
+      for (let k = 0; k < 4; k++) {
+        const j = (k + 1) % 4;
+        const pts = [q0[k], q0[j], q1[j], q1[k]];
+        const normal = norm(cross(vsub(q1[k], q0[k]), vsub(q0[j], q0[k])));
+        stick.push({ name: 'stick', id: nextId++, pts, normal, kind: 'stick', stickSide: true, color: COLORS.stick });
+      }
+      stick.push({ name: 'stick', id: nextId++, pts: [...q1].reverse(), normal: dir, kind: 'stick', color: COLORS.stick });
+      return { pieces, stick };
+    }
+
+    function transformedGeometry() {
+      const yaw = radians(+$('yaw').value), pitch = radians(+$('pitch').value);
+      const geometry = makeGeometry(+$('thickness').value);
+      const transformSurface = (s) => {
+        const pts = s.pts.map((p) => rotate(alignToReportedView(p), yaw, pitch));
+        const normal = rotate(alignToReportedView(s.normal), yaw, pitch);
+        return { ...s, pts, normal, z: meanZ(pts), facing: normal[2] };
+      };
+      const pieces = geometry.pieces.map((p) => {
+        const surfaces = p.surfaces.map(transformSurface);
+        const points = surfaces.flatMap((s) => s.pts);
+        return { ...p, surfaces, z: meanZ(points) };
+      });
+      return { pieces, stick: geometry.stick.map(transformSurface) };
+    }
+
+    function projected(s) {
+      return { ...s, pts: s.pts.map((p) => [W / 2 + p[0] * SCALE, H / 2 - p[1] * SCALE, p[2]]) };
+    }
+
+    function visible(s) { return s.facing > -(+$('cull').value); }
+
+    function splitBroadSurface(s, count) {
+      if (s.kind !== 'rib' || (s.name !== 'top' && s.name !== 'bottom')) return [s];
+      let aL, aR, bL, bR;
+      if (s.name === 'top') {
+        [aL, bL, bR, aR] = s.pts;
+      } else {
+        [aL, aR, bR, bL] = s.pts;
+      }
+      const result = [];
+      for (let i = 0; i < count; i++) {
+        const t0 = i / count, t1 = (i + 1) / count;
+        const pts = [lerp(aL, aR, t0), lerp(bL, bR, t0), lerp(bL, bR, t1), lerp(aL, aR, t1)];
+        result.push({ ...s, pts, z: meanZ(pts), tile: i });
+      }
+      return result;
+    }
+
+    function splitStickSurface(s, count) {
+      if (!s.stickSide || count <= 1) return [s];
+      const [a0, b0, b1, a1] = s.pts;
+      const result = [];
+      for (let i = 0; i < count; i++) {
+        const t0 = i / count, t1 = (i + 1) / count;
+        const pts = [lerp(a0, a1, t0), lerp(b0, b1, t0), lerp(b0, b1, t1), lerp(a0, a1, t1)];
+        result.push({ ...s, pts, z: meanZ(pts), stickTile: i });
+      }
+      return result;
+    }
+
+    function splitTriangles(s) {
+      if (s.pts.length !== 4) return [s];
+      const a = [s.pts[0], s.pts[1], s.pts[2]];
+      const b = [s.pts[0], s.pts[2], s.pts[3]];
+      return [{ ...s, pts: a, z: meanZ(a) }, { ...s, pts: b, z: meanZ(b) }];
+    }
+
+    function bounds(s) {
+      const xs = s.pts.map((p) => p[0]), ys = s.pts.map((p) => p[1]), zs = s.pts.map((p) => p[2]);
+      return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys), z0: Math.min(...zs), z1: Math.max(...zs) };
+    }
+
+    function rangesOverlap(a, b) {
+      return a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1 && a.z0 <= b.z1 && b.z0 <= a.z1;
+    }
+
+    function ribbonSurfaces(g, mode) {
+      const surfaces = g.pieces.flatMap((p) => p.surfaces);
+      if (mode !== 'tiles' && mode !== 'adaptive' && mode !== 'hybrid') return surfaces;
+      const stickBounds = g.stick.map(bounds);
+      return surfaces.flatMap((s) => {
+        const split = mode === 'tiles' || stickBounds.some((b) => rangesOverlap(bounds(s), b));
+        return split ? splitBroadSurface(s, +$('tileCount').value) : [s];
+      });
+    }
+
+    function stickSurfaces(g, mode) {
+      return mode === 'hybrid' ? g.stick.flatMap((s) => splitStickSurface(s, +$('stickCount').value)) : g.stick;
+    }
+
+    function pointKey(p) { return p.map((x) => Math.round(x * 1e5)).join(','); }
+
+    function sharedRails(surfaces) {
+      const edges = new Map();
+      for (const s of surfaces) {
+        for (let i = 0; i < s.pts.length; i++) {
+          const a = s.pts[i], b = s.pts[(i + 1) % s.pts.length];
+          const ka = pointKey(a), kb = pointKey(b);
+          const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+          if (!edges.has(key)) edges.set(key, { a, b, adjacent: [] });
+          edges.get(key).adjacent.push(s);
+        }
+      }
+      const rails = [];
+      for (const edge of edges.values()) {
+        if (edge.adjacent.length < 2) continue;
+        const candidates = edge.adjacent.filter(visible);
+        if (!candidates.length) continue;
+        candidates.sort((a, b) => b.facing - a.facing);
+        const winner = candidates[0];
+        rails.push({
+          kind: 'rail', pts: [edge.a, edge.b], color: winner.color,
+          z: (edge.a[2] + edge.b[2]) / 2 + 0.001
+        });
+      }
+      return rails;
+    }
+
+    function paintPolygon(ctx, s, treatment) {
+      const p = projected(s).pts;
+      ctx.beginPath();
+      ctx.moveTo(p[0][0], p[0][1]);
+      for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+      ctx.closePath();
+      ctx.fillStyle = s.color;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = +$('stroke').value;
+      ctx.lineJoin = 'round';
+      if (treatment === 'clipped') {
+        ctx.save();
+        ctx.clip();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        ctx.fill();
+        if (treatment !== 'fill') ctx.stroke();
+      }
+    }
+
+    function orderedSurfaces(g, mode) {
+      const stick = stickSurfaces(g, mode).filter(visible);
+      if (mode !== 'body') {
+        let surfaces = ribbonSurfaces(g, mode).filter(visible).concat(stick);
+        if (mode === 'triangles') surfaces = surfaces.flatMap(splitTriangles);
+        return surfaces.sort((a, b) => a.z - b.z);
+      }
+      const prims = g.pieces.map((p) => ({ kind: 'body', z: p.z, surfaces: p.surfaces.filter(visible) }))
+        .concat(stick.map((s) => ({ kind: 'surface', z: s.z, surface: s })));
+      prims.sort((a, b) => a.z - b.z);
+      const result = [];
+      for (const p of prims) {
+        if (p.kind === 'surface') result.push(p.surface);
+        else result.push(...p.surfaces.sort((a, b) => a.facing - b.facing));
+      }
+      return result;
+    }
+
+    function orderedItems(g, mode) {
+      const surfaces = orderedSurfaces(g, mode);
+      if (mode !== 'rails' && mode !== 'tiles' && mode !== 'adaptive' && mode !== 'hybrid') return surfaces;
+      return surfaces.concat(sharedRails(ribbonSurfaces(g, mode))).sort((a, b) => a.z - b.z);
+    }
+
+    function clear(ctx) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    function paintRail(ctx, rail) {
+      const p = rail.pts.map((q) => [W / 2 + q[0] * SCALE, H / 2 - q[1] * SCALE]);
+      ctx.beginPath();
+      ctx.moveTo(p[0][0], p[0][1]);
+      ctx.lineTo(p[1][0], p[1][1]);
+      ctx.strokeStyle = rail.color;
+      ctx.lineWidth = +$('stroke').value;
+      ctx.lineCap = 'butt';
+      ctx.stroke();
+    }
+
+    function drawCandidate(canvas, g, mode, treatment) {
+      const ctx = canvas.getContext('2d');
+      clear(ctx);
+      for (const item of orderedItems(g, mode)) {
+        if (item.kind === 'rail') paintRail(ctx, item);
+        else paintPolygon(ctx, item, (mode === 'rails' || mode === 'tiles' || mode === 'adaptive' || mode === 'hybrid') && item.kind === 'rib' ? 'fill' : treatment);
+      }
+    }
+
+    function triangles(s) {
+      const p = projected(s).pts;
+      if (p.length === 4) return [[p[0], p[1], p[2]], [p[0], p[2], p[3]]];
+      const out = [];
+      for (let i = 1; i + 1 < p.length; i++) out.push([p[0], p[i], p[i + 1]]);
+      return out;
+    }
+
+    function rasterTriangle(tri, visit) {
+      const [a, b, c] = tri;
+      const area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+      if (Math.abs(area) < 1e-7) return;
+      const x0 = Math.max(0, Math.floor(Math.min(a[0], b[0], c[0])));
+      const x1 = Math.min(W - 1, Math.ceil(Math.max(a[0], b[0], c[0])));
+      const y0 = Math.max(0, Math.floor(Math.min(a[1], b[1], c[1])));
+      const y1 = Math.min(H - 1, Math.ceil(Math.max(a[1], b[1], c[1])));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const px = x + 0.5, py = y + 0.5;
+        const w0 = ((b[0] - px) * (c[1] - py) - (b[1] - py) * (c[0] - px)) / area;
+        const w1 = ((c[0] - px) * (a[1] - py) - (c[1] - py) * (a[0] - px)) / area;
+        const w2 = 1 - w0 - w1;
+        if (w0 >= -1e-7 && w1 >= -1e-7 && w2 >= -1e-7) visit(x, y, w0 * a[2] + w1 * b[2] + w2 * c[2]);
+      }
+    }
+
+    function referenceBuffers(g) {
+      const depth = new Float64Array(W * H); depth.fill(-Infinity);
+      const ids = new Uint8Array(W * H);
+      const colors = new Array(W * H);
+      const all = g.pieces.flatMap((p) => p.surfaces).concat(g.stick);
+      for (const s of all) for (const tri of triangles(s)) rasterTriangle(tri, (x, y, z) => {
+        const k = y * W + x;
+        if (z > depth[k]) { depth[k] = z; ids[k] = s.id; colors[k] = s.color; }
+      });
+      return { depth, ids, colors };
+    }
+
+    function painterIds(g, mode) {
+      const ids = new Uint8Array(W * H);
+      for (const s of orderedSurfaces(g, mode)) for (const tri of triangles(s)) rasterTriangle(tri, (x, y) => { ids[y * W + x] = s.id; });
+      return ids;
+    }
+
+    function colorTuple(css) {
+      const n = Number.parseInt(css.slice(1), 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255];
+    }
+
+    function drawReference(canvas, ref) {
+      const ctx = canvas.getContext('2d'), image = ctx.createImageData(W, H);
+      for (let k = 0; k < W * H; k++) {
+        const c = ref.colors[k] ? colorTuple(ref.colors[k]) : BG;
+        image.data.set(c, k * 4);
+      }
+      ctx.putImageData(image, 0, 0);
+    }
+
+    function mismatch(candidate, ref) {
+      let wrong = 0, covered = 0;
+      for (let k = 0; k < candidate.length; k++) {
+        if (ref[k]) covered++;
+        if (ref[k] && candidate[k] !== ref[k]) wrong++;
+      }
+      return { wrong, covered };
+    }
+
+    function drawError(canvas, candidate, ref) {
+      const ctx = canvas.getContext('2d'), image = ctx.createImageData(W, H);
+      let wrong = 0;
+      for (let k = 0; k < candidate.length; k++) {
+        let c = BG;
+        if (ref[k]) c = candidate[k] !== ref[k] ? [220, 47, 47, 255] : [226, 231, 223, 255];
+        if (ref[k] && candidate[k] !== ref[k]) wrong++;
+        image.data.set(c, k * 4);
+      }
+      ctx.putImageData(image, 0, 0);
+      return wrong;
+    }
+
+    function render() {
+      $('yawOut').value = `${$('yaw').value}°`;
+      $('pitchOut').value = `${$('pitch').value}°`;
+      $('thicknessOut').value = `${(+$("thickness").value).toFixed(2)} Å`;
+      $('cullOut').value = (+$('cull').value).toFixed(2);
+      $('tileCountOut').value = $('tileCount').value;
+      $('stickCountOut').value = $('stickCount').value;
+      $('strokeOut').value = `${(+$("stroke").value).toFixed(1)} px`;
+      const g = transformedGeometry();
+      drawCandidate($('body'), g, 'body', 'stroke');
+      drawCandidate($('surface'), g, 'surface', 'stroke');
+      drawCandidate($('rails'), g, 'rails', 'stroke');
+      drawCandidate($('tiles'), g, 'hybrid', 'stroke');
+      const ref = referenceBuffers(g);
+      drawReference($('reference'), ref);
+      const bodyIds = painterIds(g, 'body'), surfaceIds = painterIds(g, 'surface');
+      const tileIds = painterIds(g, 'tiles'), adaptiveIds = painterIds(g, 'adaptive'), hybridIds = painterIds(g, 'hybrid');
+      const triangleIds = painterIds(g, 'triangles');
+      const bm = mismatch(bodyIds, ref.ids), sm = mismatch(surfaceIds, ref.ids);
+      const tm = mismatch(tileIds, ref.ids), am = mismatch(adaptiveIds, ref.ids), hm = mismatch(hybridIds, ref.ids);
+      const trm = mismatch(triangleIds, ref.ids);
+      $('bodyMetric').textContent = `${bm.wrong.toLocaleString()} ideal-polygon pixels disagree with depth.`;
+      $('surfaceMetric').textContent = `${sm.wrong.toLocaleString()} ideal-polygon pixels disagree with depth.`;
+      $('railsMetric').textContent = `${sm.wrong.toLocaleString()} ordering errors; rail is independently sorted.`;
+      $('tilesMetric').textContent = `${hm.wrong.toLocaleString()} errors with ${$('tileCount').value} ribbon × ${$('stickCount').value} stick tiles.`;
+      const savedTiles = $('tileCount').value;
+      const sweep = [];
+      for (let n = 1; n <= 6; n++) {
+        $('tileCount').value = n;
+        const allN = mismatch(painterIds(g, 'tiles'), ref.ids).wrong;
+        const adaptiveN = mismatch(painterIds(g, 'adaptive'), ref.ids).wrong;
+        sweep.push(`${n}: ${allN}/${adaptiveN}`);
+      }
+      $('tileCount').value = savedTiles;
+      $('tileSweep').textContent = `Tile sweep, all/adaptive wrong pixels — ${sweep.join(' · ')}`;
+      const savedSticks = $('stickCount').value;
+      const stickSweep = [];
+      for (let n = 1; n <= 8; n++) {
+        $('stickCount').value = n;
+        stickSweep.push(`${n}: ${mismatch(painterIds(g, 'hybrid'), ref.ids).wrong}`);
+      }
+      $('stickCount').value = savedSticks;
+      $('stickSweep').textContent = `Stick-length sweep at ${savedTiles} ribbon tile(s) — ${stickSweep.join(' · ')}`;
+      const grid = [];
+      for (let rn = 1; rn <= 6; rn++) {
+        $('tileCount').value = rn;
+        const row = [];
+        for (let sn = 1; sn <= 4; sn++) {
+          $('stickCount').value = sn;
+          row.push(mismatch(painterIds(g, 'hybrid'), ref.ids).wrong);
+        }
+        grid.push(`R${rn}: ${row.join(' / ')}`);
+      }
+      $('tileCount').value = savedTiles;
+      $('stickCount').value = savedSticks;
+      $('pairGrid').textContent = `Ribbon × stick grid (S1–S4) — ${grid.join('   ')}`;
+      $('triangleMetric').textContent = `Triangle primitives — ${trm.wrong.toLocaleString()} wrong pixels.`;
+      const errorMode = $('errorMode').value;
+      const errorIds = errorMode === 'triangles' ? triangleIds : errorMode === 'hybrid' ? hybridIds : errorMode === 'adaptive' ? adaptiveIds : errorMode === 'tiles' ? tileIds : errorMode === 'surface' ? surfaceIds : bodyIds;
+      const errorName = errorMode === 'triangles' ? 'Triangle primitives' : errorMode === 'hybrid' ? `${$('tileCount').value} ribbon × ${$('stickCount').value} stick tiles` : errorMode === 'adaptive' ? `${$('tileCount').value} adaptive tiles` : errorMode === 'tiles' ? `${$('tileCount').value} width tiles` : errorMode === 'surface' ? 'Per surface' : 'Current centroid';
+      const wrong = drawError($('error'), errorIds, ref.ids);
+      $('errorMetric').textContent = `${errorName}: ${wrong.toLocaleString()} red pixels.`;
+    }
+
+    const query = new URLSearchParams(window.location.search);
+    for (const id of ['yaw', 'pitch', 'thickness', 'cull', 'tileCount', 'stickCount', 'stroke', 'errorMode']) {
+      if (query.has(id)) $(id).value = query.get(id);
+      $(id).addEventListener('input', render);
+    }
+    $('reported').addEventListener('click', () => { $('yaw').value = -19; $('pitch').value = -75; render(); });
+    $('silhouette').addEventListener('click', () => { $('yaw').value = 72; $('pitch').value = -8; render(); });
+    $('reset').addEventListener('click', () => { $('yaw').value = 20; $('pitch').value = -28; $('thickness').value = 0.38; $('cull').value = 0.12; $('tileCount').value = 2; $('stickCount').value = 2; $('stroke').value = 1; render(); });
+    render();
+  })();
+  </script>
+</body>
+</html>

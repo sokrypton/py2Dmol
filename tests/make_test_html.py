@@ -11,9 +11,9 @@ OUT = os.path.join(_OUTDIR, "cartoon_test.html")
 parts = []
 
 # 1YNE: mixed alpha/beta protein with a ligand
-v1 = py2Dmol.view(size=(450, 450), style="ribbon")
+v1 = py2Dmol.view(size=(450, 450), style="tube")
 v1.from_pdb("1YNE", show=False, name="1YNE-ribbon")
-parts.append(("Ribbon (default)", v1._display_viewer(static_data=v1.objects, include_libs=True)))
+parts.append(("Tube (default)", v1._display_viewer(static_data=v1.objects, include_libs=True)))
 
 v2 = py2Dmol.view(size=(450, 450), style="cartoon")
 v2.from_pdb("1YNE", show=False, name="1YNE-cartoon")
@@ -24,9 +24,9 @@ v4 = py2Dmol.view(size=(450, 450), style="cartoon")
 v4.from_pdb("1UBQ", show=False, name="1UBQ-cartoon")
 parts.append(("Cartoon 1UBQ rainbow", v4._display_viewer(static_data=v4.objects, include_libs=False)))
 
-v5 = py2Dmol.view(size=(450, 450), style="ribbon")
+v5 = py2Dmol.view(size=(450, 450), style="tube")
 v5.from_pdb("1UBQ", show=False, name="1UBQ-ribbon")
-parts.append(("Ribbon 1UBQ rainbow", v5._display_viewer(static_data=v5.objects, include_libs=False)))
+parts.append(("Tube 1UBQ rainbow", v5._display_viewer(static_data=v5.objects, include_libs=False)))
 
 # 1BJP: small beta-rich multimer, chain coloring
 v3 = py2Dmol.view(size=(450, 450), style="cartoon", color="chain")

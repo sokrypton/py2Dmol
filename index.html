@@ -149,25 +149,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
                                 </div>
 
-                                <!-- Detect Cyclic. OFF by default, unlike the
-                                     Python side: the test is a distance one -
-                                     first and last residue of a chain closer
-                                     than the chain-break cutoff - and a linear
-                                     chain whose two ends happen to fold
-                                     together passes it. That draws a bond that
-                                     is not there and wraps the rainbow ramp all
-                                     the way round, so the N and C termini come
-                                     out the same colour. Cyclic peptides are
-                                     rare enough that the user should ask. -->
-                                <div class="upload-toggle-item">
-                                    <label class="switch">
-                                        <input type="checkbox" id="detectCyclicCheckbox">
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="detectCyclicCheckbox" class="upload-toggle-label"
-                                        title="Join a chain's first and last residue when they are close enough to be bonded, and wrap the rainbow ramp around the ring">Detect Cyclic</label>
-                                </div>
-
                             </div>
 
                             <!-- Right Column: New Options -->
@@ -231,10 +212,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                     <div id="controlsContainer" class="container-box">
                         <button id="playButton" class="btn btn-secondary btn-icon-only"><i
                                 class="fa-solid fa-play"></i></button>
-                        <button id="recordButton" class="btn btn-secondary btn-icon-only"
-                            title="Record animation to video file">
-                            <i class="fa-solid fa-video"></i>
-                        </button>
                         <input type="range" id="frameSlider" min="0" max="0" value="0">
                         <span id="frameCounter">0 / 0</span>
                         <button id="speedButton" class="btn btn-grey btn-icon-only"
@@ -273,8 +250,8 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
                                 <button id="saveImageButton" class="btn-toggle btn-flex"
                                     aria-expanded="false" aria-controls="savePanel"
-                                    title="Save image (SVG or PNG)">
-                                    <span><i class="fa-solid fa-camera"></i>Save Image</span>
+                                    title="Save an image or a video">
+                                    <span><i class="fa-solid fa-camera"></i>Save</span>
                                 </button>
                             </div>
                         </div>
@@ -318,23 +295,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                             <option value="3d">3D</option>
                                         </select>
                                     </div>
-                                </div>
-                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;" data-style="cartoon">
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
-                                        title="Smooth shading gradients (off = flat tone bands)">
-                                        <input type="checkbox" id="smoothCheckbox">
-                                        <span>Smooth</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
-                                        title="Arrowheads on the C-terminal end of each beta strand">
-                                        <input type="checkbox" id="arrowsCheckbox" checked>
-                                        <span>Arrows</span>
-                                    </label>
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
-                                        title="DNA/RNA base plates (the rungs of a duplex)">
-                                        <input type="checkbox" id="basePlatesCheckbox" checked>
-                                        <span>Bases</span>
-                                    </label>
                                 </div>
                                 <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
                                     <div style="flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0;">
@@ -432,6 +392,42 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                         style="font-size: 12px; width: 50px; flex-shrink: 0;" title="Colour palette for the SSE mode; C coil, H helix, E strand, N nucleic, L ligand">SSE:</label>
                                     <div id="ssPaletteButtons" style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;"></div>
                                 </div>
+                                <!-- The row itself is NOT tagged data-style: Smooth and
+                                     Arrows are cartoon-only and carry the tag themselves,
+                                     but Cyclic is a question about the structure and
+                                     applies to either style. Tagging the row would take
+                                     Cyclic off the screen in tube style. -->
+                                <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                        data-style="cartoon"
+                                        title="Smooth shading gradients (off = flat tone bands)">
+                                        <input type="checkbox" id="smoothCheckbox">
+                                        <span>Smooth</span>
+                                    </label>
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                        data-style="cartoon"
+                                        title="Arrowheads on the C-terminal end of each beta strand">
+                                        <input type="checkbox" id="arrowsCheckbox" checked>
+                                        <span>Arrows</span>
+                                    </label>
+                                    <!-- Detect Cyclic lives here rather than in the fetch
+                                         panel: it is a question about the structure that
+                                         can be asked at any time, not a setting that has
+                                         to be right before the file arrives. It is still
+                                         OFF by default - the test is a distance one, first
+                                         and last residue closer than the chain-break
+                                         cutoff, and a linear chain whose ends happen to
+                                         fold together passes it. That draws a bond that is
+                                         not there and wraps the rainbow ramp all the way
+                                         round, so the N and C termini come out the same
+                                         colour. Cyclic peptides are rare enough that the
+                                         user should ask. -->
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                        title="Join a chain's first and last residue when they are close enough to be bonded, and wrap the rainbow ramp around the ring">
+                                        <input type="checkbox" id="detectCyclicCheckbox">
+                                        <span>Cyclic</span>
+                                    </label>
+                                </div>
                                 <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
                                     <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1;">
                                         <input type="checkbox" id="colorblindCheckbox">
@@ -506,6 +502,31 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     aria-label="Draw side chains for the selected residues" title="Draw side chains for the selected residues">+</button>
                                 <button id="sidechainHideButton" class="btn btn-grey btn-small btn-pm"
                                     aria-label="Stop drawing side chains for the selected residues" title="Stop drawing side chains for the selected residues">&minus;</button>
+                            </div>
+                            <!-- Element colours - nitrogen blue, oxygen red, sulfur
+                                 gold - on the side chains that are drawn. ON by
+                                 default, so this hides rather than reveals. Offered
+                                 wherever Side chains is, since those atoms are the
+                                 only ones carrying an element. -->
+                            <div class="selection-panel-row" id="elementsRow" hidden>
+                                <span class="selection-panel-label">Elements</span>
+                                <button id="elementsShowButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Colour the selected side chains by element"
+                                    title="Colour the selected side chains by element">+</button>
+                                <button id="elementsHideButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Stop colouring the selected side chains by element"
+                                    title="Stop colouring the selected side chains by element">&minus;</button>
+                            </div>
+                            <!-- Hidden unless the selection contains nucleotides.
+                                 See hasBasesFor. -->
+                            <div class="selection-panel-row" id="basesRow" hidden>
+                                <span class="selection-panel-label">Bases</span>
+                                <button id="basesShowButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Draw base plates for the selected nucleotides"
+                                    title="Draw base plates for the selected nucleotides">+</button>
+                                <button id="basesHideButton" class="btn btn-grey btn-small btn-pm"
+                                    aria-label="Stop drawing base plates for the selected nucleotides"
+                                    title="Stop drawing base plates for the selected nucleotides">&minus;</button>
                             </div>
                             <div class="selection-panel-row">
                                 <span class="selection-panel-label">Main chain</span>

@@ -43,7 +43,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_paintSelectionHalo','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -53,7 +53,11 @@ for(const nm of names){
  for(;k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)break;} }
  body[nm]=src.slice(i,k+1);
 }
-const Cls=new Function('document','window','return class V {'+names.map(n=>body[n]).join('\n')+'}')
+// ...and the STATICS the lifted methods reach through this.constructor. Only
+// the named methods are lifted, so a static one of them depends on is simply
+// absent and the method throws on a property of undefined.
+const statics=(src.match(/\n        static get ELEMENT_COLORS\(\)[\s\S]*?\n        \}/)||[''])[0];
+const Cls=new Function('document','window','return class V {'+names.map(n=>body[n]).join('\n')+statics+'}')
  ({createElement:()=>mkCanvas(0,0)}, global.window);
 function mkCtx(canvas){const ops=[];return {ops,canvas,fillStyle:'',
  setTransform(){ops.push(['setTransform']);},save(){},restore(){},
@@ -1608,6 +1612,510 @@ t('detect cyclic is off by default in the web app, and on in Python', () => {
         throw new Error('the Detect Cyclic handler repaints without reloading'
             + ' the frame, and segments - the closing bond among them - are'
             + ' built in setCoords, not in render');
+    }
+});
+
+
+// COLOURING A SIDE CHAIN MUST INCLUDE ITS CA-CB BOND.
+//
+// The root bond is emitted as [owner, CB] - its idx1 is the BACKBONE alpha
+// carbon - and both colour paths resolve a segment through `segInfo.origIndex`,
+// which for that bond is the owner. So every bond of a side chain took the new
+// colour except the first, which kept the backbone's: reported as "when I click
+// on side chain, select color, it does not include ca-cb bond in the color".
+// ...AND BOTH COLOUR PATHS MUST ACTUALLY ASK. The test above proves the helper
+// is right; it cannot tell whether the code calls it. There are two paths -
+// _calculateSegmentColors and the pLDDT one, which is used INSTEAD of it in
+// plddt/deepmind/auto-for-AlphaFold modes - and fixing one and not the other is
+// the obvious way for this bug to come back on half the colour modes. Checked
+// against the source text, the way the frame builders are.
+t('both segment colour paths resolve through _colorSegmentPosition', () => {
+    for (const fn of ['_calculateSegmentColors', '_calculatePlddtColors']) {
+        // the DEFINITION, not the first call site: `this.colors =
+        // this._calculateSegmentColors()` appears earlier in the file, and
+        // slicing from there reads somebody else's body.
+        const m = src.match(new RegExp('\\n        ' + fn + '\\s*\\('));
+        if (!m) throw new Error(fn + ' is gone - it was renamed, so nothing'
+            + ' here checks it any more');
+        const i = m.index;
+        // the body, to the next method at the same indentation
+        const end = src.indexOf('\n        }', i);
+        const body = src.slice(i, end);
+        if (!/_colorSegmentPosition\(/.test(body)) {
+            throw new Error(fn + ' does not call _colorSegmentPosition - it is'
+                + ' back on segInfo.origIndex, so the bond joining a side chain'
+                + ' to its backbone takes the main chain colour again');
+        }
+        if (/const positionIndex = segInfo\.origIndex/.test(body)) {
+            throw new Error(fn + ' still reads segInfo.origIndex directly');
+        }
+    }
+});
+
+t('a side chain colour reaches its CA-CB bond', () => {
+    const d = scFixture();
+    const v = scViewer([2]);
+    const out = v._materialiseSidechains(d);
+    v.coords = out.coords;
+    v.objectsData.obj.sidechainColor = { 2: '#ff0000' };
+    // getAtomColor consults these on its way to the colour hierarchy
+    v.overlayState = { enabled: false };
+    v.chains = out.chains || new Array(out.coords.length).fill('A');
+    v.currentFrame = 0;
+    v.colorMode = 'chain';
+
+    // the bonds materialisation produced, as the segment builder sees them
+    const bonds = out.bonds || [];
+    if (!bonds.length) throw new Error('no side-chain bonds were produced');
+    const root = bonds.find((b) => b[0] === 2 || b[1] === 2);
+    if (!root) throw new Error('no bond joins the side chain to its CA');
+    const inner = bonds.find((b) => b !== root);
+
+    // segments are built with origIndex = idx1, which for the root bond is the
+    // BACKBONE alpha carbon
+    const seg = { idx1: root[0], idx2: root[1], origIndex: root[0], type: 'L' };
+    const pos = v._colorSegmentPosition(seg);
+    const col = v._sidechainColorOf(pos);
+    if (!col || col.r !== 255 || col.g !== 0 || col.b !== 0) {
+        throw new Error('the CA-CB bond resolves its colour from position ' + pos
+            + ', which carries ' + (col ? `${col.r},${col.g},${col.b}` : 'no side-chain colour')
+            + ' - a bond with one end on a side-chain atom is part of that side'
+            + ' chain and has to be coloured with it');
+    }
+    // ...and the rule must not reach past the side chain: a backbone segment
+    // still resolves through its own origIndex
+    const bb = { idx1: 1, idx2: 2, origIndex: 1, type: 'P' };
+    if (v._colorSegmentPosition(bb) !== 1) {
+        throw new Error('a backbone segment no longer resolves through its own'
+            + ' origIndex - the rule has reached past the side chain');
+    }
+    if (inner) {
+        const segIn = { idx1: inner[0], idx2: inner[1], origIndex: inner[0], type: 'L' };
+        if (!v._sidechainColorOf(v._colorSegmentPosition(segIn))) {
+            throw new Error('an inner side-chain bond lost its colour');
+        }
+    }
+});
+
+
+// SAVE IS ONE CONTROL WITH ONE NAME.
+//
+// It used to relabel itself "Save Video" whenever Rotate or Draw was on and
+// swap its icon, so the same button in the same place meant different things
+// depending on state - next to a separate record button that meant a third
+// thing (recording the frames playing through). Reported as confusing. What
+// gets made is now chosen INSIDE the panel, where the options are visible.
+t('the Save button does not change identity with the animation state', () => {
+    const btn = {
+        title: '',
+        _icon: { classes: new Set(['fa-camera']),
+            classList: { add(c) { btn._icon.classes.add(c); },
+                remove(c) { btn._icon.classes.delete(c); },
+                toggle(c, on) { if (on) btn._icon.classes.add(c); else btn._icon.classes.delete(c); } } },
+        _text: { nodeType: 3, textContent: 'Save' },
+        querySelector(sel) { return sel === 'i' ? btn._icon : btn._span; },
+        setAttribute() {},
+    };
+    btn._span = { childNodes: [btn._text], appendChild() {},
+        querySelector() { return null } };
+    btn._span.childNodes.forEach = Array.prototype.forEach.bind(btn._span.childNodes);
+
+    const v = new Cls();
+    v.saveImageButton = btn;
+    v._savePanel = null;
+    const seen = new Set();
+    for (const [rot, draw] of [[false, false], [true, false], [false, true], [true, true]]) {
+        v.autoRotate = rot; v.drawMode = draw;
+        v._syncSaveButtonMode();
+        seen.add(btn._text.textContent);
+        if (!btn._icon.classes.has('fa-camera') || btn._icon.classes.has('fa-video')) {
+            throw new Error('the Save button swapped its icon with rotate=' + rot
+                + ' draw=' + draw + ' - one control, one face');
+        }
+    }
+    if (seen.size !== 1 || !seen.has('Save')) {
+        throw new Error('the Save button called itself ' + [...seen].join(' / ')
+            + ' depending on state; it must always read Save');
+    }
+});
+
+// ...AND RECORDING STILL HAS A HOME. Deleting the record button without moving
+// what it did would silently drop trajectory recording, which is a DIFFERENT
+// video from the rotation and drawing ones the panel already offered: it plays
+// the frames through. The panel builds a row for it whenever the object has
+// frames to play, and that row calls toggleRecording.
+t('the save panel can still record a trajectory', () => {
+    // the DEFINITION, not the call site inside setUIControls - slicing from
+    // the first match reads somebody else's body, which is how this test first
+    // reported the feature missing while it was there
+    const m = src.match(/\n        _toggleSaveImagePanel\s*\(/);
+    if (!m) throw new Error('_toggleSaveImagePanel is gone');
+    const body = src.slice(m.index, src.indexOf('\n        }\n', m.index));
+    if (!/data-traj/.test(body)) {
+        throw new Error('the save panel has no trajectory row - recording the'
+            + ' frames playing through was lost with the record button');
+    }
+    if (!/toggleRecording\(\)/.test(body)) {
+        throw new Error('the panel\'s trajectory row does not call'
+            + ' toggleRecording()');
+    }
+    if (!/frames\.length > 1/.test(body)) {
+        throw new Error('the trajectory row is not gated on there being frames'
+            + ' to play - it would offer recording a single-frame structure,'
+            + ' which is what the old button did before it disabled itself');
+    }
+    // ...and the gate must be LIVE. Checking only that the strings are present
+    // passed with the row disabled outright (`if (false)`), which is the whole
+    // failure this test exists to catch.
+    if (!/if \(canTraj\) \{/.test(body)) {
+        throw new Error('the trajectory row is not emitted under `if (canTraj)`'
+            + ' - the gate is dead, so the row never appears');
+    }
+});
+
+// EVERY CONTROL IN THE PANEL IS THE SAME HEIGHT. The numbers were 46x24 at
+// 12px, too small to read and - worse - a different weight from the row beside
+// them, so with a video row and the still row both up it was not obvious which
+// field belonged to which output. Reported directly.
+t('the save panel sizes its controls consistently', () => {
+    const m = src.match(/\n        _toggleSaveImagePanel\s*\(/);
+    const body = src.slice(m.index, src.indexOf('\n        }\n', m.index));
+    const H = body.match(/const H = (\d+);/);
+    if (!H) throw new Error('the panel has no single control height');
+    const h = Number(H[1]);
+    if (h < 26) {
+        throw new Error('the panel\'s controls are ' + h + 'px high - under 26'
+            + ' they are hard to read and hard to hit');
+    }
+    // the number fields and the buttons must both be built from it, or they
+    // drift apart again the next time one of them is touched
+    for (const [name, re] of [['NUM', /const NUM = `[^`]*height:\$\{H\}px;/],
+        ['BTN', /const BTN = `[^`]*/]]) {
+        if (!re.test(body)) throw new Error(name + ' is not derived from H');
+    }
+    if (!/height:\$\{H\}px/.test(body.slice(body.indexOf('const BTN')))) {
+        throw new Error('BTN does not take its height from H, so the buttons'
+            + ' and the fields can end up different sizes');
+    }
+    // the old field sizing specifically, not any 46px anywhere: the row-name
+    // label legitimately uses that width, and matching it made this fail on a
+    // correct build
+    if (/const NUM = [^;]*width:46px/.test(body)
+        || /const NUM = [^`]*height:24px/.test(body)
+        || /const CAP = 'font-size:11px/.test(body)) {
+        throw new Error('the panel still has the old cramped field sizing');
+    }
+});
+
+// No page ships a record button any more; the Save panel is the one way in.
+t('no page offers a separate record button', () => {
+    for (const f of ['index.html', 'msa.html', 'py2Dmol/resources/viewer.html']) {
+        const html = fs.readFileSync(f, 'utf8');
+        if (/id="recordButton"/.test(html)) {
+            throw new Error(f + ' still has a record button - two entry points'
+                + ' for "make a video" is what made this confusing');
+        }
+    }
+});
+
+
+// BASES ARE PER NUCLEOTIDE NOW, chosen from the selection like side chains
+// rather than by one global checkbox.
+//
+// THE DEFAULT RUNS THE OPPOSITE WAY from side chains, and that asymmetry is the
+// whole risk in this feature. Side chains: null means NONE, because they have
+// always been off until asked for. Bases: null means ALL, because a duplex has
+// always been drawn with its rungs and an object nobody has touched has to keep
+// them. An EMPTY set is therefore meaningful - it says every plate was hidden -
+// and is not the same as null.
+function baseViewer(types) {
+    const v = new Cls();
+    v.currentObjectName = 'obj';
+    v.objectsData = { obj: {} };
+    v.positionTypes = types;
+    return v;
+}
+
+t('the Bases row is offered only where there are nucleotides', () => {
+    const v = baseViewer(['P', 'P', 'D', 'R', 'L']);
+    if (v.hasBasesFor([0, 1])) throw new Error('offered for a protein selection');
+    if (v.hasBasesFor([4])) throw new Error('offered for a ligand');
+    if (!v.hasBasesFor([2])) throw new Error('not offered for DNA');
+    if (!v.hasBasesFor([3])) throw new Error('not offered for RNA');
+    if (!v.hasBasesFor([0, 3])) throw new Error('not offered for a mixed selection');
+});
+
+t('hiding a base starts from ALL of them, not from none', () => {
+    const v = baseViewer(['D', 'D', 'D', 'P']);
+    // untouched: no set at all, which the renderer reads as every base showing
+    if (v.objectsData.obj.bases) throw new Error('a set existed before anything asked');
+    if (!v.setBasesFor([1], false)) throw new Error('hiding one base changed nothing');
+    const b = v.objectsData.obj.bases;
+    if (!(b instanceof Set)) throw new Error('no set was materialised');
+    // the point: hiding ONE leaves the other two showing. Materialising an
+    // empty set instead would hide everything but the ones later added, which
+    // is the reverse of what the button says.
+    if (b.has(1)) throw new Error('the hidden base is still in the set');
+    if (!b.has(0) || !b.has(2)) {
+        throw new Error('hiding one base hid the others too - the set was'
+            + ' materialised empty instead of full');
+    }
+    if (b.has(3)) throw new Error('a protein residue was added to the base set');
+});
+
+t('hiding every base leaves an empty set, not a missing one', () => {
+    const v = baseViewer(['D', 'R']);
+    v.setBasesFor([0, 1], false);
+    const b = v.objectsData.obj.bases;
+    if (!(b instanceof Set) || b.size !== 0) {
+        throw new Error('hiding everything did not leave an empty set - absent'
+            + ' would read as "all showing", the opposite of what was asked');
+    }
+    // and showing one again brings back exactly one
+    if (!v.setBasesFor([0], true)) throw new Error('showing a base changed nothing');
+    if (v.objectsData.obj.bases.size !== 1) {
+        throw new Error('showing one base after hiding all gave '
+            + v.objectsData.obj.bases.size);
+    }
+});
+
+t('setBasesFor reports whether anything actually changed', () => {
+    const v = baseViewer(['D', 'D']);
+    if (v.setBasesFor([0], true)) {
+        throw new Error('showing an already-shown base reported a change, so'
+            + ' every click would force a redraw');
+    }
+    if (v.setBasesFor([], false)) throw new Error('an empty selection reported a change');
+    const w = baseViewer(['P']);
+    if (w.setBasesFor([0], false)) {
+        throw new Error('hiding the base of a protein residue reported a change');
+    }
+    // ...and SHOWING one must not add it either. Without the type filter this
+    // is the case that slips through: hiding a non-base is a no-op anyway
+    // (it was never in the set), so only the show direction proves the filter
+    // is there.
+    const x = baseViewer(['P', 'D']);
+    x.setBasesFor([0], true);
+    const xb = x.objectsData.obj.bases;
+    if (xb && xb.has(0)) {
+        throw new Error('a protein residue was added to the base set - the'
+            + ' position-type filter is gone, so Show would claim to give a'
+            + ' base plate to something that has no base');
+    }
+});
+
+// The renderer must read the set, and must read ABSENT as all - otherwise every
+// nucleic structure ever saved comes back with no rungs.
+t('the renderer draws every base until a selection says otherwise', () => {
+    const cs = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/bases instanceof Set/.test(cs)) {
+        throw new Error('viewer-cartoon.js does not consult objectsData[..].bases');
+    }
+    if (!/!baseSet \|\| baseSet\.has\(res\)/.test(cs)) {
+        throw new Error('the renderer does not read an absent set as "all bases"');
+    }
+    if (!/baseShown\(i\)/.test(cs) || !/baseShown\(j\)/.test(cs)) {
+        throw new Error('one half of a pair is not gated - hiding one base of a'
+            + ' duplex has to leave its partner alone');
+    }
+});
+
+t('the global Bases checkbox is gone from the style panel', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    if (/id="basePlatesCheckbox"/.test(html)) {
+        throw new Error('index.html still has the global Bases checkbox - it'
+            + ' moved to the selection tools');
+    }
+    if (!/id="basesRow"/.test(html) || !/id="basesShowButton"/.test(html)) {
+        throw new Error('the selection tools have no Bases row');
+    }
+});
+
+
+// THE TOGGLE BUTTONS ARE ONE BLOCK, in two rows of three:
+//
+//     Smooth   Arrows   Cyclic
+//     Colorblind  Dark  Draw
+//
+// Smooth and Arrows used to sit up among the sliders and Cyclic was in the
+// FETCH panel, where it read as something that had to be decided before the
+// file arrived - it is not: it is a question about the structure that can be
+// asked at any time. Three cells per row is also what makes the two line up.
+t('the style toggles are grouped together, three to a row', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    const at = (id) => html.indexOf('id="' + id + '"');
+    const ids = ['smoothCheckbox', 'arrowsCheckbox', 'detectCyclicCheckbox',
+        'colorblindCheckbox', 'darkCheckbox', 'drawCheckbox'];
+    const pos = ids.map(at);
+    ids.forEach((id, k) => {
+        if (pos[k] < 0) throw new Error(id + ' is gone from index.html');
+    });
+    for (let k = 1; k < pos.length; k++) {
+        if (pos[k] < pos[k - 1]) {
+            throw new Error('the toggles are out of order at ' + ids[k]
+                + ': expected ' + ids.join(', '));
+        }
+    }
+    // exactly one row boundary between Cyclic and Colorblind - i.e. they are
+    // consecutive rows with nothing in between
+    const between = html.slice(pos[2], pos[3]);
+    if ((between.match(/class="toggle-item/g) || []).length !== 1) {
+        throw new Error('a control row separates the two toggle rows, so they'
+            + ' no longer read as one block');
+    }
+});
+
+// Cyclic is NOT cartoon-only, so the tag that hides Smooth and Arrows in tube
+// style must sit on those two cells and not on the row - otherwise switching to
+// tube takes Cyclic off the screen with them.
+t('Cyclic survives a switch to tube style', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    const i = html.indexOf('id="smoothCheckbox"');
+    const rowStart = html.lastIndexOf('<div class="toggle-item', i);
+    const rowEnd = html.indexOf('</div>', html.indexOf('id="detectCyclicCheckbox"'));
+    const row = html.slice(rowStart, rowEnd);
+    const openTag = row.slice(0, row.indexOf('>') + 1);
+    if (/data-style/.test(openTag)) {
+        throw new Error('the Smooth/Arrows/Cyclic row is tagged data-style, so'
+            + ' tube style hides Cyclic too - the tag belongs on the two'
+            + ' cartoon-only cells');
+    }
+    const cyclicCell = row.slice(row.indexOf('id="detectCyclicCheckbox"') - 400,
+        row.indexOf('id="detectCyclicCheckbox"'));
+    if (/data-style="cartoon"/.test(cyclicCell.slice(cyclicCell.lastIndexOf('<label')))) {
+        throw new Error('the Cyclic cell itself is tagged cartoon-only');
+    }
+});
+
+// ...and it is no longer in the fetch panel.
+t('Cyclic left the fetch panel', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    const up = html.indexOf('upload-toggle-item');
+    const uploadBlock = html.slice(0, html.indexOf('id="viewerColumn"'));
+    if (/upload-toggle-label[^>]*>Detect Cyclic/.test(uploadBlock)) {
+        throw new Error('Detect Cyclic is still in the fetch panel');
+    }
+    void up;
+});
+
+
+
+
+// THE HALF-COLOURS RIDE ON THE COLOUR ARRAY THEY WERE COMPUTED WITH.
+//
+// Colour arrays are CACHED - recomputed only when one is missing, changes
+// length, or is explicitly invalidated - and there are two of them, the plain
+// one and the pLDDT one. Held in a field of its own, the half-colour list is
+// written only by whichever function last ran, so a cached array gets served
+// beside halves belonging to a DIFFERENT segment list, or to the other colour
+// mode. The halves then land on whatever bond now sits at that index, and
+// carbon bonds come out red - reported exactly that way.
+t('half-colours cannot be served beside the wrong segments', () => {
+    const src2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (/this\.segmentHalfColors/.test(src2)) {
+        throw new Error('the half-colours are back in a field of their own, so a'
+            + ' cached colour array can be paired with another segment list');
+    }
+    const grab = (n) => {
+        const i2 = src2.indexOf('\n        ' + n + '(');
+        if (i2 < 0) throw new Error('cannot lift ' + n);
+        return src2.slice(i2, src2.indexOf('\n        }', i2) + 10);
+    };
+    const st = src2.match(/\n        static get ELEMENT_COLORS\(\)[\s\S]*?\n        \}/);
+    if (!st) throw new Error('ELEMENT_COLORS is gone');
+    const C = new Function('DEFAULT_CONTACT_COLOR', 'return class {'
+        + grab('_calculateSegmentColors') + grab('_segmentElementHalves')
+        + grab('_segmentElementColor') + grab('_colorSegmentPosition') + st[0]
+        + ' _getEffectiveColorMode(){return "chain";}'
+        + ' getAtomColor(){ return {r:9,g:9,b:9}; }'
+        + '}')({ r: 255, g: 255, b: 0 });
+    const v = new C();
+    v.overlayState = { enabled: false };
+    v.sidechainMap = new Map([[0, { owner: 0, el: 'C' }], [1, { owner: 0, el: 'O' }],
+        [2, { owner: 0, el: 'C' }], [3, { owner: 0, el: 'C' }]]);
+
+    v.segmentIndices = [{ type: 'L', idx1: 0, idx2: 1, origIndex: 0 }];
+    const mixed = v._calculateSegmentColors();
+    if (!mixed.halves || !mixed.halves[0]) {
+        throw new Error('a two-element bond produced no half-colours');
+    }
+    if (mixed.halves[0].a.r === mixed.halves[0].b.r) {
+        throw new Error('both halves of a carbon-oxygen bond are the same colour');
+    }
+    // the SAME LENGTH list of all-carbon bonds - the case a length check misses
+    v.segmentIndices = [{ type: 'L', idx1: 2, idx2: 3, origIndex: 2 }];
+    const plain = v._calculateSegmentColors();
+    if (plain.halves[0] !== null) {
+        throw new Error('an all-carbon bond was given half-colours');
+    }
+    // ...and the first array still carries its own, so a cached one is never
+    // paired with somebody else's segments
+    if (!mixed.halves[0]) {
+        throw new Error('the earlier colour array lost its half-colours');
+    }
+});
+
+
+// ELEMENT COLOURS CAN BE SWITCHED OFF PER RESIDUE, and are ON by default - so
+// the buttons hide rather than reveal. Same asymmetry as Bases and the opposite
+// of Side chains: absent means ALL, an empty set means none, and the two must
+// stay distinguishable.
+function elViewer(owners) {
+    const v = new Cls();
+    v.currentObjectName = 'obj';
+    v.objectsData = { obj: {} };
+    v.sidechainOwners = () => new Set(owners);
+    v.hasSidechainsFor = (ps) => ps.some((i) => owners.includes(i));
+    return v;
+}
+
+t('element colours are on until a selection turns them off', () => {
+    const v = elViewer([1, 2, 3]);
+    if (v.objectsData.obj.elements) throw new Error('a set existed before anything asked');
+    if (!v.setElementsFor([2], false)) throw new Error('hiding one changed nothing');
+    const e = v.objectsData.obj.elements;
+    if (!(e instanceof Set)) throw new Error('no set was materialised');
+    if (e.has(2)) throw new Error('the hidden residue is still in the set');
+    if (!e.has(1) || !e.has(3)) {
+        throw new Error('hiding one residue hid the others - the set was'
+            + ' materialised empty instead of full');
+    }
+    // ...and only residues that HAVE side chains take part. Hiding a residue
+    // without one is a no-op either way, so only the SHOW direction proves the
+    // filter is there - the same blind spot the Bases test had.
+    const w = elViewer([1]);
+    w.setElementsFor([7], true);
+    if (w.objectsData.obj.elements && w.objectsData.obj.elements.has(7)) {
+        throw new Error('a residue with no side chain was added to the element'
+            + ' set - there is nothing there to colour');
+    }
+});
+
+t('turning element colours off actually stops the colouring', () => {
+    // the switch has to reach _segmentElementHalves, or the buttons do nothing
+    const v = elViewer([0]);
+    v.sidechainMap = new Map([[10, { owner: 0, el: 'C' }], [11, { owner: 0, el: 'O' }]]);
+    const seg = { idx1: 10, idx2: 11 };
+    const before = v._segmentElementHalves(seg);
+    if (!before || !before.b) throw new Error('a carbon-oxygen bond has no element colours');
+    v.setElementsFor([0], false);
+    const after = v._segmentElementHalves(seg);
+    if (after) {
+        throw new Error('the bond still takes element colours after they were'
+            + ' switched off for its residue');
+    }
+    // ...and back on again
+    v.setElementsFor([0], true);
+    if (!v._segmentElementHalves(seg)) throw new Error('switching back on did nothing');
+});
+
+t('the Elements row is offered where side chains are', () => {
+    const v = elViewer([4]);
+    if (!v.hasElementsFor([4])) throw new Error('not offered for a residue with a side chain');
+    if (v.hasElementsFor([9])) throw new Error('offered where there is no side chain');
+    const html = fs.readFileSync('index.html', 'utf8');
+    if (!/id="elementsRow"/.test(html) || !/id="elementsHideButton"/.test(html)) {
+        throw new Error('the selection tools have no Elements row');
     }
 });
 

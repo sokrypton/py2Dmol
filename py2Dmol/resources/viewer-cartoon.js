@@ -6394,6 +6394,16 @@
             } else {
                 bondList.push({
                     a: seg.idx1, b: seg.idx2, A, B, w: wpx, c: col,
+                    // WHERE THE TWO ENDS ARE DIFFERENT ELEMENTS, what each half
+                    // should be. The box is cut at its middle and painted from
+                    // this - see the K loop in stickBox.
+                    //
+                    // OFF THE COLOUR ARRAY THIS RENDER WAS GIVEN, never off the
+                    // renderer: colour arrays are cached, and a half-colour list
+                    // held separately gets served beside a DIFFERENT segment
+                    // list - the halves then land on whatever bond now sits at
+                    // that index, and carbon bonds come out red.
+                    halfC: (colors && colors.halves && colors.halves[s]) || null,
                     flat: seg.type === 'C', sel: segSel,
                     va: v1, vb: v2,      // 3D: the box is built in Angstroms
                     rollN: scRoll,       // side chains: roll onto the ribbon
@@ -6695,7 +6705,13 @@
                 tx * uu[1] - ty * uu[0]];
             const v0 = vOf(u0);           // vOf(fr.u) is fr.v, so an unmitred
             const v1 = vOf(u1);           // end reproduces the old frame exactly
-            const emitSeg = (secA, secB, firstSeg, lastSeg) => {
+            // segC: the colour for THIS sub-segment. A box is already cut into
+            // K pieces that SHARE their sections - that is how twist is handled
+            // - so giving the pieces different colours cuts a bond in two
+            // without cutting the solid: no second box, no abutting caps, no
+            // seam to ink, and nothing added to any graph. It is the machinery
+            // that was already here.
+            const emitSeg = (secA, secB, firstSeg, lastSeg, segC) => {
             const V = [];
             const W = [];                       // the same eight, in Angstroms
             for (const sec of [secA, secB]) {
@@ -6868,7 +6884,7 @@
                     kind: 'stickFace',
                     q: fq,
                     z: zf / 4,
-                    c: bd.c,
+                    c: segC || bd.c,
                     key: o[fi],
                     nl: l[fi],
                     draw: o[fi] > -STICK_CULL && !buried,
@@ -7075,24 +7091,49 @@
                         mB[0] * mA[0] + mB[1] * mA[1] + mB[2] * mA[2])));
             }
             const MAX_SEG_TWIST = 18 * Math.PI / 180;
-            const K = Math.max(1, Math.min(8,
-                Math.ceil(Math.abs(tw) / MAX_SEG_TWIST)));
+            // AN EVEN K WHEN THE BOND IS TWO COLOURS, so a piece boundary lands
+            // exactly at the middle and the two halves are whole numbers of
+            // pieces. Twist alone decides it otherwise.
+            let K = Math.max(1, Math.min(8, Math.ceil(Math.abs(tw) / MAX_SEG_TWIST)));
+            if (bd.halfC && bd.halfC.a && bd.halfC.b) K = Math.max(2, K + (K % 2));
             const secs = [secA];
             for (let k = 1; k < K; k++) {
                 const f = k / K;
-                const ang = tw * f;
-                const ca = Math.cos(ang); const sa = Math.sin(ang);
-                const vA = vOf(mA);
-                const uk = [mA[0] * ca + vA[0] * sa, mA[1] * ca + vA[1] * sa,
-                    mA[2] * ca + vA[2] * sa];
-                secs.push(squareAt(va.x + (vb.x - va.x) * f,
-                    va.y + (vb.y - va.y) * f,
-                    va.z + (vb.z - va.z) * f, uk));
+                let sec;
+                if (mA) {
+                    const ang = tw * f;
+                    const ca = Math.cos(ang); const sa = Math.sin(ang);
+                    const vA = vOf(mA);
+                    const uk = [mA[0] * ca + vA[0] * sa, mA[1] * ca + vA[1] * sa,
+                        mA[2] * ca + vA[2] * sa];
+                    sec = squareAt(va.x + (vb.x - va.x) * f,
+                        va.y + (vb.y - va.y) * f,
+                        va.z + (vb.z - va.z) * f, uk);
+                } else {
+                    // NO FACE MARK TO ROTATE. faceMark returns null on a
+                    // degenerate section - a flat stick, thickness 0 - and with
+                    // no mark there is no twist either (tw stays 0), so the
+                    // section does not turn along the bond and interpolating
+                    // its corners IS the section at f. Forcing this path to run
+                    // without the guard is what threw on a null mark the first
+                    // time a bond was cut in two.
+                    sec = secA.map((q, i2) => [
+                        q[0] + (secB[i2][0] - q[0]) * f,
+                        q[1] + (secB[i2][1] - q[1]) * f,
+                        q[2] + (secB[i2][2] - q[2]) * f,
+                    ]);
+                }
+                secs.push(sec);
             }
             secs.push(secB);
             let any = false;
             for (let k = 0; k < K; k++) {
-                if (emitSeg(secs[k], secs[k + 1], k === 0, k === K - 1)) any = true;
+                // the near half takes the first end's colour, the far half the
+                // second's; K is even whenever this is set, so the boundary is
+                // the middle of the bond
+                const segC = (bd.halfC && bd.halfC.a && bd.halfC.b)
+                    ? (k < K / 2 ? bd.halfC.a : bd.halfC.b) : null;
+                if (emitSeg(secs[k], secs[k + 1], k === 0, k === K - 1, segC)) any = true;
             }
             return any;
         };
@@ -8228,6 +8269,20 @@
         // 12-mer duplex is too short to fill anyway) and no fitted constants.
         // The base-pair plane is perpendicular to that axis.
         const rbfP = baseFramesRot;
+        // WHICH RESIDUES SHOW A BASE. `cartoonBasePlates` is still the master
+        // switch (the Python `base_plates` option); on top of it, a selection
+        // can name the nucleotides whose plates are drawn, the way it names the
+        // residues whose side chains are.
+        //
+        // NULL MEANS ALL, which is the opposite of how side chains read it and
+        // is deliberate: a duplex has always been drawn with its rungs, so an
+        // object nobody has touched has to keep them. An EMPTY set means none -
+        // that is what selecting everything and hiding it gives you, and it has
+        // to be distinguishable from "never asked".
+        const baseObj = renderer.currentObjectName
+            ? (renderer.objectsData || {})[renderer.currentObjectName] : null;
+        const baseSet = baseObj && baseObj.bases instanceof Set ? baseObj.bases : null;
+        const baseShown = (res) => !baseSet || baseSet.has(res);
         if (renderer.cartoonBasePlates !== false) {
             const mid = (i) => {
                 // bounds first: pairOf[-1] is undefined, and `undefined < 0` is
@@ -8735,8 +8790,12 @@
                 // gave a perfect joint but left the two halves 16 deg apart at
                 // the middle - measured - and a rung that does not meet its
                 // partner stops reading as a base pair.
-                if (ci) mk(pi, fi, ci, i);
-                if (cj) mk(pj, fj, cj, j);
+                // each half is gated on ITS OWN residue: hiding one base of a
+                // pair leaves the other's half rung standing, which is what
+                // "show the bases I selected" has to mean when a selection
+                // covers one strand of a duplex
+                if (ci && baseShown(i)) mk(pi, fi, ci, i);
+                if (cj && baseShown(j)) mk(pj, fj, cj, j);
             }
         }
 

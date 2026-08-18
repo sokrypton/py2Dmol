@@ -25,7 +25,7 @@ CASES = [
 parts = []
 first = True
 for pdb, label in CASES:
-    for style in ("cartoon", "ribbon"):
+    for style in ("cartoon", "tube"):
         v = py2Dmol.view(size=(560, 560), style=style)
         try:
             v.from_pdb(pdb, show=False, name=f"{pdb}-{style}")
