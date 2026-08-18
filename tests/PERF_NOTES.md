@@ -6,6 +6,9 @@ protein chains from `tests/make_bench.py` unless stated.
 
 ## Where the time goes (10000 residues, full quality)
 
+> Earlier era, synthetic chains. For a real structure measured in Chrome, see
+> "Where a real frame actually goes" below — the shares are quite different.
+
 | phase | ms | share |
 |---|--:|--:|
 | build (JS geometry) | 187 | 27% |
@@ -37,6 +40,7 @@ Only two levers move it:
 | memoise `shade()` | 0% (slightly worse) | key computation + Map probe ≈ cost of building the string |
 | reduce cuts (quarter → none) | 6% | halves prims (32.8k → 16.2k) but stations are unchanged |
 | WebGL2 batched painter (hybrid) | 1.6× | removes rasterization only; CPU still rebuilds and marshals every quad every frame |
+| structure-of-arrays for the occluder store (typed arrays + counting sort) | 1.45× in Node, **nothing in Chrome** | REVERTED. 85k short-lived objects a frame are nearly free in Chrome — young-generation allocation is a pointer bump and they all die immediately. See "Node's V8 is not Chrome's V8" below; this is the trap that cost the most time here |
 
 ## What is shipped
 
@@ -95,6 +99,12 @@ In the DEFAULT configuration a perfect GPU painter is worth 23%.
 **This retires the GPU-painter idea.** The fills are not the bottleneck.
 
 ## Where the time actually goes: the ink pass
+
+> Earlier era. Still the right shape - the query loop dominates the ink pass -
+> but for current per-stage numbers on a real structure in Chrome see "Where a
+> real frame actually goes" below. Two things in this section have since been
+> re-tested and did NOT reproduce as levers: the cell pitch (swept 2-24, the
+> curve is flat) and any rewrite of the grid's data layout.
 
 | n | total | ink | ink % | grid build | grid sort | query | stroke |
 |--:|--:|--:|--:|--:|--:|--:|--:|
@@ -162,8 +172,142 @@ fall back to the analytic query only in the ambiguous depth band — but it stil
 needs the grid built (122 ms of the 356 ms on 4UG0), so it caps out near 1.1x
 end to end. Not worth the complexity.
 
+## Node's V8 is not Chrome's V8 — measure allocation-heavy code in the browser
+
+The most expensive lesson in this file. An occluder-grid rewrite (flat typed
+arrays plus one counting sort, in place of one object per occluder, a JS array
+per cell and a comparator sort per cell) measured **1.45× on the ink pass and
+1.27× on the frame** in the Node harness, over 20 structure/view cases, with
+the ink trace bit-identical throughout.
+
+In Chrome the same change is **neutral to slightly negative**. Interleaved
+A/B/C in one page load (hot-swapping the plugin between timed batches, so the
+renderer, the structure and the machine state are identical), 1VQ8, outline on,
+gesture degrade off, min of 9:
+
+| | collect | cell build | query | frame |
+|---|--:|--:|--:|--:|
+| existing (objects + per-cell arrays) | 17.4–17.7 | 18.4–18.9 | 40.0–40.8 | 235–241 |
+| rewrite (SoA + counting sort) | 18.0–18.3 | 23.6–24.5 | 36–52 | 241–247 |
+
+The collection pass Node measured at ~40 ms costs **8.8 ms** in Chrome for the
+same frame. Chrome's young-generation allocation and escape analysis simply eat
+the pattern the rewrite existed to remove, and the counting sort is *worse*
+than thousands of small stable sorts there.
+
+**The rewrite was reverted.** What survives is `tests/smoke.js`'s pitch
+test (below) and this warning.
+
+Corollaries, all measured the same way:
+
+- `wrapIdx` split into two closures by `cyclic` instead of branching inside:
+  17 ms of a 313 ms frame in Node, **nothing** in Chrome.
+- Cell index by reciprocal multiply instead of division: nothing in either.
+- Inlining `shade()`'s per-channel `ch` closure: nothing in either (Chrome and
+  Node both escape-analyse it away).
+- Moving the four cell-span floor-and-clamps out of the per-occluder emitter
+  into a tight pass over the boxes: 34 ms in Node, nothing in Chrome.
+
+Use Node for **correctness oracles**, which is what it is good for — the ink
+trace and the paint-stream hash below are exact and fast there. Take every
+timing decision in the browser.
+
+## The oracles
+
+Two, both cheap, both used to prove the reverted rewrite was output-identical
+before it was thrown away for being pointless:
+
+- `renderer._inkTrace = []` — one bit per ink segment, deterministic order.
+- **paint-stream hash** — a recording ctx that hashes every drawing call and
+  style assignment in order, at full precision (28.9k ops on 1TIM, 306k on
+  1VQ8). Nothing is rounded, so it catches arithmetic reordering, which is
+  exactly what a "surely equivalent" rewrite risks.
+
+Run both over five structures × four views (two rotations, a zoom, a
+perspective setting). A change that claims to be a pure optimisation must not
+move a single bit of either.
+
+`tests/smoke.js` guards the grid itself with one implementation-independent
+test: **the ink trace must be identical at cell pitches 3, 7 and 24.** The grid
+is an accelerator, so the pitch may change how fast an answer is reached and
+never the answer. It catches an unsorted cell list and an occluder that misses
+a cell it covers, and it was mutation-confirmed against both the old and the
+new implementation. One caveat found while writing it: the invariant genuinely
+fails for **off-canvas** query points, because the grid covers
+`ceil(W / CELL) · CELL` pixels — so the fixture stays inside the canvas.
+
+## Where a real frame actually goes (Chrome 151, measured)
+
+1VQ8 (6655 positions), 598 CSS px at dpr 2, cartoon, outline on, gesture
+degrade off, min of 9 renders:
+
+| | ms | share |
+|---|--:|--:|
+| geometry build | 45 | 18% |
+| ink pass | 81 | 33% |
+| rest of the paint loop (JS) | ~73 | 29% |
+| canvas rasterisation | ~50 | 20% |
+| **frame** | **249** | |
+
+Canvas share measured by no-op'ing every `CanvasRenderingContext2D` drawing
+method: 232 → 182 ms, i.e. **a perfect painter is worth 1.28×** — the 1.23×
+from the older measurement, confirmed in Chrome on a real structure. The GPU
+painter stays retired.
+
+Outline off is 249 → 157 ms (1.6×), which is a user control, not an
+optimisation.
+
+Ablated in Chrome by hot-swapping short-circuited builds between timed
+batches in one page load (1VQ8, same view, min of 9):
+
+| removed | frame | costs |
+|---|--:|--:|
+| nothing | 233–246 | |
+| `shade()` returns a constant string | 222–233 | shading, arithmetic and string both, **≈12 ms (5%)** |
+| `painter.quad` returns immediately | 180–182 | every routed fill, path building included, **≈52–64 ms (25%)** |
+
+So the frame divides roughly into fills 25%, ink 33%, geometry 18%, shading 5%,
+and a diffuse remainder. Nothing left is a soft target: the fills are already
+merged by `pathStrip`, the shading is 5%, and the ink pass is near the floor
+for an exact analytic test.
+
+**The detail lever is gone, and the notes above are stale about it.** At
+fit-to-view on a large structure, `cartoonDetail` 4, 2 and 1 all produce
+16658 primitives and the same frame time: the auto-subdivision cap
+(`subCapCur`, sized from pixels per residue) has already clamped to `MIN_SUB`,
+so there is nothing left for the detail control to remove. It only bites
+zoomed in — at zoom 4, detail 4 → 1 is 121 → 100 ms — which is where frames
+are cheap anyway. Any future LOD work has to beat what the pixel cap already
+does, not the raw detail setting.
+
+## WASM: measured, and not the thing to do
+
+- WASM cannot draw. Every quad still crosses into JS for `ctx.fill()`, and a
+  perfect painter is 1.28×.
+- Inside the part it could own, the code is not losing to JS on arithmetic. The
+  Node profile said it was, twice, and Chrome disagreed both times.
+- The remaining JS cost is diffuse: no hot line survives in the geometry loop
+  once `wrapIdx` is discounted, and the ink query loop is already near the
+  floor for an exact analytic test.
+
+If the goal is a responsive UI rather than a faster frame, the honest next step
+is **not blocking on it** — OffscreenCanvas in a worker — rather than making
+the same work go faster.
+
 ## Harness hazards (both cost real time here)
 
+- **A mock ctx that answers every property with a function selects the SVG
+  path.** `svgStrips` is `!!ctx.getSerializedSvg && !!ctx.createLinearGradient`,
+  so a permissive Proxy context makes it true and the renderer runs the SVG
+  depth-cull that the screen never runs — one profile had 36% of the frame in
+  a function the canvas path does not call. Return `undefined` for
+  `getSerializedSvg`.
+- **Coordinates must be Vec3-like, with `.x`/`.y`/`.z`.** Passing plain
+  `[x, y, z]` arrays makes the hydrogen-bond search bin every residue under
+  `"NaN,NaN,NaN"`, so secondary-structure assignment goes quadratic: 36 seconds
+  for the first frame of a 7000-residue structure, entirely an artifact.
+  `tests/paint_order_audit.js` sidesteps this only because `_forceSec` skips
+  the assignment.
 - **Test pages bundle the minified build.** `tests/out/*.html` embed
   `viewer-cartoon.min.js`. After editing the source you must re-run terser AND
   regenerate the pages, or you are measuring the old renderer. Two rounds of
@@ -176,6 +320,10 @@ end to end. Not worth the complexity.
   harmless): with the gesture downgrade removed, every frame is full quality.
 
 ## Why a full GPU port is the next thing
+
+Written before the ink-pass rewrite above; the ink numbers quoted here are the
+old ones (that pass is now 2× faster), but the argument about the outline is
+unchanged and is still the thing to settle first.
 
 The 1.6× hybrid is not the ceiling. The renderer recomputes **everything** per
 frame because rotation is applied CPU-side, yet almost all the expensive work is
@@ -212,11 +360,12 @@ Notes for that work:
 - **SVG export must keep working** — it rides the canvas path via
   `SimpleCanvas2SVG`. Keep shading CPU-side and shared, or exports silently
   drift from the screen. Add a test that renders both and compares.
-- Cheaper and worth doing first: **LOD** — drop stations for small/distant
-  elements. With the paint ceiling at 1.23x and the ink pass at ~28% of a real
-  frame, detail reduction remains the only lever measured to move the whole
-  frame: 0.5 → 0.15 already gives 1.7x. It attacks `stations × surfaces`
-  directly and reduces what a GPU port would need to upload.
+- ~~Cheaper and worth doing first: **LOD**~~ — SUPERSEDED. The auto-subdivision
+  cap already does this: at fit-to-view on a large structure the detail control
+  changes neither the primitive count nor the frame time, because `subCapCur`
+  has clamped to `MIN_SUB` from pixels per residue. See "Where a real frame
+  actually goes" above. LOD work now has to beat the pixel cap, not the raw
+  detail setting.
 
 Prototype: `tests/gpu_prototype.js` (WebGL2 painter, one draw call, in
 submission order, colour parsed from the `rgb()` string with a memo). Remember
@@ -233,6 +382,6 @@ that whole approach is 1.23x.
   own motion.
 - `renderer._phase` — set to `{}` to collect build/sort/paint plus ink
   sub-stage timings (`inkStart`, `inkGrid`, `inkSorted`, `inkStroke`, `inkEnd`,
-  `inkQueries`, `inkScans`).
+  `inkQueries`, `inkScans`, `inkCell`, `inkCells`, `inkOccRefs`).
 - `tests/make_ribosome.py` — regenerates the 4UG0 page, which was previously
   built ad hoc and could not be reproduced after a source change.

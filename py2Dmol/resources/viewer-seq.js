@@ -43,8 +43,6 @@
     let callbacks = {
         getRenderer: null,           // () => renderer instance
         getObjectSelect: null,        // () => objectSelect element
-        toggleChainResidues: null,    // (chain) => void
-        setChainResiduesSelected: null, // (chain, selected) => void
         highlightAtom: null,          // (positionIndex) => void
         highlightAtoms: null,         // (positionIndices) => void
         clearHighlight: null,        // () => void
@@ -1465,18 +1463,17 @@
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer) return;
 
-        // Store drag state (shared across all chains)
-        // initialSelectionState: tracks the selection state at drag start
-        // dragUnselectMode: true if we started on a selected item (unselect mode), false if we started on unselected (select mode)
-        // dragStartItem: the selectable item where drag started (unified system)
-        // dragEndItemIndex: the index of the selectable item where drag currently ends
-        // Simple drag state
+        // One gesture's worth of state, whichever pointer opened it. The
+        // field list is the whole of it - endChainId used to be added on the
+        // fly, which left the block below describing four fields that no
+        // longer existed and none of the ones that did.
         const dragState = {
-            active: false,           // Is a drag operation active?
-            startItem: null,         // Item where drag started
-            endItemIndex: -1,        // Current end item index
-            initialPositions: null,  // Selection state before drag started
-            unselectMode: false      // true = unselecting, false = selecting
+            active: false,           // has the press turned into a drag?
+            startItem: null,         // item the press landed on
+            endItemIndex: -1,        // item the drag currently ends on
+            endChainId: null,        // ...or chain, when dragging the chain strip
+            initialPositions: null,  // the selection before the press
+            unselectMode: false,     // started on a selected item, so this drag removes
         };
 
         const { canvas, allResidueData, chainBoundaries, sortedPositionEntries, layout } = sequenceCanvasData;
@@ -1526,30 +1523,6 @@
             document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
             return;
 
-            const newChains = new Set();
-            if (frame.chains) {
-                for (const positionIndex of positions) {
-                    const positionChain = frame.chains[positionIndex];
-                    if (positionChain) {
-                        newChains.add(positionChain);
-                    }
-                }
-            }
-
-            const totalPositions = frame.chains?.length || 0;
-            const hasPartialSelections = positions.size > 0 && positions.size < totalPositions;
-            const allChains = new Set(frame.chains);
-            const allChainsSelected = newChains.size === allChains.size &&
-                Array.from(newChains).every(c => allChains.has(c));
-            const visibilityMode = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? 'default' : 'explicit';
-            const chainsToSet = (allChainsSelected && !hasPartialSelections && positions.size > 0) ? new Set() : newChains;
-
-            renderer.setVisibility({
-                positions: positions,
-                chains: chainsToSet,
-                visibilityMode: visibilityMode,
-                paeBoxes: []
-            });
         };
 
         // Every position belonging to a chain, for click-a-chain-label.
@@ -1613,108 +1586,6 @@
         };
 
         // Mouse down handler
-        newCanvas.addEventListener('mousedown__DISABLED', (e) => {
-            if (e.button !== 0) return;
-
-            const pos = getCanvasPositionFromMouse(e, newCanvas);
-            const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
-            if (!item) return;
-
-            // Chain buttons: toggle immediately, no drag
-            if (item.type === 'chain') {
-                const chainId = item.chainId;
-                const current = renderer?.getVisibility();
-                const isSelected = current?.chains?.has(chainId) ||
-                    (current?.visibilityMode === 'default' && (!current?.chains || current.chains.size === 0));
-                if (e.altKey && callbacks.toggleChainResidues) {
-                    callbacks.toggleChainResidues(chainId);
-                } else if (callbacks.setChainResiduesSelected) {
-                    callbacks.setChainResiduesSelected(chainId, !isSelected);
-                }
-                lastSequenceUpdateHash = null;
-                scheduleRender();
-                return;
-            }
-
-            // Position/ligand: toggle immediately, then set up for potential drag
-            const current = renderer?.getVisibility();
-            const currentPositions = baselinePositions();
-
-            // Toggle immediately
-            const toggledPositions = toggleItemPositions(item, currentPositions);
-            applyResidueSelection(toggledPositions);
-            lastSequenceUpdateHash = null;
-            scheduleRender();
-
-            // Set up drag state (using toggled state as baseline)
-            const wasSelected = item.positionIndices.length > 0 &&
-                item.positionIndices.every(pi => currentPositions.has(pi));
-            dragState.active = false;
-            dragState.startItem = item;
-            dragState.endItemIndex = item.index;
-            dragState.initialPositions = new Set(toggledPositions);
-            dragState.unselectMode = !wasSelected; // After toggle, mode is flipped
-
-            // Set up window listeners for drag
-            const handleMove = (e) => {
-                if (!dragState.startItem) return;
-
-                // Check if button still pressed
-                const buttons = e.buttons !== undefined ? e.buttons : (e.which || 0);
-                if (!(buttons & 1)) return;
-
-                const dragPos = getCanvasPositionFromMouse(e, newCanvas);
-                const endItem = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
-
-                if (endItem && endItem.index !== dragState.startItem.index) {
-                    // Moved to different item - start/continue drag
-                    dragState.active = true;
-
-                    if (endItem.index !== dragState.endItemIndex) {
-                        dragState.endItemIndex = endItem.index;
-
-                        // Compute preview selection
-                        const previewPositions = computeSelectionFromRange(
-                            dragState.startItem.index,
-                            endItem.index,
-                            dragState.initialPositions,
-                            dragState.unselectMode
-                        );
-
-                        if (callbacks.setPreviewSelectionSet) {
-                            callbacks.setPreviewSelectionSet(previewPositions);
-                        }
-                        lastSequenceUpdateHash = null;
-                        scheduleRender();
-                    }
-                }
-            };
-
-            const handleUp = () => {
-                const previewSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
-
-                // If drag happened, apply the drag selection
-                if (dragState.active && previewSet) {
-                    applyResidueSelection(previewSet);
-                }
-                // Otherwise, toggle was already applied on mousedown
-
-                // Cleanup
-                if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
-                dragState.active = false;
-                dragState.startItem = null;
-                dragState.endItemIndex = -1;
-                dragState.initialPositions = null;
-                lastSequenceUpdateHash = null;
-                scheduleRender();
-
-                window.removeEventListener('mousemove', handleMove);
-                window.removeEventListener('mouseup', handleUp);
-            };
-
-            window.addEventListener('mousemove', handleMove);
-            window.addEventListener('mouseup', handleUp);
-        });
 
         // Mouse move handler - only handle hover
         newCanvas.addEventListener('mousemove', (e) => {
@@ -1784,161 +1655,136 @@
         });
 
         // Touch event handlers - same logic as mouse handlers
-        newCanvas.addEventListener('touchstart__DISABLED', (e) => {
-            if (e.touches.length !== 1) return;
-            e.preventDefault();
-
-            const touch = e.touches[0];
-            const pos = getCanvasPositionFromMouse(touch, newCanvas);
-            const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
-            if (!item) return;
-
-            // Chain buttons: toggle immediately, no drag
-            if (item.type === 'chain') {
-                const chainId = item.chainId;
-                const current = renderer?.getVisibility();
-                const isSelected = current?.chains?.has(chainId) ||
-                    (current?.visibilityMode === 'default' && (!current?.chains || current.chains.size === 0));
-                if (callbacks.setChainResiduesSelected) {
-                    callbacks.setChainResiduesSelected(chainId, !isSelected);
-                }
-                lastSequenceUpdateHash = null;
-                scheduleRender();
-                return;
-            }
-
-            // Position/ligand: toggle immediately, then set up for potential drag
-            const current = renderer?.getVisibility();
-            const currentPositions = baselinePositions();
-
-            // Toggle immediately
-            const toggledPositions = toggleItemPositions(item, currentPositions);
-            applyResidueSelection(toggledPositions);
-            lastSequenceUpdateHash = null;
-            scheduleRender();
-
-            // Set up drag state (using toggled state as baseline)
-            const wasSelected = item.positionIndices.length > 0 &&
-                item.positionIndices.every(pi => currentPositions.has(pi));
-            dragState.active = false;
-            dragState.startItem = item;
-            dragState.endItemIndex = item.index;
-            dragState.initialPositions = new Set(toggledPositions);
-            dragState.unselectMode = !wasSelected; // After toggle, mode is flipped
-
-            // Set up window listeners for drag
-            const handleMove = (e) => {
-                if (e.touches.length !== 1) return;
-                e.preventDefault();
-                if (!dragState.startItem) return;
-
-                const dragTouch = e.touches[0];
-                const dragPos = getCanvasPositionFromMouse(dragTouch, newCanvas);
-                const endItem = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
-
-                if (endItem && endItem.index !== dragState.startItem.index) {
-                    // Moved to different item - start/continue drag
-                    dragState.active = true;
-
-                    if (endItem.index !== dragState.endItemIndex) {
-                        dragState.endItemIndex = endItem.index;
-
-                        // Compute preview selection
-                        const previewPositions = computeSelectionFromRange(
-                            dragState.startItem.index,
-                            endItem.index,
-                            dragState.initialPositions,
-                            dragState.unselectMode
-                        );
-
-                        if (callbacks.setPreviewSelectionSet) {
-                            callbacks.setPreviewSelectionSet(previewPositions);
-                        }
-                        lastSequenceUpdateHash = null;
-                        scheduleRender();
-                    }
-                }
-            };
-
-            const handleEnd = (e) => {
-                e.preventDefault();
-                const previewSet = callbacks.getPreviewSelectionSet ? callbacks.getPreviewSelectionSet() : null;
-
-                // If drag happened, apply the drag selection
-                if (dragState.active && previewSet) {
-                    applyResidueSelection(previewSet);
-                }
-                // Otherwise, toggle was already applied on touchstart
-
-                // Cleanup
-                if (callbacks.setPreviewSelectionSet) callbacks.setPreviewSelectionSet(null);
-                dragState.active = false;
-                dragState.startItem = null;
-                dragState.endItemIndex = -1;
-                dragState.initialPositions = null;
-                lastSequenceUpdateHash = null;
-                scheduleRender();
-
-                window.removeEventListener('touchmove', handleMove);
-                window.removeEventListener('touchend', handleEnd);
-                window.removeEventListener('touchcancel', handleEnd);
-            };
-
-            window.addEventListener('touchmove', handleMove, { passive: false });
-            window.addEventListener('touchend', handleEnd, { passive: false });
-            window.addEventListener('touchcancel', handleEnd, { passive: false });
-        });
 
         // === Unified selection handlers (press → optional drag → release) ===
         // Applies to chain, sequence, and ligand. Chain toggles on release (no drag),
         // sequence/ligand preview during drag; commit on release.
-        newCanvas.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
+        // ---- ONE GESTURE PATH FOR MOUSE AND TOUCH ---------------------------
+        //
+        // These used to be two independent handlers with two copies of the
+        // selection logic, and the touch copy was the older of the two: a tap
+        // on a chain label toggled that chain's VISIBILITY (the pre-selection
+        // behaviour) while a click on desktop toggled its SELECTION, dragging
+        // across chain labels did nothing, and the scrollbar - the only way to
+        // reach a long sequence, since a phone has no wheel event - could not
+        // be touched at all. Any behaviour added to one path silently skipped
+        // the other.
+        //
+        // So there is one path now. A gesture is opened with a canvas position
+        // and the modifier state, and is driven by moveTo/finish; the mouse and
+        // touch listeners below do nothing but translate their own events into
+        // those three calls. A new behaviour cannot land on one pointer type
+        // only, because there is only one place to put it.
 
-            const pos = getCanvasPositionFromMouse(e, newCanvas);
+        // Where a range extends FROM: the last item committed by a plain click
+        // or drag, plus the selection as it stood once that click had landed.
+        // A shift-click is `anchorBase + the span from the anchor`, so
+        // stretching the same range shorter SHRINKS it instead of leaving the
+        // longer one behind - which is what every list in every file manager
+        // does, and the only version in which the anchor is observable at all.
+        let anchorItem = null;
+        let anchorBase = new Set();
 
-            //Check if clicked on scrollbar
+        // Called wherever a plain gesture commits.
+        const setAnchor = (item) => {
+            anchorItem = item;
+            anchorBase = new Set(renderer.residueSelection || []);
+        };
+
+        const chainOrder = () => (layout.chainLabelPositions || []).map((c) => c.chainId);
+
+        // Union of every chain from a to b in label order, inclusive.
+        const chainRangePositions = (chainA, chainB) => {
+            const order = chainOrder();
+            const i0 = order.indexOf(chainA);
+            const i1 = order.indexOf(chainB);
+            const picked = new Set();
+            if (i0 < 0 || i1 < 0) return picked;
+            for (let k = Math.min(i0, i1); k <= Math.max(i0, i1); k++) {
+                for (const i of positionsOfChain(order[k])) picked.add(i);
+            }
+            return picked;
+        };
+
+        // SHIFT EXTENDS, it does not toggle. Two chain items extend over the
+        // chain strip; two residue items extend over the item list. A mixed
+        // pair has no meaningful span between them - in sequence mode the item
+        // list runs every chain label first and then every residue, so the
+        // indices between a chain and a residue sweep up unrelated chains -
+        // and falls back to plain toggle rather than selecting something the
+        // user cannot see the shape of.
+        const shiftExtend = (item) => {
+            if (!anchorItem) return null;
+            const base = new Set(anchorBase);
+            if (anchorItem.type === 'chain' && item.type === 'chain') {
+                const picked = chainRangePositions(anchorItem.chainId, item.chainId);
+                for (const i of base) picked.add(i);
+                return picked;
+            }
+            if (anchorItem.type !== 'chain' && item.type !== 'chain') {
+                return computeSelectionFromRange(anchorItem.index, item.index, base, false);
+            }
+            return null;
+        };
+
+        // Double click/tap takes the whole chain the item belongs to. Chains
+        // are the one grouping the strip already draws, so this is the gesture
+        // people reach for after clicking one residue of a long chain.
+        //
+        // It does NOT apply to a chain label, where a single click already
+        // takes the whole chain: there, re-selecting on the second click would
+        // undo the toggle-off that a quick second click is asking for, so a
+        // chain label that is clicked twice in a hurry would stick on.
+        const chainIdOfItem = (item) => {
+            if (!item) return null;
+            if (item.type === 'chain') return item.chainId;
+            const rd = item.residueData;
+            if (rd && rd.chain) return rd.chain;
+            const obj = renderer.objectsData[renderer.currentObjectName];
+            const frame = obj?.frames?.[0];
+            const first = item.positionIndices && item.positionIndices[0];
+            return (frame?.chains && first !== undefined) ? frame.chains[first] : null;
+        };
+
+        const selectWholeChain = (item, additive) => {
+            const chainId = chainIdOfItem(item);
+            if (!chainId) return;
+            const all = positionsOfChain(chainId);
+            if (additive) for (const i of baselinePositions()) all.add(i);
+            applyResidueSelection(all);
+            setAnchor(item);
+            setLocalPreview(null);
+            lastSequenceUpdateHash = null;
+            scheduleRender();
+        };
+
+        // Scrollbar drag, shared. `finish` is a no-op for it; the caller just
+        // stops feeding it positions.
+        const beginScrollDrag = (pos) => {
+            const logicalHeight = newCanvas.height / dpiMultiplier;
+            const fullContentHeight = layout.fullContentHeight || 0;
+            const maxScrollTop = Math.max(0, fullContentHeight - logicalHeight);
+            if (maxScrollTop <= 0) return { moveTo() {}, finish() {} };
+            const seek = (p) => {
+                const ratio = Math.max(0, Math.min(1, p.y / logicalHeight));
+                scrollTop = Math.max(0, Math.min(maxScrollTop, ratio * fullContentHeight));
+                scheduleRender();
+            };
+            seek(pos);
+            return { moveTo: seek, finish() {} };
+        };
+
+        const onScrollbar = (pos) => {
             const logicalWidth = newCanvas.width / dpiMultiplier;
             const logicalHeight = newCanvas.height / dpiMultiplier;
-            const vScrollbarX = logicalWidth - SCROLLBAR_WIDTH;
-            const scrollableAreaHeight = logicalHeight;
+            return pos.x >= logicalWidth - SCROLLBAR_WIDTH && pos.y <= logicalHeight;
+        };
 
-            if (pos.x >= vScrollbarX && pos.y <= scrollableAreaHeight) {
-                // Clicked on vertical scrollbar
-                e.preventDefault();
+        // Open a gesture at `pos`. Returns null when there is nothing under it
+        // and the click has already been dealt with (clearing the selection).
+        const beginGesture = (pos, shiftKey) => {
+            if (onScrollbar(pos)) return beginScrollDrag(pos);
 
-                const fullContentHeight = layout.fullContentHeight || 0;
-                const maxScrollTop = Math.max(0, fullContentHeight - scrollableAreaHeight);
-
-                if (maxScrollTop > 0) {
-                    // Calculate scroll position from mouse Y
-                    const thumbHeight = Math.max(20, (scrollableAreaHeight / fullContentHeight) * scrollableAreaHeight);
-                    const clickedRatio = pos.y / scrollableAreaHeight;
-                    scrollTop = Math.max(0, Math.min(maxScrollTop, clickedRatio * fullContentHeight));
-
-                    scheduleRender();
-
-                    // Set up drag tracking for scrollbar
-                    const onMouseMove = (moveE) => {
-                        const movePos = getCanvasPositionFromMouse(moveE, newCanvas);
-                        const newRatio = Math.max(0, Math.min(1, movePos.y / scrollableAreaHeight));
-                        scrollTop = Math.max(0, Math.min(maxScrollTop, newRatio * fullContentHeight));
-                        scheduleRender();
-                    };
-
-                    const onMouseUp = () => {
-                        document.removeEventListener('mousemove', onMouseMove);
-                        document.removeEventListener('mouseup', onMouseUp);
-                    };
-
-                    document.addEventListener('mousemove', onMouseMove);
-                    document.addEventListener('mouseup', onMouseUp);
-                }
-
-                return;
-            }
-
-            // Regular selection logic (not on scrollbar)
             const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
             if (!item) {
                 // Clicking empty space clears the STYLE TARGET, the way clicking
@@ -1948,38 +1794,47 @@
                 // blank the structure.
                 if (renderer?.residueSelection) {
                     renderer.residueSelection = null;
+                    anchorItem = null;
+                    anchorBase = new Set();
                     lastSequenceUpdateHash = null;
                     scheduleRender();
                     document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
                 }
-                return;
+                return null;
             }
 
-            const current = renderer?.getVisibility();
-            const currentPositions = baselinePositions();
+            // A shift-click is a click, not a drag: it commits its span at once
+            // and opens no gesture, so a wobbling finger cannot turn it into a
+            // freehand range from the wrong end.
+            if (shiftKey) {
+                const extended = shiftExtend(item);
+                if (extended) {
+                    applyResidueSelection(extended);
+                    setLocalPreview(null);
+                    lastSequenceUpdateHash = null;
+                    scheduleRender();
+                    return null;
+                }
+            }
 
+            const currentPositions = baselinePositions();
             dragState.active = false;
             dragState.startItem = item;
             dragState.endItemIndex = item.index;
             dragState.endChainId = null;
             dragState.initialPositions = new Set(currentPositions);
-            dragState.unselectMode = !!(item.positionIndices && item.positionIndices.length > 0 &&
-                item.positionIndices.every(pi => currentPositions.has(pi)));
+            dragState.unselectMode = !!(item.positionIndices && item.positionIndices.length > 0
+                && item.positionIndices.every((pi) => currentPositions.has(pi)));
 
             if (item.type !== 'chain') {
-                const preview = computeSelectionFromRange(
+                setLocalPreview(computeSelectionFromRange(
                     item.index, item.index, dragState.initialPositions, dragState.unselectMode
-                );
-                setLocalPreview(preview);
+                ));
                 lastSequenceUpdateHash = null;
                 scheduleRender();
             }
 
-            const handleMove = (ev) => {
-                const buttons = ev.buttons !== undefined ? ev.buttons : (ev.which || 0);
-                if (!(buttons & 1)) return;
-
-                const dragPos = getCanvasPositionFromMouse(ev, newCanvas);
+            const moveTo = (dragPos) => {
                 const over = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
                 if (!over) return;
 
@@ -1987,204 +1842,154 @@
                     // DRAG ACROSS CHAINS. In chain mode the strip is a row of
                     // chain blocks, so dragging over them is the natural way to
                     // pick several - previously only a single click worked and a
-                    // drag did nothing at all. Selects the union of every chain
-                    // from the one the drag started on to the one under the
-                    // cursor, in the order the labels are laid out.
+                    // drag did nothing at all.
                     if (over.type !== 'chain') return;
                     dragState.active = true;
                     if (over.chainId === dragState.endChainId) return;
                     dragState.endChainId = over.chainId;
-                    const order = (layout.chainLabelPositions || []).map((c) => c.chainId);
-                    const a0 = order.indexOf(item.chainId);
-                    const b0 = order.indexOf(over.chainId);
-                    if (a0 < 0 || b0 < 0) return;
-                    const lo = Math.min(a0, b0), hi = Math.max(a0, b0);
-                    const picked = new Set();
-                    for (let k = lo; k <= hi; k++) {
-                        for (const i of positionsOfChain(order[k])) picked.add(i);
-                    }
-                    setLocalPreview(picked);
+                    setLocalPreview(chainRangePositions(item.chainId, over.chainId));
                     lastSequenceUpdateHash = null;
                     scheduleRender();
                     return;
                 }
 
                 dragState.active = true;
-                if (over.index !== dragState.endItemIndex) {
-                    dragState.endItemIndex = over.index;
-
-                    const preview = computeSelectionFromRange(
-                        dragState.startItem.index,
-                        over.index,
-                        dragState.initialPositions,
-                        dragState.unselectMode
-                    );
-                    setLocalPreview(preview);
-                    lastSequenceUpdateHash = null;
-                    scheduleRender();
-                }
+                if (over.index === dragState.endItemIndex) return;
+                dragState.endItemIndex = over.index;
+                setLocalPreview(computeSelectionFromRange(
+                    dragState.startItem.index, over.index,
+                    dragState.initialPositions, dragState.unselectMode
+                ));
+                lastSequenceUpdateHash = null;
+                scheduleRender();
             };
 
-            const handleUp = (ev) => {
-                window.removeEventListener('mousemove', handleMove);
-                window.removeEventListener('mouseup', handleUp);
-
-                if (dragState.startItem?.type === 'chain') {
+            const finish = (endPos) => {
+                const startItem = dragState.startItem;
+                if (startItem?.type === 'chain') {
                     // a drag across chain blocks commits its preview; a plain
-                    // click falls through to the single-chain toggle below
+                    // click falls through to the single-chain toggle
                     const dragged = getLocalPreview();
                     if (dragState.active && dragged && dragged.size) {
                         applyResidueSelection(dragged);
-                        setLocalPreview(null);
-                        dragState.active = false;
-                        dragState.startItem = null;
-                        dragState.endItemIndex = -1;
-                        dragState.endChainId = null;
-                        dragState.initialPositions = null;
-                        return;
-                    }
-                    const upPos = getCanvasPositionFromMouse(ev, newCanvas);
-                    const over = getSelectableItemAtPosition(upPos.x, upPos.y, layout, sequenceViewMode);
-                    if (over && over.type === 'chain' && over.chainId === dragState.startItem.chainId) {
-                        const chainId = over.chainId;
-                        // Select the WHOLE chain. Clicking it again clears it,
-                        // so the label toggles rather than only ever adding.
-                        const all = positionsOfChain(chainId);
-                        const cur = renderer.residueSelection;
-                        const already = all.size > 0 && cur
-                            && [...all].every((i) => cur.has(i));
-                        applyResidueSelection(already ? new Set() : all);
-                        setLocalPreview(null);
-                        dragState.active = false;
-                        dragState.startItem = null;
-                        dragState.endItemIndex = -1;
-                        dragState.initialPositions = null;
-                        return;
-                        const isSelected = sel?.chains?.has(chainId) ||
-                            (sel?.visibilityMode === 'default' && (!sel?.chains || sel.chains.size === 0));
-                        if (ev.altKey && callbacks.toggleChainResidues) {
-                            callbacks.toggleChainResidues(chainId);
-                        } else if (callbacks.setChainResiduesSelected) {
-                            callbacks.setChainResiduesSelected(chainId, !isSelected);
+                        setAnchor(startItem);
+                    } else {
+                        const over = endPos
+                            ? getSelectableItemAtPosition(endPos.x, endPos.y, layout, sequenceViewMode)
+                            : null;
+                        if (over && over.type === 'chain' && over.chainId === startItem.chainId) {
+                            // Select the WHOLE chain. Clicking it again clears
+                            // it, so the label toggles rather than only ever
+                            // adding.
+                            const all = positionsOfChain(over.chainId);
+                            const cur = renderer.residueSelection;
+                            const already = all.size > 0 && cur
+                                && [...all].every((i) => cur.has(i));
+                            applyResidueSelection(already ? new Set() : all);
+                            setAnchor(startItem);
                         }
                     }
-                } else {
+                } else if (startItem) {
                     const previewSet = getLocalPreview();
-                    if (dragState.active && previewSet) {
-                        applyResidueSelection(previewSet);
-                    } else {
-                        const toggled = toggleItemPositions(dragState.startItem, dragState.initialPositions);
-                        applyResidueSelection(toggled);
-                    }
+                    if (dragState.active && previewSet) applyResidueSelection(previewSet);
+                    else applyResidueSelection(toggleItemPositions(startItem, dragState.initialPositions));
+                    setAnchor(startItem);
                 }
 
                 setLocalPreview(null);
                 dragState.active = false;
                 dragState.startItem = null;
                 dragState.endItemIndex = -1;
+                dragState.endChainId = null;
                 dragState.initialPositions = null;
                 lastSequenceUpdateHash = null;
                 scheduleRender();
             };
 
+            return { moveTo, finish };
+        };
+
+        newCanvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            const pos = getCanvasPositionFromMouse(e, newCanvas);
+            if (onScrollbar(pos)) e.preventDefault();
+            const gesture = beginGesture(pos, e.shiftKey);
+            if (!gesture) return;
+
+            const handleMove = (ev) => {
+                const buttons = ev.buttons !== undefined ? ev.buttons : (ev.which || 0);
+                if (!(buttons & 1)) return;
+                gesture.moveTo(getCanvasPositionFromMouse(ev, newCanvas));
+            };
+            const handleUp = (ev) => {
+                window.removeEventListener('mousemove', handleMove);
+                window.removeEventListener('mouseup', handleUp);
+                gesture.finish(getCanvasPositionFromMouse(ev, newCanvas));
+            };
             window.addEventListener('mousemove', handleMove);
             window.addEventListener('mouseup', handleUp);
         });
 
+        // Whole chain on a double click. The two clicks underneath it have
+        // already toggled the item on and back off, so the selection this
+        // replaces is the one the user started with.
+        newCanvas.addEventListener('dblclick', (e) => {
+            const pos = getCanvasPositionFromMouse(e, newCanvas);
+            if (onScrollbar(pos)) return;
+            const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+            if (!item || item.type === 'chain') return;
+            e.preventDefault();
+            selectWholeChain(item, e.shiftKey);
+        });
+
+        // Double TAP is the same gesture. There is no dblclick on a phone, so
+        // it is measured here: two taps close together in time and place.
+        let lastTapAt = 0;
+        let lastTapPos = null;
+        const DOUBLE_TAP_MS = 320;
+        const DOUBLE_TAP_PX = 24;
+
         newCanvas.addEventListener('touchstart', (e) => {
             if (e.touches.length !== 1) return;
-            e.preventDefault();
+            const pos = getCanvasPositionFromMouse(e.touches[0], newCanvas);
 
-            const touch = e.touches[0];
-            const pos = getCanvasPositionFromMouse(touch, newCanvas);
-            const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
-            if (!item) return;
+            const now = (typeof performance !== 'undefined' && performance.now)
+                ? performance.now() : Date.now();
+            const isDoubleTap = lastTapPos
+                && (now - lastTapAt) < DOUBLE_TAP_MS
+                && Math.abs(pos.x - lastTapPos.x) < DOUBLE_TAP_PX
+                && Math.abs(pos.y - lastTapPos.y) < DOUBLE_TAP_PX;
+            lastTapAt = now;
+            lastTapPos = pos;
 
-            const current = renderer?.getVisibility();
-            const currentPositions = baselinePositions();
-
-            dragState.active = false;
-            dragState.startItem = item;
-            dragState.endItemIndex = item.index;
-            dragState.initialPositions = new Set(currentPositions);
-            dragState.unselectMode = !!(item.positionIndices && item.positionIndices.length > 0 &&
-                item.positionIndices.every(pi => currentPositions.has(pi)));
-
-            if (item.type !== 'chain') {
-                const preview = computeSelectionFromRange(
-                    item.index, item.index, dragState.initialPositions, dragState.unselectMode
-                );
-                setLocalPreview(preview);
-                lastSequenceUpdateHash = null;
-                scheduleRender();
+            if (isDoubleTap && !onScrollbar(pos)) {
+                const item = getSelectableItemAtPosition(pos.x, pos.y, layout, sequenceViewMode);
+                if (item && item.type !== 'chain') {
+                    e.preventDefault();
+                    lastTapAt = 0;
+                    lastTapPos = null;
+                    selectWholeChain(item, false);
+                    return;
+                }
             }
+
+            e.preventDefault();
+            const gesture = beginGesture(pos, false);
+            if (!gesture) return;
 
             const handleMove = (ev) => {
                 if (ev.touches.length !== 1) return;
                 ev.preventDefault();
-                const t = ev.touches[0];
-
-                const dragPos = getCanvasPositionFromMouse(t, newCanvas);
-                const over = getSelectableItemAtPosition(dragPos.x, dragPos.y, layout, sequenceViewMode);
-                if (!over) return;
-                if (item.type === 'chain') return; // no drag for chains
-
-                dragState.active = true;
-                if (over.index !== dragState.endItemIndex) {
-                    dragState.endItemIndex = over.index;
-                    const preview = computeSelectionFromRange(
-                        dragState.startItem.index,
-                        over.index,
-                        dragState.initialPositions,
-                        dragState.unselectMode
-                    );
-                    setLocalPreview(preview);
-                    lastSequenceUpdateHash = null;
-                    scheduleRender();
-                }
+                gesture.moveTo(getCanvasPositionFromMouse(ev.touches[0], newCanvas));
             };
-
             const handleEnd = (ev) => {
                 ev.preventDefault();
-
-                if (dragState.startItem?.type === 'chain') {
-                    const changedTouch = (ev.changedTouches && ev.changedTouches[0]) || null;
-                    if (changedTouch) {
-                        const upPos = getCanvasPositionFromMouse(changedTouch, newCanvas);
-                        const over = getSelectableItemAtPosition(upPos.x, upPos.y, layout, sequenceViewMode);
-                        if (over && over.type === 'chain' && over.chainId === dragState.startItem.chainId) {
-                            const chainId = over.chainId;
-                            const sel = renderer?.getVisibility();
-                            const isSelected = sel?.chains?.has(chainId) ||
-                                (sel?.visibilityMode === 'default' && (!sel?.chains || sel.chains.size === 0));
-                            if (callbacks.setChainResiduesSelected) {
-                                callbacks.setChainResiduesSelected(chainId, !isSelected);
-                            }
-                        }
-                    }
-                } else {
-                    const previewSet = getLocalPreview();
-                    if (dragState.active && previewSet) {
-                        applyResidueSelection(previewSet);
-                    } else {
-                        const toggled = toggleItemPositions(dragState.startItem, dragState.initialPositions);
-                        applyResidueSelection(toggled);
-                    }
-                }
-
-                setLocalPreview(null);
-                dragState.active = false;
-                dragState.startItem = null;
-                dragState.endItemIndex = -1;
-                dragState.initialPositions = null;
-                lastSequenceUpdateHash = null;
-                scheduleRender();
-
                 window.removeEventListener('touchmove', handleMove);
                 window.removeEventListener('touchend', handleEnd);
                 window.removeEventListener('touchcancel', handleEnd);
+                const t = (ev.changedTouches && ev.changedTouches[0]) || null;
+                gesture.finish(t ? getCanvasPositionFromMouse(t, newCanvas) : null);
             };
-
             window.addEventListener('touchmove', handleMove, { passive: false });
             window.addEventListener('touchend', handleEnd, { passive: false });
             window.addEventListener('touchcancel', handleEnd, { passive: false });
