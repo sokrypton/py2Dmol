@@ -3297,23 +3297,201 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {Array<number>} selectedIndices - old indices, ascending
          * @returns {object|null} the remapped table
          */
-        _remapSidechains(sc, selectedIndices) {
+        /**
+         * Carry an object's DISPLAY STATE onto a copy of part of it.
+         *
+         * The frame arrays are extracted position by position; this is
+         * everything else - the per-object state that says which of those
+         * positions are drawn with a side chain, which carry an element
+         * colouring, which nucleotides show a base, what secondary structure
+         * has been forced on them, what colour they and their side chains were
+         * given, and which pairs are joined by a contact. All of it is
+         * keyed by POSITION INDEX, so a copy has to renumber it exactly the
+         * way the side-chain table is renumbered, and drop whatever fell
+         * outside the selection.
+         *
+         * None of it used to be carried at all: copying a selection you had
+         * just posed - side chains out, coloured, bases showing - produced a
+         * bare backbone, because a new object starts with none of these keys
+         * and nothing filled them in.
+         *
+         * EVERY FIELD IS NAMED HERE. That is the trap this file keeps falling
+         * into (see extractedFrame, and frameObj in web/app.js): a state
+         * carried field by field silently drops whatever nobody wrote down.
+         * `tests/copy_selection.js` sets all of them and checks each one
+         * survives - and separately walks the source for per-object keys that
+         * nobody copies, so a new one added without a line here fails there.
+         */
+        _remapObjectState(src, dst, selectedIndices) {
+            if (!src || !dst) return;
+            const renumber = new Map();
+            for (let i = 0; i < selectedIndices.length; i++) {
+                renumber.set(selectedIndices[i], i);
+            }
+            // position sets: sidechains, elements, bases
+            for (const key of ['sidechains', 'elements', 'bases']) {
+                const set = src[key];
+                if (!(set instanceof Set)) continue;
+                const out = new Set();
+                for (const i of set) {
+                    const to = renumber.get(i);
+                    if (to !== undefined) out.add(to);
+                }
+                // An empty result is NOT the same as absent for every one of
+                // these - null means ALL for bases and elements and NONE for
+                // side chains - so an empty set is stored as empty rather than
+                // collapsed to null, which would invert two of the three.
+                dst[key] = out;
+            }
+            // forced secondary structure: position -> letter
+            if (src.sse) {
+                const out = {};
+                for (const k of Object.keys(src.sse)) {
+                    const to = renumber.get(Number(k));
+                    if (to !== undefined) out[to] = src.sse[k];
+                }
+                dst.sse = Object.keys(out).length ? out : null;
+            }
+            // COLOUR. Only the `position` map inside it is keyed by index; the
+            // rest of the structure - an object-wide mode or literal the
+            // per-residue colours sit on top of - is not, and is carried
+            // through untouched so a copy keeps the same base to override.
+            if (src.color) {
+                if (src.color.type === 'advanced' && src.color.value) {
+                    const value = { ...src.color.value };
+                    if (value.position) {
+                        const out = {};
+                        for (const k of Object.keys(value.position)) {
+                            const to = renumber.get(Number(k));
+                            if (to !== undefined) out[to] = value.position[k];
+                        }
+                        if (Object.keys(out).length) value.position = out;
+                        else delete value.position;
+                    }
+                    dst.color = Object.keys(value).length
+                        ? { type: 'advanced', value } : null;
+                } else {
+                    // a mode or a literal applies to the whole object either way
+                    dst.color = src.color;
+                }
+            }
+            // per-residue side-chain colour, keyed by owner position
+            if (src.sidechainColor) {
+                const out = {};
+                for (const k of Object.keys(src.sidechainColor)) {
+                    const to = renumber.get(Number(k));
+                    if (to !== undefined) out[to] = src.sidechainColor[k];
+                }
+                dst.sidechainColor = Object.keys(out).length ? out : null;
+            }
+            // contacts come in two shapes. [i, j, w, colour?] is indices and
+            // renumbers; [chain, res, chain, res, w, colour?] names residues
+            // and survives a copy untouched - but only if both of its ends
+            // came with it, or it resolves to nothing on every frame load and
+            // warns to the console for the life of the object.
+            if (Array.isArray(src.contacts) && src.contacts.length) {
+                const kept = [];
+                const survives = new Set();
+                for (const i of selectedIndices) {
+                    const chain = this.chains && this.chains[i];
+                    const res = this.residueNumbers && this.residueNumbers[i];
+                    if (chain !== undefined && res !== undefined) survives.add(chain + ':' + res);
+                }
+                for (const c of src.contacts) {
+                    if (!Array.isArray(c)) continue;
+                    if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+                        const a = renumber.get(c[0]);
+                        const b = renumber.get(c[1]);
+                        if (a === undefined || b === undefined) continue;
+                        kept.push([a, b, ...c.slice(2)]);
+                    } else if (typeof c[0] === 'string' && c.length >= 4) {
+                        if (!survives.has(c[0] + ':' + c[1])) continue;
+                        if (!survives.has(c[2] + ':' + c[3])) continue;
+                        kept.push(c.slice());
+                    }
+                }
+                dst.contacts = kept.length ? kept : null;
+            }
+        }
+
+        _remapSidechains(sc, selectedIndices, srcCoords, dstCoords) {
             if (!sc || !sc.pos || !sc.pos.length) return null;
             const renumber = new Map();
             for (let i = 0; i < selectedIndices.length; i++) {
                 renumber.set(selectedIndices[i], i);
             }
+            // THE FRAME A COEFFICIENT IS EXPRESSED IN MAY NOT EXIST IN THE COPY,
+            // and where it does exist it may not be the SAME frame: it is built
+            // from the anchor's neighbours, and a selection with a gap in it
+            // puts a different residue next door. Both cases used to go
+            // unnoticed - the rows were carried across with their numbers
+            // renumbered and their coefficients untouched, so a copy of one
+            // residue drew no side chain at all (measured: 3 rows in the table,
+            // 0 atoms on screen), four residues drew one of four, and two runs
+            // of three drew five of thirteen.
+            //
+            // So each row is taken back to a world offset using the frame it
+            // was built in, and then put into whichever frame the copy can
+            // actually build at that anchor - or left as a world offset, with
+            // anchor -1, when the copy can build none.
+            // BOTH coordinate arrays are required, and deliberately not
+            // defaulted: the whole job here is comparing the frame the copy can
+            // build against the one the source had, and a caller that passed
+            // neither would get a table that renumbers cleanly and draws
+            // nothing - which is the bug this exists to fix.
+            const localFrame = window.py2dmolCartoon && window.py2dmolCartoon.localFrame;
+            const nSrc = srcCoords.length;
+            const nDst = dstCoords.length;
+            const srcAt = (i) => ({ x: srcCoords[i][0], y: srcCoords[i][1], z: srcCoords[i][2] });
+            const dstAt = (i) => ({ x: dstCoords[i][0], y: dstCoords[i][1], z: dstCoords[i][2] });
+            const fbuf = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+            const frameCache = new Map();
+            const frameIn = (which, i) => {
+                const key = which + i;
+                if (!frameCache.has(key)) {
+                    const at = which === 's' ? srcAt : dstAt;
+                    const n = which === 's' ? nSrc : nDst;
+                    frameCache.set(key,
+                        (localFrame && localFrame(at, n, i, fbuf, null)) ? fbuf.slice() : null);
+                }
+                return frameCache.get(key);
+            };
             const pos = []; const frameOf = []; const coef = [];
             const names = []; const elements = [];
             const rowOf = new Map();          // old table row -> new table row
             for (let k = 0; k < sc.pos.length; k++) {
                 const owner = renumber.get(sc.pos[k]);
-                const anchor = renumber.get(sc.frameOf[k]);
-                if (owner === undefined || anchor === undefined) continue;
+                if (owner === undefined) continue;
+                const srcAnchor = sc.frameOf[k];
+                const dstAnchor = renumber.get(srcAnchor);
+                const fSrc = frameIn('s', srcAnchor);
+                if (!fSrc) continue;                  // unframable at source: it was never drawn
+                const cx = sc.coef[k * 3];
+                const cy = sc.coef[k * 3 + 1];
+                const cz = sc.coef[k * 3 + 2];
+                // the atom's offset from its anchor, in world axes
+                const wx = fSrc[0] * cx + fSrc[3] * cy + fSrc[6] * cz;
+                const wy = fSrc[1] * cx + fSrc[4] * cy + fSrc[7] * cz;
+                const wz = fSrc[2] * cx + fSrc[5] * cy + fSrc[8] * cz;
+                const fDst = dstAnchor === undefined ? null : frameIn('d', dstAnchor);
                 rowOf.set(k, pos.length);
                 pos.push(owner);
-                frameOf.push(anchor);
-                coef.push(sc.coef[k * 3], sc.coef[k * 3 + 1], sc.coef[k * 3 + 2]);
+                if (fDst) {
+                    frameOf.push(dstAnchor);
+                    // world offset back into the copy's own frame
+                    coef.push(fDst[0] * wx + fDst[1] * wy + fDst[2] * wz,
+                        fDst[3] * wx + fDst[4] * wy + fDst[5] * wz,
+                        fDst[6] * wx + fDst[7] * wy + fDst[8] * wz);
+                } else {
+                    // no frame in the copy: keep it as a world offset from the
+                    // OWNER, which is the one position this row is certain of
+                    const anchorPos = srcAt(srcAnchor);
+                    const ownerPos = srcAt(sc.pos[k]);
+                    frameOf.push(-1);
+                    coef.push(anchorPos.x + wx - ownerPos.x,
+                        anchorPos.y + wy - ownerPos.y,
+                        anchorPos.z + wz - ownerPos.z);
+                }
                 names.push(sc.names[k]);
                 elements.push(sc.elements[k]);
             }
@@ -3485,8 +3663,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // see _remapSidechains. Named here because this object is
                     // built field by field and anything left out is dropped in
                     // silence, which is how the copy came to have no side
-                    // chains at all.
-                    sidechains: this._remapSidechains(frame.sidechains, selectedIndices),
+                    // chains at all. FILLED IN BELOW, once the coordinates
+                    // exist: the remap has to ask whether the COPY can build a
+                    // local frame at each anchor, and it cannot answer that
+                    // against coordinates that have not been extracted yet.
+                    sidechains: null,
                 };
 
                 // Extract data for each selected position
@@ -3511,6 +3692,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         }
                     }
                 }
+
+                extractedFrame.sidechains = this._remapSidechains(
+                    frame.sidechains, selectedIndices, frame.coords, extractedFrame.coords);
 
                 // Filter PAE matrix if present (use resolved PAE data)
                 // PAE can be Uint8Array (flattened, scaled x8) or 2D array (legacy)
@@ -3590,6 +3774,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Add extracted frame to new object
                 this.addFrame(extractedFrame, extractName);
             }
+
+            // ...and the display state that goes with those positions: which
+            // of them show a side chain or a base, their colours, and the
+            // contacts between them. Frames carry coordinates; this carries
+            // the pose.
+            this._remapObjectState(object, this.objectsData[extractName], selectedIndices);
 
             // Extract MSA data for selected positions if MSA exists
             if (object.msa && object.msa.msasBySequence && object.msa.chainToSequence) {
@@ -5069,16 +5259,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const owner = sc.pos[k];
                 if (!show.has(owner)) continue;
                 const anchor = sc.frameOf[k];
-                const f = frameAt(anchor);
-                if (!f) continue;
-                const o = at(anchor);
+                // ANCHOR -1: the coefficients are a plain offset from the
+                // owner's own position, in world axes, because the structure
+                // this row belongs to cannot build a local frame at all.
+                // `localFrame` needs a residue before and two after (see its
+                // 1 <= i <= n-3 guard) and an unbroken chain through them, so a
+                // copy of one residue, or of anything under four, or of runs
+                // with gaps between them, has no frame anywhere. The offsets
+                // are baked at copy time, where the frame still existed.
+                //
+                // What this costs is the only thing the frame buys: these
+                // atoms do not follow the backbone when a sheet is flattened.
+                // A structure too short to be framed is also too short to be
+                // flattened, so there is nothing to follow.
+                const f = anchor >= 0 ? frameAt(anchor) : null;
+                if (anchor >= 0 && !f) continue;
+                const o = at(anchor >= 0 ? anchor : owner);
                 const cx = sc.coef[k * 3], cy = sc.coef[k * 3 + 1], cz = sc.coef[k * 3 + 2];
                 const idx = coords.length;
-                coords.push([
+                coords.push(f ? [
                     o.x + f[0] * cx + f[3] * cy + f[6] * cz,
                     o.y + f[1] * cx + f[4] * cy + f[7] * cz,
                     o.z + f[2] * cx + f[5] * cy + f[8] * cz,
-                ]);
+                ] : [o.x + cx, o.y + cy, o.z + cz]);
                 types.push('L');
                 chains.push(chains[owner] !== undefined ? chains[owner] : '');
                 names.push(names[owner] !== undefined ? names[owner] : '');
@@ -6280,6 +6483,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * same way the Side chains row is hidden for a selection that has none.
          * Position types 'D' and 'R' are DNA and RNA.
          */
+        /**
+         * Does this selection have a secondary structure to force?
+         *
+         * SECONDARY STRUCTURE IS A PROTEIN BACKBONE PROPERTY. A nucleotide has
+         * no helix or sheet to be in, and the assignment never gives one a
+         * letter, so the SSE control did nothing at all on a DNA or RNA
+         * selection - it just sat there offering four states none of which
+         * could apply.
+         */
+        hasSseFor(positions) {
+            const t = this.positionTypes;
+            if (!t) return false;
+            for (const i of positions) {
+                if (t[i] === 'P') return true;
+            }
+            return false;
+        }
+
         hasBasesFor(positions) {
             const t = this.positionTypes;
             if (!t) return false;
@@ -7299,7 +7520,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * So inertia is allowed only where a full-quality frame is actually
          * affordable, measured the same way the ink degrade measures it
-         * (median of the last five inked frames), and never above the segment
+         * (the cheapest of the last five inked frames - see the note there on
+         * why the minimum and not the median), and never above the segment
          * cutoff. Cost is the honest test - a segment count says nothing about
          * canvas size, detail or the machine - but the count stays as a floor
          * for styles that never report a time.
@@ -7322,8 +7544,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          *
          * Two tests, because they catch different things. The measured cost is
          * the honest one - it knows about canvas size, detail and the machine,
-         * none of which a count does. The segment count is a floor for the
-         * styles and first frames that have never reported a cost.
+         * none of which a count does. It is also the one that goes stale, so
+         * the history behind it is keyed on the canvas as well as the object.
+         * The segment count is a floor for the styles and first frames that
+         * have never reported a cost.
          */
         smoothAnimationOk() {
             let visible = this.segmentIndices ? this.segmentIndices.length : 0;
@@ -7343,10 +7567,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         /**
          * Is a full-quality frame too expensive to draw during a gesture?
-         * The cartoon plugin records the median of the last five INKED frames
-         * as _lastInkedMs; undefined means nothing has reported a cost yet (a
-         * style that does not measure, or the very first frame), and an unknown
-         * cost is not evidence of a slow one.
+         * The cartoon plugin records the CHEAPEST of the last five INKED frames
+         * as _lastInkedMs - every source of noise here only ever makes a frame
+         * slower, so the cheapest of them is the one paying for the drawing
+         * alone. Undefined means nothing has reported a cost yet (a style that
+         * does not measure, or the very first frame), and an unknown cost is
+         * not evidence of a slow one.
          */
         _frameOverBudget() {
             const budget = (typeof this.cartoonGestureInk === 'number')

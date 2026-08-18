@@ -2290,4 +2290,76 @@ test('a two-element bond is cut into two coloured halves', () => {
     }
 });
 
+// ---- the ink pass's occluder grid -----------------------------------------
+// The grid is a pure accelerator: it decides which occluders a visibility
+// query bothers to test, never what the answer is. The test below says exactly
+// that and nothing about how the grid is built, so it holds for any
+// implementation of it.
+
+// One render of a dense fixture at a given cell pitch. Ribbon (quad
+// occluders), a ligand in front of it (capsules and stick faces), and a chain
+// break. Kept well inside the canvas, because an off-canvas query point is
+// genuinely pitch-dependent - the grid covers ceil(W / CELL) * CELL pixels, so
+// the strip past the right edge belongs to the grid at one pitch and not at
+// another.
+function inkTraceAt(cell) {
+    const coords = helix(24).concat(coil(10, 26));
+    const nP = coords.length;
+    const segs = bbSegs([[0, 23], [24, 33]]);
+    // a four-atom ligand across the front of the helix, at +z (toward the
+    // eye), so it really does occlude something
+    const lig = [[-6, 2, 14], [-2, 3, 14], [2, 2, 14], [6, 3, 14]];
+    for (const [x, y, z] of lig) coords.push({ x, y, z });
+    for (let i = 0; i + 1 < lig.length; i++) {
+        segs.push({ type: 'L', idx1: nP + i, idx2: nP + i + 1 });
+    }
+    const types = new Array(coords.length).fill('P');
+    for (let i = nP; i < coords.length; i++) types[i] = 'L';
+    const r = mkRenderer(coords, segs, {
+        overlayState: { enabled: false },
+        outlineMode: 'full',
+        positionTypes: types,
+        _inkCell: cell,
+        _inkTrace: [],
+        _phase: {},
+    });
+    cartoon.render(r, mkCtx().ctx, 400, 400, segs.map(() => COL));
+    return r;
+}
+
+test('the ink pass decides the same lines at every cell pitch', () => {
+    // 3 and 24 are the ends of the adaptive pitch's own clamp, and 7 is a
+    // pitch that divides neither dimension - so occluders span different
+    // numbers of cells in all three, and every one of them has to reach every
+    // query that could see it. A cell list left unsorted fails here too: the
+    // query walks far-to-near and stops at the first occluder that is not
+    // nearer than its own point, which skips real occluders the moment the
+    // order is wrong, and changing the pitch changes which occluders share a
+    // cell.
+    const runs = [3, 7, 24].map((c) => inkTraceAt(c));
+    const ref = runs[0]._inkTrace;
+    if (!ref.length) throw new Error('no ink segments - the fixture drew nothing');
+    if (!ref.some((b) => b === 0) || !ref.some((b) => b === 1)) {
+        throw new Error('every ink segment came out the same way, so the '
+            + 'occlusion test never actually fired on this fixture');
+    }
+    for (let k = 1; k < runs.length; k++) {
+        const t = runs[k]._inkTrace;
+        if (t.length !== ref.length) {
+            throw new Error('pitch changed the number of ink segments: '
+                + ref.length + ' vs ' + t.length);
+        }
+        for (let i = 0; i < ref.length; i++) {
+            if (ref[i] !== t[i]) {
+                throw new Error('ink segment ' + i + ' is '
+                    + (ref[i] ? 'drawn' : 'hidden') + ' at pitch '
+                    + runs[0]._phase.inkCell + ' and '
+                    + (t[i] ? 'drawn' : 'hidden') + ' at pitch '
+                    + runs[k]._phase.inkCell + ' - the grid changed an answer '
+                    + 'instead of just how fast it was reached');
+            }
+        }
+    }
+});
+
 process.exit(failures ? 1 : 0);

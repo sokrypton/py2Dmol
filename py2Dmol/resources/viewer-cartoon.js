@@ -2907,7 +2907,7 @@
             inkCost = renderer._lastBareMs
                 * (renderer._inkRatio || INK_COST_RATIO_DEFAULT);
         }
-        // ENOUGH SAMPLES TO HAVE AN OPINION. With one sample the "median of
+        // ENOUGH SAMPLES TO HAVE AN OPINION. With one sample the "minimum of
         // five" is that one sample, and the first inked frame of a drag is a
         // warm-up: on 1TIM it costs 34 ms where every frame after it costs 11.
         // Degrading on it latched the outline off for the whole gesture, and
@@ -11111,25 +11111,36 @@
         //     1TIM (494 residues)  cold 46.0, 49.6, 38.3, 30.1, 23.1 ms
         //                          warm 11.2 ms median
         //     3A3A ( 86 residues)  cold 22.7 ms   warm  3.5 ms
-        // The median of five was meant to absorb exactly this, and cannot: the
-        // cold frames arrive CONSECUTIVELY, so right after any cache
-        // invalidation the whole history is cold and its median is 38 ms. A drag
-        // started at that moment dropped the outline on a 494-residue protein,
-        // and - because nothing is recorded while the ink is off - stayed
-        // degraded for the entire gesture. A drag started a second later saw a
-        // median of 11 ms and behaved perfectly. That is the whole of the
+        // A five-frame history cannot absorb this on its own, by either
+        // estimator: the cold frames arrive CONSECUTIVELY, so right after any
+        // cache invalidation EVERY sample in the window is cold - a median of
+        // 38 ms, and a minimum still of 23. Hence the exclusion here rather
+        // than a cleverer average. A drag started at that moment dropped the
+        // outline on a 494-residue protein, and - because nothing is recorded
+        // while the ink is off - stayed degraded for the entire gesture. A
+        // drag started a second later read 11 ms and behaved perfectly. That
+        // is the whole of the
         // reported "sometimes fine, sometimes not": the decision was reading the
         // cost of building the structure, not the cost of drawing it.
         // THE HISTORY BELONGS TO A STRUCTURE. It used to persist across loads,
         // so opening a ribosome and then a small protein left the small one
-        // carrying the ribosome's 260 ms samples - and since it takes three new
-        // samples to shift the median of five, the small protein spent its first
-        // drags degraded for no reason. Keyed on the object rather than on
+        // carrying the ribosome's 260 ms samples, and spent its first drags
+        // degraded for no reason. (The minimum recovers from a stale history
+        // in ONE cheap sample where the median needed three - but only once
+        // such a sample is taken, and while the outline is off none is.)
+        // Keyed on the object rather than on
         // secKey, which also changes per FRAME: a trajectory step is the same
         // structure at the same cost, and resetting there would mean the history
         // never fills during playback.
+        // ...AND TO THE CANVAS, because cost is per pixel as much as per
+        // structure. Measured: keeping the key on the object alone, a resize
+        // from 900 to 1400 px - 2.4x the pixels - left the 900 px samples and
+        // their median in place to decide 1400 px frames. Rounded to 100 px so
+        // a drag on a resize handle does not clear the history every frame.
         {
-            const costKey = `${renderer.currentObjectName}|${n}`;
+            const px = Math.round((renderer.displayWidth || 0)
+                * (renderer.displayHeight || 0) / 1e4);
+            const costKey = `${renderer.currentObjectName}|${n}|${px}`;
             if (renderer._inkedMsKey !== costKey) {
                 renderer._inkedMsKey = costKey;
                 renderer._inkedMs = [];
@@ -11143,12 +11154,28 @@
         if (!cacheRebuilt) {
             const _t1 = (typeof performance !== 'undefined' && performance.now)
                 ? performance.now() : Date.now();
-            // MEDIAN OF THE LAST FIVE, not the last one. A single frame is a
-            // bad estimate - the first render after any change pays JIT and
-            // cache costs (measured 52 and 60 ms on a structure that settles at
-            // 16), and a GC can land anywhere. Deciding on one sample let a
-            // transient spike degrade an entire drag on a structure that never
-            // needed it.
+            // THE MINIMUM OF THE LAST FIVE, not the last one and not their
+            // median. A single frame is a bad estimate - the first render
+            // after any change pays JIT and cache costs (measured 52 and 60 ms
+            // on a structure that settles at 16), and a GC can land anywhere.
+            //
+            // The min rather than the median because EVERY SOURCE OF NOISE HERE
+            // IS ONE-SIDED. JIT, a cold cache, a GC pause, another tab getting
+            // the CPU - all of them only ever make a frame slower; nothing
+            // makes one faster than the work it does. So the cheapest of the
+            // last five IS the cost of the frame, and the dearer ones are that
+            // cost plus an accident. The median only helps against noise that
+            // goes both ways, and against a RUN of consecutive cold frames -
+            // which is exactly how warm-up arrives - its median is cold too.
+            // Measured, six 5-frame drags on 1UBQ with nothing else changing:
+            // the median read 27.7 ms on the first and 6.1 on the second, so
+            // the first drag dropped the outline and the rest kept it. That is
+            // the whole of the reported "same structure, sometimes slow".
+            //
+            // It biases LOW, which is the safe direction: an underestimate
+            // keeps the outline on for a frame or two more and is corrected by
+            // the next sample, while an overestimate drops it for the whole
+            // gesture and - with no inked frame left to measure - cannot be.
             //
             // BOTH KINDS OF FRAME ARE TIMED, into their own histories. Timing
             // only the inked ones was a one-way door: the moment the outline
@@ -11166,10 +11193,12 @@
                 : (renderer._bareMs || (renderer._bareMs = []));
             hist.push(_t1 - _t0);
             if (hist.length > 5) hist.shift();
-            const sorted = hist.slice().sort((x, y) => x - y);
-            const med = sorted[sorted.length >> 1];
-            if (inked) renderer._lastInkedMs = med;
-            else renderer._lastBareMs = med;
+            let best = hist[0];
+            for (let i = 1; i < hist.length; i++) {
+                if (hist[i] < best) best = hist[i];
+            }
+            if (inked) renderer._lastInkedMs = best;
+            else renderer._lastBareMs = best;
             // What the ink COSTS, as a multiplier on a bare frame. Measured at
             // 900px: 1BNA 2.6x, 3A3A 2.3x, 1TIM 1.6x - it falls as the structure
             // grows, because the fills grow faster than the silhouette does.
@@ -11177,11 +11206,22 @@
             // so it needs no constant.
             // Updated ONLY on a frame where the ink actually ran, so the two
             // sides of the ratio are contemporaneous. Recomputing it every frame
-            // was circular and did nothing: while degraded the inked median is
-            // frozen, so bare x (frozenInked / bare) is just frozenInked again.
+            // was circular and did nothing: while degraded the inked estimate
+            // is frozen, so bare x (frozenInked / bare) is just frozenInked
+            // again.
+            // CLAMPED AT 1, because a frame that also draws the ink cannot
+            // be cheaper than the same frame without it. Measured on one
+            // structure across six drags the raw quotient read 4.26, 0.94,
+            // 1.12, 0.94, 0.97 and 0.77 - the two sides are measured at
+            // different moments, so a warm bare frame divided into a
+            // cold inked one, or the reverse, gives a number the geometry
+            // forbids. Below 1 it made the degraded estimate cheaper than the
+            // bare frame it is built from, which brings the outline back and
+            // the next cold frame takes it away again: the flip-flop.
             if (inked && renderer._lastBareMs > 0.01
                 && renderer._inkedMs.length >= 3 && renderer._bareMs.length >= 3) {
-                renderer._inkRatio = renderer._lastInkedMs / renderer._lastBareMs;
+                renderer._inkRatio = Math.max(1,
+                    renderer._lastInkedMs / renderer._lastBareMs);
             }
         }
     }

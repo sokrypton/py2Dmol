@@ -514,9 +514,12 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 </label>
                             </div>
                             <!-- Hidden unless the selection contains nucleotides.
-                                 See hasBasesFor. -->
+                                 See hasBasesFor. Called "Side chain" and not
+                                 "Bases" because it is the same thing this panel
+                                 offers a protein: the part that hangs off the
+                                 backbone, drawn or not drawn. -->
                             <div class="selection-panel-row" id="basesRow" hidden>
-                                <span class="selection-panel-label">Bases</span>
+                                <span class="selection-panel-label">Side chain</span>
                                 <label class="btn-toggle btn-small selection-toggle" title="Draw base plates for the selected nucleotides">
                                     <input type="checkbox" id="basesShowToggle"
                                         aria-label="Draw base plates for the selected nucleotides">

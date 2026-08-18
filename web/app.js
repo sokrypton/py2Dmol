@@ -1061,14 +1061,28 @@ function setupEventListeners() {
         // the atoms the row draws, so wherever there are none it is already
         // gone with them.
         //
-        // ...and the Bases row on the same rule, from the other side: it is
-        // offered only where the selection HAS nucleotides. A protein selection
-        // gets Side chains, a nucleic one gets Bases, a mixed one gets both.
+        // ...and the nucleic row on the same rule, from the other side: it is
+        // offered only where the selection HAS nucleotides. It is labelled
+        // "Side chain" like the row above it, because to a nucleotide a base is
+        // exactly that; they are separate rows because the two are gated from
+        // opposite sides and a mixed selection can show both.
         const bRow = document.getElementById('basesRow');
         if (bRow) {
             const renderer = viewerApi?.renderer;
             bRow.hidden = none || !renderer || !renderer.hasBasesFor
                 || !renderer.hasBasesFor(picked);
+        }
+        // SSE on the same rule, from the protein side. Secondary structure is
+        // a property of a protein backbone: a nucleotide is never assigned a
+        // letter, so on a DNA or RNA selection this menu offered four states
+        // and did nothing whichever was picked. It hides rather than
+        // disabling, because the row it sits on is about the main chain and
+        // stays useful - a greyed control there reads as something broken.
+        const ssHide = document.getElementById('selSsSelect');
+        if (ssHide) {
+            const renderer = viewerApi?.renderer;
+            ssHide.hidden = none || !renderer || !renderer.hasSseFor
+                || !renderer.hasSseFor(picked);
         }
         tools.classList.toggle('disabled', none);
         // Also set the real disabled property, not just the class: hiding the
@@ -3098,124 +3112,6 @@ function updateChainSelectionUI() {
     }
 }
 
-function setChainResiduesSelected(chain, selected) {
-    if (!viewerApi?.renderer) return;
-    const current = viewerApi.renderer.getVisibility();
-    const objectName = viewerApi.renderer.currentObjectName;
-    if (!objectName) return;
-
-    const obj = viewerApi.renderer.objectsData[objectName];
-    if (!obj?.frames?.length) return;
-    const frame0 = obj.frames[0];
-    if (!frame0?.residue_numbers || !frame0?.chains) return;
-
-    // Get all available chains
-    const allChains = new Set(frame0.chains);
-
-    // Determine current chain selection
-    // If chains.size === 0 and mode is 'default', all chains are selected
-    let currentChains = new Set(current.chains);
-    if (currentChains.size === 0 && current.visibilityMode === 'default') {
-        currentChains = new Set(allChains);
-    }
-
-    const newChains = new Set(currentChains);
-
-    // getVisibility() now normalizes default mode to have all positions, so we can use it directly
-    const newPositions = new Set(current.positions);
-
-    if (selected) {
-        newChains.add(chain);
-        // When selecting a chain, add all positions from that chain
-        // This preserves existing position selections from other chains
-        for (let i = 0; i < frame0.chains.length; i++) {
-            if (frame0.chains[i] === chain) {
-                newPositions.add(i); // Add position (Set.add is idempotent, so safe)
-            }
-        }
-    } else {
-        newChains.delete(chain);
-        // When deselecting a chain, remove all positions from that chain
-        // This preserves position selections from other chains
-        for (let i = 0; i < frame0.chains.length; i++) {
-            if (frame0.chains[i] === chain) {
-                newPositions.delete(i);
-            }
-        }
-    }
-
-    // Determine selection mode
-    // If we have explicit position selections (partial selections), always use 'explicit' mode
-    // to preserve the partial selections. Only use 'default' if we have no position selections
-    // and all chains are selected.
-    const allChainsSelected = newChains.size === allChains.size &&
-        Array.from(newChains).every(c => allChains.has(c));
-    const hasPartialSelections = newPositions.size > 0 &&
-        newPositions.size < frame0.chains.length;
-
-    // Use explicit mode if we have partial selections OR if not all chains are selected OR if no positions are selected
-    // This allows all chains to be deselected (empty chains set with explicit mode)
-    const visibilityMode = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? 'default' : 'explicit';
-
-    // If all chains are selected AND no partial selections AND we have positions, use empty chains set with default mode
-    // Otherwise, keep explicit chain selection (allows empty chains)
-    const chainsToSet = (allChainsSelected && !hasPartialSelections && newPositions.size > 0) ? new Set() : newChains;
-
-    viewerApi.renderer.setVisibility({
-        chains: chainsToSet,
-        positions: newPositions,
-        visibilityMode: visibilityMode,
-        paeBoxes: []  // Clear PAE boxes when editing chain selection
-    });
-    // Event listener will update UI, no need to call applySelection()
-}
-
-/** Alt-click a chain label to toggle selection of all positions in that chain */
-function toggleChainResidues(chain) {
-    if (!viewerApi?.renderer) return;
-    const objectName = viewerApi.renderer.currentObjectName;
-    if (!objectName) return;
-    const obj = viewerApi.renderer.objectsData[objectName];
-    if (!obj?.frames?.length) return;
-    const frame = obj.frames[0];
-    if (!frame?.chains) return;
-
-    const current = viewerApi.renderer.getVisibility();
-    const chainPositionIndices = [];
-    for (let i = 0; i < frame.chains.length; i++) {
-        if (frame.chains[i] === chain) {
-            chainPositionIndices.push(i);
-        }
-    }
-    const allSelected = chainPositionIndices.length > 0 && chainPositionIndices.every(positionIndex => current.positions.has(positionIndex));
-
-    const newPositions = new Set(current.positions);
-    chainPositionIndices.forEach(positionIndex => {
-        if (allSelected) newPositions.delete(positionIndex);
-        else newPositions.add(positionIndex);
-    });
-
-    // When toggling positions, we need to update chains to include all chains that have selected positions
-    // to prevent the chain filter from hiding positions we just selected
-    const newChains = new Set();
-    for (const positionIndex of newPositions) {
-        const positionChain = frame.chains[positionIndex];
-        if (positionChain) {
-            newChains.add(positionChain);
-        }
-    }
-
-    // Determine if we have partial selections (not all positions from all chains)
-    const hasPartialSelections = newPositions.size > 0 && newPositions.size < frame.chains.length;
-
-    viewerApi.renderer.setVisibility({
-        positions: newPositions,
-        chains: newChains,
-        visibilityMode: hasPartialSelections ? 'explicit' : 'default',
-        paeBoxes: []  // Clear PAE boxes when editing sequence
-    });
-}
-
 // [NEW] This function updates the chain buttons and sequence view
 // based on the renderer's selection model
 function syncChainPillsToSelection() {
@@ -3363,8 +3259,6 @@ if (window.SEQ) {
     window.SEQ.setCallbacks({
         getRenderer: () => viewerApi?.renderer || null,
         getObjectSelect: () => document.getElementById('objectSelect'),
-        toggleChainResidues: toggleChainResidues,
-        setChainResiduesSelected: setChainResiduesSelected,
         highlightAtom: highlightPosition,
         highlightAtoms: highlightPositions,
         clearHighlight: clearHighlight,

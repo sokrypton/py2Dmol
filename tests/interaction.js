@@ -495,7 +495,7 @@ const panelBody = (() => {
     };
     return appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles');
 })();
-function panelRun(selection, sidechained = new Set(), hasContact = false) {
+function panelRun(selection, sidechained = new Set(), hasContact = false, types = null) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
@@ -510,6 +510,8 @@ function panelRun(selection, sidechained = new Set(), hasContact = false) {
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
+        basesRow: { hidden: null },
+        selSsSelect: { hidden: null, disabled: null },
     };
     const doc = { getElementById: (id) => nodes[id] || null };
     // eslint-disable-next-line no-new-func
@@ -524,9 +526,10 @@ function panelRun(selection, sidechained = new Set(), hasContact = false) {
         { renderer: {
             hasSidechainsFor: (p2) => p2.some((i) => sidechained.has(i)),
             hasElementsFor: (p2) => p2.some((i) => sidechained.has(i)),
-            hasBasesFor: () => false,
+            hasBasesFor: (p2) => !!types && p2.some((i) => types[i] === 'D' || types[i] === 'R'),
+            hasSseFor: (p2) => (types ? p2.some((i) => types[i] === 'P') : true),
             sidechainOwners: () => sidechained,
-            positionTypes: [],
+            positionTypes: types || [],
             visiblePositions: null,
             currentObjectName: 'obj',
             objectsData: { obj: {} },
@@ -639,6 +642,49 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     if (!(sse < copy)) throw new Error('SSE is not next to Copy');
 });
 
+t('SSE is offered for protein and withheld from nucleic acid', () => {
+    // Secondary structure is a protein backbone property: the assignment never
+    // gives a nucleotide a letter, so on a DNA or RNA selection this menu
+    // offered four states and none of them could do anything.
+    const PROT = ['P', 'P', 'P', 'P'];
+    const NUC = ['D', 'D', 'D', 'D'];
+    const MIX = ['P', 'P', 'D', 'D'];
+    if (panelRun([0, 1], new Set(), false, PROT).selSsSelect.hidden !== false) {
+        throw new Error('SSE is hidden on a protein selection');
+    }
+    if (panelRun([0, 1], new Set(), false, NUC).selSsSelect.hidden !== true) {
+        throw new Error('SSE is still offered on a nucleic selection, where it does nothing');
+    }
+    // a mixed selection keeps it: some of what is picked can take a letter
+    if (panelRun([0, 2], new Set(), false, MIX).selSsSelect.hidden !== false) {
+        throw new Error('SSE went away on a selection that is partly protein');
+    }
+    if (panelRun(null, new Set(), false, PROT).selSsSelect.hidden !== true) {
+        throw new Error('SSE is offered with nothing selected');
+    }
+});
+
+t('the nucleic row is the side-chain row by another name', () => {
+    // Bases are to a nucleotide what side chains are to an amino acid, and the
+    // panel now says so. The two rows never both apply to one residue, and each
+    // is offered only where it can do something.
+    const html = fs.readFileSync('index.html', 'utf8');
+    const at = html.indexOf('id="basesRow"');
+    if (at < 0) throw new Error('basesRow is gone');
+    const label = html.slice(at, at + 400).match(/selection-panel-label">([^<]+)</);
+    if (!label || label[1].trim() !== 'Side chain') {
+        throw new Error('the nucleic row is labelled ' + JSON.stringify(label && label[1]));
+    }
+    const NUC = ['D', 'D'];
+    const PROT = ['P', 'P'];
+    if (panelRun([0, 1], new Set(), false, NUC).basesRow.hidden !== false) {
+        throw new Error('the row is hidden on a nucleic selection');
+    }
+    if (panelRun([0, 1], new Set(), false, PROT).basesRow.hidden !== true) {
+        throw new Error('the nucleic row is offered on a protein selection');
+    }
+});
+
 t('Unselect still follows the selection, and lives outside the panel', () => {
     // Select all / Unselect CREATE or clear a selection, so they cannot live in
     // a panel that only exists once there is one - they stay in the sequence
@@ -659,6 +705,15 @@ t('Unselect still follows the selection, and lives outside the panel', () => {
 });
 
 
+// Where a table's atoms actually END UP, so a copy can be judged on the only
+// thing that matters: the side chain has to sit where it sat.
+function scAtomsOf(frameData, shown) {
+    const v = scViewer(shown);
+    const built = v._materialiseSidechains(frameData);
+    return built.coords.slice(frameData.coords.length);
+}
+const nearly = (a, b) => Math.abs(a - b) < 1e-6;
+
 t('a copied sub-structure keeps its side chains, renumbered', () => {
     // The table is keyed by POSITION INDEX and a copy renumbers everything, so
     // it can neither be dropped (the copy has no side chains and asking for
@@ -668,7 +723,8 @@ t('a copied sub-structure keeps its side chains, renumbered', () => {
     const v = scViewer([2]);
     // copy residues 1..4, so residue 2 becomes index 1 and its anchor comes too
     const selected = [1, 2, 3, 4];
-    const out = v._remapSidechains(d.sidechains, selected);
+    const copiedCoords = selected.map((i) => d.coords[i]);
+    const out = v._remapSidechains(d.sidechains, selected, d.coords, copiedCoords);
     if (!out) throw new Error('the copy got no side-chain table at all');
     if (out.pos.length !== d.sidechains.pos.length) {
         throw new Error('lost atoms: ' + out.pos.length + ' of ' + d.sidechains.pos.length);
@@ -677,9 +733,13 @@ t('a copied sub-structure keeps its side chains, renumbered', () => {
         if (out.pos[k] !== 1) throw new Error('atom ' + k + ' points at position '
             + out.pos[k] + ', residue 2 of the original is index 1 of the copy');
         if (out.frameOf[k] !== 1) throw new Error('anchor was not renumbered');
+        // The copy can build a frame here from the SAME three residues, so the
+        // coefficients come back as they went in - to within the round trip
+        // through world axes that the remap now does, which is not bit-exact.
         for (let c = 0; c < 3; c++) {
-            if (out.coef[k * 3 + c] !== d.sidechains.coef[k * 3 + c]) {
-                throw new Error('coefficients were altered by the copy');
+            if (!nearly(out.coef[k * 3 + c], d.sidechains.coef[k * 3 + c])) {
+                throw new Error('coefficients were altered by the copy: '
+                    + out.coef[k * 3 + c] + ' vs ' + d.sidechains.coef[k * 3 + c]);
             }
         }
     }
@@ -688,7 +748,7 @@ t('a copied sub-structure keeps its side chains, renumbered', () => {
     }
     // and it must actually materialise against the copied coordinates
     const copied = {
-        coords: selected.map((i) => d.coords[i]),
+        coords: copiedCoords,
         position_types: selected.map(() => 'P'),
         chains: selected.map(() => 'A'),
         position_names: selected.map((i) => d.position_names[i]),
@@ -714,15 +774,93 @@ t('a copy that leaves the anchor behind drops that side chain, not the table', (
     // somewhere arbitrary.
     const d = scFixture();
     const v = scViewer([2]);
-    const out = v._remapSidechains(d.sidechains, [4, 5]);   // residue 2 not copied
+    const out = v._remapSidechains(d.sidechains, [4, 5],
+        d.coords, [4, 5].map((i) => d.coords[i]));      // residue 2 not copied
     if (out !== null) throw new Error('kept rows whose residue was not copied');
     // a table with SOME rows surviving must keep those
-    const wide = v._remapSidechains(d.sidechains, [0, 1, 2, 3, 4, 5]);
+    const wide = v._remapSidechains(d.sidechains, [0, 1, 2, 3, 4, 5], d.coords, d.coords);
     if (!wide || wide.pos.length !== d.sidechains.pos.length) {
         throw new Error('a full copy lost rows');
     }
 });
 
+
+t('a copy too short to have a frame still draws its side chain, in place', () => {
+    // THE REPORTED BUG. Coefficients live in a LOCAL FRAME built from the
+    // residue before and the two after (localFrame's 1 <= i <= n-3 guard), so
+    // a copy of one residue can build no frame anywhere and every atom was
+    // silently dropped at draw time - the table came across intact and nothing
+    // appeared. Measured on 1TIM before the fix: one residue copied gave 3
+    // table rows and 0 atoms, four residues gave 11 rows and 4 atoms.
+    const d = scFixture();
+    const v = scViewer([2]);
+    const want = scAtomsOf(d, [2]);          // where they sit in the original
+    if (want.length !== 2) throw new Error('fixture drew ' + want.length + ' atoms');
+
+    for (const selected of [[2], [1, 2], [2, 3, 4], [1, 2, 3, 4]]) {
+        const copiedCoords = selected.map((i) => d.coords[i]);
+        const out = v._remapSidechains(d.sidechains, selected, d.coords, copiedCoords);
+        if (!out) throw new Error('copy of ' + JSON.stringify(selected) + ': no table');
+        const owner = selected.indexOf(2);
+        const copied = {
+            coords: copiedCoords,
+            position_types: selected.map(() => 'P'),
+            chains: selected.map(() => 'A'),
+            position_names: selected.map((i) => d.position_names[i]),
+            residue_numbers: selected.map((i) => d.residue_numbers[i]),
+            sidechains: out,
+        };
+        const got = scAtomsOf(copied, [owner]);
+        if (got.length !== want.length) {
+            throw new Error('copy of ' + JSON.stringify(selected) + ' drew '
+                + got.length + ' of ' + want.length + ' side-chain atoms');
+        }
+        for (let k = 0; k < want.length; k++) {
+            for (let c = 0; c < 3; c++) {
+                if (!nearly(got[k][c], want[k][c])) {
+                    throw new Error('copy of ' + JSON.stringify(selected)
+                        + ' moved atom ' + k + ': ' + JSON.stringify(got[k])
+                        + ' want ' + JSON.stringify(want[k]));
+                }
+            }
+        }
+    }
+});
+
+t('a gap in the selection does not re-point a side chain at the wrong neighbour', () => {
+    // A frame is built from the anchor's NEIGHBOURS. Copy a selection with a
+    // hole in it and the residue next door in the copy is a different residue
+    // from the one the coefficients were measured against, so carrying them
+    // over unchanged would rotate the side chain by whatever the two frames
+    // differ by - wrong, and wrong silently.
+    const d = scFixture();
+    const v = scViewer([2]);
+    const want = scAtomsOf(d, [2]);
+    const selected = [0, 2, 4];             // 1 and 3 left behind
+    const copiedCoords = selected.map((i) => d.coords[i]);
+    const out = v._remapSidechains(d.sidechains, selected, d.coords, copiedCoords);
+    if (!out) throw new Error('no table');
+    const copied = {
+        coords: copiedCoords,
+        position_types: selected.map(() => 'P'),
+        chains: selected.map(() => 'A'),
+        position_names: selected.map((i) => d.position_names[i]),
+        residue_numbers: selected.map((i) => d.residue_numbers[i]),
+        sidechains: out,
+    };
+    const got = scAtomsOf(copied, [1]);
+    if (got.length !== want.length) {
+        throw new Error('drew ' + got.length + ' of ' + want.length + ' atoms');
+    }
+    for (let k = 0; k < want.length; k++) {
+        for (let c = 0; c < 3; c++) {
+            if (!nearly(got[k][c], want[k][c])) {
+                throw new Error('atom ' + k + ' moved to ' + JSON.stringify(got[k])
+                    + ', want ' + JSON.stringify(want[k]));
+            }
+        }
+    }
+});
 
 t('a side chain follows its residue\'s colour until given one of its own', () => {
     const d = scFixture();
@@ -2398,6 +2536,126 @@ t('every selection toggle has a name of its own', () => {
             + ' visible text, and three of these say only "Show"');
         if (seen.has(label)) throw new Error('two toggles share the name "' + label + '"');
         seen.add(label);
+    }
+});
+
+// ---------------------------------------------------------------------------
+// WHAT A FRAME COSTS, which is the whole of the gesture decision. Lifted out of
+// the cartoon plugin as source text, for the usual reason: a paraphrase of a
+// cost estimator agrees with itself forever.
+// Anchored STRUCTURALLY - the costKey line and the `if (!cacheRebuilt)` block,
+// brace-matched - rather than on the text of any expression inside it. An
+// earlier version ended the slice on the ratio expression, so editing that
+// expression did not fail a test, it stopped the suite from loading at all.
+// Built lazily for the same reason: a missing anchor must FAIL, not crash.
+let _costRecorder;
+const costRecorder = (...args) => {
+    if (!_costRecorder) {
+        const cSrc = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+        const key = cSrc.indexOf('const costKey = `${renderer.currentObjectName}');
+        if (key < 0) throw new Error('the costKey line moved - nothing here scores it');
+        const a = cSrc.lastIndexOf('{', key);          // the block it opens
+        const rec = cSrc.indexOf('if (!cacheRebuilt) {', a);
+        if (rec < 0) throw new Error('the cost-recording block moved');
+        let d = 0, k = cSrc.indexOf('{', rec);
+        for (; k < cSrc.length; k++) {
+            if (cSrc[k] === '{') d++;
+            else if (cSrc[k] === '}' && !--d) break;
+        }
+        _costRecorder = new Function('renderer', 'n', '_t0', 'cacheRebuilt',
+            'performance', cSrc.slice(a, k + 1));
+    }
+    return _costRecorder(...args);
+};
+
+// one frame: `ms` is what it cost, `inked` whether the outline was drawn
+const frame = (r, ms, inked, opts = {}) => {
+    r._inkRan = inked;
+    costRecorder(r, opts.n === undefined ? 100 : opts.n, 0,
+        !!opts.cacheRebuilt, { now: () => ms });
+};
+const mkCostRenderer = () => ({ currentObjectName: 'obj',
+    displayWidth: 900, displayHeight: 900 });
+
+// EVERY SOURCE OF NOISE IN A FRAME TIME IS ONE-SIDED. JIT, a cold cache, a GC
+// pause, another process taking the CPU - all of them only make a frame slower.
+// So the cheapest of the last five is the frame's real cost and the dearer ones
+// are that cost plus an accident, which is why the estimate is the minimum. The
+// median let a RUN of consecutive cold frames - exactly how warm-up arrives -
+// carry the whole window: measured on 1UBQ, 27.7 ms on the first drag against
+// 6.1 on the second, with nothing about the structure changed.
+t('the frame-cost estimate is the cheapest of the last five, not the median', () => {
+    const r = mkCostRenderer();
+    // a warm-up run followed by steady frames, which is what a drag looks like
+    for (const ms of [40, 40, 40, 8, 9]) frame(r, ms, true);
+    if (r._lastInkedMs !== 8) {
+        throw new Error('estimate is ' + r._lastInkedMs + ' ms, want 8 - the median'
+            + ' of this window is 40, which is three cold frames deciding a drag');
+    }
+    // and it must still be a WINDOW: the cheap frames age out, so a structure
+    // that gets dearer - a zoom in, a style change - is not held to a price it
+    // no longer costs
+    for (const ms of [30, 31, 32, 33, 34]) frame(r, ms, true);
+    if (r._lastInkedMs !== 30) {
+        throw new Error('a sample outside the last five still counts: got ' + r._lastInkedMs);
+    }
+});
+
+// THE SAME STRUCTURE MUST NOT DECIDE DIFFERENTLY DRAG TO DRAG. This is the
+// reported symptom - "similar sized objects, I jump between slow and fast" -
+// and it is reproduced here as the sequence a real gesture produces: a few cold
+// frames, then steady ones, repeated. The estimate must land on the steady cost
+// each time rather than on whichever population happens to fill the window.
+t('repeated drags on one structure reach the same verdict', () => {
+    const BUDGET = 25;
+    const verdicts = [];
+    const r = mkCostRenderer();
+    for (let drag = 0; drag < 4; drag++) {
+        // warm-up frames arrive CONSECUTIVELY, then the drag settles
+        for (const ms of [38, 36, 34]) frame(r, ms, true);
+        for (const ms of [9, 10, 9, 11]) frame(r, ms, true);
+        verdicts.push(r._lastInkedMs > BUDGET);
+    }
+    if (verdicts.some((v) => v !== verdicts[0])) {
+        throw new Error('the same structure was judged ' + JSON.stringify(verdicts)
+            + ' over four identical drags');
+    }
+    if (verdicts[0]) throw new Error('a 9 ms structure was called unaffordable');
+});
+
+// COST IS PER PIXEL AS MUCH AS PER STRUCTURE. Keyed on the object alone, samples
+// taken at 900px stayed in place to decide frames at 1400px - 2.4x the work.
+t('the cost history is thrown away when the canvas changes size', () => {
+    const r = mkCostRenderer();
+    for (const ms of [4, 4, 4]) frame(r, ms, true);
+    if (r._lastInkedMs !== 4) throw new Error('history did not fill');
+    r.displayWidth = 1400; r.displayHeight = 1400;
+    frame(r, 40, true);
+    if (r._lastInkedMs !== 40) {
+        throw new Error('a 900px sample survived the resize and is deciding 1400px'
+            + ' frames: estimate ' + r._lastInkedMs);
+    }
+    // ...but not for a nudge of a few pixels, or a resize drag clears it every frame
+    r.displayWidth = 1402;
+    frame(r, 41, true);
+    if (r._lastInkedMs !== 40) {
+        throw new Error('a 2px change wiped the history - a resize drag would leave'
+            + ' it permanently empty');
+    }
+});
+
+// A FRAME THAT ALSO DRAWS THE INK CANNOT BE CHEAPER THAN THE SAME FRAME WITHOUT
+// IT. The two sides of this ratio are taken from different moments, so the raw
+// quotient went as low as 0.77 in measurement - and below 1 it makes the
+// degraded estimate cheaper than the bare frame it is built from, which brings
+// the outline back onto a frame that cannot afford it.
+t('the ink-cost ratio can never say ink is free', () => {
+    const r = mkCostRenderer();
+    for (const ms of [20, 21, 22]) frame(r, ms, false);   // bare frames
+    for (const ms of [10, 11, 12]) frame(r, ms, true);    // inked, and CHEAPER
+    if (!(r._inkRatio >= 1)) {
+        throw new Error('ratio is ' + r._inkRatio + ' - the estimate while degraded'
+            + ' is now cheaper than the bare frame it multiplies');
     }
 });
 

@@ -32,13 +32,15 @@ by the packaged Python path.
 | `richardson_test.html` | Richardson preset beside the plain cartoon on four SS compositions (3CHY, 1TIM, 2POR, 1BBH). 1TIM is the control — it is the subject of the original drawing. |
 | `ribosome.html` | 4UG0, the large-structure performance case (17,789 positions). Built separately: `python tests/make_ribosome.py`. |
 
-## Assertions — `smoke.js` / `interaction.js`
+## Assertions — `smoke.js` / `interaction.js` / `sequence.js` / `copy_selection.js`
 
 Unlike the pages above, these assert, and need no browser:
 
     node tests/smoke.js                                          # source
     node tests/smoke.js py2Dmol/resources/viewer-cartoon.min.js  # bundle
     node tests/interaction.js
+    node tests/sequence.js
+    node tests/copy_selection.js
 
 `smoke.js` renders synthetic structures through a mock 2D context and checks
 properties of what gets painted: closed solids, no inked edge crossing its own
@@ -49,6 +51,54 @@ mangler can break what the source proves.
 against a mock canvas, plus `_materialiseSidechains`, side-chain picking, and
 orient's centre/extent arithmetic from `web/app.js` — all lifted out of the
 source text rather than reimplemented.
+
+`sequence.js` drives the sequence strip's input layer through a DOM stub:
+synthetic clicks, drags, taps and scrollbar drags against `viewer-seq.js`, with
+the selection read back off the renderer. **Every shared behaviour is asserted
+through BOTH pointer types**, which is the point of the file — the strip used
+to carry two independent copies of the selection logic, and the touch copy was
+the older one, so a tap on a chain label toggled that chain's *visibility*
+while a click toggled its *selection*, dragging across chain labels worked only
+with a mouse, and the scrollbar could not be touched at all (a phone has no
+wheel event, so a long sequence had nothing below the first screenful
+reachable). Two structural tests keep that from coming back: neither pointer
+listener may name the selection helpers directly, and no listener may be
+registered under a name that cannot fire — both handlers had been sitting
+disabled by an `__DISABLED` suffix on their event name for long enough that the
+live copies drifted.
+
+`copy_selection.js` covers what **Copy** carries onto the new object. A frame
+is extracted position by position and has its own coverage; this is the
+per-object display state beside it — which positions show a side chain or a
+base, their colours, the forced secondary structure, and the contacts between
+them. All of it is keyed by position index, none of it used to be carried at
+all, so copying a posed selection returned a bare backbone. The last test in
+the file walks `web/app.js` and `viewer-mol.js` for per-object keys that
+`_remapObjectState` does not name, and fails on any it finds — that is how
+`sse` and `color` were discovered to be missing too.
+
+**A copy can also be too small to hold a side chain.** Coefficients live in a
+local frame built from the residue before and the two after (`localFrame`'s
+`1 <= i <= n-3` guard, plus an unbroken chain through them), so a copy of one
+residue can build no frame anywhere and every atom was dropped at draw time —
+the table came across intact and nothing appeared. Measured on 1TIM before the
+fix: one residue gave 3 table rows and **0** atoms, four residues gave 11 rows
+and 4 atoms, two runs of three gave 13 rows and 5 atoms. The rows are now taken
+back to a world offset and re-expressed in whatever frame the copy can build,
+or kept as a world offset with anchor `-1` where it can build none.
+`interaction.js` asserts the copied atoms land on the same coordinates they had
+in the original, for selections of 1, 2, 3 and 4 residues and for one with a
+gap in it.
+
+Two traps in the harness itself, both of which made assertions pass vacuously
+before they were fixed:
+
+- **`cloneNode` must copy the canvas width.** `setupCanvasSequenceEvents` clears
+  old listeners by cloning the canvas; a stub clone with `width` 0 makes
+  `getCanvasPositionFromMouse` scale every coordinate to zero, which puts every
+  click on the scrollbar and selects nothing, forever.
+- **`scrollTop` survives a rebuild.** A scroll test that only dragged one way
+  passed or failed on whatever ran before it. Drive both ends inside the test.
 
 Orient's floor is worth knowing about: a single position has extent **0**, which
 is falsy, so the branch that sets the target centre was skipped and orienting on
