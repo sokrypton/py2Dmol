@@ -4999,8 +4999,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // leave indices in them that now point past the end of the
             // coordinate array - and those get saved into the object's
             // visibilityState and carried forward.
+            //
+            // THE SELECTION IS ONE OF THOSE SETS. A click in the 3D view can
+            // land on a side-chain atom, which selects an APPENDED index; hide
+            // the side chains and that index points past the end. Everything
+            // that reads the selection then asks about a position that no
+            // longer exists - the panel's toggles tally it as not-visible and
+            // the main chain read as half hidden the moment side chains went.
             const nBase = data.coords.length;
-            for (const set of [this.visiblePositions,
+            for (const set of [this.visiblePositions, this.residueSelection,
                 this.visibilityModel && this.visibilityModel.positions]) {
                 if (!set) continue;
                 for (const i of set) if (i >= nBase) set.delete(i);

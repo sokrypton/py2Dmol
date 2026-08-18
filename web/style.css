@@ -1360,16 +1360,39 @@ table.layout-table td {
     color: #4b5563;
 }
 
-/* +/- buttons. A word costs a third of the row in a 340px panel, and with six
-   of them across three rows the labels were most of the panel. The symbol has
-   to carry the meaning, so each keeps a title and an aria-label - see the
-   colour buttons, which lost their text the same way. Square, so a lone glyph
-   does not sit in a wide slab. */
-.btn-pm {
-    width: 26px;
-    padding: 0;
-    text-align: center;
-    font-weight: 600;
+/* SELECTION TOGGLES. These rows used a +/- pair each: two buttons to express
+   one binary, and no way to see which way it currently stood - a selection
+   already showing its side chains looked exactly like one that was not. A
+   toggle carries the state in its own face, grey for off and green for on, the
+   same as every other toggle on the page, and halves the controls in a 340px
+   panel.
+   Sized to leave room for two on the side-chain row (Show and Elements)
+   without wrapping. */
+.selection-toggle {
+    flex: 0 0 auto;
+    min-width: 54px;
+}
+
+.selection-toggle > span {
+    padding: 0 8px;
+}
+
+/* Mixed selection: some of what was picked has it, some does not. Neither on
+   nor off is true, and showing either is a lie that the next click makes
+   worse - so it reads as its own state, and the click resolves it by turning
+   everything ON. */
+.selection-toggle input:indeterminate + span {
+    background: repeating-linear-gradient(135deg,
+        #e5e7eb, #e5e7eb 4px, #d1d5db 4px, #d1d5db 8px);
+    color: #4b5563;
+}
+
+/* SSE shares the main-chain row with its Show toggle, the way Elements shares
+   the side-chain row - so it is sized to the toggle rather than to its own
+   content, or the two rows would end at different places. */
+#selSsSelect {
+    flex: 0 0 auto;
+    min-width: 54px;
 }
 
 /* Per-contact width. Narrow enough to share a row with a swatch and two

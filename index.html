@@ -498,35 +498,30 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="scColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <button id="sidechainShowButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Draw side chains for the selected residues" title="Draw side chains for the selected residues">+</button>
-                                <button id="sidechainHideButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Stop drawing side chains for the selected residues" title="Stop drawing side chains for the selected residues">&minus;</button>
-                            </div>
-                            <!-- Element colours - nitrogen blue, oxygen red, sulfur
-                                 gold - on the side chains that are drawn. ON by
-                                 default, so this hides rather than reveals. Offered
-                                 wherever Side chains is, since those atoms are the
-                                 only ones carrying an element. -->
-                            <div class="selection-panel-row" id="elementsRow" hidden>
-                                <span class="selection-panel-label">Elements</span>
-                                <button id="elementsShowButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Colour the selected side chains by element"
-                                    title="Colour the selected side chains by element">+</button>
-                                <button id="elementsHideButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Stop colouring the selected side chains by element"
-                                    title="Stop colouring the selected side chains by element">&minus;</button>
+                                <label class="btn-toggle btn-small selection-toggle" title="Draw side chains for the selected residues">
+                                    <input type="checkbox" id="sidechainShowToggle"
+                                        aria-label="Draw side chains for the selected residues">
+                                    <span>Show</span>
+                                </label>
+                                <!-- Element colours ride WITH the side chains rather than in a
+                                     row of their own: they are a property of the atoms this row
+                                     draws, and a row that only ever applies to whatever this one
+                                     turned on reads as a separate thing to manage. -->
+                                <label class="btn-toggle btn-small selection-toggle" title="Colour the selected side chains by element - nitrogen blue, oxygen red, sulfur gold">
+                                    <input type="checkbox" id="elementsShowToggle"
+                                        aria-label="Colour the selected side chains by element">
+                                    <span>Elements</span>
+                                </label>
                             </div>
                             <!-- Hidden unless the selection contains nucleotides.
                                  See hasBasesFor. -->
                             <div class="selection-panel-row" id="basesRow" hidden>
                                 <span class="selection-panel-label">Bases</span>
-                                <button id="basesShowButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Draw base plates for the selected nucleotides"
-                                    title="Draw base plates for the selected nucleotides">+</button>
-                                <button id="basesHideButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Stop drawing base plates for the selected nucleotides"
-                                    title="Stop drawing base plates for the selected nucleotides">&minus;</button>
+                                <label class="btn-toggle btn-small selection-toggle" title="Draw base plates for the selected nucleotides">
+                                    <input type="checkbox" id="basesShowToggle"
+                                        aria-label="Draw base plates for the selected nucleotides">
+                                    <span>Show</span>
+                                </label>
                             </div>
                             <div class="selection-panel-row">
                                 <span class="selection-panel-label">Main chain</span>
@@ -543,10 +538,24 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="selColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <button id="mainchainShowButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Show the selected residues" title="Show the selected residues">+</button>
-                                <button id="mainchainHideButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Hide the selected residues" title="Hide the selected residues">&minus;</button>
+                                <label class="btn-toggle btn-small selection-toggle" title="Show or hide the selected residues">
+                                    <input type="checkbox" id="mainchainShowToggle"
+                                        aria-label="Show or hide the selected residues">
+                                    <span>Show</span>
+                                </label>
+                                <!-- SSE lives HERE because it is a BACKBONE
+                                     property: a side chain has no secondary
+                                     structure. It sits where Elements sits on
+                                     the side-chain row - the second control on
+                                     the row, styling what that row draws. -->
+                                <select id="selSsSelect" class="btn btn-grey btn-small"
+                                    title="Force the secondary structure of the selected residues">
+                                    <option value="" selected>SSE</option>
+                                    <option value="H">Helix</option>
+                                    <option value="E">Sheet</option>
+                                    <option value="C">Loop</option>
+                                    <option value="auto">Auto</option>
+                                </select>
                             </div>
                             <!-- CONTACTS need exactly two residues, so this row
                                  appears only then - a contact is a line between
@@ -563,12 +572,11 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="contactColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <button id="contactAddButton" class="btn btn-grey btn-small btn-pm"
-                                    aria-label="Draw a contact between the two selected residues"
-                                    title="Draw a contact between the two selected residues">+</button>
-                                <button id="contactRemoveButton" class="btn btn-grey btn-small btn-pm" hidden
-                                    aria-label="Remove the contact between the two selected residues"
-                                    title="Remove the contact between the two selected residues">&minus;</button>
+                                <label class="btn-toggle btn-small selection-toggle" title="Draw a contact between the two selected residues">
+                                    <input type="checkbox" id="contactShowToggle"
+                                        aria-label="Draw a contact between the two selected residues">
+                                    <span>Show</span>
+                                </label>
                                 <!-- Per contact, not global: the stored entry
                                      carries its own weight, so two contacts in
                                      one picture can differ. Narrow, to keep the
@@ -583,20 +591,10 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     aria-label="Width of this contact"
                                     title="Width of this contact (full width is the maximum)">
                             </div>
-                            <!-- Whole-selection actions. SSE is a BACKBONE
-                                 property - a side chain has no secondary
-                                 structure - but it is not a show/hide, and
-                                 keeping the two part rows to the same three
-                                 controls is what makes them scan as a pair. -->
+                            <!-- Whole-selection actions. Copy is the only one
+                                 left: it acts on the selection as a whole
+                                 rather than on one part of it. -->
                             <div class="selection-panel-row">
-                                <select id="selSsSelect" class="btn btn-grey btn-small"
-                                    title="Force the secondary structure of the selected residues">
-                                    <option value="" selected>SSE</option>
-                                    <option value="H">Helix</option>
-                                    <option value="E">Sheet</option>
-                                    <option value="C">Loop</option>
-                                    <option value="auto">Auto</option>
-                                </select>
                                 <button id="copySelectionButton" class="btn btn-grey btn-small"
                                     title="Copy the selected residues into a new object">Copy</button>
                             </div>

@@ -205,6 +205,34 @@ t('a switched-on residue appends its atoms as ligand positions', () => {
     }
 });
 
+// A SELECTION OUTLIVES THE COORDINATE ARRAY IT WAS MADE AGAINST. A click in the
+// 3D view can land on a side-chain atom, which selects an APPENDED index; hide
+// the side chains and that index points past the end of the array. Everything
+// that reads the selection then asks about a position that no longer exists -
+// the panel tallied it as not-visible, so the main chain read as HALF HIDDEN
+// the moment side chains went off, with nothing about the main chain changed.
+t('hiding side chains drops their atoms from the selection, not just visibility', () => {
+    const d = scFixture();
+    const v = scViewer([2]);
+    const shown = v._materialiseSidechains(d);
+    if (shown.coords.length !== 8) throw new Error('fixture did not materialise');
+    // as if the user had clicked residue 2 and one of its atoms
+    v.residueSelection = new Set([2, 7]);
+    v.visiblePositions = new Set([0, 1, 2, 3, 4, 5, 6, 7]);
+    v.visibilityModel = { positions: new Set([2, 7]) };
+    // ...and now they switch side chains off
+    v.objectsData.obj.sidechains = null;
+    v._materialiseSidechains(d);
+    if (v.residueSelection.has(7)) {
+        throw new Error('the selection kept index 7, which no longer exists -'
+            + ' every tally over the selection now asks about a dead position');
+    }
+    if (!v.residueSelection.has(2)) throw new Error('the real residue was pruned too');
+    if (v.visiblePositions.has(7) || v.visibilityModel.positions.has(7)) {
+        throw new Error('a visibility set kept the dead index');
+    }
+});
+
 t('a residue that was never captured is simply not drawn', () => {
     const d = scFixture();
     // residue 4 has no atoms in the table; residue 2 does but is not asked for
@@ -453,7 +481,19 @@ const panelBody = (() => {
         if (appSrc[k] === '{') d++;
         else if (appSrc[k] === '}') { d--; if (!d) break; }
     }
-    return appSrc.slice(a, k + 1);
+    // ...and syncSelectionToggles with it: the panel calls it, so lifting one
+    // without the other leaves the panel throwing on an undefined function.
+    const lift = (name) => {
+        const i = appSrc.indexOf('    function ' + name + '(');
+        if (i < 0) throw new Error(name + ' not found in web/app.js');
+        let j = appSrc.indexOf('{', i), dd = 0, kk = j;
+        for (; kk < appSrc.length; kk++) {
+            if (appSrc[kk] === '{') dd++;
+            else if (appSrc[kk] === '}') { dd--; if (!dd) break; }
+        }
+        return appSrc.slice(i, kk + 1);
+    };
+    return appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles');
 })();
 function panelRun(selection, sidechained = new Set(), hasContact = false) {
     const nodes = {
@@ -462,8 +502,11 @@ function panelRun(selection, sidechained = new Set(), hasContact = false) {
         selectionPanelCount: { textContent: null },
         contactRow: { hidden: null },
         clearAllResidues: { disabled: null },
-        contactAddButton: { hidden: null },
-        contactRemoveButton: { hidden: null },
+        sidechainShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: { checked: false, indeterminate: false },
+        basesShowToggle: { checked: false, indeterminate: false },
+        mainchainShowToggle: { checked: false, indeterminate: false },
+        contactShowToggle: { checked: false, indeterminate: false },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
@@ -478,7 +521,16 @@ function panelRun(selection, sidechained = new Set(), hasContact = false) {
         'findContact', 'contactSlots',
         panelBody + '; return updateSelectionToolsState;')(
         doc, () => selection,
-        { renderer: { hasSidechainsFor: (p2) => p2.some((i) => sidechained.has(i)) } },
+        { renderer: {
+            hasSidechainsFor: (p2) => p2.some((i) => sidechained.has(i)),
+            hasElementsFor: (p2) => p2.some((i) => sidechained.has(i)),
+            hasBasesFor: () => false,
+            sidechainOwners: () => sidechained,
+            positionTypes: [],
+            visiblePositions: null,
+            currentObjectName: 'obj',
+            objectsData: { obj: {} },
+        } },
         // a usable shape, not a bare {}: the panel reads the contact's stored
         // weight to load the width slider
         () => (hasContact ? { obj: { contacts: [['A', 1, 'B', 2, 1.5]] }, i: 0 } : null),
@@ -522,44 +574,63 @@ t('the panel says how big the selection is', () => {
 
 t('the panel keeps two matching part rows, with SSE and Copy below them', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const need = ['sidechainShowButton', 'sidechainHideButton',
-        'mainchainShowButton', 'mainchainHideButton',
+    const need = ['sidechainShowToggle', 'elementsShowToggle',
+        'mainchainShowToggle', 'basesShowToggle', 'contactShowToggle',
         'scColorButton', 'selColorButton', 'selSsSelect'];
     for (const id of need) {
         if (!html.includes('id="' + id + '"')) throw new Error('missing control: ' + id);
     }
-    // one toggle per part would mean reading two labels to work out what the
-    // selection looks like; these must stay two buttons each
-    for (const gone of ['toggleSelectionButton', 'sidechainSelectionButton']) {
-        if (html.includes('id="' + gone + '"')) throw new Error(gone + ' is still there');
-    }
-    // The colour buttons carry no text - the swatch is the label - and the
-    // +/- buttons carry a glyph that names an action nowhere. Both need an
-    // explicit accessible name: title is only a fallback for one, and dropping
-    // the word is exactly how a button goes unnamed.
-    for (const id of ['scColorButton', 'selColorButton', 'contactColorButton',
-        'sidechainShowButton', 'sidechainHideButton',
+    // ONE TOGGLE PER PART, not a +/- pair. This test used to assert the
+    // opposite - "one toggle would mean reading two labels to work out what the
+    // selection looks like" - and that reasoning was wrong in the one way that
+    // mattered: a +/- pair shows NOTHING about the current state, so a
+    // selection already showing its side chains looked exactly like one that
+    // was not. A toggle carries the state in its own face.
+    for (const gone of ['sidechainShowButton', 'sidechainHideButton',
         'mainchainShowButton', 'mainchainHideButton',
+        'basesShowButton', 'basesHideButton',
+        'elementsShowButton', 'elementsHideButton',
         'contactAddButton', 'contactRemoveButton']) {
-        const at = html.indexOf('id="' + id + '"');
-        const tagEnd = html.indexOf('>', at);
-        const open = html.lastIndexOf('<button', at);
-        const close = html.indexOf('</button>', at);
-        const tag = html.slice(open, tagEnd);
-        const text = html.slice(tagEnd + 1, close).replace(/<[^>]*>/g, '').trim();
-        // a lone +, - or nothing at all is not a name
-        if ((!text || text.length <= 1 || text === '&minus;')
-            && !/aria-label=/.test(tag)) {
-            throw new Error(id + ' has no accessible name - its label is '
-                + JSON.stringify(text) + ', which names no action');
+        if (html.includes('id="' + gone + '"')) {
+            throw new Error(gone + ' is still there - the rows are back to +/- pairs');
         }
     }
-    // The two part rows must stay the SAME three controls each - swatch, Show,
-    // Hide - which is what makes them scan as a pair. SSE is a backbone
-    // property but it is not a show/hide, so it sits with Copy on the actions
-    // row below them, after both.
-    const scHide = html.indexOf('id="sidechainHideButton"');
-    const mcHide = html.indexOf('id="mainchainHideButton"');
+    // Elements rides on the SIDE CHAIN row rather than a row of its own: it is
+    // a property of the atoms that row draws.
+    const scRow = html.indexOf('id="sidechainRow"');
+    const scEnd = html.indexOf('</div>', html.indexOf('id="elementsShowToggle"'));
+    if (!(html.indexOf('id="elementsShowToggle"') > scRow
+        && html.indexOf('id="elementsShowToggle"') < scEnd)) {
+        throw new Error('Elements is not on the side-chain row');
+    }
+    if (html.includes('id="elementsRow"')) {
+        throw new Error('the separate Elements row is still there');
+    }
+    // Each toggle must SAY what it is - the visible text is its accessible
+    // name - and carry a title, since "Show" alone does not say show what.
+    for (const id of ['sidechainShowToggle', 'elementsShowToggle',
+        'basesShowToggle', 'mainchainShowToggle', 'contactShowToggle']) {
+        const at2 = html.indexOf('id="' + id + '"');
+        const open = html.lastIndexOf('<label', at2);
+        const close = html.indexOf('</label>', at2);
+        const block = html.slice(open, close);
+        const text = (block.match(/<span>([^<]*)<\/span>/) || [, ''])[1].trim();
+        if (!text) throw new Error(id + ' has no visible label, so it has no name');
+        if (!/title="/.test(block.slice(0, block.indexOf('>')))) {
+            throw new Error(id + ' has no title - "Show" does not say show what');
+        }
+    }
+    // The colour buttons carry no text - the swatch is the label - so they
+    // still need an explicit accessible name.
+    for (const id of ['scColorButton', 'selColorButton', 'contactColorButton']) {
+        const at2 = html.indexOf('id="' + id + '"');
+        const tag = html.slice(html.lastIndexOf('<button', at2), html.indexOf('>', at2));
+        if (!/aria-label=/.test(tag)) {
+            throw new Error(id + ' has no accessible name');
+        }
+    }
+    const scHide = html.indexOf('id="elementsShowToggle"');
+    const mcHide = html.indexOf('id="mainchainShowToggle"');
     const sse = html.indexOf('id="selSsSelect"');
     const copy = html.indexOf('id="copySelectionButton"');
     if (!(scHide < mcHide && mcHide < sse)) {
@@ -1171,24 +1242,26 @@ t('committing a contact RELOADS the frame, not just repaints', () => {
     }
 });
 
-t('Add and Remove are offered according to whether a contact exists', () => {
+t('the contact toggle reflects whether a contact exists', () => {
+    // It replaced an Add button and a Remove button that were shown and hidden
+    // in turn. One control now, and its STATE is the answer - which is also
+    // what makes "is there a contact between these two" readable at a glance.
     const without = panelRun([4, 5], new Set(), false);
-    if (without.contactAddButton.hidden !== false) throw new Error('no Add for a pair with no contact');
-    if (without.contactRemoveButton.hidden !== true) {
-        throw new Error('Remove is offered with nothing to remove');
+    if (without.contactShowToggle.checked) {
+        throw new Error('the toggle is on for a pair with no contact');
     }
     if (without.contactColorButton.parentElement.hidden !== true) {
         throw new Error('a colour is offered with no contact to colour');
     }
     const withOne = panelRun([4, 5], new Set(), true);
-    if (withOne.contactAddButton.hidden !== true) {
-        throw new Error('Add is offered for a pair that already has a contact');
+    if (!withOne.contactShowToggle.checked) {
+        throw new Error('the toggle is off for a pair that has a contact');
     }
-    if (withOne.contactRemoveButton.hidden !== false) throw new Error('no Remove for an existing contact');
     if (withOne.contactColorButton.parentElement.hidden !== false) {
         throw new Error('no colour control for an existing contact');
     }
 });
+
 
 
 t('clicking a contact selects the two residues it joins', () => {
@@ -1318,12 +1391,12 @@ t('the contact row reads colour, add or remove, then width', () => {
         if (i < 0) throw new Error('missing control: ' + id);
         return i;
     };
-    const order = ['contactColorButton', 'contactAddButton',
-        'contactRemoveButton', 'contactWidthSlider'].map(at);
+    const order = ['contactColorButton', 'contactShowToggle',
+        'contactWidthSlider'].map(at);
     for (let i = 1; i < order.length; i++) {
         if (!(order[i] > order[i - 1])) {
             throw new Error('the contact row is out of order - colour, then the'
-                + ' add/remove button, then the width');
+                + ' toggle, then the width');
         }
     }
     // FULL WIDTH IS THE MAXIMUM: the slider takes a contact DOWN from the width
@@ -1926,7 +1999,7 @@ t('the global Bases checkbox is gone from the style panel', () => {
         throw new Error('index.html still has the global Bases checkbox - it'
             + ' moved to the selection tools');
     }
-    if (!/id="basesRow"/.test(html) || !/id="basesShowButton"/.test(html)) {
+    if (!/id="basesRow"/.test(html) || !/id="basesShowToggle"/.test(html)) {
         throw new Error('the selection tools have no Bases row');
     }
 });
@@ -2114,8 +2187,217 @@ t('the Elements row is offered where side chains are', () => {
     if (!v.hasElementsFor([4])) throw new Error('not offered for a residue with a side chain');
     if (v.hasElementsFor([9])) throw new Error('offered where there is no side chain');
     const html = fs.readFileSync('index.html', 'utf8');
-    if (!/id="elementsRow"/.test(html) || !/id="elementsHideButton"/.test(html)) {
-        throw new Error('the selection tools have no Elements row');
+    if (!/id="elementsShowToggle"/.test(html)) {
+        throw new Error('the side-chain row has no Elements toggle');
+    }
+});
+
+
+// A TOGGLE SHOWS THE SELECTION'S STATE, AND A MIXED SELECTION IS ITS OWN STATE.
+//
+// This is the whole reason the +/- pairs went: a pair shows nothing about what
+// is currently drawn, so a selection already showing its side chains looked
+// exactly like one that was not. A set can be all, none, or SOME - and "some"
+// is neither, so it reads indeterminate rather than picking a side. Clicking an
+// indeterminate box checks it, which resolves the mixture by turning everything
+// on: what "show what I picked" means when half of it already is.
+t('the selection toggles show all, none and mixed', () => {
+    const nodes = {
+        selectionTools: { classList: { toggle() {} }, querySelectorAll: () => [] },
+        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null },
+        contactRow: { hidden: null }, clearAllResidues: { disabled: null },
+        contactColorButton: { hidden: null, parentElement: { hidden: null } },
+        contactWidthSlider: { hidden: null, value: null },
+        sidechainRow: { hidden: null },
+        basesRow: { hidden: null },
+        sidechainShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: { checked: false, indeterminate: false },
+        basesShowToggle: { checked: false, indeterminate: false },
+        mainchainShowToggle: { checked: false, indeterminate: false },
+        contactShowToggle: { checked: false, indeterminate: false },
+    };
+    const owners = new Set([1, 2, 3]);
+    const run = (picked, shown) => {
+        const f = new Function('document', 'getActiveSelection', 'viewerApi',
+            'findContact', 'contactSlots',
+            panelBody + '; return updateSelectionToolsState;')(
+            { getElementById: (id) => nodes[id] || null },
+            () => picked,
+            { renderer: {
+                hasSidechainsFor: (p2) => p2.some((i) => owners.has(i)),
+                hasElementsFor: (p2) => p2.some((i) => owners.has(i)),
+                hasBasesFor: () => false,
+                sidechainOwners: () => owners,
+                positionTypes: [], visiblePositions: null,
+                currentObjectName: 'obj',
+                objectsData: { obj: { sidechains: shown } },
+            } },
+            () => null, () => ({ w: 4, col: 5 }));
+        f();
+        return nodes.sidechainShowToggle;
+    };
+    let t2 = run([1, 2], new Set([1, 2]));
+    if (!t2.checked || t2.indeterminate) throw new Error('all shown did not read as on');
+    t2 = run([1, 2], new Set());
+    if (t2.checked || t2.indeterminate) throw new Error('none shown did not read as off');
+    t2 = run([1, 2], new Set([1]));
+    if (!t2.indeterminate || t2.checked) {
+        throw new Error('a MIXED selection did not read as indeterminate - it was'
+            + ' shown as ' + (t2.checked ? 'on' : 'off') + ', which is a lie about'
+            + ' half of what was picked');
+    }
+    // ...and with nothing selected everything reads off rather than stale
+    t2 = run([], new Set([1, 2]));
+    if (t2.checked || t2.indeterminate) throw new Error('an empty selection left a stale state');
+});
+
+// Elements default ON, so their toggle must read on for an untouched object -
+// the opposite of side chains, and the asymmetry is easy to lose.
+t('the Elements toggle reads on until it is switched off', () => {
+    const nodes = {
+        selectionTools: { classList: { toggle() {} }, querySelectorAll: () => [] },
+        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null },
+        contactRow: { hidden: null }, clearAllResidues: { disabled: null },
+        contactColorButton: { hidden: null, parentElement: { hidden: null } },
+        contactWidthSlider: { hidden: null, value: null },
+        sidechainRow: { hidden: null }, basesRow: { hidden: null },
+        sidechainShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: { checked: false, indeterminate: false },
+        basesShowToggle: { checked: false, indeterminate: false },
+        mainchainShowToggle: { checked: false, indeterminate: false },
+        contactShowToggle: { checked: false, indeterminate: false },
+    };
+    const owners = new Set([1, 2]);
+    const run = (objData) => {
+        new Function('document', 'getActiveSelection', 'viewerApi', 'findContact',
+            'contactSlots', panelBody + '; return updateSelectionToolsState;')(
+            { getElementById: (id) => nodes[id] || null }, () => [1, 2],
+            { renderer: {
+                hasSidechainsFor: () => true, hasElementsFor: () => true,
+                hasBasesFor: () => false, sidechainOwners: () => owners,
+                positionTypes: [], visiblePositions: null,
+                currentObjectName: 'obj', objectsData: { obj: objData },
+            } }, () => null, () => ({ w: 4, col: 5 }))();
+        return nodes.elementsShowToggle;
+    };
+    if (!run({}).checked) {
+        throw new Error('an untouched object reads element colours as OFF - absent'
+            + ' means all, so it must read on');
+    }
+    if (run({ elements: new Set() }).checked) {
+        throw new Error('an EMPTY set reads as on - empty means none, and it has to'
+            + ' stay distinguishable from absent');
+    }
+    if (!run({ elements: new Set([1]) }).indeterminate) {
+        throw new Error('half switched off did not read as mixed');
+    }
+});
+
+// The same stale index, from the panel's side: the renderer prunes it, and this
+// is the second lock on the same door. An index past the end of the coordinate
+// array is not a hidden position - it is not a position at all - so it must not
+// be tallied at all rather than tallied as "not visible".
+t('the toggles ignore a selected position that no longer exists', () => {
+    const nodes = {
+        selectionTools: { classList: { toggle() {} }, querySelectorAll: () => [] },
+        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null },
+        contactRow: { hidden: null }, clearAllResidues: { disabled: null },
+        contactColorButton: { hidden: null, parentElement: { hidden: null } },
+        contactWidthSlider: { hidden: null, value: null },
+        sidechainRow: { hidden: null }, basesRow: { hidden: null },
+        sidechainShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: { checked: false, indeterminate: false },
+        basesShowToggle: { checked: false, indeterminate: false },
+        mainchainShowToggle: { checked: false, indeterminate: false },
+        contactShowToggle: { checked: false, indeterminate: false },
+    };
+    const run = (picked) => {
+        new Function('document', 'getActiveSelection', 'viewerApi', 'findContact',
+            'contactSlots', panelBody + '; return updateSelectionToolsState;')(
+            { getElementById: (id) => nodes[id] || null }, () => picked,
+            { renderer: {
+                hasSidechainsFor: () => true, hasElementsFor: () => true,
+                hasBasesFor: () => false, sidechainOwners: () => new Set([1, 2]),
+                positionTypes: [], coords: new Array(6),
+                visiblePositions: new Set([0, 1, 2, 3, 4, 5]),
+                currentObjectName: 'obj', objectsData: { obj: {} },
+            } }, () => null, () => ({ w: 4, col: 5 }))();
+        return nodes.mainchainShowToggle;
+    };
+    if (!run([1, 2]).checked) throw new Error('a fully visible selection did not read as on');
+    const t2 = run([1, 2, 99]);
+    if (t2.indeterminate || !t2.checked) {
+        throw new Error('index 99 - past the end of a 6-position structure - was'
+            + ' counted as hidden, so the main chain read as half hidden');
+    }
+});
+
+// A SELECTOR THAT NAMES ELEMENT TYPES ROTS WHEN THE ELEMENTS CHANGE TYPE. The
+// panel disabled `button, select` so its controls leave the tab order with no
+// selection - and the +/- buttons then became checkboxes, which that selector
+// does not match. Nothing failed: the toggles simply stayed live.
+t('the show toggles are disabled along with the rest of the panel', () => {
+    const toggles = [{ tag: 'INPUT', disabled: false }, { tag: 'INPUT', disabled: false }];
+    const buttons = [{ tag: 'BUTTON', disabled: false }];
+    const nodes = {
+        selectionTools: {
+            classList: { toggle() {} },
+            // the real DOM answers by SELECTOR, so the stub must too
+            querySelectorAll: (sel) => [
+                ...(/button/i.test(sel) ? buttons : []),
+                ...(/input/i.test(sel) ? toggles : []),
+            ],
+        },
+        selectionPanel: { hidden: null }, selectionPanelCount: { textContent: null },
+        contactRow: { hidden: null }, clearAllResidues: { disabled: null },
+        contactColorButton: { hidden: null, parentElement: { hidden: null } },
+        contactWidthSlider: { hidden: null, value: null },
+        sidechainRow: { hidden: null }, basesRow: { hidden: null },
+        sidechainShowToggle: { checked: false, indeterminate: false },
+        elementsShowToggle: { checked: false, indeterminate: false },
+        basesShowToggle: { checked: false, indeterminate: false },
+        mainchainShowToggle: { checked: false, indeterminate: false },
+        contactShowToggle: { checked: false, indeterminate: false },
+    };
+    const run = (picked) => new Function('document', 'getActiveSelection', 'viewerApi',
+        'findContact', 'contactSlots', panelBody + '; return updateSelectionToolsState;')(
+        { getElementById: (id) => nodes[id] || null }, () => picked,
+        { renderer: {
+            hasSidechainsFor: () => true, hasElementsFor: () => true,
+            hasBasesFor: () => false, sidechainOwners: () => new Set([1]),
+            positionTypes: [], coords: new Array(6), visiblePositions: null,
+            currentObjectName: 'obj', objectsData: { obj: {} },
+        } }, () => null, () => ({ w: 4, col: 5 }))();
+    run(null);
+    if (!toggles.every((e) => e.disabled)) {
+        throw new Error('a checkbox stayed enabled with nothing selected - it is'
+            + ' still tabbable and still clickable');
+    }
+    if (!buttons.every((e) => e.disabled)) throw new Error('the buttons stayed enabled');
+    run([1]);
+    if (toggles.some((e) => e.disabled) || buttons.some((e) => e.disabled)) {
+        throw new Error('the panel stayed disabled WITH a selection, so the check'
+            + ' above only proves everything is dead');
+    }
+});
+
+// THREE OF THESE READ "Show". A sighted user tells them apart by the row label
+// beside them; a screen reader announces the control on its own, so without a
+// name of its own each is just "Show, checkbox" three times over. The +/- pair
+// carried aria-labels for the same reason and they went with the buttons.
+t('every selection toggle has a name of its own', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    const ids = ['sidechainShowToggle', 'elementsShowToggle', 'basesShowToggle',
+        'mainchainShowToggle', 'contactShowToggle'];
+    const seen = new Set();
+    for (const id of ids) {
+        const m = html.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
+        if (!m) throw new Error('no input for ' + id);
+        const label = (m[0].match(/aria-label="([^"]+)"/) || [])[1];
+        if (!label) throw new Error(id + ' has no aria-label: it is announced by its'
+            + ' visible text, and three of these say only "Show"');
+        if (seen.has(label)) throw new Error('two toggles share the name "' + label + '"');
+        seen.add(label);
     }
 });
 

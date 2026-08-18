@@ -870,6 +870,64 @@ function setupEventListeners() {
         renderer.render('selection sidechains');
     }
 
+    // WHAT THE TOGGLES SHOW. Each reflects the selection it applies to, so a
+    // press is never a guess about the current state - which the +/- pairs it
+    // replaced could not do at all: a selection already showing its side chains
+    // looked exactly like one that was not.
+    //
+    // THREE STATES, because a selection is a set. All of it has the thing, none
+    // of it does, or some does - and "some" is neither, so it reads
+    // indeterminate rather than picking a side. Clicking an indeterminate box
+    // checks it, so the mixture resolves by turning everything on.
+    function syncSelectionToggles(picked, none) {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        const list = picked || [];
+        const set = (id, state) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.indeterminate = state === null;
+            el.checked = state === true;
+        };
+        // how many of `of` are in `have`; `null` means the set is absent, which
+        // for bases and elements means ALL and for side chains means NONE
+        const tally = (of, have, absentIsAll) => {
+            if (!of.length) return false;
+            const n = of.filter((i) => (have ? have.has(i) : absentIsAll)).length;
+            if (n === 0) return false;
+            if (n === of.length) return true;
+            return null;
+        };
+        if (none || !renderer || !obj) {
+            for (const id of ['sidechainShowToggle', 'elementsShowToggle',
+                'basesShowToggle', 'mainchainShowToggle', 'contactShowToggle']) {
+                set(id, false);
+            }
+            return;
+        }
+        // ...and only positions that still EXIST. A selection outlives the
+        // coordinate array it was made against - a click can land on a
+        // side-chain atom, and hiding side chains takes that atom away - so a
+        // stale index would be tallied as "not visible" and read as mixed.
+        // The renderer prunes them; this is the second lock on the same door.
+        const nPos = renderer.coords ? renderer.coords.length : Infinity;
+        const live = list.filter((i) => i < nPos);
+        const owners = renderer.sidechainOwners ? renderer.sidechainOwners() : null;
+        const scAble = owners ? live.filter((i) => owners.has(i)) : [];
+        set('sidechainShowToggle', tally(scAble,
+            obj.sidechains instanceof Set ? obj.sidechains : null, false));
+        set('elementsShowToggle', tally(scAble,
+            obj.elements instanceof Set ? obj.elements : null, true));
+        const t = renderer.positionTypes || [];
+        const nuc = live.filter((i) => t[i] === 'D' || t[i] === 'R');
+        set('basesShowToggle', tally(nuc,
+            obj.bases instanceof Set ? obj.bases : null, true));
+        // visibility: null means everything is visible
+        const vis = renderer.visiblePositions;
+        set('mainchainShowToggle', tally(live, vis, true));
+        set('contactShowToggle', list.length === 2 && !!findContact(list));
+    }
+
     // Element colours, per residue. A pure repaint - the atoms and bonds are
     // already there, only what colour a bond's halves take changes.
     function setSelectionElements(positions, on) {
@@ -966,21 +1024,16 @@ function setupEventListeners() {
                 : `${picked.length} residue${picked.length === 1 ? '' : 's'}`;
         }
         // A contact is a line between a PAIR: nothing to draw for one residue or
-        // for five, so the row is offered only for exactly two. Within it, Add
-        // and Remove are offered according to whether there IS one - an Add
-        // that would do nothing and a Remove with nothing to remove are both
-        // just clutter, and between them they say whether the pair is joined.
+        // for five, so the row is offered only for exactly two. Within it the
+        // toggle's STATE says whether the pair is joined - which is what the
+        // Add/Remove pair could only say by which of the two was showing.
         const contactRow = document.getElementById('contactRow');
         const pair = !none && picked.length === 2;
         if (contactRow) contactRow.hidden = !pair;
         if (pair) {
             const found = findContact(picked);
             const has = !!found;
-            const addBtn = document.getElementById('contactAddButton');
-            const rmBtn = document.getElementById('contactRemoveButton');
             const swatch = document.getElementById('contactColorButton');
-            if (addBtn) addBtn.hidden = has;
-            if (rmBtn) rmBtn.hidden = !has;
             // nothing to colour or size until there is a contact
             if (swatch) swatch.parentElement.hidden = !has;
             const wSlider = document.getElementById('contactWidthSlider');
@@ -993,6 +1046,7 @@ function setupEventListeners() {
                 }
             }
         }
+        syncSelectionToggles(picked, none);
         // The side-chain row is offered only when there is something to show:
         // glycine has no side chain, nor does a nucleotide, nor any residue in
         // a backbone-only model, and a control that cannot do anything is worse
@@ -1003,15 +1057,13 @@ function setupEventListeners() {
             scRow.hidden = none || !renderer || !renderer.hasSidechainsFor
                 || !renderer.hasSidechainsFor(picked);
         }
+        // Elements rides that same row rather than gating itself: it colours
+        // the atoms the row draws, so wherever there are none it is already
+        // gone with them.
+        //
         // ...and the Bases row on the same rule, from the other side: it is
         // offered only where the selection HAS nucleotides. A protein selection
         // gets Side chains, a nucleic one gets Bases, a mixed one gets both.
-        const eRow = document.getElementById('elementsRow');
-        if (eRow) {
-            const renderer = viewerApi?.renderer;
-            eRow.hidden = none || !renderer || !renderer.hasElementsFor
-                || !renderer.hasElementsFor(picked);
-        }
         const bRow = document.getElementById('basesRow');
         if (bRow) {
             const renderer = viewerApi?.renderer;
@@ -1022,7 +1074,10 @@ function setupEventListeners() {
         // Also set the real disabled property, not just the class: hiding the
         // panel takes it off the screen but leaves its buttons in the tab
         // order, and `disabled` is what removes them from it.
-        for (const el of tools.querySelectorAll('button, select')) el.disabled = none;
+        // INPUT is in that list because the +/- buttons became checkboxes: a
+        // selector naming only buttons and selects stopped covering the show
+        // toggles the moment they stopped being buttons.
+        for (const el of tools.querySelectorAll('button, select, input')) el.disabled = none;
         // Unselect lives outside that group because it does not need a
         // selection to be discoverable - but it does need one to do anything,
         // so it follows the same state. Select all stays enabled either way.
@@ -1218,16 +1273,33 @@ function setupEventListeners() {
                 });
             }
         }
-        on('contactAddButton', (positions) => addSelectionContact(positions));
-        on('contactRemoveButton', (positions) => removeSelectionContact(positions));
-        on('sidechainShowButton', (positions) => setSelectionSidechains(positions, true));
-        on('sidechainHideButton', (positions) => setSelectionSidechains(positions, false));
-        on('elementsShowButton', (positions) => setSelectionElements(positions, true));
-        on('elementsHideButton', (positions) => setSelectionElements(positions, false));
-        on('basesShowButton', (positions) => setSelectionBases(positions, true));
-        on('basesHideButton', (positions) => setSelectionBases(positions, false));
-        on('mainchainShowButton', (positions) => setSelectionVisible(positions, true, false));
-        on('mainchainHideButton', (positions) => setSelectionVisible(positions, false, false));
+        // A TOGGLE CARRIES ITS OWN DIRECTION. `on` fires on click and the
+        // handler decided the direction; these fire on change and take it from
+        // the box, so the control and what it does cannot disagree.
+        //
+        // A MIXED selection - some of it has the thing, some does not - is
+        // shown indeterminate, and the browser's first click on an
+        // indeterminate box checks it. So the click resolves the mixture by
+        // turning everything ON, which is the useful direction: it is what
+        // "show what I picked" means when half of it already is.
+        const onToggle = (id, fn) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('change', withSelection((positions) => {
+                fn(positions, el.checked);
+                // ...and re-read the state from the structure, not from the
+                // box: an action can be refused (no side-chain atoms, base
+                // plates switched off globally) and the toggle must then go
+                // back to what is actually drawn rather than sit on a lie.
+                updateSelectionToolsState();
+            }));
+        };
+        onToggle('sidechainShowToggle', (p2, v) => setSelectionSidechains(p2, v));
+        onToggle('elementsShowToggle', (p2, v) => setSelectionElements(p2, v));
+        onToggle('basesShowToggle', (p2, v) => setSelectionBases(p2, v));
+        onToggle('mainchainShowToggle', (p2, v) => setSelectionVisible(p2, v, false));
+        onToggle('contactShowToggle', (p2, v) => (v
+            ? addSelectionContact(p2) : removeSelectionContact(p2)));
 
         // Every surface that draws the selection listens here, so a change made
         // on ANY of them shows on all the others. The sequence strip used to be
