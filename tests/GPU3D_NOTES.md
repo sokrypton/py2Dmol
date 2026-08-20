@@ -1404,3 +1404,51 @@ It does recover more than half the missing rim, and it costs six times the
 interior marks to do it - the sausage arcs, which are the artefact anyone
 notices. The earlier verdict stands; only now it stands on a metric that can
 see the thing being traded away.
+
+### Joint caps, ported after all
+
+Rule 2 above - the 2D pass rounding the outline cap at every interior joint -
+was twice written off as unportable. It is portable; both earlier attempts were
+just the naive version of it.
+
+**One owner per joint.** Letting both segments round is what fights and prints
+an arc across the joint. Only one may carry the disc - and which one does not
+matter, which is the part that makes this work here. The two share the
+position, so they would draw the SAME disc: same centre, same radius, same
+depth. The 2D pass has to pick the back-most only because it paints in order.
+So the owner is the first segment to reach the position in `buildTube` -
+deterministic, independent of the view, and therefore nothing to rebuild when
+the model turns. `claim[]` beside `touch[]`, one extra Int32Array, at rebuild
+time only.
+
+**A joint cap gets its own depth.** At the joint's axis it still surfaces as a
+complete RING through tubes it belongs behind - the disc reaches a radius past
+the tube on every side, and wherever nothing covers that annulus it draws.
+Sinking it two radii puts it behind anything near enough to matter, so it
+survives only where the 2D pass's disc survives: outside the elbow, against the
+background.
+
+Extra ink against rim the 2D draws and the GPU does not, 1TIM at zoom 2.2 and
+1UBQ at 2.0:
+
+| | caps off | capZ -2 | capZ -1.4 | capZ -1 |
+| --- | --- | --- | --- | --- |
+| 1TIM | 206 / 4089 | **219 / 1401** | 326 / 1323 | 407 / 1294 |
+| 1UBQ | 82 / 1819 | **93 / 806** | 124 / 754 | 176 / 754 |
+
+Two thirds of the missing rim, for thirteen pixels of ink. `CAP_Z = -2.0`;
+`cartoonCapZ` overrides it and `cartoonJointCaps = false` turns it off.
+
+**It is free.** 4UG0's draw pass over 31 timed frames: 51.7 and 50.4 ms with
+the caps against 54.8 and 54.5 without - inside the run-to-run spread, and if
+anything faster, since a cap fragment fails early-Z at once.
+
+**A trap worth recording.** The first version declared `capKind` inside the
+skirt's discard block and read it in the depth block, which is a different GLSL
+scope. The shader failed to link, the GPU declined the frame, and the 2D pass
+drew it - WITHOUT shading, because `_gpuWillTake` had already told it to skip
+the occlusion. So it presented as a perfect outline with the shading missing,
+which is a very convincing way to be shown your own reference render and told
+it is the new one. Check `__gpuLastError` before believing a GPU result that
+looks too good, and treat "the outline got better AND something unrelated
+broke" as the signature of a silent fallback.

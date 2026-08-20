@@ -1419,6 +1419,7 @@ uniform float uScale, uPersp, uFL, uPushZ;
 // now that a fragment decides for itself whether it is skirt or fill.
 uniform float uGrowPx;
 uniform float uSkirtZ;
+uniform float uCapZ;
 // 1 = a free end keeps its round skirt, 0 = every end is cut square
 uniform float uEndCaps;
 // the skirt is the fill darkened - the 2D pass's own gap-filler colour
@@ -1476,6 +1477,12 @@ void main() {
   // beats it on a tie - which is per fragment and does not care which draw it
   // arrived in. So the grown quad is rasterised ONCE and each fragment picks.
   bool skirt = dist > vRfill;
+  // WHICH CAP THIS FRAGMENT IS BEYOND, if any: 2 a joint cap, 1 a free end,
+  // 0 a butt cut. Declared out here because the depth block below needs it
+  // too, and a GLSL block scope does not reach it.
+  float capKind = 0.0;
+  if (tRaw < 0.0) capKind = vCapA;
+  else if (tRaw > 1.0) capKind = vCapB;
   // WHY THE OUTLINE STOPS SQUARE IN THE MIDDLE OF A CHAIN.
   // Every segment carries its own rim, so a round cap at a joint draws a dark
   // arc BETWEEN consecutive residues and the backbone reads as a string of
@@ -1496,8 +1503,12 @@ void main() {
     // when the mode is 'full'; this path treated anything that was not 'none'
     // as 'full', so partial came out with rounded outline caps at every chain
     // terminus that the 2D pass does not draw.
-    if ((vCapA * uEndCaps) < 0.5 && tRaw < 0.0) discard;
-    if ((vCapB * uEndCaps) < 0.5 && tRaw > 1.0) discard;
+    if (tRaw < 0.0 || tRaw > 1.0) {
+        if (capKind < 0.5) discard;             // butt cut
+        // 'partial' drops EVERY round outline cap, joint and free end alike -
+        // the 2D pass gates both on outlineMode === 'full', in one branch.
+        if (uEndCaps < 0.5) discard;
+    }
   }
   // THE SURFACE, not the centre line. A tube is round, so the fragment nearest
   // the eye at distance d from the axis stands proud of it by
@@ -1561,7 +1572,16 @@ void main() {
     // which is ink the 2D pass does not draw; too far and other tubes' bulges
     // beat it and the rim breaks into dashes, which is ink the 2D pass does
     // draw and this one loses.
-    zSurf = zAxis + uSkirtZ * vRfill / max(1e-6, uScale * pe);
+    // A JOINT CAP SITS AT THE JOINT'S OWN AXIS, not proud of it.
+    //
+    // The disc is centred on a position two tubes share, so both of their
+    // fills bulge up to a full radius in front of it there - and that is
+    // exactly what should hide it. At the axis it survives only where neither
+    // fill reaches: outside the elbow, which is where the 2D pass's disc
+    // survives too. Given the side bands' uSkirtZ it would instead print
+    // across the joint, which is the artefact this whole thing has to avoid.
+    float sz = (capKind > 1.5) ? uCapZ : uSkirtZ;
+    zSurf = zAxis + sz * vRfill / max(1e-6, uScale * pe);
   }
   float t01 = (zSurf - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
   // NDC z is 1 - 2*t01, the same mapping the other programs put in gl_Position,
@@ -1690,6 +1710,7 @@ let progTube, bufTube, tubeCount = 0;
 let tubeRange = [-1, 1];        // the depth range the capsules are mapped through
 let tubeSig = null;             // what the instance buffer was built from
 let tubeTouch = null;           // per-position count of drawn segments, reused
+let tubeClaim = null;           // ...and which segment owns each joint's cap
 let tubeData = null;            // the instance staging array, reused
 // ---- GPU TIMING, off unless asked for ----------------------------------
 // A WebGL draw call returns as soon as it is QUEUED, so wrapping render() in
@@ -1839,6 +1860,24 @@ const TUBE_AO_DENSITY = 0.164;
 // It costs nothing: one multiply in the fragment shader, no extra pass.
 // cartoonSkirtZ overrides it.
 const SKIRT_Z = 0.25;
+// ...and where a JOINT cap sits, which is a different question. The disc is
+// centred on a position two tubes share, so it has to lose to BOTH of their
+// fills, and it has to lose to them everywhere except where the 2D pass's own
+// disc survives - outside the elbow, against the background.
+//
+// At the joint's own axis (0) it still surfaces as a complete ring through
+// tubes it should be behind. Sunk two radii it does not, and it costs almost
+// nothing to sink it: measured against the 2D pass, extra ink against rim the
+// 2D draws and this does not -
+//
+//                 caps off        capZ -2      capZ -1.4    capZ -1
+//     1TIM      206 / 4089     219 / 1401    326 / 1323   407 / 1294
+//     1UBQ       82 / 1819      93 /  806    124 /  754   176 /  754
+//
+// - so -2 buys back two thirds of the missing rim for thirteen pixels of ink.
+// Going further only buries the rim again. cartoonCapZ overrides it, and
+// cartoonJointCaps = false turns the whole thing off.
+const CAP_Z = -2.0;
 // ...and the user-facing multiplier on it, now that the density carries the
 // calibration itself.
 const AO_GAIN = 1.0;
@@ -4003,10 +4042,14 @@ function buildTube(renderer, S) {
     // rewriting only the entries this pass touches, so clearing is free too.
     if (!tubeTouch || tubeTouch.length < n) tubeTouch = new Int32Array(n);
     const touch = tubeTouch;
+    if (!tubeClaim || tubeClaim.length < n) tubeClaim = new Int32Array(n);
+    const claim = tubeClaim;
+    const jointCaps = renderer.cartoonJointCaps !== false;
     for (let k = 0; k < cnt; k++) {
         const sg2 = S.segments[order[k]];
         if (!sg2 || sg2.idx1 === undefined) continue;
         touch[sg2.idx1] = 0; touch[sg2.idx2] = 0;
+        claim[sg2.idx1] = 0; claim[sg2.idx2] = 0;
     }
     for (let k = 0; k < cnt; k++) {
         const sg2 = S.segments[order[k]];
@@ -4056,9 +4099,34 @@ function buildTube(renderer, S) {
         data[o++] = r * 255; data[o++] = g * 255; data[o++] = b * 255;
         // a free end gets a cap. Written out rather than through a closure
         // built per segment, which is what it was.
+        // WHO CARRIES THE CAP AT A JOINT.
+        //
+        // The 2D pass lays a filled outline disc at every interior joint - for
+        // whichever segment is drawn FIRST there - and the neighbours' fills
+        // cover all but the outside of the elbow. That rim around every bend is
+        // the biggest single difference between the two outlines: 490 of 1TIM's
+        // 984 segment ends, 17,353 of 4UG0's 34,896.
+        //
+        // Letting BOTH segments round at a joint does not reproduce it - they
+        // fight, and print the arc across the joint that the butt cut exists to
+        // stop (measured: six times the interior marks). Only ONE may carry it.
+        //
+        // Which one does not matter, and that is what makes this portable. The
+        // two share the position, so they would draw the SAME disc - same
+        // centre, same radius, same depth - where the 2D pass has to pick the
+        // back-most because it paints in order. So the owner is simply the
+        // first segment to reach the position here: deterministic, independent
+        // of the view, and therefore no reason to rebuild when the model turns.
+        //
+        // 2 marks a joint cap, 1 a free end. They differ in depth - see uCapZ.
         const isC = sg.type === 'C';
-        data[o++] = (isC || touch[i1] <= 1) ? 1 : 0;
-        data[o++] = (isC || touch[i2] <= 1) ? 1 : 0;
+        let cA = 0, cB = 0;
+        if (isC || touch[i1] <= 1) cA = 1;
+        else if (jointCaps && claim[i1] === 0) { claim[i1] = 1; cA = 2; }
+        if (isC || touch[i2] <= 1) cB = 1;
+        else if (jointCaps && claim[i2] === 0) { claim[i2] = 1; cB = 2; }
+        data[o++] = cA;
+        data[o++] = cB;
         data[o++] = isC ? 1 : 0;                        // annotation: no shading
         count++;
         const dax = a.x - cx; const day = a.y - cy; const daz = a.z - cz;
@@ -4183,6 +4251,7 @@ function drawTube(cv, renderer, prm) {
         // the bit, because neither depends on the quad any more.
         u('uZOnly', 1);
         u('uGrowPx', 0); u('uPushZ', 0); u('uSkirtZ', 0); u('uEndCaps', 1);
+        u('uCapZ', 0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 1.0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'), 0);
         const tmZ = tmStart('1-prepass');
@@ -4293,6 +4362,7 @@ function drawTube(cv, renderer, prm) {
     u('uSkirtZ', typeof renderer.cartoonSkirtZ === 'number'
         ? renderer.cartoonSkirtZ : SKIRT_Z);
     u('uEndCaps', renderer.outlineMode === 'partial' ? 0 : 1);
+    u('uCapZ', typeof renderer.cartoonCapZ === 'number' ? renderer.cartoonCapZ : CAP_Z);
     gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 0.7);
     // FLAT BY DEFAULT. Per-fragment cylinder lighting is in the shader and
     // works, but it turns the drawing into shiny rods - a different style, not
