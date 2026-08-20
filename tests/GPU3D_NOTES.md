@@ -1146,3 +1146,58 @@ redundant R32F copy is the cheaper arrangement. Reverted.
 - Prepass and draw are each a full rasterisation of every capsule and are now
   94% of the frame. Below that lies LOD - fewer, fatter segments when a tube is
   sub-pixel - which is a bigger change than anything above.
+
+### The occlusion's density was measured, and the measurement was the error
+
+Reported as: on Q5VSL9 "the depth isn't really taking hold for shadow because
+the long loop is taking over". It was, and the mechanism is that `tubeDensity`
+was `count / (pi * rad^2)` with `rad` the distance to the FARTHEST atom. That
+is an EXTREME, so one extended loop sets it for the whole structure, and the
+density - which goes as 1/r^2 - collapses for the bulk that is nowhere near it.
+Q5VSL9's farthest CA is 77.9 A out; its RMS radius is 35.7.
+
+Swapping the extreme for the RMS radius (the standard deviation of the
+positions about their centre) fixes the shape dependence. Sweeping
+`cartoonAOGain` against the 2D pass and reading off the gain that matches it:
+
+| | max radius | RMS radius |
+| --- | --- | --- |
+| spread of required gain | 0.66 - 4.65 (**7.1x**) | 0.55 - 0.92 (**1.7x**) |
+
+But the shader only ever sees the PRODUCT `density * gain`, and asking what that
+product has to be says to go further - it is essentially a constant:
+
+| structure | segments | required product |
+| --- | --- | --- |
+| 1UBQ | 75 | 0.173 |
+| 3CHY | 127 | 0.160 |
+| 1TIM | 492 | 0.181 |
+| Q5VSL9 | 836 | 0.187 |
+| 4UG0 | 17,448 | 0.127 |
+| 3J3Q | 311,880 | 0.162 |
+
+1.5x across four orders of magnitude in size, against 4.3x for the RMS density
+and 5.3x for the measured one. **The measurement was contributing the variance
+rather than removing it.** The occlusion estimate already responds to crowding
+on its own - a tap in a crowded structure hits something nearer - so scaling it
+by crowding a second time overshot. `TUBE_AO_DENSITY = 0.164`, `AO_GAIN = 1.0`,
+and `cartoonAOGain` remains the knob.
+
+Mean luminance over structure pixels, GPU against the 2D pass:
+
+| structure | 2D | was (shipped gain 2.0) | now |
+| --- | --- | --- | --- |
+| 1UBQ | 169.5 | 177.3 (+7.9) | 170.4 (+0.9) |
+| 3CHY | 173.2 | 171.9 (-1.2) | 173.6 (+0.4) |
+| 1TIM | 175.7 | 174.6 (-1.1) | 177.9 (+2.2) |
+| Q5VSL9 | 158.4 | 166.8 (+8.3) | 160.7 (+2.3) |
+| 4UG0 | 167.7 | 146.4 (**-21.2**) | 164.8 (-2.8) |
+
+Worst error 2.8 of 255. The ribosome is the surprise: it was over-shadowed by
+21 levels and nobody had noticed, because the only structures anyone checked
+were the compact ones the gain happened to suit.
+
+The old rationale for measuring - "what makes a sparse structure and a dense one
+shade alike" - was reasonable and wrong, and it survived because it was never
+checked against more than one size of structure. Sweep at least one tiny, one
+compact, one extended and one enormous before believing any calibration here.

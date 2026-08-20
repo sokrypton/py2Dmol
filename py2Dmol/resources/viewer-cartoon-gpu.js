@@ -1787,7 +1787,14 @@ let tubeDensity = 0.1;          // visible segments per square Angstrom
 // Calibrated against the 2D render of 1TIM, matching the mean and spread of
 // the drawn pixels: CPU 175.7 +/- 19.9, this 175.3 +/- 21.0. Overridable per
 // renderer as cartoonAOGain.
-const AO_GAIN = 2.0;
+// The occlusion's areal density, in segments per square Angstrom: a constant,
+// calibrated against the 2D pass across six structures spanning four orders of
+// magnitude in size. See buildTube for the measurements and why it is not
+// measured per structure any more.
+const TUBE_AO_DENSITY = 0.164;
+// ...and the user-facing multiplier on it, now that the density carries the
+// calibration itself.
+const AO_GAIN = 1.0;
 
 function initGL(cv) {
     gl = cv.getContext('webgl2', { antialias: true, preserveDrawingBuffer: true });
@@ -4019,9 +4026,36 @@ function buildTube(renderer, S) {
     // HOW MANY SEGMENTS PER SQUARE ANGSTROM the occlusion pass should assume.
     // Each of its taps stands for a patch of the sampling disc, and what the
     // CPU sums over that patch is SEGMENTS - so the two only agree if the pass
-    // is told the areal density. Measuring it here rather than fixing a
-    // constant is what makes a sparse structure and a dense one shade alike.
-    tubeDensity = count / Math.max(1, Math.PI * rad * rad);
+    // is told the areal density.
+    //
+    // MEASURED, THIS WAS THE THING MAKING STRUCTURES DISAGREE. It used to be
+    // count / (pi * rad^2) with rad the distance to the FARTHEST atom - an
+    // extreme, so one long loop set it for the whole structure and the density,
+    // which goes as 1/r^2, collapsed for the bulk nowhere near it. On Q5VSL9
+    // the farthest CA is 77.9 A out against an RMS radius of 35.7.
+    //
+    // Replacing the extreme with the RMS radius fixes that much, and measuring
+    // what the shader actually NEEDS says to go further. Sweeping the gain
+    // against the 2D pass on six structures from 75 to 311,880 segments, the
+    // product the shader consumes - density x gain - comes out essentially
+    // constant, while the measured density does not:
+    //
+    //     1UBQ      75 seg   required product 0.173
+    //     3CHY     127                        0.160
+    //     1TIM     492                        0.181
+    //     Q5VSL9   836                        0.187
+    //     4UG0  17,448                        0.127
+    //     3J3Q 311,880                        0.162
+    //
+    // 1.5x across the set, against 4.3x for the RMS density and 5.3x for the
+    // old one. So the measurement was contributing the variance rather than
+    // removing it, and the honest value is a constant. The occlusion estimate
+    // already responds to crowding on its own - a tap in a crowded structure
+    // hits something nearer - which is presumably why scaling it by crowding
+    // a second time overshot.
+    //
+    // cartoonAOGain still multiplies this, so it stays the knob it was.
+    tubeDensity = TUBE_AO_DENSITY;
     tubeCount = count;
     gl.bindBuffer(gl.ARRAY_BUFFER, bufTube);
     gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, o), gl.DYNAMIC_DRAW);
@@ -4129,10 +4163,10 @@ function drawTube(cv, renderer, prm) {
         ua('uTintMax', refLen * 0.5 + refLen * 2.5);
         ua('uStrength', typeof renderer.shadowStrength === 'number' ? renderer.shadowStrength : 0.5);
         ua('uIntensity', typeof renderer.shadowIntensity === 'number' ? renderer.shadowIntensity : 0.95);
-        // AO_GAIN. The prepass sees only the front-most surface along each ray,
-        // where the CPU counts every segment behind it as well, so the measured
-        // density undercounts burial by a roughly constant factor. One number,
-        // calibrated against the 2D render, absorbs it.
+        // The areal density the kernel is scaled by: a calibrated constant now
+        // rather than a measurement - see buildTube for the six-structure sweep
+        // that says the measurement was the thing making structures disagree -
+        // with cartoonAOGain as the knob on top of it.
         ua('uDensity', tubeDensity
             * (typeof renderer.cartoonAOGain === 'number' ? renderer.cartoonAOGain : AO_GAIN));
         // A sample less than about a tube's radius nearer is the SAME tube's
