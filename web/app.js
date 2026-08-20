@@ -3114,7 +3114,7 @@ function applyPendingObjects() {
         // loaded, and the switch above restores that object's own viewerState -
         // so this has to come last or it gets overwritten.
         if (r?.orthoSlider) r.orthoSlider.dispatchEvent(new Event('input'));
-        if (typeof buildView === 'function') window.SEQ?.buildView();
+        if (typeof buildView === 'function') (window.SEQ?.buildViewDeferred || window.SEQ?.buildView)?.();
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
         if (r?.updateUIControls) r.updateUIControls();
@@ -3134,7 +3134,7 @@ function applyPendingObjects() {
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
         if (typeof updateObjectNavigationButtons === 'function') updateObjectNavigationButtons();
         if (window.SEQ?.clearPreview) window.SEQ.clearPreview();
-        if (typeof buildView === 'function') window.SEQ?.buildView();
+        if (typeof buildView === 'function') (window.SEQ?.buildViewDeferred || window.SEQ?.buildView)?.();
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
     } else {

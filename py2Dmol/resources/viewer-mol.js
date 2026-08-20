@@ -2791,8 +2791,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (window.SEQ.clear) {
                     window.SEQ.clear();
                 }
-                // Rebuild sequence view for the new object
-                window.SEQ.buildView();
+                // Rebuild sequence view for the new object - after the paint,
+                // since nothing the structure canvas draws depends on it
+                (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
             }
 
             // Focal length is derived from the ortho value AND the object's

@@ -756,6 +756,28 @@
     // MAIN SEQUENCE VIEWER FUNCTIONS
     // ============================================================================
 
+    // THE PICTURE FIRST, THE SEQUENCE A FRAME LATER.
+    //
+    // Building the view lays out one entry per residue - a layout record, a
+    // residue record and a selectable item each - and on a 313,000-residue
+    // capsid that is 214 ms. It runs from _switchToObject, which is on the
+    // path between "the coordinates are ready" and "something is on screen",
+    // so the whole of it is spent with a blank canvas up.
+    //
+    // Nothing the structure canvas draws reads any of it, so it can wait. Two
+    // frames: the first lets the render that follows the switch actually
+    // paint, the second runs the build. Requests coalesce, and a synchronous
+    // buildView in between is harmless - it caches on the frame it built from
+    // and the deferred call returns early.
+    let deferredBuild = 0;
+    function buildSequenceViewDeferred() {
+        if (typeof requestAnimationFrame !== 'function') { buildSequenceView(); return; }
+        if (deferredBuild) return;
+        deferredBuild = requestAnimationFrame(() => {
+            requestAnimationFrame(() => { deferredBuild = 0; buildSequenceView(); });
+        });
+    }
+
     function buildSequenceView() {
         const sequenceViewEl = document.getElementById('sequenceView');
         if (!sequenceViewEl) return;
@@ -2292,6 +2314,7 @@
 
         // Main functions
         buildView: buildSequenceView,
+        buildViewDeferred: buildSequenceViewDeferred,
         updateColors: updateSequenceViewColors,
         updateSelection: updateSequenceViewSelectionState,
 
