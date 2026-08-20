@@ -1371,3 +1371,36 @@ falls, and that the fill keeps round caps in both.
 
 4. **Zero-length segments.** The 2D rounds them unconditionally; the GPU
    derives the flag from `touch` like any other segment. Not chased.
+
+**How big is (2)?** Both rules were computed side by side in the page - the 2D's
+own `segmentEndpointFlags` as it left them, against `touch` recomputed exactly
+as `buildTube` does it - and counted:
+
+| | segment ends | capped by both | 2D only | GPU only |
+| --- | --- | --- | --- | --- |
+| 1TIM | 984 | 4 | **490** | 0 |
+| 4UG0 | 34,896 | 192 | **17,353** | 0 |
+
+One end per joint, which is the whole of rule 2, and the GPU never caps where
+the 2D does not. The ends capped by BOTH are the genuinely free ones - 1TIM has
+exactly four, its two chain termini.
+
+**The genuinely free caps are fine.** Ink mass within a 14 px disc of each of
+1TIM's four free ends, GPU against 2D: 3,689/5,076, 3,459/3,698, 4,142/4,150,
+3,452/3,600 - 89% overall, and three of the four inside 7%. The shortfall is
+the antialiasing fringe again, not a missing rim.
+
+**Rule 2 retested with the right metrics, after the blurred one was caught out
+by the crosses.** Rounding at joints and letting depth cover it:
+
+| | crosses | missing rim |
+| --- | --- | --- |
+| butt cut, uSkirtZ 0.25 (shipped) | **210** | 2,880 |
+| round at joints, uSkirtZ 0 | 1,328 | 1,322 |
+| round at joints, uSkirtZ 0.1 | 1,494 | 1,186 |
+| round at joints, uSkirtZ 0.25 | 2,137 | 902 |
+
+It does recover more than half the missing rim, and it costs six times the
+interior marks to do it - the sausage arcs, which are the artefact anyone
+notices. The earlier verdict stands; only now it stands on a metric that can
+see the thing being traded away.
