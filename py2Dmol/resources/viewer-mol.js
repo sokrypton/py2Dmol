@@ -5609,20 +5609,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
 
-                // Check each chain to see if it contains only ligands
-                for (const chainId of sortedUniqueChains) {
-                    let hasNonLigand = false;
-                    for (let i = 0; i < n; i++) {
-                        if (this.chains[i] === chainId) {
-                            const type = this.positionTypes[i];
-                            if (type === 'P' || type === 'D' || type === 'R') {
-                                hasNonLigand = true;
-                                break;
-                            }
-                        }
+                // WHICH CHAINS ARE LIGAND-ONLY: one pass over the positions,
+                // not one pass PER CHAIN.
+                //
+                // This asked, for every chain, "does any position in it carry a
+                // polymer type" by scanning the whole position list - so it
+                // cost chains x positions. On a capsid that is 1,356 chains
+                // against 313,236 positions: 425 million string comparisons,
+                // and 3.6 s of a 16 s load, all of it inside setCoords.
+                //
+                // The question is per POSITION, not per chain: walk the
+                // positions once, note the chain of each polymer one, and any
+                // chain not noted is ligand-only. Same answer, O(n + chains).
+                const polymerChains = new Set();
+                for (let i = 0; i < n; i++) {
+                    const type = this.positionTypes[i];
+                    if (type === 'P' || type === 'D' || type === 'R') {
+                        polymerChains.add(this.chains[i]);
                     }
-                    // If chain has no P/D/R atoms, it's ligand-only
-                    if (!hasNonLigand) {
+                }
+                for (const chainId of sortedUniqueChains) {
+                    if (!polymerChains.has(chainId)) {
                         this.ligandOnlyChains.add(chainId);
                     }
                 }

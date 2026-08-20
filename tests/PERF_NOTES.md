@@ -431,3 +431,37 @@ each walk 2.4M atom OBJECTS; the parse builds them, `convertParsedToFrameData`
 reads them into typed arrays, and the rest re-walks them for residue grouping
 and bonds. Whether that is worth doing is a design decision about the interface
 between `web/utils.js`, `web/app.js` and `viewer-mol.js`, not an optimisation.
+
+### The first thing the loader profile found: setCoords was quadratic
+
+`setCoords` cost 3.6 s of a capsid's 16 s load - 11.5 microseconds per
+position - and all of it was one loop asking, for every CHAIN, whether any
+position in it carries a polymer type:
+
+    for (const chainId of sortedUniqueChains)      // C
+        for (let i = 0; i < n; i++)                // x N
+            if (this.chains[i] === chainId) ...
+
+3J3Q is 1,356 chains and 313,236 positions: **425 million string
+comparisons**. The question is per POSITION, not per chain - walk the
+positions once, note the chain of each polymer one, and any chain not noted
+is ligand-only. O(n + chains), same answer.
+
+| | before | after |
+| --- | --- | --- |
+| `setCoords` | 3,590 ms | **355 ms** |
+| `setFrame` | 3,648 ms | 411 ms |
+| `applyPendingObjects` | 5,862 ms | 2,534 ms |
+| 3J3Q load to first picture | 16.5 s | **13.2 s** |
+| 4UG0 load to first picture | 1.10 s | 0.94 s |
+
+Verified equivalent where it actually matters: with ligands loaded, 4HHB has
+6 ligand-only chains, 1HVR 1 and 3PTB 2, and the one-pass version finds the
+same sets. Note the first check ran with ligands OFF - which is the default -
+and every structure reported zero ligand-only chains, so it proved nothing.
+A test of this needs ligands on.
+
+**Why it hid for so long**: the cost is quadratic in CHAINS, and almost
+everything has a handful. 4UG0's 81 chains cost 160 ms of its 1.1 s load and
+looked like ordinary work. Only a capsid, with more than a thousand chains,
+makes it the largest single item in the profile.
