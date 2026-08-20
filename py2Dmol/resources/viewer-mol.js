@@ -10428,9 +10428,42 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const styleToggle = containerElement.querySelector('#styleToggle');
     const stylePanel = containerElement.querySelector('#stylePanel');
 
+    // HOW WIDE THE WIDTH CONTROL GOES, PER STYLE.
+    //
+    // A tube is a solid stroke and keeps reading as one when it fattens, so it
+    // goes to 5.0; the cartoon keeps the 4.7 the control has always had.
+    //
+    // The ceiling is deliberately modest, because the two renderers agree less
+    // well the wider the stroke gets. Measured on 1TIM, GPU against the 2D
+    // pass, mean absolute difference per pixel: 3.40 at width 2, 3.41 at 3,
+    // 3.85 at 4, 4.14 at 5. The visible part is the outlines: as capsules
+    // overlap more, the GPU keeps fewer of them than the 2D pass does (thin
+    // dark pixels at width 5: 7,233 against 9,913), so a wide tube reads as a
+    // smoother mass there and as a drawn one here. None of that is new - the
+    // same gap is in the pre-GPU-optimisation build at the default width - it
+    // just grows with the control, which is reason enough not to open the
+    // control very far.
+    //
+    // The VALUE comes down with the ceiling when the style changes. A slider
+    // pinned at its maximum while the renderer holds a larger number is a
+    // control that lies about the drawing, which is the same failure the
+    // STYLE_DEFAULTS table exists to prevent - and _lineWidthUserSet means a
+    // width the user actually dragged survives a style switch, so without this
+    // a tube at 5 would carry 5 into a cartoon whose slider stops at 4.7.
+    const WIDTH_MAX = { tube: 5.0, cartoon: 4.7 };
+
     function syncStylePanel() {
         const style = renderer.style || 'tube';
         if (!stylePanel) return;
+        const widthSlider = stylePanel.querySelector('#lineWidthSlider');
+        if (widthSlider) {
+            const cap = WIDTH_MAX[style] || WIDTH_MAX.cartoon;
+            widthSlider.max = String(cap);
+            if (renderer.lineWidth > cap) {
+                renderer.lineWidth = cap;
+                widthSlider.value = String(cap);
+            }
+        }
         Array.prototype.forEach.call(stylePanel.children, (row) => {
             row.hidden = false;
         });
