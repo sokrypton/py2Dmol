@@ -6191,9 +6191,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.colors = this._calculateSegmentColors();
             this.colorsNeedUpdate = false;
 
-            // Pre-calculate pLDDT colors
-            this.plddtColors = this._calculatePlddtColors();
-            this.plddtColorsNeedUpdate = false;
+            // NOT THE pLDDT COLOURS. The draw path builds them itself the
+            // moment the colour mode actually asks for them - it has to, since
+            // the mode can change without the coordinates changing - so doing
+            // it here as well is a second pass over every position for an
+            // array most structures never read. Marked stale instead.
+            this.plddtColors = [];
+            this.plddtColorsNeedUpdate = true;
 
             // [PATCH] Apply initial mask and render once
             // Don't render before applying mask - _composeAndApplyMask will handle rendering
