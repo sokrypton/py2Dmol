@@ -425,6 +425,22 @@ those were reverted.
         try { return o.apply(this, arguments); } finally { ms += performance.now() - a; }
     };
 
+**CORRECTION - dropping N/C/O is NOT lossless.** An earlier note here reasoned
+that since the renderer holds C-alphas and nothing else, the backbone N, C and
+O atoms are parsed and discarded, so a parse-time filter would be free. Two
+things were wrong with that. The pixel test behind it ran on 3J3Q, whose
+residues are all standard, so it could not have detected the failure; and
+`isRealAminoAcid` falls back to a connectivity check -
+
+    residue.atoms.some(a => a.atomName === 'N')
+        && residue.atoms.some(a => a.atomName === 'CA')
+        && residue.atoms.some(a => a.atomName === 'C')
+
+- for any residue NOT in STANDARD_AMINO_ACIDS. Strip N and C and every modified
+or unusual residue is reclassified as a ligand. The saving was 1.1 s of a 16.5 s
+load and is now a smaller share of a 6.5 s one; it is not worth a filter that
+has to know which atoms each classifier reads.
+
 **What would actually move it** is the columnar atom model - the same
 conclusion the parser work reached from the other end. Four separate passes
 each walk 2.4M atom OBJECTS; the parse builds them, `convertParsedToFrameData`
