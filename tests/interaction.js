@@ -2176,27 +2176,6 @@ t('the style toggles are grouped together, three to a row', () => {
     }
 });
 
-// THE TWO RENDERERS COMPUTE THE SHADOW WITH THE SAME MATH NOW, and the only
-// number they cannot share directly is the areal density: neither file loads
-// the other, so each carries its own copy. A drift between them is exactly the
-// kind of thing nobody notices - the levels just quietly stop matching.
-t('the occlusion density constant agrees between the two renderers', () => {
-    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
-    const grab = (src, where) => {
-        const m = src.match(/TUBE_AO_DENSITY\s*=\s*([0-9.]+)/);
-        if (!m) throw new Error('TUBE_AO_DENSITY is gone from ' + where);
-        return parseFloat(m[1]);
-    };
-    const a = grab(mol, 'viewer-mol.js');
-    const b = grab(gpu, 'viewer-cartoon-gpu.js');
-    if (a !== b) {
-        throw new Error('the occlusion density differs: viewer-mol.js has ' + a
-            + ', viewer-cartoon-gpu.js has ' + b
-            + ' - the 2D and GPU shadows will not match');
-    }
-});
-
 // Cyclic is NOT cartoon-only, so the tag that hides Smooth and Arrows in tube
 // style must sit on those two cells and not on the row - otherwise switching to
 // tube takes Cyclic off the screen with them.

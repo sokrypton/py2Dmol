@@ -1202,49 +1202,49 @@ shade alike" - was reasonable and wrong, and it survived because it was never
 checked against more than one size of structure. Sweep at least one tiny, one
 compact, one extended and one enormous before believing any calibration here.
 
-### ...and the 2D pass computes it the same way now
+### Measured and rejected: the same estimator on the 2D side
 
-The two renderers used the same KERNEL - `c^2 / (c^2 + d^2 * 2)`, the same
-cutoffs off the same reference bond length - but summed it over different
-things. The 2D pass summed over every PAIR of segments; the GPU sums over
-samples of a depth field scaled by an areal density. Same maths, different
-population, so the levels only agreed by calibration and drifted whenever
-either side moved.
+The two renderers share the kernel - `c^2 / (c^2 + d^2 * 2)`, the same cutoffs
+off the same reference bond length - but sum it over different things. The 2D
+pass sums over every PAIR of segments; the GPU sums over samples of a depth
+field scaled by an areal density. So their levels agree by calibration rather
+than by construction, and the obvious tidy-up is to give the 2D pass the GPU's
+estimator, still evaluated once per segment so the flat-per-capsule style and
+SVG export are unaffected.
 
-`_calculateShadowsFromField` is the GPU's estimator on the 2D side: one depth
-field, the same golden-angle taps at the same radii, the same kernel, the same
-`TUBE_AO_DENSITY`. What it does not copy is where the answer lands - the GPU
-shades a fragment, this shades a SEGMENT, one flat tone per capsule, which is
-what the 2D style is and what SVG export needs. `shadowMode = 'pairs'` still
-asks for the exact pairwise sums.
+Built, and it worked: agreement with the GPU went from within 2.8 levels to
+within 1.9, with the spread across structures down to 0.6. **Dropped anyway**,
+for two reasons found only by measuring.
 
-Mean luminance over structure pixels:
+**It is not faster.** Median 2D frame, pairwise against field: 1UBQ 0.9 -> 1.2
+ms, 3CHY 1.8 -> 1.7, 1TIM 3.5 -> 2.7, Q5VSL9 10.0 -> 4.4, 4UG0 66.0 -> 56.4. A
+tiny structure LOSES - building the field costs more than 75 segments' worth of
+pairs - and the ribosome's 56 ms is stroking capsules, not occlusion. The
+"occlusion is ~90% of a 2D frame" figure in PERF_NOTES.md does not hold at
+these sizes.
 
-| structure | 2D pairwise | 2D field | GPU | field - GPU |
-| --- | --- | --- | --- | --- |
-| 1UBQ | 169.5 | 169.0 | 170.4 | -1.4 |
-| 3CHY | 173.2 | 172.1 | 173.6 | -1.4 |
-| 1TIM | 175.7 | 176.3 | 177.9 | -1.6 |
-| Q5VSL9 | 158.4 | 159.0 | 160.7 | -1.7 |
-| 4UG0 | 167.7 | 162.9 | 164.8 | -1.9 |
+**It flickers under rotation.** Mean frame-to-frame luminance change over ten
+0.3-degree steps on 1TIM: pairwise 2.41, GPU 2.44, field **3.04** - and a
+number that size understates it, because the answer is one flat tone per
+capsule, so every jump is a whole capsule changing shade at once.
 
-Agreement to under two levels with a spread of 0.6, and by construction rather
-than by tuning. The 2D output barely moves except on 4UG0, which darkens by 4.8
-toward what the GPU (and the screen) already showed.
+The flicker is NOT tap quantisation. Replacing nearest-cell sampling with
+bilinear interpolation plus coverage weighting - which makes both the sampled
+depth and the empty-to-occupied transition continuous as a tap moves - measured
+3.047 against 3.044. No change whatsoever. What moves between frames is the
+FIELD ITSELF: which cells a segment splats into changes as the structure turns,
+and at a cell size the tube can barely resolve, that reshuffles what every tap
+sees. Fixing it properly means a field fine enough that splatting is stable,
+which is the per-pixel field the GPU already has and the 2D path cannot afford.
 
-**The field has to resolve the tube, and that is most of the work.** Splatting
-one cell per segment centre left the gaps between consecutive centres empty, so
-fewer taps landed on anything and it read 10-13 levels light. Walking the
-segment and giving it its radius as a DISC - with cells a quarter of the line
-width, not half, because at one cell per radius the disc rounds to a single
-cell and the tube enters the field a third of its true width - takes that to
--1.6. The remaining offset is the honest difference between evaluating at a
-segment's centre and averaging over its pixels.
+Temporal history would hide it, and was considered: blend each segment's shadow
+with the previous frame's. It buys nothing here - the change is not a speedup,
+so smoothing it only preserves a like-for-like result at the cost of lag during
+exactly the motion that shows the problem, plus invalidation on every colour,
+visibility and structure change, plus a rendering that depends on what was
+drawn before it, which an export must not.
 
-**It is not much faster, which was the other hope.** Median 2D frame, pairwise
-against field: 1UBQ 0.9 -> 1.2 ms, 3CHY 1.8 -> 1.7, 1TIM 3.5 -> 2.7, Q5VSL9
-10.0 -> 4.4, 4UG0 66.0 -> 56.4. The extended case wins 2.3x because pairwise
-work grows with neighbours in range; a tiny structure LOSES, because building
-the field costs more than 75 segments' worth of pairs. Stroking the capsules,
-not the occlusion, is what the ribosome's 56 ms is made of. Consistency is the
-reason to keep this, not speed.
+The levels already agree to within 2.8 through the calibrated
+`TUBE_AO_DENSITY`, so what this would have bought is agreement by construction
+instead of by tuning - a maintenance property, not a visible one, and not worth
+a flicker.

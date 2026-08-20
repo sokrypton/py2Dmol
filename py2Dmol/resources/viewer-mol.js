@@ -782,12 +782,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const WIDTH_RATIO_CLAMP_MIN = 0.01;     // Minimum width ratio for shadow/tint
     const WIDTH_RATIO_CLAMP_MAX = 10.0;     // Maximum width ratio for shadow/tint
     const MAX_SHADOW_SUM = 12;              // Maximum accumulated shadow sum (saturating accumulation)
-    // The occlusion's areal density in segments per square Angstrom - the same
-    // constant viewer-cartoon-gpu.js calls TUBE_AO_DENSITY, calibrated there
-    // across six structures from 75 to 311,880 segments. The two files carry it
-    // separately because neither loads the other; tests/interaction.js checks
-    // they still agree.
-    const TUBE_AO_DENSITY = 0.164;
 
     // Default nested config used by both Python and standalone HTML
     const DEFAULT_CONFIG = {
@@ -7355,177 +7349,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Dispatcher method: selects fast/slow shadow calculation based on position count
         _calculateFrameShadows(segmentList, numPositions, segments, segData, maxExtent, shadows, tints) {
-            // THE FIELD ESTIMATOR IS THE DEFAULT, and it is the GPU's. Both
-            // paths then compute the shadow the same way and only differ in
-            // where they evaluate it - per segment here, per pixel there - so
-            // they agree by construction instead of by calibration.
-            //
-            // The pairwise sums are still here and still exact; shadowMode
-            // 'pairs' asks for them.
-            if (this.shadowMode !== 'pairs') {
-                this._calculateShadowsFromField(segmentList, segments, segData,
-                    maxExtent, shadows, tints);
-                return;
-            }
             const useFastMode = numPositions > this.LARGE_MOLECULE_CUTOFF;
 
             if (useFastMode) {
                 this._calculateShadowsWithGrid(segmentList, segments, segData, maxExtent, shadows, tints);
             } else {
                 this._calculateShadowsExhaustive(segmentList, segments, segData, shadows, tints);
-            }
-        }
-
-        /**
-         * THE GPU'S OCCLUSION, EVALUATED PER SEGMENT.
-         *
-         * The two renderers used to compute the shadow differently and were
-         * reconciled by calibration: this one sums the kernel over every pair
-         * of segments, the GPU sums it over samples of a depth field scaled by
-         * an areal density. Same kernel, different thing summed - so they drift
-         * apart whenever either side changes, and the density constant had to
-         * be tuned to make the levels agree.
-         *
-         * This is the GPU's estimator, on this side of the fence: one depth
-         * field, the same golden-angle taps at the same radii, the same
-         * rational kernel and the same constants. What it does NOT copy is
-         * where the answer lands - the GPU shades a fragment, this shades a
-         * SEGMENT, one flat tone per capsule, which is what the 2D style is and
-         * what SVG export needs.
-         *
-         * It is also O(segments x taps) rather than O(segments^2), which is the
-         * other reason to want it: the pairwise pass is most of a 2D frame.
-         *
-         * The field is in VIEW SPACE ANGSTROM, not pixels. The kernel radii are
-         * in Angstrom, so no zoom conversion enters and the shading does not
-         * change as the drawing is scaled - the same property the GPU gets by
-         * dividing its own scale back out.
-         */
-        _calculateShadowsFromField(segmentList, segments, segData, maxExtent, shadows, tints) {
-            const nSeg = segmentList.length;
-            if (!nSeg) return;
-            const refLen = REF_LENGTHS['P'];
-            const shadowCut = refLen * SHADOW_CUTOFF_MULTIPLIER;
-            const shadowMax = shadowCut + refLen * SHADOW_OFFSET_MULTIPLIER;
-            const tintCut = refLen * TINT_CUTOFF_MULTIPLIER;
-            const tintMax = tintCut + refLen * TINT_OFFSET_MULTIPLIER;
-            const sc2 = shadowCut * shadowCut;
-            const tc2 = tintCut * tintCut;
-
-            // ONE CELL PER TUBE WIDTH. The field stands for "is there a surface
-            // here", and the surface is a tube, so resolving it much finer than
-            // the tube only leaves holes between the segment centres that get
-            // splatted into it - which reads as less occlusion, not more detail.
-            // FINE ENOUGH TO RESOLVE THE TUBE, which means cells SMALLER than
-            // its radius: at one cell per radius the disc below rounds to a
-            // single cell and the tube goes into the field a third of its true
-            // width, which is most of why this read light.
-            const cellA = Math.max(0.5, (this.lineWidth || 3) * 0.25);
-            const half = maxExtent + shadowMax;
-            const dim = Math.max(8, Math.min(2048, Math.ceil((2 * half) / cellA)));
-            const step = (2 * half) / dim;
-            if (!this._occField || this._occField.length !== dim * dim) {
-                this._occField = new Float32Array(dim * dim);
-            }
-            const field = this._occField;
-            field.fill(-1e30);
-
-            // WHAT CASTS. The exclusions are _shadowPairExcluded's, read from
-            // the casting side: a contact is annotation and a side chain is too
-            // thin and too close to print a shadow on the chain it grows out
-            // of. Here they simply never enter the field.
-            const scMap = this.sidechainMap;
-            const hasSC = !!(scMap && scMap.size);
-            // THE WHOLE CAPSULE, NOT ITS CENTRE. The GPU's field is a
-            // rasterised surface; splatting one cell per segment leaves the gap
-            // between consecutive centres empty, so fewer taps land on anything
-            // and the same constant under-shadows - measured 10 to 13 levels
-            // light against both the pairwise sum and the GPU. Walking the
-            // segment and giving it its radius makes the two fields the same
-            // kind of object, which is what lets one constant serve both.
-            const rad = (this.lineWidth || 3) * 0.5;
-            const rCells = Math.max(0, Math.round(rad / step));
-            const rCells2 = rCells * rCells;
-            const rotated = this.rotatedCoords;
-            for (let k = 0; k < nSeg; k++) {
-                const i = segmentList[k];
-                const info = segments[i];
-                if (info.type === 'C') continue;
-                if (hasSC && (scMap.has(info.idx1) || scMap.has(info.idx2))) continue;
-                const s = segData[i];
-                const a = rotated && rotated[info.idx1];
-                const b = rotated && rotated[info.idx2];
-                const ax = a ? a.x : s.x, ay = a ? a.y : s.y, az = a ? a.z : s.z;
-                const bx = b ? b.x : s.x, by = b ? b.y : s.y, bz = b ? b.z : s.z;
-                const dx = bx - ax, dy = by - ay;
-                const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / step));
-                for (let t = 0; t <= steps; t++) {
-                    const f = t / steps;
-                    const px = ax + dx * f, py = ay + dy * f;
-                    const pz = az + (bz - az) * f;
-                    const cx = ((px + half) / step) | 0;
-                    const cy = ((py + half) / step) | 0;
-                    for (let oy = -rCells; oy <= rCells; oy++) {
-                        const gy = cy + oy;
-                        if (gy < 0 || gy >= dim) continue;
-                        const row = gy * dim;
-                        for (let ox = -rCells; ox <= rCells; ox++) {
-                            // a DISC, not a square: the corners of a square
-                            // splat would widen the tube by 40%
-                            if (ox * ox + oy * oy > rCells2) continue;
-                            const gx = cx + ox;
-                            if (gx < 0 || gx >= dim) continue;
-                            if (pz > field[row + gx]) field[row + gx] = pz;
-                        }
-                    }
-                }
-            }
-
-            // A SAMPLE LESS THAN ABOUT A TUBE'S RADIUS NEARER IS THE SAME TUBE.
-            // The GPU's uSelfBias, for the same reason: without it every
-            // segment shades against its own neighbours in the chain.
-            const selfBias = Math.max(0.6, (this.lineWidth || 3) * 0.5 * 1.1);
-            const strength = this.shadowStrength;
-            const intensity = this.shadowIntensity;
-            const density = (typeof this.cartoonAOGain === 'number'
-                ? this.cartoonAOGain : 1.0) * TUBE_AO_DENSITY;
-            const NS = 28;
-            const NT = 10;
-            const wArea = (Math.PI * shadowMax * shadowMax / NS) * density;
-            const GOLDEN = 2.39996323;
-
-            for (let k = 0; k < nSeg; k++) {
-                const i = segmentList[k];
-                if (segments[i].type === 'C') { shadows[i] = 1; tints[i] = 1; continue; }
-                const s = segData[i];
-                const zc = s.z;
-                let shadowSum = 0;
-                let maxTint = 0;
-                for (let t = 0; t < NS; t++) {
-                    const dA = Math.sqrt((t + 0.5) / NS) * shadowMax;
-                    const ang = t * GOLDEN;
-                    const gx = ((s.x + Math.cos(ang) * dA + half) / step) | 0;
-                    const gy = ((s.y + Math.sin(ang) * dA + half) / step) | 0;
-                    if (gx < 0 || gy < 0 || gx >= dim || gy >= dim) continue;
-                    const zs = field[gy * dim + gx];
-                    const dz = zs - zc;
-                    if (dz <= selfBias) continue;       // behind, or the same tube
-                    shadowSum += (sc2 / (sc2 + (dA * dA + dz * dz) * 2.0)) * wArea;
-                }
-                for (let t = 0; t < NT; t++) {
-                    const dA = Math.sqrt((t + 0.5) / NT) * tintMax;
-                    const ang = t * GOLDEN + 1.1;
-                    const gx = ((s.x + Math.cos(ang) * dA + half) / step) | 0;
-                    const gy = ((s.y + Math.sin(ang) * dA + half) / step) | 0;
-                    if (gx < 0 || gy < 0 || gx >= dim || gy >= dim) continue;
-                    const zs = field[gy * dim + gx];
-                    if (zs - zc <= selfBias) continue;
-                    const v = tc2 / (tc2 + dA * dA * 2.0);
-                    if (v > maxTint) maxTint = v;
-                }
-                shadowSum = Math.min(shadowSum * strength, MAX_SHADOW_SUM);
-                shadows[i] = Math.pow(intensity, shadowSum);
-                tints[i] = 1 - maxTint * strength;
             }
         }
 
