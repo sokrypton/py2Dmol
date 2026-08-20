@@ -574,3 +574,40 @@ columnar rewrite** that was the plan going in: one loop quadratic in chains,
 one whole pass that only a PAE needs, and one pass that could not produce a
 result for 99% of what it iterated. Parse is now the largest single stage and
 is the one part that has already been optimised once.
+
+### The safe version of the N/C/O filter, and what it is actually worth
+
+The correction above rules out an unconditional filter. A CONDITIONAL one is
+safe, and the condition is the same guard that made the unconditional version
+wrong: `isRealAminoAcid` only falls back to looking for N/CA/C atoms for a
+residue NOT in `STANDARD_AMINO_ACIDS`. For a standard residue it returns at the
+name test and never reads an atom.
+
+For a standard residue, then, N/C/O/OXT are read by nothing:
+
+- the classifier short-circuits on the name;
+- `buildSidechainTable` already drops every backbone atom but CA
+  (`PROTEIN_BACKBONE_ATOMS` minus CA);
+- only its CA reaches `coords`, so nothing addressed by atom index -
+  `struct_conn`, `chem_comp_bond`, `atomIdToIndex` - could resolve to one.
+
+So `parseCIF` skips them, gated on the residue name. Verified identical:
+positions and segments on 3J3Q and 4UG0; bond count and an order-independent
+checksum on 4HHB (200 / 3140046280), 3PTB, 1HVR and 1AOI; the side-chain table
+on 4HHB (7 keys, 18,406 values, checksum 2535756989); and the XYZ case that
+broke the unconditional version still classifies as protein.
+
+**It is worth 0.56 s of a 6.5 s load, not the 38.6% the atom count suggests**,
+and where the time goes is the interesting part:
+
+| | before | after |
+| --- | --- | --- |
+| parse | 2,854 | 2,781 |
+| buildPendingObject | 4,181 | 3,821 |
+| applyPendingObjects | 2,328 | 2,129 |
+
+Dropping 38.6% of the atoms takes 73 ms off the PARSE. Nearly all the saving is
+downstream, in the passes that walk the atoms afterwards. The parse is
+dominated by scanning the text - `readCIFCols` visits every line whatever it
+decides to do with it - not by building the objects. Anyone hoping to make the
+parse itself faster should attack the scan, not the allocation.

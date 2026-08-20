@@ -953,6 +953,35 @@ function parseCIF(text) {
         const nCols = readCIFCols(text, lineStart, end, wantMask, values);
         if (nCols < minReqLen) continue;
 
+        // A STANDARD RESIDUE'S N, C AND O ARE READ BY NOTHING, so they are not
+        // built. This is the largest single saving available in the parse -
+        // they are 38.6% of the atoms in a capsid - and the condition is what
+        // makes it safe, because an unconditional version is NOT:
+        //
+        //   - isRealAminoAcid only falls back to looking for N/CA/C atoms for a
+        //     residue NOT in STANDARD_AMINO_ACIDS. For a standard one it
+        //     returns at the name test and never reads an atom. Strip N and C
+        //     from a residue it does not recognise and that residue vanishes
+        //     from the structure entirely - measured, five renamed residues of
+        //     4HHB went from 748 positions to 743.
+        //   - buildSidechainTable already drops every backbone atom but CA
+        //     (`PROTEIN_BACKBONE_ATOMS` minus CA), so a side chain never sees
+        //     them either.
+        //   - only the CA of a standard residue reaches `coords`, so nothing
+        //     addressed by atom index - struct_conn, chem_comp_bond,
+        //     atomIdToIndex - could resolve to one of these in the first place.
+        //
+        // The cartoon rebuilding C, N and O from the C-alpha trace is a
+        // different fact and does NOT license this: reconstruction says where a
+        // known residue's backbone is, the classifier asks whether an unknown
+        // residue is a residue at all.
+        if (idxAtomName >= 0 && idxAtomName < nCols
+                && idxResName >= 0 && idxResName < nCols
+                && DROPPABLE_BACKBONE.has(values[idxAtomName])
+                && STANDARD_AMINO_ACIDS.has(values[idxResName])) {
+            continue;
+        }
+
         // Direct array access - much faster than function calls
         // Update modelID if needed
         if (idxModelID >= 0 && idxModelID < nCols) {
@@ -1275,6 +1304,9 @@ function resolveChainNucleicTypes(allResidues) {
 // Backbone. Everything else heavy is side chain - "CB and up". OXT is the
 // terminal carboxylate oxygen, backbone by any reading.
 const PROTEIN_BACKBONE_ATOMS = new Set(['N', 'CA', 'C', 'O', 'OXT']);
+// The backbone atoms of a STANDARD residue that no consumer reads - the same
+// set without CA. See the filter in parseCIF for why the qualifier matters.
+const DROPPABLE_BACKBONE = new Set(['N', 'C', 'O', 'OXT']);
 // WHAT IS ACTUALLY BONDED TO WHAT, per residue type.
 //
 // A side chain's connectivity is a property of the amino acid, not of the
