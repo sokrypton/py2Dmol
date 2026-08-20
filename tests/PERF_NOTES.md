@@ -385,3 +385,49 @@ that whole approach is 1.23x.
   `inkQueries`, `inkScans`, `inkCell`, `inkCells`, `inkOccRefs`).
 - `tests/make_ribosome.py` — regenerates the 4UG0 page, which was previously
   built ad hoc and could not be reproduced after a source change.
+
+## Where the time is now (Aug 2026, after the GPU work)
+
+Rendering is no longer the expensive part of this app. On an M2, 598 px:
+
+| | tube frame | cartoon frame | load to first picture |
+| --- | --- | --- | --- |
+| 1TIM (492 seg) | ~0.3 ms | 0.51 ms | 70 ms |
+| 4UG0 (17.4k seg) | 4.1 ms | 4.6 ms | 1.1 s |
+| 3J3Q (312k seg) | ~26 ms | - | **15.6 s** |
+
+**Loading a capsid is now the slowest thing in the product by two orders of
+magnitude.** 3J3Q is 242 MB of text and 2.4M atoms, and the 15.6 s splits four
+ways, none of them a silver bullet:
+
+| stage | ms | share |
+| --- | --- | --- |
+| parse, including biounit expansion | 2,823 | 18% |
+| frame loop: `convertParsedToFrameData` | 2,344 | 15% |
+| frame loop: everything else | 3,685 | 24% |
+| align and centre | 62 | - |
+| `applyPendingObjects` (i.e. `addFrame` per frame) | 4,723 | 30% |
+| first render | 1,911 | 12% |
+
+Every one of those is a pass over 2.4M atoms or 313k positions. Parse is
+already the *cheapest* of the big four, having been worked over once - which is
+worth knowing before optimising it again, as the obvious target.
+
+**How to reproduce this without touching the source.** The top-level split
+needs no instrumentation at all: `parseCIF`, `buildPendingObject` and
+`applyPendingObjects` are script-scope globals, so wrapping them from the page
+times each. Only the split *inside* the frame loop needed temporary marks, and
+those were reverted.
+
+    const o = window.buildPendingObject; let ms = 0;
+    window.buildPendingObject = function () {
+        const a = performance.now();
+        try { return o.apply(this, arguments); } finally { ms += performance.now() - a; }
+    };
+
+**What would actually move it** is the columnar atom model - the same
+conclusion the parser work reached from the other end. Four separate passes
+each walk 2.4M atom OBJECTS; the parse builds them, `convertParsedToFrameData`
+reads them into typed arrays, and the rest re-walks them for residue grouping
+and bonds. Whether that is worth doing is a design decision about the interface
+between `web/utils.js`, `web/app.js` and `viewer-mol.js`, not an optimisation.
