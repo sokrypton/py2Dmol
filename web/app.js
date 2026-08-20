@@ -2564,80 +2564,97 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
             }
         }
 
-        // Convert original model to identify which positions are ligands
-        // This is needed to filter PAE matrix correctly
-        // We need to identify ligands in the ORIGINAL model to map PAE positions correctly
-        // IMPORTANT: includeAllResidues=true ensures ALL positions are included to match PAE matrix size
-        const originalFrameData = convertParsedToFrameData(models[i], modresMap, chemCompMap, true, conectMap, structConn, chemCompBondMap);
-
-        // Build position map from original model for classification
-        const originalResidueMap = new Map();
-        for (const atom of models[i]) {
-            if (!atom || atom.resName === 'HOH') continue;
-            const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
-            if (!originalResidueMap.has(resKey)) {
-                originalResidueMap.set(resKey, {
-                    resName: atom.resName,
-                    record: atom.record,
-                    chain: atom.chain,
-                    resSeq: atom.resSeq,
-                    atoms: []
-                });
-            }
-            originalResidueMap.get(resKey).atoms.push(atom);
-        }
-
-        // Convert to array for connectivity checks
-        const originalAllResidues = Array.from(originalResidueMap.values());
-        originalAllResidues.sort((a, b) => {
-            if (a.chain !== b.chain) {
-                return a.chain.localeCompare(b.chain);
-            }
-            return a.resSeq - b.resSeq;
-        });
-
-        // Map each position in originalFrameData to its corresponding position and check if it's a ligand
+        // ONLY THE PAE NEEDS THIS, so only build it when there is a PAE.
+        //
+        // Everything down to the end of this block exists to produce
+        // originalIsLigandPosition, and that is read in exactly one place -
+        // the `if (paeData)` branch below - to line a PAE matrix up with the
+        // positions it was computed for. Building it unconditionally means a
+        // SECOND full convertParsedToFrameData over every atom, plus a residue
+        // map and a per-position classification, for every structure whether
+        // it has a PAE or not.
+        //
+        // On 3J3Q that is 2.7 s of a 13 s load: convertParsedToFrameData
+        // measured 5.5 s across both call sites against 2.8 s for the one that
+        // feeds the drawing.
+        let originalFrameData = null;
         const originalIsLigandPosition = [];
+        if (paeData) {
+            // Convert original model to identify which positions are ligands
+            // This is needed to filter PAE matrix correctly
+            // We need to identify ligands in the ORIGINAL model to map PAE positions correctly
+            // IMPORTANT: includeAllResidues=true ensures ALL positions are included to match PAE matrix size
+            originalFrameData = convertParsedToFrameData(models[i], modresMap, chemCompMap, true, conectMap, structConn, chemCompBondMap);
 
-        // Cache classification results per position to avoid re-classifying the same position
-        const residueClassificationCache = new Map(); // resKey -> {is_protein, nucleicType}
-
-        if (originalFrameData.position_types && originalFrameData.position_names && originalFrameData.residue_numbers) {
-            for (let idx = 0; idx < originalFrameData.position_types.length; idx++) {
-                const positionType = originalFrameData.position_types[idx];
-                const resName = originalFrameData.position_names[idx];
-                const resSeq = originalFrameData.residue_numbers[idx];
-                const chain = originalFrameData.chains ? originalFrameData.chains[idx] : '';
-
-                // Find the position in the original model
-                const resKey = chain + ':' + resSeq + ':' + resName;
-                const residue = originalResidueMap.get(resKey);
-
-                if (residue) {
-                    // Check cache first to avoid re-classifying the same position
-                    let classification = residueClassificationCache.get(resKey);
-                    if (!classification) {
-                        // Use the same classification logic as maybeFilterLigands (with connectivity checks)
-                        const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues);
-                        const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues);
-
-                        // Cache the result
-                        classification = { is_protein, nucleicType };
-                        residueClassificationCache.set(resKey, classification);
-                    }
-
-                    // It's a ligand if it's NOT protein AND NOT nucleic acid
-                    originalIsLigandPosition.push(!classification.is_protein && classification.nucleicType === null);
-                } else {
-                    // If we can't find the residue, use the position type as fallback
-                    originalIsLigandPosition.push(positionType === 'L');
+            // Build position map from original model for classification
+            const originalResidueMap = new Map();
+            for (const atom of models[i]) {
+                if (!atom || atom.resName === 'HOH') continue;
+                const resKey = `${atom.chain}:${atom.resSeq}:${atom.resName}`;
+                if (!originalResidueMap.has(resKey)) {
+                    originalResidueMap.set(resKey, {
+                        resName: atom.resName,
+                        record: atom.record,
+                        chain: atom.chain,
+                        resSeq: atom.resSeq,
+                        atoms: []
+                    });
                 }
+                originalResidueMap.get(resKey).atoms.push(atom);
             }
-        } else {
-            // Fallback: use position_types if available
-            originalIsLigandPosition.push(...(originalFrameData.position_types ?
-                originalFrameData.position_types.map(type => type === 'L') :
-                Array(originalFrameData.coords.length).fill(false)));
+
+            // Convert to array for connectivity checks
+            const originalAllResidues = Array.from(originalResidueMap.values());
+            originalAllResidues.sort((a, b) => {
+                if (a.chain !== b.chain) {
+                    return a.chain.localeCompare(b.chain);
+                }
+                return a.resSeq - b.resSeq;
+            });
+
+            // Map each position in originalFrameData to its corresponding position and check if it's a ligand
+            
+
+            // Cache classification results per position to avoid re-classifying the same position
+            const residueClassificationCache = new Map(); // resKey -> {is_protein, nucleicType}
+
+            if (originalFrameData.position_types && originalFrameData.position_names && originalFrameData.residue_numbers) {
+                for (let idx = 0; idx < originalFrameData.position_types.length; idx++) {
+                    const positionType = originalFrameData.position_types[idx];
+                    const resName = originalFrameData.position_names[idx];
+                    const resSeq = originalFrameData.residue_numbers[idx];
+                    const chain = originalFrameData.chains ? originalFrameData.chains[idx] : '';
+
+                    // Find the position in the original model
+                    const resKey = chain + ':' + resSeq + ':' + resName;
+                    const residue = originalResidueMap.get(resKey);
+
+                    if (residue) {
+                        // Check cache first to avoid re-classifying the same position
+                        let classification = residueClassificationCache.get(resKey);
+                        if (!classification) {
+                            // Use the same classification logic as maybeFilterLigands (with connectivity checks)
+                            const is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, originalAllResidues);
+                            const nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, originalAllResidues);
+
+                            // Cache the result
+                            classification = { is_protein, nucleicType };
+                            residueClassificationCache.set(resKey, classification);
+                        }
+
+                        // It's a ligand if it's NOT protein AND NOT nucleic acid
+                        originalIsLigandPosition.push(!classification.is_protein && classification.nucleicType === null);
+                    } else {
+                        // If we can't find the residue, use the position type as fallback
+                        originalIsLigandPosition.push(positionType === 'L');
+                    }
+                }
+            } else {
+                // Fallback: use position_types if available
+                originalIsLigandPosition.push(...(originalFrameData.position_types ?
+                    originalFrameData.position_types.map(type => type === 'L') :
+                    Array(originalFrameData.coords.length).fill(false)));
+            }
         }
 
         // Filter ligands from model

@@ -465,3 +465,40 @@ A test of this needs ligands on.
 everything has a handful. 4UG0's 81 chains cost 160 ms of its 1.1 s load and
 looked like ordinary work. Only a capsid, with more than a thousand chains,
 makes it the largest single item in the profile.
+
+### ...and the second: the frame loop converted every model twice
+
+`convertParsedToFrameData` measured 5.5 s on a capsid, against 2.8 s for the
+call that feeds the drawing. It has two call sites, and the first one converts
+the model AGAIN with `includeAllResidues=true`, then builds a residue map over
+every atom and classifies every position.
+
+All of that exists to produce one array, `originalIsLigandPosition`, which is
+read in exactly one place: the `if (paeData)` branch, to line a PAE matrix up
+with the positions it was computed for. It was being built for every structure
+whether it had a PAE or not - and most do not.
+
+Guarding the block on `paeData` takes `buildPendingObject` from 9,284 ms to
+6,500 on 3J3Q.
+
+**Testing it needed a structure with ligands AND a PAE**, which is not a
+combination that occurs naturally: AlphaFold models carry a PAE and no ligands,
+PDB entries carry ligands and no PAE. Pairing 4HHB with a synthetic 801x801 PAE
+whose values vary with both indices, and loading with ligands ON so the filter
+actually runs, gives 748 positions and 641,601 PAE bytes with checksum
+3083556608 - identical before and after. A test that skips the ligands
+checkbox proves nothing here, the same trap as the ligand-only chains above.
+
+### Where the capsid load stands
+
+| stage | before | now |
+| --- | --- | --- |
+| parse | 2,855 | 2,910 |
+| frame loop (build minus parse) | 6,181 | 3,382 |
+| `applyPendingObjects` | 4,723 | 2,299 |
+| first render | 1,911 | 1,978 |
+| **total** | **16.5 s** | **8.6 s** |
+
+4UG0 goes 1.10 s to 0.69 s. Both wins were algorithmic and neither needed the
+columnar rewrite: one loop that was quadratic in chains, and one whole pass
+that did not need to run. Profile before restructuring.
