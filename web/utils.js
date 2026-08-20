@@ -698,16 +698,27 @@ function parsePDB(text) {
  * @param {string} text - CIF file content
  * @returns {Array<Array<object>>} - Array of models, each containing atoms
  */
+// The only loops any consumer of parseCIF's `loops` looks at. Adding a reader
+// for another one means naming it here; the symptom of forgetting is that loop
+// arriving with no rows rather than absent, which is what `skipped` marks.
+const CIF_LOOPS_READ = [
+    '_struct_conn.',
+    '_chem_comp.',
+    '_chem_comp_bond.',
+    '_pdbx_struct_assembly_gen.',
+    '_pdbx_struct_oper_list.',
+];
+
 function parseCIF(text) {
 
-    // Parse chemical component table first (for modified residue detection)
-    // Also parse struct_conn for explicit bonds.
+    // THE FIVE LOOPS ANYONE ACTUALLY READS.
     //
-    // NOT the atom table. This walker is here for the small metadata loops -
-    // struct_conn, chem_comp, chem_comp_bond, and the biounit pair - which
-    // together are a few thousand rows. The atoms are read by the dedicated
-    // loop below, and tokenising them here as well was half the parse.
-    const loops = parseMinimalCIF_light(text, ['_atom_site.']);
+    // Three are read below - struct_conn for explicit bonds, chem_comp for
+    // modified-residue detection, chem_comp_bond for ligand connectivity - and
+    // two more by extractCIFBiounitOperations, which is handed these same loops
+    // as `cachedLoops` rather than re-walking the file. Nothing else consumes
+    // parseCIF's `loops` (app.js:cachedLoops is its only reader).
+    const loops = parseMinimalCIF_light(text, CIF_LOOPS_READ);
 
     const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
 
@@ -2735,20 +2746,21 @@ function tokenizeCIFLine_light(s) {
 
 /* Every loop_ in the file, as [columns, rows].
  *
- * `skipPrefixes` names loops whose ROWS the caller will not read. They are
- * still found, and still delimit correctly - only their contents are not
- * tokenised or kept.
+ * `keepPrefixes`, when given, names the only loops whose ROWS the caller will
+ * read. Every other loop is still found, and still delimits correctly - only
+ * its contents are not tokenised or kept.
  *
- * This exists for exactly one loop, and it is worth the parameter. _atom_site
- * is the entire structure: on 4UG0 it is 218,776 rows of 21 columns, so walking
- * it here builds 4.6 MILLION substrings, copies every row again with slice(),
- * and retains the lot - and then the caller throws it away, because parseCIF
- * has its own atom reader that does the job properly a few lines later.
- * Measured: 2,698 ms of a 5,342 ms parse, half the cost of loading a large
- * structure, for a table nothing looks at.
+ * A PDB-issued mmCIF has around 40 loops and parseCIF reads five of them. The
+ * rest are metadata nobody here asks for - and one of them, _atom_site, IS the
+ * structure: on 4UG0 that is 218,776 rows of 21 columns, 4.6 million
+ * substrings, each row copied again with slice(), all retained, and then
+ * dropped, because parseCIF has its own atom reader a few lines later.
  *
- * Only parseCIF passes a skip-list. buildBioFromCIF genuinely does read the
- * atom rows out of this, and calls it without one.
+ * Measured cold on 4UG0: walking every loop was 2,698 ms of a 5,342 ms parse.
+ * Naming only the loops that are read takes it to a fraction of that.
+ *
+ * Only parseCIF passes a list. buildBioFromCIF genuinely does read atom rows
+ * out of this and calls it without one, so it still gets everything.
  */
 /* tokenizeCIFLine_light, but it only KEEPS the columns asked for.
  *
@@ -2813,11 +2825,14 @@ function readCIFCols(s, from, n, wantMask, out) {
     return col;
 }
 
-function parseMinimalCIF_light(text, skipPrefixes) {
+// a mask that wants nothing: readCIFCols then counts columns and slices none
+const NO_COLUMNS_WANTED = new Uint8Array(0);
+
+function parseMinimalCIF_light(text, keepPrefixes) {
     const lines = text.split(/\r?\n/);
     const loops = [];
-    const skip = (skipPrefixes && skipPrefixes.length)
-        ? (col) => skipPrefixes.some((p) => col && col.startsWith(p))
+    const unread = (keepPrefixes && keepPrefixes.length)
+        ? (col) => !keepPrefixes.some((p) => col && col.startsWith(p))
         : null;
     let i = 0;
     let loopCount = 0;
@@ -2840,19 +2855,36 @@ function parseMinimalCIF_light(text, skipPrefixes) {
                 i++;
             }
 
-            // A SKIPPED LOOP IS STILL WALKED, just not read. The end of a
-            // loop is decided line by line by the tests below, so advancing
-            // through the rows without tokenising them stops in the same
-            // place - and the continuation branch cannot change that, since a
-            // continuation line fails every one of those tests too.
-            const skipping = skip ? skip(cols[0]) : false;
+            // A SKIPPED LOOP IS STILL WALKED, just not kept - and it has to be
+            // walked the SAME WAY, or it does not end in the same place.
+            //
+            // A row shorter than its header continues onto the next line, and
+            // the reading branch below swallows that line as part of the row.
+            // Simply advancing one line at a time instead does not: the
+            // continuation is examined as a row of its own, and a loop with
+            // continued rows can come back split into two entries. Measured -
+            // 4UG0 reported 42 loops instead of 40.
+            //
+            // So the count is taken the same way, with readCIFCols against an
+            // empty mask: it walks the tokens and returns how many there were
+            // without slicing a single one, which is the whole point of being
+            // in this branch.
+            const skipping = unread ? unread(cols[0]) : false;
 
             while (i < lines.length) {
                 const raw = lines[i];
                 if (!raw || /^\s*#/.test(raw) || /^\s*loop_/i.test(raw) ||
                     /^\s*data_/i.test(raw) || /^\s*_/.test(raw)) break;
 
-                if (skipping) { i++; continue; }
+                if (skipping) {
+                    let count = readCIFCols(raw, 0, raw.length, NO_COLUMNS_WANTED, null);
+                    while (count < cols.length && i + 1 < lines.length) {
+                        const nxt = lines[++i];
+                        count += readCIFCols(nxt, 0, nxt.length, NO_COLUMNS_WANTED, null);
+                    }
+                    i++;
+                    continue;
+                }
 
                 let vals = tokenizeCIFLine_light(raw);
                 while (vals.length < cols.length && i + 1 < lines.length) {
