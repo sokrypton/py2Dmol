@@ -436,10 +436,27 @@ residues are all standard, so it could not have detected the failure; and
         && residue.atoms.some(a => a.atomName === 'CA')
         && residue.atoms.some(a => a.atomName === 'C')
 
-- for any residue NOT in STANDARD_AMINO_ACIDS. Strip N and C and every modified
-or unusual residue is reclassified as a ligand. The saving was 1.1 s of a 16.5 s
-load and is now a smaller share of a 6.5 s one; it is not worth a filter that
-has to know which atoms each classifier reads.
+- for any residue NOT in STANDARD_AMINO_ACIDS.
+
+**And the cartoon's PULCHRA reconstruction does not rescue it**, which is the
+tempting objection: the renderer does rebuild C, N and O from the C-alpha
+trace, and that is exactly why CA-only input DRAWS correctly. But the
+reconstruction answers "where is this residue's backbone", and the classifier
+is asking "is this thing a residue at all". Reconstruction presupposes the
+answer to the second question, so it cannot supply it.
+
+Measured, by renaming five residues of 4HHB chain A to an unknown code XYZ and
+loading with ligands on:
+
+| | positions | types | the XYZ residues |
+| --- | --- | --- | --- |
+| N/C present | 748 | P 574, L 174 | classified P |
+| N/C stripped | 743 | P 569, L 174 | **gone entirely** |
+
+They are not even demoted to ligands - they disappear, and every bond index
+after them shifts. The saving was 1.1 s of a 16.5 s load and is a smaller share
+of a 6.5 s one; it is not worth a filter that has to know which atoms each
+classifier reads.
 
 **What would actually move it** is the columnar atom model - the same
 conclusion the parser work reached from the other end. Four separate passes
