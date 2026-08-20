@@ -1032,6 +1032,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.cartoonSmooth = (config.rendering?.smooth !== undefined)
                 ? config.rendering.smooth === true
                 : (this.style !== 'cartoon');
+            // THE GPU PATH, off unless asked for. It changes how fast the
+            // picture appears and not what the picture is, so it is a rendering
+            // option like any other - and it is checked against WebGL2 at the
+            // point of use rather than here, because a context can be lost long
+            // after the viewer was built.
+            this.cartoonGPU = config.rendering?.gpu === true;
             // Highlight gain: 0 = the old ceiling at the base colour, 1 = a
             // full lift toward white on faces pointing at the light.
             const hg = Number(config.rendering?.highlight);
@@ -2199,9 +2205,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.lineWidthSlider) {
                 this.lineWidthSlider.addEventListener('input', (e) => {
                     this.lineWidth = parseFloat(e.target.value);
-                    // the user has taken width over; style switches stop
-                    // imposing their preset on it (see _applyStyleDefaults)
-                    this._lineWidthUserSet = true;
+                    // THE USER, NOT THE APP. This latch stops a style switch
+                    // imposing its preset width (see _applyStyleDefaults), and
+                    // it must only be tripped by an actual gesture.
+                    //
+                    // Restoring saved state sets the slider and dispatches a
+                    // synthetic 'input' to push the value through - and this
+                    // handler could not tell the two apart, so the latch closed
+                    // on load and width never followed the preset again. That is
+                    // richardson and 3d rendering at the same width while the
+                    // panel truthfully reports the one number they share, even
+                    // though their defaults are 2.0 and 3.0.
+                    //
+                    // isTrusted is false for any event dispatched from script
+                    // and true only for one the browser raised from real input,
+                    // which is exactly the distinction wanted here.
+                    if (e.isTrusted) this._lineWidthUserSet = true;
                     if (!this.isPlaying) {
                         this.render('updateUIControls: lineWidthSlider');
                     }
@@ -7531,6 +7550,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * Will the GPU draw this frame? Asked by anything that budgets a frame,
+         * because the answer changes what a frame COSTS by more than an order of
+         * magnitude and every cost heuristic here predates it.
+         *
+         * The conditions are the two draw hooks' own, kept together so they
+         * cannot drift: the flag, a working WebGL2, and an entry point for the
+         * current style. Still a guess and not a promise - the hook may decline
+         * the frame for a reason only it can see (a lost context, an export
+         * canvas) - so callers must stay correct if it turns out wrong. Every
+         * caller does: they choose between two ways of drawing the same picture.
+         */
+        _gpuWillDraw() {
+            if (this.cartoonGPU !== true) return false;
+            const G = window.py2dmolCartoonGPU;
+            if (!G || typeof G.available !== 'function' || !G.available()) return false;
+            return this.style === 'cartoon'
+                ? (typeof G.render === 'function' && !!window.py2dmolCartoon)
+                : typeof G.renderTube === 'function';
+        }
+
+        /**
          * Can this structure carry a SMOOTH ANIMATION - one that draws many
          * frames in a row at full quality and is judged on whether it flows?
          *
@@ -7561,7 +7601,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
             }
-            if (visible > this.LARGE_MOLECULE_CUTOFF) return false;
+            // THE SEGMENT FLOOR IS A COST MODEL FOR THE 2D PATH, and it stops
+            // being true the moment the GPU is drawing. A thousand segments is
+            // roughly where a canvas repaint stops keeping up; the GPU draws
+            // 3431 of them in ~3 ms, so the count says nothing about whether
+            // this structure can hold a frame rate. Left in, the floor vetoed
+            // inertia and turned the orient fly-to into a jump on anything past
+            // the cutoff - and switching side chains on is enough to cross it,
+            // which is exactly what "acceleration is disabled during
+            // interactions" looked like from the outside.
+            //
+            // The MEASURED test below still applies, to both backends. That one
+            // is honest: it asks what frames actually cost on this machine at
+            // this canvas size, which is the question, and it will veto a GPU
+            // frame too if the GPU turns out to be slow here.
+            if (!this._gpuWillDraw() && visible > this.LARGE_MOLECULE_CUTOFF) return false;
             return !this._frameOverBudget();
         }
 
@@ -7736,7 +7790,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // parameters, and paints its own primitives (SS ribbons + tubes).
             if (this.style === 'cartoon'
                 && window.py2dmolCartoon) {
-                window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
+                // THE GPU PATH, when it is asked for and it works. It paints
+                // the same drawing from a mesh that lives on the card, so
+                // turning the model is one draw call instead of a full repaint.
+                // Everything after it here is unchanged: the halo, the sequence
+                // overlay and both exports stay on the path they are on today,
+                // because the GPU replaces the DRAW and not the frame.
+                //
+                // It returns false rather than throwing for anything it cannot
+                // do - no WebGL2, a lost context, an export context, a shader
+                // that will not link on some driver - and the 2D renderer below
+                // then draws the frame as if the option had never been set.
+                const gpuOk = this.cartoonGPU === true
+                    && window.py2dmolCartoonGPU
+                    && window.py2dmolCartoonGPU.render(this, ctx,
+                        displayWidth, displayHeight, colors);
+                if (!gpuOk) {
+                    window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
+                }
                 // A real frame supersedes any snapshot taken from an older one.
                 this._invalidateSelectionPreview();
                 // over the finished drawing, so it is never occluded
@@ -7923,7 +7994,35 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            const renderShadows = this.shadowEnabled;
+            // WILL THE GPU TAKE THIS FRAME? It changes when the occlusion is
+            // worth computing, not whether.
+            //
+            // `shadows` and `tints` ARE the style: every segment tested against
+            // everything in front of it, which is what makes a buried loop sit
+            // behind an exposed one. Nothing cheap looks like it - a depth ramp
+            // darkens the whole back of the structure including the parts that
+            // are plainly in the open - so the GPU keeps using these exact
+            // numbers rather than an approximation of them.
+            //
+            // What it does not do is recompute them mid-gesture. The pass is
+            // ~90% of a tube frame (9FOG: 67 ms against 6.8 ms without), and
+            // this is already the policy for large structures, where the
+            // occlusion is allowed to go stale during a drag and is brought up
+            // to date the moment the view settles. Occlusion changes slowly
+            // under rotation, so the staleness is nearly invisible; the cost is
+            // not. On the GPU path the drawing itself is ~1 ms, so that policy
+            // has to apply at EVERY size or the occlusion is the whole frame.
+            //
+            // Deliberately a guess, not a promise: renderTube may still decline
+            // the frame, and the 2D pass then draws with whatever these hold -
+            // possibly a gesture out of date, never wrong.
+            const gpuWillDraw = this._gpuWillDraw();
+            // The GPU computes its own occlusion now - a depth prepass and one
+            // screen-space pass, whose cost is a function of pixels rather than
+            // of segments - so the CPU pass is not just deferred but skipped.
+            // That is the whole speed argument: this pass is ~90% of a tube
+            // frame and it grows with the structure.
+            const renderShadows = this.shadowEnabled && !gpuWillDraw;
             const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
 
             const shadows = new Float32Array(n);
@@ -8311,6 +8410,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             };
 
+            // THE TUBE STYLE ON THE GPU, in place of the stroking loop below.
+            //
+            // HERE AND NOT EARLIER, because everything it needs is decided by
+            // this point and not before: which segments are visible, the depth
+            // order, and above all `shadows` and `tints` - the screen-space
+            // occlusion that IS the tube style's shading. The GPU replaces the
+            // stroking, not the reckoning; it is handed the same per-segment
+            // colour the loop would have used.
+            //
+            // Returns false for anything it cannot do - no WebGL2, a lost
+            // context, an export context - and the loop then runs unchanged.
+            if (this.cartoonGPU === true && window.py2dmolCartoonGPU
+                && window.py2dmolCartoonGPU.renderTube
+                && window.py2dmolCartoonGPU.renderTube(this, ctx,
+                    displayWidth, displayHeight, {
+                        order: visibleOrder, count: numRendered,
+                        segments, segData, colors, shadows, tints,
+                        renderShadows, outlineWidthPx,
+                    })) {
+                this._invalidateSelectionPreview();
+                this._paintSelectionHalo(ctx, this._exportPxScale || 1);
+                if (!this.isDragging && !this.isZooming && !this.isOrientAnimating
+                    && window.SEQ && window.SEQ.drawHighlights) {
+                    window.SEQ.drawHighlights();
+                }
+                return;
+            }
+
             // [OPTIMIZATION] Simplified loop - visibleOrder is already culled
             // Only iterate over visible segments - no need for visibility check inside loop
             for (let i = 0; i < numRendered; i++) {
@@ -8566,21 +8693,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // 1. Handle inertia/spin - disabled during recording, large molecules, or active drag
             if (!this.isRecording && !this.isDragging) {
-                // Check if object is large (disable inertia for performance based on visible segments)
-                const object = this.currentObjectName ? this.objectsData[this.currentObjectName] : null;
-                const totalSegmentCount = object && this.segmentIndices ? this.segmentIndices.length : 0;
-                // Count visible segments for inertia determination
-                let visibleSegmentCount = totalSegmentCount;
-                if (this.visiblePositions && this.segmentIndices) {
-                    visibleSegmentCount = 0;
-                    for (let i = 0; i < this.segmentIndices.length; i++) {
-                        const seg = this.segmentIndices[i];
-                        if (this.visiblePositions.has(seg.idx1) && this.visiblePositions.has(seg.idx2)) {
-                            visibleSegmentCount++;
-                        }
-                    }
-                }
-                const enableInertia = visibleSegmentCount <= this.LARGE_MOLECULE_CUTOFF;
+                // ONE RULE FOR INERTIA, and this is not where it lives. This
+                // counted visible segments against the cutoff itself - the same
+                // arithmetic as smoothAnimationOk() but WITHOUT its measured
+                // cost test, so the two could and did disagree: _inertiaAllowed
+                // was documented as the rule while this copy quietly decided it.
+                // Asking the rule means the GPU exemption applies here too.
+                const enableInertia = this._inertiaAllowed();
 
                 if (enableInertia) {
                     const INERTIA_THRESHOLD = 0.0001; // Stop when velocity is below this
@@ -9541,7 +9660,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // Get device pixel ratio for high-DPI displays
     // Use devicePixelRatio for native scaling, capped at 1.5x for performance
     // Can be overridden with window.canvasDPR
-    const currentDPR = window.canvasDPR !== undefined ? window.canvasDPR : Math.min(window.devicePixelRatio || 1, 1.5);
+    // Uncapped: the display's own ratio. See the note in web/app.js - the 1.5x
+    // cap traded sharpness for paint cost, which stopped being the right trade
+    // when the GPU path took over the drawing. window.canvasDPR still overrides.
+    const currentDPR = window.canvasDPR !== undefined
+        ? window.canvasDPR : (window.devicePixelRatio || 1);
 
     // Store display dimensions as constants - these never change
     const displayWidth = config.display?.size[0] || 300;
@@ -10277,7 +10400,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             ? renderer.cartoonThickness : 0;
         thicknessSlider.addEventListener('input', (e) => {
             renderer.cartoonThickness = parseFloat(e.target.value);
-            renderer._thicknessUserSet = true;
+            // Same rule as the Width slider: only a real gesture takes the
+            // control over. Nothing dispatches a synthetic 'input' at this
+            // slider today, but the two latches are siblings and drifted once
+            // already - the guard makes that impossible rather than lucky.
+            if (e.isTrusted) renderer._thicknessUserSet = true;
             renderer.render('thicknessSlider');
         });
     }
@@ -10341,6 +10468,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             renderer.render('smoothCheckbox');
         });
     }
+    // NO GPU CONTROL HERE. `cartoonGPU` is a rendering BACKEND and applies to
+    // both styles, so the Style panel was the wrong home for it: tagged for one
+    // style it was hidden in the other, and tagged for both it was still sitting
+    // among the things that change what the picture IS. The web app owns the
+    // control now (index.html's Use GPU, wired in web/app.js) and Python owns
+    // the flag (view(gpu=True) -> config.rendering.gpu). This file just reads it.
     const highlightSlider = containerElement.querySelector('#highlightSlider');
     if (highlightSlider) {
         highlightSlider.value = renderer.cartoonHighlight !== undefined

@@ -313,7 +313,21 @@
     // width was taken from the THICKNESS control: 0.525 * (2/3 width scale) is
     // the 0.35 half-side it used to get from thickness 0.7. Same picture at the
     // defaults, but Width now moves it.
-    const RICH_HALF_A = { H: 1.45, E: 1.65, C: 0.525 };
+    // RESCALED SO THE WIDTH CONTROL MEANS THE SAME THING IN EVERY PRESET.
+    //
+    // These were 1.45 / 1.65 / 0.525, and richardson compensated for them by
+    // asking for a Width of 2.0 where the other presets ask for 3.0 - so with
+    // widthScale = lineWidth / 3, the drawn half-widths came out at 2/3 of the
+    // table. Two knobs cancelling each other: the slider read 2.0 against 3.0
+    // for the same ribbon on screen, richardson sat pinned on the slider's
+    // minimum, and giving all three presets one width silently made richardson
+    // half again as wide because it removed one side of the cancellation.
+    //
+    // The factor is folded in here instead. Every preset now starts at
+    // PRESET_WIDTH, one slider value means one width everywhere, and richardson
+    // draws exactly the ribbon it drew before: these are the old numbers times
+    // 2/3, which is what the old pairing produced.
+    const RICH_HALF_A = { H: 0.9667, E: 1.1, C: 0.35 };
     // Per-SS thickness, RELATIVE to the Thick setting rather than absolute.
     // The whole point of the preset is that one global thickness cannot give
     // flat helices and solid strands at once - but the Thick slider still has
@@ -343,7 +357,19 @@
     const RICH_HILITE_DEFAULT = 3.0;
     // Width slider default for the preset. RICH_HALF_A already sets the per-SS
     // proportions; this sets the overall scale they are drawn at.
-    const RICH_WIDTH_DEFAULT = 2.0;
+    // ONE WIDTH FOR EVERY PRESET. Richardson used to ask for 2.0 while cartoon
+    // and 3d asked for 3.0, which made the same structure change width when you
+    // switched preset - and because widthScale is lineWidth / 3.0, that is a
+    // third narrower, not a nuance. Width is not part of what distinguishes
+    // these looks: thickness, outline, tint, pencil and the per-SS profile are.
+    //
+    // It also sat exactly on the Width slider's own minimum, so richardson was
+    // pinned to the left end with no room below it, and "the preset did not
+    // apply" was indistinguishable from "the slider is at its floor".
+    //
+    // Shared as one constant rather than three literals so they cannot drift
+    // apart again.
+    const PRESET_WIDTH = 3.0;
     // Richardson sits at the TOP of the slider, and the slider's top is
     // exactly the grain the preset used to apply (0.9 x 0.6 = 0.54 alpha). So
     // pencil = 1 in plain cartoon now matches the Richardson default rather
@@ -713,6 +739,48 @@
     // test, and no interior crease to exclude, because there is no interior.
     // `end` keeps the meaning it has for the box: those edges are the cap ring,
     // and are inked only where the atom carries nothing else.
+    // AN N-SIDED SECTION, for a bond that is a TUBE rather than a box. The
+    // vertex layout is the box's generalised: 0..n-1 is the near section and
+    // n..2n-1 the far one, so every consumer that indexes V/W is unchanged.
+    // n = 4 returns the hand-written tables above rather than a generated copy,
+    // so a ligand stick's geometry is bit-for-bit what it was.
+    const RING_CACHE = new Map();
+    const ringTables = (n) => {
+        if (n === 4) return { faces: STICK_FACES, edges: STICK_EDGES };
+        let t = RING_CACHE.get(n);
+        if (t) return t;
+        const faces = [];
+        for (let i = 0; i < n; i++) {
+            // ax IS A ROLE, NOT AN INDEX: 2 means "this is an end cap", and the
+            // side facets must never claim it. The box uses 0 and 1 for its two
+            // pairs of sides, so alternate the same way. Numbering the facets
+            // instead made facet 2 of a 10-sided tube read as a cap - it came
+            // out flagged as the square lying on the backbone, and its ink was
+            // suppressed with it.
+            faces.push({ q: [i, (i + 1) % n, n + ((i + 1) % n), n + i],
+                ax: i % 2, sgn: 1 });
+        }
+        // the two caps, wound outward: the near one runs backwards round its
+        // ring, the far one forwards, exactly as the box's do
+        const capA = []; for (let i = n - 1; i >= 0; i--) capA.push(i);
+        const capB = []; for (let i = 0; i < n; i++) capB.push(n + i);
+        const iA = faces.length; faces.push({ q: capA, ax: 2, sgn: -1 });
+        const iB = faces.length; faces.push({ q: capB, ax: 2, sgn: 1 });
+        const edges = [];
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            edges.push({ a: i, b: j, f0: i, f1: iA, end: 0 });
+            edges.push({ a: n + i, b: n + j, f0: i, f1: iB, end: 1 });
+            // the rails: each is shared by two neighbouring side facets, and
+            // the front/back test across that pair is what puts the outline on
+            // the two rails that are actually the silhouette - which is the
+            // whole reason a tube needs no special ink rule.
+            edges.push({ a: i, b: n + i, f0: i, f1: (i - 1 + n) % n, end: -1 });
+        }
+        t = { faces, edges };
+        RING_CACHE.set(n, t);
+        return t;
+    };
     const STICK_FACES_FLAT = [{ q: [0, 1, 5, 4], ax: 0, sgn: 1, two: true }];
     const STICK_EDGES_FLAT = [
         { a: 0, b: 1, f0: 0, f1: 0, end: 0 },
@@ -2387,6 +2455,11 @@
     // colour. Anything between keeps a dark edge that still belongs to its
     // element.
     const RIBBON_INK_MUL = 0.7;   // matches viewer-mol.js gapFillerColor
+    // The drawn weight of an outline, and its floor, both relative to the
+    // Outline control. Named because the WebGL2 port needs the SAME numbers -
+    // it had its own 0.8 and 0.2 and drew every line 1.45x heavy.
+    const INK_W_MUL = 0.55;
+    const INK_W_MIN = 0.35;
     function inkColor(rgb, tint, near) {
         // `near` applies the SAME depth fade the fills get (see shade):
         // without it the outline stayed full-strength black while the fill
@@ -2402,6 +2475,13 @@
         const ch = (v) => Math.round(
             (t === 0 ? INK_BASE : v * RIBBON_INK_MUL * t) * f + PAPER[0] * (1 - f));
         return `rgb(${ch(r)},${ch(g)},${ch(b)})`;
+    }
+
+    // A colour, straight, with no light and no depth blend on it. What an
+    // annotation wants: the flat stroke a contact used to be drew exactly this.
+    function rgbCss(c) {
+        const q = (v) => Math.max(0, Math.min(255, Math.round(v || 0)));
+        return `rgb(${q(c && c.r)},${q(c && c.g)},${q(c && c.b)})`;
     }
 
     /**
@@ -2677,6 +2757,13 @@
         // structure and zoomed-out saving, which is where the cost actually is.
         // MIN_SUB still applies underneath: 2 is a hard floor, not a preference.
         subCapCur = Math.max(MIN_SUB, Math.floor((CA_STEP_A * scale) / SUB_TARGET_PX));
+        // Emit each ribbon station's frame in MODEL space alongside the
+        // projected corners. For consumers that keep the geometry and re-use it
+        // at other views; see evalSlab for why a projected drawing is not
+        // enough to recover it. Declared HERE, with the other render-scope
+        // switches, because evalSlab reads it far above where the shading
+        // parameters are set up.
+        const frameProbe = !!renderer._frameProbe;
         const persp = (typeof vs.ortho === 'number') ? vs.ortho < 1 : false;
         const fl = vs.focalLength;
         const widthScale = (renderer.lineWidth || 3.0) / 3.0;
@@ -2756,6 +2843,9 @@
         // reach 7.5 at 2.5x. So growth stops at 1.5x.
         const zoomW = Math.max(0.35, Math.min(1.5,
             (renderer.viewerState && renderer.viewerState.zoom) || 1));
+        // Ink the ring where a side chain meets the backbone? No, by default -
+        // see scBase in the stick builder for why.
+        const baseInk = renderer.cartoonBaseInk === true;
         const outlineW = renderer.outlineMode !== 'none'
             ? (renderer.relativeOutlineWidth === 0
                 ? 0 : (renderer.relativeOutlineWidth || 3) * pxScale * zoomW)
@@ -2924,7 +3014,7 @@
         // read by viewer-mol.js, which re-renders once the gesture settles -
         // otherwise the last degraded frame is what stays on screen
         renderer._inkSkipped = dropInk;
-        const inkW = Math.max(0.35 * pxScale, outlineW * 0.55);
+        const inkW = Math.max(INK_W_MIN * pxScale, outlineW * INK_W_MUL);
         // NO INK ANYWHERE WHILE A DRAWING IS UP, OR WHILE A GESTURE HAS DROPPED
         // IT. Switching the ink PASS off is not enough: ink is also laid down in
         // the paint loop, as the rim across the end of an element, the outline
@@ -3004,10 +3094,20 @@
     // left the base edges dashed, every subdivision cut being a place for the
     // line to break. It needs only the four corner curves and the facing terms,
     // so anything that can build those gets the ribbon's own outline.
-    // `square` picks the loop rule (corners extreme across the chain) over the
-    // hull rule; a rung is a flat slab like a ribbon, so it passes false.
+    // `outerOnly` picks the extreme-corner rule (corners extreme across the
+    // chain) over the hull rule. A rung passes TRUE - see its call site: a base plate
+    // carries no inner line either.
+    //
+    // IT IS NOT ONLY LOOPS ANY MORE. The rule was written for them - a square
+    // loop's crease runs a hair inside the silhouette and reads as a doubled
+    // line rather than as structure - but the same is true of every ribbon
+    // outside richardson. Richardson is the style whose slabs are meant to read
+    // as solids, and it is the only one the WebGL2 port inks creases for
+    // (fullOutline = rich && ss === 'E'); the other presets keep their
+    // interiors clean. Passing `squareLoop || !rich` here is what makes the two
+    // renderers agree about that.
     const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
-        squareLoop) => {
+        outerOnly) => {
                         const nsF = Lp.length;
                         const curves = [Lp, Lm, Rp, Rm];
                         const visC = [[], [], [], []];
@@ -3127,7 +3227,7 @@
                             // at the two ends, so a tolerance adds nothing but
                             // corners a pixel inside the edge, and those stroke
                             // as the second line this is here to remove.
-                            if (squareLoop) {
+                            if (outerOnly) {
                                 // Across-chain direction: the segment's mean
                                 // step, turned 90 degrees. Unnormalised - only
                                 // the ORDER of the projections matters.
@@ -4182,7 +4282,15 @@
         // The pad covers the widest profile (a Richardson arrowhead), the
         // Hermite's bulge past its chord, and the outline width.
         const cullPadA = 4.5 * Math.max(1, widthScale);
+        // OFF-SCREEN CULLING, AND HOW TO TURN IT OFF. Dropping what falls
+        // outside the viewport is right for painting a frame and wrong for
+        // harvesting geometry: a consumer that keeps the primitives and re-uses
+        // them at other views (the GPU prototype does exactly that) gets a model
+        // with holes wherever this frame happened to look, and geometry winks in
+        // and out as it turns. renderer._noViewCull keeps everything.
+        const noViewCull = !!renderer._noViewCull;
         const cullSeg = (p1, p2) => {
+            if (noViewCull) return false;
             const A = project(p1.x, p1.y, p1.z);
             const B = project(p2.x, p2.y, p2.z);
             if (!A || !B) return false;      // behind camera: keep, existing
@@ -5006,11 +5114,23 @@
             const thickScale = thickScaleRaw * thickZoom;
             if (!isProt) naSlabHalfT = thickScale;
 
+            // HELIX RATIO, OVERRIDABLE. RICH_TH_REL.H is 0 - a richardson helix
+            // is exactly flat, which is the look - but a zero-thickness piece
+            // is also the source of a whole class of trouble for a consumer
+            // that rebuilds the surface (it has no outward direction, so it has
+            // to be oriented at the eye per view, and edges it shares are
+            // interior with nothing to test). A hair of real thickness makes it
+            // an ordinary solid. Exposed so that can be tried without touching
+            // the constant, and so the two renderers can differ on it.
+            const hxRel = (typeof renderer.cartoonHelixThRel === 'number'
+                && renderer.cartoonHelixThRel >= 0)
+                ? renderer.cartoonHelixThRel : RICH_TH_REL.H;
             const halfT = (j) => {
                 if (!rich || !isProt) return thickScale;
                 const jj = wrapIdx(j);
                 const t = sec[jj];
-                const k = RICH_TH_REL[t] !== undefined ? RICH_TH_REL[t] : RICH_TH_REL.C;
+                const k = t === 'H' ? hxRel
+                    : (RICH_TH_REL[t] !== undefined ? RICH_TH_REL[t] : RICH_TH_REL.C);
                 return thickScale * k;
             };
 
@@ -5544,11 +5664,27 @@
                     // thickness are separate here, so ribbon mode gives a flat
                     // rail of full width and the extra faces have no area at
                     // all (see the zero-thickness guard in the painter).
-                    const ht = !isProt ? (naSlabHalfT !== null ? naSlabHalfT : naHalfT)
+                    // THE PER-SS RATIO DELIBERATELY DOES NOT REACH HERE.
+                    //
+                    // Routing this through halfT() was tried, on the reasoning
+                    // that the richardson ratios should apply on every path and
+                    // not only through htA/htB on the `profiled` one. It is a
+                    // defensible reading, but it is a GEOMETRY change to both
+                    // renderers, not a fix: on a non-profiled interval a helix
+                    // went from the Thick slider's value to exactly zero, which
+                    // moves silhouettes across the whole structure and so moves
+                    // every outline that follows them. Reverted rather than
+                    // carried while the outline rules were being changed
+                    // underneath it - two moving parts, one picture.
+                    //
+                    // If it is wanted, the change is `halfT(i)` here, and it
+                    // needs looking at on its own with the ink rules stable.
+                    const htFlat = !isProt ? (naSlabHalfT !== null ? naSlabHalfT : naHalfT)
                         : (squareLoop ? hw
                             : (renderer.cartoonThickness !== undefined
                                 ? renderer.cartoonThickness / 2
                                 : RIBBON_TH_A));
+                    const ht = htFlat;
                     const evalSlab = (u, afterSeam) => {
                         hermiteV(pa, pb, mA, mB, u, q0);
                         const t2 = u * u;
@@ -5687,7 +5823,24 @@
                             nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2],
                             (tx * LIGHT[0] + ty * LIGHT[1] + tz * LIGHT[2]) / tm,
                         );
-                        return cnr; // [L+, L-, R+, R-, n.v, b.v, t.v, b.k]
+                        // THE FRAME ITSELF, IN MODEL SPACE, for a consumer that
+                        // re-uses the geometry at other views. Everything above
+                        // is this frame already dotted with the eye or the
+                        // light - one view baked in - and a consumer handed only
+                        // those has to invert the projection and rebuild the
+                        // frame by cross products, which recovers its DIRECTION
+                        // but not its SIGN. Nothing in a projected drawing says
+                        // which side of a ribbon was the outside.
+                        // Off by default: it is three arrays per station that a
+                        // normal render never reads.
+                        if (frameProbe) {
+                            // ub is the FACE normal, n the WIDTH normal (it is
+                            // what oN above is built from), t the tangent
+                            cnr.push([ubx, uby, ubz],
+                                [nx, ny, nz],
+                                [tx / tm, ty / tm, tz / tm]);
+                        }
+                        return cnr; // [L+, L-, R+, R-, n.v, b.v, t.v, b.k, ...]
                     };
                     const Lp = [];
                     const Lm = [];
@@ -5700,6 +5853,10 @@
                     const oLb = [];
                     const oLn = [];
                     const oLt = [];
+                    // model-space frame per station, only when asked for
+                    const mUb = [];
+                    const mWa = [];
+                    const mT = [];
                     let ok = true;
                     let zSum = 0;
                     // Station parameters. Uniform normally; an arrowhead needs
@@ -5733,6 +5890,7 @@
                         oLb.push(st[8]);
                         oLn.push(st[9]);
                         oLt.push(st[10]);
+                        if (frameProbe) { mUb.push(st[11]); mWa.push(st[12]); mT.push(st[13]); }
                         zSum += (st[0][2] + st[1][2] + st[2][2] + st[3][2]) / 4;
                     }
                     if (!ok) continue;
@@ -5877,6 +6035,13 @@
                         const pieceOv = far ? ovN : ovI;
                         const prim = {
                             kind: 'rib',
+                            // WHICH OUTLINE RULE THIS PIECE TAKES, stated on the
+                            // prim so a consumer does not have to re-derive it.
+                            // emitSlabInk is called with `squareLoop || !rich`
+                            // just below, and a renderer that rebuilds the
+                            // outline from these prims has to make the same
+                            // choice or its interiors disagree with this one's.
+                            squareLoop,
                             // SS class of this interval, so paintSide can give
                             // strand EDGES their own colour (see below) and
                             // paintFace can find the two-tone underside. Same
@@ -5888,6 +6053,35 @@
                             // see the inner-face tint in paintFace
                             co: !!pieceOv,
                             arrow: arrowHead,
+                            // WHICH END OF THIS PIECE IS THE ARROW'S BARB STEP.
+                            // The interval is cut at seamIdx because the step is
+                            // a real discontinuity, so the arrow arrives as two
+                            // pieces and the seam is an END on both of them. A
+                            // consumer that outlines piece boundaries needs to
+                            // know which boundary this is: inking across the
+                            // seam draws a line over the full barb width, which
+                            // is the inner arrow line nobody wants, while every
+                            // other boundary on the arrow is real outline.
+                            seam0: seamIdx > 0 && a0 === seamIdx,
+                            seam1: seamIdx > 0 && e0 === seamIdx,
+                            // ...AND THE SEAM AS AN ABSOLUTE STATION, which is
+                            // the only form that survives how this interval gets
+                            // cut. seam0/seam1 say "this piece BEGINS/ENDS at the
+                            // seam", and that is not the same question. For an
+                            // arrow nsub is 2*halfN+1, so the midpoint cut and
+                            // the quarter cut q2c both land beside seamIdx - and
+                            // when one of them is seamIdx+1 the step becomes its
+                            // own two-station piece. The pieces either side then
+                            // begin and end at those cuts rather than at the
+                            // seam, carry no flag, and draw their cross-sections:
+                            // one line at barb width, one at shaft width, which
+                            // is the double line at the base of the arrowhead.
+                            //
+                            // The station index does not care how the interval
+                            // was divided, so a consumer can ask "is this station
+                            // the seam" wherever it lands.
+                            seamA: seamIdx > 0 ? seamIdx : -1,
+                            st0: a0,
                             Lp: Lp.slice(a0, e0 + 1),
                             Lm: Lm.slice(a0, e0 + 1),
                             Rp: Rp.slice(a0, e0 + 1),
@@ -5899,9 +6093,24 @@
                             oLb: oLb.slice(a0, e0 + 1),
                             oLn: oLn.slice(a0, e0 + 1),
                             oLt: oLt.slice(a0, e0 + 1),
+                            // the model-space frame, when renderer._frameProbe
+                            // asked for it - see evalSlab
+                            ub: frameProbe ? mUb.slice(a0, e0 + 1) : undefined,
+                            wa: frameProbe ? mWa.slice(a0, e0 + 1) : undefined,
+                            tv: frameProbe ? mT.slice(a0, e0 + 1) : undefined,
                             z: zSort,
                             zShade,
                             c: pieceCol,
+                            // WHICH SLOT OF `colors` THIS PIECE TOOK, so a
+                            // consumer holding the geometry can repaint it from
+                            // a new palette without asking for it again. Only
+                            // meaningful when the colour came from the palette:
+                            // an override or an ss-mode colour did not, and says
+                            // so, because a lookup would then be wrong.
+                            ci: frameProbe ? segIdx : undefined,
+                            ciPalette: frameProbe
+                                ? !(ssColor && isProt) && !hasColorOverrides
+                                : undefined,
                             capStart: a0 === 0 && capStartV,
                             capEnd: e0 === nsub && capEndV,
                             gs0: i + a0 / nsub,
@@ -5929,7 +6138,7 @@
                 if (inkWanted) {
                     emitSlabInk(Lp, Lm, Rp, Rm, oN, oB, oK, col,
                         !!(selInk && (selInk.has(i) || selInk.has(iN))), i,
-                        squareLoop);
+                        squareLoop || !rich);
                 }
                 } else {
                     // Loop, or the junction between two different elements:
@@ -6170,6 +6379,52 @@
                 ? thPreset
                 : (thPreset === 0 ? 0 : LIGAND_TH_DEFAULT));
         const stickHT = Math.max(0, thLig / 2);
+        // THE CONTACT'S OWN SECTION. Its width is CONTACT_WIDTH, in Angstrom,
+        // and that is the FULL width - the same number the flat stroke used, so
+        // switching to a box does not change how heavy a contact reads. Its
+        // thickness follows the ribbon's, because a contact tying two slabs
+        // together should look like it is made of the same stuff; at thickness
+        // zero it collapses to the flat double-sided face on its own, through
+        // the same path a zero-thickness ligand stick takes.
+        // A RADIUS, the same on both axes. The section builder spends u on the
+        // thickness and v on the width, and giving those two different numbers
+        // makes an ellipse - a tube that is fatter one way than the other, and
+        // so still has an orientation, which is the thing a round section is
+        // for getting rid of. A contact is a cylinder: same width, same depth,
+        // and its radius is its own, not the ribbon's thickness control.
+        const contactR = CONTACT_WIDTH / 2;
+        const contactHW = contactR;
+        const contactHT = contactR;
+        // A CONTACT IS A FLAT BRIGHT STROKE. That is the default and it is a
+        // deliberate one: a contact is annotation OVER the picture, not part of
+        // it, and anything with a lit surface and an outline reads as part of
+        // it however carefully it is attached.
+        //
+        // Drawing it as a solid was tried - a box, then a cylinder, both
+        // attached the way a side chain is, with each end's section cut into
+        // the ribbon's own plane so it lies in the surface. The attachment is
+        // the good part of that and the machinery for it is still here, behind
+        // this flag, because it is the section that was wrong rather than the
+        // join. Set cartoonContactBoxes = true for the solid, and
+        // cartoonContactSides for its section: 4 is a square rod, 10 a
+        // cylinder. Both are painted unlit, one flat colour.
+        const contactBoxes = renderer.cartoonContactBoxes === true;
+        // ROUND, not square. A contact is a tie between two residues rather than
+        // a piece of chemistry, and a square rod reads as the latter - the flat
+        // faces catch the light in bands and the corners give it an orientation
+        // it has no business having. A tube has neither: it is the same solid
+        // from every side, which is what an annotation that happens to be three
+        // dimensional should be. It attaches exactly as the square did - the
+        // ring rolls onto the ribbon's face and its section is cut into that
+        // plane, so the end lies in the surface as an ELLIPSE instead of a
+        // square, which is the same connection and a quieter join.
+        //
+        // 10 facets: at a contact's width on screen the silhouette is smooth
+        // by 8, and the outline pass puts ink on exactly the two rails that
+        // are the silhouette, so the facet count costs geometry and nothing
+        // else. Set cartoonContactSides to 4 for the square.
+        const contactSides = Math.max(3, Math.min(24,
+            renderer.cartoonContactSides || 10));
 
         // --- generic segments: ligands, explicit bonds, cyclic closures,
         //     contacts, lone-position dots. Same widths as the ribbon style. ---
@@ -6191,8 +6446,9 @@
             // atoms, lone dots), so those are unaffected.
             let v1 = at(seg.idx1) || rotated[seg.idx1];
             let v2 = at(seg.idx2) || rotated[seg.idx2];
-            let scRoll = null; let scRollAt; let scRollFlush = false;
-            let scRollP = null;
+            const scRollN = [null, null];
+            const scRollP = [null, null];
+            const scRollFlush = [false, false];
             // A SIDE CHAIN LEAVES THROUGH THE RIBBON'S FACE, not out of its
             // middle. Its CA end is a backbone position, which is the CENTRE of
             // the slab - so the first stick began inside the ribbon, the two
@@ -6230,8 +6486,8 @@
                         // which is right - a thicker ribbon swallows more of it.
                         //
                         // So only the cutting plane is recorded here; the end
-                        // point stays where the atom is.
-                        scRollP = face;
+                        // point stays where the atom is. (Recorded just below,
+                        // once the end index is known.)
                         // ROLL THE SECTION ONTO THE RIBBON. A stick's square is
                         // otherwise rolled by its neighbours, so it meets the
                         // surface at whatever angle that happened to give and
@@ -6241,9 +6497,10 @@
                         // across the surface - which is what a base plate does
                         // at its joint, "matches the ribbon's own half-width and
                         // side vector, so the two line up exactly".
-                        scRoll = face.n;
                         // which END of this bond is the ribbon one
-                        scRollAt = a1 ? 1 : 0;
+                        const scEndIdx = a1 ? 1 : 0;
+                        scRollN[scEndIdx] = face.n;
+                        scRollP[scEndIdx] = face;
                         // ...and whether the end square can be cut into that
                         // surface's plane at all. Decided here, once, because
                         // two things downstream need the same answer: the cut
@@ -6272,7 +6529,7 @@
                         const off = Math.hypot(face.x - (a1 ? v2.x : v1.x),
                             face.y - (a1 ? v2.y : v1.y),
                             face.z - (a1 ? v2.z : v1.z));
-                        scRollFlush = dn >= SC_FLUSH_EPS
+                        scRollFlush[scEndIdx] = dn >= SC_FLUSH_EPS
                             && (off + stickHT) <= dn * dl;
                     }
                 }
@@ -6322,6 +6579,50 @@
                     v2 = { x: v2.x - ux * tb * k, y: v2.y - uy * tb * k,
                         z: v2.z - uz * tb * k };
                 }
+                // ...AND THEN IT ATTACHES THE WAY A SIDE CHAIN DOES. The crop
+                // above puts each end ON the surface, which stops the two
+                // solids interpenetrating; what it cannot do is make the end
+                // look like it belongs there, because a perpendicular cut
+                // across a bond that meets the ribbon obliquely is a square
+                // standing on a slope. The same surfaces the crop just found
+                // are handed on as roll planes, so each end's section is rolled
+                // onto the ribbon's own face and sliced into its plane - the
+                // side chain's "square that lies on the backbone", at both ends
+                // instead of one.
+                //
+                // A contact is the only bond that can need this at BOTH ends,
+                // which is why the roll data is a pair.
+                if (contactBoxes) {
+                    const setRoll = (e, endIdx, p, other) => {
+                        if (!e || !e.n) return;
+                        const dxr = other.x - p.x, dyr = other.y - p.y,
+                            dzr = other.z - p.z;
+                        const dlr = Math.hypot(dxr, dyr, dzr) || 1;
+                        const dnr = Math.abs((dxr * e.n[0] + dyr * e.n[1]
+                            + dzr * e.n[2]) / dlr);
+                        scRollN[endIdx] = e.n;
+                        scRollP[endIdx] = e;
+                        // the same backstop the side chain uses: a corner must
+                        // not travel past the far end of the bond
+                        const offr = Math.hypot(e.x - p.x, e.y - p.y, e.z - p.z);
+                        // ...AND THE SECTION'S CENTRE MUST BARELY MOVE. The end
+                        // has already been cropped ONTO this surface, so the
+                        // slice should only tilt the square, not slide it: the
+                        // centre travels ((plane - end).n)/dn, and where that is
+                        // more than the crop itself the two disagree about where
+                        // the surface is and the cut is not a slice of this bond
+                        // any more. Measured at 150 degrees off the face normal,
+                        // where it reached -1.29 A of "crop" on a slab 1.1 A
+                        // thick - backwards, and further than the slab is deep.
+                        const slide = ((e.x - p.x) * e.n[0] + (e.y - p.y) * e.n[1]
+                            + (e.z - p.z) * e.n[2]) / (dnr || 1);
+                        scRollFlush[endIdx] = dnr >= SC_FLUSH_EPS
+                            && (offr + contactHT) <= dnr * dlr
+                            && Math.abs(slide) <= 2 * contactR;
+                    };
+                    setRoll(e1, 0, v1, v2);
+                    setRoll(e2, 1, v2, v1);
+                }
             }
             const A = project(v1.x, v1.y, v1.z);
             const B = project(v2.x, v2.y, v2.z);
@@ -6346,13 +6647,18 @@
             // through the contact. Biasing the channel keeps them agreed, and
             // costs nothing: x and y are already fixed, so the drawn line does
             // not move.
-            const zBias = seg.type === 'C'
+            // ...AND A BOX DOES NOT NEED IT. The bias exists because a flat
+            // stroke "stands for something with thickness" and has no near
+            // surface of its own to sort on. A box has one, so biasing it as
+            // well would push it in front of things it genuinely sits behind.
+            const zBias = (seg.type === 'C' && !contactBoxes)
                 ? Math.max(0, CONTACT_TUBE_R - (renderer.cartoonThickness || 0) / 2)
                 : 0;
             if (zBias && A) A[2] += zBias;
             if (zBias && B) B[2] += zBias;
             if (!A || !B) continue;
             const col = colors[s];
+            const segCi = frameProbe ? s : undefined;   // its slot, for repainting
             if (!col) continue;
             const widthMult = renderer._calculateSegmentWidthMultiplier(null, seg);
             // A CONTACT KEEPS ITS OWN WIDTH, the way a ligand does. The Line
@@ -6371,7 +6677,15 @@
                 ? (seg.contactWeight !== undefined ? seg.contactWeight : 1)
                 : widthMult;
             const wpx = Math.max(0.5, wBase * wMult * ((A[3] + B[3]) / 2));
-            {   // offscreen: same cull as backbone intervals, stroke-width pad
+            // THE SAME WIDTH IN ANGSTROM, for a consumer that keeps the
+            // geometry. `wpx` has the view scale and the perspective factor
+            // already multiplied in, so it is only true of the frame it was
+            // computed for - and a consumer re-drawing at another zoom needs
+            // the quantity this style actually owns, which is a distance in the
+            // molecule and not a number of pixels.
+            const wAng = (seg.type === 'C' ? CONTACT_WIDTH : (renderer.lineWidth || 3.0))
+                * wMult;
+            if (!noViewCull) {   // offscreen: same cull as backbone intervals
                 const m2 = wpx / 2 + outlineW + 4;
                 if ((A[0] < -m2 && B[0] < -m2)
                     || (A[0] > displayWidth + m2 && B[0] > displayWidth + m2)
@@ -6393,7 +6707,7 @@
                     r: wpx / 2, c: col, pA: A, sel: segSel, gs0: seg.idx1 });
             } else {
                 bondList.push({
-                    a: seg.idx1, b: seg.idx2, A, B, w: wpx, c: col,
+                    a: seg.idx1, b: seg.idx2, A, B, w: wpx, wA: wAng, c: col,
                     // WHERE THE TWO ENDS ARE DIFFERENT ELEMENTS, what each half
                     // should be. The box is cut at its middle and painted from
                     // this - see the K loop in stickBox.
@@ -6404,12 +6718,30 @@
                     // list - the halves then land on whatever bond now sits at
                     // that index, and carbon bonds come out red.
                     halfC: (colors && colors.halves && colors.halves[s]) || null,
-                    flat: seg.type === 'C', sel: segSel,
+                    ci: segCi,
+                    // A CONTACT IS A BOX NOW, not a flat stroke - see the roll
+                    // note above. `flat` stays for the other thing that reaches
+                    // this list: a bond whose box could not be built.
+                    flat: (seg.type === 'C' && !contactBoxes), sel: segSel,
+                    // ...times its OWN stored weight, which is the per-contact
+                    // control and the only thing that sizes it. Dropping it
+                    // when the flat stroke became a box was caught by the test
+                    // that exists for exactly that.
+                    hw: seg.type === 'C' ? contactR * wMult : undefined,
+                    ht: seg.type === 'C' ? contactR * wMult : undefined,
+                    segA: seg.type === 'C' ? CONTACT_SEG_A : undefined,
+                    sides: seg.type === 'C' ? contactSides : undefined,
+                    unlit: seg.type === 'C',
                     va: v1, vb: v2,      // 3D: the box is built in Angstroms
-                    rollN: scRoll,       // side chains: roll onto the ribbon
-                    rollP: scRollP,      // ...a point on the cutting plane
-                    rollAt: scRollAt,    // ...and which end sits against it
-                    rollFlush: scRollFlush,  // ...and whether its square lies in it
+                    // ROLL DATA PER END, because a bond can meet the ribbon at
+                    // BOTH. A side chain only ever does at its CA, so this used
+                    // to be three scalars plus `rollAt` naming the one end that
+                    // had them; a contact runs ribbon to ribbon and needs the
+                    // same treatment at each. Indexed [end0, end1], null where
+                    // the end meets nothing.
+                    rollN: scRollN,      // the surface's outward normal
+                    rollP: scRollP,      // ...a point on its plane
+                    rollFlush: scRollFlush,  // ...and whether the square lies in it
                     zBias,               // contacts: sort on the near surface
                 });
             }
@@ -6646,7 +6978,12 @@
             // VIEW space and so does not - but by then the bond has no
             // neighbours and no offset from the centre, and a lone rod on the
             // axis looks the same whichever way its square is rolled.
-            const u = (bd.rollN && perp(bd.rollN[0], bd.rollN[1], bd.rollN[2]))
+            // Either end's surface will do as the SEED: it only sets which way
+            // the square is rolled along the whole bond, and each end is then
+            // cut into its own plane on top of that. End 0 first so a side
+            // chain, which only ever has one, is unchanged.
+            const rn = bd.rollN && (bd.rollN[0] || bd.rollN[1]);
+            const u = (rn && perp(rn[0], rn[1], rn[2]))
                 || perp(sx, sy, sz)
                 || (pick && perp(pick[0], pick[1], pick[2]))
                 || (modelRoll && perp(modelRoll[0], modelRoll[1], modelRoll[2]))
@@ -6661,6 +6998,18 @@
         const stickBox = (bd) => {
             const fr = bd.fr;
             if (!fr) return false;
+            // A BOND MAY CARRY ITS OWN SECTION. Ligand and side-chain sticks all
+            // share one, which is what stickHW/stickHT are - but a CONTACT is a
+            // bond too, and it has its own width in Angstrom (CONTACT_WIDTH,
+            // "on the same scale the Line Width control works in"). So the
+            // section is asked of the bond first and falls back to the stick's,
+            // and the flatness test follows it rather than the global one: a
+            // contact drawn as a solid box beside flat ligand sticks is right,
+            // and the reverse is right too.
+            const bHW = bd.hw !== undefined ? bd.hw : stickHW;
+            const bHT = bd.ht !== undefined ? bd.ht : stickHT;
+            const bFlat = bHT <= 0.5 * bHW * 0.02;
+            const bSides = (bd.sides && bd.sides >= 3) ? (bd.sides | 0) : 4;
             const va = bd.va;
             const vb = bd.vb;
             const tx = fr.t[0]; const ty = fr.t[1]; const tz = fr.t[2];
@@ -6715,7 +7064,7 @@
             const V = [];
             const W = [];                       // the same eight, in Angstroms
             for (const sec of [secA, secB]) {
-                for (let k = 0; k < 4; k++) {
+                for (let k = 0; k < sec.length; k++) {
                     const w = sec[k];
                     const q = project(w[0], w[1], w[2]);
                     if (!q) return false;
@@ -6760,18 +7109,27 @@
             // normals inward
             let cx3 = 0; let cy3 = 0; let cz3 = 0;
             for (const w of W) { cx3 += w[0]; cy3 += w[1]; cz3 += w[2]; }
-            cx3 /= 8; cy3 /= 8; cz3 /= 8;
+            cx3 /= W.length; cy3 /= W.length; cz3 /= W.length;
             const o = [];
             const l = [];
-            const SF = stickIsFlat ? STICK_FACES_FLAT : STICK_FACES;
+            const RT = ringTables(bSides);
+            const SF = bFlat ? STICK_FACES_FLAT : RT.faces;
             for (const f of SF) {
-                const p0 = W[f.q[0]]; const p1 = W[f.q[1]];
-                const p2 = W[f.q[2]]; const p3 = W[f.q[3]];
-                const d1 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-                const d2 = [p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]];
-                let nx2 = d1[1] * d2[2] - d1[2] * d2[1];
-                let ny2 = d1[2] * d2[0] - d1[0] * d2[2];
-                let nz2 = d1[0] * d2[1] - d1[1] * d2[0];
+                // NEWELL, over however many corners the face has. A tube's
+                // caps are n-gons, and the two-diagonal cross product is only
+                // the quad's special case of this - it reads f.q[3] and there
+                // may not be one. Newell is also the right answer for a
+                // non-planar face, which a twisted side facet is.
+                const fw = f.q.map((vi) => W[vi]);
+                const p0 = fw[0]; const p1 = fw[1];
+                let nx2 = 0; let ny2 = 0; let nz2 = 0;
+                for (let i2 = 0; i2 < fw.length; i2++) {
+                    const a2 = fw[i2];
+                    const b2 = fw[(i2 + 1) % fw.length];
+                    nx2 += (a2[1] - b2[1]) * (a2[2] + b2[2]);
+                    ny2 += (a2[2] - b2[2]) * (a2[0] + b2[0]);
+                    nz2 += (a2[0] - b2[0]) * (a2[1] + b2[1]);
+                }
                 const nl2 = Math.hypot(nx2, ny2, nz2);
                 if (nl2 < 1e-9) { o.push(0); l.push(0); continue; }
                 nx2 /= nl2; ny2 /= nl2; nz2 /= nl2;
@@ -6785,9 +7143,11 @@
                         nx2 = -nx2; ny2 = -ny2; nz2 = -nz2;
                     }
                 } else {
-                    const gx = (p0[0] + p1[0] + p2[0] + p3[0]) / 4 - cx3;
-                    const gy = (p0[1] + p1[1] + p2[1] + p3[1]) / 4 - cy3;
-                    const gz = (p0[2] + p1[2] + p2[2] + p3[2]) / 4 - cz3;
+                    let gx = 0; let gy = 0; let gz = 0;
+                    for (const q of fw) { gx += q[0]; gy += q[1]; gz += q[2]; }
+                    gx = gx / fw.length - cx3;
+                    gy = gy / fw.length - cy3;
+                    gz = gz / fw.length - cz3;
                     if (nx2 * gx + ny2 * gy + nz2 * gz < 0) {
                         nx2 = -nx2; ny2 = -ny2; nz2 = -nz2;
                     }
@@ -6802,7 +7162,11 @@
                 // normal - which is what the surface does on the whole - still
                 // decides how the face is lit and how squarely it reads.
                 let best = nx2 * ex + ny2 * ey + nz2 * ez;
-                for (const [A, B, C] of [[p0, p1, p2], [p0, p2, p3]]) {
+                const tris = [];
+                for (let i2 = 1; i2 + 1 < fw.length; i2++) {
+                    tris.push([fw[0], fw[i2], fw[i2 + 1]]);
+                }
+                for (const [A, B, C] of tris) {
                     const e1 = [B[0] - A[0], B[1] - A[1], B[2] - A[2]];
                     const e2 = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
                     let X = e1[1] * e2[2] - e1[2] * e2[1];
@@ -6872,21 +7236,71 @@
                 // cap is back to being perpendicular to the stick, a lid at the
                 // wrong angle over the join, and is buried instead, exactly
                 // like the internal joints the same flag already covers.
-                const scEnd = bd.rollAt !== undefined && !bd.rollFlush
-                    && f.ax === 2 && ((bd.rollAt === 0) === (f.sgn < 0));
+                // WHICH END this cap belongs to: ax 2 is the pair of end
+                // sections, and its sign says which.
+                // ...AND ONLY ON THE RUN'S OWN OUTER ENDS. A long bond is cut
+                // into pieces, and every piece reads the same bond record - so
+                // each of them thought its end sections were the ones meeting
+                // the ribbon. The interior ones are buried and never painted,
+                // so it did not show as a wrong face, but it did suppress their
+                // ink and mark them as bases. A contact makes it easy to hit:
+                // it is the one bond long enough to be cut routinely.
+                const capEnd = f.ax === 2
+                    ? (f.sgn < 0 ? (firstSeg ? 0 : -1) : (lastSeg ? 1 : -1))
+                    : -1;
+                const capRolled = capEnd >= 0 && !!(bd.rollN && bd.rollN[capEnd]);
+                const capFlush = capEnd >= 0 && !!(bd.rollFlush && bd.rollFlush[capEnd]);
+                const scEnd = capRolled && !capFlush;
+                // THE BASE: the square that lies flat on the backbone, at the
+                // end of the side chain that was cut into the ribbon's own
+                // plane. It is a real face and is painted; what it does not get
+                // is a RING OF INK around it. A side chain is part of the
+                // residue, not an object standing on it, and an inked ring says
+                // the opposite - it draws the join as a seam. Dropping it also
+                // makes the one thing that can go wrong there far less visible:
+                // where the box pokes a little through the ribbon surface, an
+                // untraced edge reads as nothing much and an inked one reads as
+                // a mistake.
+                const scBase = capFlush;
                 const buried = scEnd || (f.ax === 2
                     && (f.sgn < 0 ? (!firstSeg || !!bd.cut0)
                         : (!lastSeg || !!bd.cut1)));
                 const fq = f.q.map((vi) => V[vi]);
                 let zf = 0;
                 for (const p2 of fq) zf += p2[2];
+                zf /= fq.length;
                 prims.push({
                     kind: 'stickFace',
                     q: fq,
-                    z: zf / 4,
+                    z: zf,
+                    // painted as one flat colour - see rgbCss in the fill
+                    unlit: !!bd.unlit,
                     c: segC || bd.c,
+                    // WHICH PALETTE SLOT THIS FACE TOOK. `ci` is the generic
+                    // segment index and `half` says whether it used the
+                    // segment's own colour (0) or one of the two half-bond
+                    // colours (1, 2) that element colouring supplies. Together
+                    // they let a consumer repaint the face from a new palette
+                    // without asking for the geometry again.
+                    ci: bd.ci,
+                    half: segC ? (segC === (bd.halfC && bd.halfC.a) ? 1 : 2) : 0,
                     key: o[fi],
                     nl: l[fi],
+                    // DOUBLE-SIDED, and a consumer has to be told. At zero
+                    // thickness the box collapses to ONE quad with nothing
+                    // behind it (STICK_FACES_FLAT), and the rule above is
+                    // `orient it at the eye` - which is a per-VIEW decision.
+                    // A consumer that keeps the geometry and re-lights it from
+                    // a new angle (the WebGL2 port) must redo that, or it
+                    // lights the face from wherever the camera was when the
+                    // prims were taken and back-face culls it the moment the
+                    // model turns - every side chain vanishing as it goes
+                    // round. Absent on a solid stick, where each face has a
+                    // real outward direction.
+                    two: !!f.two,
+                    // ...and a consumer that re-derives the outline needs to
+                    // know which face this is; see baseInk below
+                    base: scBase,
                     draw: o[fi] > -STICK_CULL && !buried,
                     gs0: prim.gs0,
                     gsStep: 0,
@@ -6984,10 +7398,15 @@
                     return m;
                 };
                 const ON_OUTLINE = 0.5;                  // px
-                for (const e of (stickIsFlat ? STICK_EDGES_FLAT : STICK_EDGES)) {
-                    if (!stickIsFlat && front[e.f0] === front[e.f1]) continue;
+                for (const e of (bFlat ? STICK_EDGES_FLAT : RT.edges)) {
+                    if (!bFlat && front[e.f0] === front[e.f1]) continue;
                     if (e.end === 0 && !prim.free0) continue;
                     if (e.end === 1 && !prim.free1) continue;
+                    // THE BASE RING IS NOT INKED - see scBase above. Set
+                    // renderer.cartoonBaseInk = true to draw it, which is what
+                    // every version before this did.
+                    if (!baseInk && e.end >= 0 && bd.rollFlush && bd.rollFlush[e.end]
+                        && (e.end === 0 ? firstSeg : lastSeg)) continue;
                     if (hullPts.length > 2
                         && insideBy(V[e.a]) > ON_OUTLINE
                         && insideBy(V[e.b]) > ON_OUTLINE) continue;
@@ -7020,12 +7439,28 @@
             // single box and pays nothing. Only the interior sections are new
             // geometry; the two ends are exactly what they were, mitre or
             // sweep or square.
+            // THE SECTION. Four corners is a square box; more is a tube, and
+            // the ring is the SAME shape the square is - u is the thickness
+            // axis and v the width, so a tube with unequal half-sizes is an
+            // ellipse, and it rolls onto the ribbon and cuts into its plane
+            // through exactly the code the square does. The 4-point case keeps
+            // its own corner list so a ligand stick is unchanged: a generated
+            // ring of 4 would be the same square rotated 45 degrees.
+            const SQ = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
+            const ring = bSides === 4 ? SQ : (() => {
+                const out = [];
+                for (let i = 0; i < bSides; i++) {
+                    const a = (2 * Math.PI * i) / bSides;
+                    out.push([Math.cos(a), Math.sin(a)]);
+                }
+                return out;
+            })();
             const squareAt = (px, py, pz, uu) => {
                 const vvv = vOf(uu);
-                return [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([su, sv]) => [
-                    px + uu[0] * su * stickHT + vvv[0] * sv * stickHW,
-                    py + uu[1] * su * stickHT + vvv[1] * sv * stickHW,
-                    pz + uu[2] * su * stickHT + vvv[2] * sv * stickHW]);
+                return ring.map(([su, sv]) => [
+                    px + uu[0] * su * bHT + vvv[0] * sv * bHW,
+                    py + uu[1] * su * bHT + vvv[1] * sv * bHW,
+                    pz + uu[2] * su * bHT + vvv[2] * sv * bHW]);
             };
             // A SQUARE THAT LIES ON THE BACKBONE.
             //
@@ -7044,11 +7479,11 @@
             // it never meets the plane and the slide is unbounded. There is no
             // angle cutoff above that - see SC_FLUSH_EPS.
             const flushCut = (end) => {
-                const n = bd.rollN;
-                const pl = bd.rollP;
+                const n = bd.rollN && bd.rollN[end];
+                const pl = bd.rollP && bd.rollP[end];
                 const t = bd.fr && bd.fr.t;
-                if (!n || !pl || !t || bd.rollAt !== end) return null;
-                if (!bd.rollFlush) return null;
+                if (!n || !pl || !t) return null;
+                if (!(bd.rollFlush && bd.rollFlush[end])) return null;
                 const dn = t[0] * n[0] + t[1] * n[1] + t[2] * n[2];
                 if (Math.abs(dn) < SC_FLUSH_EPS) return null;
                 // The square is built where the ATOM is, so the box is the whole
@@ -7076,9 +7511,10 @@
             const faceMark = (sec) => {
                 let cx3 = 0; let cy3 = 0; let cz3 = 0;
                 for (const q of sec) { cx3 += q[0]; cy3 += q[1]; cz3 += q[2]; }
-                return alongT([(sec[0][0] + sec[1][0]) / 2 - cx3 / 4,
-                    (sec[0][1] + sec[1][1]) / 2 - cy3 / 4,
-                    (sec[0][2] + sec[1][2]) / 2 - cz3 / 4]);
+                const m = sec.length;
+                return alongT([(sec[0][0] + sec[1][0]) / 2 - cx3 / m,
+                    (sec[0][1] + sec[1][1]) / 2 - cy3 / m,
+                    (sec[0][2] + sec[1][2]) / 2 - cz3 / m]);
             };
             const mA = faceMark(secA);
             const mB = faceMark(secB);
@@ -7095,6 +7531,20 @@
             // exactly at the middle and the two halves are whole numbers of
             // pieces. Twist alone decides it otherwise.
             let K = Math.max(1, Math.min(8, Math.ceil(Math.abs(tw) / MAX_SEG_TWIST)));
+            // ...AND BY LENGTH, for a bond that spans the picture. Twist alone
+            // is the right measure for a stick a bond long: it is what decides
+            // whether the ruled side faces read as wrung. A CONTACT can cross
+            // the whole structure dead straight, so it twists not at all and
+            // would come out as one box - one depth key for each of its side
+            // faces over their whole span, sorting as if the contact were all
+            // at its own midpoint, which is exactly what it must not do when it
+            // passes behind one thing and in front of the next. Same 2 A pitch
+            // and same ceiling the flat stroke used.
+            if (bd.segA) {
+                const bl = Math.hypot(vb.x - va.x, vb.y - va.y, vb.z - va.z);
+                K = Math.max(K, Math.min(CONTACT_SEG_MAX,
+                    Math.ceil(bl / bd.segA)));
+            }
             if (bd.halfC && bd.halfC.a && bd.halfC.b) K = Math.max(2, K + (K % 2));
             const secs = [secA];
             for (let k = 1; k < K; k++) {
@@ -7507,7 +7957,13 @@
                     prims.push({
                         kind: 'joint', q: poly, z: zs / poly.length,
                         c: legs[0].c, gs0: atom,
+                        ci: legs[0].ci, half: 0,
                         nl: nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2],
+                        // same as the flat stick face above: at zero thickness
+                        // the junction polygon is emitted ONCE and oriented at
+                        // the eye, so its facing is the view's and not the
+                        // geometry's
+                        two: stickIsFlat,
                         face: Math.abs(nz),
                     });
                     // set renderer._jointProbe = [] to collect the junction
@@ -8128,7 +8584,18 @@
                                     pts: [p1, p2],
                                     x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
                                     z: (p1[2] + p2[2]) / 2,
-                                    w: bd.w, c: bd.c, flat: true,
+                                    w: bd.w, wA: bd.wA, c: bd.c, flat: true,
+                                    // THE DEPTH BIAS, so a consumer that reads
+                                    // POSITION out of the depth channel can take
+                                    // it back off - see the note where it is
+                                    // applied. The 2D pass only sorts on that
+                                    // channel, so moving it does not move the
+                                    // drawn line; the WebGL2 path unprojects
+                                    // from it, and a biased z plants the whole
+                                    // contact half an Angstrom toward the eye in
+                                    // MODEL space, where it then swings around
+                                    // with the structure as the view turns.
+                                    zBias: bd.zBias || 0,
                                     pA: p1, pB: p2,
                                     sel: bd.sel,
                                     // POSITIONAL: the ink pass reads joints[0]
@@ -8174,7 +8641,10 @@
                     x1: pts[0][0], y1: pts[0][1],
                     x2: pts[pts.length - 1][0], y2: pts[pts.length - 1][1],
                     z: zSum / pts.length,
-                    w: bd.w,
+                    w: bd.w, wA: bd.wA,
+                    // see the note on the other line emitter: a consumer that
+                    // reads position out of the depth channel needs this back
+                    zBias: bd.zBias || 0,
                     c: bd.c,
                     flat: bd.flat,
                     pA: pts[0], pB: pts[pts.length - 1],
@@ -8707,6 +9177,7 @@
                         prims.push({
                             kind: 'rib',
                             ss: 'C',
+
                             // it IS a rib, and is drawn as one; the flag is only
                             // so a rung can be told from a backbone downstream
                             naRung: true,
@@ -8727,6 +9198,12 @@
                             // neither is a boundary wanting a cross-section
                             capStart: false,
                             capEnd: false,
+                            // THE RESIDUE THIS RUNG BELONGS TO, stated rather
+                            // than inferred. gs0 carries a sub-station offset so
+                            // the pencil can vary along the rung, and a consumer
+                            // that rounds it to get a residue lands on the NEXT
+                            // one for every slice past the midpoint.
+                            resId: res,
                             gs0: res + s / Math.max(1, nseg),
                             gsStep: 1 / Math.max(1, nseg),
                         });
@@ -8910,6 +9387,17 @@
         prims.sort((a, b) => a.z - b.z);
         if (renderer._phase) { renderer._phase.prims = prims.length;
             renderer._phase.sorted = (typeof performance !== 'undefined' ? performance.now() : 0); }
+        // GEOMETRY ONLY. A consumer that wants the primitives and not the
+        // picture - the GPU prototype harvesting a mesh - has everything it
+        // came for by this line: the prims are built, and _primProbe already
+        // holds them. Everything past here paints a frame nobody will look at,
+        // and the ink pass alone is the larger half of it. Measured on 1UBQ,
+        // 13 ms of a 44 ms capture.
+        //
+        // The sort above is deliberately kept: it costs nothing next to the
+        // paint and it leaves the list in the order the painter would use,
+        // which a consumer comparing against a painted reference wants.
+        if (renderer._probeOnly) return;
         // First pass: record the earliest draw order at every joint. A
         // primitive whose order IS the minimum at a joint is drawn before all
         // its neighbours there, so its round cap gets covered by them.
@@ -9133,8 +9621,11 @@
                         tri2(g.q[0], g.q[k2], g.q[k2 + 1]);
                     }
                 } else if (g.kind === 'stickFace') {
-                    tri2(g.q[0], g.q[1], g.q[2]);
-                    tri2(g.q[0], g.q[2], g.q[3]);
+                    // FANNED, because a tube's end cap is an n-gon. A quad is
+                    // the two-triangle case of the same loop.
+                    for (let k2 = 1; k2 + 1 < g.q.length; k2++) {
+                        tri2(g.q[0], g.q[k2], g.q[k2 + 1]);
+                    }
                 } else if (g.kind === 'dot' && g.pA) {
                     cap2(g.pA, g.pA, g.r + outlineW / 2 - 1);
                 }
@@ -9488,6 +9979,45 @@
                         ? SHEET_EDGE_RGB : g.c;
                     ctx.lineWidth = 1;
                     ctx.lineJoin = 'round';
+                    // CEL SHADING, same as paintFace above. This branch was
+                    // MISSING, so with smooth off the broad faces went flat
+                    // and the thickness bands kept their per-station gradient
+                    // - one surface of every loop still airbrushed while the
+                    // rest of the drawing was banded. The constant sideLumAt
+                    // below is why it went unnoticed: it reads as though the
+                    // sides were already flat, but BOTH call sites pass a
+                    // non-zero `outward`, so that constant is never the value
+                    // actually used.
+                    //
+                    // Piece means of the band's OWN outward direction (+-n),
+                    // exactly as paintFace means over +-b. The quantization
+                    // range is paintFace's with the inner-shadow term at
+                    // zero, which is what it collapses to here (k = 0), so a
+                    // side band lands on the SAME level ladder as the faces
+                    // it meets - a band off the faces' ladder puts a visible
+                    // step along an edge that should be continuous.
+                    if (cel) {
+                        const isPos = outward > 0;
+                        let lnA = 0;
+                        let nA = 0;
+                        let tA = 0;
+                        for (let s = 0; s < ns; s++) {
+                            lnA += g.oLn ? g.oLn[s] : g.oN[s];
+                            nA += g.oN[s];
+                            tA += g.oT[s];
+                        }
+                        lnA /= Math.max(1, ns);
+                        nA /= Math.max(1, ns);
+                        tA /= Math.max(1, ns);
+                        const lv = quant(
+                            faceLum(lnA, 0, isPos, isPos ? nA : -nA, tA),
+                            soft(LIGHT_AMB), soft(1) + LIGHT_HI * hiGain);
+                        const flat = shade(gc, nearS, 1, edgeTone(), lv);
+                        ctx.fillStyle = flat;
+                        ctx.strokeStyle = flat;
+                        pathStrip(A, B);
+                        return;
+                    }
                     // Export: whole band as one path + one multi-stop
                     // gradient, mirroring the paintFace export path above.
                     if (svgStrips && ns >= 2) {
@@ -9552,9 +10082,11 @@
                             l0v = d0;
                             l1v = d1;
                         }
-                        // sides are constant-lum since the edge-shading
-                        // purge, so this is solid in practice; keep the
-                        // gradient path for when edge-band shading returns
+                        // NOT constant-lum: `outward` is set at both call
+                        // sites, so l0v/l1v above came from faceLum on the
+                        // band's own direction and genuinely vary along the
+                        // piece. This gradient is the smooth path doing its
+                        // job; the flat one is the cel branch at the top.
                         let style = shade(gc, nearS, 1, edgeTone(), (l0v + l1v) / 2);
                         if (canGrad2 && Math.abs(l0v - l1v) * edgeTone() * 255 > 3) {
                             const x0 = (A[s][0] + B[s][0]) / 2;
@@ -9830,7 +10362,12 @@
                 // lum difference there flashes triangles (probe-verified:
                 // every jumping pixel had |oT| ~ 0.93).
                 const faceLum = (lb, k, isTop, a, t, innerMul) => {
-                    const nL = isTop ? lb : -lb;
+                    // Two-sided on a base plate - see the note in the WebGL2
+                    // port's faceLum: every plate in a duplex shares one axis,
+                    // so an outward-only nL leaves the whole stack unable to
+                    // highlight whenever that axis points away from the light.
+                    const nLs = isTop ? lb : -lb;
+                    const nL = g.naRung ? Math.abs(nLs) : nLs;
                     const inner = isTop ? k : -k;
                     let q = LIGHT_AMB + LIGHT_DIFF * Math.max(0, nL);
                     // inner shadow scales the diffuse AND the highlight, as it
@@ -9840,8 +10377,17 @@
                             * Math.min(1, inner)
                         : 1;
                     q *= shadowF;
-                    let w = Math.min(1, Math.max(0, a) / 0.35);
-                    w *= Math.min(1, Math.max(0, (1 - Math.abs(t)) / 0.3));
+                    // A FLAT CARD DOES NOT CONVERGE, so it is not damped.
+                    // `w` fades a face as it turns edge-on, which is what stops
+                    // a ribbon flashing at a paint-order swap. A base plate's
+                    // normal points along the helix axis, so seen from the side
+                    // - the usual view of a duplex - `a` is near zero and w
+                    // collapses, taking the diffuse modelling and the highlight
+                    // with it: the broad face sat at LUM_NEUTRAL whatever the
+                    // Hilite slider said, while its thin edges still lit.
+                    let w = g.naRung ? 1
+                        : Math.min(1, Math.max(0, a) / 0.35)
+                            * Math.min(1, Math.max(0, (1 - Math.abs(t)) / 0.3));
                     // DIFFUSE MODELLING - this is what the Shade slider scales.
                     const base = soft(LUM_NEUTRAL + (q - LUM_NEUTRAL) * w);
                     // HIGHLIGHT is a SEPARATE control (the Hilite slider) and is
@@ -10195,7 +10741,16 @@
                     qv = quant(qv, LIGHT_AMB,
                         LIGHT_AMB + LIGHT_DIFF + LIGHT_HI * hiGain);
                 }
-                const body = shade(g.c, nearS, 1, tv, soft(qv));
+                // ONE FLAT COLOUR, where the prim asks for it. A contact is an
+                // annotation: it is drawn as a solid so that it can attach to
+                // the ribbon's face and be occluded properly, but it is not
+                // MADE of anything, and lighting it gives it a material and a
+                // direction it should not have. Unlit, a cylinder reads as a
+                // single bright tie whose outline happens to be round - which
+                // is the flat stroke it replaced, with the ends trimmed to the
+                // surfaces it joins.
+                const body = g.unlit ? rgbCss(g.c)
+                    : shade(g.c, nearS, 1, tv, soft(qv));
                 ctx.fillStyle = body;
                 ctx.strokeStyle = body;
                 ctx.lineWidth = 1;
@@ -10247,7 +10802,7 @@
                 ctx.lineCap = 'butt';
                 ctx.beginPath();
                 ctx.moveTo(g.q[0][0], g.q[0][1]);
-                for (let k2 = 1; k2 < 4; k2++) ctx.lineTo(g.q[k2][0], g.q[k2][1]);
+                for (let k2 = 1; k2 < g.q.length; k2++) ctx.lineTo(g.q[k2][0], g.q[k2][1]);
                 ctx.closePath();
                 ctx.fill();
                 ctx.stroke();
@@ -10500,8 +11055,9 @@
             // reject almost every candidate with one comparison.
             const addQuad = (q, gs) => {
                 if (useZBuf) {
-                    rasterTri(q[0], q[1], q[2]);
-                    rasterTri(q[0], q[2], q[3]);
+                    for (let k2 = 1; k2 + 1 < q.length; k2++) {
+                        rasterTri(q[0], q[k2], q[k2 + 1]);
+                    }
                     return;
                 }
                 let x0 = Infinity;
@@ -10663,8 +11219,10 @@
                     if (x < o.x0 || x > o.x1 || y < o.y0 || y > o.y1) continue;
                     const eps = EPS_OCC;
                     if (o.q) {
-                        if (triHides(o.q[0], o.q[1], o.q[2], x, y, z, eps)
-                            || triHides(o.q[0], o.q[2], o.q[3], x, y, z, eps)) return true;
+                        for (let k2 = 1; k2 + 1 < o.q.length; k2++) {
+                            if (triHides(o.q[0], o.q[k2], o.q[k2 + 1],
+                                x, y, z, eps)) return true;
+                        }
                     } else {
                         const a = o.seg[0];
                         const b = o.seg[1];
@@ -11237,11 +11795,14 @@
         // re-asserts all of them: any key left out kept whatever the previous
         // style's slider was at - a high Outline set in cartoon silently
         // survived into richardson, whose panel hides the slider, leaving no
-        // way to see or fix it. (width is the one deliberate exception - see
-        // _lineWidthUserSet in viewer-mol.js: it follows the style only until
-        // the user drags the slider, because ribbon shares it.)
+        // way to see or fix it.
+        //
+        // WIDTH IS THE SAME IN ALL THREE (PRESET_WIDTH). It is shared rather
+        // than style-owned, so switching preset never moves it; _lineWidthUserSet
+        // in viewer-mol.js still lets a real drag survive a switch, but with the
+        // three values equal that latch no longer decides what you see.
         richardson: {
-            width: RICH_WIDTH_DEFAULT,
+            width: PRESET_WIDTH,
             outlineWidth: 2.0,
             thickness: RICH_THICK_DEFAULT,
             outlineTint: RICH_TINT_DEFAULT,
@@ -11261,7 +11822,7 @@
             smooth: true,
         },
         cartoon: {
-            width: 3.0,
+            width: PRESET_WIDTH,
             outlineWidth: 2.0,
             thickness: 0,
             outlineTint: 0,
@@ -11280,7 +11841,7 @@
         // view(preset='3d'); unlike richardson it keeps the standard per-SS
         // geometry profile.
         '3d': {
-            width: 3.0,
+            width: PRESET_WIDTH,
             outlineWidth: 0,
             // 1.0 A of slab - a half-thickness of 0.5, four times the ribbon's
             // usual RIBBON_TH_A. This preset is solid shaded geometry rather
@@ -11417,6 +11978,23 @@
     window.py2dmolCartoon = { render, makeSec, smoothSec, extendSec, SS_PARAMS: SS,
         predictBackbone, predictBaseFrames, assignSecondary, assignSecondaryOpen,
         ringsOf, buildSheetFrames, localFrame,
+        // THE PAPER, and the three numbers that place it. The WebGL2 port
+        // multiplies the same grain in its fragment shaders, and it has to be
+        // the SAME SHEET: the tile is built from Math.random(), so a second
+        // generator would give the two renderers different paper and every
+        // comparison between them would be dominated by noise that means
+        // nothing. `paperTile` caches on whatever object it is handed, so
+        // passing the renderer shares one tile between both paths.
+        paperTile,
+        PENCIL: { STRENGTH: PENCIL_STRENGTH, DEFAULT: PENCIL_DEFAULT,
+            TILE: 128, GRAIN_SCALE },
+        // THE SHADING NUMBERS, for the same reason paperTile is shared: a
+        // second copy in the WebGL2 port is a second source of truth, and the
+        // two drift silently because nothing compares them. Every one of these
+        // had already been restated over there, and one pair had drifted.
+        SHADING: { HI_KNEE, RICH_HI_KNEE, LIGHT_AMB, LIGHT_DIFF, LIGHT_HI,
+            BACK_INNER_SHADE, RIBBON_INK_MUL, INK_FADE_SCALE,
+            INK_W_MUL, INK_W_MIN },
         STYLE_DEFAULTS, SS_PALETTES };
     // Near-white, not pure white: a pure white edge disappears into the page.
     const SHEET_EDGE_RGB = { r: 244, g: 246, b: 240 };
@@ -11444,6 +12022,19 @@
         const ks = Object.keys(ov);
         return '|ss' + ks.length + ':' + ks.join(',') + ':' + ks.map((k) => ov[k]).join('');
     };
+    // EXPORTED, because the WebGL2 port's rebuild signature needs this exact
+    // digest. An sse edit changes which residues are helix, strand or loop, so
+    // it changes the GEOMETRY - and the port cannot reach it through
+    // _cartoonSecKey: that is only refreshed while the 2D pass runs, which on
+    // the GPU path happens inside the capture, i.e. AFTER the signature has
+    // been compared. The mesh would never rebuild, so the capture would never
+    // run, so the key would never update - a stale picture that stays stale.
+    //
+    // Attached here rather than in the export literal above because that
+    // literal is built before this const exists.
+    if (typeof window !== 'undefined' && window.py2dmolCartoon) {
+        window.py2dmolCartoon.sseKey = sseKey;
+    }
     const applySse = (sec, renderer) => {
         const ov = sseOf(renderer);
         if (!ov || !sec) return sec;

@@ -107,6 +107,243 @@ reach, an arginine's tip sitting ~7 Å from its CA — so one residue frames its
 and its side chain rather than asking for a magnification nothing is legible at.
 Anything bigger clears the floor on its own and is untouched.
 
+## GPU renderer — `gpu3d_view.html` (look) and `gpu3d_lab.html` (measure)
+
+**Start with `GPU3D_HANDOFF.md`**: what exists, what works, what is half-done,
+and the numbers to check a change against. `GPU3D_NOTES.md` is the long record
+of why each rule is what it is — worth reading before changing one, since most
+look wrong until you know what they fixed.
+
+    python3 -m http.server 8080
+    open http://localhost:8080/tests/gpu3d_view.html
+
+**`gpu3d_view.html`** is the plain one: a single canvas, a `renderer` dropdown
+(WebGL2 or the 2D renderer), a structure picker, and the style controls the app
+has. No comparison and no metric — pick a renderer, change a setting, look. The
+frame time is printed under the canvas, which is where the difference shows:
+1UBQ at 640px reads 47 ms on the 2D renderer and 0.3 ms on WebGL2, because a
+drag on the GPU turns a mesh that is already resident and rebuilds nothing.
+
+Throw it and it coasts, with the app's own numbers: velocity smoothed at 0.5
+while dragging, applied per frame as `rotationMatrix*(v * 0.005)`, damped by
+0.95 until it falls under 1e-4. Whether to run it is decided by MEASURED frame
+cost rather than by the size of the structure — the same call
+`viewer-cartoon.js` makes for its gesture ink degrade, and for the reason it
+gives there: a segment count knows nothing about canvas size, detail, or the
+machine.
+
+`inertiaStep()` is split out of the rAF loop so the physics can be driven
+directly. That is not a convenience: `requestAnimationFrame` never fires in a
+backgrounded tab, so a test that goes through the loop measures whether the
+window had focus and nothing else.
+
+Most controls do NOT rebuild the mesh. It holds model-space geometry, and
+everything about the camera and the light arrives at the shader as a uniform, so
+`ortho`, `shade`, `highlight` and `fade` cost one draw — measured against a
+rebuild at the same setting, all four differ by **0.000%**. Ortho is the
+surprising one: `unproject` inverts `project` exactly, perspective factor
+included, so the geometry it recovers does not depend on the projection in force
+when it was captured. `smooth` joined them once the mesh started carrying BOTH normals — the
+per-station pair a smooth face interpolates between and the single per-face one
+a flat face uses — with the shader choosing off `uCel`; toggling it without a
+rebuild differs from a rebuild by 0%. Only the geometry controls now move the
+mesh (thickness 18.1%).
+
+**Show/hide does not either.** The mesh carries every face and tags each with
+its class, so hiding the backbone or the side chains is a uniform and a clip at
+the vertex stage — measured on 1UBQ, all four combinations reuse the mesh and
+cost 0.6 ms. Side chains are therefore ALWAYS materialised
+(`window.__scGeometry = false` leaves them out of the geometry altogether, worth
+it only on something like 9FOG where they are most of the 62k faces).
+
+Note the two pages want opposite things from that checkbox. In the viewer it is
+visibility. In the lab it must change the SCENE, because hiding side chains on
+the GPU while the reference still paints them does not measure anything — it
+reports the side chains as error (1BBH 24.1% → 52.5%). The lab rebuilds.
+
+**Nor does adding or removing an individual side chain.** Every face carries the
+residue it belongs to, and a one-byte-per-residue texture says which residues
+are drawn — so `setResidueVisible(i, on)` is a single texel write against a mesh
+that already holds the geometry. Measured on 1UBQ: below timer resolution,
+against 67 ms for the rebuild it replaces. `setAllResiduesVisible(on)` resets it.
+A side chain can only be revealed if the mesh contains it, which is why they are
+always materialised.
+
+**The Ink control is ported.** `cartoonOutlineTint` mixes an outline between
+black and the element's own colour at 0.7 — and it is not a mix: past zero the
+black term is dropped entirely, so at 0.5 a line is a dark version of its own
+element rather than a grey. `inkColor()`'s depth fade came with it. The presets
+set it (richardson 0.8, the others 0), and matching improves as it rises —
+1UBQ 25.6% at tint 0 to 20.5% at 1 — because a tinted line sits closer to the
+fill it borders, so a misplaced one costs less.
+
+Set the SAME tint on both sides when measuring. The lab's reference had it
+pinned at 0 from when the shader could only draw black, which compared a tinted
+outline against a black one and called the difference error.
+
+**Bias is tied to line width and surface slope**, which is what stops the
+outline zigzagging. The line is a screen-space quad straddling the edge, so half
+its width lies OVER one of the two faces, at that face's depth — which is why it
+z-fights at all. How much depth that half spans depends on the line's width and
+on how steeply the face recedes (`|n.xy| / |n.z|`), both of which the shader
+already has. A constant bias over-corrects a face-on surface and
+under-corrects a grazing one, and under-correction eats the quad in a
+slope-dependent pattern: a line that alternates between drawn and missing along
+its length. Reported by eye as a zigzag.
+
+Scaled, it is essentially solved. Counting ink pixels with fewer than two ink
+neighbours — the ends of a stroke — a black outline at width 1.6 goes from
+**63% broken to 0.8%**, with the manual bias at zero. The manual bias is a trim
+now: 0.8% without it, 0.7% with.
+
+**The outline is tuned for how it LOOKS, not for the pixel metric**, which is a
+deliberate choice and worth stating because the two disagree. More ink than the
+reference is fine: a solid line reads as a line, a dashed one reads as a fault,
+and the metric prefers the dashed one because it counts pixels rather than
+strokes. The one thing the cap still protects against is a genuine defect rather
+than a matter of taste — an effectively uncapped bias reached ~0.038 on grazing
+faces and surfaced edges that should have stayed hidden.
+
+Defaults: line width 1.6, manual bias 0.002, slope-bias cap 0.004, ink tint from
+the preset. The knobs, in the order worth reaching for: `ink w` sets the weight,
+`bias` trims continuity, and the cap (`window.__biasMax`) bounds how far a line
+may sit in front of its own surface — raise it for solider lines, lower it if
+hidden edges start showing.
+
+Note the fills-only comparison is unaffected by any of this and stays the honest
+measure of the SHADING port: 15.8% on 1UBQ.
+
+The trade itself, for reference (1UBQ, ink tint 0.8):
+
+| line width | pixel match | broken |
+|---|--:|--:|
+| 1.2 | **18.0%** | 58.6% |
+| 1.4 | 20.2% | 34.0% |
+| 1.6 | 23.2% | **11.7%** |
+
+A thinner line is nearer the reference by pixel count and more broken; a wider
+one is solid and over-inks. The default is 1.6, chosen for the drawing rather
+than the number — the same call as the bias itself.
+
+**The old fixed-bias note**, kept because the reasoning was wrong in an
+instructive way: It was added
+to stop a silhouette z-fighting its own surface, but measured against the
+renderer it only makes the match worse — 1UBQ 24.3% at bias 0, 25.6% at 0.004 —
+because the ink it admits is largely ink the reference does not draw. At zero
+bias the GPU still lays down 11843 ink pixels against the reference's 9440, so
+**the remaining outline error is not the depth epsilon**: it is a rule
+difference about which edges get drawn. An ID buffer would remove the epsilon
+and leave that 25% untouched.
+
+**A new GL context invalidates every object the old one owned.** Switching
+renderer replaces the canvas, and the textures are created lazily by functions
+that short-circuit on an existing handle — so they were rebound from the dead
+context and silently did nothing, which showed up as the outline vanishing on
+the way back to WebGL2. `initGL` clears the handles.
+
+**The outline is most of a build, so it is only built when it is on.** Staged
+timings on 9FOG put the edge table and its instance buffer at 471 ms against
+511 ms for everything else — and the outline is a checkbox. Skipping it takes a
+9FOG build from 1672 ms to 1201 ms; ticking the box rebuilds, which is a cost
+the user just asked for. `window.__mrPhase` carries the stage timings.
+
+**One instance per face, not six vertices.** Of the 36 floats a vertex carried,
+only the position and the normal/tangent pair differ between a face's corners —
+the other 21 were written six times over. Per face it is now 48 floats: four
+corners, two frames, one copy of the rest, with the corner picked off
+`gl_VertexID`. On 9FOG the vertex array went from **111 MB to 25 MB**.
+
+Watch the attribute budget when adding to it. Ten per-face scalars declared
+singly wanted 18 vertex attributes against WebGL2's 16, and the program simply
+fails to link with "too many attributes" — they are packed three-to-a-vec4 and
+unpacked on the shader's first three lines.
+
+**Building is faster too**, by not doing work nobody wanted:
+
+| | before | after |
+|---|--:|--:|
+| 1UBQ capture | 44 ms | 9.8 ms |
+| 1UBQ `makeResident` | 26 ms | 14.5 ms |
+| 9FOG `makeResident` | 1409 ms | 894 ms |
+
+Three things did it. `renderer._probeOnly` returns from the render as soon as
+the primitives exist — a consumer harvesting geometry has everything it came for
+by then, and the paint and ink that follow are a frame nobody looks at. The
+model radius was re-unprojecting every corner a second time, when the loop above
+had already stored them. And the edge table keyed on template literals built
+from three `Math.round`s per corner, about half a million of them on 9FOG; it
+now hashes to a number and caches that on the point.
+
+The viewer has a `colour` dropdown (rainbow, by chain, one colour, stripes,
+gradient) so a colour change is something to measure rather than talk about.
+Each mode moves 85–89% of painted pixels, and the note under the canvas prints
+what the change cost — currently 45 ms on 1UBQ, which is the number a fast path
+has to beat.
+
+**Element colour takes HALF a bond**, and the renderer is what cuts it: a
+colours array may carry a `halves` side-table, `halves[s] = {a, b}`, and where
+it does the renderer splits that bond at its midpoint and gives the near half
+`a`, the far half `b`. Supplying the PAIR is the whole of it — an earlier
+attempt here painted the entire segment with its non-carbon end's colour, a
+bond-length smear where the app draws half of one. On 1UBQ, 78 segments carry
+halves and 468 primitives come back painted an element colour.
+
+**Colour does not rebuild either.** Every primitive reports the palette SLOT it
+took (`ci`, plus `half` for the two half-bond colours element colouring
+supplies), the mesh stores that slot per face, and the colours themselves live
+in a texture — three texels per segment. Changing scheme is one upload of a few
+kilobytes and a redraw: **0.2–2.1 ms against 45 ms for the rebuild it replaces,
+and pixel-identical to it (0%).**
+
+The two derived colours are redone in the shader rather than baked — a sheet
+edge is white, a helix's inner face is tinted 0.68 toward white — because baking
+them would need a palette entry per derived colour instead of per segment.
+
+Two things this cost:
+
+- **Every prim kind has to report a slot.** The junction plates of a three-way
+  side chain did not, so they kept the colour baked at build time and stayed
+  behind as wrong-coloured triangles while the legs around them changed. 117 of
+  1UBQ's 2947 faces were in that state (110 junction, 7 rib cap) and it showed
+  as a 0.7% residual against a rebuild; with them tagged it is 0%.
+- **The attribute limit.** Ten per-face scalars declared singly wanted 18 vertex
+  attributes against WebGL2's 16, and the program simply fails to link with
+  "too many attributes". They are packed three-to-a-vec4 and unpacked into the
+  same names on the shader's first three lines. On 9FOG that is the difference between a
+sub-millisecond redraw and a 1.7 s rebuild.
+
+Rotation is the app's, not a yaw/pitch pair: `rotateView` accumulates the same
+screen-space increments `viewer-mol.js` does (`dx`/`dy` scaled by 0.01, left
+multiplied onto the accumulated matrix), so a drag here behaves like a drag in
+index.html — no roll creeping in once the model is pitched, and no gimbal lock
+looking down the axis. The lab's yaw slider still steps to a named angle through
+`setViewYawPitch`, which is how the measurements in `GPU3D_NOTES.md` were taken.
+
+Note the canvas is REPLACED when the renderer changes. A canvas keeps the first
+context type it is ever given, so one element cannot serve `getContext('2d')`
+and WebGL2 both — a reference captured at startup goes on pointing at the
+detached one, where `getContext('2d')` returns null.
+
+**`gpu3d_core.js`** holds the GPU path both pages use — shaders, capture,
+`facesOf`, `buildResident`, the outline pass. It is lifted out of the lab rather
+than reimplemented: every rule in it was arrived at by measuring against the
+renderer, and a second copy would drift silently. It reads its settings from DOM
+ids (`preset`, `smooth`, `frame`, `ink3d`, …), so a page that does not show one
+supplies a hidden input carrying the default.
+
+## GPU depth prototype — `gpu3d_lab.html`
+
+    python3 -m http.server 8080
+    open http://localhost:8080/tests/gpu3d_lab.html
+
+Answers "how much of the drawing changes if depth is resolved per pixel instead
+of by sorting bodies". Both panels draw the SAME faces off the renderer's own
+primitive list with the same tone function; only the depth resolution differs, and
+a third no-depth GPU pass separates rasterisation from ordering. Measured over 36
+views of 1UBQ: **ordering 674 px (0.19%)**, rasterisation 13590 px of which 99.3%
+is antialiasing on a colour boundary and 56 px land inside a face. Findings and
+the costs that are not pixels are in `GPU3D_NOTES.md`.
+
 ## Paint order — `paint_order_audit.js`
 
     CARTOON=py2Dmol/resources/viewer-cartoon.js node tests/paint_order_audit.js
@@ -498,6 +735,7 @@ from the console (`window.py2dmol_viewers[id].renderer`):
 | `_capT` | `0.85` | Threshold for filling the interior cross-section cap |
 | `_innerShade` | `0.22` | Depth of the concave-side shadow on wide faces |
 | `_quality` | `'perfect'` | `'fast'` selects the cheap painter ink. There is no automatic gesture downgrade: it changed the drawing mid-drag and snapped back on release, which reads as the render breaking |
+| `_noViewCull` | `false` | Keeps primitives that fall outside the viewport. Dropping them is right for painting a frame and wrong for HARVESTING geometry: a consumer that re-uses the primitives at other views gets a model with holes wherever that frame happened to look |
 | `_inkMode` | `'grid'` | `'zbuf'` swaps the exact analytic hidden-line test for a depth buffer — faster, but flickers (see PERF_NOTES) |
 | `_loopFrame` | transport | `'curvature'` restores the old loop frame (visibly more twist) |
 | `_cuts` | `'quarter'` | `'half'` / `'none'` reduce depth-sort granularity |

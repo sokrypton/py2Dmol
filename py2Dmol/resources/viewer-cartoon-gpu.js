@@ -1,0 +1,4162 @@
+/* WebGL2 cartoon renderer - the same drawing as viewer-cartoon.js, resident on
+ * the GPU so that turning the model costs one draw call instead of one full
+ * repaint.
+ *
+ * WHAT THIS IS NOT: a second cartoon renderer. It does not decide where a
+ * ribbon goes, how wide it is, which way a helix faces or what colour anything
+ * takes. It asks viewer-cartoon.js for its primitives ONCE, lifts them back
+ * into model space, and re-paints them from any angle. Every shading rule in
+ * here is a port of a rule in that file, arrived at by measuring one against
+ * the other - see tests/GPU3D_NOTES.md for what each is and why. A second
+ * implementation of any of them would drift silently.
+ *
+ * THE CONTRACT WITH THE 2D RENDERER is three opt-in hooks, all default off:
+ *   _frameProbe   emit each station's frame in MODEL space. A projected
+ *                 drawing gives a frame's direction but not its SIGN.
+ *   _noViewCull   keep primitives outside the viewport. Dropping them is right
+ *                 for painting a frame and wrong for harvesting geometry.
+ *   _probeOnly    return once the prims exist; the rest is a frame nobody sees.
+ *
+ * PARAMETERS ARRIVE AS AN OBJECT, never read from a document. The measurement
+ * harness in tests/ builds that object from its own controls; the app builds it
+ * from the renderer's own properties. One producer each, and the module has no
+ * opinion about where a page keeps its state.
+ */
+(function () {
+'use strict';
+
+// ---- what the consumer tells us about itself -------------------------------
+// A residue map (how many backbone positions, and which generic index each
+// side-chain segment belongs to), the capture canvas size, where colours come
+// from, and a fallback parameter producer. All of it used to be read off the
+// harness's own globals; naming it here is the whole difference between a test
+// page and a module.
+let resMap = { nBase: 0, sidechainMap: null };
+let capW = 600;
+let capH = 600;
+let paletteSource = null;
+let orthoVal = 1;                       // 1 = orthographic, 0 = full perspective
+// DEVICE PIXELS PER DISPLAY PIXEL. The 2D renderer works in DISPLAY pixels -
+// the app scales its context by the ratio and hands it CSS sizes - so the
+// captured geometry and `_viewScale` are both in that space, while the WebGL
+// drawing buffer is the full device size. One number reconciles them, and
+// getting it wrong draws the whole structure at 1/ratio in the middle of a
+// retina canvas. The harness renders 1:1 and leaves it at 1.
+let pixelRatio = 1;
+function setPixelRatio(k) { pixelRatio = (typeof k === 'number' && k > 0) ? k : 1; }
+function setOrtho(v) { orthoVal = Math.max(0, Math.min(1, v === undefined ? 1 : v)); }
+let defaultParams = () => ({});
+function setResidueMap(m) { resMap = m || { nBase: 0, sidechainMap: null }; }
+function setSize(w, h) { capW = w; capH = h; }
+function setPaletteSource(fn) { paletteSource = fn; }
+function setDefaultParams(fn) { defaultParams = fn; }
+function recolour() { if (paletteSource) setPalette(paletteSource()); }
+
+// THE PAGE BEHIND THE CANVAS. The depth blend goes toward it and the base INK
+// is its opposite - a black outline vanishes on a black page, so dark mode inks
+// in white. Both are the renderer's, set per frame; the harness leaves them at
+// the off-white it measured against.
+let PAPER = [252, 252, 250];
+let INK_BASE = 0;
+function setPaper(rgb, inkBase) {
+    if (rgb) PAPER = rgb;
+    INK_BASE = inkBase || 0;
+}
+function toneOf(q, c, zMin, zMax, real) {
+    if (real) return [real.r, real.g, real.b];   // the renderer's own answer
+    // face normal in screen space; z grows toward the eye
+    const ux = q[1][0] - q[0][0], uy = q[1][1] - q[0][1], uz = q[1][2] - q[0][2];
+    const vx = q[3][0] - q[0][0], vy = q[3][1] - q[0][1], vz = q[3][2] - q[0][2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    nz = Math.abs(nz / nl);                       // 1 = facing the eye
+    const lum = 0.72 + 0.28 * nz;
+    const zc = (q[0][2] + q[1][2] + q[2][2] + q[3][2]) / 4;
+    const near = zMax > zMin ? (zc - zMin) / (zMax - zMin) : 1;
+    const fade = 0.55 + 0.45 * near;              // far things sink toward paper
+    return [0, 1, 2].map((i) => {
+        const base = [c.r, c.g, c.b][i] * lum;
+        return Math.round(base * fade + PAPER[i] * (1 - fade));
+    });
+}
+
+// Every filled face the cartoon emits as a quad, with its own corner depths.
+// Which residue a primitive belongs to. `gs0` is an ATOM index on a stick and a
+// backbone position on a ribbon, so a side-chain atom has to be mapped back to
+// the residue that owns it - which is exactly what sidechainMap records.
+function residueOf(p) {
+    // AN EXPLICIT RESIDUE WINS. gs0 is a position with a sub-station offset on
+    // top - `res + s / nseg` for a base plate - and rounding that lands on the
+    // NEXT residue for every slice past the midpoint. On the last residue it
+    // lands one past the end, and the visibility lookup below is a texelFetch:
+    // out of range returns 0 in WebGL2, which reads as "hidden", so half of the
+    // terminal base pair was culled in every nucleic structure. The 2D pass has
+    // no visibility texture, which is why it was GPU-only.
+    if (p.resId !== undefined) return p.resId;
+    const g = p.gs0;
+    if (g === undefined) return 0;
+    if (!resMap || g < resMap.nBase) return Math.round(g);
+    const sc = resMap.sidechainMap && resMap.sidechainMap.get(Math.round(g));
+    return sc ? sc.owner : Math.round(g);
+}
+
+function facesOf(prims, prm) {
+    const P0 = prm || defaultParams();
+    const skipKinds = {};
+    const lines = [];
+    let palComplete = true;
+    const faces = [];
+    let skipped = 0;
+    let pieces = 0;
+    for (const p of prims) {
+        if (p.kind === 'rib' && p.Lp) {
+            const ns = p.Lp.length;
+            // oK is ub·k - the inner-ness of the +b face, and the one shading
+            // input that does not depend on the camera, so it travels as a
+            // scalar rather than being rebuilt from geometry.
+            let kAvg = 0;
+            if (p.oK) { for (let i = 0; i < p.oK.length; i++) kAvg += p.oK[i]; kAvg /= p.oK.length; }
+            const mean = (a) => { let t = 0; for (let i = 0; i < a.length; i++) t += a[i]; return t / a.length; };
+            const bAvg = p.oB ? mean(p.oB) : 0;
+            const lbAvg = p.oLb ? mean(p.oLb) : 0;
+            const tAvg = p.oT ? mean(p.oT) : 0;
+            // A THICKNESS BAND IS LIT BY THE WIDTH NORMAL, not the face
+            // normal, so its `exact inputs` dots are the renderer's oN/oLn -
+            // NOT oB/oLb. Feeding a side the broad face's numbers made the
+            // control that exists to separate "port wrong" from "capture
+            // imprecise" quietly wrong itself on a quarter of the surfaces.
+            const nAvg = p.oN ? mean(p.oN) : 0;
+            const lnAvg = p.oLn ? mean(p.oLn) : (p.oN ? mean(p.oN) : 0);
+            // IS THIS PIECE A FLAT SHEET? Richardson gives a helix zero
+            // thickness (RICH_TH_REL H: 0), so its +b and -b faces are the
+            // SAME surface. Emitting both puts two coincident quads in the
+            // depth buffer, which z-fight: the painter draws them in a fixed
+            // order so the outer one always wins, a depth test picks per pixel
+            // and the pale inner face breaks through in patches. That is the
+            // "some helices painted all lighter".
+            //
+            // A sheet has one side facing you at a time, so it is emitted once
+            // and the shader decides which side it is looking at.
+            // PER STATION, NOT PER PIECE. This asked whether the WHOLE piece
+            // was flat, and a piece that runs from a zero-thickness helix into
+            // a solid loop is not - so neither of its two coincident faces was
+            // culled at the flat end, and they z-fought: the pale inner face
+            // breaking through the coloured outer one in patches. Measured on
+            // 1UBQ, 5 of 201 ribbon pieces have thickness varying from full to
+            // exactly zero along their length, and every one of them is a helix
+            // meeting its neighbour.
+            //
+            // A QUAD spans two stations, so it is coincident when BOTH of its
+            // ends are - which is the flag the shader actually wants.
+            const thinAt = [];
+            for (let k = 0; k < ns; k++) {
+                thinAt.push(Math.hypot(p.Lp[k][0] - p.Lm[k][0], p.Lp[k][1] - p.Lm[k][1],
+                    p.Lp[k][2] - p.Lm[k][2]) <= 0.02);
+            }
+            // BOTH SURFACES, ALWAYS. A sheet has two sides and they carry
+            // different colours - the outer keeps the element's, the inner is
+            // tinted toward white. What a zero-thickness piece must NOT do is
+            // leave them fighting for the same depth; each is simply culled
+            // when it is the side turned away, which the shader decides per
+            // frame. Merging them into one quad loses the second colour and
+            // measured worse.
+            const surfaces = [
+                [p.Lp, p.Rp, 1],      // +b face
+                [p.Lm, p.Rm, 0],      // -b face
+                [p.Lp, p.Lm, 1],      // the two width faces; they take the
+                [p.Rp, p.Rm, 0],      // same treatment, and vanish at zero
+            ];
+            // ONE TONE PER PIECE, not per sub-quad. The flat path paints the
+            // whole strip as a single path with a colour derived from the
+            // piece's AVERAGED frame (bAvg, kAvg, lbAvg, tAvg over its
+            // stations), so shading each sub-quad from its own normal disagrees
+            // with the reference almost everywhere - which is what the first
+            // 73% was. Faces are tagged with their piece so the mean frame can
+            // be computed once the geometry is in model space.
+            const rich = P0.rich;
+            const tintWhite = (c, fr) => ({ r: c.r + (255 - c.r) * fr,
+                g: c.g + (255 - c.g) * fr, b: c.b + (255 - c.b) * fr });
+            // CAPS: the flat rim at a piece end. Missing entirely until now,
+            // so every end was reference-only pixels.
+            const capC = (rich && (p.ss === 'E' || p.naRung))
+                ? { r: 244, g: 246, b: 240 } : (p.c || { r: 140, g: 160, b: 200 });
+            // The outward normal of a start cap is -T and of an end cap +T,
+            // which is what the renderer's oT test is checking. Carrying the
+            // captured facing lets the mesh orient them once and cull per view.
+            const capSlot = p.ci !== undefined && p.ciPalette ? p.ci * 3 : -1;
+            const capMode = capSlot < 0 ? 0
+                : ((rich && (p.ss === 'E' || p.naRung)) ? 2 : 0);
+            // A CAP AT THE ARROW'S SEAM IS NOT AN END, so it must not be
+            // outlined. The barbs are cut off the shaft into their own piece,
+            // and the piece is capped there like any other - a full-width quad
+            // across the base of the arrowhead. Its rim is the diagonal line
+            // across the barb base: the inner arrow line, arriving from the cap
+            // rather than from the broad faces, which is why suppressing the
+            // cross edge on those alone did not remove it.
+            //
+            // The face is kept and only its INK vetoed. It still closes the
+            // solid and still writes depth; noInk kills the whole edge, so the
+            // broad faces that share it cannot re-introduce the line either.
+            if (p.capStart) {
+                faces.push({ res: residueOf(p), q: [p.Lp[0], p.Lm[0], p.Rm[0], p.Rp[0]], c: capC, cap: 1,
+                    pal: capSlot,
+                    colMode: capMode,
+                    noInk: p.seam0 ? 1 : 0,
+                    top: 1, kAvg: 0, iMul: 1, nl: -(p.oT ? p.oT[0] : 0) });
+            }
+            if (p.capEnd) {
+                const e = ns - 1;
+                faces.push({ res: residueOf(p), q: [p.Lp[e], p.Lm[e], p.Rm[e], p.Rp[e]], c: capC, cap: 1,
+                    pal: capSlot,
+                    colMode: capMode,
+                    noInk: p.seam1 ? 1 : 0,
+                    top: 1, kAvg: 0, iMul: 1, nl: (p.oT ? p.oT[e] : 0) });
+            }
+            const pieceId = pieces++;
+            // The two stations either side of an arrow's barb step. The seam is
+            // sampled twice, so the step occupies stations 0 and 1 of the piece
+            // that starts there (and the last two of the piece that ends there).
+            // IS THIS STATION THE ARROW'S BARB STEP? Asked in ABSOLUTE station
+            // numbers, because the piece-relative form could not answer it: the
+            // step is not always at the start or end of a piece - depending on
+            // where the interval's other cuts fall it can be a piece all of its
+            // own, and then the pieces either side never knew they touched a
+            // seam and drew a cross-section each. That is the double line.
+            //
+            // The seam occupies two stations, seamA and seamA+1, because the
+            // renderer samples that point twice: once at shaft width, once at
+            // barb width.
+
+
+            const seamAbs = p.seamA === undefined ? -1 : p.seamA;
+            const stBase = p.st0 || 0;
+            const seamSt = (i) => seamAbs >= 0
+                && (stBase + i === seamAbs || stBase + i === seamAbs + 1);
+            for (let k = 0; k + 1 < ns; k++) {
+                for (let si = 0; si < surfaces.length; si++) {
+                    const [A, B, top] = surfaces[si];
+                    // TWO-TONE HELIX. Richardson hand-coloured the inside of a
+                    // spiral pale, and the renderer synthesises that by tinting
+                    // the INNER face 0.68 toward white - chosen by concavity,
+                    // not by which label the face carries. The inner shadow is
+                    // then eased on exactly those faces, or the two would say
+                    // the same thing twice and drag the pale face back to mud.
+                    const base = p.c || { r: 140, g: 160, b: 200 };
+                    const isSide = si >= 2;
+                    const canTint = rich && p.ss === 'H' && !p.co;
+                    // SHEET EDGES ARE WHITE in the Richardson convention: an
+                    // arrow reads as a plate of white card with a coloured
+                    // face, and the pale rim is what separates strands where
+                    // they overlap. Only the THICKNESS faces change.
+                    const edgeWhite = isSide && rich && (p.ss === 'E' || p.naRung);
+                    const slot = (p.ci !== undefined && p.ciPalette) ? p.ci * 3
+                        : (palComplete = false, -1);
+                    const inward = (top ? kAvg : -kAvg) > 0;
+                    const twoTone = !isSide && inward && rich && p.ss === 'H' && !p.co;
+                    faces.push({ res: residueOf(p),
+                        q: [A[k], B[k], B[k + 1], A[k + 1]],
+                        c: edgeWhite ? { r: 244, g: 246, b: 240 }
+                            : (twoTone ? tintWhite(base, 0.68) : base),
+                        // a sheet carries BOTH colours and picks at draw time
+                        cIn: canTint ? tintWhite(base, 0.68) : base,
+                        cOut: base,
+                        // COINCIDENT HERE? That is a fact about a STATION, not
+                        // about a quad. A quad that runs from a zero-thickness
+                        // helix into a solid loop is coincident at one end and
+                        // genuinely two-sided at the other, and asking it as
+                        // one question has to be answered wrong at one end:
+                        // say yes and half a solid face is culled, say no and
+                        // the pale inner face z-fights the coloured outer one
+                        // at the thin end - which is the pale sliver along a
+                        // helix at the angle where the two faces are within a
+                        // depth-buffer step of each other. Asked per station
+                        // and interpolated, the cull switches on exactly where
+                        // the slab actually closes up.
+                        sheetA: (!isSide && thinAt[k]) ? 1 : 0,
+                        sheetB: (!isSide && thinAt[k + 1]) ? 1 : 0,
+                        canTint: canTint ? 1 : 0,
+                        iMul: twoTone ? 0.3 : 1,          // BACK_INNER_SHADE
+                        side: isSide ? 1 : 0,
+                        plate: p.naRung ? 1 : 0,
+                        // A RICHARDSON SHEET IS OUTLINED ALL THE WAY ROUND.
+                        // The default rule inks a ribbon along its rails and
+                        // never across it, because a line across a helix
+                        // wherever its face rolls edge-on is a true silhouette
+                        // of the surface and not a line the reference draws.
+                        // A richardson strand is a solid slab and reads as one,
+                        // so its ends belong to its outline the same way a base
+                        // plate's do - and the other presets keep the sparse
+                        // rule, which is what keeps their interiors clean.
+                        //
+                        // This does NOT put a line at every station: an
+                        // interior cross edge has two adjacent faces with the
+                        // same normal, so the silhouette test drops it. Only a
+                        // real boundary survives, which is the outline.
+                        //
+                        // ARROWHEADS INCLUDED - excluding them was too blunt.
+                        // The one line that must not be drawn is the cross edge
+                        // AT THE SEAM, where the barbs meet the shaft: the
+                        // interval is cut there, so inking across that boundary
+                        // draws a line over the full barb width, which is the
+                        // inner arrow line. Everything else on an arrow is real
+                        // outline - the shaft's bottom rail, the barb's own
+                        // edges, the crease between the broad face and the side
+                        // - and excluding the whole piece took all of it with
+                        // the one line it was aimed at.
+                        fullOutline: (rich && p.ss === 'E') ? 1 : 0,
+                        // THE 2D USES A SCREEN-SPACE RULE HERE, not a facing
+                        // one, and this says where. emitSlabInk is called with
+                        // outerOnly = true for a rung, a square loop and every
+                        // ribbon outside richardson: keep only the corners whose
+                        // projection is EXTREME across the chain, so an interior
+                        // crease corner - which is never extreme - draws no
+                        // line. The facing test cannot make that guarantee, and
+                        // the two disagree near grazing, which is where a base
+                        // plate spends most of its time.
+                        // ONE RULE, THE REFERENCE'S. viewer-cartoon.js passes
+                        // emitSlabInk `squareLoop || !rich` for a ribbon and
+                        // always `true` for a rung, so this is that expression
+                        // rather than an approximation of it.
+                        //
+                        // Dropping the rung term was tried - letting a plate
+                        // take the same rule as a helix or a sheet - to see
+                        // whether the extreme test's degeneracy on a broadside
+                        // plate was behind the inner lines there. It changed
+                        // nothing visible, so it is not that, and the special
+                        // case is back because matching the reference is worth
+                        // more than a divergence that bought no improvement.
+                        outerOnly: (p.squareLoop || !rich || p.naRung) ? 1 : 0,
+                        // ...so the seam quad's cross edges are held back -
+                        // BOTH of them, which is the part that took a second
+                        // look. The seam station is sampled twice (the renderer
+                        // pushes arrowU at the end of the shaft's run and again
+                        // at the start of the barbs'), so the quad at the seam
+                        // is the STEP itself: no length along the chain, and a
+                        // width that jumps from shaft to barb. Its near cross
+                        // edge is the shaft's cross-section and its far one is
+                        // the barb's, and BOTH are interior to the base of the
+                        // arrow. Ghosting only the near one left the far one -
+                        // the full barb width - which is the inner arrow line.
+                        //
+                        // Its RAILS are kept, and they are the two shoulders:
+                        // each runs from a shaft corner out to a barb corner,
+                        // which is the step's own silhouette and the only part
+                        // of the base that should be drawn.
+                        // ...AND FROM BOTH SIDES, which is the second half of
+                        // it. An edge is ghosted per FACE, and the step quad's
+                        // far cross edge is shared with the next quad along -
+                        // which is an ordinary one and claims it as real, so the
+                        // edge survived and still inked. Worse, the step quad's
+                        // normal points along the chain, so the two disagree by
+                        // ~90 degrees and the crease rule promotes the edge to
+                        // "always draw". Ghosting has to cover every face that
+                        // touches the two seam stations, not just the step.
+                        gA: seamSt(k) ? 1 : 0,
+                        gB: seamSt(k + 1) ? 1 : 0,
+
+                        top, kAvg, oT: tAvg, pieceId, surf: si, st: k,
+                        // THE PALETTE SLOT, and what was done to it. `c` above
+                        // is the base colour after two derivations the shader
+                        // can redo: a sheet edge becomes white, a helix's inner
+                        // face is tinted 0.68 toward white. Emitting the slot
+                        // plus which derivation applies means a new palette
+                        // repaints the mesh without rebuilding it.
+                        pal: slot,
+                        // ...AND ONLY WHEN THERE IS A SLOT TO REDO IT FROM.
+                        // `c` above is ALREADY derived - a helix's inner face
+                        // is already tinted 0.68 toward white. Where the slot
+                        // exists the shader replaces the base with the raw
+                        // palette colour first, so its derivation is the only
+                        // one. Where it does not - ss mode, or any per-residue
+                        // override, both of which report ciPalette false - the
+                        // baked colour is all there is, and asking for the
+                        // derivation again applied 0.68 twice: 0.898 toward
+                        // white, which is the inner face of every helix coming
+                        // out visibly too pale in SSE colouring.
+                        colMode: slot < 0 ? 0 : (edgeWhite ? 2 : (twoTone ? 1 : 0)),
+                        // THE RENDERER'S OWN FRAME at this quad's two stations,
+                        // in model space. Its sign is the renderer's, so there
+                        // is nothing left to decide.
+                        ubA: p.ub && p.ub[k], ubB: p.ub && p.ub[k + 1],
+                        waA: p.wa && p.wa[k], waB: p.wa && p.wa[k + 1],
+                        tvA: p.tv && p.tv[k], tvB: p.tv && p.tv[k + 1],
+                        // sides carry the width-normal pair, faces the b pair;
+                        // surf 3 is the -n side, so its dots are negated
+                        oB: isSide ? (si === 2 ? nAvg : -nAvg) : bAvg,
+                        oLb: isSide ? (si === 2 ? lnAvg : -lnAvg) : lbAvg,
+                        // THE CENTRE LINE, not a rail. oT is the dive of the
+                        // ribbon's own tangent, and faceLum divides by
+                        // (1 - |t|)/0.3 - so near a dive a rail's direction
+                        // instead of the centre's swings the convergence factor
+                        // several-fold and the tone with it. Measured on one
+                        // piece: rail -0.99 against the renderer's -0.929,
+                        // which is w = 0.03 against 0.24.
+                        tan: [
+                            (A[k + 1][0] + B[k + 1][0] - A[k][0] - B[k][0]) / 2,
+                            (A[k + 1][1] + B[k + 1][1] - A[k][1] - B[k][1]) / 2,
+                            (A[k + 1][2] + B[k + 1][2] - A[k][2] - B[k][2]) / 2,
+                        ],
+                    });
+                }
+            }
+        } else if (p.kind === 'stickFace' && p.q) {
+            // KEEP THE FACES THE RENDERER CULLED. `draw` is false for a face
+            // that pointed away AT THE CAPTURE VIEW, and dropping those bakes
+            // one camera into the mesh: rotate the resident model and the back
+            // of every stick is missing, because it was never uploaded. A
+            // resident mesh has to carry the whole solid and cull per frame,
+            // which is what the shader does below.
+            //
+            // Buried faces come along too and cost nothing: they are inside a
+            // closed box, so the depth buffer hides them without being asked.
+            // THE PRIM'S OWN nl (face normal . LIGHT) IS CARRIED so the
+            // normal can be oriented. A quad's winding does not say which way
+            // its face points, and for a stick that is fatal rather than
+            // cosmetic: the wrong sign makes max(0, n.L) clamp to zero, the
+            // knee is never crossed, and the side chain gets no highlight at
+            // all - which is exactly how they looked.
+            faces.push({ res: residueOf(p), q: p.q, c: p.c || { r: 200, g: 140, b: 60 }, top: 1, kAvg: 0,
+                // A FLAT STICK IS ONE DOUBLE-SIDED QUAD. At zero thickness -
+                // which plain cartoon asks for, because flatness IS its look -
+                // the box collapses to a single face with nothing behind it,
+                // and the renderer's rule for it is `orient it at the eye`.
+                // That is a per-view decision, so it cannot be baked: carried
+                // as a flag, the shader redoes it every frame. Without it the
+                // stick cull deleted every side chain the moment the model
+                // turned past the capture view.
+                stick: 1, two: p.two ? 1 : 0, iMul: 1, nl: p.nl,
+                // ONE FLAT COLOUR, no light. A contact is drawn as a solid so
+                // it can attach to the ribbon and be occluded properly, but it
+                // is an annotation and not made of anything - see `unlit` in
+                // viewer-cartoon.js. Shading it here while the 2D pass leaves
+                // it flat is the two renderers disagreeing about what the thing
+                // IS, which is the one disagreement that matters.
+                unlit: p.unlit ? 1 : 0,
+                // THE SQUARE THAT LIES ON THE BACKBONE. Painted like any other
+                // face and never outlined: a side chain is part of its residue,
+                // not an object standing on it, and a ring of ink around the
+                // join draws it as a seam. See scBase in viewer-cartoon.js.
+                noInk: p.base ? 1 : 0,
+                pal: p.ci !== undefined ? p.ci * 3 + (p.half || 0) : -1, colMode: 0,
+                tan: [p.q[1][0] - p.q[0][0], p.q[1][1] - p.q[0][1], p.q[1][2] - p.q[0][2]] });
+        } else if (p.kind === 'joint' && p.q && p.q.length >= 3) {
+            for (let k = 1; k + 1 < p.q.length; k++) {
+                faces.push({ res: residueOf(p), q: [p.q[0], p.q[k], p.q[k + 1], p.q[0]],
+                    c: p.c || { r: 200, g: 140, b: 60 }, top: 1, kAvg: 0, stick: 1,
+                    // A JUNCTION PLATE IS NEVER INKED, because it is not inked
+                    // in the 2D pass either - and there the reason is explicit
+                    // twice over: a joint prim carries no ink curves at all,
+                    // and a leg's end cut is only stroked at a FREE end
+                    // (`if (e.end === 0 && !prim.free0) continue`), which a
+                    // junction is not. So nothing is drawn where three bonds
+                    // meet, and the legs' own sides carry the outline.
+                    //
+                    // This pass derives its edges from geometry and has no idea
+                    // what a free end is, so the plate's boundary - which lies
+                    // exactly along the legs' end cuts - came out as strokes
+                    // down the sides of the junction. At zero thickness the
+                    // plate is double-sided, so those edges are drawn whatever
+                    // way the model is turned. Hence lines at every three-way
+                    // side-chain branch. noInk vetoes the whole edge, including
+                    // where a leg claims the same one.
+                    noInk: 1,
+                    // the junction plate goes the same way as the legs it
+                    // bridges: emitted once and eye-oriented at zero thickness
+                    two: p.two ? 1 : 0, iMul: 1,
+                    // WITHOUT THIS THE JUNCTION DOES NOT REPAINT. A three-way
+                    // side-chain junction is a plate bridging its legs, and a
+                    // face with no palette slot keeps whatever colour was baked
+                    // when the mesh was built - so recolouring left the plates
+                    // behind as wrong-coloured triangles while the legs around
+                    // them changed. It takes the slot of the leg it bridges.
+                    pal: p.ci !== undefined ? p.ci * 3 + (p.half || 0) : -1,
+                    colMode: 0,
+                    nl: p.nl,
+                    tan: [p.q[k][0] - p.q[0][0], p.q[k][1] - p.q[0][1], p.q[k][2] - p.q[0][2]] });
+            }
+        } else if (p.kind === 'line' && p.pts && p.pts.length > 1) {
+            // A FLAT STROKE - a contact, or a bond with no box. It is not a
+            // surface and never was: the renderer draws it as a bright line of
+            // its own width, from either side, and that is annotation rather
+            // than structure. Carried whole and turned into ink instances once
+            // the geometry is in model space.
+            lines.push({ pts: p.pts, c: p.c || { r: 90, g: 90, b: 90 },
+                w: p.w || 1, sel: !!p.sel });
+        } else {
+            skipped++;                            // tubes, dots, ribStrokes
+            skipKinds[p.kind] = (skipKinds[p.kind] || 0) + 1;
+        }
+    }
+    // WHAT THE MESH DOES NOT HOLD, by kind. Anything here is simply absent from
+    // the GPU frame, which is how contacts and the round backbone tube went
+    // missing without a word.
+    window.__gpuSkipped = skipKinds;
+    // ...and whether every face could be repainted from the palette. A prim
+    // whose colour did NOT come from `colors` - an ss-mode colour, or any
+    // per-residue override, which is what a selection is - reports ciPalette
+    // false and carries a baked colour instead. The mesh can still draw it; it
+    // just cannot RECOLOUR it, so a colour change has to rebuild.
+    window.__gpuPaletteComplete = palComplete;
+    return { faces, skipped, lines, paletteComplete: palComplete };
+}
+
+/* ------------------------------------------------------------------- CPU */
+
+function paintCPU(cv, faces, zMin, zMax) {
+    const g = cv.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, cv.width, cv.height);
+    // painter's algorithm: the faces in the order the renderer sorted them
+    for (const f of faces) {
+        const t = toneOf(f.q, f.c, zMin, zMax, f.real);
+        g.fillStyle = `rgb(${t[0]},${t[1]},${t[2]})`;
+        g.beginPath();
+        g.moveTo(f.q[0][0], f.q[0][1]);
+        for (let i = 1; i < f.q.length; i++) g.lineTo(f.q[i][0], f.q[i][1]);
+        g.closePath();
+        g.fill();
+    }
+}
+
+/* ------------------------------------------------------------------- GPU */
+
+const VS = `#version 300 es
+in vec2 aPos; in float aZ; in vec3 aCol;
+uniform vec2 uSize; uniform vec2 uZRange;
+out vec3 vCol;
+out float vCull;      // the shared fragment shader reads it; nothing to cull here
+void main() {
+  vec2 ndc = vec2(aPos.x / uSize.x * 2.0 - 1.0, 1.0 - aPos.y / uSize.y * 2.0);
+  // z grows toward the eye, so NEAR must become SMALL depth for gl.LESS
+  float t = (aZ - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
+  gl_Position = vec4(ndc, 1.0 - 2.0 * t, 1.0);
+  vCol = aCol;
+  vCull = 0.0;
+}`;
+
+// RESIDENT GEOMETRY. The mesh is uploaded ONCE in model space and the camera is
+// a uniform, which is the whole structural argument for a 3D port: the ribbon
+// is a function of coordinates and secondary structure, not of the view, so
+// turning it should not rebuild it. Recovering the model mesh from the
+// captured primitives is possible because the projection is ORTHOGRAPHIC and
+// therefore invertible - see unproject().
+//
+// The tone is computed here rather than on the CPU, from the rotated face
+// normal, because a resident mesh has no CPU pass left to compute it in. This
+// is the first piece of shade() actually living in a shader.
+// THE RENDERER'S OWN SHADING, ported. Every input faceLum() and faceTone()
+// take is a dot product of the ribbon's LOCAL FRAME with either the view
+// direction or the fixed light:
+//
+//   oB  = ub·v     the ±b face's facing        oLb = ub·L   face normal · light
+//   oT  = t·v      the tangent's dive          oK  = ub·k   inner-ness, view-FREE
+//
+// so the frame is all that has to travel. It is recoverable from the face
+// itself - ub is the face normal, t runs along the strip - which is why this
+// can be done from captured geometry at all. Rotating those two vectors by the
+// camera reproduces the dots exactly, and the rest is shade() transcribed.
+const VS3D = `#version 300 es
+// ONE INSTANCE PER FACE: the quad's four corners and the frames at its two
+// ends, with the corner chosen off gl_VertexID. Per-face values are then
+// stored once instead of six times - see the emit for what that saved.
+in vec3 aC0; in vec3 aC1; in vec3 aC2; in vec3 aC3;
+in vec3 aNA; in vec3 aNB; in vec3 aTA; in vec3 aTB;
+in vec3 aBase;
+// Ten per-face scalars, packed three-to-a-vec4. WebGL2 allows 16 vertex
+// attributes; declared singly these wanted 18 and the program simply failed to
+// link. They are unpacked into their own names at the top of main, so the rest
+// of the shader is unchanged.
+in vec4 aFlags0;        // k, top, iMul, stick
+in vec4 aFlags1;        // side, cap, sheet, residue
+in vec4 aFlags2;        // palette slot, colour mode, -, -
+out float vCull;
+in vec3 aDots;          // captured oB, oLb, oT - only true at the capture view
+in vec3 aFlatN;         // the FACE's own OUTWARD normal, constant over it
+in vec3 aFlatShade;     // ...and the normal a FLAT face shades from
+uniform mat3 uRot; uniform vec2 uSize; uniform vec2 uZRange; uniform vec2 uShadeRange;
+uniform float uScale; uniform vec3 uPaper;
+uniform float uPersp, uFL;      // 0 = orthographic; uFL is the focal length
+uniform float uFlatCull;
+uniform float uShowRibbon, uShowSticks;
+uniform sampler2D uVis;     // one texel per residue: 0 hides it
+uniform float uVisW;
+uniform float uVisN;    // how many residues the texture actually holds
+uniform sampler2D uPal;     // three texels per segment: base, half a, half b
+uniform float uPalW;
+uniform float uShadeAmt, uInnerShade, uHiGain, uKnee, uDepthFloor, uCel, uExact;
+// the STANDARD knee, for sticks - richardson's broad one does not apply to a solid
+uniform float uStickKnee;
+out vec3 vCol;
+
+const vec3 LIGHT = normalize(vec3(-0.45, 0.6, 0.75));
+const float LIGHT_AMB = 0.72, LIGHT_DIFF = 0.28, LIGHT_HI = 0.22;
+const float FLAT_TONE = 0.72;
+
+float soft(float v) { return 1.0 + (v - 1.0) * uShadeAmt; }
+
+// CEL. It is on whenever cartoonSmooth is not true, which is the lab's case
+// and the plain cartoon's, and it quantises BOTH the facing tone and the
+// luminance into 8 bands before they reach shade(). A smooth shader against a
+// banded reference disagrees on almost every pixel by a little - which is
+// exactly what the first measurement showed.
+const float CEL_LEVELS = 8.0;
+float quant(float v, float lo, float hi) {
+  if (hi - lo < 1e-9) return v;
+  float t = clamp((v - lo) / (hi - lo), 0.0, 1.0);
+  return lo + (floor(t * (CEL_LEVELS - 1.0) + 0.5) / (CEL_LEVELS - 1.0)) * (hi - lo);
+}
+
+float faceTone(float b, float isTop) {
+  float a = isTop > 0.5 ? b : -b;
+  return soft(0.72 + 0.28 * clamp(a / 0.4, 0.0, 1.0));
+}
+
+float faceLum(float lb, float k, float isTop, float a, float t, float iMul,
+        float flatCard) {
+  float nL = isTop > 0.5 ? lb : -lb;
+  // A CARD IS LIT FROM WHICHEVER SIDE YOU SEE. nL is the OUTWARD normal against
+  // the light, which is right for an opaque surface - a face turned away from
+  // the light does not catch a highlight. A ribbon twists, so its normals sweep
+  // through the light and every part of it lights somewhere.
+  //
+  // A base plate cannot. Every plate in a duplex is normal to the SAME axis, so
+  // nL has one sign for all of them at once: point that axis away from the
+  // light and not one plate highlights, at any Hilite setting, while their thin
+  // sides - whose normals run across the rung - light normally. That is the
+  // reported bug, and it is not a slider problem, it is orientation.
+  //
+  // The plate is a card with the same colour on both faces, so it takes the
+  // light two-sided.
+  if (flatCard > 0.5) nL = abs(nL);
+  float inner = isTop > 0.5 ? k : -k;
+  float q = LIGHT_AMB + LIGHT_DIFF * max(0.0, nL);
+  float shadowF = inner > 0.0 ? 1.0 - uInnerShade * iMul * min(1.0, inner) : 1.0;
+  q *= shadowF;
+  // flatCard = a base plate: it never turns edge-on the way a ribbon does, so
+  // the convergence damper does not apply. Its normal runs along the helix
+  // axis, which is perpendicular to the view for any side-on look at a duplex,
+  // and w collapsed to zero there - no modelling and no highlight.
+  float w = flatCard > 0.5 ? 1.0
+      : min(1.0, max(0.0, a) / 0.35) * min(1.0, max(0.0, 1.0 - abs(t)) / 0.3);
+  float LUM_NEUTRAL = LIGHT_AMB + LIGHT_DIFF * 0.5;
+  float base = soft(LUM_NEUTRAL + (q - LUM_NEUTRAL) * w);
+  if (uHiGain > 0.0 && nL > uKnee) {
+    return base + LIGHT_HI * uHiGain * ((nL - uKnee) / (1.0 - uKnee)) * w * shadowF;
+  }
+  return base;
+}
+
+// shade(rgb, near, dim=1, extra=tone, lum)
+vec3 shadeCol(vec3 rgb, float near, float extra, float lum) {
+  float f = (uDepthFloor + (1.0 - uDepthFloor) * near) * extra;
+  float mul = lum < 1.0 ? lum : 1.0;
+  float hi = lum > 1.0 ? min(1.0, lum - 1.0) : 0.0;
+  vec3 c = (rgb * f + uPaper * (1.0 - f)) * mul;
+  return (hi > 0.0 ? c + (255.0 - c) * hi : c) / 255.0;
+}
+
+void main() {
+  float aK = aFlags0.x, aTop = aFlags0.y, aIMul = aFlags0.z, aStick = aFlags0.w;
+  float aSide = aFlags1.x, aCap = aFlags1.y, aRes = aFlags1.w;
+  // aFlags2.z packs three flags: 1 = double-sided, 2 = unlit, 4 = base plate.
+  // All per-face booleans, bit-packed into the one spare slot.
+  float aPal = aFlags2.x, aColMode = aFlags2.y;
+  float aTwo = mod(aFlags2.z, 2.0) > 0.5 ? 1.0 : 0.0;
+  float aPlate = mod(floor(aFlags2.z / 4.0), 2.0) > 0.5 ? 1.0 : 0.0;
+  // BIT 2, not ">= 2". This read the whole field as a magnitude, which was
+  // right while it held only bits 1 and 2 (z was 0..3, so z >= 2 meant bit 2).
+  // Adding the plate bit made z = 4 for every base plate and the test then
+  // called it unlit - which skips the lighting outright, so no plate responded
+  // to the Hilite slider at all. Extract the bit.
+  float aUnlit = mod(floor(aFlags2.z / 2.0), 2.0) > 0.5 ? 1.0 : 0.0;
+  // two triangles over the quad's four corners; 0 and 1 sit at the near
+  // station, 2 and 3 at the far one, which is what picks the frame
+  int ids[6] = int[6](0, 1, 2, 0, 2, 3);
+  int corner = ids[gl_VertexID];
+  // coincident at THIS end of the quad - corners 0 and 1 sit at the near
+  // station, 2 and 3 at the far one, the same split the frames use. Declared
+  // after the corner index because GLSL does not hoist: one line earlier
+  // and the program does not link and the whole path falls back silently.
+  float aSheet = (corner == 0 || corner == 1) ? aFlags1.z : aFlags2.w;
+  vec3 aModel = corner == 0 ? aC0 : (corner == 1 ? aC1 : (corner == 2 ? aC2 : aC3));
+  vec3 aNormal = (corner == 0 || corner == 1) ? aNA : aNB;
+  vec3 aTangent = (corner == 0 || corner == 1) ? aTA : aTB;
+  vec3 v = uRot * aModel;
+  // THE RENDERER'S OWN PROJECTION. pe = fl / (fl - z), applied to x and y and
+  // not to z - which is what leaves z invertible on the way back in.
+  float pe = uPersp > 0.5 ? uFL / max(0.1, uFL - v.z) : 1.0;
+  vec2 px = vec2(uSize.x * 0.5 + v.x * uScale * pe, uSize.y * 0.5 - v.y * uScale * pe);
+  vec2 ndc = vec2(px.x / uSize.x * 2.0 - 1.0, 1.0 - px.y / uSize.y * 2.0);
+  float t01 = (v.z - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
+  gl_Position = vec4(ndc, 1.0 - 2.0 * t01, 1.0);
+  // DEPTH AND FADE ARE NOT THE SAME NUMBER, and using one for both is why the
+  // Fade slider disagreed with the 2D pass by 84% of the frame.
+  //
+  // The depth buffer needs a range that CONTAINS every corner, or geometry
+  // outside it is clipped - so uZRange is the model's bounding radius, which
+  // has the further virtue of not changing as the model turns.
+  //
+  // The renderer's own 'near' is a different quantity: it normalises over the
+  // actual span of PRIM CENTROID depths at this view, and it is one value for
+  // the whole prim rather than per corner. So the shading takes its own range,
+  // recomputed per frame from the face centroids, and evaluates at the face's
+  // own centroid - which is what that near means.
+  vec3 ctr = (aC0 + aC1 + aC2 + aC3) * 0.25;
+  float cz = (uRot * ctr).z;
+  float tShade = (cz - uShadeRange.x) / max(1e-6, uShadeRange.y - uShadeRange.x);
+
+  // SMOOTH OR FLAT, decided here rather than when the mesh was built. uCel is
+  // already "not smooth", so the switch needs no new uniform: a smooth face
+  // interpolates between its two stations' normals, a flat one takes the
+  // single per-face normal - which for a width band is the PIECE mean,
+  // because that is what the reference quantises.
+  vec3 nSrc = uCel > 0.5 ? aFlatShade : aNormal;
+  vec3 ub = normalize(uRot * nSrc);
+  // THE CULL DOES NOT FOLLOW THE SHADING NORMAL. Which side of a zero-thickness
+  // ribbon faces the eye is a fact about the geometry, and the interpolated
+  // test is what partitions a quad exactly where the surface turns over. Read
+  // through the FLAT normal it is constant across the face, so the whole quad
+  // keeps whichever side its piece mean happened to face - and the pale inner
+  // face breaks through the coloured outer one in patches, on a plain helix,
+  // with nothing near it. That is a per-face cull by the back door, and it only
+  // appeared with Smooth off, because only then is nSrc the flat normal.
+  vec3 ubTrue = normalize(uRot * aNormal);
+  vec3 tg = normalize(uRot * aTangent);         // along the strip
+  // THE VIEW VECTOR, which under perspective is per point rather than (0,0,1).
+  // Everything the renderer calls a facing term is this dotted with a frame
+  // vector, so making it a variable is the whole of the perspective port.
+  vec3 vd = uPersp > 0.5
+      ? normalize(vec3(-v.x, -v.y, uFL - v.z))
+      : vec3(0.0, 0.0, 1.0);
+  // A DOUBLE-SIDED FACE HAS NO OUTWARD DIRECTION TO FIND, so the renderer
+  // orients it at the eye - which both keeps it lit and makes it always drawn.
+  // Its facing is therefore a property of the VIEW, and redoing it here is the
+  // whole fix: baked from the capture, a flat side chain was lit from a camera
+  // that had moved on and then back-face culled outright.
+  if (aTwo > 0.5 && dot(ub, vd) < 0.0) ub = -ub;
+  float oB = dot(ub, vd);
+  float oT = dot(tg, vd);
+  float oLb = dot(ub, LIGHT);
+  // THE CONTROL. Recovering the frame from a projected drawing is accurate to
+  // about 0.02-0.05 in these dots, which is invisible on its own and lands a
+  // face one cel band out when it falls near a boundary. Feeding the
+  // renderer's own numbers instead separates "is the shading port right" from
+  // "is my capture hack precise". A real port builds the frame in model space
+  // and never has this error.
+  if (uExact > 0.5 && aStick < 0.5) { oB = aDots.x; oLb = aDots.y; oT = aDots.z; }
+
+  float tone, lum;
+  if (aCap > 0.5) {
+    // A CAP IS A CROSS-SECTION, and caps only exist in the diving regime where
+    // everything converges to neutral - so the renderer gives them exactly
+    // that, with no light modelling at all.
+    tone = soft(FLAT_TONE);
+    lum = soft(LIGHT_AMB + LIGHT_DIFF * 0.5);
+  } else if (aSide > 0.5) {
+    // THE THICKNESS BAND. Lit by the WIDTH normal rather than the face normal,
+    // with no inner shadow and a constant edge tone - it is the white card the
+    // coloured face is mounted on, not part of the modelled surface.
+    tone = soft(FLAT_TONE);
+    lum = faceLum(oLb, 0.0, 1.0, oB, oT, 1.0, 0.0);
+    // ...and it BANDS with everything else. This quantisation was missing, so
+    // in cel mode the bands stayed continuous while every other surface
+    // stepped - the same hole the 2D renderer had in paintSide, in the same
+    // place, found by fixing that one and asking what its mirror was here.
+    // The bounds are the face bounds with the inner-shadow term at zero,
+    // which is what they collapse to at k = 0: a band off the faces' ladder
+    // puts a visible step along an edge that should be continuous.
+    if (uCel > 0.5) {
+      lum = quant(lum, soft(LIGHT_AMB), soft(1.0) + LIGHT_HI * uHiGain);
+    }
+  } else if (aStick > 0.5) {
+    // A STICK IS A SOLID, and takes none of the ribbon's treatment: no facing
+    // wash (its side faces are edge-on at every angle and the ramp would
+    // bleach exactly the faces that should read as its shaded sides), no
+    // inner shadow, and the standard knee rather than richardson's broad one.
+    // Only the light decides. Without this a side chain came out flat.
+    float nl = oLb;
+    float qv = LIGHT_AMB + LIGHT_DIFF * max(0.0, nl);
+    // uStickKnee is HI_KNEE, handed in rather than written as 0.55 here. The
+    // value is the same; the point is that it is the reference's copy, so it
+    // cannot drift the way the outline weight did.
+    if (uHiGain > 0.0 && nl > uStickKnee) {
+      qv += LIGHT_HI * uHiGain * (nl - uStickKnee) / (1.0 - uStickKnee);
+    }
+    if (uCel > 0.5) qv = quant(qv, LIGHT_AMB, LIGHT_AMB + LIGHT_DIFF + LIGHT_HI * uHiGain);
+    tone = 1.0;
+    lum = soft(qv);
+  } else {
+    float a = aTop > 0.5 ? oB : -oB;
+    tone = faceTone(oB, aTop);
+    lum = faceLum(oLb, aK, aTop, a, oT, aIMul, aPlate);
+    if (uCel > 0.5) {
+      // the same bounds the renderer quantises between, and they track iMul
+      tone = quant(tone, soft(FLAT_TONE), 1.0);
+      float lo = soft(LIGHT_AMB * (1.0 - uInnerShade * max(0.0, aIMul)));
+      float hi = soft(1.0 + uInnerShade * max(0.0, -aIMul)) + LIGHT_HI * uHiGain;
+      lum = quant(lum, lo, hi);
+    }
+  }
+  // COLOUR COMES FROM A TEXTURE, not from the vertex. aBase is still there
+  // as the fallback for anything whose palette slot the renderer could not
+  // report, but where the slot exists the colour is looked up - so repainting
+  // the whole structure is a texture upload against a mesh that never moves.
+  //
+  // The two derivations are redone here rather than baked: a sheet edge is
+  // white in the Richardson convention, and a helix's inner face is tinted
+  // 0.68 toward white. Baking them would have meant a palette entry per
+  // DERIVED colour instead of per segment.
+  vec3 base = aBase;
+  if (uPalW > 0.5 && aPal >= 0.0) {
+    int pi = int(aPal + 0.5);
+    int pw = int(uPalW);
+    base = texelFetch(uPal, ivec2(pi % pw, pi / pw), 0).rgb * 255.0;
+  }
+  if (aColMode > 1.5) base = vec3(244.0, 246.0, 240.0);
+  else if (aColMode > 0.5) base = base + (vec3(255.0) - base) * 0.68;
+  // straight through: no light, no depth blend, no cel banding
+  vCol = aUnlit > 0.5 ? base / 255.0 : shadeCol(base, tShade, tone, lum);
+  // A CAP IS CULLED THE SAME WAY, and for the same reason the stick faces
+  // were: the renderer only draws one when its outward normal (the chain
+  // tangent) faces the eye, and that is a per-VIEW decision. Emitting caps
+  // unconditionally put a face at every piece end that the reference does not
+  // draw at that angle.
+  // CULLING IS PER FACE, NEVER INTERPOLATED. aFlatN is the face's own normal
+  // and is identical at all six of its vertices, so vCull comes out constant
+  // and the fragment test cannot cut a face part-way.
+  //
+  // It used to be computed from the SHADING normal, which is welded per vertex
+  // and therefore varies across the face. Where it crossed zero the two
+  // coincident faces of a flat sheet were each clipped at a slightly different
+  // place, neither covered the seam, and paper showed through - a pale band
+  // across the ribbon at a residue boundary.
+  vec3 fn = normalize(uRot * aFlatN);
+  // SHOW/HIDE IS A UNIFORM, not a rebuild. The mesh holds every face already,
+  // so hiding a class is a clip at the vertex stage - no capture, no upload,
+  // and no fragment work for what is hidden.
+  float show = aStick > 0.5 ? uShowSticks : uShowRibbon;
+  // PER-RESIDUE VISIBILITY, read from a texture rather than baked into the
+  // mesh. Adding or removing one residue's side chain is then a single texel
+  // write - the geometry is already there, it was only being masked.
+  if (show >= 0.5 && uVisW > 0.5) {
+    // clamped: an out-of-range texelFetch returns 0, which reads as hidden, so
+    // a stray index does not silently delete geometry
+    int ri = clamp(int(aRes + 0.5), 0, int(uVisN) - 1);
+    int w = int(uVisW);
+    if (texelFetch(uVis, ivec2(ri % w, ri / w), 0).r < 0.5) show = 0.0;
+  }
+  if (show < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // ...and a double-sided face is never culled: there is no back of it to be on.
+  vCull = (((aStick > 0.5 && aTwo < 0.5) || aCap > 0.5)
+      && dot(fn, vd) < -0.02) ? 1.0 : 0.0;
+  // A ZERO-THICKNESS PIECE has its two broad faces at the same depth, so a
+  // depth test cannot separate them and the pale inner face breaks through the
+  // outer one in patches - the helices that came out "all lighter". They are
+  // not fighting if only the side facing the eye is drawn.
+  // A zero-thickness piece keeps only the side turned toward the eye, and
+  // aFlatN already points OUT of this particular face - so the pair is
+  // exactly complementary by construction, rather than by an aTop/oB agreement
+  // that per-vertex normals can break.
+  // WHICH SIDE OF A ZERO-THICKNESS PIECE TO KEEP, and it has to be decided PER
+  // FRAGMENT.
+  //
+  // A constant per-face normal is too coarse: a flat ribbon that twists through
+  // edge-on WITHIN one quad keeps the side its first station faced for the
+  // whole quad, while the next quad keeps the other - so the pale inner face
+  // breaks through the coloured outer one in patches, on a plain helix with no
+  // transition anywhere near it.
+  //
+  // The interpolated test partitions the quad exactly, and the reason is worth
+  // stating: BOTH coincident faces carry the same aNormal - the +b direction -
+  // with aTop saying which side each one is. So both compute the SAME oB, cross
+  // zero at the same point, and one picks up precisely where the other leaves
+  // off. Nothing falls through the gap because there is no gap.
+  //
+  // window.__flatCull = true restores the per-face test.
+  if (aSheet > 0.5) {
+    float oBcull = dot(ubTrue, vd);
+    bool away = uFlatCull > 0.5 ? (dot(fn, vd) <= 0.0) : ((aTop > 0.5) != (oBcull > 0.0));
+    if (away) vCull = 1.0;
+  }
+}`;
+
+// GPU HIDDEN-LINE OUTLINE.
+//
+// The point of difference from the renderer's `zbuf` ink backend, which was
+// measured and rejected: that one keeps the analytic pass's shape - ONE binary
+// visible/hidden decision per ink segment - and only swaps where the answer
+// comes from. Every artefact in PERF_NOTES follows from that collapse, which is
+// why supersampling the depth buffer made churn WORSE (4.74 -> 5.49) instead of
+// better. You cannot supersample away a decision that was already reduced to
+// one bit per segment.
+//
+// Here there is no query and no segment-level decision. The edge is real
+// geometry and the depth test runs per FRAGMENT, so a line slides out from
+// behind an occluder pixel by pixel. The failure mode changes from a segment
+// blinking to a line stippling where it grazes its own surface, and stippling
+// is what the depth bias (and later an ID buffer) is for.
+//
+// One instanced quad per edge; 6 vertices from gl_VertexID, no quad buffer.
+const VSINK = `#version 300 es
+precision highp float;
+in vec3 aP0; in vec3 aP1; in vec3 aN0; in vec3 aN1; in float aAlways;
+in float aEdgeStick;    // bit 1 = belongs to a stick, bit 2 = extreme-corner rule
+in float aEdgePal;      // its palette slot, for the Ink tint
+// THE COLOUR THE FACE WAS BUILT WITH, and a width multiplier. A slot is not
+// always available: a prim whose colour did not come from the palette reports none
+// (ss mode, any per-residue override), and the tint then had nothing to tint
+// with, so the whole backbone inked black while side chains - which always
+// carry a slot - tinted. This is the fallback, and it is also what lets a
+// CONTACT ride through this same pass: a contact is an edge with its own colour
+// and its own weight that is always drawn.
+in vec3 aEdgeCol;
+// 0 = an outline, and takes uWidth. Otherwise a stroke width in ANGSTROM,
+// which uScale turns into device pixels - so it follows the zoom and the
+// device ratio the way the geometry does, and the perspective factor the way
+// the 2D pass does.
+in float aEdgeW;
+out vec3 vInk;
+uniform mat3 uRot; uniform vec2 uSize, uZRange, uShadeRange;
+uniform float uScale, uWidth, uBias, uPersp, uFL;
+uniform float uShowRibbon, uShowSticks;
+uniform sampler2D uPal;
+uniform float uPalW;
+// the Ink control: 0 = black, 1 = the element's own colour at 0.7
+uniform float uInkTint, uInkBase, uInkFloor, uBiasMax;
+// how near zero a cross product counts as a handoff (see pairDraw)
+uniform float uHandoff;
+uniform vec3 uPaperInk;
+vec2 toPx(vec3 v) {
+    float pe = uPersp > 0.5 ? uFL / max(0.1, uFL - v.z) : 1.0;
+    return vec2(uSize.x * 0.5 + v.x * uScale * pe, uSize.y * 0.5 - v.y * uScale * pe);
+}
+// facing, against the view vector at that point - (0,0,1) under ortho
+bool faces(vec3 n, vec3 at) {
+    vec3 vd = uPersp > 0.5 ? normalize(vec3(-at.x, -at.y, uFL - at.z)) : vec3(0.0, 0.0, 1.0);
+    return dot(n, vd) > 0.0;
+}
+void main() {
+  vInk = vec3(0.0);          // set on every path: an early return still runs
+  float aStickBit = mod(aEdgeStick, 2.0) > 0.5 ? 1.0 : 0.0;
+  float aOuter = mod(floor(aEdgeStick / 2.0), 2.0) > 0.5 ? 1.0 : 0.0;
+  if ((aStickBit > 0.5 ? uShowSticks : uShowRibbon) < 0.5) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // hidden class: no outline either
+    return;
+  }
+  vec3 v0 = uRot * aP0;
+  vec3 v1 = uRot * aP1;
+  // THE SILHOUETTE, AND NOTHING ELSE - the renderer's own words for the same
+  // rule (viewer-cartoon.js, the stick ink block). An edge is drawn iff exactly
+  // one of the two faces meeting along it points at the eye. Orthographic, so
+  // "points at the eye" is just z > 0.
+  //
+  // AN INTERIOR CREASE FAILS THIS BY CONSTRUCTION - both its faces are visible -
+  // and that is the whole point: it is what guarantees no line is ever drawn
+  // across a face. The first cut of this pass had a crease rule that force-drew
+  // any edge whose faces disagreed by more than 40 degrees, which marked 3608
+  // of 4677 edges always-draw and inked every internal seam between connecting
+  // polygons. That is not a heavier outline, it is a different drawing.
+  //
+  // aAlways: 0 = test the pair, 2 = open boundary edge (one adjacent face, so
+  // nothing to disagree with) drawn while that face is turned toward the eye,
+  // 5 = the same edge on a DOUBLE-SIDED face, which the renderer orients at the
+  // eye and so is never turned away from it; 3 = the bright CORE of a contact,
+  // 4 = a contact's ink BORDER, which takes the ordinary ink colour.
+  //
+  // 5 AND NOT 3, WHICH IS WHAT IT WAS. The double-sided case was added so a
+  // flat side chain would keep its outline as the model turns, and it reused
+  // the contact core's value - the comment below even recorded both meanings on
+  // one line and asserted nothing else reached the pass with it set. So every
+  // flat side-chain edge was read as a contact: it took its own colour at full
+  // strength, which is precisely the branch written to keep the INK CONTROL
+  // away from contacts, so side-chain outlines ignored Ink while the backbone
+  // obeyed it. They also skipped the depth fade and lost their corner
+  // overshoot. Three symptoms, one overloaded number.
+  // The 2D pass strokes a contact twice - g.w + paintInkW in ink, then g.w in
+  // the bright colour over it - and without the first one a contact reads as a
+  // flat bar rather than a drawn one.
+  vec3 r0 = uRot * aN0;
+  vec3 r1 = uRot * aN1;
+  // Both faces tested at the edge's own midpoint: under perspective the view
+  // vector varies over the model, and testing an edge's two faces at two
+  // different points would let a straight edge disagree with itself.
+  vec3 mid = (v0 + v1) * 0.5;
+  bool f0 = faces(r0, mid);
+  bool f1 = faces(r1, mid);
+  // EITHER FACE, NOT THE FIRST ONE. aAlways = 2 means "this edge is drawn while
+  // its surface is turned toward the eye", and with one adjacent face - an open
+  // boundary - f0 IS that surface and f1 is a copy of it, so the two readings
+  // agree. With TWO faces, which is every crease, testing f0 alone makes the
+  // answer depend on which face happened to reach addEdge first.
+  //
+  // That is not academic: it is why a richardson strand had a line where its
+  // top face meets the side and none where the BOTTOM face meets the same side.
+  // Both rails exist in the buffer and both are creases at 90 degrees; the top
+  // one recorded the +b face first, which faces you, and the bottom one
+  // recorded the -b face first, which does not. Same edge kind, opposite
+  // outcome, decided by insertion order.
+  //
+  // A crease is visible when either of the surfaces meeting along it is.
+  // THE 2D'S RULE, ported. It keeps the corners whose projection is extreme
+  // ACROSS the chain; a corner sits at +/-hw*w +/-ht*b from the centre, so the
+  // extreme one is the corner whose two adjacent faces both lean the SAME way
+  // along that across-chain direction. Both normals are already here, so the
+  // test is their screen-space cross products against the edge sharing a sign -
+  // no extra geometry, and it reproduces "interior crease corners are never
+  // extreme" exactly, which the facing test cannot.
+  vec3 eDir = v1 - v0;
+  float c0 = eDir.x * r0.y - eDir.y * r0.x;
+  float c1 = eDir.x * r1.y - eDir.y * r1.x;
+  // ...AND A HANDOFF COUNTS AS EXTREME. The reference tests each corner at BOTH
+  // stations and keeps it if it is extreme at either -
+  //     v0[c] >= hi0 || v1[c] >= hi1 || v0[c] <= lo0 || v1[c] <= lo1
+  // - which is why its own comment says it "normally keeps 2 corners and keeps
+  // 3 across a handoff", where the outer edge passes from one corner to
+  // another along a twisting piece.
+  //
+  // One test for the whole edge cannot see that: it keeps 2 and never 3, so
+  // every rail that hands off mid-piece was dropped. A rung twists on its way
+  // out of the backbone, so most of them do - measured, the GPU drew 0.81x the
+  // reference's ink on 1BNA, missing 6336 pixels of outline.
+  //
+  // A handoff is exactly where one of the two cross products passes through
+  // zero, so a near-zero term is the per-edge shadow of "extreme at one end".
+  float m0 = abs(c0), m1 = abs(c1);
+  bool handoff = min(m0, m1) <= uHandoff * max(m0, m1);
+  // THE EXTREME TEST NEEDS BOTH NORMALS TO HAVE SCREEN EXTENT.
+  //
+  // c is |eDir| * |r.xy| * sin(angle), so it collapses when a normal projects
+  // to nothing - which is precisely what a face pointing AT THE VIEWER does.
+  // A base plate seen broadside puts its broad face there, so c for that face
+  // is ~0 at all four corners and its SIGN is numerical noise. The product test
+  // then decides the outline by coin toss and draws creases: the inner lines.
+  //
+  // Where the test is meaningless, fall back to the facing rule, which answers
+  // this case correctly - visible broad + visible side is a crease and stays
+  // unlit; visible side + hidden broad is the silhouette and draws.
+  float eL = length(eDir.xy);
+  bool usable = min(m0, m1) > 0.15 * max(1e-6, eL);
+  bool pairDraw = aOuter > 0.5
+      ? (usable ? ((c0 * c1 > 0.0) || handoff) : (f0 != f1))
+      : (f0 != f1);
+  bool draw = (aAlways > 2.5) ? true : ((aAlways > 1.5) ? (f0 || f1) : pairDraw);
+  if (!draw) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // clipped, no fragments at all
+    return;
+  }
+  vec2 s0 = toPx(v0);
+  vec2 s1 = toPx(v1);
+  vec2 d = s1 - s0;
+  float L = length(d);
+  vec2 dir = L > 1e-6 ? d / L : vec2(1.0, 0.0);
+  float peW = uPersp > 0.5 ? uFL / max(0.1, uFL - mid.z) : 1.0;
+  // a contact's ink BORDER is its core plus one outline width, which is what
+  // the 2D pass strokes underneath it
+  // the contact BORDER (4) is its core plus one outline width; the test is
+  // bounded because 5 is an ordinary outline and must not collect it
+  bool isContact = aAlways > 2.5 && aAlways < 4.5;
+  float w = aEdgeW > 0.0
+      ? max(0.5, aEdgeW * uScale * peW) + (aAlways > 3.5 && isContact ? uWidth : 0.0)
+      : uWidth;
+  vec2 perp = vec2(-dir.y, dir.x) * (w * 0.5);
+  int ids[6] = int[6](0, 1, 2, 0, 2, 3);
+  int c = ids[gl_VertexID];
+  bool far = (c == 1 || c == 2);
+  vec2 p = far ? s1 : s0;
+  p += (c >= 2) ? perp : -perp;
+  // half a width of overshoot at each end, so consecutive edges of one strip
+  // meet instead of leaving a notch at every station.
+  //
+  // NOT ON A STROKE. That overshoot exists because an outline turns corners
+  // between segments; a contact does not turn, its pieces are collinear and
+  // abut exactly, so butt ends meet with no notch to fill. Extending them
+  // instead pushes the contact HALF A WIDTH past each of the two CAs it names -
+  // and the width follows the zoom and the perspective, so that overhang
+  // breathes as the view moves, which reads as the ends not sitting on the
+  // residues. A contact should stop where it stops.
+  // ...and only a CONTACT gives up the overshoot. A double-sided edge is an
+  // outline like any other: it turns corners between segments, so without the
+  // overshoot every station leaves a notch.
+  float over = isContact ? 0.0 : (w * 0.5);
+  p += dir * (far ? over : -over);
+  float zv = far ? v1.z : v0.z;
+  vec2 ndc = vec2(p.x / uSize.x * 2.0 - 1.0, 1.0 - p.y / uSize.y * 2.0);
+  float t01 = (zv - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
+
+  // BIAS SCALED BY WIDTH AND SLOPE, which is what stops the zigzag.
+  //
+  // The line is a screen-space quad straddling the edge, so half its width lies
+  // OVER one of the two faces - at that face's depth, which is why it z-fights
+  // at all. How much depth that half spans depends on two things the shader
+  // already knows: how wide the line is, and how steeply the face recedes.
+  //
+  // On a face with normal n, moving one pixel sideways changes view depth by
+  // |n.xy| / |n.z| / uScale. A constant bias therefore over-corrects a
+  // face-on surface and under-corrects a grazing one, and under-correction
+  // eats the quad in a slope-dependent pattern - a line that alternates
+  // between drawn and missing along its length, which is the zigzag.
+  //
+  // The steeper of the two faces is the one to satisfy. |n.z| is floored
+  // because a face exactly edge-on wants infinite bias and cannot have it.
+  float sl0 = length(r0.xy) / max(0.08, abs(r0.z));
+  float sl1 = length(r1.xy) / max(0.08, abs(r1.z));
+  float slope = max(sl0, sl1);
+  float dz = (w * 0.5 / max(1e-6, uScale)) * slope;   // in view units
+  // the depth range maps to 2.0 of clip z, so convert before applying it
+  float slopeBias = 2.0 * dz / max(1e-6, uZRange.y - uZRange.x);
+  // AND CAP IT. A grazing face recedes arbitrarily fast, so the correction it
+  // asks for is unbounded - and a line pushed that far forward stops being
+  // hidden by anything, which surfaces interior edges the drawing should not
+  // have. Capping the RESULT rather than the slope is what bounds the damage:
+  // the cap is in clip depth, so it says directly how far in front of its own
+  // surface a line may ever sit.
+  slopeBias = min(slopeBias, uBiasMax);
+  gl_Position = vec4(ndc, 1.0 - 2.0 * t01 - uBias - slopeBias, 1.0);
+
+  // THE INK COLOUR, ported from inkColor():
+  //     f  = inkFloor + (1 - inkFloor) * near        (the same depth fade the
+  //                                                   fills get, so a faded
+  //                                                   structure does not read
+  //                                                   as a dark wireframe over
+  //                                                   ghost geometry)
+  //     ch = (tint == 0 ? INK_BASE : v * 0.7 * tint) * f + PAPER * (1 - f)
+  //
+  // Note the black term is DROPPED once the tint is non-zero - it is not a mix
+  // between black and the colour, it is the colour scaled by 0.7 * tint. At
+  // 0.5 an outline is a dark version of its own element rather than a grey.
+  vec3 elem = aEdgeCol;
+  if (uPalW > 0.5 && aEdgePal >= 0.0) {
+    int pi = int(aEdgePal + 0.5);
+    int pw = int(uPalW);
+    elem = texelFetch(uPal, ivec2(pi % pw, pi / pw), 0).rgb * 255.0;
+  }
+  // ...and the ink fades on the SHADING range too, at the edge's own midpoint:
+  // its depth key in the 2D pass is the prim's, not the corner's
+  float tShade = (((v0.z + v1.z) * 0.5) - uShadeRange.x)
+      / max(1e-6, uShadeRange.y - uShadeRange.x);
+  // a contact's bright core takes its own colour at full strength; its border,
+  // and every ordinary outline, fades toward the paper with depth
+  bool core = aAlways > 2.5 && aAlways < 3.5;
+  float f = core ? 1.0 : (uInkFloor + (1.0 - uInkFloor) * tShade);
+  // A CONTACT IS NOT AN OUTLINE, so the Ink control does not reach it: it is a
+  // bright annotation stroke in its own colour, and tinting it toward black -
+  // which is what Ink 0 means for an outline - would have deleted it in the
+  // one style that draws contacts most. aAlways 3 is the flag; nothing else
+  // reaches this pass with it set.
+  vec3 ink = core ? aEdgeCol
+      : (uInkTint <= 0.0 ? vec3(uInkBase) : elem * 0.7 * uInkTint);
+  vInk = (ink * f + uPaperInk * (1.0 - f)) / 255.0;
+}`;
+
+/* ======================================================= THE TUBE STYLE
+ * A different drawing and a much simpler one. Where the cartoon builds a mesh
+ * of ribbon slabs, the tube style is one CAPSULE per segment: the 2D pass
+ * strokes a thick round-capped line between two projected positions and fills a
+ * disc at each end. So there is nothing to capture and nothing to unproject -
+ * the geometry IS the coordinates, and the whole port is one instanced quad per
+ * segment with the capsule solved in the fragment shader.
+ *
+ * WHAT THE GPU DOES DIFFERENTLY, and it is the reason to do this at all: the 2D
+ * pass has no depth buffer, so it sorts segments back to front and paints them
+ * whole. Two tubes that genuinely cross therefore have to pick a winner, and
+ * the loser passes behind at the crossing even where it should emerge in front.
+ * Writing gl_FragDepth from the capsule's own surface makes them intersect.
+ *
+ * WHAT IT DOES NOT DO IS DECIDE THE COLOUR. The tube's shading is screen-space
+ * occlusion - every segment darkened by whatever lies in front of it - which is
+ * viewer-mol.js's own calculation, cached and recomputed when a gesture settles
+ * rather than per frame. The colour arrives here already shaded, one per
+ * segment, and is re-uploaded when that cache is rebuilt. During a drag there is
+ * nothing to upload and the frame is one draw call.
+ */
+const VSTUBE = `#version 300 es
+precision highp float;
+in vec3 aP0;            // the segment's two ends, MODEL space
+in vec3 aP1;
+in float aRad;          // its radius in ANGSTROM, so it follows zoom like the rest
+in vec3 aTCol;          // colour, already shaded, 0..255
+// 1 = this end is a free end of the chain, 0 = the next segment continues it
+in float aCapA, aCapB;
+// 1 = annotation (a contact): the 2D pass excludes these from shading
+in float aNoAO;
+uniform mat3 uRot;
+uniform vec2 uSize;
+uniform vec2 uZRange;
+uniform float uScale, uPersp, uFL;
+// extra radius in DISPLAY pixels, and a depth push, for the outline pass
+uniform float uGrowPx, uPushZ, uRatio;
+uniform float uDepthCue;   // per-segment depth darkening, the flat cue
+out vec2 vA, vB;        // the ends in device pixels
+out float vRpx;         // the radius actually DRAWN, in device pixels
+// ...and the tube's own radius, which is not the same thing on the outline pass.
+// The capsule's depth comes from its surface, and a grown radius bulges further
+// toward the eye - by far more than the depth push meant to keep the outline
+// behind its own fill, so the outline won everywhere and the whole drawing came
+// out at 0.7. The halo is a flat skirt around the TRUE tube, not a fatter tube.
+out float vRfill;
+out float vZA, vZB;     // view-space depth at each end
+out vec3 vTCol;
+out vec2 vPx;           // this vertex's own device-pixel position
+out float vCapA, vCapB;
+out float vNoAO;
+void main() {
+  vec3 a = uRot * aP0;
+  vec3 b = uRot * aP1;
+  float peA = uPersp > 0.5 ? uFL / max(0.1, uFL - a.z) : 1.0;
+  float peB = uPersp > 0.5 ? uFL / max(0.1, uFL - b.z) : 1.0;
+  vA = vec2(uSize.x * 0.5 + a.x * uScale * peA, uSize.y * 0.5 - a.y * uScale * peA);
+  vB = vec2(uSize.x * 0.5 + b.x * uScale * peB, uSize.y * 0.5 - b.y * uScale * peB);
+  vZA = a.z; vZB = b.z;
+  vCapA = aCapA; vCapB = aCapB; vNoAO = aNoAO;
+  // ONE TONE PER SEGMENT, and that is the point. The style is flat segments
+  // with a dark rim, not lit tubes: the shading has to be constant across a
+  // capsule or it stops reading as a flat mark. So the depth cue is computed
+  // HERE, per instance, from the segment's own midpoint - free, and it cannot
+  // vary across the fragment the way a surface normal does.
+  //
+  // It replaces the 2D pass's screen-space occlusion, which is a better cue and
+  // costs ~90% of the frame (9FOG: 67 ms with, 6.8 ms without). This is the
+  // cheap half of that idea: things further away are darker.
+  float zMid = (a.z + b.z) * 0.5;
+  float near01 = clamp((zMid - uZRange.x) / max(1e-6, uZRange.y - uZRange.x), 0.0, 1.0);
+  vTCol = (aTCol / 255.0) * (uDepthCue > 0.5 ? (0.74 + 0.26 * near01) : 1.0);
+  // THE RADIUS FOLLOWS THE PERSPECTIVE, averaged over the segment, which is
+  // what the 2D pass does: it scales the stroke by the mean of its two ends'
+  // perspective factors rather than per pixel.
+  float pe = (peA + peB) * 0.5;
+  vRfill = aRad * uScale * pe;
+  vRpx = vRfill + uGrowPx * uRatio;
+  // A QUAD THAT COVERS THE CAPSULE: along the segment, extended by the radius
+  // at each end so the round caps are inside it, and half a radius wider than
+  // the tube on each side.
+  vec2 d = vB - vA;
+  float L = length(d);
+  vec2 t = L > 1e-6 ? d / L : vec2(1.0, 0.0);
+  vec2 n = vec2(-t.y, t.x);
+  int ids[6] = int[6](0, 1, 2, 0, 2, 3);
+  int c = ids[gl_VertexID];
+  float along = (c == 0 || c == 3) ? -vRpx : L + vRpx;
+  float across = (c == 0 || c == 1) ? -vRpx : vRpx;
+  vec2 p = vA + t * along + n * across;
+  vPx = p;
+  vec2 ndc = vec2(p.x / uSize.x * 2.0 - 1.0, 1.0 - p.y / uSize.y * 2.0);
+  gl_Position = vec4(ndc, 0.0, 1.0);
+}`;
+
+// A FULL-SCREEN TRIANGLE with no attributes at all - gl_VertexID is enough,
+// and it keeps the tube's instanced attribute state from having to be torn
+// down and rebuilt around the occlusion pass.
+const VSQUAD = `#version 300 es
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// SCREEN-SPACE OCCLUSION, and the reason it exists rather than the CPU pass.
+//
+// The 2D renderer shades a segment by testing it against every other segment
+// in front of it: two nested loops over the visible list, a grid above a size
+// threshold. It is the single most expensive thing in the style - on 9FOG it
+// is ~90% of the frame - and it grows with the structure, which is the wrong
+// direction when the whole point of the GPU path is 3J3Q.
+//
+// The kernels below are the CPU's, unchanged: a rational stand-in for a
+// sigmoid, c^2 / (c^2 + d^2 * 2), summed for shadow and maxed for tint, with
+// the same cutoffs derived from the same reference bond lengths. What changes
+// is WHAT IS SUMMED OVER. The CPU sums over segments; this sums over samples
+// of the depth field the capsules just wrote, so the cost is a function of the
+// number of PIXELS and not of the number of segments. Ten thousand segments
+// cost exactly what five hundred do.
+//
+// Two consequences worth naming, because they are visible:
+//
+//  - It is better at crossings. The CPU compares segment CENTRES, so where one
+//    strand passes over another the shadow is attributed to the whole segment
+//    and the crossing softens into a general darkening. Sampling the depth
+//    field puts the darkening where the strands actually cross, and the two
+//    read as two, which is the thing a tube drawing has to get right.
+//  - It only sees the front-most surface along each ray, where the CPU counts
+//    every segment behind it too. That undercounts burial by a roughly
+//    constant factor, which is what uDensity absorbs.
+// THE MATCHING RESOLVE. A 4x4 box, which is exactly the period of the
+// interleaved rotation above, so every output pixel averages one full set of
+// sixteen sample orientations.
+//
+// It is depth-weighted, and that is not a refinement. A plain box would drag
+// the dark band from behind a crossing out across the strand in front of it,
+// and that halo is what makes screen-space occlusion look dirty. Weighting each
+// tap by how near its depth is to the centre's keeps the average inside one
+// surface: smooth along a tube, hard where one passes over another - which is
+// the one place the drawing needs an edge.
+const FBLUR = `#version 300 es
+precision highp float;
+uniform sampler2D uAOTex;
+uniform sampler2D uZTex;
+uniform vec2 uTexel;
+out vec2 fragAO;
+void main() {
+  vec2 uv = gl_FragCoord.xy * uTexel;
+  float zc = texture(uZTex, uv).r;
+  if (zc < -1.0e8) { fragAO = vec2(1.0, 1.0); return; }
+  vec2 acc = vec2(0.0);
+  float wsum = 0.0;
+  for (int y = -2; y <= 1; y++) {
+    for (int x = -2; x <= 1; x++) {
+      vec2 uvk = uv + vec2(float(x), float(y)) * uTexel;
+      float zn = texture(uZTex, uvk).r;
+      if (zn < -1.0e8) continue;
+      float w = exp(-abs(zn - zc) * 1.5);
+      acc += texture(uAOTex, uvk).rg * w;
+      wsum += w;
+    }
+  }
+  fragAO = wsum > 0.0 ? acc / wsum : texture(uAOTex, uv).rg;
+}`;
+
+const FSAO = `#version 300 es
+precision highp float;
+uniform sampler2D uZTex;
+uniform vec2 uTexel;           // 1 / size of the depth texture, in pixels
+uniform float uScale;          // device pixels per Angstrom at pe = 1
+uniform float uPersp, uFL;
+uniform float uShadowCut, uShadowMax;   // Angstrom, from REF_LENGTHS
+uniform float uTintCut, uTintMax;
+uniform float uStrength;       // the shadow slider
+uniform float uIntensity;      // 0.95, the CPU's per-unit darkening
+uniform float uDensity;        // segments per square Angstrom, times the gain
+uniform float uSelfBias;       // Angstrom; below this a sample is the same tube
+out vec2 fragAO;
+const int NS = 28;             // burial: a wide disc, area-uniform
+const int NT = 10;             // contact: a tight disc, where crossings live
+void main() {
+  vec2 uv = gl_FragCoord.xy * uTexel;
+  float zc = texture(uZTex, uv).r;
+  if (zc < -1.0e8) { fragAO = vec2(1.0, 1.0); return; }   // paper
+  float pe = uPersp > 0.5 ? uFL / max(0.1, uFL - zc) : 1.0;
+  float pxPerA = max(1.0e-6, uScale * pe);
+  float sc2 = uShadowCut * uShadowCut;
+  float tc2 = uTintCut * uTintCut;
+  float shadowSum = 0.0;
+  float maxTint = 0.0;
+  // BURIAL. Radii as sqrt(i/N) so the taps are uniform per unit AREA, which is
+  // what lets one tap stand for a fixed patch of the disc and the whole sum be
+  // scaled by a single density.
+  float wArea = (3.14159265 * uShadowMax * uShadowMax / float(NS)) * uDensity;
+  // INTERLEAVED SAMPLING. Twenty-odd taps is a coarse estimate of the disc
+  // however they are placed, and placing them at the SAME angles for every
+  // pixel makes the error identical across a neighbourhood - it shows up as
+  // blotches and facets that look like shading and are not.
+  //
+  // A random per-pixel rotation fixes that but replaces it with grain, and
+  // grain only averages out if you blur far enough to collect a fair sample of
+  // rotations - which a small blur does not. So the rotation is not random: it
+  // is the pixel's position in a 4x4 block, giving sixteen evenly spaced
+  // angles, arranged so that EVERY 4x4 block contains each one exactly once.
+  // The 4x4 blur that follows therefore averages a complete, fair set every
+  // time, and the estimate lands at 16 x 28 effective taps for the cost of 28.
+  ivec2 ip = ivec2(gl_FragCoord.xy) & 3;
+  float rot = float(ip.x + (ip.y << 2)) * (6.2831853 / 16.0);
+  for (int i = 0; i < NS; i++) {
+    float fi = (float(i) + 0.5) / float(NS);
+    float ang = float(i) * 2.39996323 + rot;   // golden angle, so no ring pattern
+    float rr = sqrt(fi);
+    float dA = rr * uShadowMax;
+    vec2 off = vec2(cos(ang), sin(ang)) * dA * pxPerA;
+    float zs = texture(uZTex, uv + off * uTexel).r;
+    if (zs < -1.0e8) continue;
+    float dz = zs - zc;
+    if (dz <= uSelfBias) continue;          // behind, or the same tube's bulge
+    shadowSum += (sc2 / (sc2 + (dA * dA + dz * dz) * 2.0)) * wArea;
+  }
+  // CONTACT. The tint cutoff is ~1.9 Angstrom, so this term is only alive
+  // within a couple of Angstrom of something in front - which is exactly the
+  // pixels beside a crossing. It is a max, not a sum: one occluder is enough.
+  for (int i = 0; i < NT; i++) {
+    float fi = (float(i) + 0.5) / float(NT);
+    float ang = float(i) * 2.39996323 + rot + 1.1;
+    float dA = sqrt(fi) * uTintMax;
+    vec2 off = vec2(cos(ang), sin(ang)) * dA * pxPerA;
+    float zs = texture(uZTex, uv + off * uTexel).r;
+    if (zs < -1.0e8) continue;
+    if (zs - zc <= uSelfBias) continue;
+    maxTint = max(maxTint, tc2 / (tc2 + dA * dA * 2.0));
+  }
+  shadowSum = min(shadowSum * uStrength, 12.0);   // MAX_SHADOW_SUM
+  fragAO = vec2(pow(uIntensity, shadowSum), 1.0 - maxTint * uStrength);
+}`;
+
+const FSTUBE = `#version 300 es
+precision highp float;
+in vec2 vA, vB;
+in float vRpx;
+in float vRfill;
+in float vZA, vZB;
+in vec3 vTCol;
+in vec2 vPx;
+in float vCapA, vCapB;
+in float vNoAO;
+uniform vec2 uZRange;
+uniform float uScale, uPersp, uFL, uPushZ;
+// the outline pass is the fill darkened - the 2D pass's own gap-filler colour
+uniform float uDarken;
+// 1 = light the capsule per fragment, 0 = flat (the outline skirt)
+uniform float uLit;
+// 1 = cut the outline off square where the chain continues (see below)
+uniform float uButt;
+// THE OCCLUSION, computed on the GPU from a depth prepass rather than on the
+// CPU from every pair of segments. uZOnly makes this the prepass itself: the
+// shader writes the capsule's view depth in Angstrom instead of a colour.
+uniform float uZOnly;
+uniform float uUseAO;
+uniform vec2 uSizeF;
+uniform sampler2D uAOTex;
+out vec4 fragColor;
+void main() {
+  // distance to the segment, in pixels, and how far along it the nearest point is
+  vec2 d = vB - vA;
+  float L2 = dot(d, d);
+  float tRaw = L2 > 1e-9 ? dot(vPx - vA, d) / L2 : 0.0;
+  float t = clamp(tRaw, 0.0, 1.0);
+  vec2 q = vA + d * t;
+  float dist = length(vPx - q);
+  if (dist > vRpx) discard;              // outside the capsule
+  // WHY THE OUTLINE STOPS SQUARE IN THE MIDDLE OF A CHAIN.
+  // Every segment carries its own rim, so a round cap at a joint draws a dark
+  // arc BETWEEN consecutive residues and the backbone reads as a string of
+  // sausages rather than one tube. A joint is not an end of anything: the next
+  // segment starts exactly there. So on the outline pass the halo is cut off
+  // flush at any end another segment continues, and the neighbour's halo takes
+  // over from the same plane. Only a genuinely free end - a chain terminus, a
+  // break - keeps its round cap. The FILL is always round, which is what
+  // closes the wedge on the outside of a bend.
+  // This is the 2D pass's rule too (shouldRoundEndpoint / the butt-capped gap
+  // filler); the GPU had simply been rounding everything.
+  if (uButt > 0.5) {
+    if (vCapA < 0.5 && tRaw < 0.0) discard;
+    if (vCapB < 0.5 && tRaw > 1.0) discard;
+  }
+  // THE SURFACE, not the centre line. A tube is round, so the fragment nearest
+  // the eye at distance d from the axis stands proud of it by
+  // sqrt(r^2 - dist^2) - in PIXELS, which becomes Angstrom by dividing out the
+  // same scale that put it there. Without this the whole capsule sits at its
+  // axis depth and two crossing tubes meet as a flat seam instead of one
+  // passing over the other.
+  float zAxis = mix(vZA, vZB, t);
+  float pe = uPersp > 0.5 ? uFL / max(0.1, uFL - zAxis) : 1.0;
+  // FROM THE TUBE, NOT FROM THE HALO. Clamped so the skirt outside the tube
+  // sits at the tube's own rim depth rather than diving behind it.
+  float dIn = min(dist, vRfill);
+  float bulgePx = sqrt(max(0.0, vRfill * vRfill - dIn * dIn));
+  float zSurf = zAxis + bulgePx / max(1e-6, uScale * pe);
+  // THE OUTLINE IS A SKIRT OUTSIDE THE TUBE, NOT A FATTER TUBE BEHIND IT.
+  // This is the whole of what makes a depth buffer behave like the 2D pass's
+  // painter, which strokes each segment's rim and then its fill, in depth
+  // order, so a rim covers whatever is behind it and is covered by whatever is
+  // in front - and is never in a tie, because order decides.
+  //
+  // A depth buffer has no order, so the geometry has to avoid the tie instead.
+  // Two things went wrong before, and they pull in opposite directions:
+  //
+  //  - Put the skirt at its own surface depth and it wins over its OWN fill,
+  //    printing a dark disc over the tube.
+  //  - Sink it behind the tube to stop that, and it starts losing to fills that
+  //    are behind the tube but in front of the sunk skirt. That does not remove
+  //    a tie, it CHOPS THE RIM UP: what should be one continuous outline
+  //    survives only in fragments, and because each fragment is butt-cut square
+  //    at the joints, two segments meeting at an angle leave two straight
+  //    dashes crossing each other. Those are the crosses at the corners. Deeper
+  //    sinking just erases more of the rim - measured, the dark pixels fell
+  //    steadily and the crosses never went away.
+  //
+  // Discarding the part of the skirt that lies inside its own fill removes the
+  // conflict at its source: there is then no pixel where a segment's outline
+  // and its own fill both want to be, so the skirt can sit at the tube's rim
+  // depth and win against everything genuinely behind it. Which it does for
+  if (uButt > 0.5) {
+    // ...and the skirt carries the depth of the NEAREST point of the tube it
+    // belongs to, not the depth of the rim it sits on.
+    //
+    // This is the part that took two wrong answers to find. The 2D painter
+    // decides coverage per SEGMENT: it strokes a rim, fills it, and moves to
+    // the next one, so a nearer segment's rim covers a farther segment
+    // outright. A depth buffer decides per PIXEL, and the thing it compares
+    // against is the far tube's BULGED surface - which stands up to a radius
+    // proud of its axis and can therefore poke in front of the near tube's rim
+    // even while the near tube is, as a whole, in front. Wherever it does, one
+    // pixel of rim is erased. Strung along a segment that is exactly a rim
+    // chopped into dashes, and where two segments meet at an angle the two sets
+    // of dashes cross - the crosses at the corners.
+    //
+    // Giving the skirt zAxis + r makes it as near as its own tube ever gets, so
+    // it beats everything its own tube beats and the rim comes back in one
+    // piece. uPushZ then settles the exact ties (a joint, where both tubes'
+    // front surfaces meet at the shared point) in the fill's favour.
+    if (dist < vRfill) discard;
+    zSurf = zAxis + vRfill / max(1e-6, uScale * pe);
+  }
+  float t01 = (zSurf - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
+  // NDC z is 1 - 2*t01, the same mapping the other programs put in gl_Position,
+  // and the depth buffer wants (z + 1) / 2 - which is 1 - t01. Clamping the NDC
+  // value to 0..1 BEFORE that conversion, as this did, throws away the whole
+  // near half of the range: every fragment nearer than the midpoint came out at
+  // exactly 0.5 and nothing occluded anything correctly.
+  //
+  // uPushZ moves it AWAY from the eye for the outline pass, so a segment's own
+  // fill wins where the two coincide.
+  gl_FragDepth = clamp(1.0 - t01 + uPushZ, 0.0, 1.0);
+  // THE CAPSULE'S OWN NORMAL, which is what the screen-space occlusion was
+  // standing in for. The 2D pass has no surface to light, so it fakes depth by
+  // darkening each segment by however much lies in front of it - an O(n^2)
+  // pass over the whole structure, measured at ~90% of the frame. A capsule
+  // HAS a surface: the offset from the axis gives x and y, the bulge gives z,
+  // and one dot product does what the occlusion pass was approximating.
+  //
+  // It is not the same picture. It is a rounder, more literal one - the
+  // original was always pseudo-3D - and it costs nothing per frame.
+  // THE PREPASS. Same geometry, same depth, but the colour channel carries the
+  // surface's view z so the occlusion pass can read a real depth field instead
+  // of guessing one from segment centres.
+  if (uZOnly > 0.5) { fragColor = vec4(zSurf, 0.0, 0.0, 1.0); return; }
+  vec3 col = vTCol;
+  // EXACTLY THE 2D PASS'S TWO TERMS, applied to a per-pixel occlusion instead
+  // of a per-segment one: whiten by how exposed the pixel is, then darken by
+  // how much lies in front of it. Same constants, same order - see the
+  // shading block in viewer-mol.js.
+  if (uUseAO > 0.5 && vNoAO < 0.5) {
+    vec2 ao = texture(uAOTex, gl_FragCoord.xy / uSizeF).rg;
+    col += (1.0 - col) * ((0.50 * ao.g) / 3.0);
+    col *= (0.20 + 0.80 * ao.r);
+  }
+  if (uLit > 0.5) {
+    vec2 off = (vPx - q) / max(1e-6, vRfill);
+    vec3 nrm = normalize(vec3(off.x, -off.y, bulgePx / max(1e-6, vRfill)));
+    const vec3 L = normalize(vec3(-0.45, 0.6, 0.75));
+    float dif = max(0.0, dot(nrm, L));
+    // ambient floor plus diffuse, then a soft rim so a tube reads as round
+    // even where it faces away from the light
+    float lum = 0.62 + 0.38 * dif;
+    lum += 0.14 * pow(max(0.0, 1.0 - nrm.z), 2.0) * dif;
+    col = clamp(col * lum, 0.0, 1.0);
+  }
+  fragColor = vec4(col * uDarken, 1.0);
+}`;
+
+// ---- THE PAPER ---------------------------------------------------------
+// The pencil grain is not stroke geometry and never was: the 2D renderer builds
+// ONE 128 px tile of three-octave value noise, repeats it across the canvas,
+// masks it to the structure's alpha and multiplies it down at 0.54. Only the
+// middle two steps are the canvas's; on the GPU the mask is free, because a
+// fragment only exists where geometry drew, and the multiply is arithmetic.
+//
+// So this is the whole port: sample the SAME tile at the fragment's canvas
+// position and scale the colour by it. It goes in BOTH fragment shaders,
+// because the 2D pass grains the finished frame - outline included.
+//
+// THE GRAIN DOES NOT ZOOM, and here that is not a decision but a consequence:
+// gl_FragCoord is in device pixels, so the tile is pinned to the canvas whatever
+// the view does. The paper is the medium, not the subject.
+const GRAIN_GLSL = `
+uniform sampler2D uPaperTex;
+uniform vec2 uPaperSize;    // the drawing buffer, in device pixels
+uniform float uPencil;      // PENCIL_STRENGTH * amount; 0 is off
+uniform float uGrainK;      // GRAIN_SCALE: <1 minifies, so finer
+vec3 grainAt(vec3 c) {
+  if (uPencil <= 0.001) return c;
+  // MATCH THE 2D PATTERN TRANSFORM EXACTLY. It maps pattern space to canvas
+  // space as x = k*u + (cx - k*cx), so u = (x - cx)/k + cx, about the canvas
+  // centre. The phase is invisible on its own, but the lab diffs this against
+  // the 2D frame and a half-tile shift in noise would swamp every real
+  // difference. gl_FragCoord.y counts up and canvas y counts down.
+  vec2 ctr = uPaperSize * 0.5;
+  vec2 p = vec2(gl_FragCoord.x, uPaperSize.y - gl_FragCoord.y);
+  vec2 u = (p - ctr) / uGrainK + ctr;
+  vec3 g = texture(uPaperTex, u / 128.0).rgb;
+  // The canvas does dst*(1-a) + a*dst*src, which is dst * mix(1, src, a) -
+  // a multiply that leaves the highlights alone, which is how a pencil lays
+  // colour down. Straight multiplication at full strength reads as dirt.
+  return c * mix(vec3(1.0), g, uPencil);
+}`;
+
+const FSINK = `#version 300 es
+precision highp float;
+in vec3 vInk; out vec4 fragColor;
+${GRAIN_GLSL}
+void main() { fragColor = vec4(grainAt(vInk), 1.0); }`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec3 vCol; in float vCull; out vec4 fragColor;
+${GRAIN_GLSL}
+void main() {
+  // the per-frame version of the renderer's STICK_CULL: a face is dropped when
+  // it turns away, decided now rather than when the mesh was captured
+  if (vCull > 0.5) discard;
+  fragColor = vec4(grainAt(vCol), 1.0);
+}`;
+
+let gl, prog, buf, locPos, locZ, locCol;
+let prog3, buf3, resident = null;   // { count, zMin, zMax, scale }
+let progInk, bufInk, edgeCount = 0;
+let progTube, bufTube, tubeCount = 0;
+let tubeRange = [-1, 1];        // the depth range the capsules are mapped through
+let tubeSig = null;             // what the instance buffer was built from
+let progAO = null;              // screen-space occlusion
+let progBlur = null;            // ...and its 4x4 depth-aware resolve
+let zFbo = null, zTex = null, zRb = null;   // the view-depth prepass target
+let aoFbo = null, aoTex = null;             // its shadow/tint answer
+let aoFbo2 = null, aoTex2 = null;           // ...resolved
+let occW = 0, occH = 0;
+let occOk = false;              // false = no float render target; draw unshaded
+// NO GPU-ONLY THICKNESS. Ribbon asks for thickness 0 and this renderer used to
+// floor it at 0.3 A, because a zero-thickness piece has no outward direction and
+// every awkward case lived there: normals whose sign means nothing, shared edges
+// that are interior with nothing to test, coincident front and back faces.
+//
+// Those are fixed properly now - a double-sided boundary edge is drawn on its
+// own flag, a degenerate face borrows its neighbour's normal - so the floor buys
+// nothing and costs the one thing that matters here: the two renderers were
+// drawing different geometry for the same setting. Kept as a knob for testing;
+// 0 means the GPU builds exactly what the 2D pass builds.
+// Where a fully-outlined surface counts a corner as a crease. A slab's broad
+// face meets its side at 90 degrees; a ribbon bends a few degrees per station.
+// how near zero a cross product counts as an extreme-corner handoff
+// OFF, and the widening it controls is degenerate rather than merely too big.
+//
+// `c = cross_z(eDir, r)` is a normal's component across the edge, and for a
+// rail both adjacent normals lie in the plane perpendicular to the chain. Seen
+// broadside - the ordinary way to look at a base plate - the BROAD face points
+// at the viewer, so its normal projects to nearly nothing on screen and
+// min(|c0|,|c1|) is tiny at ALL FOUR corners. The test then reads every corner
+// as a handoff and draws every rail, crease included. That is the inner line on
+// a plate, and it is why only plates showed it: in richardson a ribbon uses the
+// facing rule, so the plates are the only pieces this term reaches.
+//
+// The sweep is still worth recording, because it says the widening was never
+// buying agreement anyway - it traded missing ink for extra ink almost 1:1 and
+// the TOTAL disagreement barely moved: 10504 / 10200 / 10122 / 10222 / 10438 /
+// 10393 px at 0 / .05 / .10 / .15 / .20 / .35. So switching it off costs some
+// back-side outline and removes a line the reference never draws, which is the
+// right side of that trade.
+//
+// A real handoff needs the corner projections at BOTH stations, which is what
+// the 2D has and an edge-at-a-time test does not. Overridable as
+// renderer.cartoonHandoff to try again.
+const HANDOFF_TOL = 0.0;
+const RICH_CREASE_DEG = 60;
+const RICH_CREASE_COS = Math.cos(RICH_CREASE_DEG * Math.PI / 180);
+const GPU_RIBBON_THICK = 0;
+// 0, AND THE EXPERIMENT IS WHY. Giving a richardson helix a hair of real
+// thickness was tried against the pale-patch bleed and does not help, because
+// the pale patches in that view are not a bleed at all - the 2D reference draws
+// them identically, and they are the two-tone underside a richardson helix is
+// supposed to have.
+//
+// Worse, 0.1 is the one value to avoid. The coincidence cull fires when the two
+// surfaces are within 0.02 (projected), so a helix at 0 is culled to one face
+// and cannot fight itself; at 0.8 the faces are far enough apart for the depth
+// buffer to separate them. 0.1 is above the cull and below the precision - both
+// faces emitted, a fraction of a pixel apart - which is the z-fight the cull
+// exists to prevent. Off by default; the knob stays for trying it again.
+const GPU_RICH_HELIX_TH = 0;
+let tubeDensity = 0.1;          // visible segments per square Angstrom
+// Calibrated against the 2D render of 1TIM, matching the mean and spread of
+// the drawn pixels: CPU 175.7 +/- 19.9, this 175.3 +/- 21.0. Overridable per
+// renderer as cartoonAOGain.
+const AO_GAIN = 2.0;
+
+function initGL(cv) {
+    gl = cv.getContext('webgl2', { antialias: true, preserveDrawingBuffer: true });
+    // No page to report to from a shipping module: the caller gets false and
+    // decides what to say about it.
+    if (!gl) return false;
+    const mk = (type, src) => {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, src); gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+        return s;
+    };
+    prog = gl.createProgram();
+    gl.attachShader(prog, mk(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, mk(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    buf = gl.createBuffer();
+    locPos = gl.getAttribLocation(prog, 'aPos');
+    locZ = gl.getAttribLocation(prog, 'aZ');
+    locCol = gl.getAttribLocation(prog, 'aCol');
+    prog3 = gl.createProgram();
+    gl.attachShader(prog3, mk(gl.VERTEX_SHADER, VS3D));
+    gl.attachShader(prog3, mk(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog3);
+    if (!gl.getProgramParameter(prog3, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog3));
+    buf3 = gl.createBuffer();
+    // A NEW CONTEXT INVALIDATES EVERY OBJECT THE OLD ONE OWNED. The buffers
+    // below are recreated here, but the textures are made lazily and their
+    // creators both short-circuit when the handle is already set - so after a
+    // renderer switch they were rebound from the dead context and silently did
+    // nothing. Clearing the handles is what makes initGL safe to call twice.
+    visTex = null; visW = 0; visH = 0; visData = null;
+    palTex = null; palW = 0; palH = 0;
+    edgeCount = 0;
+    progTube = gl.createProgram();
+    gl.attachShader(progTube, mk(gl.VERTEX_SHADER, VSTUBE));
+    gl.attachShader(progTube, mk(gl.FRAGMENT_SHADER, FSTUBE));
+    gl.linkProgram(progTube);
+    if (!gl.getProgramParameter(progTube, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(progTube));
+    }
+    bufTube = gl.createBuffer();
+    tubeCount = 0;
+    // R32F HAS TO BE ASKED FOR. Float TEXTURES are core in WebGL2, but making
+    // one a RENDER target is not - without this extension the prepass
+    // framebuffer comes back incomplete and the occlusion silently does
+    // nothing, which looks like flat colour rather than like an error.
+    occOk = !!gl.getExtension('EXT_color_buffer_float');
+    zFbo = null; zTex = null; zRb = null; aoFbo = null; aoTex = null;
+    aoFbo2 = null; aoTex2 = null;
+    occW = 0; occH = 0;
+    progAO = gl.createProgram();
+    gl.attachShader(progAO, mk(gl.VERTEX_SHADER, VSQUAD));
+    gl.attachShader(progAO, mk(gl.FRAGMENT_SHADER, FSAO));
+    gl.linkProgram(progAO);
+    if (!gl.getProgramParameter(progAO, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progAO));
+    progBlur = gl.createProgram();
+    gl.attachShader(progBlur, mk(gl.VERTEX_SHADER, VSQUAD));
+    gl.attachShader(progBlur, mk(gl.FRAGMENT_SHADER, FBLUR));
+    gl.linkProgram(progBlur);
+    if (!gl.getProgramParameter(progBlur, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progBlur));
+    progInk = gl.createProgram();
+    gl.attachShader(progInk, mk(gl.VERTEX_SHADER, VSINK));
+    gl.attachShader(progInk, mk(gl.FRAGMENT_SHADER, FSINK));
+    gl.linkProgram(progInk);
+    if (!gl.getProgramParameter(progInk, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progInk));
+    bufInk = gl.createBuffer();
+    return true;
+}
+
+function paintGPU(cv, faces, zMin, zMax, useDepth) {
+    const data = new Float32Array(faces.length * 6 * 6);   // 2 triangles x 6 floats
+    let o = 0;
+    for (const f of faces) {
+        const t = toneOf(f.q, f.c, zMin, zMax, f.real);
+        const push = (p) => {
+            data[o++] = p[0]; data[o++] = p[1]; data[o++] = p[2];
+            data[o++] = t[0] / 255; data[o++] = t[1] / 255; data[o++] = t[2] / 255;
+        };
+        push(f.q[0]); push(f.q[1]); push(f.q[2]);
+        push(f.q[0]); push(f.q[2]); push(f.q[3]);
+    }
+    gl.viewport(0, 0, cv.width, cv.height);
+    // THE CONTROL. Without the depth test WebGL draws in submission order -
+    // the painter's algorithm, on the GPU. Diffing the 2D canvas against THAT
+    // measures rasterisation alone (fill rules, antialiasing at every face
+    // edge); diffing it against the depth-tested pass measures rasterisation
+    // AND ordering. The difference between the two is the ordering.
+    if (useDepth) { gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); }
+    else gl.disable(gl.DEPTH_TEST);
+    // ...and the frame is cleared to the paper, not to white. The GPU canvas is
+    // blitted over whatever the app painted, so a white clear paints a white
+    // square over a black page.
+    gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+    gl.clearDepth(1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    const stride = 6 * 4;
+    gl.enableVertexAttribArray(locPos);
+    gl.vertexAttribPointer(locPos, 2, gl.FLOAT, false, stride, 0);
+    gl.enableVertexAttribArray(locZ);
+    gl.vertexAttribPointer(locZ, 1, gl.FLOAT, false, stride, 8);
+    gl.enableVertexAttribArray(locCol);
+    gl.vertexAttribPointer(locCol, 3, gl.FLOAT, false, stride, 12);
+    gl.uniform2f(gl.getUniformLocation(prog, 'uSize'), cv.width, cv.height);
+    gl.uniform2f(gl.getUniformLocation(prog, 'uZRange'), zMin, zMax);
+    gl.drawArrays(gl.TRIANGLES, 0, faces.length * 6);
+}
+
+/* -------------------------------------------------- resident model geometry */
+
+// The primitives come back in SCREEN space. Under an orthographic camera that
+// is an affine map and therefore invertible:
+//
+//     sx = W/2 + x·scale        x = (sx − W/2) / scale
+//     sy = H/2 − y·scale   ->   y = (H/2 − sy) / scale
+//     sz = z                    z = sz
+//
+// so the rotated 3D positions can be recovered exactly, and undoing the known
+// capture rotation gives model space. That is what lets the mesh live on the
+// card while the camera becomes a uniform. It works ONLY under ortho - with
+// perspective the divide has thrown information away, and the capture would
+// have to move upstream into the geometry builder, which is step two proper.
+function unproject(p, scale) {
+    // z survives projection untouched, so the perspective factor that scaled x
+    // and y is recoverable from it and divides straight back out. Under ortho
+    // pe is 1 and this is the old expression exactly.
+    //
+    // The centre is the CAPTURE viewport's, not the canvas's - the prims were
+    // projected about the middle of the wide one.
+    const z = p[2];
+    const fl = focalLength();
+    const pe = isPersp() ? fl / Math.max(0.1, fl - z) : 1;
+    const k = scale * pe;
+    return [(p[0] - capW / 2) / k, (capH / 2 - p[1]) / k, z];
+}
+
+const matT = (m) => [[m[0][0], m[1][0], m[2][0]],
+    [m[0][1], m[1][1], m[2][1]], [m[0][2], m[1][2], m[2][2]]];
+const matMul = (a, b) => a.map((r, i) => [0, 1, 2].map((j) =>
+    r[0] * b[0][j] + r[1] * b[1][j] + r[2] * b[2][j]));
+const dotv = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const apply = (m, v) => [
+    m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+    m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+    m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2]];
+const rotYawPitch = (yawDeg, pitchDeg) => {
+    const t = yawDeg * Math.PI / 180, p = pitchDeg * Math.PI / 180;
+    const Ry = [[Math.cos(t), 0, -Math.sin(t)], [0, 1, 0], [Math.sin(t), 0, Math.cos(t)]];
+    const Rp = [[1, 0, 0], [0, Math.cos(p), -Math.sin(p)], [0, Math.sin(p), Math.cos(p)]];
+    return matMul(Rp, Ry);
+};
+
+// THE VIEW IS ONE ACCUMULATED MATRIX, not a pair of Euler angles - the same way
+// viewer-mol.js keeps `viewerState.rotation`. Yaw-and-pitch was fine for
+// stepping to a named angle in a measurement, and wrong the moment a person
+// dragged it: once pitched, a horizontal drag turns the model about the WORLD y
+// axis rather than about the screen's vertical, so the structure rolls under
+// the cursor and gimbal-locks looking down the axis.
+//
+// These two are byte for byte the app's rotationMatrixX / rotationMatrixY, and
+// the accumulation below is its update, so a drag here feels like a drag there.
+const rotationMatrixX = (a) => {
+    const c = Math.cos(a), s2 = Math.sin(a);
+    return [[1, 0, 0], [0, c, -s2], [0, s2, c]];
+};
+const rotationMatrixY = (a) => {
+    const c = Math.cos(a), s2 = Math.sin(a);
+    return [[c, 0, s2], [0, 1, 0], [-s2, 0, c]];
+};
+let viewRot = rotYawPitch(210, 20);
+const currentRot = () => viewRot;
+// Left-multiplied, which is what makes the increment happen in SCREEN space:
+// the new rotation is applied after the accumulated one, so dragging right
+// always spins the model about the screen's vertical whatever it has already
+// been turned to. Right-multiplying gives the turntable that this replaces.
+function rotateView(dx, dy) {
+    if (dy !== 0) viewRot = matMul(rotationMatrixX(dy * 0.01), viewRot);
+    if (dx !== 0) viewRot = matMul(rotationMatrixY(dx * 0.01), viewRot);
+}
+// For a page that still wants to step to a named angle - the lab's yaw slider,
+// and every measurement taken through it.
+function setViewYawPitch(yawDeg, pitchDeg2) { viewRot = rotYawPitch(yawDeg, pitchDeg2); }
+
+// ZOOM IS A VIEW PARAMETER, so it must not rebuild the mesh. Under an
+// orthographic camera zooming scales x and y and leaves depth ordering
+// untouched, which is exactly one multiplier on uScale in the shader - the
+// resident buffer is unaffected and a zoom costs the same as a rotation.
+//
+// The MESH IS ALWAYS CAPTURED AT ZOOM 1 for that to hold: `capture` renders
+// through the 2D renderer to get its prims, and its `_viewScale` would
+// otherwise already carry the zoom, which the shader would then apply a second
+// time. `capturing` is the flag that keeps the two apart.
+// THE CAMERA. `ortho` is the app's 0..1 slider and the renderer's own test is
+// `persp = ortho < 1`, so anything below 1 is a perspective view - and the app
+// SHIPS at 0.5. The focal length is viewerState.focalLength.
+//
+// Perspective was assumed to be out of reach here because the resident mesh is
+// recovered by inverting the projection. It is not: `project` returns
+// [x, y, z, pe] and carries z through UNCHANGED, so pe = fl / (fl - z) is
+// recoverable at every captured point and divides straight back out. What
+// perspective really changes is the VIEW VECTOR - (0,0,1) everywhere under
+// ortho, normalize(-x, -y, fl - z) per point otherwise - which is what oB, oT
+// and oN are dotted against. oLb and oLn use the fixed light and do not move.
+// FOCAL LENGTH IS WHERE THE ORTHO SLIDER'S CONTINUITY LIVES. The renderer's own
+// test is just `persp = ortho < 1` - a boolean - so the slider does nothing on
+// its own, and with a fixed focal length it reads as a two-position switch.
+// The app maps it (web/app.js):
+//
+//   baseSize    = object.stdDev * 2.0            // stdDev is the RMS radius
+//   multiplier  = 1.5 + (20.0 - 1.5) * ortho     // 1.5 near, 20 far
+//   focalLength = baseSize * multiplier
+//
+// So it scales with the structure - a ribosome and a hexapeptide get the same
+// apparent perspective at the same slider value - and approaches orthographic
+// as it rises. Reproduced here rather than approximated, because the reference
+// renderer is driven by the same number and any disagreement shows up as the
+// two projecting differently.
+const STD_DEV_MULT = 2.0;
+const PERSPECTIVE_MIN_MULT = 1.5;
+const PERSPECTIVE_MAX_MULT = 20.0;
+let sceneStdDev = 30;
+// THE APP'S OWN NUMBER WINS. The focal length is not a free parameter: the
+// capture projected through it, so the unprojection has to divide by exactly
+// the same one or the model comes back the wrong size - and then the draw
+// re-applies a different perspective on top. The app computes it once and
+// keeps it on viewerState; the harness has no viewerState and derives it from
+// the scene radius, which is where this formula comes from in the first place.
+let flOverride = 0;
+function setFocalLength(v) {
+    flOverride = (typeof v === 'number' && isFinite(v) && v > 0) ? v : 0;
+}
+function focalLength() {
+    if (flOverride) return flOverride;
+    const o = Math.max(0, Math.min(1, orthoAmount()));
+    return sceneStdDev * STD_DEV_MULT
+        * (PERSPECTIVE_MIN_MULT + (PERSPECTIVE_MAX_MULT - PERSPECTIVE_MIN_MULT) * o);
+}
+const isPersp = () => orthoAmount() < 1;
+function orthoAmount() { return orthoVal; }
+// The view vector at a point, in view space - the renderer's own expression.
+function viewVecAt(v) {
+    if (!isPersp()) return [0, 0, 1];
+    const d = [-v[0], -v[1], focalLength() - v[2]];
+    const m = Math.hypot(d[0], d[1], d[2]) || 1;
+    return [d[0] / m, d[1] / m, d[2] / m];
+}
+
+// NOTHING IS CULLED WHILE CAPTURING. The 2D renderer drops what falls outside
+// its viewport, which is right for painting a frame and wrong for harvesting
+// geometry: the mesh would hold only what was on screen at the capture view,
+// and turning it afterwards opens holes where side chains used to be - atoms
+// winking in and out as it rotates.
+//
+// `renderer._noViewCull` (viewer-cartoon.js) switches that off at the source,
+// which beats capturing into an oversized viewport: no second set of
+// dimensions to thread through unproject, and no scale arithmetic to keep in
+// step.
+// INERTIA, with the app's own numbers (viewer-mol.js): velocity smoothed at
+// 0.5 while dragging, then applied per frame as rotationMatrix*(v * 0.005) and
+// damped by 0.95 until it drops under 1e-4.
+//
+// Whether to run it at all is decided by MEASURED FRAME COST, not by the size
+// of the structure - the same call viewer-cartoon.js makes for its gesture ink
+// degrade, and for the same reason it gives there: a segment count is a bad
+// proxy, because it knows nothing about canvas size, detail or the machine. A
+// throw that stutters is worse than no throw.
+let spinX = 0;
+let spinY = 0;
+let spinRAF = 0;
+const SPIN_SMOOTH = 0.5;
+const SPIN_STEP = 0.005;
+const SPIN_DAMP = 0.95;
+const SPIN_STOP = 0.0001;
+const SPIN_BUDGET_MS = 25;
+
+function noteDragVelocity(dx, dy, dtMs) {
+    if (!(dtMs > 0)) return;
+    spinX = spinX * (1 - SPIN_SMOOTH) + ((dx / dtMs) * 20) * SPIN_SMOOTH;
+    spinY = spinY * (1 - SPIN_SMOOTH) + ((dy / dtMs) * 20) * SPIN_SMOOTH;
+}
+
+function stopInertia() {
+    spinX = 0;
+    spinY = 0;
+    if (spinRAF) cancelAnimationFrame(spinRAF);
+    spinRAF = 0;
+}
+
+// ONE STEP, callable on its own. Split out from the loop so the physics can be
+// exercised without requestAnimationFrame - which never fires in a backgrounded
+// tab, so a test that drives it through the loop proves nothing about the
+// damping and everything about whether the window had focus.
+// Returns true while the throw is still alive.
+function inertiaStep(draw) {
+    let moved = false;
+    if (Math.abs(spinX) > SPIN_STOP) {
+        viewRot = matMul(rotationMatrixY(spinX * SPIN_STEP), viewRot);
+        spinX *= SPIN_DAMP;
+        moved = true;
+    } else spinX = 0;
+    if (Math.abs(spinY) > SPIN_STOP) {
+        viewRot = matMul(rotationMatrixX(spinY * SPIN_STEP), viewRot);
+        spinY *= SPIN_DAMP;
+        moved = true;
+    } else spinY = 0;
+    if (!moved) return false;
+    const cost = draw();
+    // Bow out of a throw this machine cannot carry smoothly.
+    if (typeof cost === 'number' && cost > SPIN_BUDGET_MS) { stopInertia(); return false; }
+    return true;
+}
+
+// `draw` repaints and returns how long it took, in ms.
+function startInertia(draw) {
+    if (spinRAF) cancelAnimationFrame(spinRAF);
+    const step = () => {
+        spinRAF = 0;
+        if (inertiaStep(draw)) spinRAF = requestAnimationFrame(step);
+    };
+    spinRAF = requestAnimationFrame(step);
+}
+
+// SHOW/HIDE, as view state rather than geometry. The mesh always carries both
+// classes; these decide what is drawn. Toggling costs one draw.
+// PER-RESIDUE VISIBILITY, as a texture the shader samples. One byte per
+// residue: adding or removing a side chain is a single texel write against a
+// mesh that already holds the geometry - no capture, no upload of vertices.
+let visTex = null;
+let visW = 0;
+let visH = 0;
+let visData = null;
+// THE PAPER TILE, uploaded once. It comes from the renderer's own paperTile()
+// rather than a second noise generator here: the tile is built from
+// Math.random(), so an independent copy would give the 2D reference and the GPU
+// DIFFERENT paper, and every diff between them would be dominated by noise
+// that means nothing. `paperTile` caches on the object it is handed, so the
+// 2D renderer and this share one sheet.
+//
+// A SAMPLER WITH NO TEXTURE BOUND INVALIDATES THE WHOLE DRAW CALL - not just
+// the fetch - so this always produces something, white when the tile cannot be
+// built, and unit 2 is always bound whether the pencil is on or not.
+let paperTex = null;
+const paperCache = {};
+function ensurePaperTexture() {
+    if (paperTex) return paperTex;
+    paperTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, paperTex);
+    const C = window.py2dmolCartoon;
+    const tile = (C && C.paperTile) ? C.paperTile(paperCache) : null;
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    if (tile) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tile);
+    } else {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
+            gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+    }
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    // GRAIN_SCALE is 0.4, so the tile is MINIFIED - 128 texels into 51 pixels.
+    // Point sampling that is aliasing, and aliasing on a noise texture shimmers
+    // under rotation, which is the one thing paper must not do. The 2D path
+    // gets the same filtering free from the browser's pattern minification.
+    // ...and NOT by mipmapping it. That was the first attempt and it deletes the
+    // effect: the tooth is a ~3 px cluster on a 128 px tile, which GRAIN_SCALE
+    // 0.4 lands at about 1.2 screen pixels, so the mip the GPU picks averages
+    // exactly the octave the paper is made of. What survives is the tile's MEAN,
+    // 232/255, applied uniformly - a flat 5% darkening over the whole drawing
+    // and no grain at all, which is precisely how it looked.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    return paperTex;
+}
+// Bind the paper and hand a program the three numbers that place it. `amount`
+// is the style's 0..1 pencil; the shader wants it already multiplied by
+// PENCIL_STRENGTH, the same 0.54 the canvas puts in globalAlpha.
+function bindPaper(prg, cv, amount) {
+    const C = window.py2dmolCartoon;
+    const K = (C && C.PENCIL) || { STRENGTH: 0.54, GRAIN_SCALE: 0.4 };
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, ensurePaperTexture());
+    gl.uniform1i(gl.getUniformLocation(prg, 'uPaperTex'), 2);
+    gl.uniform2f(gl.getUniformLocation(prg, 'uPaperSize'), cv.width, cv.height);
+    gl.uniform1f(gl.getUniformLocation(prg, 'uGrainK'), K.GRAIN_SCALE);
+    gl.uniform1f(gl.getUniformLocation(prg, 'uPencil'),
+        Math.max(0, Math.min(1, amount || 0)) * K.STRENGTH);
+    gl.activeTexture(gl.TEXTURE0);
+}
+
+function ensureVisTexture(n) {
+    const w = Math.min(4096, Math.max(1, n));
+    const h = Math.ceil(n / w) || 1;
+    if (visTex && visW === w && visH === h) return;
+    visW = w; visH = h;
+    visData = new Uint8Array(w * h).fill(255);
+    if (!visTex) visTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, visTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, visData);
+}
+// THE EDIT. Show or hide one residue's geometry without touching the mesh.
+function setResidueVisible(idx, on) {
+    if (!visData || idx < 0 || idx >= visData.length) return;
+    const v = on ? 255 : 0;
+    if (visData[idx] === v) return;
+    visData[idx] = v;
+    gl.bindTexture(gl.TEXTURE_2D, visTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, idx % visW, Math.floor(idx / visW), 1, 1,
+        gl.RED, gl.UNSIGNED_BYTE, visData.subarray(idx, idx + 1));
+}
+function setAllResiduesVisible(on) {
+    if (!visData) return;
+    visData.fill(on ? 255 : 0);
+    gl.bindTexture(gl.TEXTURE_2D, visTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, visW, visH, gl.RED, gl.UNSIGNED_BYTE, visData);
+}
+
+// THE PALETTE, as a texture. Three texels per segment - its own colour and the
+// two half-bond colours element colouring supplies - so repainting the whole
+// structure is one upload of a few kilobytes against a mesh that never moves.
+let palTex = null;
+let palW = 0;
+let palH = 0;
+function setPalette(cols) {
+    if (!gl || !cols) return;
+    const n = cols.length;
+    const need = n * 3;
+    const w = Math.min(4096, Math.max(1, need));
+    const h = Math.ceil(need / w) || 1;
+    const data = new Uint8Array(w * h * 4);
+    const put = (i, c) => {
+        if (!c) return;
+        data[i * 4] = c.r; data[i * 4 + 1] = c.g; data[i * 4 + 2] = c.b; data[i * 4 + 3] = 255;
+    };
+    const halves = cols.halves || null;
+    for (let i = 0; i < n; i++) {
+        put(i * 3, cols[i]);
+        const hv = halves && halves[i];
+        // absent halves fall back to the segment's own colour, so a face that
+        // asks for one always reads something sensible
+        put(i * 3 + 1, (hv && hv.a) || cols[i]);
+        put(i * 3 + 2, (hv && hv.b) || cols[i]);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, palTex || (palTex = gl.createTexture()));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (palW !== w || palH !== h) {
+        palW = w; palH = h;
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    } else {
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    }
+}
+
+let showRibbon = true;
+let showSticks = true;
+function setVisible(o) {
+    if (o.ribbon !== undefined) showRibbon = !!o.ribbon;
+    if (o.sticks !== undefined) showSticks = !!o.sticks;
+}
+
+let viewZoom = 1;
+let capturing = false;
+const currentZoom = () => (capturing ? 1 : viewZoom);
+function setZoom(z) { viewZoom = Math.max(0.15, Math.min(12, z)); }
+// The lab's slider has a range; the app's zoom does not, and clamping it would
+// silently disagree with the 2D path at either end.
+function setZoomExact(z) { viewZoom = (typeof z === 'number' && z > 0) ? z : 1; }
+function zoomBy(f) { setZoom(viewZoom * f); }
+
+// Build the resident buffer once: model-space corners, a model-space face
+// normal, and the face's base colour. Shading happens in the shader from then on.
+
+function makeResident(faces, scale, prm, lines) {
+    const P0 = prm || defaultParams();
+    if (P0.ortho !== undefined) setOrtho(P0.ortho);
+    // Stage timings, for finding what a build actually spends its time on.
+    const MP = (window.__mrPhase = { t0: performance.now() });
+    const mark = (k) => { MP[k] = +(performance.now() - MP.t0).toFixed(1); };
+    const VR = currentRot();
+    const inv = matT(VR);                                 // rotations are orthonormal
+    // THE FLAT STROKES, lifted the same way the surfaces are. Each consecutive
+    // pair of a polyline becomes one ink instance.
+    //
+    // ITS WIDTH IS AN ANGSTROM, which is what the renderer says it is:
+    // CONTACT_WIDTH is 1.175 A "on the same scale the Line Width control works
+    // in", so a contact grows and shrinks with the structure. The prim also
+    // carries that width already converted to pixels - but only for the frame
+    // it was computed for, with the view scale AND the perspective factor
+    // multiplied in. Carrying the pixel number instead, as a multiple of the
+    // outline's width, was wrong four ways: it froze the zoom at the capture's,
+    // it froze the perspective, it made the Outline slider resize every contact
+    // in the picture, and it dragged in the 0.8 fudge that exists for the
+    // ribbon's silhouette. uScale already carries the zoom and the device
+    // ratio, and pe is per vertex, so the shader needs neither.
+    const contactEdges = [];
+    for (const ln of (lines || [])) {
+        // TAKE THE DEPTH BIAS BACK OFF FIRST. A contact's projected points have
+        // it added to their z - the 2D pass sorts on that channel and never
+        // reads position from it, so the drawn line does not move. Unprojecting
+        // from a biased z does move it: the point comes back half an Angstrom
+        // toward the eye in MODEL space, along whatever direction the capture
+        // happened to be looking, and that offset then turns with the structure
+        // - the contact drifting off the two CAs it names as the view rotates.
+        const zb = ln.zBias || 0;
+        const mp = ln.pts.map((q2) => apply(inv,
+            unproject([q2[0], q2[1], q2[2] - zb], scale)));
+        // fall back to the pixel width over the CAPTURE scale if a build of the
+        // renderer predates wA - wrong under zoom, but not wildly wrong
+        const wA = ln.wA !== undefined ? ln.wA : (ln.w / Math.max(1e-6, scale));
+        for (let i2 = 0; i2 + 1 < mp.length; i2++) {
+            contactEdges.push({ p0: mp[i2], p1: mp[i2 + 1],
+                c: [ln.c.r, ln.c.g, ln.c.b], wA });
+        }
+    }
+    const normv = (v) => {
+        const l = Math.hypot(v[0], v[1], v[2]) || 1;
+        return [v[0] / l, v[1] / l, v[2] / l];
+    };
+    const STRIDE = 22;      // ...plus the sheet flag and its second colour
+    // 25 floats of per-vertex data, plus the face's outward normal and the
+    // face's flat-shading normal - 31 in all. KEEP THIS IN STEP WITH `stride`
+    // and the bind offsets below: a mismatch does not error, it silently
+    // reads the wrong attribute, and an unbound one reads (0,0,0).
+    const data = new Float32Array(faces.length * 48);
+    let o = 0;
+    let zMin = Infinity, zMax = -Infinity;
+
+    // PASS ONE: A FRAME AT EVERY STATION, not one per piece.
+    //
+    // The smooth path draws a strip as a gradient whose stops are the
+    // per-station tones, so the shading has to vary continuously ALONG the
+    // ribbon. Deriving the normal from the width vector while holding the
+    // tangent at the piece mean does not do that: consecutive width vectors
+    // are nearly parallel, both ends of a quad come out with the same normal,
+    // and the strip paints as one flat band per station pair with a step at
+    // every face boundary. That is the banding.
+    //
+    // A station's frame is its own: width from L[k] to R[k], tangent from the
+    // centre line through it, normal their cross product. Neighbouring faces
+    // then SHARE the frame at the station between them, so the interpolated
+    // shading is continuous across the join by construction.
+    mark('unprojectFrames');
+    const pieceFrame = new Map();
+    const pieceRails = new Map();
+    for (const f of faces) {
+        if (f.pieceId === undefined || f.surf !== 0) continue;
+        const m = f.q.map((q2) => apply(inv, unproject(q2, scale)));
+        let e = pieceRails.get(f.pieceId);
+        if (!e) { e = { L: [], R: [], oB: f.oB, kAvg: f.kAvg }; pieceRails.set(f.pieceId, e); }
+        e.L[f.st] = m[0]; e.R[f.st] = m[1];          // station k
+        e.L[f.st + 1] = m[3]; e.R[f.st + 1] = m[2];  // station k+1
+        if (f.ubA && f.waA && f.tvA) {
+            if (!e.frames) e.frames = [];
+            // BACK OUT OF THE VIEW ROTATION, exactly as the corner positions
+            // are. mkRenderer hands the renderer coordinates that are ALREADY
+            // turned, so everything it computes - including this frame - comes
+            // back in the rotated frame, while the resident mesh is built in
+            // the unrotated one. Using them as-is rotates the lighting away
+            // from the geometry by the whole view matrix.
+            const un = (v) => normv(apply(inv, v));
+            // the width normal points centre->L (L is the +n corner), and `w`
+            // here is R - L, so it is stored negated
+            const neg = (v) => [-v[0], -v[1], -v[2]];
+            e.frames[f.st] = { n: un(f.ubA), t: un(f.tvA), w: neg(un(f.waA)) };
+            if (f.ubB) {
+                e.frames[f.st + 1] = { n: un(f.ubB), t: un(f.tvB), w: neg(un(f.waB)) };
+            }
+        }
+    }
+    const cross = (a2, b2) => [a2[1] * b2[2] - a2[2] * b2[1],
+        a2[2] * b2[0] - a2[0] * b2[2], a2[0] * b2[1] - a2[1] * b2[0]];
+    const sub = (a2, b2) => [a2[0] - b2[0], a2[1] - b2[1], a2[2] - b2[2]];
+    const mid = (a2, b2) => [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, (a2[2] + b2[2]) / 2];
+    for (const [id, e] of pieceRails) {
+        const ns2 = e.L.length;
+        const cen = [];
+        for (let k = 0; k < ns2; k++) if (e.L[k] && e.R[k]) cen[k] = mid(e.L[k], e.R[k]);
+        const frames = [];
+        for (let k = 0; k < ns2; k++) {
+            if (!e.L[k] || !e.R[k]) continue;
+            const prev = cen[k - 1] || cen[k];
+            const next = cen[k + 1] || cen[k];
+            let t = sub(next, prev);
+            if (Math.hypot(t[0], t[1], t[2]) < 1e-9) t = [1, 0, 0];
+            const w = sub(e.R[k], e.L[k]);
+            // `n` is the BROAD face normal (+-b) and `w` the width direction,
+            // R MINUS L. Mind the sign: the renderer puts the L rail at +wa
+            // (`lp = P(1, 1)`, `rp = P(-1, 1)`) and defines oN as wa . view, so
+            // R - L runs along -wa and the L side's OUTWARD direction is minus
+            // this vector. Getting that backwards lights each band with its
+            // neighbour's value, which is worse than not interpolating at all
+            // and is what the first cut of this measured.
+            // THE RENDERER'S FRAME IF IT GAVE US ONE. Rebuilding it from the
+            // projected rails recovers a direction but not a SIGN - nothing in
+            // a drawing says which side of a ribbon was the outside - and each
+            // attempt to pin that sign afterwards got a different set of faces
+            // wrong. `_frameProbe` asks the renderer for the vector instead.
+            const src = e.frames && e.frames[k];
+            frames[k] = src
+                ? { n: src.n, t: src.t, w: src.w }
+                : { n: normv(cross(t, w)), t: normv(t), w: normv(w) };
+        }
+        // NOTHING TO DECIDE when the frame came from the renderer: its sign is
+        // the one every captured dot product was taken against, so it is right
+        // by construction. Only a rebuilt frame needs making self-consistent -
+        // and a rebuilt frame's overall sign is simply not recoverable from a
+        // projected drawing, which is what three failed attempts established.
+        if (!e.frames) {
+            let ref = null;
+            for (let k = 0; k < ns2; k++) if (frames[k]) { ref = frames[k].n; break; }
+            if (ref) {
+                for (const fr of frames) {
+                    if (!fr) continue;
+                    if (dotv(fr.n, ref) < 0) fr.n = [-fr.n[0], -fr.n[1], -fr.n[2]];
+                }
+            }
+        }
+        // THE PIECE MEAN OUTWARD DIRECTION, for the flat path. The reference
+        // quantises ONE value per piece per side; the shader quantises what
+        // reaches the fragment. Feed it a per-quad value and the two snap to
+        // different bands wherever the quad disagrees with the piece - a
+        // difference that simply averaged out before quantisation existed.
+        let wm = [0, 0, 0];
+        let nm = [0, 0, 0];
+        for (const fr of frames) if (fr) { wm[0] += fr.w[0]; wm[1] += fr.w[1]; wm[2] += fr.w[2]; }
+        // ...AND THE SAME FOR THE BROAD FACES, which is what this comment was
+        // about all along and only the sides ever got. A flat broad face took
+        // its own station's normal, so consecutive quads of one piece quantised
+        // into different bands and every station boundary came out as a step -
+        // the ribbon visibly darker between positions with Smooth off, which is
+        // the default in plain cartoon.
+        for (const fr of frames) if (fr) { nm[0] += fr.n[0]; nm[1] += fr.n[1]; nm[2] += fr.n[2]; }
+        pieceFrame.set(id, { frames, oB: e.oB, wMean: normv(wm), nMean: normv(nm) });
+    }
+
+
+    // EDGE TABLE for the outline pass, keyed by the two endpoints so the two
+    // faces that share an edge find each other. Quantised to 1e-3 model units:
+    // the rails of adjacent strip quads are the SAME computed point, so they
+    // agree to floating point, and the quantisation is only insurance.
+    const edgeMap = new Map();
+    const vkey = (q) => `${Math.round(q[0] * 1000)},${Math.round(q[1] * 1000)},${Math.round(q[2] * 1000)}`;
+    // ...and a NUMERIC version of the same thing, cached on the point. The edge
+    // pass asks for a corner's identity about eight times (four edges, two ends
+    // each), and on a structure the size of 9FOG that was half a million
+    // template literals built out of three Math.rounds apiece. The hash is
+    // arithmetic, and stashing it on the array means each corner is hashed
+    // once however often it is looked at.
+    const hashPt = (q2) => {
+        let h = Math.round(q2[0] * 1000) * 73856093
+            ^ Math.round(q2[1] * 1000) * 19349663
+            ^ Math.round(q2[2] * 1000) * 83492791;
+        return h >>> 0;
+    };
+    const ptH = (q) => (q.__h !== undefined ? q.__h : (q.__h = hashPt(q)));
+    // Two-level Map instead of a composed key: an edge is identified by its two
+    // endpoint hashes, and nesting them avoids building a key object at all.
+    // A single packed number would need 64 bits and silently collide past 2^53.
+    const edgeAt = (h1, h2) => {
+        const lo = h1 < h2 ? h1 : h2;
+        const hi = h1 < h2 ? h2 : h1;
+        let inner = edgeMap.get(lo);
+        if (!inner) { inner = new Map(); edgeMap.set(lo, inner); }
+        return inner;
+    };
+    // GHOST EDGES. A face may need to be COUNTED along an edge without being
+    // allowed to ink it. The cross-strip edges of a rib quad are the case: the
+    // reference never runs ink across a ribbon, so a rib face must not create
+    // one - but the flat CAP at a piece end lands on exactly those four edges,
+    // and if the rib does not register there the cap's rim has one incident
+    // face, reads as an open boundary, and is drawn whatever the view. That is
+    // the square permanently ruled across the blunt back of every arrow.
+    //
+    // A ghost contributes its normal and its count and nothing else; an edge
+    // with no REAL face is never emitted. So a mid-strip cross edge still has
+    // two ghosts and stays invisible, while a cap rim has one real face and one
+    // ghost - two normals, and the ordinary silhouette test decides it.
+    const addEdge = (a2, b2, nrm, isStick, pal, ghost, two, noInk, col, full, seam, outer) => {
+        const ha = ptH(a2);
+        const hb = ptH(b2);
+        if (ha === hb) return;      // the repeated corner of a fan-padded quad
+        const inner = edgeAt(ha, hb);
+        const other = ha < hb ? hb : ha;
+        let e = inner.get(other);
+        if (!e) {
+            e = { p0: a2, p1: b2, n: [], count: 0, real: 0, stick: 0, two: 0,
+                noInk: 0, pal: -1, full: 0, seam: 0, outer: 0 };
+            inner.set(other, e);
+        }
+        if (!ghost) e.real++;
+        if (two && !ghost) e.two = 1;
+        if (noInk) e.noInk = 1;      // any face may veto the whole edge
+        if (isStick) e.stick = 1;   // so show/hide can drop its outline too
+        if (full && !ghost) e.full = 1;   // a fully-outlined surface (see below)
+        // A SEAM CROSS EDGE IS VETOED ON THE EDGE, NOT ON THE FACE, and that is
+        // the whole reason this works. The arrow's step is its own two-station
+        // piece, so its far cross edge is shared with the NEXT PRIM - which
+        // knows nothing about the seam and claimed the edge as real, so a
+        // per-face ghost could never remove it. The edge object is looked up by
+        // the hash of its two endpoints and is therefore the SAME object for
+        // both prims, so a flag set here survives whoever else claims it.
+        if (seam) e.seam = 1;
+        if (outer && !ghost) e.outer = 1;
+
+        // AND ITS COLOUR. The Ink control tints an outline toward its own
+        // element's colour, so an edge has to know which palette slot it
+        // belongs to. The first face to claim the edge lends it one.
+        if (e.pal < 0 && pal !== undefined && pal >= 0) e.pal = pal;
+        // ...and its colour, for when there is no slot to look up
+        if (!e.col && col && !ghost) e.col = col;
+        // and WHICH faces they are, for the ID test
+        // COUNT EVERY incident face, keep the first two normals. The count is
+        // what decides whether the silhouette rule even applies - see below.
+        e.count++;
+        if (e.n.length < 2) e.n.push(nrm);
+    };
+
+
+    for (const f of faces) {
+        const m = f.q.map((p) => apply(inv, unproject(p, scale)));
+        // NEWELL, not a single cross product. A mitred junction is emitted as
+        // a triangle fan padded to a quad - [q0, qk, qk+1, q0] - so its fourth
+        // corner repeats the first and cross(m1-m0, m3-m0) is exactly zero.
+        // A zero normal makes max(0, n.L) clamp, the face falls to flat
+        // ambient, and every three-way side-chain junction comes out as dark
+        // triangles. Summing over all edges is immune to a repeated vertex.
+        const n = [0, 0, 0];
+        for (let i2 = 0; i2 < m.length; i2++) {
+            const a2 = m[i2];
+            const b2 = m[(i2 + 1) % m.length];
+            n[0] += (a2[1] - b2[1]) * (a2[2] + b2[2]);
+            n[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
+            n[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
+        }
+        const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+        let nn = [n[0] / nl, n[1] / nl, n[2] / nl];
+        // ORIENT IT LIKE ub, and for a rib face use the PIECE's mean frame -
+        // the renderer's tone is one value for the whole strip.
+        const pf = f.pieceId !== undefined ? pieceFrame.get(f.pieceId) : null;
+        const frA = pf && pf.frames ? pf.frames[f.st] : null;
+        const frB = pf && pf.frames ? pf.frames[f.st + 1] : null;
+        // A SIDE IS A SURFACE TOO. Per-station frames - the whole mechanism
+        // smooth shading rides on - were handed only to surf 0 and 1, so with
+        // smooth ON the broad faces interpolated and the two thickness bands
+        // stayed one flat tone per quad. Same defect as the 2D renderer's
+        // missing `cel` branch in paintSide, running the other way: there the
+        // sides refused to go flat, here they refuse to go smooth. Both are
+        // one routine handling the broad faces and nobody handling the bands.
+        //
+        // The outward direction is +w on the L side (surf 2) and -w on the R
+        // (surf 3), which is exactly the sign `paintSide` passes as `outward`.
+        // The shader's side branch hardcodes isTop = 1, so what it wants is
+        // the ALREADY-ORIENTED outward normal, not a normal plus a flag.
+        const sideSign = f.surf === 2 ? -1 : 1;   // see the frame comment: L is at +wa = -w
+        const isRibSide = (f.surf === 2 || f.surf === 3);
+        const wOf = (fr) => (fr && fr.w
+            ? [sideSign * fr.w[0], sideSign * fr.w[1], sideSign * fr.w[2]] : null);
+        // flat: the piece mean, matching what the reference quantises
+        const wFlat = (pf && pf.wMean)
+            ? [sideSign * pf.wMean[0], sideSign * pf.wMean[1], sideSign * pf.wMean[2]] : null;
+        if (frA && (f.surf === 0 || f.surf === 1)) {
+            nn = frA.n;
+        } else if (isRibSide && wOf(frA)) {
+            nn = wOf(frA);
+        } else if ((f.stick || f.cap) && f.nl !== undefined) {
+            // orient it so n.L reproduces the prim's own nl
+            const rn = apply(VR, nn);
+            const vdF = viewVecAt(apply(VR, m[0]));
+            if (f.cap) {
+                // for a cap the carried number is its FACING, so orient by z
+                if ((dotv(rn, vdF) < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
+            } else {
+                const L = [-0.45, 0.6, 0.75];
+                const lm = Math.hypot(L[0], L[1], L[2]);
+                const dot = (rn[0] * L[0] + rn[1] * L[1] + rn[2] * L[2]) / lm;
+                if ((dot < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
+            }
+        } else if (f.oB !== undefined && f.oB !== 0) {
+            const zAtCapture = dotv(apply(VR, nn), viewVecAt(apply(VR, m[0])));
+            if ((zAtCapture < 0) !== (f.oB < 0)) nn = [-nn[0], -nn[1], -nn[2]];
+        }
+        // OUTWARD normals, and it has to be outward or the test is noise. The
+        // silhouette rule is "one adjacent face points at the eye and the other
+        // does not", which is only meaningful if both normals point OUT of the
+        // same solid. The raw winding normal does not: the strip emits its +b
+        // and -b faces with the same corner order, so both their Newell normals
+        // point the same way, and a rail edge would find its two faces always
+        // agreeing.
+        //
+        // `nn` is already outward for sides, sticks and caps. For the two broad
+        // faces it is the +b direction for BOTH, with `top` carrying which side
+        // this one is - the same convention the shader reads - so -b is the one
+        // that needs flipping.
+        const topF = f.top === undefined ? 1 : f.top;
+        // NOT `isRibFace` - that is declared 30 lines further down and this is
+        // above it. A `const` read before its declaration is a TDZ throw, not
+        // undefined, and it takes the whole render with it.
+        const broadFace = (f.surf === 0 || f.surf === 1);
+        // Edges are built in a SECOND pass (below), because two of the rules
+        // need to see every face first: dropping interior face pairs, and
+        // knowing a rib face's strip direction.
+        f._m = m;
+        f._outN = (broadFace && topF < 0.5) ? [-nn[0], -nn[1], -nn[2]] : nn;
+        // SIDE-FACE NORMALS ARE ALREADY OUTWARD - measured, not assumed.
+        //
+        // It was argued from the winding that one of the pair must be inward:
+        //   quad = [A[k], B[k], B[k+1], A[k+1]],  nn ~ (B-A) x (chain step)
+        //   surf 2 = [Lp, Lm] and surf 3 = [Rp, Rm] both give -w, on opposite
+        //   sides, so one of them should point at the axis.
+        // Acting on that put inner lines on every loop and helix. Testing it
+        // instead - each side face's centroid against its piece's centroid,
+        // over a whole DNA structure - flipped ZERO of 228 side faces. The
+        // derivation is wrong somewhere and the normals are fine; the ink and
+        // the cull can share them.
+        f._inkN = f._outN;
+        const c = f.c;
+        // the strip tangent, unprojected and unrotated the same way
+        const tv = (frA && (f.surf === 0 || f.surf === 1 || isRibSide)) ? frA.t
+            : (f.tan ? apply(inv, [f.tan[0] / scale, -f.tan[1] / scale, f.tan[2]]) : [1, 0, 0]);
+        const tl = Math.hypot(tv[0], tv[1], tv[2]) || 1;
+        const tt = [tv[0] / tl, tv[1] / tl, tv[2] / tl];
+        // PER-STATION NORMALS. A quad spans two stations - corners 0,1 are the
+        // near one and 3,2 the far one - and the ribbon TWISTS between them, so
+        // one normal for the whole face throws away exactly the variation the
+        // smooth path draws as a gradient. The width vector at each station
+        // gives its own frame; the shader then interpolates the shading across
+        // the face for free, which is what the 2D renderer is approximating
+        // with a two-stop gradient.
+        // the frame at each END of the quad; neighbouring faces share these,
+        // so the interpolation runs continuously along the whole strip
+        // A/B IN ONE SESSION. Reloading between variants let a dropdown reset
+        // swap the structure underneath a comparison once already: a reading of
+        // 1.4% was a four-atom fixture, not the protein it was being compared
+        // against. Switching the variant at runtime removes that whole class
+        // of mistake.
+        // A flat reference is shaded per PIECE; a smooth one per station. The
+        // frame control follows that by default and can still be forced.
+        const fm = P0.frame;
+        // SMOOTH IS NO LONGER A BUILD-TIME DECISION. Both normals are emitted -
+        // the per-station pair that a smooth face interpolates between, and the
+        // single per-face one a flat face uses - and the shader picks. It reads
+        // uCel, which is already "not smooth", so no new uniform is needed.
+        //
+        // The flat normal is not simply nA: a broad face takes its own station's
+        // frame, while a width band takes the PIECE MEAN, which is what the
+        // reference quantises. That difference is why this could not just be
+        // dropped in the shader.
+        const isRibFace = (f.surf === 0 || f.surf === 1);
+        const nA = isRibFace ? (frA ? frA.n : nn) : (isRibSide ? (wOf(frA) || nn) : nn);
+        const nB = isRibFace ? (frB ? frB.n : nA)
+            : (isRibSide ? (wOf(frB) || nA) : nA);
+        const nFlat = isRibFace ? ((pf && pf.nMean) || nA)
+            : (isRibSide ? ((wFlat || wOf(frA)) || nn) : nn);
+        const tA = (frA && (isRibFace || isRibSide)) ? frA.t : tt;
+        const tB = (frB && (isRibFace || isRibSide)) ? frB.t : tA;
+        f._nA = nA; f._nB = nB; f._nFlat = nFlat; f._tA = tA; f._tB = tB;
+        f._emit = m;
+    }
+
+    // THE VERTEX WELD IS GONE. It averaged the normals of every face meeting
+    // at a shared position, to hide a discontinuity that no longer exists:
+    // pieces disagreed at their shared station only because the frame was
+    // REBUILT from the projected rails, with a one-sided tangent over a
+    // two-station piece. `_frameProbe` hands over the renderer's own frame,
+    // which is continuous across pieces by construction - measured, `welded`
+    // and `station` came out identical to the pixel once it was in.
+    //
+    // Deleting it takes the smoothing-angle threshold and the surface-class
+    // keying with it, both of which existed only to stop the averaging from
+    // rounding off creases it should not have been touching in the first place.
+
+    // ITS INSTANCE INDEX IS ITS IDENTITY. The fill pass writes gl_InstanceID
+    // into an ID buffer, so a face's index in the DRAW - not in this array,
+    // which also holds faces that were skipped - is what the outline compares
+    // against.
+    for (const f of faces) {
+        if (!f._emit) continue;
+        const m = f._emit;
+        const c = f.c;
+        const nA = f._nA; const nB = f._nB;
+        const tA = f._tA; const tB = f._tB;
+        // ONE INSTANCE PER FACE, 48 floats. It used to be six VERTICES of 36
+        // floats each - 216 - and of those 36 only the position and the
+        // normal/tangent pair differ between a face's corners at all. The other
+        // 21 were written six times over.
+        //
+        // On 9FOG that array was 111 MB, and filling and uploading it was 420 ms
+        // of a 894 ms build. Per face it is now 48 floats: the four corners, the
+        // two ends' frames, and one copy of everything else. The shader picks a
+        // corner off gl_VertexID, which is what the outline pass already does.
+        //
+        // `aBaseIn` went with it - it was bound and uploaded and never read.
+        const fo = f._outN || nA;              // outward normal, for culling
+        const nf = f._nFlat || nA;             // flat shading normal
+        for (let i = 0; i < 4; i++) {          // the quad's corners
+            data[o++] = m[i][0]; data[o++] = m[i][1]; data[o++] = m[i][2];
+        }
+        data[o++] = nA[0]; data[o++] = nA[1]; data[o++] = nA[2];
+        data[o++] = nB[0]; data[o++] = nB[1]; data[o++] = nB[2];
+        data[o++] = tA[0]; data[o++] = tA[1]; data[o++] = tA[2];
+        data[o++] = tB[0]; data[o++] = tB[1]; data[o++] = tB[2];
+        data[o++] = fo[0]; data[o++] = fo[1]; data[o++] = fo[2];
+        data[o++] = nf[0]; data[o++] = nf[1]; data[o++] = nf[2];
+        data[o++] = f.oB || 0; data[o++] = f.oLb || 0; data[o++] = f.oT || 0;
+        data[o++] = c.r; data[o++] = c.g; data[o++] = c.b;
+        // flags0: k, top, iMul, stick
+        data[o++] = f.kAvg || 0; data[o++] = f.top === undefined ? 1 : f.top;
+        data[o++] = f.iMul === undefined ? 1 : f.iMul;
+        data[o++] = f.stick ? 1 : 0;
+        // flags1: side, cap, sheet, residue
+        data[o++] = f.side ? 1 : 0; data[o++] = f.cap ? 1 : 0;
+        data[o++] = f.sheetA ? 1 : 0; data[o++] = f.res || 0;
+        // flags2: palette slot, colour mode, double-sided, coincident at the FAR station
+        data[o++] = f.pal === undefined ? -1 : f.pal;
+        data[o++] = f.colMode || 0;
+        data[o++] = (f.two ? 1 : 0) + (f.unlit ? 2 : 0) + (f.plate ? 4 : 0);
+        data[o++] = f.sheetB ? 1 : 0;
+        for (const p of f.q) {
+            const z = p[2];
+            if (z < zMin) zMin = z;
+            if (z > zMax) zMax = z;
+        }
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+
+    mark('facesAndEmit');
+    // ---- EDGES, only when something is going to draw them -----------------
+    // This is 91% of a build: on 9FOG the edge table costs 519 ms and turning
+    // it into instances another 401 ms, against 93 ms for the fills. None of it
+    // is wanted unless the outline is on, and the outline is a checkbox.
+    //
+    // Skipped when it is off. `edgeCount = 0` is what drawInk sees, and the
+    // page rebuilds if the outline is switched on later - a build the user
+    // asked for by ticking the box, rather than one paid on every structure.
+    // ...and the pass runs for the strokes alone when the outline is off: a
+    // contact is not an outline and switching the outline off must not delete
+    // it. With neither, the whole 91% is skipped exactly as before.
+    const wantEdges = !!P0.ink || contactEdges.length > 0;
+    const wantOutline = !!P0.ink;
+    edgeCount = 0;
+    window.__edgeStats = { edges: 0, faces: faces.length, skipped: !wantEdges };
+    if (wantEdges) {
+        // ---- EDGES, second pass ------------------------------------------------
+        // INTERIOR FACES FIRST. Where two solids are butted together - consecutive
+        // bond boxes of a side chain, consecutive ribbon pieces - each contributes
+        // its own end cap and the two land on exactly the same four corners. Those
+        // caps are inside the joined shape, and their rims are the "extra lines
+        // between bonds" and the lines across a helix. The renderer solves the
+        // same problem by refusing to emit them ("cap rings are dropped at any atom
+        // that carries another bond"); here the faces are already built, so the
+        // equivalent is to weld - a quad that appears twice is interior, and both
+        // copies drop out along with every edge they would have contributed.
+        // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot tell
+        // them apart by geometry: both are two coincident quads with opposing
+        // normals. The difference is what lies between them - solid for a seam,
+        // NOTHING for a flat ribbon, which is one surface with two sides.
+        //
+        // Richardson gives a helix RICH_TH_REL.H = 0, so this is not a corner case:
+        // welding them deleted both faces of every helix in the default preset, the
+        // rails contributed no edges, and helices came out with no outline at all
+        // while everything around them had one. `sheet` already marks exactly this
+        // pair, so it is the one thing the weld must skip.
+        // An order-independent key for a quad: the sum of its corner hashes. Two
+        // quads on the same four corners agree however their windings differ, which
+        // is what the interior weld is asking.
+        // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot tell
+        // them apart by geometry - both are two coincident quads with opposing
+        // normals. The difference is what lies between them: solid for a seam,
+        // NOTHING for a flat ribbon, which is one surface with two sides. The
+        // weld has to skip exactly the faces that are coincident along their
+        // WHOLE length, which is both stations thin. Splitting the old single
+        // `sheet` flag into a per-station pair for the cull left these two
+        // reading a field that no longer existed, so every helix welded itself
+        // away and came out with no outline at all - the same failure the flag
+        // was introduced to prevent, arriving from the other direction.
+        const flatPair = (f) => !!(f.sheetA && f.sheetB);
+        const faceKey = (m) => {
+            let a = 0;
+            let b = 1;
+            for (const q2 of m) { const h = hashPt(q2); a = (a + h) >>> 0; b = (b ^ h) >>> 0; }
+            return a * 4294967296 + b;     // sum AND xor: order-free, collision-shy
+        };
+        // A STEP FACE BORROWS ITS NEIGHBOUR'S NORMAL. The arrow's step quad has
+        // no area, so the Newell normal computed for it above is noise - and
+        // that is why its shoulders had to be forced to draw. Forcing them is
+        // wrong in one visible way: it draws the pair on the UNDERSIDE as well,
+        // which reads as a stray line under the arrowhead.
+        //
+        // The step lies in the same plane as the quad next to it on the same
+        // surface of the same piece, so that quad's normal is the one it should
+        // have had. With a real normal the ordinary facing test applies and each
+        // side's shoulders appear only when that side is the one being looked at.
+        const normDonor = new Map();
+        for (const f of faces) {
+            if (f.gA && f.gB) continue;               // the step itself
+            if (f.pieceId === undefined || f.surf === undefined) continue;
+            const k2 = f.pieceId + ':' + f.surf;
+            if (!normDonor.has(k2) && f._inkN) normDonor.set(k2, f._inkN);
+        }
+        for (const f of faces) {
+            if (!(f.gA && f.gB)) continue;
+            const d = normDonor.get(f.pieceId + ':' + f.surf);
+            if (d) f._inkN = d;
+        }
+        const faceSeen = new Map();
+        for (const f of (wantOutline ? faces : [])) {
+            if (!f._m || flatPair(f)) continue;
+            // Four string keys, an array sort and a join, per face. The key only
+            // has to be order-independent, so add the corner keys' hashes instead:
+            // addition commutes, which is the whole requirement.
+            const k = faceKey(f._m);
+            faceSeen.set(k, (faceSeen.get(k) || 0) + 1);
+            f._fkey = k;
+        }
+        let nInterior = 0;
+        for (const f of (wantOutline ? faces : [])) {
+            if (!f._m || flatPair(f) || faceSeen.get(f._fkey) < 2) continue;
+            f._interior = 1;
+            nInterior++;
+        }
+        for (const f of (wantOutline ? faces : [])) {
+            if (!f._m || f._interior) continue;
+            // THE ARROW'S STEP QUAD BOUNDS NOTHING. Its two stations sit at the
+            // SAME point along the chain - the renderer samples the seam twice,
+            // once at shaft width and once at barb width - so all four corners
+            // are collinear and the quad has zero area. Its Newell normal is
+            // therefore meaningless, and "does this face turn toward the eye"
+            // is a coin toss: whichever way it lands, the silhouette test can
+            // read the two sides as disagreeing and draw the edge. That is the
+            // line across the base of the arrowhead, and it survives the crease
+            // rule being switched off entirely because it was never a crease.
+            //
+            // gA and gB both set means both of this quad's stations are seam
+            // stations, which only the step quad satisfies.
+            //
+            // ONLY ITS RAILS SURVIVE, and they are the SHOULDERS - each runs
+            // from a shaft corner out to a barb corner, which is the step the
+            // arrow's outline has to turn through. Dropping the quad outright
+            // took them with it, and the arrowhead and the shaft then closed
+            // their own outlines separately: two shapes side by side instead of
+            // one arrow. Its two CROSS edges are the shaft's and the barb's
+            // cross-sections, which are interior to the base and must not draw.
+            //
+            // The rails are now TESTED, not forced: the step face borrows a
+            // usable normal from its neighbour above, so the ordinary rule can
+            // decide. Forcing them drew the underside pair too, which is the
+            // stray line beneath the arrowhead.
+            const stepQuad = !!(f.gA && f.gB);
+            const m = f._m;
+            // A DEGENERATE FACE BOUNDS NOTHING. At zero thickness the two width
+            // faces collapse to a line: their quad is [P, P, Q, Q], so the two
+            // surviving sides are BOTH the rail P-Q and one face registers the same
+            // edge twice. That pushed every rail of every flat ribbon to four
+            // incident faces, and the non-manifold rule then dropped it - the
+            // helices lost their outline to the fix for the junction triangle
+            // rather than to the weld.
+            const nv = [0, 0, 0];
+            for (let i2 = 0; i2 < m.length; i2++) {
+                const a2 = m[i2];
+                const b2 = m[(i2 + 1) % m.length];
+                nv[0] += (a2[1] - b2[1]) * (a2[2] + b2[2]);
+                nv[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
+                nv[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
+            }
+            if (Math.hypot(nv[0], nv[1], nv[2]) < 1e-6) continue;   // zero area
+            // ...and belt and braces: one face may not count one edge twice.
+            const own = new Set();
+            // A RIB FACE INKS ALONG THE STRIP ONLY. The reference does not run a
+            // face-normal test over a slab at all - it inks the four CORNER CURVES
+            // (the rails) and picks, per segment, the two that are extreme
+            // perpendicular to the chain's screen direction. What matters for us is
+            // the consequence: its ink never runs ACROSS the ribbon, so a strip can
+            // not grow an inner line however the surface turns. A quad here is
+            // [A[k], B[k], B[k+1], A[k+1]], so edges 0-1 and 2-3 are the cross-strip
+            // pair and 1-2 and 3-0 are the rails. Emitting the cross pair drew a
+            // line across the helix everywhere its face rolled through edge-on -
+            // a true silhouette of the surface, and not a line the reference has.
+            // A RUNG IS A STRIP LIKE ANY OTHER, and the reference treats it as
+            // one. It used to be exempted here so its ends would ink and a base
+            // pair would read as a box rather than as two loose lines - a
+            // deliberate deviation, and the source of both differences against
+            // the 2D pass: an end line it does not draw, and an asymmetry in
+            // which of them survived.
+            //
+            // viewer-cartoon.js inks a rung through emitSlabInk with the LOOP
+            // rule (`outerOnly` true - "THE LOOP RULE, so the rung carries no
+            // INNER line"), and emitSlabInk only ever emits the four corner
+            // rails. So a base plate there is two silhouette lines, no box and
+            // no crease. Matching that is what parity means.
+            const alongOnly = f.surf !== undefined && f.surf < 4 && !f.fullOutline;
+            for (let i2 = 0; i2 < m.length; i2++) {
+                // the cross-strip pair is registered as a GHOST rather than
+                // skipped: it must not ink, but the cap that shares it needs a
+                // second normal to be testable at all
+                // The cross pair is edges 0-1 (station k) and 2-3 (station
+                // k+1); a fully-outlined surface keeps them except at the seam.
+                if (stepQuad && (i2 === 0 || i2 === 2)) continue;   // its cross-sections
+                const seamCross = (i2 === 0 && f.gA) || (i2 === 2 && f.gB);
+                const ghost = alongOnly && (i2 === 0 || i2 === 2);
+                const ka = ptH(m[i2]);
+                const kb = ptH(m[(i2 + 1) % m.length]);
+                const ek = ka < kb ? ka * 4294967296 + kb : kb * 4294967296 + ka;
+                if (own.has(ek)) continue;
+                own.add(ek);
+                addEdge(m[i2], m[(i2 + 1) % m.length], f._inkN, !!f.stick, f.pal, ghost,
+                    !!f.two, !!f.noInk, f.c ? [f.c.r, f.c.g, f.c.b] : null,
+                    !!f.fullOutline, seamCross, !!f.outerOnly);
+            }
+        }
+
+        // ---- the edge instance buffer: p0, p1, n0, n1, always = 13 floats ----
+        const creaseDeg = P0.creaseDeg;
+        const creaseCos = Math.cos(creaseDeg * Math.PI / 180);
+        // the fully-outlined surfaces' own threshold
+        const richDeg = RICH_CREASE_DEG;
+        const richCos = RICH_CREASE_COS;
+        let edgeTotal = 0;
+        for (const inner of edgeMap.values()) edgeTotal += inner.size;
+        const ED_FLOATS = 19;      // p0, p1, n0, n1, always, stick, pal, col, w
+        const ed = new Float32Array((edgeTotal + contactEdges.length * 2) * ED_FLOATS);
+        let eo = 0;
+        let nBoundary = 0;
+        let nCrease = 0;
+        let nNonManifold = 0;
+        let nGhostOnly = 0;
+        for (const inner of edgeMap.values()) for (const e of inner.values()) {
+            // no face is allowed to ink here - a mid-strip cross edge, or the
+            // ring around a side chain's base, which is vetoed outright
+            if (!e.real || e.noInk || e.seam) { nGhostOnly++; continue; }
+            const a2 = e.n[0] || [0, 0, 1];
+            const b2 = e.n[1] || a2;
+            // NON-MANIFOLD EDGES ARE JUNCTION INTERIOR, and the silhouette rule is
+            // not merely wrong there, it is undefined: "exactly one of the TWO
+            // faces meeting along it faces the eye" needs there to be two. Where
+            // three side-chain bonds meet, 9 of 33 edges of the fixture have three
+            // or four incident faces, and keeping an arbitrary pair of them ran the
+            // test on a pair that bounds nothing - which drew a closed triangle
+            // around every three-way junction that the reference does not have.
+            //
+            // Geometrically the count IS the answer: material fills all the way
+            // around such an edge, so it cannot lie on the outline. Two faces means
+            // a real surface edge, one means an open boundary, three or more means
+            // inside the join. The reference reaches the same place from the other
+            // side, by testing each edge against the hull of its own box's
+            // projected corners and rejecting any that lands inside.
+            if (e.count > 2) { nNonManifold++; continue; }
+            // A FLAT STICK'S SHARED EDGE IS A STATION, NOT AN OUTLINE.
+            //
+            // Ribbon mode asks for zero thickness, so a side-chain bond is a
+            // single double-sided quad and consecutive pieces of one run share
+            // their cross edge. The 2D pass never inks that edge, and the rule
+            // it uses says why in one line: a stick's end edges are stroked only
+            // at a FREE end (`if (e.end === 0 && !prim.free0) continue`), and an
+            // edge two pieces share is by definition not one.
+            //
+            // Here the same edge arrives with two real faces, so it fell through
+            // to the crease test below - and wherever the run bends or twists,
+            // which is most side chains with a branch or a ring, the two quads
+            // are not coplanar, the test fires, and the edge is promoted to
+            // "always draw". That is the line ACROSS the middle of a side chain.
+            // Coplanar runs got away with it, which is why only some residues
+            // showed it.
+            //
+            // The silhouette rule is no better here: both faces are oriented at
+            // the eye per frame, so the captured normals' signs are arbitrary
+            // and `f0 != f1` is a coin toss. There is nothing to test, because
+            // the edge is interior - two pieces of one solid meeting flush.
+            if (e.stick && e.two && e.real > 1) { continue; }
+            let always = 0;
+            // A BOUNDARY EDGE OF A DOUBLE-SIDED FACE IS ALWAYS DRAWN, and that
+            // is not a special case but the same eye-orient rule followed one
+            // step further: the face is turned toward the eye every frame, so
+            // "draw this edge while its face faces the eye" is a tautology.
+            // Left as an ordinary boundary it tested the normal the CAPTURE
+            // baked, and every flat side chain kept its fill but lost its
+            // outline the moment the model turned past that view.
+            if (e.n.length < 2) { always = e.two ? 5 : 2; nBoundary++; }   // open edge
+            else {
+                // |dot| because the two winding normals of a closed pair point
+                // opposite ways by construction; the ANGLE between the surfaces is
+                // what a crease is, and it is the same either way round.
+                const d2 = Math.abs(a2[0] * b2[0] + a2[1] * b2[1] + a2[2] * b2[2]);
+                // THE CREASE RULE IS OFF EVERYWHERE EXCEPT A FULLY-OUTLINED
+                // SURFACE. Globally it has to be: on a smooth ribbon a crease
+                // threshold inks a line wherever the surface bends, which is a
+                // line the reference does not draw, so this renderer keeps to
+                // the silhouette and nothing else.
+                //
+                // A richardson strand is the exception, and it is why its
+                // "inner" outline was missing. The slab shows a coloured broad
+                // face and a pale side face at the same time, and the edge
+                // between them is a 90 degree CREASE - both faces turned toward
+                // the eye, so the silhouette test says nothing and the two
+                // colours met with no line. 60 degrees catches that corner and
+                // still ignores the few degrees a ribbon bends between
+                // stations.
+                const cDeg = e.full ? richDeg : creaseDeg;
+                const cCos = e.full ? richCos : creaseCos;
+                if (cDeg < 180 && d2 < cCos) { always = 2; nCrease++; }
+            }
+            ed[eo++] = e.p0[0]; ed[eo++] = e.p0[1]; ed[eo++] = e.p0[2];
+            ed[eo++] = e.p1[0]; ed[eo++] = e.p1[1]; ed[eo++] = e.p1[2];
+            ed[eo++] = a2[0]; ed[eo++] = a2[1]; ed[eo++] = a2[2];
+            ed[eo++] = b2[0]; ed[eo++] = b2[1]; ed[eo++] = b2[2];
+            ed[eo++] = always;
+            // bit 1 = stick, bit 2 = use the extreme-corner rule
+            ed[eo++] = (e.stick ? 1 : 0) + (e.outer ? 2 : 0); ed[eo++] = e.pal;
+            const ec = e.col || [0, 0, 0];
+            ed[eo++] = ec[0]; ed[eo++] = ec[1]; ed[eo++] = ec[2];
+            ed[eo++] = 0;              // 0 = take uWidth, the outline's own weight
+        }
+        // ---- CONTACTS ride through the same pass ---------------------------
+        // A contact is a flat bright stroke, not a surface: it is drawn from
+        // both sides, at its own width, in its own colour, and it is the one
+        // thing here that is annotation rather than structure. All of which is
+        // an ink instance with aAlways = 3, so it needs no second program - and
+        // it gets the depth test and the slope bias for free, which is what
+        // makes it pass behind the ribbon where it should.
+        // BORDER FIRST, CORE OVER IT. The ink pass writes colour with the
+        // depth mask off, so within one draw call the later instance simply
+        // paints over the earlier one - which is the same order the 2D pass
+        // strokes them in, and the reason neither needs a depth offset.
+        const putContact = (c, always, col, w) => {
+            ed[eo++] = c.p0[0]; ed[eo++] = c.p0[1]; ed[eo++] = c.p0[2];
+            ed[eo++] = c.p1[0]; ed[eo++] = c.p1[1]; ed[eo++] = c.p1[2];
+            ed[eo++] = 0; ed[eo++] = 0; ed[eo++] = 1;      // normals: unused
+            ed[eo++] = 0; ed[eo++] = 0; ed[eo++] = 1;
+            ed[eo++] = always; ed[eo++] = 0; ed[eo++] = -1;   // not a stick, no slot
+            ed[eo++] = col[0]; ed[eo++] = col[1]; ed[eo++] = col[2];
+            ed[eo++] = w;
+        };
+        if (wantOutline) for (const c of contactEdges) putContact(c, 4, c.c, c.wA);
+        for (const c of contactEdges) putContact(c, 3, c.c, c.wA);
+        // `continue` above leaves the tail of `ed` unwritten, so the instance count
+        // is what was actually filled, not the map size
+        edgeCount = eo / ED_FLOATS;
+        gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
+        gl.bufferData(gl.ARRAY_BUFFER, ed.subarray(0, eo), gl.STATIC_DRAW);
+        window.__edgeStats = { edges: edgeCount, boundary: nBoundary, crease: nCrease,
+            faces: faces.length, interiorDropped: nInterior, nonManifoldDropped: nNonManifold,
+            ghostOnly: nGhostOnly };
+    }
+    mark('edges');
+    // OUTSIDE THE GUARD. The depth range and the diagnostic face list are not
+    // the outline's business, and leaving them inside it meant a build with the
+    // outline off produced no radius at all - `rad is not defined`, and nothing
+    // rendered. Cheap mistake to make when a guard is wrapped around a span
+    // rather than around a function.
+    //
+    // REUSE THE CORNERS ALREADY UNPROJECTED, rather than unprojecting every one
+    // a second time just to find the model radius.
+    let rad = 0;
+    for (const f of faces) {
+        const m = f._m;
+        if (!m) continue;
+        for (const q2 of m) {
+            const d = q2[0] * q2[0] + q2[1] * q2[1] + q2[2] * q2[2];
+            if (d > rad) rad = d;          // compare squared, root once
+        }
+    }
+    rad = Math.sqrt(rad);
+    window.__faces = faces;      // for diagnostics: carries _m, _outN, _interior
+    mark('buffers');
+    // one texel per residue, sized to the structure
+    ensureVisTexture(resMap && resMap.nBase ? resMap.nBase : 1);
+    // WHERE THE COLOURS COME FROM is the consumer's business: the harness has a
+    // colour-scheme dropdown, the app has a five-level hierarchy it has already
+    // resolved. Both hand over a function, and recolour() calls the same one -
+    // which is what makes a colour change a texture upload and not a rebuild.
+    if (paletteSource) setPalette(paletteSource());
+    // MODEL-SPACE FACE CENTROIDS, for the shading range above. Kept as a flat
+    // Float32Array rather than an array of triples: the per-frame loop over it
+    // is the only thing in the draw path that is O(faces).
+    const cen = new Float32Array(faces.length * 3);
+    let ci2 = 0;
+    for (const f of faces) {
+        const m = f._m;
+        if (!m) { ci2 += 3; continue; }
+        let ax = 0; let ay = 0; let az = 0;
+        for (const q2 of m) { ax += q2[0]; ay += q2[1]; az += q2[2]; }
+        const k2 = 1 / m.length;
+        cen[ci2++] = ax * k2; cen[ci2++] = ay * k2; cen[ci2++] = az * k2;
+    }
+    srCache = null; srKey = '';
+    resident = { count: faces.length, zMin: -rad, zMax: rad, scale, centroids: cen };
+    return resident;
+}
+
+// THE SPAN OF PRIM DEPTHS AT THIS VIEW, which is what the renderer normalises
+// its `near` over - min and max of the face centroids' view z. Recomputed every
+// frame, because it turns with the model: a loop over three floats per face,
+// which is about ten microseconds on 3000 faces and three hundred on 100000.
+// Cached on the rotation so a redraw that has not turned pays nothing.
+let srCache = null;
+let srKey = '';
+function shadeRange() {
+    if (!resident || !resident.centroids) return [resident ? resident.zMin : -1,
+        resident ? resident.zMax : 1];
+    const R = viewRot;
+    const k = R[2][0] + ',' + R[2][1] + ',' + R[2][2] + ',' + resident.count;
+    if (srCache && srKey === k) return srCache;
+    const c = resident.centroids;
+    const a = R[2][0]; const b = R[2][1]; const d = R[2][2];
+    let lo = Infinity; let hi = -Infinity;
+    for (let i = 0; i < c.length; i += 3) {
+        const z = a * c[i] + b * c[i + 1] + d * c[i + 2];
+        if (z < lo) lo = z;
+        if (z > hi) hi = z;
+    }
+    if (!(hi > lo)) { lo = resident.zMin; hi = resident.zMax; }
+    srCache = [lo, hi];
+    srKey = k;
+    return srCache;
+}
+
+function drawResident(cv, prm) {
+    const P0 = prm || defaultParams();
+    if (P0.ortho !== undefined) setOrtho(P0.ortho);
+    if (!resident) return;              // nothing built yet; the caller builds
+    gl.useProgram(prog3);
+    gl.viewport(0, 0, cv.width, cv.height);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+    gl.clearDepth(1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
+    const stride = 48 * 4;
+    const bound = [];
+    const bind = (name, size, off) => {
+        const l = gl.getAttribLocation(prog3, name);
+        if (l < 0) return;
+        gl.enableVertexAttribArray(l);
+        gl.vertexAttribPointer(l, size, gl.FLOAT, false, stride, off);
+        gl.vertexAttribDivisor(l, 1);      // one set of values per FACE
+        bound.push(l);
+    };
+    bind('aC0', 3, 0); bind('aC1', 3, 12); bind('aC2', 3, 24); bind('aC3', 3, 36);
+    bind('aNA', 3, 48); bind('aNB', 3, 60); bind('aTA', 3, 72); bind('aTB', 3, 84);
+    bind('aFlatN', 3, 96); bind('aFlatShade', 3, 108);
+    bind('aDots', 3, 120); bind('aBase', 3, 132);
+    bind('aFlags0', 4, 144); bind('aFlags1', 4, 160); bind('aFlags2', 4, 176);
+    const R = currentRot();
+    gl.uniformMatrix3fv(gl.getUniformLocation(prog3, 'uRot'), false,
+        new Float32Array([R[0][0], R[1][0], R[2][0],
+            R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
+    gl.uniform2f(gl.getUniformLocation(prog3, 'uSize'), cv.width, cv.height);
+    gl.uniform2f(gl.getUniformLocation(prog3, 'uZRange'), resident.zMin, resident.zMax);
+    const sr = shadeRange();
+    gl.uniform2f(gl.getUniformLocation(prog3, 'uShadeRange'), sr[0], sr[1]);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uScale'),
+        resident.scale * (viewZoom / (resident.capZoom || 1)) * pixelRatio);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uPersp'), isPersp() ? 1 : 0);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uFL'), focalLength());
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uShowRibbon'), showRibbon ? 1 : 0);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uShowSticks'), showSticks ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, visTex);
+    gl.uniform1i(gl.getUniformLocation(prog3, 'uVis'), 0);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uVisW'), visTex ? visW : 0);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uVisN'),
+        (resMap && resMap.nBase) ? resMap.nBase : 1);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, palTex);
+    gl.uniform1i(gl.getUniformLocation(prog3, 'uPal'), 1);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uPalW'), palTex ? palW : 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uFlatCull'), P0.flatCull ? 1 : 0);
+    gl.uniform3f(gl.getUniformLocation(prog3, 'uPaper'), PAPER[0], PAPER[1], PAPER[2]);
+    // the same numbers the 2D renderer is using for this preset
+    const sp = P0;
+    // THE GRAIN. A redraw, never a rebuild - it is a fragment-stage multiply
+    // and the mesh knows nothing about it.
+    bindPaper(prog3, cv, sp.pencil);
+    const u = (n2, v) => gl.uniform1f(gl.getUniformLocation(prog3, n2), v);
+    u('uShadeAmt', sp.shadeAmt);
+    u('uInnerShade', sp.innerShade);
+    u('uHiGain', sp.hiGain);
+    u('uKnee', sp.knee);
+    u('uStickKnee', sp.stickKnee);
+    u('uDepthFloor', sp.depthFloor);
+    u('uCel', sp.cel);
+    u('uExact', sp.exact ? 1 : 0);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, resident.count);
+    // divisors live on the attribute, not the program: leaving them at 1 makes
+    // the next non-instanced draw read one vertex and stretch it over the mesh
+    for (const l of bound) gl.vertexAttribDivisor(l, 0);
+    if (sp.ink) drawInk(cv, sp);
+    gl.useProgram(prog);
+}
+
+// The outline, over the depth buffer the fills just wrote. Nothing is uploaded
+// here - the edge buffer is resident and the view is a uniform, which is the
+// structural difference from the analytic pass: that one rebuilds its occluder
+// grid every frame (122 ms of 356 on 4UG0) because the grid is in SCREEN space
+// and every rotation invalidates it.
+function drawInk(cv, prm) {
+    const spI = prm || defaultParams();
+    if (!edgeCount) return;
+    gl.useProgram(progInk);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    gl.depthMask(false);            // ink must not occlude ink
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
+    const stride = 19 * 4;
+    const binds = [['aP0', 3, 0], ['aP1', 3, 12], ['aN0', 3, 24],
+        ['aN1', 3, 36], ['aAlways', 1, 48], ['aEdgeStick', 1, 52], ['aEdgePal', 1, 56],
+        ['aEdgeCol', 3, 60], ['aEdgeW', 1, 72]];
+    for (const [nm, sz, off] of binds) {
+        const l = gl.getAttribLocation(progInk, nm);
+        if (l < 0) continue;
+        gl.enableVertexAttribArray(l);
+        gl.vertexAttribPointer(l, sz, gl.FLOAT, false, stride, off);
+        gl.vertexAttribDivisor(l, 1);          // one set of values per EDGE
+    }
+    const R = currentRot();
+    gl.uniformMatrix3fv(gl.getUniformLocation(progInk, 'uRot'), false,
+        new Float32Array([R[0][0], R[1][0], R[2][0],
+            R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
+    gl.uniform2f(gl.getUniformLocation(progInk, 'uSize'), cv.width, cv.height);
+    gl.uniform2f(gl.getUniformLocation(progInk, 'uZRange'), resident.zMin, resident.zMax);
+    const srI = shadeRange();
+    gl.uniform2f(gl.getUniformLocation(progInk, 'uShadeRange'), srI[0], srI[1]);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uScale'),
+        resident.scale * (viewZoom / (resident.capZoom || 1)) * pixelRatio);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uPersp'), isPersp() ? 1 : 0);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uFL'), focalLength());
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uShowRibbon'), showRibbon ? 1 : 0);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uShowSticks'), showSticks ? 1 : 0);
+    // DISPLAY pixels in, device pixels out - the same ratio the fills go through
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uWidth'), spI.inkWidth * pixelRatio);
+    // THE MANUAL BIAS IS NOW A TRIM, not the mechanism - see the slope- and
+    // width-scaled term in the shader, which does the actual work. It defaults
+    // to 0 and barely moves anything: at width 1.6 the outline is 0.8% broken
+    // without it and 0.7% with.
+    //
+    // Kept because it costs nothing and the pixel metric and the eye disagree
+    // about outlines, so having the knob is worth more than the tidiness of
+    // removing it.
+    //
+    // A silhouette edge lies exactly ON its own two faces, so with no bias it
+    // z-fights them and the line comes apart. Counting ink pixels with fewer
+    // than two ink neighbours - the ends of a stroke - shows what that costs:
+    //
+    //     bias 0      3650 ink px, 63.1% of them broken
+    //     bias 0.001  9679          36.2%
+    //     bias 0.002 11000          30.0%
+    //     bias 0.004 11767          26.8%
+    //
+    // At zero the outline is not a thin outline, it is a dashed one: two thirds
+    // of it is fragments. The whole-image difference cannot see that - a dashed
+    // line and a solid one differ by their pixel COUNT, and the dashed one
+    // happens to be nearer the reference's - so it reported 24.3% at bias 0
+    // against 25.6% at 0.004 and preferred the broken drawing.
+    //
+    // 0.002 is the knee: most of the continuity, least of the excess ink.
+    // THE REAL FIX IS STILL THE ID BUFFER, and this is the argument for it:
+    // bias trades continuity against ink the reference does not draw, and an
+    // identity test escapes the trade instead of picking a point on it.
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uBias'), spI.inkBias);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uInkTint'), spI.outlineTint || 0);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uHandoff'), spI.handoff);
+    // THE CAP, and it is a compromise rather than a solution. Measured on 1UBQ
+    // at width 1.6, black ink, against the renderer's 9440 ink pixels:
+    //
+    //     cap 0.0001   12687 px   24.2% broken
+    //     cap 0.00025  13812      19.5%
+    //     cap 0.0005   15356      13.8%
+    //     uncapped     22120       0.8%
+    //
+    // Loosening it makes the lines solid and surfaces edges the drawing should
+    // not have; tightening it removes those and breaks the lines again. There
+    // is no setting that does both, because a depth offset cannot tell "in
+    // front of my own face" from "in front of something else" - which is the
+    // whole of what an ID buffer would fix.
+    //
+    // 0.004 is chosen for how the drawing LOOKS, not for the pixel metric. More
+    // ink than the reference is fine - a solid line reads as a line and a
+    // dashed one reads as a fault - and the metric prefers the dashed one
+    // because it counts pixels rather than strokes. What the cap protects
+    // against is the other failure: an effectively uncapped bias reached ~0.038
+    // on grazing faces and surfaced edges that should have stayed hidden, which
+    // is a real defect rather than a matter of taste. 0.004 is an order of
+    // magnitude below that and leaves the lines about 2% broken.
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uBiasMax'),
+        spI.biasMax);
+    // INK_BASE is 0 on paper and 255 in dark mode
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uInkBase'), INK_BASE);
+    // inkFloor = 1 - fade * INK_FADE_SCALE, with INK_FADE_SCALE = 0.35
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uInkFloor'),
+        1 - (1 - (spI.depthFloor === undefined ? 1 : spI.depthFloor)) * 0.35);
+    gl.uniform3f(gl.getUniformLocation(progInk, 'uPaperInk'), PAPER[0], PAPER[1], PAPER[2]);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, palTex);
+    gl.uniform1i(gl.getUniformLocation(progInk, 'uPal'), 1);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uPalW'), palTex ? palW : 0);
+    gl.activeTexture(gl.TEXTURE0);
+    // the 2D pass grains the FINISHED frame, outline included, so the ink takes
+    // the same paper - and takes it from the same tile
+    bindPaper(progInk, cv, spI.pencil);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, edgeCount);
+    // PUT THE DIVISORS BACK. They live on the attribute, not on the program, so
+    // leaving them at 1 makes the next non-instanced draw read one vertex and
+    // stretch it over the whole mesh - which shows up as the fills vanishing on
+    // the frame AFTER the outline is switched off, not the frame it happens on.
+    for (const [nm] of binds) {
+        const l = gl.getAttribLocation(progInk, nm);
+        if (l >= 0) gl.vertexAttribDivisor(l, 0);
+    }
+    gl.depthMask(true);
+}
+/* ============================================================== THE APP ENTRY
+ * Everything above is the port. This is the one function viewer-mol.js calls,
+ * and its whole job is to answer three questions: what parameters does this
+ * renderer imply, has anything changed that the resident mesh cannot absorb,
+ * and where does the picture go.
+ *
+ * WHERE THE PICTURE GOES is an offscreen WebGL canvas, blitted onto the 2D
+ * context the app already owns. That keeps the selection halo, the sequence
+ * highlight overlay, picking and both exports on exactly the path they are on
+ * today - the GPU replaces the DRAW, not the frame.
+ *
+ * WHAT CHANGED is a signature over everything the mesh is built from. Anything
+ * not in it is a redraw: the rotation, the zoom, the ortho slider, shade,
+ * highlight, fade, smooth, the pencil, the ink weight and the whole palette.
+ * Anything in it rebuilds, which costs one 2D render with the painter switched
+ * off - the same work the app was doing every frame before.
+ */
+let appCv = null;                  // the offscreen drawing buffer
+let appSig = null;                 // what the resident mesh was built from
+let appColors = null;              // the palette the app last handed over
+let appColourKey = '';             // ...and a digest of it, since it is mutated in place
+let appPalComplete = true;         // ...and whether recolouring it would do anything
+let appPos = null;                 // the drawn positions, model space, xyz triples
+
+// The renderer's own properties, in the shape the port reads. Same object the
+// harness builds from its controls, so there is one consumer and two producers
+// rather than two of each.
+// THE REFERENCE'S OWN NUMBERS. Restating them here is what let the outline
+// weight drift to 1.45x; anything the 2D module names, this reads rather than
+// repeats. Fallbacks are the values it exports today, so an older
+// viewer-cartoon.js still renders.
+function ref() {
+    return (window.py2dmolCartoon && window.py2dmolCartoon.SHADING) || {};
+}
+
+function paramsFromRenderer(r) {
+    const rich = r.cartoonRichardson === true;
+    const num = (v, d) => (typeof v === 'number' && isFinite(v) ? v : d);
+    const fade = Math.max(0, Math.min(1, num(Number(r.cartoonFade), 0)));
+    const outlineW = num(r.relativeOutlineWidth, 0);
+    const inkOn = outlineW > 0 && r.outlineMode !== 'none';
+    // the 2D pass's own clamp: real thinning as the drawing shrinks, but growth
+    // stops at 1.5x or a drawn line becomes a band
+    const zoomW = Math.max(0.35, Math.min(1.5,
+        (r.viewerState && r.viewerState.zoom) || 1));
+    return {
+        rich,
+        // WELDED IS THE MEASURED DEFAULT and the only frame mode that ships:
+        // `station` and the two forced modes exist so the lab can show what
+        // they cost. They measured identically once _frameProbe landed.
+        frame: 'welded',
+        ink: inkOn,
+        creaseDeg: 180,             // no crease rule: the silhouette, and nothing else
+        // the interpolated sheet cull, which measured better. The comment in
+        // the shader promises window.__flatCull restores the per-face test;
+        // it was never wired, so the escape hatch did nothing.
+        flatCull: (typeof window !== 'undefined' && window.__flatCull === true),
+        exact: false,               // a lab control: feed the renderer's own dots back in
+        cel: r.cartoonSmooth === true ? 0.0 : 1.0,
+        shadeAmt: num(r.cartoonShade, 1),
+        hiGain: num(r.cartoonHighlight, 1),
+        innerShade: 0.22,
+        knee: rich ? num(ref().RICH_HI_KNEE, 0.25) : num(ref().HI_KNEE, 0.55),
+        stickKnee: num(ref().HI_KNEE, 0.55),
+        depthFloor: 1 - fade,
+        ortho: r.viewerState && r.viewerState.ortho !== undefined
+            ? r.viewerState.ortho : 1,
+        pencil: r.cartoonPencil !== undefined ? r.cartoonPencil : (rich ? 1 : 0),
+        // THE OUTLINE'S WEIGHT IS THE APP'S, in the app's units, and it is a
+        // DISPLAY width - the device ratio is applied at the draw with
+        // everything else. The 2D pass computes `relativeOutlineWidth * zoomW`
+        // and so does this; without the zoom term the GPU line stayed put while
+        // the 2D one thinned, which is exactly the fault zoomW exists to fix.
+        //
+        // The 0.8 is the one number here that was chosen by eye rather than
+        // derived: the GPU inks a per-edge silhouette where the reference picks
+        // two corner curves per segment, so it lays down about a quarter more
+        // ink at the same nominal width. Matching the WEIGHT of the drawing
+        // matters more than matching the number.
+        // THE 2D PASS'S OWN WEIGHT, read from it rather than restated.
+        // viewer-cartoon.js computes
+        //   inkW = max(INK_W_MIN * pxScale, outlineW * pxScale * zoomW * INK_W_MUL)
+        // and this is the same expression - the device ratio is the only part
+        // applied later (uWidth = inkWidth * pixelRatio at the draw).
+        //
+        // These were 0.8 and 0.2 against the reference's 0.55 and 0.35, so every
+        // GPU outline came out 1.45x heavier at the same Outline setting.
+        inkWidth: Math.max(num(ref().INK_W_MIN, 0.35),
+            outlineW * zoomW * num(ref().INK_W_MUL, 0.55)),
+        handoff: num(r.cartoonHandoff, HANDOFF_TOL),
+        inkBias: 0.002,
+        biasMax: 0.004,
+        outlineTint: num(r.cartoonOutlineTint, 0),
+    };
+}
+
+// WHAT FORCES A REBUILD. Deliberately generous: a signature that misses
+// something shows up as a stale picture, which is far worse than a rebuild that
+// was not strictly needed. Colour is the one thing kept OUT of it, because the
+// palette is a texture and repainting is an upload against a mesh that never
+// moves.
+function signatureOf(r, w, h, colors) {
+    const o = r.objectsData && r.objectsData[r.currentObjectName];
+    // THE MASK IS A SET. Indexed like an array its length is undefined, the
+    // loop never runs, and the digest is the same constant for every mask -
+    // so hiding a residue did not rebuild and the geometry never changed.
+    // Second time this file made that mistake; see projectPositions.
+    const vis = r.visiblePositions;
+    let visKey = 'all';
+    if (vis && vis.forEach) {
+        // order-free, because a Set has no order to rely on
+        let a = 0;
+        let b = 0;
+        vis.forEach((i) => { a = (a + (i | 0) * 2654435761) >>> 0; b = (b ^ (i | 0)) >>> 0; });
+        visKey = a + ':' + b + ':' + (vis.size || 0);
+    }
+    // CONTACTS ARE GEOMETRY. Their endpoints, weight and colour are all baked
+    // into the ink instances when the mesh is built - a contact's width is
+    // CONTACT_WIDTH times its own stored weight, in Angstrom - so the width
+    // slider and the colour swatch both need a rebuild to be seen. Only the
+    // COUNT was visible here, through segmentIndices.length, which caught
+    // adding and removing one and missed every edit to an existing one.
+    let contactKey = 'none';
+    if (o && Array.isArray(o.contacts) && o.contacts.length) {
+        let a = 0;
+        for (const c of o.contacts) {
+            for (const v of c) {
+                const t = typeof v === 'number' ? v : String(v).charCodeAt(0);
+                a = ((a * 31) + (t * 1000 | 0)) >>> 0;
+            }
+        }
+        contactKey = o.contacts.length + ':' + a;
+    }
+    return [
+        r.currentObjectName, r.currentFrame,
+        r.coords && r.coords.length, r.segmentIndices && r.segmentIndices.length,
+        o && o.maxExtent, visKey, w, h,
+        r.lineWidth, r.cartoonThickness, r.cartoonSheetFlat, r.cartoonDetail,
+        // the thickness floors are geometry, so tuning either rebuilds
+        r.cartoonGpuRibbonThick, r.cartoonGpuHelixTh,
+        r.cartoonArrows, r.cartoonRichardson, r.cartoonStyle,
+        // NOT colorMode. Colour is a texture: three texels per segment against
+        // a mesh that never moves, and putting the mode in here made every
+        // scheme change a full rebuild - 45 to 95 ms where the upload is under
+        // one. What DOES belong is the half-bond table, because element colour
+        // is not a colour at all as far as the geometry is concerned: the
+        // RENDERER cuts a bond at its midpoint when the palette carries
+        // `halves`, and that happens at capture.
+        colors && colors.halves ? 'halves:' + colors.halves.length : 'nohalves',
+        // ...and the two things that make a colour change GEOMETRY. Where an
+        // interval's two ends disagree the renderer CUTS it at its midpoint and
+        // gives each half its own end's colour, so a single coloured residue
+        // runs from the midpoint before it to the midpoint after it. That only
+        // happens in ss mode or where the object carries explicit overrides -
+        // and repainting the old cut structure with the new colours puts every
+        // transition half a residue late, which is the loop after a strand
+        // coming out strand-coloured. Both are in the signature, so entering
+        // either rebuilds; rainbow to chain and back still repaints.
+        (r._getEffectiveColorMode ? r._getEffectiveColorMode() : r.colorMode) === 'ss',
+        (function () {
+            const o = r.objectsData && r.currentObjectName
+                ? r.objectsData[r.currentObjectName] : null;
+            const c = o && o.color;
+            return !!(c && c.type === 'advanced' && c.value
+                && (c.value.position || c.value.chain));
+        }()),
+        // the outline is 91% of a build and is skipped when it is off, so
+        // switching it on is a rebuild by construction
+        r.outlineMode, (r.relativeOutlineWidth || 0) > 0,
+        // FORCED SECONDARY STRUCTURE IS GEOMETRY. objectsData[name].sse maps a
+        // position to 'H', 'E' or 'C' and wins over the assignment, so editing
+        // it turns a loop into a strand - a different ribbon, not a different
+        // colour. The 2D pass folds the same digest into its own secKey.
+        (window.py2dmolCartoon && window.py2dmolCartoon.sseKey
+            ? window.py2dmolCartoon.sseKey(r) : ''),
+        // per-residue side chains and contacts change the segment list
+        r.sidechainMap ? r.sidechainMap.size : 0,
+        contactKey,
+    ].join('|');
+}
+
+// ONE 2D RENDER WITH THE PAINTER SWITCHED OFF. The three hooks are set and
+// cleared around it so a renderer that is also being drawn normally is never
+// left in probe mode.
+function captureFrom(renderer, w, h, colors) {
+    const keep = {
+        noViewCull: renderer._noViewCull, frameProbe: renderer._frameProbe,
+        probeOnly: renderer._probeOnly, primProbe: renderer._primProbe,
+        posProbe: renderer._posProbe,
+        pencil: renderer.cartoonPencil, zoom: renderer.viewerState.zoom,
+        thick: renderer.cartoonThickness, hxRel: renderer.cartoonHelixThRel,
+    };
+    // GIVE THE FLAT PIECES A REAL THICKNESS, on this path only.
+    //
+    // Ribbon asks for thickness 0 and a richardson helix for exactly 0, and in
+    // the 2D pass that is free: it paints polygons and a zero-thickness slab is
+    // simply one polygon. This renderer rebuilds a SURFACE, and a piece with no
+    // thickness has no outward direction - so it is carried as double-sided and
+    // oriented at the eye every frame, which is where the awkward cases live:
+    // normals whose sign means nothing, shared edges that are interior with
+    // nothing to test, and a front face and a back face at identical depth.
+    //
+    // A fraction of an Angstrom makes each piece an ordinary closed solid and
+    // all of that goes away by construction rather than by special case. Both
+    // are floors, so raising Thick past them still does what it says, and both
+    // are tunable: cartoonGpuRibbonThick / cartoonGpuHelixTh, either set to 0
+    // to get the old geometry back.
+    const rich = renderer.cartoonRichardson === true;
+    const ribThick = typeof renderer.cartoonGpuRibbonThick === 'number'
+        ? renderer.cartoonGpuRibbonThick : GPU_RIBBON_THICK;
+    const hxTh = typeof renderer.cartoonGpuHelixTh === 'number'
+        ? renderer.cartoonGpuHelixTh : GPU_RICH_HELIX_TH;
+    if (rich) {
+        if (hxTh > 0) renderer.cartoonHelixThRel = hxTh;
+    } else if (ribThick > 0) {
+        renderer.cartoonThickness = Math.max(renderer.cartoonThickness || 0, ribThick);
+    }
+    renderer._noViewCull = true;
+    renderer._frameProbe = true;
+    renderer._probeOnly = true;
+    renderer._primProbe = null;
+    renderer._posProbe = null;        // ...and the DRAWN position of each residue
+    // CAPTURED AT THE LIVE ZOOM, not at 1. The unprojection divides the view
+    // scale back out, and it divides by whatever scale the renderer used - so
+    // any zoom works, and everything zoom-INDEPENDENT comes back identical
+    // either way.
+    //
+    // What is not zoom-independent is the ribbon's drawn THICKNESS: it fades
+    // with projected size, so a ribbon small on screen really is drawn thinner
+    // than the control says. The contact crop reads that thickness, and so does
+    // the side-chain attachment. Capturing at zoom 1 while the 2D pass drew at
+    // the live zoom therefore had the two renderers disagreeing about where a
+    // contact ends - measured 0.24 A at zoom 0.5 on 1UBQ, and nothing at all at
+    // zoom 1 and above, where the fade has saturated. Capturing at the zoom
+    // being looked at makes the mesh agree with the 2D pass exactly, and the
+    // draw divides that zoom out again so turning and zooming stay redraws.
+    const capZoom = (renderer.viewerState.zoom > 0)
+        ? renderer.viewerState.zoom : 1;
+    // ...and never with the grain: it is composited over the finished frame,
+    // and there is no finished frame here.
+    renderer.cartoonPencil = 0;
+    setCapturing(true);
+    try {
+        window.py2dmolCartoon.render(renderer, nullCtx(w, h), w, h, colors);
+        // READ THE PROBES HERE, inside the try. A return expression is
+        // evaluated before `finally` runs, and `finally` puts every hook back
+        // where it found it - so a caller reading renderer._posProbe afterwards
+        // gets the value from BEFORE the capture, which is undefined. The drawn
+        // positions were silently never collected, appPos stayed null, and the
+        // per-frame re-projection returned immediately: the selection halo and
+        // the sequence highlight kept whatever screen coordinates the last 2D
+        // render had left, and drifted the moment the model turned.
+        return { prims: renderer._primProbe || [], scale: renderer._viewScale,
+            capZoom, pos: renderer._posProbe };
+    } finally {
+        setCapturing(false);
+        renderer._noViewCull = keep.noViewCull;
+        renderer._frameProbe = keep.frameProbe;
+        renderer._probeOnly = keep.probeOnly;
+        renderer._primProbe = keep.primProbe;
+        renderer._posProbe = keep.posProbe;
+        renderer.cartoonPencil = keep.pencil;
+        renderer.viewerState.zoom = keep.zoom;
+        renderer.cartoonThickness = keep.thick;
+        renderer.cartoonHelixThRel = keep.hxRel;
+    }
+}
+
+// Force the next render to rebuild. The app calls this when something changed
+// that the signature cannot see - a style object replaced wholesale, a new
+// structure loaded under the same name.
+function invalidate() {
+    appSig = null; appColourKey = ''; appPalComplete = true; tubeSig = null;
+    clearResident();
+}
+
+// THE SAME PROJECTION THE 2D TAIL DOES, from the captured model-space drawn
+// positions. Display pixels, because that is the space every consumer of
+// screenX/screenY works in.
+function projectPositions(renderer, dw, dh) {
+    const n = renderer.coords ? renderer.coords.length : 0;
+    if (!appPos || !renderer.screenX || renderer.screenX.length < n) return;
+    const R = currentRot();
+    const persp = isPersp();
+    const fl = focalLength();
+    // the same ratio the fills use: the mesh's scale carries the zoom it was
+    // captured at, so this divides that out before applying the live one
+    const sc = (resident ? resident.scale / (resident.capZoom || 1) : 1) * viewZoom;
+    const cx = dw / 2;
+    const cy = dh / 2;
+    renderer.screenFrameId++;
+    const fid = renderer.screenFrameId;
+    // THE VISIBILITY MASK IS A SET, and the renderer's own test for it is
+    // `!mask || mask.has(i)`. Indexing it like an array - which is what this
+    // did - returns undefined for EVERY residue, so every one was marked
+    // invalid and no screen position was ever written. The arrays then kept
+    // whatever the last 2D render left in them: exactly right until the model
+    // turned, and steadily wrong afterwards. Precisely the fault this function
+    // exists to fix, reintroduced one line below the fix.
+    const mask = renderer.visiblePositions;
+    const shown = (i) => !mask || (mask.has ? mask.has(i) : !!mask[i]);
+    const lw = (renderer.lineWidth || 3.0) * sc;
+    for (let i = 0; i < n; i++) {
+        const o = i * 3;
+        if (o + 2 >= appPos.length || !(appPos[o] === appPos[o])) {
+            renderer.screenValid[i] = 0;
+            continue;
+        }
+        if (!shown(i)) { renderer.screenValid[i] = 0; continue; }
+        const x = appPos[o]; const y = appPos[o + 1]; const z = appPos[o + 2];
+        const vx = R[0][0] * x + R[0][1] * y + R[0][2] * z;
+        const vy = R[1][0] * x + R[1][1] * y + R[1][2] * z;
+        const vz = R[2][0] * x + R[2][1] * y + R[2][2] * z;
+        let pe = 1;
+        if (persp) {
+            const dz = fl - vz;
+            if (dz <= 0.1) { renderer.screenValid[i] = 0; continue; }
+            pe = fl / dz;
+        }
+        renderer.screenX[i] = cx + vx * sc * pe;
+        renderer.screenY[i] = cy - vy * sc * pe;
+        renderer.screenRadius[i] = Math.max(2, lw * 0.25 * pe);
+        renderer.screenValid[i] = fid;
+    }
+}
+
+/* The entry itself. Returns true if it drew, false if the caller should fall
+ * back to the 2D path - which it must be able to do, because WebGL2 can be
+ * absent, the context can be lost, and a shader can fail to link on a driver
+ * nobody has tested.
+ */
+// WHETHER THE PALETTE CHANGED, and it cannot be answered by identity: the app
+// keeps ONE colours array and recomputes it in place, so the reference never
+// moves. A full digest is O(n) per frame - about 30 microseconds on a 5000
+// position structure against a 1 ms frame - and it is the only version of this
+// that cannot miss a single residue being recoloured, which a sampled one can.
+function colourDigest(cols) {
+    if (!cols) return '0';
+    let a = 2166136261;
+    for (let i = 0; i < cols.length; i++) {
+        const c = cols[i];
+        if (!c) { a = (a * 16777619) >>> 0; continue; }
+        a = ((a ^ c.r) * 16777619) >>> 0;
+        a = ((a ^ c.g) * 16777619) >>> 0;
+        a = ((a ^ c.b) * 16777619) >>> 0;
+    }
+    const hv = cols.halves;
+    if (hv) {
+        for (let i = 0; i < hv.length; i++) {
+            const p = hv[i];
+            if (!p) { a = (a * 16777619) >>> 0; continue; }
+            if (p.a) a = ((a ^ p.a.r ^ (p.a.g << 8) ^ (p.a.b << 16)) * 16777619) >>> 0;
+            if (p.b) a = ((a ^ p.b.r ^ (p.b.g << 8) ^ (p.b.b << 16)) * 16777619) >>> 0;
+        }
+    }
+    return cols.length + ':' + a;
+}
+
+function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
+    if (!window.py2dmolCartoon || typeof document === 'undefined') return false;
+    // THE REAL CANVAS ONLY. Export runs this same draw stage against an SVG
+    // context and against an offscreen 2D context at a different scale; both
+    // want the vector or the exact-size raster the 2D path produces, and
+    // neither can take a blit from a canvas sized for the screen.
+    if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
+    if (ctx.canvas !== renderer.canvas) return false;
+    const w = renderer.canvas.width;
+    const h = renderer.canvas.height;
+    if (!(w > 0 && h > 0)) return false;
+    try {
+        if (!appCv) {
+            appCv = document.createElement('canvas');
+            // A LOST CONTEXT IS NOT RECOVERABLE ON THE SAME CANVAS. getContext
+            // hands back the same dead object, so initGL "succeeds" and every
+            // call after it silently does nothing - the toggle stays on and
+            // the acceleration is gone. Drop the canvas instead and build a
+            // fresh one, which is what the failure path below does too.
+            appCv.addEventListener('webglcontextlost', (e) => {
+                e.preventDefault();
+                appCv = null; appSig = null; clearResident(); clearGL();
+            });
+        }
+        const fresh = !gl || appCv.width !== w || appCv.height !== h;
+        if (appCv.width !== w || appCv.height !== h) {
+            appCv.width = w; appCv.height = h;
+        }
+        // A RESIZE DOES NOT DROP THE CONTEXT, but the first call must make one.
+        if (!gl && !initGL(appCv)) return false;
+        if (fresh) appSig = null;
+
+        setRot(renderer.viewerState.rotation);
+        setZoomExact((renderer.viewerState && renderer.viewerState.zoom) || 1);
+        setPixelRatio(displayWidth > 0 ? w / displayWidth : 1);
+        setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
+        // dark mode is the renderer's background, exactly as the 2D pass reads it
+        const dark = renderer.backgroundColor === '#000000';
+        setPaper(dark ? [0, 0, 0] : [255, 255, 255], dark ? 255 : 0);
+        const prm = paramsFromRenderer(renderer);
+
+        const sig = signatureOf(renderer, w, h, colors);
+        if (sig !== appSig || !resident) {
+            // THE RESIDUE MAP, so a side-chain face knows which residue owns it.
+            // The app numbers side-chain positions above the backbone and keeps
+            // the mapping on the renderer, which is the same shape the harness
+            // builds for itself.
+            setResidueMap({ nBase: renderer.coords.length,
+                sidechainMap: renderer.sidechainMap || null });
+            // DISPLAY pixels, not device: that is the space the 2D renderer
+            // projected into and so the space the unprojection has to undo.
+            setSize(displayWidth, displayHeight);
+            setPaletteSource(() => appColors);
+            setDefaultParams(() => paramsFromRenderer(renderer));
+            appColors = colors;
+            appColourKey = colourDigest(colors);
+            // THE SCENE'S RADIUS, which is what sets the focal length and so the
+            // whole perspective. RMS about the centroid, the renderer's own
+            // measure - see focalLength().
+            const co = renderer.rotatedCoords;
+            let cx = 0; let cy = 0; let cz = 0;
+            const n = renderer.coords.length;
+            for (let i = 0; i < n; i++) { cx += co[i].x; cy += co[i].y; cz += co[i].z; }
+            if (n > 0) { cx /= n; cy /= n; cz /= n; }
+            let sq = 0;
+            for (let i = 0; i < n; i++) {
+                const dx = co[i].x - cx; const dy = co[i].y - cy; const dz = co[i].z - cz;
+                sq += dx * dx + dy * dy + dz * dz;
+            }
+            setStdDev(n > 0 ? Math.sqrt(sq / n) : 30);
+
+            // DISPLAY PIXELS, not device. The capture is a real call into the
+            // 2D renderer, and it sizes its projection from the width it is
+            // handed: given the device size it centred at 448 instead of 299
+            // and computed a scale 1.5x too large, so the unprojection came
+            // back with model coordinates that were both offset and oversized -
+            // the structure drawn half again too big and off to one side. The
+            // ratio is applied ONCE, at the draw, and nowhere else.
+            const { prims, scale, capZoom, pos } = captureFrom(renderer,
+                displayWidth, displayHeight, colors);
+            if (!prims.length) return false;
+            const { faces, lines, paletteComplete } = facesOf(prims, prm);
+            makeResident(faces, scale, prm, lines);
+            // the mesh's scale already carries the zoom it was captured at, so
+            // the draw multiplies by the RATIO rather than by the zoom itself
+            if (resident) resident.capZoom = capZoom;
+            // THE DRAWN POSITIONS, in model space. Everything on top of the
+            // canvas - the selection halo, the sequence hover, click-picking -
+            // reads renderer.screenX/screenY, and the 2D pass fills them at the
+            // END of a render that the GPU path no longer runs every frame. So
+            // the positions are captured once and re-projected per frame, which
+            // is exactly what that tail does.
+            appPos = null;
+            const pp = pos;
+            // a diagnostic, and the one that matters: zero here means the
+            // overlay has nothing to project and will silently go stale
+            window.__gpuPosCount = pp ? pp.length : 0;
+            if (pp && pp.length) {
+                appPos = new Float64Array(pp.length * 3);
+                for (let i = 0; i < pp.length; i++) {
+                    const v = pp[i];
+                    if (!v) { appPos[i * 3] = NaN; continue; }
+                    const mv = apply(matT(currentRot()), [v.x, v.y, v.z]);
+                    appPos[i * 3] = mv[0]; appPos[i * 3 + 1] = mv[1]; appPos[i * 3 + 2] = mv[2];
+                }
+            }
+            appSig = sig;
+            // CAN THIS MESH BE REPAINTED AT ALL? Only if every face knows which
+            // slot of `colors` it took. A prim whose colour did NOT come from
+            // the palette - an ss-mode colour, or any per-residue override,
+            // which is what a SELECTION is - reports ciPalette false and
+            // carries a baked colour instead. Recolouring such a mesh changes
+            // nothing, which is exactly how selecting a residue stopped
+            // showing: the ribbon kept the colour it was captured with. Where
+            // the palette is incomplete a colour change rebuilds instead.
+            appPalComplete = paletteComplete !== false;
+        } else {
+            // A COLOUR CHANGE IS AN UPLOAD, not a rebuild - three texels per
+            // segment against a mesh that never moves.
+            const key = colourDigest(colors);
+            if (key !== appColourKey || colors !== appColors) {
+                appColors = colors;
+                appColourKey = key;
+                if (appPalComplete) {
+                    recolour();
+                } else {
+                    // baked colours: the only way to change them is to ask the
+                    // renderer for the prims again
+                    appSig = null;
+                    return renderApp(renderer, ctx, displayWidth, displayHeight, colors);
+                }
+            }
+        }
+        if (!resident) return false;
+        drawResident(appCv, prm);
+        projectPositions(renderer, displayWidth, displayHeight);
+        // ...and onto the canvas the app owns, under whatever transform it is
+        // holding, which is why this saves and restores it.
+        const prev = ctx.getTransform ? ctx.getTransform() : null;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(appCv, 0, 0);
+        if (prev) ctx.setTransform(prev.a, prev.b, prev.c, prev.d, prev.e, prev.f);
+        return true;
+    } catch (err) {
+        // A FAILURE HERE FALLS BACK, it does not break the viewer. The 2D path
+        // is still complete and still correct; the GPU is an accelerator.
+        if (window.console) window.console.warn('cartoon GPU path unavailable:', err);
+        window.__gpuLastError = String((err && err.message) || err);
+        appSig = null;
+        clearResident();
+        clearGL();
+        // ...and the CANVAS with it. Keeping it means the next attempt asks a
+        // dead context for a new one and gets the dead one back.
+        appCv = null;
+        return false;
+    }
+}
+
+/* ------------------------------------------------- the tube instance buffer
+ * One instance per drawn segment: its two ends in MODEL space, its radius in
+ * Angstrom, and the colour viewer-mol.js already shaded. Ten floats.
+ *
+ * NOTHING IS CAPTURED. The cartoon path has to run the 2D renderer to find out
+ * where its ribbon goes; a tube segment runs between two positions and that is
+ * all it is, so the geometry comes straight off `rotatedCoords` un-rotated -
+ * which is just `coords` centred, the same space the ribbon mesh lives in.
+ */
+const TUBE_FLOATS = 13;
+function buildTube(renderer, S) {
+    if (!gl) return false;
+    const co = renderer.coords || [];
+    const n = co.length;
+    const order = S.order || [];
+    const cnt = Math.min(S.count === undefined ? order.length : S.count, order.length);
+    if (!cnt || !n) { tubeCount = 0; return false; }
+    // the centre the app subtracts before rotating, so this is the same model
+    // space the cartoon mesh lives in
+    let cx = 0; let cy = 0; let cz = 0;
+    for (let i = 0; i < n; i++) { cx += co[i].x; cy += co[i].y; cz += co[i].z; }
+    cx /= n; cy /= n; cz /= n;
+    const lw = renderer.lineWidth || 3.0;
+    // HOW MANY DRAWN SEGMENTS TOUCH EACH POSITION. An end shared with the next
+    // segment is not an end of anything - the chain runs straight through it -
+    // and a round outline cap there draws a rim between every pair of residues,
+    // which is what makes a backbone read as a string of sausages rather than a
+    // tube. The 2D pass has the same rule (shouldRoundEndpoint): the outline is
+    // butt-capped along the chain and rounded only where the chain stops.
+    const touch = new Map();
+    for (let k = 0; k < cnt; k++) {
+        const sg2 = S.segments[order[k]];
+        // contacts are annotation laid ACROSS the chain, not links in it: they
+        // must not turn a real chain terminus into an interior joint, and they
+        // keep their own round ends
+        if (!sg2 || sg2.idx1 === undefined || sg2.type === 'C') continue;
+        touch.set(sg2.idx1, (touch.get(sg2.idx1) || 0) + 1);
+        touch.set(sg2.idx2, (touch.get(sg2.idx2) || 0) + 1);
+    }
+    const data = new Float32Array(cnt * TUBE_FLOATS);
+    let o = 0;
+    let count = 0;
+    let rad = 0;
+    for (let k = 0; k < cnt; k++) {
+        const idx = order[k];
+        const sg = S.segments[idx];
+        if (!sg) continue;
+        const i1 = sg.idx1;
+        const i2 = sg.idx2;
+        if (i1 === undefined || i2 === undefined || i1 >= n || i2 >= n) continue;
+        const base = S.colors && S.colors[idx];
+        if (!base) continue;
+        // THE LOOP'S OWN COLOUR, arrived at the same way: a contact stays bright
+        // and flat, everything else is tinted toward white by the occlusion it
+        // sits under and then multiplied down by it.
+        let r = base.r / 255;
+        let g = base.g / 255;
+        let b = base.b / 255;
+        if (sg.type !== 'C' && S.renderShadows) {
+            const tf = (0.50 * S.tints[idx]) / 3;
+            r += (1 - r) * tf; g += (1 - g) * tf; b += (1 - b) * tf;
+            const sf = 0.20 + 0.80 * S.shadows[idx];
+            r *= sf; g *= sf; b *= sf;
+        }
+        const wm = renderer._calculateSegmentWidthMultiplier
+            ? renderer._calculateSegmentWidthMultiplier(S.segData && S.segData[idx], sg) : 1;
+        const a = co[i1];
+        const c2 = co[i2];
+        data[o++] = a.x - cx; data[o++] = a.y - cy; data[o++] = a.z - cz;
+        data[o++] = c2.x - cx; data[o++] = c2.y - cy; data[o++] = c2.z - cz;
+        data[o++] = Math.max(0.02, lw * wm * 0.5);      // radius, Angstrom
+        data[o++] = r * 255; data[o++] = g * 255; data[o++] = b * 255;
+        const free = (i) => (sg.type === 'C' || (touch.get(i) || 0) <= 1) ? 1 : 0;
+        data[o++] = free(i1); data[o++] = free(i2);     // a free end gets a cap
+        data[o++] = sg.type === 'C' ? 1 : 0;            // annotation: no shading
+        count++;
+        for (const q of [a, c2]) {
+            const d = (q.x - cx) * (q.x - cx) + (q.y - cy) * (q.y - cy)
+                + (q.z - cz) * (q.z - cz);
+            if (d > rad) rad = d;
+        }
+    }
+    rad = Math.sqrt(rad) + 2;    // room for the capsule's own bulge
+    tubeRange = [-rad, rad];
+    // HOW MANY SEGMENTS PER SQUARE ANGSTROM the occlusion pass should assume.
+    // Each of its taps stands for a patch of the sampling disc, and what the
+    // CPU sums over that patch is SEGMENTS - so the two only agree if the pass
+    // is told the areal density. Measuring it here rather than fixing a
+    // constant is what makes a sparse structure and a dense one shade alike.
+    tubeDensity = count / Math.max(1, Math.PI * rad * rad);
+    tubeCount = count;
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufTube);
+    gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, o), gl.DYNAMIC_DRAW);
+    return count > 0;
+}
+
+/* Two passes, outline then fill, exactly the order the 2D pass strokes them in
+ * per segment - only here the depth buffer does the sorting, so all the
+ * outlines can go down first and every tube is still outlined against whatever
+ * is behind it. The outline is pushed away from the eye so a segment's own fill
+ * wins where the two coincide.
+ */
+function drawTube(cv, renderer, prm) {
+    if (!gl || !tubeCount) return false;
+    const dw = renderer.displayWidth || cv.width;
+    const ratio = dw > 0 ? cv.width / dw : 1;
+    gl.useProgram(progTube);
+    gl.viewport(0, 0, cv.width, cv.height);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    gl.depthMask(true);
+    gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+    gl.clearDepth(1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufTube);
+    const stride = TUBE_FLOATS * 4;
+    const bound = [];
+    const bind = (name, size, off) => {
+        const l = gl.getAttribLocation(progTube, name);
+        if (l < 0) return;
+        gl.enableVertexAttribArray(l);
+        gl.vertexAttribPointer(l, size, gl.FLOAT, false, stride, off);
+        gl.vertexAttribDivisor(l, 1);
+        bound.push(l);
+    };
+    bind('aP0', 3, 0); bind('aP1', 3, 12); bind('aRad', 1, 24); bind('aTCol', 3, 28);
+    bind('aCapA', 1, 40); bind('aCapB', 1, 44); bind('aNoAO', 1, 48);
+    const R = currentRot();
+    const u = (nm, v) => gl.uniform1f(gl.getUniformLocation(progTube, nm), v);
+    gl.uniformMatrix3fv(gl.getUniformLocation(progTube, 'uRot'), false,
+        new Float32Array([R[0][0], R[1][0], R[2][0],
+            R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
+    gl.uniform2f(gl.getUniformLocation(progTube, 'uSize'), cv.width, cv.height);
+    gl.uniform2f(gl.getUniformLocation(progTube, 'uZRange'), tubeRange[0], tubeRange[1]);
+    u('uScale', (renderer._viewScale || 1) * ratio);
+    u('uPersp', isPersp() ? 1 : 0);
+    u('uFL', focalLength());
+    u('uRatio', ratio);
+    // The depth ramp is a STAND-IN, not an addition. When the real screen-space
+    // occlusion is present it is already baked into each instance's colour by
+    // buildTube, exactly as the 2D pass bakes it; ramping on top of that would
+    // darken the back of the structure twice. It only runs with shadows off.
+    u('uDepthCue', 0);
+    gl.uniform2f(gl.getUniformLocation(progTube, 'uSizeF'), cv.width, cv.height);
+
+    // PASS 0: THE DEPTH PREPASS AND THE OCCLUSION.
+    // Same instances, same shader, one uniform different: the colour channel
+    // carries view z. Then one full-screen pass turns that depth field into the
+    // shadow/tint pair the 2D renderer computes on the CPU by testing every
+    // segment against every segment in front of it.
+    const wantAO = renderer.shadowEnabled !== false && ensureOcc(cv.width, cv.height);
+    if (wantAO) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, zFbo);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+        // -1e9 is "no surface here". The occlusion pass tests for it rather
+        // than trusting a zero, which is a perfectly ordinary depth.
+        gl.clearColor(-1e9, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        u('uZOnly', 1); u('uUseAO', 0); u('uButt', 0);
+        u('uGrowPx', 0); u('uPushZ', 0);
+        gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 1.0);
+        gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'), 0);
+        drawTubeInstances();
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+        gl.useProgram(progAO);
+        const ua = (nm, v) => gl.uniform1f(gl.getUniformLocation(progAO, nm), v);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, zTex);
+        gl.uniform1i(gl.getUniformLocation(progAO, 'uZTex'), 0);
+        gl.uniform2f(gl.getUniformLocation(progAO, 'uTexel'), 1 / cv.width, 1 / cv.height);
+        ua('uScale', (renderer._viewScale || 1) * ratio);
+        ua('uPersp', isPersp() ? 1 : 0);
+        ua('uFL', focalLength());
+        // The 2D renderer's own numbers: cutoff 2.0 x the reference bond and an
+        // offset 2.5 x it for the shadow, 0.5 x / 2.5 x for the tint.
+        const refLen = 3.8;
+        ua('uShadowCut', refLen * 2.0);
+        ua('uShadowMax', refLen * 2.0 + refLen * 2.5);
+        ua('uTintCut', refLen * 0.5);
+        ua('uTintMax', refLen * 0.5 + refLen * 2.5);
+        ua('uStrength', typeof renderer.shadowStrength === 'number' ? renderer.shadowStrength : 0.5);
+        ua('uIntensity', typeof renderer.shadowIntensity === 'number' ? renderer.shadowIntensity : 0.95);
+        // AO_GAIN. The prepass sees only the front-most surface along each ray,
+        // where the CPU counts every segment behind it as well, so the measured
+        // density undercounts burial by a roughly constant factor. One number,
+        // calibrated against the 2D render, absorbs it.
+        ua('uDensity', tubeDensity
+            * (typeof renderer.cartoonAOGain === 'number' ? renderer.cartoonAOGain : AO_GAIN));
+        // A sample less than about a tube's radius nearer is the SAME tube's
+        // own bulge, not something in front of it. Without this every capsule
+        // shades its own rim and the flat segments come out looking moulded.
+        ua('uSelfBias', Math.max(0.6, (renderer.lineWidth || 3) * 0.5 * 1.1));
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        // RESOLVE: the 4x4 box that matches the interleaved rotation.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo2);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.useProgram(progBlur);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, aoTex);
+        gl.uniform1i(gl.getUniformLocation(progBlur, 'uAOTex'), 1);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, zTex);
+        gl.uniform1i(gl.getUniformLocation(progBlur, 'uZTex'), 0);
+        gl.uniform2f(gl.getUniformLocation(progBlur, 'uTexel'), 1 / cv.width, 1 / cv.height);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        gl.useProgram(progTube);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, aoTex2);
+        gl.uniform1i(gl.getUniformLocation(progTube, 'uAOTex'), 1);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+        gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    }
+    u('uZOnly', 0);
+    u('uUseAO', wantAO ? 1 : 0);
+    // Shadows off means FLAT, the same as the 2D pass - not "flat plus a depth
+    // ramp of my own invention". The ramp stays available (it was the stand-in
+    // while the GPU had no occlusion of its own) but nothing asks for it now
+    // unless a caller does.
+    u('uDepthCue', renderer.cartoonTubeDepthCue === true && !wantAO ? 1 : 0);
+    // PASS 1: the outline. Its width is the app's own outlineWidth, in display
+    // pixels, and its colour the fill darkened 0.7 - both straight off the 2D
+    // pass, which calls it the gap filler.
+    const outW = (renderer.outlineMode !== 'none')
+        ? Math.max(0, prm.outlineWidthPx || 0) : 0;
+    if (outW > 0) {
+        u('uGrowPx', outW * 0.5);
+        u('uPushZ', 0.0008);
+        gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 0.7);
+        gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'), 0);
+        u('uButt', 1);
+        drawTubeInstances();
+    }
+    // PASS 2: the fill.
+    u('uGrowPx', 0);
+    u('uPushZ', 0);
+    u('uButt', 0);   // the fill keeps its round caps and closes the joints
+    gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 1.0);
+    // FLAT BY DEFAULT. Per-fragment cylinder lighting is in the shader and
+    // works, but it turns the drawing into shiny rods - a different style, not
+    // this one. renderer.cartoonTubeLit = true asks for it.
+    gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'),
+        renderer.cartoonTubeLit === true ? 1 : 0);
+    drawTubeInstances();
+    for (const l of bound) gl.vertexAttribDivisor(l, 0);
+    return true;
+}
+// The two offscreen targets, at the drawing buffer's own size. Recreated only
+// when that size changes.
+function ensureOcc(w, h) {
+    if (!occOk) return false;
+    if (zFbo && occW === w && occH === h) return true;
+    const tex = (fmt, type, internal) => {
+        const t = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, fmt, type, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        return t;
+    };
+    if (zTex) gl.deleteTexture(zTex);
+    if (aoTex) gl.deleteTexture(aoTex);
+    if (aoTex2) gl.deleteTexture(aoTex2);
+    if (aoFbo2) gl.deleteFramebuffer(aoFbo2);
+    if (zRb) gl.deleteRenderbuffer(zRb);
+    if (zFbo) gl.deleteFramebuffer(zFbo);
+    if (aoFbo) gl.deleteFramebuffer(aoFbo);
+    zTex = tex(gl.RED, gl.FLOAT, gl.R32F);
+    aoTex = tex(gl.RG, gl.UNSIGNED_BYTE, gl.RG8);
+    aoTex2 = tex(gl.RG, gl.UNSIGNED_BYTE, gl.RG8);
+    // A REAL DEPTH BUFFER FOR THE PREPASS. The capsules resolve their own
+    // overlaps with gl_FragDepth; without somewhere to write it the nearest
+    // surface is whichever segment happened to be drawn last.
+    zRb = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, zRb);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+    zFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, zFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, zTex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, zRb);
+    const okZ = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    aoFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, aoTex, 0);
+    const okA = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    aoFbo2 = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo2);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, aoTex2, 0);
+    const okB = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    occW = w; occH = h;
+    if (!okZ || !okA || !okB) { occOk = false; return false; }
+    return true;
+}
+
+function drawTubeInstances() {
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, tubeCount);
+}
+
+/* The tube style's app entry. Same contract as renderApp: draws into the
+ * offscreen WebGL canvas and blits, returns false for anything it cannot do so
+ * the 2D path takes the frame instead.
+ *
+ * The instance buffer is rebuilt when the geometry or the COLOURS change - and
+ * for this style the colours are most of it, because they carry the screen-space
+ * occlusion viewer-mol.js computes and caches. That cache is rebuilt when a
+ * gesture settles, so during a drag the digest is unchanged and the frame is one
+ * uniform and two draw calls.
+ */
+function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
+    if (typeof document === 'undefined') return false;
+    if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
+    if (ctx.canvas !== renderer.canvas) return false;
+    const w = renderer.canvas.width;
+    const h = renderer.canvas.height;
+    if (!(w > 0 && h > 0)) return false;
+    try {
+        if (!appCv) {
+            appCv = document.createElement('canvas');
+            appCv.addEventListener('webglcontextlost', (e) => {
+                e.preventDefault();
+                appCv = null; appSig = null; tubeSig = null;
+                clearResident(); clearGL();
+            });
+        }
+        const fresh = !gl || appCv.width !== w || appCv.height !== h;
+        if (appCv.width !== w || appCv.height !== h) { appCv.width = w; appCv.height = h; }
+        if (!gl && !initGL(appCv)) return false;
+        if (fresh) tubeSig = null;
+
+        setRot(renderer.viewerState.rotation);
+        setOrtho(renderer.viewerState && renderer.viewerState.ortho);
+        setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
+        const dark = renderer.backgroundColor === '#000000';
+        setPaper(dark ? [0, 0, 0] : [255, 255, 255], dark ? 255 : 0);
+
+        // REBUILT EVERY FRAME, and that is not a compromise. The visible list,
+        // the depth order and the occlusion shading are all decided upstream per
+        // frame, so there is no view for which last frame's instances are still
+        // right. It is one Float32Array of twelve floats per drawn segment - 480 KB
+        // at ten thousand segments - against the thousands of arc and stroke
+        // calls it replaces.
+        if (!buildTube(renderer, S)) { tubeSig = null; return false; }
+        tubeSig = 'built';
+        if (!tubeCount) return false;
+        if (!drawTube(appCv, renderer,
+            { outlineWidthPx: S.outlineWidthPx || 0, hasOcclusion: !!S.renderShadows })) return false;
+        const prev = ctx.getTransform ? ctx.getTransform() : null;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(appCv, 0, 0);
+        if (prev) ctx.setTransform(prev.a, prev.b, prev.c, prev.d, prev.e, prev.f);
+        return true;
+    } catch (err) {
+        if (window.console) window.console.warn('tube GPU path unavailable:', err);
+        window.__gpuLastError = String((err && err.message) || err);
+        tubeSig = null;
+        clearGL();
+        appCv = null;
+        return false;
+    }
+}
+
+/* ------------------------------------------------- a context that draws nothing
+ * The capture runs the real renderer for its primitives, not for a picture, so
+ * it is handed a sink. Every 2D call is a no-op and the few that must return
+ * something return the least it will accept.
+ */
+function nullCtx(w, h) {
+    const noop = () => {};
+    return new Proxy({}, { get: (t, k) => {
+        if (k === 'canvas') return { width: w, height: h };
+        if (k === 'getSerializedSvg') return undefined;   // or it takes the SVG path
+        if (k === 'measureText') return () => ({ width: 10 });
+        if (k === 'createLinearGradient' || k === 'createRadialGradient') {
+            return () => ({ addColorStop: noop });
+        }
+        if (k === 'getImageData') return () => ({ data: new Uint8ClampedArray(4) });
+        return noop;
+    }, set: () => true });
+}
+
+/* ------------------------------------------------------------ module state
+ * Everything the camera needs is module state with a setter rather than a
+ * parameter on every call, because the port reads it in a dozen places and
+ * threading it through each would have made the extraction from the harness a
+ * rewrite instead of a move. The two consumers push their view in and the
+ * module never asks where it came from.
+ */
+function setStdDev(v) { sceneStdDev = v; }
+function setCapturing(on) { capturing = !!on; }
+function getResident() { return resident; }
+function clearResident() { resident = null; }
+function hasGL() { return !!gl; }
+function clearGL() { gl = null; }
+function getShow() { return { ribbon: showRibbon, sticks: showSticks }; }
+function isCapturing() { return capturing; }
+function setRot(m) { viewRot = m; }
+function getZoom() { return viewZoom; }
+function getEdgeCount() { return edgeCount; }
+// IS WEBGL2 THERE AT ALL? Asked once and remembered - and the probe context is
+// handed back immediately. A browser keeps only a dozen or so live WebGL
+// contexts and drops the oldest when it runs out, so a probe that leaks one per
+// call eventually costs a real renderer its context: the symptom was the GPU
+// checkbox quietly disappearing from the panel after a few reloads.
+let availCache = null;
+function available() {
+    if (availCache !== null) return availCache;
+    if (typeof document === 'undefined') { availCache = false; return false; }
+    try {
+        const c = document.createElement('canvas');
+        const g = c.getContext('webgl2');
+        if (g) {
+            const ext = g.getExtension('WEBGL_lose_context');
+            if (ext) ext.loseContext();
+        }
+        availCache = !!g;
+    } catch (e) { availCache = false; }
+    return availCache;
+}
+
+window.py2dmolCartoonGPU = {
+    // the app's entry, and the two calls that go with it
+    // a build marker, so "is the browser running what I just wrote" is one
+    // question with one answer rather than a guess
+    build: 'plate-plain-2',
+    render: renderApp, renderTube: renderTubeApp, invalidate, paramsFromRenderer,
+    available, initGL, hasGL, clearGL, setZoomExact,
+    setResidueMap, setSize, setPaletteSource, setDefaultParams, setOrtho,
+    setPixelRatio, setFocalLength, setPaper, recolour,
+    facesOf, makeResident, drawResident, drawInk, nullCtx,
+    getResident, clearResident, getEdgeCount,
+    setPalette, setResidueVisible, setAllResiduesVisible, setVisible, getShow,
+    setStdDev, setCapturing, isCapturing, currentZoom, setZoom, zoomBy, getZoom,
+    rotateView, setViewYawPitch, currentRot, setRot,
+    focalLength, orthoAmount, isPersp, viewVecAt, unproject,
+    noteDragVelocity, stopInertia, inertiaStep, startInertia,
+    // The measurement harness reaches in for the pieces that only make sense
+    // beside it - the CPU painter it compares against, the matrix helpers its
+    // fixtures are built with. Not part of the contract with the app.
+    __internals: {
+        PAPER, toneOf, residueOf, paintCPU, paintGPU,
+        matT, matMul, dotv, apply, rotYawPitch, rotationMatrixX, rotationMatrixY,
+    },
+};
+})();

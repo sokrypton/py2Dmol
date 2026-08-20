@@ -77,6 +77,32 @@ function initializeApp() {
     // Get viewer API reference
     viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
 
+    // USE GPU: the rendering backend, for both styles. Hidden entirely where
+    // WebGL2 is absent - a control that cannot do anything is worse than none -
+    // and the renderer falls back to the 2D path by itself for anything the GPU
+    // declines, so this is only ever a request.
+    (() => {
+        const cb = document.getElementById('useGpuCheckbox');
+        if (!cb) return;
+        const G = window.py2dmolCartoonGPU;
+        if (!G || !G.available()) {
+            const row = document.getElementById('useGpuRow');
+            if (row && row.remove) row.remove();
+            return;
+        }
+        const apply = () => {
+            const r = viewerApi && viewerApi.renderer;
+            if (!r) return;
+            r.cartoonGPU = cb.checked;
+            // the mesh was built from state that may have moved on while this
+            // was off, so ask for a fresh one rather than trusting it
+            G.invalidate();
+            r.render('useGpuCheckbox');
+        };
+        cb.addEventListener('change', apply);
+        apply();
+    })();
+
     // Setup MSA viewer callbacks (after viewerApi is initialized)
     if (window.MSA) {
         window.MSA.setCallbacks({
@@ -3013,14 +3039,21 @@ function applyPendingObjects() {
             if (width > 0 && height > 0) {
                 canvas.style.width = width + 'px';
                 canvas.style.height = height + 'px';
-                // SAME DPR POLICY as viewer-mol.js's canvas setup: capped at
-                // 1.5x for performance, overridable via window.canvasDPR.
-                // Uncapped devicePixelRatio here silently overrode that cap -
-                // on a 2x display a 600px canvas became a 1200x1200 backing
-                // store, 1.78x the pixels the rest of the app sizes for, and
-                // paint is the dominant per-frame cost.
+                // SAME DPR POLICY as viewer-mol.js's canvas setup, and the two
+                // must stay in step or the app sizes for one resolution and the
+                // renderer draws at another.
+                //
+                // THE 1.5x CAP IS GONE. It bought performance by drawing fewer
+                // pixels than the display has - on a 2x screen a 598px canvas
+                // got an 897px backing store and the result was resampled up,
+                // which is exactly the softness it looks like. That trade was
+                // worth making when every frame was a full canvas repaint; it
+                // is the wrong way round now that the GPU path draws a frame in
+                // a couple of milliseconds and paint is not the bottleneck.
+                // window.canvasDPR still overrides, so window.canvasDPR = 1.5
+                // puts the old behaviour back without a rebuild.
                 const dpr = window.canvasDPR !== undefined
-                    ? window.canvasDPR : Math.min(window.devicePixelRatio || 1, 1.5);
+                    ? window.canvasDPR : (window.devicePixelRatio || 1);
                 canvas.width = width * dpr;
                 canvas.height = height * dpr;
                 const ctx = canvas.getContext('2d');
@@ -6388,6 +6421,7 @@ function saveViewerState() {
             thickness: renderer.cartoonThickness,
             detail: renderer.cartoonDetail,
             smooth: renderer.cartoonSmooth === true,
+            cartoon_gpu: renderer.cartoonGPU === true,
             arrows: renderer.cartoonArrows !== false,
             sheet_flat: renderer.cartoonSheetFlat,
             pencil: renderer.cartoonPencil,
@@ -6886,6 +6920,7 @@ async function loadViewerState(stateData) {
             restoreCartoon('outline_tint', 'cartoonOutlineTint', 'outlineTintSlider');
             restoreCartoon('shade', 'cartoonShade', 'shadeSlider');
             restoreCartoon('smooth', 'cartoonSmooth', 'smoothCheckbox', 'bool');
+            restoreCartoon('cartoon_gpu', 'cartoonGPU', 'useGpuCheckbox', 'bool');
             restoreCartoon('arrows', 'cartoonArrows', 'arrowsCheckbox', 'bool');
 
             // Restore color mode
@@ -6924,14 +6959,18 @@ async function loadViewerState(stateData) {
                 }
             }
 
-            // Restore line width
+            // Restore line width. NO SYNTHETIC EVENT - the same shape as
+            // restoreCartoon() above, and for a reason that bit: the slider's
+            // handler treats an 'input' as the user taking the control over
+            // (_lineWidthUserSet), after which a preset switch stops setting
+            // width. Dispatching one here closed that latch on every load, so
+            // richardson and 3d - 2.0 and 3.0 - both kept whatever width was
+            // already there. Setting the property and the element directly is
+            // what every other restored control does.
             if (typeof vs.line_width === 'number') {
                 renderer.lineWidth = vs.line_width;
                 const lineWidthSlider = document.getElementById('lineWidthSlider');
-                if (lineWidthSlider) {
-                    lineWidthSlider.value = vs.line_width;
-                    lineWidthSlider.dispatchEvent(new Event('input'));
-                }
+                if (lineWidthSlider) lineWidthSlider.value = vs.line_width;
             }
 
             // Restore shadow

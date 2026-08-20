@@ -53,7 +53,14 @@ DEFAULT_CONFIG = {
         "outline": "full",
         "width": 3.0,
         "ortho": 0.5,
-        "detect_cyclic": True
+        "detect_cyclic": True,
+        # Draw the cartoon on the GPU. The geometry is built once by the
+        # ordinary cartoon renderer and then re-painted from any angle, so
+        # turning and zooming cost one draw call instead of a full repaint.
+        # Falls back to the 2D path wherever WebGL2 is unavailable, and exports
+        # always go through it - so this changes how fast the picture appears,
+        # not what leaves the viewer in a file.
+        "gpu": False
     },
     "color": {
         "mode": "auto",
@@ -99,6 +106,7 @@ _RENDER_STATE_KEYS = (
     ("shade", "shade"),
     ("shadow", "shadow_enabled"),
     ("ortho", "ortho_slider_value"),
+    ("gpu", "cartoon_gpu"),
 )
 
 
@@ -131,6 +139,7 @@ def _nest_config(**flat):
     if "outline" in flat: config["rendering"]["outline"] = flat["outline"]
     if "width" in flat: config["rendering"]["width"] = flat["width"]
     if "ortho" in flat: config["rendering"]["ortho"] = flat["ortho"]
+    if flat.get("gpu") is not None: config["rendering"]["gpu"] = bool(flat["gpu"])
     if "detect_cyclic" in flat: config["rendering"]["detect_cyclic"] = flat["detect_cyclic"]
     # None = leave the key out so the renderer's default (plates on) applies
     if flat.get("base_plates") is not None:
@@ -366,7 +375,7 @@ class view:
     def __init__(self, size=(400,400), controls=True, box=True,
         color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
-        outline=None, width=None, ortho=0.5, bg=None, rotate=False, autoplay=False,
+        outline=None, width=None, ortho=0.5, gpu=False, bg=None, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, detect_cyclic=True,
         persistence=True, id=None, cutoffs=None,
     ):
@@ -415,6 +424,13 @@ class view:
                 (solid shaded geometry: thickness 1.0, no outline, smooth
                 shading, flat sheets, on a black page). Implies
                 style="cartoon". An explicit argument always wins over it.
+            gpu (bool): Draw the cartoon on the GPU (WebGL2). The picture is
+                the same - the geometry is built once by the ordinary cartoon
+                renderer and then re-painted from any angle - but turning and
+                zooming cost one draw call instead of a full repaint, which is
+                what makes a large structure usable. Silently falls back to the
+                2D renderer where WebGL2 is unavailable, and PNG/SVG export
+                always goes through the 2D path. Default False.
             style (str): Render style - "tube" (smooth backbone trace) or
                 "cartoon" (secondary-structure cartoon: helix/strand ribbons,
                 loop tubes). Default "tube". These are the only two, because
@@ -586,6 +602,7 @@ class view:
             outline=outline,
             width=width,
             ortho=ortho,
+            gpu=gpu,
             bg=bg,
             rotate=rotate,
             autoplay=autoplay,
@@ -1226,6 +1243,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             with importlib.resources.open_text(py2dmol_resources, 'viewer-cartoon.min.js') as f:
                 cartoon_js_content = f.read()
             container_html = f'<script>{cartoon_js_content}</script>\n' + container_html
+
+            # The WebGL2 cartoon path. Always shipped, never active unless
+            # something asks for it: it registers window.py2dmolCartoonGPU and
+            # does nothing else until renderer.cartoonGPU is set. Loading it
+            # unconditionally is what lets the Style panel offer the switch, and
+            # what lets it fall straight back to the 2D renderer when a browser
+            # has no WebGL2.
+            with importlib.resources.open_text(py2dmol_resources, 'viewer-cartoon-gpu.min.js') as f:
+                cartoon_gpu_js = f.read()
+            container_html = f'<script>{cartoon_gpu_js}</script>\n' + container_html
 
             if self.config["pae"]["enabled"]:
                 with importlib.resources.open_text(py2dmol_resources, 'viewer-pae.min.js') as f:

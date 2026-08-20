@@ -1,0 +1,500 @@
+<!doctype html>
+<!--
+  GPU depth-buffer prototype, step one.
+
+    cd <repo root> && python3 -m http.server 8080
+    open http://localhost:8080/tests/gpu3d_lab.html
+
+  WHY A SERVER: the script tags load from disk fine, but a file:// page is an
+  opaque origin, so fetching the .cif next to it is a cross-origin request the
+  browser refuses. Nothing here is remote - it is the security model. Opened
+  from disk the page says so and offers a file chooser instead, which works
+  because picking a file grants access explicitly. Every path is relative, so
+  any port works as long as the server root is the repo.
+
+  THE QUESTION THIS ANSWERS. The cartoon renderer sorts whole bodies by one
+  depth key and paints back to front, which is why a side chain can land on top
+  of a ribbon that is genuinely in front of it (PAINT_ORDER.md - six measured
+  attempts, none of which fixed both error directions). A real 3D pipeline
+  decides that per pixel and cannot get it wrong. Before rewriting anything, the
+  useful thing to know is how much of the drawing actually changes.
+
+  SO THIS CHANGES EXACTLY ONE VARIABLE. Both panels below draw the SAME faces,
+  taken from the renderer's own primitive list, with the SAME tone function:
+
+    left    painter's algorithm - the faces in the order the renderer sorted
+            them, no depth test, which is what ships today
+    right   WebGL2 - the same faces, same colours, with a depth buffer
+
+  Anything that differs between them is the ordering and nothing else. The ink,
+  the paper grain, the shading model and the geometry are all held fixed by
+  construction: the faces come from one render of the real thing.
+
+  What is NOT drawn here: tubes, base plates, dots and the ink pass. Those do
+  not come through as quads, and step one is about the fills. The counter at the
+  top says how many faces were captured and how many were skipped, so the number
+  is never quietly partial.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>py2Dmol - GPU depth prototype</title>
+<style>
+  body { font: 13px/1.5 -apple-system, system-ui, sans-serif; margin: 16px; color: #222; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .panel { border: 1px solid #ddd; border-radius: 6px; padding: 8px; }
+  .panel h2 { font-size: 12px; margin: 0 0 6px; font-weight: 600; color: #555; }
+  canvas { display: block; background: #fff; }
+  #stats { margin: 10px 0; font-variant-numeric: tabular-nums; }
+  #stats b { font-weight: 600; }
+  .controls { margin: 8px 0 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button, select { font: inherit; padding: 3px 8px; }
+  .note { color: #666; max-width: 70ch; }
+  #host { position: absolute; left: -10000px; top: 0; }
+</style>
+</head>
+<body>
+<h1>GPU depth prototype — same faces, painter's algorithm vs a depth buffer</h1>
+<p class="note">
+  Both panels draw the same captured faces with the same tone function. The only
+  difference is how depth is resolved. Differing pixels are the ordering error.
+</p>
+
+<div class="controls">
+  <label>structure
+    <select id="pdb">
+      <option value="fixture:three-way">a three-way junction</option>
+      <option value="fixture:benzene">one ring (benzene)</option>
+      <option value="fixture:tetra">a tetrahedral centre</option>
+      <option value="../1UBQ.cif">1UBQ</option>
+      <option value="../1TIM.cif">1TIM</option>
+      <option value="../1BBH.cif">1BBH</option>
+      <option value="out/pdb/9FOG.cif">9FOG</option>
+    </select>
+  </label>
+  <label>preset
+    <select id="preset">
+      <option value="richardson">richardson</option>
+      <option value="3d">3d</option>
+      <option value="cartoon">cartoon</option>
+    </select>
+  </label>
+  <label>yaw <input id="yaw" type="range" min="0" max="350" step="10" value="210"></label>
+  <span id="yawv">210°</span>
+  <label><input id="sc" type="checkbox" checked> side chains</label>
+  <label title="colour side-chain atoms by element, as the app does"><input id="elements" type="checkbox"> elements</label>
+  <label title="0 = black ink, 1 = the element's colour at 0.7">ink tint
+    <input id="outlineTint" type="number" value="0" min="0" max="1" step="0.05" style="width:52px"></label>
+  <label>colour <select id="colour">
+      <option value="rainbow">rainbow</option><option value="chain">by chain</option>
+      <option value="mono">one colour</option><option value="stripe">stripes</option>
+      <option value="depth">gradient</option>
+    </select></label>
+  <label title="Feed the shader the renderer's own dot products instead of recovering them from the projected mesh. Only valid at the capture view - it is a proof that the shading port is exact, not a way to run.">
+    <input id="exact" type="checkbox"> exact inputs</label>
+  <label title="All one colour, so the only thing left to disagree about is the lighting"><input id="white" type="checkbox"> white</label>
+  <label title="Drives BOTH sides: off means the renderer takes its flat cel path and the shader quantises and shades per piece, so the two are comparable. On means gradients on both.">
+    <input id="smooth" type="checkbox"> smooth</label>
+  <label title="per-station frames give a smooth gradient; the piece mean gives one tone per face">
+    frame <select id="frame">
+      <option value="welded">weld vertex normals (smooth only)</option>
+      <option value="station">follow smooth</option>
+      <option value="force-station">force per station</option>
+      <option value="piece">force piece mean</option>
+    </select></label>
+  <label title="GPU hidden-line outline: silhouette and crease edges drawn as geometry, visibility decided per PIXEL by the depth buffer rather than per segment by a query">
+    <input id="ink3d" type="checkbox"> outline</label>
+  <!-- PENCIL OFF, on BOTH sides. The grain is now ported (both fragment shaders
+       multiply the renderer's own paper tile), so the two do agree here - but
+       it is a per-pixel texture over every painted pixel, and letting it into
+       the diff means every number this page reports is partly a measurement of
+       noise alignment rather than of shading. The benchmark stays grainless;
+       gpu3d_view.html is where the pencil is looked at. -->
+  <input id="pencil" type="hidden" value="0">
+  <label>ink w <input id="inkw" type="number" value="1.6" min="0.2" max="6" step="0.2" style="width:52px"></label>
+  <label title="Depth pushed toward the eye, in units of the [-1,1] clip range. Too little and lines stipple where they touch their own surface; too much and hidden lines leak through.">
+    bias <input id="inkbias" type="number" value="0.002" min="0" max="0.05" step="0.001" style="width:62px"></label>
+  <label title="Force-draw an edge whose two faces disagree by more than this angle. 180 = off, which is correct: the reference inks the silhouette and nothing else, so an interior seam between connecting polygons is never drawn. Lower it only to see what that rule costs.">
+    crease <input id="inkcrease" type="number" value="180" min="0" max="180" step="5" style="width:52px"></label>
+  <label>show
+    <select id="view">
+      <option value="resident">the GPU render (drag to turn)</option>
+      <option value="both">ordering experiment (four panels)</option>
+    </select>
+  </label>
+  <button id="sweep">sweep 36 views</button>
+  <label title="Works when the page is opened straight from disk, where fetch cannot reach the .cif">
+    or open a file <input id="file" type="file" accept=".cif,.pdb"></label>
+</div>
+
+<div id="stats">loading…</div>
+
+<div class="row">
+  <div class="panel"><h2>the renderer itself (reference)</h2><canvas id="ref" width="600" height="600"></canvas></div>
+  <div class="panel"><h2>painter's algorithm, replayed (stand-in tone, both sides)</h2><canvas id="cpu" width="600" height="600"></canvas></div>
+  <div class="panel"><h2>WebGL2 depth buffer</h2><canvas id="gpu" width="600" height="600"></canvas></div>
+  <!-- in the four-panel mode this canvas shows the ORDERING experiment, which
+       shares one stand-in tone with the panel beside it on purpose. The ported
+       shading lives in the resident path. -->
+  <div class="panel"><h2>difference</h2><canvas id="diff" width="600" height="600"></canvas></div>
+</div>
+
+<div id="host"></div>
+
+<script src="../web/utils.js"></script>
+<script src="../py2Dmol/resources/viewer-cartoon.js"></script>
+<script src="../py2Dmol/resources/viewer-mol.js"></script>
+<script src="../py2Dmol/resources/viewer-cartoon-gpu.js"></script>
+<script src="gpu3d_core.js"></script>
+<script>
+/* ---------------------------------------------------------------- capture */
+
+// One tone for a face, used by BOTH panels so the comparison isolates depth.
+// Not the renderer's shade() - that is per-face state the prim list does not
+// carry - but the same SHAPE of thing: a lambert term off the face normal plus
+// a depth fade toward paper, which is enough to read the form.
+function fail(msg, detail) {
+    document.getElementById('stats').innerHTML =
+        `<span style="color:#b00">${msg}</span>`
+        + (detail ? `<br><code style="color:#666">${detail}</code>` : '');
+}
+
+async function boot() {
+    if (location.protocol === 'file:') {
+        // WHY A SERVER. The <script> tags above load fine from disk, but a
+        // file:// page is an opaque origin, so fetching the .cif beside it is a
+        // cross-origin request with no CORS headers and the browser refuses it.
+        // Nothing here is actually remote - it is the security model, not the
+        // code. Picking the file by hand grants access explicitly, so the
+        // chooser works where fetch does not.
+        fail('Opened from disk: pick a structure with the file chooser above.',
+            'Or serve it - python3 -m http.server 8080 from the repo root, then '
+            + 'http://localhost:8080/tests/gpu3d_lab.html - and the dropdown works.');
+        return;
+    }
+    if (!window.py2dmolCartoon || !window.parseCIF) {
+        fail('The viewer scripts did not load.',
+            'Serve from the REPO ROOT so ../web/utils.js and '
+            + '../py2Dmol/resources/*.js resolve.');
+        return;
+    }
+    if (!GPU.hasGL()) { fail('WebGL2 is not available in this browser.'); return; }
+    try {
+        await load(document.getElementById('pdb').value);
+    } catch (e) {
+        fail('Could not build the scene: ' + e.message,
+            'If this is a fetch error, the structure file is not where the '
+            + 'dropdown expects it - serve from the repo root.');
+        throw e;
+    }
+}
+
+// THE SMALL CASES, from tests/make_stick_test.py. A three-way junction on a
+// whole protein is impossible to judge; one ring is four bonds and six
+// junctions and every pixel of it can be looked at. Same coordinates the stick
+// test page uses, so anything found here is findable there too.
+const FIXTURES = {
+    'three-way': {
+        pts: [[0, 0, 0], [1.4, 0, 0], [-0.7, 1.21, 0], [-0.7, -1.21, 0]],
+        bonds: [[0, 1], [0, 2], [0, 3]],
+    },
+    benzene: (() => {
+        const n = 6, r = 1.4;
+        const pts = [];
+        for (let i = 0; i < n; i++) {
+            pts.push([r * Math.cos(2 * Math.PI * i / n), r * Math.sin(2 * Math.PI * i / n), 0]);
+        }
+        return { pts, bonds: pts.map((_, i) => [i, (i + 1) % n]) };
+    })(),
+    tetra: (() => {
+        const D = 0.89;
+        return {
+            pts: [[0, 0, 0], [D, D, D], [D, -D, -D], [-D, D, -D], [-D, -D, D]],
+            bonds: [[0, 1], [0, 2], [0, 3], [0, 4]],
+        };
+    })(),
+};
+
+function refresh() {
+    if (document.getElementById('view').value === 'resident') return goResident();
+    return draw();
+}
+
+function draw() {
+    if (document.getElementById('view').value === 'resident') return goResident();
+    const t0 = performance.now();
+    const { prims, polys } = capture();
+    const tCap = performance.now() - t0;
+    const { faces, skipped } = facesOf(prims);
+    const matched = colourFaces(faces, polys, false);
+    let zMin = Infinity, zMax = -Infinity;
+    for (const f of faces) for (const p of f.q) { if (p[2] < zMin) zMin = p[2]; if (p[2] > zMax) zMax = p[2]; }
+    const cpu = document.getElementById('cpu');
+    const gpu = document.getElementById('gpu');
+    // ONLY TWO MODES, because there were three and one of them lied. A
+    // "GPU only" view used paintGPU - the ordering experiment's program, with
+    // its deliberately matched stand-in tone - so none of the shading work
+    // appeared in it while its label implied the opposite. The GPU render is
+    // the resident path and nothing else; `both` stays as the ordering
+    // experiment and says so.
+    paintCPU(cpu, faces, zMin, zMax);
+    // control: same faces, same order, no depth test - rasterisation only
+    paintGPU(gpu, faces, zMin, zMax, false);
+    const raster = diffPanels(cpu, gpu, document.getElementById('diff'));
+    const flat = readGL(gpu);
+    // the real thing
+    paintGPU(gpu, faces, zMin, zMax, true);
+    const total = diffPanels(cpu, gpu, document.getElementById('diff'));
+    const depthOnly = diffArrays(flat, readGL(gpu));
+    const cpuPx = cpu.getContext('2d').getImageData(0, 0, W, H).data;
+    const split = edgeSplit(cpuPx, cpuPx, flat, W, H);
+    document.getElementById('stats').innerHTML =
+        `<b>${prims.length}</b> primitives &rarr; <b>${faces.length}</b> faces, `
+        + `<b>${skipped}</b> skipped &nbsp;|&nbsp; `
+        + `rasterisation alone <b>${raster}</b> px &nbsp;·&nbsp; `
+        + `ordering alone <b>${depthOnly}</b> px `
+        + `(${(100 * depthOnly / (W * H)).toFixed(2)}% of canvas) &nbsp;·&nbsp; `
+        + `both <b>${total}</b> px<br>`
+        + `rasterisation split: <b>${split.onEdge}</b> on a colour boundary, `
+        + `<b>${split.inside}</b> inside a face<br>`
+        + `redraw <b>${(performance.now() - t0).toFixed(0)} ms</b> `
+        + `(${tCap.toFixed(0)} ms of it the 2D renderer) &nbsp;·&nbsp; `
+        + `${polys.length} filled polygons recorded, pairing to `
+        + `<b>${matched}</b> of ${faces.length} faces `
+        + `(${(100 * matched / faces.length).toFixed(0)}% - the rest are merged `
+        + `by pathStrip, see the note above colourFaces)`;
+    return { raster, depthOnly, total, onEdge: split.onEdge, inside: split.inside };
+}
+
+// GPU-ONLY VIEW. The original renderer cannot be switched off here - it is what
+// BUILDS the faces, and step one is deliberately downstream of it so the two
+// panels are comparable. What this does is stop drawing the comparison and give
+// the GPU canvas the whole page and the mouse, which is what you want in order
+// to judge the look rather than the diff.
+function applyView() {
+    const mode = document.getElementById('view').value;
+    const panels = [...document.querySelectorAll('.panel')];
+    panels.forEach((p) => {
+        const isGpu = !!p.querySelector('#gpu');
+        const isRef = !!p.querySelector('#ref');
+        // resident mode shows the reference beside it - the whole question is
+        // how close the two look, and a number alone does not answer that
+        const keep = mode === 'both' || isGpu || (mode === 'resident' && isRef);
+        p.style.display = keep ? '' : 'none';
+    });
+    const only = mode !== 'both';
+    const gpu = document.getElementById('gpu');
+    const size = only ? Math.min(560, Math.floor(window.innerHeight - 220)) : 600;
+    gpu.style.width = size + 'px';
+    gpu.style.height = size + 'px';
+    const ref = document.getElementById('ref');
+    if (mode === 'resident') { ref.style.width = size + 'px'; ref.style.height = size + 'px'; }
+    else { ref.style.width = ''; ref.style.height = ''; }
+    refresh();
+}
+document.getElementById('view').addEventListener('change', applyView);
+window.addEventListener('resize', () => {
+    if (document.getElementById('view').value !== 'both') applyView();
+});
+
+// Build the resident mesh from one capture, then never call the 2D renderer
+// again for this structure and preset. This is the case PERF_NOTES measures at
+// 26-45x: the mesh is a function of the coordinates, not the camera.
+let building = false;
+function goResident() {
+    if (building) return;
+    building = true;
+    const t0 = performance.now();
+    const faces = buildResident();
+    const tCap = performance.now() - t0;
+    const tBuild = 0;
+    const gpu = document.getElementById('gpu');
+    const t2 = performance.now();
+    drawResident(gpu);
+    const tDraw = performance.now() - t2;
+    // HOW CLOSE IS IT? The reference is the real renderer at the same view,
+    // painted for real. Only fills are compared - the reference has ink and the
+    // shader has none - so pixels where the reference is dark ink are excluded.
+    const ref = document.getElementById('ref');
+    const rr = mkRenderer(scene);
+    rr.cartoonPencil = 0;
+    // THE REFERENCE INKS WHEN THE SHADER DOES. With the outline on only one
+    // side, the diff is dominated by the presence or absence of the lines
+    // themselves and says nothing about whether they are in the same PLACE,
+    // which is the only question the outline pass exists to answer. Pencil
+    // stays off either way - see the hidden `pencil` input above: it is now
+    // ported, but it is a per-pixel texture over every painted pixel and
+    // letting it in makes every number here partly about noise alignment.
+    const inkBoth = document.getElementById('ink3d').checked;
+    rr.outlineMode = inkBoth ? 'full' : 'none';
+    if (inkBoth) {
+        // The reference keeps the width the PRESET gives it. Driving both sides
+        // from the `ink w` box made them shrink together, so a sweep of it just
+        // reported "less ink disagrees less" - monotonic, no minimum, and no
+        // information about whether the lines land in the same PLACE.
+        // THE SAME TINT ON BOTH SIDES. This was pinned at 0 back when the
+        // shader could only draw black; leaving it pinned once the shader
+        // learned the Ink control would compare a tinted outline against a
+        // black one and report the difference as error.
+        rr.cartoonOutlineTint = styleParams().outlineTint || 0;
+        window.__refInkW = rr.relativeOutlineWidth;
+    }
+    const rc = ref.getContext('2d');
+    rc.setTransform(1, 0, 0, 1, 0, 0);
+    rc.fillStyle = '#fff';
+    rc.fillRect(0, 0, W, H);
+    window.py2dmolCartoon.render(rr, rc, W, H, segColors(scene));
+    const a = rc.getImageData(0, 0, W, H).data;
+    const b = readGL(gpu);
+    let differ = 0, painted = 0, sum = 0;
+    for (let i = 0; i < a.length; i += 4) {
+        const litA = !(a[i] > 245 && a[i + 1] > 245 && a[i + 2] > 245);
+        const litB = !(b[i] > 245 && b[i + 1] > 245 && b[i + 2] > 245);
+        if (!litA && !litB) continue;
+        painted++;
+        const d = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1])
+            + Math.abs(a[i + 2] - b[i + 2]);
+        sum += d;
+        if (d > 24) differ++;
+    }
+    document.getElementById('stats').innerHTML =
+        `mesh resident: <b>${faces.length}</b> faces uploaded once `
+        + `(2D renderer ${tCap.toFixed(0)} ms + unproject ${tBuild.toFixed(0)} ms, `
+        + `paid ONCE) &nbsp;·&nbsp; first draw <b>${tDraw.toFixed(1)} ms</b><br>`
+        + `against the real renderer (${inkBoth ? 'BOTH inked' : 'outline off, fills only'}): `
+        + `<b>${(100 * differ / Math.max(1, painted)).toFixed(1)}%</b> of painted `
+        + `pixels differ, mean channel error `
+        + `<b>${(sum / Math.max(1, painted) / 3).toFixed(1)}</b>/255`;
+    building = false;
+}
+
+// drag to turn it
+(() => {
+    const gpu = document.getElementById('gpu');
+    let last = null;
+    let lastT = 0;
+    gpu.style.cursor = 'grab';
+    gpu.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        zoomBy(Math.exp(-e.deltaY * 0.0015));
+        if (document.getElementById('view').value === 'resident') drawResident(gpu);
+        else draw();
+    }, { passive: false });
+    gpu.addEventListener('mousedown', (e) => {
+        stopInertia();
+        last = [e.clientX, e.clientY]; lastT = performance.now();
+        gpu.style.cursor = 'grabbing';
+    });
+    window.addEventListener('mouseup', () => {
+        if (!last) return;
+        last = null; gpu.style.cursor = 'grab';
+        if (performance.now() - lastT > 60) stopInertia();
+        startInertia(() => {
+            const a = performance.now();
+            if (document.getElementById('view').value === 'resident') drawResident(gpu);
+            else draw();
+            return performance.now() - a;
+        });
+    });
+    window.addEventListener('mousemove', (e) => {
+        if (!last) return;
+        // Free rotation, as in the app. The yaw box is no longer where the view
+        // lives - it is a way to STEP to a named angle, which is what the
+        // measurements in GPU3D_NOTES were taken through - so a drag leaves it
+        // showing whatever it last stepped to.
+        const now = performance.now();
+        rotateView(e.clientX - last[0], e.clientY - last[1]);
+        noteDragVelocity(e.clientX - last[0], e.clientY - last[1], now - lastT);
+        lastT = now;
+        last = [e.clientX, e.clientY];
+        if (document.getElementById('view').value === 'resident') {
+            const a = performance.now();
+            drawResident(gpu);
+            document.getElementById('stats').innerHTML =
+                `mesh resident &nbsp;·&nbsp; drag frame <b>`
+                + `${(performance.now() - a).toFixed(2)} ms</b> on the GPU, `
+                + `nothing on the CPU`;
+        } else draw();
+    });
+})();
+
+document.getElementById('yaw').addEventListener('input', (e) => {
+    document.getElementById('yawv').textContent = e.target.value + '\u00b0';
+    setViewYawPitch(+e.target.value, pitchDeg);
+    refresh();
+});
+document.getElementById('exact').addEventListener('change', () => { GPU.clearResident(); refresh(); });
+document.getElementById('frame').addEventListener('change', () => { GPU.clearResident(); refresh(); });
+for (const id of ['ink3d', 'inkw', 'inkbias']) {
+    document.getElementById(id).addEventListener('input', () => applyView());
+}
+// crease is baked into the buffer at build time, so it needs a rebuild
+document.getElementById('inkcrease').addEventListener('input', () => {
+    GPU.clearResident(); applyView();
+});
+document.getElementById('smooth').addEventListener('change',
+    () => { GPU.clearResident(); load(document.getElementById('pdb').value); });
+document.getElementById('white').addEventListener('change',
+    () => { GPU.clearResident(); load(document.getElementById('pdb').value); });
+document.getElementById('preset').addEventListener('change', () => {
+    GPU.clearResident();              // the preset changes the mesh, not just the view
+    refresh();
+});
+// IN THE LAB, `sc` CHANGES THE SCENE, not just what is drawn. The viewer makes
+// it a visibility uniform, which is right there and wrong here: hiding side
+// chains on the GPU while the reference still paints them does not measure
+// anything, it just reports the side chains as error. Both sides have to agree
+// on what exists, so this rebuilds.
+document.getElementById('sc').addEventListener('change', () => {
+    window.__scGeometry = document.getElementById('sc').checked;
+    setVisible({ sticks: true, ribbon: true });
+    load(document.getElementById('pdb').value);
+});
+window.__scGeometry = document.getElementById('sc').checked;
+// the lab rebuilds, because its reference panel has to be repainted anyway
+document.getElementById('colour').addEventListener('change', () => { GPU.clearResident(); refresh(); });
+document.getElementById('elements').addEventListener('change', () => { GPU.clearResident(); refresh(); });
+// the edge table is skipped when the outline is off, so switching it on builds
+document.getElementById('ink3d').addEventListener('change', () => { GPU.clearResident(); refresh(); });
+document.getElementById('pdb').addEventListener('change', (e) => load(e.target.value));
+document.getElementById('file').addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+        try {
+            const parsed = /\.cif$/i.test(f.name)
+                ? window.parseCIF(rd.result) : window.parsePDB(rd.result);
+            const models = Array.isArray(parsed) ? parsed : (parsed.models || parsed.frames);
+            const first = Array.isArray(models[0]) ? models[0] : models;
+            scene = buildScene(window.convertParsedToFrameData(first));
+            GPU.clearResident();
+            refresh();
+        } catch (err) { fail('Could not read ' + f.name + ': ' + err.message); }
+    };
+    rd.readAsText(f);
+});
+document.getElementById('sweep').addEventListener('click', () => {
+    const rows = [];
+    for (let d = 0; d < 360; d += 10) {
+        document.getElementById('yaw').value = d;
+        setViewYawPitch(d, pitchDeg);
+        rows.push(Object.assign({ yaw: d }, draw()));
+    }
+    window.__sweep = rows;
+    const mean = (k) => rows.reduce((s, r) => s + r[k], 0) / rows.length;
+    const worst = rows.reduce((m, r) => (r.depthOnly > m.depthOnly ? r : m));
+    document.getElementById('stats').innerHTML +=
+        `<br><b>sweep ${rows.length} views:</b> ordering alone, mean `
+        + `${mean('depthOnly').toFixed(0)} px `
+        + `(${(100 * mean('depthOnly') / (W * H)).toFixed(2)}%), worst `
+        + `${worst.depthOnly} at yaw ${worst.yaw}\u00b0 &nbsp;·&nbsp; `
+        + `rasterisation alone, mean ${mean('raster').toFixed(0)} px`;
+});
+
+initGL(document.getElementById('gpu'));
+boot();
+</script>
+</body>
+</html>
