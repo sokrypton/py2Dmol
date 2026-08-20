@@ -67,6 +67,21 @@ registered under a name that cannot fire — both handlers had been sitting
 disabled by an `__DISABLED` suffix on their event name for long enough that the
 live copies drifted.
 
+`tests/gpu_bench.py` reports **per-pass GPU time for the tube path** on the real
+GPU, from the shell:
+
+    python3 tests/gpu_bench.py 4UG0.cif
+    python3 tests/gpu_bench.py 3J3Q.cif --frames 16 --png /tmp/capsid.png
+
+Use it for any change to `drawTube`. Timing `render()` with `performance.now()`
+does NOT work - a draw call returns when it is queued, and the submit read
+0.28 ms for a frame the GPU spent 13.6 ms on. The numbers come from
+`EXT_disjoint_timer_query_webgl2`, which the renderer emits whenever
+`window.__gpuTimers` is set, into `window.__gpuTimes`. The script prints which
+renderer produced them: a software rasteriser has the opposite vertex/fragment
+balance and its timings do not transfer. See the tube section of
+`GPU3D_NOTES.md` for the current baseline.
+
 `copy_selection.js` covers what **Copy** carries onto the new object. A frame
 is extracted position by position and has its own coverage; this is the
 per-object display state beside it — which positions show a side chain or a

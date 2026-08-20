@@ -1048,3 +1048,101 @@ Both culls measure identically (1UBQ 15.8%, 1BBH 24.0 against 24.1). The pixel
 diff cannot see a seam: swapping which of two nearly-equal tones covers a patch
 barely moves a pixel count. Only the eye and a targeted probe found it.
 
+
+## The tube path at capsid scale: 149 ms to 26 ms
+
+Measured on an M2 (ANGLE Metal), 598 px canvas, steady state during a drag,
+per-pass GPU time from `EXT_disjoint_timer_query_webgl2`. 3J3Q is the HIV
+capsid, 311,880 drawn segments; 4UG0 is the ribosome, 17,448.
+
+| pass | 3J3Q before | 3J3Q after | 4UG0 before | 4UG0 after |
+| --- | --- | --- | --- | --- |
+| depth prepass | 15.6 | 11.7 | 1.39 | 1.35 |
+| occlusion | 5.5 | 1.0 | 0.64 | 0.58 |
+| resolve | 0.4 | 0.2 | 0.20 | 0.28 |
+| outline | 63.5 | — | 5.12 | — |
+| fill / draw | 64.0 | 12.6 | 6.25 | 1.27 |
+| copy to canvas | — | 0.4 | — | 0.17 |
+| **total** | **149** | **25.9** | **13.6** | **3.65** |
+
+**MEASURE THE GPU, NOT THE SUBMIT.** `performance.now()` around `render()`
+reported 0.28 ms for the 13.6 ms frame above, and 0.06 ms for the 149 ms one -
+a draw call returns when it is queued. Every number here comes from a
+`TIME_ELAPSED_EXT` query. `window.__gpuTimers = true` turns them on and
+`window.__gpuTimes` collects them, per pass, in milliseconds. Only one query
+may be active at a time, so the passes are timed in sequence and there is no
+`total` query - it is the sum. The results land a few frames after the pass.
+
+Three changes, and the order matters: each one only pays because of the one
+before it.
+
+**1. One pass instead of two.** The outline pass drew every instance at a grown
+radius and discarded each fragment inside the tube; the fill pass then drew
+them all again. The two regions are disjoint (`dist > vRfill` is the skirt), so
+a fragment can decide for itself, and the depth each writes carries the
+ordering that two passes used to. 3J3Q: 127.5 ms becomes 57.8 ms.
+
+**2. Early-Z, bought with a conservative depth.** Writing `gl_FragDepth`
+switches off early depth rejection everywhere, so at a capsid's depth
+complexity every layer of every capsule shaded in full. The quad now carries
+the capsule's nearest possible depth - the nearer end's axis plus a radius -
+and the fragment depth is declared `depth_greater` under
+`EXT_conservative_depth`, which lets the hardware reject against the polygon
+first. Where the extension is missing the shader is the ordinary one and the
+quad depth is simply true and unused. 3J3Q draw: 57.8 -> 30.8 ms, and **not one
+pixel changes**, which is the check that the bound really is conservative.
+
+**3. The draw reuses the prepass's depth buffer.** A renderbuffer can be
+attached to two framebuffers. The prepass already leaves a complete depth
+buffer behind, so the draw renders into a colour target sharing that attachment
+and tests LEQUAL against it - and now rejects *every* hidden capsule, not only
+the ones drawn after their occluder. 3J3Q draw: 30.8 -> 12.6 ms.
+
+### Three things step 3 cost, each found by looking at the picture
+
+- **Depth writes have to stay ON.** A skirt sits in front of the surface the
+  prepass recorded there and must leave that depth behind, or the fill it is
+  supposed to outline passes LEQUAL straight over the top of it. With
+  `depthMask(false)` the frame came back with most of its outlines missing.
+  Writing costs nothing: the rejection comes from testing against an
+  already-complete buffer, and a passing fragment writes what was there.
+- **`vPx` comes from `gl_FragCoord`, not from a varying.** As a varying it was
+  a function of the quad's corners, so the prepass and the draw - whose quads
+  differ by the outline width - disagreed in the last bit. That is not a
+  rounding curiosity: the bulge is `sqrt(r^2 - dist^2)`, whose slope is
+  unbounded at the silhouette, so a last-bit difference in position becomes a
+  large difference in depth exactly at a tube's edge. Absorbing it with a
+  tolerance cost every outline in the picture and left white speckle.
+  `gl_FragCoord` is the pixel centre whatever quad carried the fragment there,
+  so the two agree by construction - and the prepass can then go back to the
+  tube's own quad, a quarter of the fragments at a capsid's outline-to-tube
+  ratio.
+- **The copy is a textured triangle, not `blitFramebuffer`.** The context asks
+  for `antialias: true`, so the default framebuffer is multisampled, and
+  blitting a single-sample buffer into one is an `INVALID_OPERATION`. It
+  presents as a blank white frame.
+
+### Measured and rejected: sampling the depth buffer instead of an R32F copy
+
+The prepass writes the view depth twice - once as depth, once as an R32F colour
+for the occlusion to read - and dropping the colour attachment takes a quarter
+off it (4UG0 1.71 -> 1.29 ms, measured by masking colour writes). Doing it
+properly, with a `DEPTH_COMPONENT24` texture sampled by the occlusion and
+reconstructed through `zRange`, made **everything else slower**: blur 0.36 ->
+1.20, occlusion 0.59 -> 1.05, draw 1.18 -> 1.82, copy 0.19 -> 1.24, for a net
+4.09 -> 6.47 ms. Apple's GPU compresses depth, and sampling a depth texture
+that is simultaneously a depth attachment forces it to decompress. The
+redundant R32F copy is the cheaper arrangement. Reverted.
+
+### Still on the table
+
+- The draw's quad is grown by the outline width, which is a fixed number of
+  pixels, so at capsid zoom - where a tube is about a pixel across - the quad
+  is many times the tube's own area. Measured at ribosome scale the outline is
+  23% of the draw (1.24 vs 0.95 ms with `relativeOutlineWidth` 0); at capsid
+  scale it will be a larger share. Thinning or dropping the outline below some
+  drawn radius is the biggest remaining win and is a change to how the drawing
+  LOOKS, so it is a decision rather than an optimisation.
+- Prepass and draw are each a full rasterisation of every capsule and are now
+  94% of the frame. Below that lies LOD - fewer, fatter segments when a tube is
+  sub-pixel - which is a bigger change than anything above.
