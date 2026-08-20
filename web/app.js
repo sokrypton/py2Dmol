@@ -1425,53 +1425,6 @@ function setupEventListeners() {
 // UI HELPER FUNCTIONS
 // ============================================================================
 
-/**
- * THE LOAD PROGRESS BAR, under the status line.
- *
- * A structure the size of a capsid spends sixteen seconds in this pipeline and
- * says nothing, which is indistinguishable from a hang. The bar is coarse on
- * purpose - five stages, not a percentage of atoms - because everything here is
- * one long synchronous block per stage and there is nothing to sample inside
- * one.
- *
- * WHICH IS ALSO WHY setProgress IS ASYNC AND MUST BE AWAITED. Setting a style
- * and returning to a five-second parse paints nothing: the browser never gets
- * the main thread back, and the bar arrives finished. Yielding twice - a task
- * and then a frame - is what makes the update visible before the work starts.
- */
-// ...and it stays out of the way of a small one. A 70 ms load does not need
-// reporting, and the yields below would be most of its cost; the bar is armed
-// only once a payload turns up that is big enough to be worth watching.
-let progressArmed = false;
-const PROGRESS_MIN_BYTES = 4e6;
-
-function armProgress(bytes) {
-    if (bytes > PROGRESS_MIN_BYTES) progressArmed = true;
-}
-
-async function setProgress(frac, label, detail) {
-    if (!progressArmed) return;
-    const box = document.getElementById('load-progress');
-    if (!box) return;
-    box.hidden = false;
-    const bar = document.getElementById('load-progress-bar');
-    const lab = document.getElementById('load-progress-label');
-    const det = document.getElementById('load-progress-detail');
-    if (bar) bar.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';
-    if (lab && label) lab.textContent = label;
-    if (det) det.textContent = detail || '';
-    // hand the main thread back so the paint actually happens
-    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-}
-
-function hideProgress() {
-    progressArmed = false;
-    const box = document.getElementById('load-progress');
-    if (box) box.hidden = true;
-    const bar = document.getElementById('load-progress-bar');
-    if (bar) bar.style.width = '0%';
-}
-
 function setStatus(message, isError = false) {
     // Check if we're on msa.html (has status-message with different styling) or index.html
     const statusElement = document.getElementById('status-message');
@@ -4075,13 +4028,11 @@ async function handleFetch() {
     }
 
     try {
-        await setProgress(0.05, 'Fetching', fetchId);
         const structResponse = await fetch(structUrl);
         if (!structResponse.ok) {
             throw new Error(`Failed to fetch structure (HTTP ${structResponse.status})`);
         }
         const structText = await structResponse.text();
-        armProgress(structText.length);
 
         let paeData = null;
         if (paeEnabled && paeUrl && loadPAE) {
@@ -4098,7 +4049,6 @@ async function handleFetch() {
             }
         }
 
-        await setProgress(0.35, 'Building structure', name);
         const framesAdded = buildPendingObject(
             structText,
             name,
@@ -4112,12 +4062,10 @@ async function handleFetch() {
         // screen (an unknown chain, say). Stop here so the success lines below
         // cannot overwrite it with "loaded 0 object(s)", which reads like the
         // fetch worked and hides what actually went wrong.
-        if (!framesAdded || tempBatch.length === 0) { hideProgress(); return; }
+        if (!framesAdded || tempBatch.length === 0) return;
 
         pendingObjects.push(...tempBatch);
-        await setProgress(0.65, 'Preparing viewer');
         applyPendingObjects();
-        await setProgress(0.90, 'Drawing');
 
         // Auto-download MSA for PDB structures (only if Load MSA is enabled)
         if (isPDB && window.MSA && loadMSA) {
@@ -4476,9 +4424,6 @@ async function handleFetch() {
     } catch (e) {
         console.error("Fetch failed:", e);
         setStatus(`Error: Fetch failed for ${fetchId}. ${e.message}.`, true);
-    } finally {
-        // whatever happened, the bar must not be left on screen
-        hideProgress();
     }
 }
 
@@ -5337,7 +5282,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     const jsonLoadPromises = jsonFileDataArray.map(({ file: jsonFile, text: jsonText, error }) => new Promise(async (resolve) => {
         if (error || !jsonText) {
             resolve();
-            hideProgress();
             return;
         }
 
@@ -5387,7 +5331,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         } catch (e) {
             console.error("Failed to load state file:", e);
             setStatus(`Error loading state file: ${e.message}`, true);
-            hideProgress();
             return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
         }
     }
@@ -5411,7 +5354,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 loadMSA,
                 loadPAE
             });
-            hideProgress();
             return result;
         }
     }
@@ -5426,7 +5368,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
             // Load MSA-only for msa.html
             const msaFile = msaFilesToProcess[0];
             await loadStandaloneMSA(msaFile);
-            hideProgress();
             return {
                 objectsLoaded: 0,
                 framesAdded: 0,
@@ -5437,7 +5378,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         }
 
         setStatus('MSA-only uploads are not supported on this page. Please use msa.html for standalone MSAs.', true);
-        hideProgress();
         return {
             objectsLoaded: 0,
             framesAdded: 0,
@@ -5508,14 +5448,9 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     }
 
     // Process structure files
-    let fileIdx = 0;
     for (const file of structureFiles) {
-        fileIdx++;
         try {
-            await setProgress(0.03 + 0.02 * ((fileIdx - 1) / structureFiles.length),
-                'Reading file', file.name);
             const text = await file.readAsync("text");
-            armProgress(text.length);
 
             const baseName = cleanObjectName(file.name);
 
@@ -5538,14 +5473,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 (groupName || cleanObjectName(structureFiles[0].name)) :
                 baseName;
 
-            // The stage names are the profile's: reading the file, then the
-            // parse and frame build, then applyPendingObjects. Each await is
-            // what lets the bar be seen before the block it announces.
-            // 5% to 65%: parse plus the frame build is about 60% of a big
-            // load, and it is announced BEFORE the block, so the bar sits at
-            // the work already behind it rather than the work about to start.
-            await setProgress(0.05 + 0.60 * ((fileIdx - 1) / structureFiles.length),
-                'Building structure', file.name);
             const framesAdded = buildPendingObject(
                 text,
                 file.name,
@@ -5558,7 +5485,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         } catch (e) {
             console.error(`Error processing file ${file.name}:`, e);
             setStatus(`Error processing ${file.name}: ${e.message}`, true);
-            hideProgress();
         }
     }
 
@@ -5600,11 +5526,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     }
 
     if (tempBatch.length > 0) pendingObjects.push(...tempBatch);
-    // applyPendingObjects is addFrame per frame - 4.7 s of the capsid's load,
-    // the largest single stage - so it gets its own announcement.
-    await setProgress(0.65, 'Preparing viewer');
     applyPendingObjects();
-    await setProgress(0.90, 'Drawing');
 
     // Process MSA files AFTER structures are loaded (only if Load MSA is enabled)
     if (msaFilesToProcess.length > 0 && loadMSA) {
@@ -5684,7 +5606,6 @@ async function processFiles(files, loadAsFrames, groupName = null) {
         }
     }
 
-    hideProgress();
     return {
         objectsLoaded: tempBatch.length,
         framesAdded: overallTotalFramesAdded,

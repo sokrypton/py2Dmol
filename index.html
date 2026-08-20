@@ -211,43 +211,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
             <!-- Status message below the table -->
             <div id="status-message" style="margin-top: 12px;"></div>
-
-            <style>
-                @keyframes py2dmol-lp {
-                    from { transform: translateX(-100%); }
-                    to   { transform: translateX(100%); }
-                }
-            </style>
-            <!-- LOAD PROGRESS, under the status line and hidden unless a load is
-                 running. A big structure spends ten seconds or more inside
-                 synchronous work, so the bar is only honest if the page gets a
-                 paint between stages - see setProgress in web/app.js. -->
-            <div id="load-progress" hidden style="margin-top: 8px;">
-                <div style="display: flex; justify-content: space-between;
-                            font-size: 12px; color: #4b5563; margin-bottom: 4px;">
-                    <span id="load-progress-label">Loading</span>
-                    <span id="load-progress-detail" style="color: #9ca3af;"></span>
-                </div>
-                <div style="height: 6px; background: #e5e7eb; border-radius: 3px;
-                            overflow: hidden; position: relative;">
-                    <div id="load-progress-bar" style="height: 100%; width: 0%;
-                            background: #3b82f6; border-radius: 3px;
-                            transition: width 120ms linear;"></div>
-                    <!-- A STRIPE THE COMPOSITOR ANIMATES. Each load stage is one
-                         unbroken block of synchronous JS - the build alone is
-                         nine seconds on a capsid - so the main thread cannot
-                         repaint and the fill above sits at one value the whole
-                         time, which reads as a hang. A CSS transform animation
-                         runs off the main thread, so this keeps moving while
-                         everything else is frozen: it is the part that says
-                         "still working" honestly, and the fill says how far. -->
-                    <div id="load-progress-pulse" style="position: absolute;
-                            inset: 0; pointer-events: none;
-                            background: linear-gradient(90deg, transparent,
-                                rgba(59,130,246,0.55), transparent);
-                            animation: py2dmol-lp 1.1s linear infinite;"></div>
-                </div>
-            </div>
         </div>
 
         <div id="viewer-container" class="py2dmol-viewer-instance" style="display: none;">
