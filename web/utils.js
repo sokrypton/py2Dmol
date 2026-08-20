@@ -2085,11 +2085,24 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     const multiAtomResidues = [];
 
     const residueMap = new Map();
+    // ATOMS ARRIVE IN RESIDUE ORDER. Building the key costs a string
+    // concatenation and a hash per atom, and a 2.4 M-atom file spends it
+    // 1.5 M times to name the same few hundred thousand residues. Almost
+    // every atom belongs to the same residue as the one before it, and
+    // three field compares settle that without touching the map. The map
+    // is still there for the atoms that don't - a residue interrupted and
+    // resumed later in the file lands back in its own group, exactly as
+    // before.
+    let runChain = null, runSeq = null, runName = null, runResidue = null;
     for (const atom of atoms) {
         if (atom.resName === 'HOH') continue;
-        // Optimize string concatenation - use array join or direct concatenation
+        let residue;
+        if (runResidue !== null && atom.chain === runChain
+            && atom.resSeq === runSeq && atom.resName === runName) {
+            residue = runResidue;
+        } else {
         const resKey = atom.chain + ':' + atom.resSeq + ':' + atom.resName;
-        let residue = residueMap.get(resKey);
+        residue = residueMap.get(resKey);
         if (!residue) {
             residue = {
                 atoms: [],
@@ -2101,6 +2114,9 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
                 c4Atom: null  // Cache C4' atom for nucleic acids
             };
             residueMap.set(resKey, residue);
+        }
+        runChain = atom.chain; runSeq = atom.resSeq; runName = atom.resName;
+        runResidue = residue;
         }
         residue.atoms.push(atom);
 
