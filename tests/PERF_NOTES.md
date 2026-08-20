@@ -502,3 +502,42 @@ checkbox proves nothing here, the same trap as the ligand-only chains above.
 4UG0 goes 1.10 s to 0.69 s. Both wins were algorithmic and neither needed the
 columnar rewrite: one loop that was quadratic in chains, and one whole pass
 that did not need to run. Profile before restructuring.
+
+### ...and the third: chem_comp_bond walked every residue to find nothing
+
+`convertParsedToFrameData` was 3.3 s on a capsid, and 2.06 s of it was the
+`chemCompBondMap` pass. It walks every residue in the structure and, for each
+bond that residue's component defines, builds three template literals to look
+two atoms up by name in `atomIdToIndex`.
+
+A protein residue contributes exactly ONE position - its CA. A nucleic one
+contributes its C4'. So both ends of an INTRA-residue bond can never be found
+for either, and the pass spends its time proving that: on 3J3Q, 313,236
+residues x ~15 bonds = 4.7 million lookups and 14 million strings, producing
+nothing.
+
+Only a ligand puts more than one atom in `coords`, so only a ligand can carry
+one of these bonds. Collecting those residues as they are built and iterating
+that list gives the same bonds over a handful of residues instead of all of
+them: `buildPendingObject` 6,469 -> 4,316 ms.
+
+Verified with ligands ON, comparing an order-independent checksum of the bond
+list before and after: 4HHB 200 bonds / 3140046280, 3PTB 9 / 2820525387,
+1HVR 52 / 1448305941, 1AOI 0. Identical.
+
+### The capsid load, end to end
+
+| stage | at the start | now |
+| --- | --- | --- |
+| fetch | 477 | 387 |
+| parse | 2,855 | 2,854 |
+| frame loop (build minus parse) | 6,181 | 1,327 |
+| `applyPendingObjects` | 4,723 | 2,328 |
+| first render | 1,911 | 1,863 |
+| **total** | **16.5 s** | **6.5 s** |
+
+4UG0 goes 1.10 s to 0.42 s. **2.5x on the capsid and none of it was the
+columnar rewrite** that was the plan going in: one loop quadratic in chains,
+one whole pass that only a PAE needs, and one pass that could not produce a
+result for 99% of what it iterated. Parse is now the largest single stage and
+is the one part that has already been optimised once.

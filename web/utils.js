@@ -2055,6 +2055,9 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     const atomIdToIndex = new Map();
     // Map resKey:atomName to new index for chemCompBondMap resolution
     const resAtomIdToIndex = new Map();
+    // the residues that contribute more than one position - see the ligand
+    // branch below, and the chem_comp_bond pass that consumes this
+    const multiAtomResidues = [];
 
     const residueMap = new Map();
     for (const atom of atoms) {
@@ -2105,7 +2108,6 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     // cannot be recovered later. The table it builds is never read by the
     // draw path unless a residue is actually selected - see buildSidechainTable.
     const sidechainEntries = [];
-
     for (let idx = 0; idx < allResidues.length; idx++) {
         const residue = allResidues[idx];
 
@@ -2172,6 +2174,11 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
             // If includeAllResidues is true, include everything (even unclassified residues)
             // Otherwise, only include HETATM records as ligands
             // For ligands or unclassified residues, use all non-H atoms (like Python code)
+            // A LIGAND IS THE ONLY RESIDUE THAT PUTS MORE THAN ONE ATOM IN
+            // coords, and therefore the only one that can carry an
+            // intra-residue bond. Noted here so the chem_comp_bond pass below
+            // does not have to walk every residue in the structure to find out.
+            multiAtomResidues.push(residue);
             for (const atom of residue.atoms) {
                 if (atom.element !== 'H' && atom.element !== 'D') {
                     const newIndex = coords.length;
@@ -2291,7 +2298,20 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
 
         const processedBonds = new Set(); // To avoid duplicate bonds from this source
 
-        for (const [resKey, residue] of residueMap.entries()) {
+        // ONLY THE RESIDUES THAT CAN HAVE ONE.
+        //
+        // This walked every residue in the structure and, for each bond its
+        // component defines, built three template literals to look two atoms up
+        // by name. A protein residue contributes exactly ONE position - its CA -
+        // so both ends of an intra-residue bond can never be found and the work
+        // is spent proving that. On 3J3Q it was 313,236 residues x ~15 bonds =
+        // 4.7 million lookups and 14 million strings, 2.06 s of a 3.3 s
+        // conversion, to produce nothing at all.
+        //
+        // Only a ligand puts more than one atom in coords, so only a ligand can
+        // carry one of these bonds. Same bonds out, over the handful of
+        // residues that can actually have them.
+        for (const residue of multiAtomResidues) {
             const resName = residue.resName;
             if (chemCompBondMap.has(resName)) {
                 const bondsInComp = chemCompBondMap.get(resName);
@@ -2320,7 +2340,6 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
             }
         }
     }
-
     const result = { coords, atomIdToIndex };
 
     if (bonds.length > 0) {
