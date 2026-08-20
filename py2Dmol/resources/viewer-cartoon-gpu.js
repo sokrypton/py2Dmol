@@ -1241,7 +1241,24 @@ void main() {
   vec2 p = vA + t * along + n * across;
   vPx = p;
   vec2 ndc = vec2(p.x / uSize.x * 2.0 - 1.0, 1.0 - p.y / uSize.y * 2.0);
-  gl_Position = vec4(ndc, 0.0, 1.0);
+  // A CONSERVATIVE DEPTH FOR THE QUAD, WHICH IS WHAT BUYS BACK EARLY-Z.
+  //
+  // This used to be 0 - the quad sat at the middle of the depth range and the
+  // fragment shader wrote the real depth. Writing gl_FragDepth switches off
+  // early depth rejection on every GPU, so at a capsid's depth complexity every
+  // layer of every capsule ran the full fragment shader whether it could be
+  // seen or not. That is what made the draw 58 ms on 3J3Q.
+  //
+  // Declaring the fragment depth depth_greater gives the hardware permission
+  // to reject against the POLYGON's depth first, and the promise it needs is
+  // that the shader's depth is never nearer than this one. So the quad is
+  // placed at the nearest point the capsule can reach: the nearer end's axis,
+  // plus a radius for the bulge. Every fragment's own zSurf is at or behind it
+  // by construction, and uPushZ only ever pushes further back.
+  float zNear = max(vZA, vZB) + aRad;
+  float tNear = clamp((zNear - uZRange.x) / max(1.0e-6, uZRange.y - uZRange.x),
+                      0.0, 1.0);
+  gl_Position = vec4(ndc, 1.0 - 2.0 * tNear, 1.0);
 }`;
 
 // A FULL-SCREEN TRIANGLE with no attributes at all - gl_VertexID is enough,
@@ -1387,7 +1404,9 @@ void main() {
 }`;
 
 const FSTUBE = `#version 300 es
+__CONSEXT__
 precision highp float;
+__CONSDECL__
 in vec2 vA, vB;
 in float vRpx;
 in float vRfill;
@@ -1398,12 +1417,14 @@ in float vCapA, vCapB;
 in float vNoAO;
 uniform vec2 uZRange;
 uniform float uScale, uPersp, uFL, uPushZ;
-// the outline pass is the fill darkened - the 2D pass's own gap-filler colour
+// HOW WIDE THE SKIRT IS, in device pixels, and whether there is one at all.
+// The vertex shader grows the quad by it; the fragment shader needs it too,
+// now that a fragment decides for itself whether it is skirt or fill.
+uniform float uGrowPx;
+// the skirt is the fill darkened - the 2D pass's own gap-filler colour
 uniform float uDarken;
 // 1 = light the capsule per fragment, 0 = flat (the outline skirt)
 uniform float uLit;
-// 1 = cut the outline off square where the chain continues (see below)
-uniform float uButt;
 // THE OCCLUSION, computed on the GPU from a depth prepass rather than on the
 // CPU from every pair of segments. uZOnly makes this the prepass itself: the
 // shader writes the capsule's view depth in Angstrom instead of a colour.
@@ -1421,6 +1442,22 @@ void main() {
   vec2 q = vA + d * t;
   float dist = length(vPx - q);
   if (dist > vRpx) discard;              // outside the capsule
+  // SKIRT OR FILL, DECIDED PER FRAGMENT INSTEAD OF PER PASS.
+  //
+  // These were two draws over the same instances: one at the grown radius that
+  // discarded everything inside the tube, then one at the true radius. Measured
+  // on 4UG0 they were the two most expensive things in the frame by a wide
+  // margin - 5.1 ms and 6.3 ms of a 13.6 ms GPU frame - because a capsule quad
+  // is mostly overdraw and the shader writes gl_FragDepth, which switches off
+  // early-Z, so every fragment of every layer runs in full.
+  //
+  // The two regions are disjoint by construction: the skirt is dist > vRfill
+  // and the fill is dist <= it. Nothing needed them in separate passes except
+  // the depth ordering, and that is carried by the depth each writes - the
+  // skirt at its tube's nearest point, pushed back by uPushZ so its own fill
+  // beats it on a tie - which is per fragment and does not care which draw it
+  // arrived in. So the grown quad is rasterised ONCE and each fragment picks.
+  bool skirt = dist > vRfill;
   // WHY THE OUTLINE STOPS SQUARE IN THE MIDDLE OF A CHAIN.
   // Every segment carries its own rim, so a round cap at a joint draws a dark
   // arc BETWEEN consecutive residues and the backbone reads as a string of
@@ -1432,7 +1469,10 @@ void main() {
   // closes the wedge on the outside of a bend.
   // This is the 2D pass's rule too (shouldRoundEndpoint / the butt-capped gap
   // filler); the GPU had simply been rounding everything.
-  if (uButt > 0.5) {
+  if (skirt) {
+    // no outline asked for: the grown radius is the true one and there is no
+    // skirt to draw
+    if (uGrowPx <= 0.0) discard;
     if (vCapA < 0.5 && tRaw < 0.0) discard;
     if (vCapB < 0.5 && tRaw > 1.0) discard;
   }
@@ -1473,7 +1513,7 @@ void main() {
   // conflict at its source: there is then no pixel where a segment's outline
   // and its own fill both want to be, so the skirt can sit at the tube's rim
   // depth and win against everything genuinely behind it. Which it does for
-  if (uButt > 0.5) {
+  if (skirt) {
     // ...and the skirt carries the depth of the NEAREST point of the tube it
     // belongs to, not the depth of the rim it sits on.
     //
@@ -1492,7 +1532,6 @@ void main() {
     // it beats everything its own tube beats and the rim comes back in one
     // piece. uPushZ then settles the exact ties (a joint, where both tubes'
     // front surfaces meet at the shared point) in the fill's favour.
-    if (dist < vRfill) discard;
     zSurf = zAxis + vRfill / max(1e-6, uScale * pe);
   }
   float t01 = (zSurf - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
@@ -1504,7 +1543,7 @@ void main() {
   //
   // uPushZ moves it AWAY from the eye for the outline pass, so a segment's own
   // fill wins where the two coincide.
-  gl_FragDepth = clamp(1.0 - t01 + uPushZ, 0.0, 1.0);
+  gl_FragDepth = clamp(1.0 - t01 + (skirt ? uPushZ : 0.0), 0.0, 1.0);
   // THE CAPSULE'S OWN NORMAL, which is what the screen-space occlusion was
   // standing in for. The 2D pass has no surface to light, so it fakes depth by
   // darkening each segment by however much lies in front of it - an O(n^2)
@@ -1528,7 +1567,7 @@ void main() {
     col += (1.0 - col) * ((0.50 * ao.g) / 3.0);
     col *= (0.20 + 0.80 * ao.r);
   }
-  if (uLit > 0.5) {
+  if (uLit > 0.5 && !skirt) {
     vec2 off = (vPx - q) / max(1e-6, vRfill);
     vec3 nrm = normalize(vec3(off.x, -off.y, bulgePx / max(1e-6, vRfill)));
     const vec3 L = normalize(vec3(-0.45, 0.6, 0.75));
@@ -1539,7 +1578,7 @@ void main() {
     lum += 0.14 * pow(max(0.0, 1.0 - nrm.z), 2.0) * dif;
     col = clamp(col * lum, 0.0, 1.0);
   }
-  fragColor = vec4(col * uDarken, 1.0);
+  fragColor = vec4(col * (skirt ? uDarken : 1.0), 1.0);
 }`;
 
 // ---- THE PAPER ---------------------------------------------------------
@@ -1603,6 +1642,50 @@ let tubeRange = [-1, 1];        // the depth range the capsules are mapped throu
 let tubeSig = null;             // what the instance buffer was built from
 let tubeTouch = null;           // per-position count of drawn segments, reused
 let tubeData = null;            // the instance staging array, reused
+// ---- GPU TIMING, off unless asked for ----------------------------------
+// A WebGL draw call returns as soon as it is QUEUED, so wrapping render() in
+// performance.now() times the submit and not the work: 17,000 instances came
+// back as 0.28 ms that way. EXT_disjoint_timer_query_webgl2 is the only thing
+// that reports what the card actually spent, and it is asynchronous - a
+// query's result lands some frames after the pass, so the readback is polled
+// and the number reported belongs to an earlier frame. That is fine for a
+// steady-state drag, which is what this measures.
+//
+// One query may be active at a time, so the passes are timed in sequence and
+// never nested. window.__gpuTimers turns it on; window.__gpuTimes holds the
+// last complete set, in milliseconds.
+let timerExt = null, timerOn = false;
+const timerPending = [];        // { pass, q }
+function tmStart(pass) {
+    if (!timerOn) return null;
+    if (!timerExt) {
+        timerExt = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+        if (!timerExt) { timerOn = false; return null; }
+    }
+    const q = gl.createQuery();
+    gl.beginQuery(timerExt.TIME_ELAPSED_EXT, q);
+    return { pass, q };
+}
+function tmEnd(h) {
+    if (!h) return;
+    gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+    timerPending.push(h);
+}
+function tmCollect() {
+    if (!timerOn || !timerExt) return;
+    const out = window.__gpuTimes || (window.__gpuTimes = {});
+    for (let i = timerPending.length - 1; i >= 0; i--) {
+        const h = timerPending[i];
+        if (!gl.getQueryParameter(h.q, gl.QUERY_RESULT_AVAILABLE)) continue;
+        const ns = gl.getQueryParameter(h.q, gl.QUERY_RESULT);
+        gl.deleteQuery(h.q);
+        timerPending.splice(i, 1);
+        const ms = ns / 1e6;
+        const acc = out[h.pass] || (out[h.pass] = { n: 0, sum: 0, last: 0 });
+        acc.n++; acc.sum += ms; acc.last = ms;
+        acc.mean = +(acc.sum / acc.n).toFixed(3);
+    }
+}
 let progAO = null;              // screen-space occlusion
 let progBlur = null;            // ...and its 4x4 depth-aware resolve
 let zFbo = null, zTex = null, zRb = null;   // the view-depth prepass target
@@ -1703,8 +1786,19 @@ function initGL(cv) {
     palTex = null; palW = 0; palH = 0;
     edgeCount = 0;
     progTube = gl.createProgram();
+    // EARLY-Z, IF THE DRIVER WILL ALLOW IT. The extension has to be enabled on
+    // the context before a shader may #extension it; where it is missing the
+    // placeholder becomes nothing and the shader is the ordinary one, correct
+    // and slower. The vertex shader's conservative quad depth is harmless
+    // either way - it is the true nearest depth of the capsule.
+    const consDepth = !!gl.getExtension('EXT_conservative_depth');
+    const fsTube = FSTUBE
+        .replace('__CONSEXT__', consDepth
+            ? '#extension GL_EXT_conservative_depth : enable' : '')
+        .replace('__CONSDECL__', consDepth
+            ? 'layout (depth_greater) out float gl_FragDepth;' : '');
     gl.attachShader(progTube, mk(gl.VERTEX_SHADER, VSTUBE));
-    gl.attachShader(progTube, mk(gl.FRAGMENT_SHADER, FSTUBE));
+    gl.attachShader(progTube, mk(gl.FRAGMENT_SHADER, fsTube));
     gl.linkProgram(progTube);
     if (!gl.getProgramParameter(progTube, gl.LINK_STATUS)) {
         throw new Error(gl.getProgramInfoLog(progTube));
@@ -3898,6 +3992,7 @@ function buildTube(renderer, S) {
  */
 function drawTube(cv, renderer, prm) {
     if (!gl || !tubeCount) return false;
+    timerOn = (typeof window !== 'undefined' && window.__gpuTimers === true);
     const dw = renderer.displayWidth || cv.width;
     const ratio = dw > 0 ? cv.width / dw : 1;
     gl.useProgram(progTube);
@@ -3953,11 +4048,13 @@ function drawTube(cv, renderer, prm) {
         // than trusting a zero, which is a perfectly ordinary depth.
         gl.clearColor(-1e9, 0, 0, 1);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        u('uZOnly', 1); u('uUseAO', 0); u('uButt', 0);
+        u('uZOnly', 1); u('uUseAO', 0);
         u('uGrowPx', 0); u('uPushZ', 0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 1.0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'), 0);
+        const tmZ = tmStart('1-prepass');
         drawTubeInstances();
+        tmEnd(tmZ);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo);
         gl.viewport(0, 0, cv.width, cv.height);
@@ -3990,7 +4087,9 @@ function drawTube(cv, renderer, prm) {
         // own bulge, not something in front of it. Without this every capsule
         // shades its own rim and the flat segments come out looking moulded.
         ua('uSelfBias', Math.max(0.6, (renderer.lineWidth || 3) * 0.5 * 1.1));
+        const tmA = tmStart('2-ao');
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        tmEnd(tmA);
 
         // RESOLVE: the 4x4 box that matches the interleaved rotation.
         gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo2);
@@ -4003,7 +4102,9 @@ function drawTube(cv, renderer, prm) {
         gl.bindTexture(gl.TEXTURE_2D, zTex);
         gl.uniform1i(gl.getUniformLocation(progBlur, 'uZTex'), 0);
         gl.uniform2f(gl.getUniformLocation(progBlur, 'uTexel'), 1 / cv.width, 1 / cv.height);
+        const tmB = tmStart('3-blur');
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        tmEnd(tmB);
 
         gl.useProgram(progTube);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -4022,31 +4123,33 @@ function drawTube(cv, renderer, prm) {
     // while the GPU had no occlusion of its own) but nothing asks for it now
     // unless a caller does.
     u('uDepthCue', renderer.cartoonTubeDepthCue === true && !wantAO ? 1 : 0);
-    // PASS 1: the outline. Its width is the app's own outlineWidth, in display
-    // pixels, and its colour the fill darkened 0.7 - both straight off the 2D
-    // pass, which calls it the gap filler.
+    // THE DRAW: outline and fill in ONE pass over the instances.
+    //
+    // These were two passes, and they were 86% of the GPU frame on 3J3Q - 63.5
+    // ms of outline and 64.0 ms of fill out of 149 ms. They rasterise the same
+    // capsules over the same pixels, and the shader now picks skirt or fill per
+    // fragment, so the second rasterisation bought nothing but its own cost.
+    //
+    // The outline's width is the app's own outlineWidth in display pixels and
+    // its colour the fill darkened 0.7, both straight off the 2D pass, which
+    // calls it the gap filler. uGrowPx is what tells the shader a skirt is
+    // wanted at all: at 0 there is no ring outside the tube and the draw is a
+    // plain fill.
     const outW = (renderer.outlineMode !== 'none')
         ? Math.max(0, prm.outlineWidthPx || 0) : 0;
-    if (outW > 0) {
-        u('uGrowPx', outW * 0.5);
-        u('uPushZ', 0.0008);
-        gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 0.7);
-        gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'), 0);
-        u('uButt', 1);
-        drawTubeInstances();
-    }
-    // PASS 2: the fill.
-    u('uGrowPx', 0);
-    u('uPushZ', 0);
-    u('uButt', 0);   // the fill keeps its round caps and closes the joints
-    gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 1.0);
+    u('uGrowPx', outW * 0.5);
+    u('uPushZ', 0.0008);
+    gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 0.7);
     // FLAT BY DEFAULT. Per-fragment cylinder lighting is in the shader and
     // works, but it turns the drawing into shiny rods - a different style, not
     // this one. renderer.cartoonTubeLit = true asks for it.
     gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'),
         renderer.cartoonTubeLit === true ? 1 : 0);
+    const tmF = tmStart('4-draw');
     drawTubeInstances();
+    tmEnd(tmF);
     for (const l of bound) gl.vertexAttribDivisor(l, 0);
+    tmCollect();
     return true;
 }
 // The two offscreen targets, at the drawing buffer's own size. Recreated only
