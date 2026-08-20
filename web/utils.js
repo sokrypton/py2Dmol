@@ -1460,6 +1460,31 @@ function buildSidechainTable(coords, entries) {
     // table rows bonded to their residue's own backbone position, not to
     // another row - the CA end of the side chain
     const toBackbone = [];
+
+    // SCRATCH, REUSED BY EVERY RESIDUE. A side chain is at most a couple of
+    // dozen heavy atoms, and the loop below used to allocate ten containers to
+    // hold them - two Sets, a Map, an array per atom for the adjacency, and a
+    // stack per walk - once per residue. A 313,000-residue capsid pays for
+    // three million short-lived objects to describe side chains that never
+    // exceed fourteen atoms. These grow to the largest residue seen and are
+    // then cleared, not rebuilt; `cap` tracks how much of each is live.
+    let cap = 32;
+    let group = new Array(cap);
+    let adjN = new Uint8Array(cap);            // degree of each group index
+    let adj = new Int16Array(cap * cap);       // neighbours, row-major by cap
+    let reach = new Uint8Array(cap);           // 1 once walked to from the CA
+    let stack = new Int16Array(cap);
+    let rowOf = new Int32Array(cap);
+    const growScratch = (need) => {
+        while (cap < need) cap *= 2;
+        group = new Array(cap);
+        adjN = new Uint8Array(cap);
+        adj = new Int16Array(cap * cap);
+        reach = new Uint8Array(cap);
+        stack = new Int16Array(cap);
+        rowOf = new Int32Array(cap);
+    };
+
     for (const e of entries) {
         const ca = e.residue.caAtom;
         if (!ca) continue;
@@ -1494,43 +1519,64 @@ function buildSidechainTable(coords, entries) {
         const isHydrogen = (a) => (a.element
             ? (a.element === 'H' || a.element === 'D')
             : /^[0-9]?[HD]/.test(a.atomName || ''));
-        const group = [];
-        const seen = new Set();
-        for (const a of e.residue.atoms) {
+        const atoms = e.residue.atoms;
+        if (atoms.length > cap) growScratch(atoms.length);
+        let gn = 0;
+        for (let ai = 0; ai < atoms.length; ai++) {
+            const a = atoms[ai];
             if (isHydrogen(a)) continue;
             if (a.atomName !== 'CA' && PROTEIN_BACKBONE_ATOMS.has(a.atomName)) continue;
-            if (seen.has(a.atomName)) continue;
-            seen.add(a.atomName);
-            group.push(a);
+            // first-wins by name, over a handful of entries - a linear scan
+            // beats hashing at this size, and there is nothing to allocate
+            let dup = false;
+            for (let k = 0; k < gn; k++) {
+                if (group[k].atomName === a.atomName) { dup = true; break; }
+            }
+            if (dup) continue;
+            group[gn++] = a;
         }
-        // CA first, so index 0 of every group is the anchor
-        group.sort((a, b) => (a.atomName === 'CA' ? -1 : b.atomName === 'CA' ? 1 : 0));
-        if (group.length < 2) continue;           // glycine: nothing to draw
+        // CA first, so index 0 of every group is the anchor. Moved rather than
+        // swapped: the rows are emitted in group order, so the atoms after it
+        // have to keep the order the file gave them.
+        for (let k = 1; k < gn; k++) {
+            if (group[k].atomName !== 'CA') continue;
+            const ca0 = group[k];
+            for (let m = k; m > 0; m--) group[m] = group[m - 1];
+            group[0] = ca0;
+            break;
+        }
+        if (gn < 2) continue;                     // glycine: nothing to draw
         const base = pos.length;
         // CONNECTIVITY. From the residue's chemistry where we recognise it,
         // and only otherwise from distances.
         const link = [];
-        const adj = group.map(() => []);
+        for (let k = 0; k < gn; k++) adjN[k] = 0;
         const join = (i, j) => {
             link.push(i, j);
-            adj[i].push(j); adj[j].push(i);
+            adj[i * cap + adjN[i]++] = j;
+            adj[j * cap + adjN[j]++] = i;
         };
         const known = PROTEIN_SIDECHAIN_BONDS[e.residue.resName];
         if (known) {
             const alias = SIDECHAIN_ATOM_ALIASES[e.residue.resName];
-            const row = new Map();
-            for (let i = 0; i < group.length; i++) {
+            const rowName = [];
+            for (let i = 0; i < gn; i++) {
                 const n0 = group[i].atomName;
-                row.set((alias && alias[n0]) || n0, i);
+                rowName.push((alias && alias[n0]) || n0);
             }
+            const rowIdx = (nm) => {
+                // last match wins, as Map.set did when two atoms alias to one name
+                for (let i = gn - 1; i >= 0; i--) if (rowName[i] === nm) return i;
+                return undefined;
+            };
             for (const [n1, n2] of known) {
-                const i = row.get(n1); const j = row.get(n2);
+                const i = rowIdx(n1); const j = rowIdx(n2);
                 // an atom the file never modelled simply has no bond to make
                 if (i !== undefined && j !== undefined) join(i, j);
             }
         } else {
-            for (let i = 0; i < group.length; i++) {
-                for (let j = i + 1; j < group.length; j++) {
+            for (let i = 0; i < gn; i++) {
+                for (let j = i + 1; j < gn; j++) {
                     const a = group[i], b = group[j];
                     const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
                     if (dx * dx + dy * dy + dz * dz < SIDECHAIN_BOND_MAX_SQ) {
@@ -1546,13 +1592,19 @@ function buildSidechainTable(coords, entries) {
         // it appears as a sphere floating beside a gap, which reads as a broken
         // bond rather than as the absent atom it really is. Dropping it says
         // the honest thing: nothing is drawn where nothing was measured.
-        const reach = new Set([0]);          // index 0 is the CA anchor
+        for (let k = 0; k < gn; k++) reach[k] = 0;
+        reach[0] = 1;                        // index 0 is the CA anchor
+        let reachN = 1;
         const grow = (from) => {
-            const stack = [from];
-            while (stack.length) {
-                for (const nb of adj[stack.pop()]) {
-                    if (reach.has(nb)) continue;
-                    reach.add(nb); stack.push(nb);
+            let sp = 0;
+            stack[sp++] = from;
+            while (sp) {
+                const at0 = stack[--sp];
+                const deg = adjN[at0]; const row = at0 * cap;
+                for (let k = 0; k < deg; k++) {
+                    const nb = adj[row + k];
+                    if (reach[nb]) continue;
+                    reach[nb] = 1; reachN++; stack[sp++] = nb;
                 }
             }
         };
@@ -1570,10 +1622,10 @@ function buildSidechainTable(coords, entries) {
         // further than the threshold does.
         while (!known) {
             let bd = SIDECHAIN_LINK_MAX_SQ; let bi = -1; let bj = -1;
-            for (let i = 0; i < group.length; i++) {
-                if (!reach.has(i)) continue;
-                for (let j = 0; j < group.length; j++) {
-                    if (reach.has(j)) continue;
+            for (let i = 0; i < gn; i++) {
+                if (!reach[i]) continue;
+                for (let j = 0; j < gn; j++) {
+                    if (reach[j]) continue;
                     const a = group[i], b = group[j];
                     const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
                     const d2 = dx * dx + dy * dy + dz * dz;
@@ -1582,20 +1634,19 @@ function buildSidechainTable(coords, entries) {
             }
             if (bi < 0) break;
             link.push(bi, bj);
-            adj[bi].push(bj); adj[bj].push(bi);
-            reach.add(bj);
+            adj[bi * cap + adjN[bi]++] = bj;
+            adj[bj * cap + adjN[bj]++] = bi;
+            reach[bj] = 1; reachN++;
             grow(bj);
         }
         // Whatever is STILL detached is dropped, for the reason above.
-        if (reach.size < 2) continue;        // nothing reached the CA at all
-        // renumber the survivors, since the rows are written in group order
-        const keep = [];
-        for (let i = 0; i < group.length; i++) if (reach.has(i)) keep.push(i);
-        const rowOf = new Map();
-        // the CA (group index 0) is the backbone position, so it is not emitted
-        const emitted = keep.filter((i) => i !== 0);
-        for (let i = 0; i < emitted.length; i++) rowOf.set(emitted[i], base + i);
-        for (const i of emitted) {
+        if (reachN < 2) continue;            // nothing reached the CA at all
+        // renumber the survivors, since the rows are written in group order.
+        // The CA (group index 0) is the backbone position, so it is not emitted.
+        let emitN = 0;
+        for (let i = 1; i < gn; i++) if (reach[i]) rowOf[i] = base + emitN++;
+        for (let i = 1; i < gn; i++) {
+            if (!reach[i]) continue;
             const a = group[i];
             const dx = a.x - o.x, dy = a.y - o.y, dz = a.z - o.z;
             pos.push(e.pos);
@@ -1611,12 +1662,13 @@ function buildSidechainTable(coords, entries) {
             // a bond touching the CA becomes a bond to the OWNING POSITION,
             // recorded separately because it crosses out of the table
             if (p1 === 0 || p2 === 0) {
-                const other = rowOf.get(p1 === 0 ? p2 : p1);
-                if (other !== undefined) toBackbone.push(other);
+                // rowOf holds stale entries from earlier residues, so a row
+                // number only counts when this residue actually reached it
+                const o = p1 === 0 ? p2 : p1;
+                if (o !== 0 && reach[o]) toBackbone.push(rowOf[o]);
                 continue;
             }
-            const a = rowOf.get(p1); const b = rowOf.get(p2);
-            if (a !== undefined && b !== undefined) bonds.push(a, b);
+            if (reach[p1] && reach[p2]) bonds.push(rowOf[p1], rowOf[p2]);
         }
     }
     if (!pos.length) return null;
