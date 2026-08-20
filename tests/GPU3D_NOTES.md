@@ -1300,3 +1300,52 @@ measurement just re-finds the fringe:
 `SKIRT_Z = 0.5`. Shallow - 2% to 9% - but it is one multiply in the fragment
 shader and no extra pass, and 4UG0's preference for 0.75 is 0.6% away. Frame
 time on 4UG0 is unchanged at 4.1 ms.
+
+### Reading the two outline implementations against each other
+
+What the code says, after the pixels had been looked at. The 2D rim is
+`viewer-mol.js`'s two-step draw - a butt-capped stroke of
+`lineWidth + outlineWidth` under a round-capped stroke of `lineWidth` - and the
+GPU's is the skirt, `vRfill < dist <= vRfill + uGrowPx`, butt-cut where the
+chain continues.
+
+**These agree and were checked:** the outer radius (`(lw + outW) / 2` against
+`vRfill + uGrowPx`), the colour (fill x 0.7 both, after occlusion), the
+perspective term (`fl/z` against `uFL/(uFL - z)`, the same quantity), the
+width's dependence on zoom (both are Angstrom x view scale), where the butt cut
+falls, and that the fill keeps round caps in both.
+
+**Four places they differ:**
+
+1. **The relevance filter on the cap rule.** `shouldRoundEndpoint` counts only
+   segments of the SAME TYPE and SAME CHAIN (or, for a ligand, only other
+   ligands); `buildTube`'s `touch` counts every drawn non-contact segment at a
+   position. So where a chain terminus shares its position with a segment of
+   another type, the 2D rounds the cap and the GPU does not. Real, and small -
+   it reaches termini and cross-type junctions only. Fixing it needs a count
+   per position PER CLASS, and the per-position counter it would replace is
+   already the thing that measured 5.4 ms against 0.3 on 4UG0 when it was a
+   Map, so it is not obviously free. Left alone.
+
+2. **"Lowest render order rounds".** When several relevant segments meet,
+   `shouldRoundEndpoint` still returns true for whichever is drawn FIRST, so
+   the 2D lays a filled outline circle at every interior joint and the
+   neighbours' fills cover all but the outside of the elbow. That is the rim on
+   the outside of every bend, and it is most of the red in the overlays. The
+   GPU has no render order to appeal to - it has a depth buffer - and porting
+   it by keeping the round skirt at joints measures WORSE at every skirt depth:
+   1.37 at 0.5, 1.19 at 0.25, 1.08 even at 0, against 1.03 for the butt cut.
+   The skirt prints an arc across the joint instead of being covered, which is
+   the "string of sausages" the butt cut was introduced for. A faithful port
+   would need the cap flag to depend on the view, which means rebuilding the
+   instance buffer every frame. Not portable at this price.
+
+3. **outlineMode 'partial' was treated as 'full'** - FIXED. The 2D adds the
+   round endpoint circle only when the mode is `full`; the GPU tested
+   `!== 'none'` and kept its round skirt at free ends either way, so partial
+   drew rounded outline caps at every chain terminus that the 2D does not.
+   `uEndCaps` cuts every end square in partial. Full mode is bit-identical
+   after the change (1.0255226 either side).
+
+4. **Zero-length segments.** The 2D rounds them unconditionally; the GPU
+   derives the flag from `touch` like any other segment. Not chased.

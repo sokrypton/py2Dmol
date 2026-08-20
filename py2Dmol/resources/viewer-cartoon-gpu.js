@@ -1419,6 +1419,8 @@ uniform float uScale, uPersp, uFL, uPushZ;
 // now that a fragment decides for itself whether it is skirt or fill.
 uniform float uGrowPx;
 uniform float uSkirtZ;
+// 1 = a free end keeps its round skirt, 0 = every end is cut square
+uniform float uEndCaps;
 // the skirt is the fill darkened - the 2D pass's own gap-filler colour
 uniform float uDarken;
 // 1 = light the capsule per fragment, 0 = flat (the outline skirt)
@@ -1489,8 +1491,13 @@ void main() {
     // no outline asked for: the grown radius is the true one and there is no
     // skirt to draw
     if (uGrowPx <= 0.0) discard;
-    if (vCapA < 0.5 && tRaw < 0.0) discard;
-    if (vCapB < 0.5 && tRaw > 1.0) discard;
+    // OUTLINE MODE 'partial' CUTS EVERY END SQUARE. The 2D pass strokes the rim
+    // butt-capped along the segment and only adds the round cap at a free end
+    // when the mode is 'full'; this path treated anything that was not 'none'
+    // as 'full', so partial came out with rounded outline caps at every chain
+    // terminus that the 2D pass does not draw.
+    if ((vCapA * uEndCaps) < 0.5 && tRaw < 0.0) discard;
+    if ((vCapB * uEndCaps) < 0.5 && tRaw > 1.0) discard;
   }
   // THE SURFACE, not the centre line. A tube is round, so the fragment nearest
   // the eye at distance d from the axis stands proud of it by
@@ -4158,7 +4165,7 @@ function drawTube(cv, renderer, prm) {
         // field of surfaces only. Its depths still line up with the draw's to
         // the bit, because neither depends on the quad any more.
         u('uZOnly', 1);
-        u('uGrowPx', 0); u('uPushZ', 0); u('uSkirtZ', 0);
+        u('uGrowPx', 0); u('uPushZ', 0); u('uSkirtZ', 0); u('uEndCaps', 1);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 1.0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'), 0);
         const tmZ = tmStart('1-prepass');
@@ -4268,6 +4275,7 @@ function drawTube(cv, renderer, prm) {
     u('uPushZ', 0.0008);
     u('uSkirtZ', typeof renderer.cartoonSkirtZ === 'number'
         ? renderer.cartoonSkirtZ : SKIRT_Z);
+    u('uEndCaps', renderer.outlineMode === 'partial' ? 0 : 1);
     gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 0.7);
     // FLAT BY DEFAULT. Per-fragment cylinder lighting is in the shader and
     // works, but it turns the drawing into shiny rods - a different style, not
