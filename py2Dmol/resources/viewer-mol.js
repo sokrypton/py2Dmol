@@ -3076,6 +3076,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * distance only separates candidates at equal depth.
          */
         pickResidueAt(clientX, clientY) {
+            this._ensurePickProjection();
             if (!this.canvas || !this.screenX || !this.screenValid) return -1;
             const rect = this.canvas.getBoundingClientRect();
             const px = clientX - rect.left;
@@ -6658,6 +6659,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sel = this._selectionPreview
                 || (this.selectionInk ? this.selectionInk() : this.residueSelection);
             if (!sel || !sel.size) return;
+            // Only now, and only because there IS a selection to place. On the
+            // GPU tube path the frame did not project anything; this is where
+            // that debt is settled, and it is settled once per frame at most.
+            this._ensurePickProjection();
             const fid = this.screenFrameId;
             const sx = this.screenX; const sy = this.screenY;
             const sr = this.screenRadius; const sv = this.screenValid;
@@ -7561,6 +7566,258 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * canvas) - so callers must stay correct if it turns out wrong. Every
          * caller does: they choose between two ways of drawing the same picture.
          */
+        /* THE GPU TUBE FRAME, and everything it needs to draw one.
+         *
+         * The 2D tube pass and this one want almost disjoint things. The 2D
+         * pass needs a depth order, per-endpoint cap flags and a projected
+         * screen position for every atom, because it strokes the picture itself
+         * with a painter that has no depth buffer. The GPU needs the segment
+         * list, the colours and the view scale, and derives the rest on the
+         * card. This method is that short list; the long one below it is what
+         * the 2D pass still runs when this returns false.
+         *
+         * Returns false for anything it cannot do - no WebGL2, a lost context,
+         * an export context - having done no work worth speaking of, so the
+         * caller falls through to the full path unharmed.
+         */
+        /* WILL THE GPU TUBE PATH TAKE THIS FRAME? Asked before the rotation
+         * loop, which is why it cannot simply be "did _tubeGPUFrame succeed".
+         * It repeats the refusals _tubeGPUFrame itself makes, and like
+         * _gpuWillDraw it is a guess: being wrong costs one rotation done late
+         * rather than early, never a wrong picture.
+         */
+        _tubeGPUWillTake(ctx) {
+            return this.style !== 'cartoon' && this._gpuWillTake(ctx);
+        }
+
+        /* The same question for either style, and the one the CLEAR depends on.
+         * Same standing as _gpuWillDraw: a guess made before the attempt, whose
+         * cost when wrong is a repaint, never a wrong picture.
+         */
+        _gpuWillTake(ctx) {
+            if (this.cartoonGPU !== true) return false;
+            const G = window.py2dmolCartoonGPU;
+            if (!G) return false;
+            if (this.style === 'cartoon') {
+                if (typeof G.render !== 'function' || !window.py2dmolCartoon) return false;
+            } else if (typeof G.renderTube !== 'function') return false;
+            if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
+            return ctx.canvas === this.canvas;
+        }
+
+        /* THE POINT THE VIEW TURNS ABOUT. O(1), and separate from the rotation
+         * because a pan reads _viewCenter on the next gesture whether or not
+         * anything was rotated this frame.
+         */
+        _computeViewCentre(object) {
+            const globalCenter = (object && object.totalPositions > 0)
+                ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0, 0, 0);
+            const c = this.viewerState.center || globalCenter;
+            // A pan MOVES this point; remember it so the first drag has
+            // something to move even when the view is still on the default
+            // (null) centre.
+            this._viewCenter = { x: c.x, y: c.y, z: c.z };
+            return c;
+        }
+
+        /* EVERY POSITION INTO VIEW SPACE: the object's own rotation_matrix
+         * (best_view) first, then the user's. Lifted out of _renderToContext
+         * unchanged so that the GPU tube path can decide not to call it.
+         */
+        _rotateCoords(object, c) {
+            this._rotPending = false;
+            while (this.rotatedCoords.length < this.coords.length) {
+                this.rotatedCoords.push(new Vec3(0, 0, 0));
+            }
+            const m = this.viewerState.rotation;
+            const objectRotation = (object && object.rotation_matrix && object.center)
+                ? object.rotation_matrix : null;
+            const objectCenter = (object && object.center) ? object.center : null;
+            for (let i = 0; i < this.coords.length; i++) {
+                let v = this.coords[i];
+
+                // Step 1: Apply object-level rotation (best_view) if present
+                if (objectRotation && objectCenter) {
+                    const cx = v.x - objectCenter[0];
+                    const cy = v.y - objectCenter[1];
+                    const cz = v.z - objectCenter[2];
+                    const rotX = objectRotation[0][0] * cx + objectRotation[0][1] * cy + objectRotation[0][2] * cz;
+                    const rotY = objectRotation[1][0] * cx + objectRotation[1][1] * cy + objectRotation[1][2] * cz;
+                    const rotZ = objectRotation[2][0] * cx + objectRotation[2][1] * cy + objectRotation[2][2] * cz;
+                    v = new Vec3(rotX + objectCenter[0], rotY + objectCenter[1], rotZ + objectCenter[2]);
+                }
+
+                // Step 2: Apply user rotation
+                const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
+                const out = this.rotatedCoords[i];
+                out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
+                out.y = m[1][0] * subX + m[1][1] * subY + m[1][2] * subZ;
+                out.z = m[2][0] * subX + m[2][1] * subY + m[2][2] * subZ;
+            }
+        }
+
+        /* SETTLE A DEFERRED ROTATION. Called by everything that reads
+         * rotatedCoords on a GPU frame: picking, the selection halo, and
+         * renderApp when it rebuilds the cartoon mesh. Cheap and idempotent -
+         * a no-op unless a frame actually skipped the loop.
+         */
+        _ensureRotated() {
+            if (!this._rotPending) return;
+            const object = this.objectsData[this.currentObjectName];
+            if (object) this._rotateCoords(object, this._computeViewCentre(object));
+            else this._rotPending = false;
+        }
+
+        /* PAY FOR THE SCREEN POSITIONS AT THE MOMENT SOMETHING READS THEM.
+         *
+         * On the GPU tube path the frame leaves an IOU rather than a
+         * projection: rotatedCoords may be a view out of date and screenX and
+         * friends may be unwritten. There are exactly two readers in the
+         * codebase - pickResidueAt and _paintSelectionHalo - and both call this
+         * first. A no-op on every other path, where the 2D pass has already
+         * filled both as a side effect of drawing.
+         */
+        _ensurePickProjection() {
+            this._ensureRotated();
+            const p = this._pickPending;
+            if (p) {
+                this._pickPending = null;
+                this._projectForPicking(p.dw, p.dh, p.scale);
+            }
+        }
+
+        _tubeGPUFrame(ctx, displayWidth, displayHeight, colors, object) {
+            const G = window.py2dmolCartoonGPU;
+            if (!G || !G.renderTube) return false;
+            // the same refusals renderTube makes, asked before spending
+            // anything: an export wants the vector or the exact-size raster the
+            // 2D pass produces, not a blit from a screen-sized canvas
+            if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
+            if (ctx.canvas !== this.canvas) return false;
+
+            const segments = this.segmentIndices;
+            const n = segments ? segments.length : 0;
+            if (!n) return false;
+
+            // WHICH SEGMENTS ARE DRAWN - and in no particular order, which is
+            // the whole point of being here. The 2D pass sorts this list back
+            // to front because its painter has nothing else to resolve overlap
+            // with; the GPU has a depth buffer.
+            //
+            // KEPT BETWEEN FRAMES. The answer depends on the mask and the
+            // segment list and on nothing else - not on the view - so turning
+            // the model does not change it. Rescanning anyway cost 2.5 ms of a
+            // 20 ms frame at 320,000 positions.
+            //
+            // Pointer comparison is exact here: viewer-mol.js only ever
+            // ASSIGNS visiblePositions (null, a new Set, or a freshly combined
+            // one) and rebuilds segmentIndices into a new array. Neither is
+            // edited in place, so an unchanged pointer is an unchanged answer.
+            const vis = this.visiblePositions;
+            let order = this._gpuTubeOrder;
+            let cnt;
+            if (order && this._gpuTubeVisSrc === vis && this._gpuTubeSegSrc === segments
+                    && this._gpuTubeSegN === n) {
+                cnt = this._gpuTubeCount;
+            } else {
+                if (!order || order.length < n) order = this._gpuTubeOrder = new Int32Array(n);
+                cnt = 0;
+                for (let i = 0; i < n; i++) {
+                    const s = segments[i];
+                    let ok;
+                    if (!vis) {
+                        ok = true;
+                    } else if (s.type === 'C' && s.contactIdx1 !== undefined
+                            && s.contactIdx2 !== undefined) {
+                        // a contact is visible with its ORIGINAL endpoints, not
+                        // the intermediate positions it was expanded into
+                        ok = vis.has(s.contactIdx1) && vis.has(s.contactIdx2);
+                    } else {
+                        ok = vis.has(s.idx1) && vis.has(s.idx2);
+                    }
+                    if (ok) order[cnt++] = i;
+                }
+                this._gpuTubeVisSrc = vis;
+                this._gpuTubeSegSrc = segments;
+                this._gpuTubeSegN = n;
+                this._gpuTubeCount = cnt;
+            }
+            if (!cnt) return false;
+
+            // THE VIEW SCALE, the one number from the block below that is still
+            // needed up here: the GPU draws with it and a pan drag converts
+            // screen pixels to Angstroms with it. Arithmetic, not a pass.
+            const maxExtent = (object && object.maxExtent > 0) ? object.maxExtent : 30.0;
+            const extent = this.viewerState.extent || maxExtent;
+            const padding = 0.9;
+            const baseScale = Math.min((displayWidth * padding) / (extent * 2),
+                (displayHeight * padding) / (extent * 2));
+            const scale = baseScale * this.viewerState.zoom;
+            this._viewScale = scale;
+            const pxScale = this._exportPxScale || 1;
+
+            // renderShadows is FALSE and not a question. The CPU occlusion pass
+            // is what this path exists to not run; the GPU computes its own from
+            // a depth prepass, at a cost that follows pixels rather than
+            // segments.
+            if (!G.renderTube(this, ctx, displayWidth, displayHeight, {
+                order, count: cnt, segments, segData: this.segData, colors,
+                shadows: null, tints: null, renderShadows: false,
+                outlineWidthPx: this.relativeOutlineWidth * pxScale,
+            })) return false;
+
+            // NOT PROJECTED NOW. Nothing in the picture needs screen
+            // positions - the card has them - and the two things that do
+            // (pickResidueAt, _paintSelectionHalo) run on an event, not on a
+            // frame. What is recorded is enough to do it when one of them asks.
+            this._pickPending = { dw: displayWidth, dh: displayHeight, scale };
+            return true;
+        }
+
+        /* SCREEN POSITIONS FOR EVERYTHING THAT IS NOT THE PICTURE - picking,
+         * the selection halo, the sequence overlay. The 2D pass writes these as
+         * a side effect of projecting each segment's endpoints; nothing on the
+         * GPU path projects on the CPU at all, so they are written here.
+         *
+         * A flat loop over positions rather than a walk over segment endpoints
+         * with a per-position "did I already do this one" test: same answer,
+         * and it was 6.3 ms of a 60 ms frame done the other way. The cartoon
+         * path has its own version of this (projectPositions in
+         * viewer-cartoon-gpu.js) for the same reason.
+         */
+        _projectForPicking(displayWidth, displayHeight, scale) {
+            const np = this.coords.length;
+            const sx = this.screenX; const sy = this.screenY;
+            const sr = this.screenRadius; const sv = this.screenValid;
+            if (!sx || !sv || sx.length < np) return;
+            const rotated = this.rotatedCoords;
+            this.screenFrameId++;
+            const fid = this.screenFrameId;
+            const cx = displayWidth / 2;
+            const cy = displayHeight / 2;
+            const persp = isPerspective(this.viewerState);
+            const fl = this.viewerState.focalLength;
+            const base = this.lineWidth * scale;
+            const types = this.positionTypes;
+            const tw = this.typeWidthMultipliers;
+            const mask = this.visiblePositions;
+            for (let i = 0; i < np; i++) {
+                if (mask && !mask.has(i)) { sv[i] = 0; continue; }
+                const v = rotated[i];
+                let pe = 1;
+                if (persp) {
+                    const dz = fl - v.z;
+                    if (dz <= 0.1) { sv[i] = 0; continue; }
+                    pe = fl / dz;
+                }
+                const wm = (types && tw && tw[types[i]]) || 0.5;
+                sx[i] = cx + v.x * scale * pe;
+                sy[i] = cy - v.y * scale * pe;
+                sr[i] = Math.max(2, base * wm * 0.5 * pe);
+                sv[i] = fid;
+            }
+        }
+
         _gpuWillDraw() {
             if (this.cartoonGPU !== true) return false;
             const G = window.py2dmolCartoonGPU;
@@ -7704,47 +7961,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
 
-            // Ensure rotatedCoords array is expanded to match coords
-            while (this.rotatedCoords.length < this.coords.length) {
-                this.rotatedCoords.push(new Vec3(0, 0, 0));
-            }
+            // THE VIEW CENTRE IS ALWAYS FRESH - a pan reads it on the next
+            // gesture, so it cannot be deferred with the rotation below. It is
+            // O(1); the rotation is O(positions).
+            const c = this._computeViewCentre(object);
 
-            // Use temporary center if set (for orienting to visible positions), otherwise use global center
-            const globalCenter = (object && object.totalPositions > 0) ? object.globalCenterSum.mul(1 / object.totalPositions) : new Vec3(0, 0, 0);
-            const c = this.viewerState.center || globalCenter;
-            // A pan MOVES this point; remember it so the first drag has
-            // something to move even when the view is still on the default
-            // (null) centre.
-            this._viewCenter = { x: c.x, y: c.y, z: c.z };
-
-            // Update pre-allocated rotatedCoords
-            // Apply object's rotation_matrix first (best_view), then user's rotation
-            const m = this.viewerState.rotation;
-            const objectRotation = (object && object.rotation_matrix && object.center) ? object.rotation_matrix : null;
-            const objectCenter = (object && object.center) ? object.center : null;
-
-            for (let i = 0; i < this.coords.length; i++) {
-                let v = this.coords[i];
-
-                // Step 1: Apply object-level rotation (best_view) if present
-                if (objectRotation && objectCenter) {
-                    const cx = v.x - objectCenter[0];
-                    const cy = v.y - objectCenter[1];
-                    const cz = v.z - objectCenter[2];
-                    const rotX = objectRotation[0][0] * cx + objectRotation[0][1] * cy + objectRotation[0][2] * cz;
-                    const rotY = objectRotation[1][0] * cx + objectRotation[1][1] * cy + objectRotation[1][2] * cz;
-                    const rotZ = objectRotation[2][0] * cx + objectRotation[2][1] * cy + objectRotation[2][2] * cz;
-                    v = new Vec3(rotX + objectCenter[0], rotY + objectCenter[1], rotZ + objectCenter[2]);
-                }
-
-                // Step 2: Apply user rotation
-                const subX = v.x - c.x, subY = v.y - c.y, subZ = v.z - c.z;
-                const out = this.rotatedCoords[i];
-                out.x = m[0][0] * subX + m[0][1] * subY + m[0][2] * subZ;
-                out.y = m[1][0] * subX + m[1][1] * subY + m[1][2] * subZ;
-                out.z = m[2][0] * subX + m[2][1] * subY + m[2][2] * subZ;
-
-            }
+            // ROTATING EVERY POSITION, UNLESS THE GPU IS ABOUT TO TAKE THE FRAME.
+            //
+            // Neither GPU path reads rotatedCoords to draw with. The tube's
+            // instances are model space and the vertex shader turns them; the
+            // cartoon draws a mesh that is already on the card and projects its
+            // overlay positions from its own captured copy. What still needs
+            // this array is PICKING, the selection halo, and a cartoon REBUILD
+            // - none of which happens on most frames. So it is deferred to
+            // whoever actually asks (_ensureRotated, reached through
+            // _ensurePickProjection and from renderApp's rebuild branch) rather
+            // than done 60 times a second on the chance that someone will.
+            // 4.3 ms of a 20 ms frame at 320,000 positions.
+            //
+            // A guess, like _gpuWillDraw: if the GPU then declines the frame
+            // the 2D pass below needs the array after all, and both branches
+            // settle up before falling through.
+            const deferRot = this._gpuWillTake(ctx);
+            if (deferRot) this._rotPending = true; else this._rotateCoords(object, c);
             const rotated = this.rotatedCoords;
 
             // Segment generation is now just data lookup
@@ -7806,6 +8045,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     && window.py2dmolCartoonGPU.render(this, ctx,
                         displayWidth, displayHeight, colors);
                 if (!gpuOk) {
+                    // it declined: the 2D renderer below is built on rotatedCoords
+                    this._ensureRotated();
                     window.py2dmolCartoon.render(this, ctx, displayWidth, displayHeight, colors);
                 }
                 // A real frame supersedes any snapshot taken from an older one.
@@ -7821,6 +8062,36 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // wheel zoom paid it on every frame while rotation did not -
                 // exactly the "cartoon zoom lags, rotation is fine" report.
                 // Each gesture's settle timer repaints it once at the end.
+                if (!this.isDragging && !this.isZooming && !this.isOrientAnimating
+                    && window.SEQ && window.SEQ.drawHighlights) {
+                    window.SEQ.drawHighlights();
+                }
+                return;
+            }
+
+            // THE TUBE STYLE ON THE GPU, TAKEN BEFORE THE 2D RECKONING.
+            //
+            // It used to be taken at the bottom, beside the stroking loop it
+            // replaces, on the reasoning that everything it needs is decided by
+            // then. That was true and it was still wrong: almost nothing it
+            // needs is decided there. Measured on 4UG0 (17,789 positions), a
+            // 60 ms GPU tube frame spent 15.5 ms sorting by depth, 10.7 ms
+            // deciding which endpoints get round caps, 6.3 ms projecting
+            // positions and 3.8 ms on depth normalisation - 36 ms of a 60 ms
+            // frame computing answers the GPU throws away. The depth buffer
+            // sorts, buildTube derives its own caps from the topology, and the
+            // vertex shader projects. The actual GL work was 0.4 ms.
+            //
+            // So the branch moved up here, beside the cartoon one, and the
+            // whole block below it is now what runs only when the GPU declines
+            // the frame - which it still can, and then nothing above has been
+            // skipped that the 2D pass needs.
+            if (deferRot && !this._tubeGPUFrame(ctx, displayWidth, displayHeight, colors, object)) {
+                // declined - the 2D pass below reads what was skipped above
+                this._ensureRotated();
+            } else if (deferRot) {
+                this._invalidateSelectionPreview();
+                this._paintSelectionHalo(ctx, this._exportPxScale || 1);
                 if (!this.isDragging && !this.isZooming && !this.isOrientAnimating
                     && window.SEQ && window.SEQ.drawHighlights) {
                     window.SEQ.drawHighlights();
@@ -8410,33 +8681,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             };
 
-            // THE TUBE STYLE ON THE GPU, in place of the stroking loop below.
+            // THE GPU TUBE FRAME WAS OFFERED THIS FRAME AND DECLINED IT.
             //
-            // HERE AND NOT EARLIER, because everything it needs is decided by
-            // this point and not before: which segments are visible, the depth
-            // order, and above all `shadows` and `tints` - the screen-space
-            // occlusion that IS the tube style's shading. The GPU replaces the
-            // stroking, not the reckoning; it is handed the same per-segment
-            // colour the loop would have used.
-            //
-            // Returns false for anything it cannot do - no WebGL2, a lost
-            // context, an export context - and the loop then runs unchanged.
-            if (this.cartoonGPU === true && window.py2dmolCartoonGPU
-                && window.py2dmolCartoonGPU.renderTube
-                && window.py2dmolCartoonGPU.renderTube(this, ctx,
-                    displayWidth, displayHeight, {
-                        order: visibleOrder, count: numRendered,
-                        segments, segData, colors, shadows, tints,
-                        renderShadows, outlineWidthPx,
-                    })) {
-                this._invalidateSelectionPreview();
-                this._paintSelectionHalo(ctx, this._exportPxScale || 1);
-                if (!this.isDragging && !this.isZooming && !this.isOrientAnimating
-                    && window.SEQ && window.SEQ.drawHighlights) {
-                    window.SEQ.drawHighlights();
-                }
-                return;
-            }
+            // It used to be offered here instead, which meant a frame the GPU
+            // did take had still paid for the depth sort, the cap flags and the
+            // projection above - 36 ms of a 60 ms frame on 4UG0, all of it
+            // discarded. The offer now happens before any of that
+            // (_tubeGPUFrame), so reaching this line means WebGL2 is absent,
+            // the context is lost, or this is an export - and the stroking loop
+            // below is the answer, unchanged.
 
             // [OPTIMIZATION] Simplified loop - visibleOrder is already culled
             // Only iterate over visible segments - no need for visibility check inside loop

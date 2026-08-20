@@ -340,15 +340,6 @@
     // entirely, so selecting this style seeds the Thick control instead of
     // silently ignoring it.
     const RICH_THICK_DEFAULT = 0.7;
-    // Screen-space window over which thickness fades out as the view zooms out,
-    // measured on the HALF-thickness in pixels: below the first it is flat,
-    // above the second it is full, linear between.
-    // Below MIN the thickness is EXACTLY zero, not merely small: a fraction of
-    // a pixel of side face is not a thin edge, it is a grey fringe on one side
-    // of every ribbon, and it still costs a face per piece to draw. Above FULL
-    // it is at the user's setting, linear between.
-    const THICK_FADE_MIN_PX = 1.0;
-    const THICK_FADE_FULL_PX = 2.5;
     // Outlines in the drawings are a dark tint of the element's own colour, not
     // black - black flattens the palette and fights the pale sheet edges.
     const RICH_TINT_DEFAULT = 0.8;
@@ -2841,6 +2832,13 @@
         // Zoomed in, a fixed outline is merely a little fine, and following the
         // ribbon all the way up turns a drawn LINE into a band: 3 px would
         // reach 7.5 at 2.5x. So growth stops at 1.5x.
+        //
+        // KEPT, deliberately, when the thickness fade below was removed. They
+        // look like the same thing and are not: this keeps the outline in
+        // PROPORTION to a ribbon that is itself shrinking, so the drawing holds
+        // its balance. The thickness fade changed the ribbon's actual geometry
+        // - the same setting drew a solid slab or a flat strip depending on how
+        // big the file was - which is a different fault.
         const zoomW = Math.max(0.35, Math.min(1.5,
             (renderer.viewerState && renderer.viewerState.zoom) || 1));
         // Ink the ring where a side chain meets the backbone? No, by default -
@@ -3318,10 +3316,10 @@
         const naPlateWA = numOr(renderer.cartoonNaPlateW, NA_PLATE_W);
         // WHAT THE NUCLEIC SLAB ACTUALLY CAME OUT AS, recorded by the ribbon
         // run below and read by the rungs. The rung starts where the rail's face
-        // is, so it needs the rail's REAL half-thickness - which is not the
-        // number requested but that number after the zoom fade (thickZoom), and
-        // under some paths it came from thickScaleRaw rather than from naHalfT
-        // at all. Two independent numbers meant the rung started at one offset
+        // is, so it needs the rail's REAL half-thickness, which under some
+        // paths came from thickScaleRaw rather than from naHalfT at all. (It
+        // also used to differ by the screen-space thickness fade, which is now
+        // gone.) Two independent numbers meant the rung started at one offset
         // while the rail's face was at another: the plates sat off the backbone
         // until the Thickness slider was touched, at which point the two
         // happened to agree again and everything jumped into place.
@@ -5089,29 +5087,23 @@
                 : (renderer.cartoonThickness !== undefined
                     ? renderer.cartoonThickness / 2 : RIBBON_TH_A);
 
-            // THICKNESS TAPERS OFF AS YOU ZOOM OUT. Thickness is only readable
-            // while the band is a few pixels wide; below that it stops being a
-            // solid edge and becomes a dark fringe along every ribbon, which
-            // reads as dirt rather than as depth. So it is faded to nothing in
-            // SCREEN space: the same structure keeps its edges when you zoom in
-            // and loses them when you zoom out, which is what the eye expects
-            // from a real object.
+            // THICKNESS IS WHAT THE CONTROL SAYS IT IS, at every scale.
             //
-            // This is a LEGIBILITY change, not a performance one. A flat ribbon
-            // might look like less to draw, but measured on a helix+coil test
-            // it issues about 3% MORE canvas operations at zoom 0.3 than the
-            // slab does (5627 vs 5484): the slab path merges faces that the
-            // flat path emits separately. Do not reach for it as an
-            // optimisation.
-            // Measured against the DISPLAY, not the output: this is a question
-            // about what the viewer can see, and the answer must not change
-            // because the same view is being exported larger. Dividing the
-            // export scale back out keeps a flat ribbon on screen flat in its
-            // PNG - the export stays what you were looking at.
-            const thPx = thickScaleRaw * scale / pxScale;
-            const thickZoom = Math.max(0, Math.min(1,
-                (thPx - THICK_FADE_MIN_PX) / (THICK_FADE_FULL_PX - THICK_FADE_MIN_PX)));
-            const thickScale = thickScaleRaw * thickZoom;
+            // It used to taper off as the drawing got small on screen - faded
+            // to nothing between a projected half-thickness of 1.0 and 2.5 px -
+            // on the argument that a sub-pixel side face reads as a dark fringe
+            // rather than as depth. The trouble is that the test was against
+            // PROJECTED size, and projected size depends on the structure:
+            // fit-to-view scales a large assembly down until its ribbons fall
+            // through that window, so loading a bigger file silently flattened
+            // the cartoon. The same setting drew with depth or without it
+            // according to how many residues the file had, which reads as a bug
+            // rather than as perspective.
+            //
+            // Removed rather than re-tuned: any threshold in screen space has
+            // the same property. The control is in Angstrom and now means the
+            // same thing whatever it is pointed at.
+            const thickScale = thickScaleRaw;
             if (!isProt) naSlabHalfT = thickScale;
 
             // HELIX RATIO, OVERRIDABLE. RICH_TH_REL.H is 0 - a richardson helix

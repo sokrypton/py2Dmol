@@ -701,8 +701,13 @@ function parsePDB(text) {
 function parseCIF(text) {
 
     // Parse chemical component table first (for modified residue detection)
-    // Also parse struct_conn for explicit bonds
-    const loops = parseMinimalCIF_light(text);
+    // Also parse struct_conn for explicit bonds.
+    //
+    // NOT the atom table. This walker is here for the small metadata loops -
+    // struct_conn, chem_comp, chem_comp_bond, and the biounit pair - which
+    // together are a few thousand rows. The atoms are read by the dedicated
+    // loop below, and tokenising them here as well was half the parse.
+    const loops = parseMinimalCIF_light(text, ['_atom_site.']);
 
     const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
 
@@ -880,14 +885,45 @@ function parseCIF(text) {
     // files write ragged ones: 9a9o omits pdbx_PDB_model_num and ihm_model_id
     // on ~2000 of its 16740 atoms, all of them past the last column we need.
     const minReqLen = Math.max(idxX, idxY, idxZ, idxChain, idxResSeq, idxResName, idxAtomName) + 1;
+    // ONLY THE COLUMNS THAT ARE READ. _atom_site has 21 of them in a PDB-issued
+    // file and this loop looks at ten; tokenising the rest built 4.6 million
+    // substrings on 4UG0 and dropped them all. The mask says which column
+    // indices matter, and readCIFCols slices those and counts past the others.
+    const wantIdx = [idxRecord, idxAtomName, idxResName, idxChain, idxResSeq,
+        headerMap['_atom_site.auth_seq_id'], idxX, idxY, idxZ, idxB, idxElement, idxModelID];
+    let maxWanted = -1;
+    for (const w of wantIdx) if (w >= 0 && w > maxWanted) maxWanted = w;
+    const wantMask = new Uint8Array(maxWanted + 1);
+    for (const w of wantIdx) if (w >= 0) wantMask[w] = 1;
+    // reused across rows; a column is only read when it is < nCols, and every
+    // column below that count was written on this row, so nothing goes stale
+    const values = [];
     let currentModelArray = null;
 
-    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-        const line = lines[lineIdx];
-        const lineLen = line.length;
+    // OVER THE TEXT ITSELF, NOT OVER `lines`.
+    //
+    // text.split('\n') hands back SLICED strings - views carrying a pointer to
+    // the parent and an offset - and every character read through one pays that
+    // indirection. Measured on 4UG0: scanning the same 21.9 million characters
+    // costs 885 ms across the 218,776 line strings and 250 ms across the flat
+    // text. Same characters, same test, 3.5x, purely because of how the string
+    // is represented.
+    //
+    // So this walks `text` with a cursor and hands readCIFCols a RANGE. No line
+    // is ever materialised: startsWith takes a position, and the row tests read
+    // a character code straight out of the parent.
+    const textLen = text.length;
+    for (let pos = 0; pos < textLen; ) {
+        let eol = text.indexOf('\n', pos);
+        if (eol < 0) eol = textLen;
+        // a trailing \r belongs to the line ending, not to the last column
+        const end = (eol > pos && text.charCodeAt(eol - 1) === 13) ? eol - 1 : eol;
+        const lineLen = end - pos;
+        const lineStart = pos;
+        pos = eol + 1;
 
         // Check for atom_site header
-        if (line.startsWith('_atom_site.')) {
+        if (text.startsWith('_atom_site.', lineStart)) {
             atomSiteLoop = true;
             continue;
         }
@@ -895,20 +931,20 @@ function parseCIF(text) {
         if (!atomSiteLoop) continue;
 
         // Fast check for comment or end marker
-        if (lineLen > 0 && line[0] === '#') {
+        if (lineLen > 0 && text.charCodeAt(lineStart) === 35 /* # */) {
             atomSiteLoop = false;
             continue;
         }
 
         // Skip semicolon lines
-        if (lineLen > 0 && line[0] === ';') continue;
+        if (lineLen > 0 && text.charCodeAt(lineStart) === 59 /* ; */) continue;
 
-        const values = tokenizeCIFLine_light(line);
-        if (!values || values.length < minReqLen) continue;
+        const nCols = readCIFCols(text, lineStart, end, wantMask, values);
+        if (nCols < minReqLen) continue;
 
         // Direct array access - much faster than function calls
         // Update modelID if needed
-        if (idxModelID >= 0 && idxModelID < values.length) {
+        if (idxModelID >= 0 && idxModelID < nCols) {
             const newModelID = +values[idxModelID] || modelID; // Unary + is faster than parseInt
             if (newModelID !== modelID) {
                 modelID = newModelID;
@@ -931,16 +967,16 @@ function parseCIF(text) {
 
         // Create atom object with direct array access and optimized number parsing
         // Use unary + operator for numbers (faster than parseFloat/parseInt)
-        const resNameVal = (idxResName >= 0 && idxResName < values.length) ? values[idxResName] : '';
+        const resNameVal = (idxResName >= 0 && idxResName < nCols) ? values[idxResName] : '';
         // Parse residue sequence number, handling missing values ("?") by falling back to auth_seq_id
         // Use label_seq_id (PDB numbering) for SIFTS mapping compatibility
         let resSeqVal = 0;
-        if (idxResSeq >= 0 && idxResSeq < values.length) {
+        if (idxResSeq >= 0 && idxResSeq < nCols) {
             const labelSeqStr = values[idxResSeq];
             // Check if label_seq_id is missing ("?" or empty), fall back to auth_seq_id
             if (labelSeqStr === '?' || labelSeqStr === '' || labelSeqStr === null || labelSeqStr === undefined) {
                 const idxAuthSeq = headerMap['_atom_site.auth_seq_id'];
-                if (idxAuthSeq >= 0 && idxAuthSeq < values.length) {
+                if (idxAuthSeq >= 0 && idxAuthSeq < nCols) {
                     const authSeqStr = values[idxAuthSeq];
                     resSeqVal = (authSeqStr === '?' || authSeqStr === '' || authSeqStr === null) ? 0 : (+authSeqStr || 0);
                 }
@@ -951,16 +987,16 @@ function parseCIF(text) {
         }
 
         const atom = {
-            record: (idxRecord >= 0 && idxRecord < values.length) ? values[idxRecord] : 'ATOM',
-            atomName: (idxAtomName >= 0 && idxAtomName < values.length) ? values[idxAtomName] : '',
+            record: (idxRecord >= 0 && idxRecord < nCols) ? values[idxRecord] : 'ATOM',
+            atomName: (idxAtomName >= 0 && idxAtomName < nCols) ? values[idxAtomName] : '',
             resName: resNameVal,
-            chain: (idxChain >= 0 && idxChain < values.length) ? values[idxChain] : '',
+            chain: (idxChain >= 0 && idxChain < nCols) ? values[idxChain] : '',
             resSeq: resSeqVal,
-            x: (idxX >= 0 && idxX < values.length) ? (+values[idxX] || 0) : 0,
-            y: (idxY >= 0 && idxY < values.length) ? (+values[idxY] || 0) : 0,
-            z: (idxZ >= 0 && idxZ < values.length) ? (+values[idxZ] || 0) : 0,
-            b: (idxB >= 0 && idxB < values.length) ? (+values[idxB] || 0) : 0,
-            element: (idxElement >= 0 && idxElement < values.length) ? values[idxElement] : '',
+            x: (idxX >= 0 && idxX < nCols) ? (+values[idxX] || 0) : 0,
+            y: (idxY >= 0 && idxY < nCols) ? (+values[idxY] || 0) : 0,
+            z: (idxZ >= 0 && idxZ < nCols) ? (+values[idxZ] || 0) : 0,
+            b: (idxB >= 0 && idxB < nCols) ? (+values[idxB] || 0) : 0,
+            element: (idxElement >= 0 && idxElement < nCols) ? values[idxElement] : '',
             res_name: resNameVal, // Duplicate for compatibility
             res_seq: resSeqVal // Duplicate for compatibility
         };
@@ -2697,9 +2733,92 @@ function tokenizeCIFLine_light(s) {
     return out;
 }
 
-function parseMinimalCIF_light(text) {
+/* Every loop_ in the file, as [columns, rows].
+ *
+ * `skipPrefixes` names loops whose ROWS the caller will not read. They are
+ * still found, and still delimit correctly - only their contents are not
+ * tokenised or kept.
+ *
+ * This exists for exactly one loop, and it is worth the parameter. _atom_site
+ * is the entire structure: on 4UG0 it is 218,776 rows of 21 columns, so walking
+ * it here builds 4.6 MILLION substrings, copies every row again with slice(),
+ * and retains the lot - and then the caller throws it away, because parseCIF
+ * has its own atom reader that does the job properly a few lines later.
+ * Measured: 2,698 ms of a 5,342 ms parse, half the cost of loading a large
+ * structure, for a table nothing looks at.
+ *
+ * Only parseCIF passes a skip-list. buildBioFromCIF genuinely does read the
+ * atom rows out of this, and calls it without one.
+ */
+/* tokenizeCIFLine_light, but it only KEEPS the columns asked for.
+ *
+ * Same rules - single and double quotes (nucleic atom names arrive as "O5'"),
+ * and an unquoted . or ? means absent. The difference is that an unwanted
+ * column is walked past rather than sliced out, which is the whole point: the
+ * atom table is the one loop where the unwanted columns outnumber the wanted
+ * ones and there are hundreds of thousands of rows.
+ *
+ * Writes into `out` and returns HOW MANY columns the row had - the caller needs
+ * that, not out.length, because ragged rows are legal and are relied on (see
+ * minReqLen).
+ */
+const CC_SPACE = 32;
+const CC_TAB = 9;
+const CC_LF = 10;
+const CC_CR = 13;
+const CC_QUOTE = 39;      // '
+const CC_DQUOTE = 34;     // "
+const CC_DOT = 46;        // .
+const CC_QMARK = 63;      // ?
+
+function readCIFCols(s, from, n, wantMask, out) {
+    const maxCol = wantMask.length;
+    let i = from;
+    let col = 0;
+    while (i < n) {
+        // Char codes rather than s[i]. NOT because single-character strings
+        // are expensive - V8 caches them, and measured on sliced line strings
+        // the two were within 2% of each other. It is because this now scans a
+        // RANGE of the parent text, where charCodeAt is the natural read and
+        // s[i] would be comparing against a one-character string for every
+        // character of a 24 MB file.
+        let c = s.charCodeAt(i);
+        while (i < n && (c === CC_SPACE || c === CC_TAB || c === CC_CR || c === CC_LF)) {
+            c = s.charCodeAt(++i);
+        }
+        if (i >= n) break;
+        const want = col < maxCol && wantMask[col] === 1;
+        if (c === CC_QUOTE || c === CC_DQUOTE) {
+            let j = ++i;
+            while (j < n && s.charCodeAt(j) !== c) j++;
+            if (want) out[col] = s.slice(i, j);
+            i = j < n ? j + 1 : n;
+        } else {
+            let j = i;
+            for (;;) {
+                if (j >= n) break;
+                const d = s.charCodeAt(j);
+                if (d === CC_SPACE || d === CC_TAB || d === CC_CR || d === CC_LF) break;
+                j++;
+            }
+            if (want) {
+                // an unquoted single . or ? is CIF for "no value"
+                out[col] = (j - i === 1 && (s.charCodeAt(i) === CC_DOT || s.charCodeAt(i) === CC_QMARK))
+                    ? '' : s.slice(i, j);
+            }
+            i = j;
+        }
+        col++;
+    }
+    return col;
+}
+
+function parseMinimalCIF_light(text, skipPrefixes) {
     const lines = text.split(/\r?\n/);
     const loops = [];
+    const skip = (skipPrefixes && skipPrefixes.length)
+        ? (col) => skipPrefixes.some((p) => col && col.startsWith(p))
+        : null;
     let i = 0;
     let loopCount = 0;
     let rowCount = 0;
@@ -2721,10 +2840,19 @@ function parseMinimalCIF_light(text) {
                 i++;
             }
 
+            // A SKIPPED LOOP IS STILL WALKED, just not read. The end of a
+            // loop is decided line by line by the tests below, so advancing
+            // through the rows without tokenising them stops in the same
+            // place - and the continuation branch cannot change that, since a
+            // continuation line fails every one of those tests too.
+            const skipping = skip ? skip(cols[0]) : false;
+
             while (i < lines.length) {
                 const raw = lines[i];
                 if (!raw || /^\s*#/.test(raw) || /^\s*loop_/i.test(raw) ||
                     /^\s*data_/i.test(raw) || /^\s*_/.test(raw)) break;
+
+                if (skipping) { i++; continue; }
 
                 let vals = tokenizeCIFLine_light(raw);
                 while (vals.length < cols.length && i + 1 < lines.length) {
@@ -2738,7 +2866,9 @@ function parseMinimalCIF_light(text) {
                 }
                 i++;
             }
-            loops.push([cols, rows]);
+            const entry = [cols, rows];
+            if (skipping) entry.skipped = true;   // rows empty by request, not by absence
+            loops.push(entry);
             loopCount++;
             continue;
         }
