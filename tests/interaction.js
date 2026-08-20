@@ -2176,6 +2176,45 @@ t('the style toggles are grouped together, three to a row', () => {
     }
 });
 
+// THE PROGRESS BAR ONLY WORKS BECAUSE IT YIELDS. Everything the loader does is
+// one long synchronous block per stage, so setting a width and returning to a
+// nine-second build paints nothing - the browser never gets the main thread
+// back and the bar arrives already finished. The await of a frame is the whole
+// feature, and it is exactly the sort of thing that gets "simplified" away.
+t('the load progress bar yields to the browser before each stage', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    for (const id of ['load-progress', 'load-progress-bar', 'load-progress-label']) {
+        if (!html.includes('id="' + id + '"')) {
+            throw new Error(id + ' is gone from index.html');
+        }
+    }
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const fn = app.slice(app.indexOf('async function setProgress'),
+        app.indexOf('function hideProgress'));
+    if (!fn) throw new Error('setProgress is gone from web/app.js');
+    if (!/async function setProgress/.test(fn)) {
+        throw new Error('setProgress is no longer async, so it cannot yield and'
+            + ' the bar will never paint during a load');
+    }
+    if (!/requestAnimationFrame/.test(fn)) {
+        throw new Error('setProgress no longer waits for a frame, so the bar'
+            + ' will jump straight to done on any load worth showing');
+    }
+    // ...and every announcement has to be awaited, or the yield is discarded
+    // the declaration is not a call, and neither is a property access
+    const calls = app.match(/(?<![a-zA-Z.])(?<!function )setProgress\(/g) || [];
+    const awaited = app.match(/await setProgress\(/g) || [];
+    if (calls.length !== awaited.length) {
+        throw new Error('setProgress is called without await: ' + calls.length
+            + ' calls but ' + awaited.length + ' awaited - an un-awaited call'
+            + ' does not yield, so it never paints');
+    }
+    if (!/id="load-progress-pulse"/.test(html)) {
+        throw new Error('the compositor-animated pulse is gone; without it the'
+            + ' bar is frozen for the whole of each blocking stage');
+    }
+});
+
 // Cyclic is NOT cartoon-only, so the tag that hides Smooth and Arrows in tube
 // style must sit on those two cells and not on the row - otherwise switching to
 // tube takes Cyclic off the screen with them.
