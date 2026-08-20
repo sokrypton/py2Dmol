@@ -1297,9 +1297,31 @@ measurement just re-finds the fringe:
 | 1UBQ | 0.4747 | 0.4505 | **0.4381** | 0.4460 | 0.4638 |
 | 4UG0 | 2.1126 | 2.0926 | 2.0756 | **2.0639** | 2.0652 |
 
-`SKIRT_Z = 0.5`. Shallow - 2% to 9% - but it is one multiply in the fragment
-shader and no extra pass, and 4UG0's preference for 0.75 is 0.6% away. Frame
-time on 4UG0 is unchanged at 4.1 ms.
+...and then reported as still showing crosses at the joints, which sent this
+back for a second look. The blurred metric is nearly blind to a thin interior
+line, and that is what a cross is.
+
+**Why a joint crosses.** Two segments that meet SHARE a position, so their axes
+coincide there. A skirt sitting `uSkirtZ` radii toward the eye beats its
+neighbour's fill wherever that neighbour's bulge is under `uSkirtZ * r` - a
+band just inside the neighbour's silhouette, printing as a dash across the
+joint, and two of them meeting is the cross. The band closes as `uSkirtZ` goes
+to zero. Counting interior ink the 2D pass does not draw against rim ink it
+does, 1TIM at zoom 4:
+
+| uSkirtZ | crosses | missing rim |
+| --- | --- | --- |
+| 0 | 209 | 3139 |
+| **0.25** | **210** | 2880 |
+| 0.5 | 270 | 2613 |
+| 1.0 | 511 | 2419 |
+
+`SKIRT_Z = 0.25`: at the cross floor - indistinguishable from 0 - while keeping
+some of the rim that 0 gives up, so it dominates both ends. The blurred metric
+prefers 0.5 by 1-5% and is overruled, because it is dominated by the
+antialiasing fringe, which is not fixable at this price, while the crosses are
+what someone actually notices. One multiply, no extra pass; 4UG0 frame time
+unchanged.
 
 ### Reading the two outline implementations against each other
 

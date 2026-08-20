@@ -1813,15 +1813,32 @@ const TUBE_AO_DENSITY = 0.164;
 // the contest with the neighbour's bulge alternates pixel by pixel, which is
 // the rim "chopped into dashes" recorded in FSTUBE.
 //
-// Half a radius measured best against the 2D pass, and by the same margin
-// wherever it was checked: 1TIM at zoom 2.2 and at zoom 9, 3CHY and 1UBQ. 4UG0
-// prefers 0.75 by 0.6%, which is inside the noise of the others. The metric is
-// the difference in BLURRED ink maps, which is deliberately blind to
-// antialiasing - see GPU3D_NOTES for why that matters here.
+// A QUARTER, AND THE REASON IS THE CROSSES AT THE JOINTS.
+//
+// Two segments that meet SHARE a position, so their axes coincide there. A
+// skirt sitting uSkirtZ radii toward the eye therefore beats its neighbour's
+// fill wherever that neighbour's bulge is under uSkirtZ * r - a band just
+// inside the neighbour's silhouette, which prints as a dash across the joint,
+// and two of them meeting is the cross. The band closes as uSkirtZ goes to 0.
+//
+// Measured on 1TIM at zoom 4, interior ink the 2D pass does not draw against
+// rim ink it does:
+//
+//     uSkirtZ    crosses    missing rim
+//        0          209        3139
+//        0.25       210        2880
+//        0.5        270        2613
+//        1.0        511        2419
+//
+// 0.25 is at the cross floor - indistinguishable from 0 - while keeping some of
+// the rim that 0 gives up, so it dominates both ends. A blurred-ink comparison
+// against the 2D pass prefers 0.5 by 1-5%, and is ignored here on purpose: it
+// is dominated by the antialiasing fringe, which is not fixable at this price,
+// and it barely sees a thin interior line, which the eye goes straight to.
 //
 // It costs nothing: one multiply in the fragment shader, no extra pass.
 // cartoonSkirtZ overrides it.
-const SKIRT_Z = 0.5;
+const SKIRT_Z = 0.25;
 // ...and the user-facing multiplier on it, now that the density carries the
 // calibration itself.
 const AO_GAIN = 1.0;
