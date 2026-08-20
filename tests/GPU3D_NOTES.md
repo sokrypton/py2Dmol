@@ -1518,3 +1518,41 @@ both changes 685 / 752 ms. The minima are identical and the medians sit well
 inside a +-15% spread. This is the class of change PERF_NOTES already warns
 gives nothing in Chrome, and the warning was right again. Measure the minimum
 of many warm samples here; a single rebuild is worthless as a signal.
+
+### Cartoon at capsid scale: it cannot fit, and now it says so
+
+Reported as a crash when loading 3J3Q in cartoon mode with the GPU on. It is
+not a leak or a GPU fault - it is arithmetic.
+
+A cartoon build materialises prims, one object per FACE and an edge table all
+at once. Measured, that is **20,261 bytes per position**: a 4UG0 build takes the
+heap from 118 MB to 457 MB for 17,544 positions. 3J3Q is 313,236 positions, so
+it asks for **6.0 GB** on top of the ~1.9 GB the loaded structure already
+occupies, against a 4,192 MB heap limit.
+
+Heap at each step, capsid, before the guard:
+
+| | MB |
+| --- | --- |
+| fetched | 239 |
+| loaded | 1,872 |
+| tube drawn | 1,983 |
+| cartoon | tab dies |
+
+It does not degrade, it dies, and a structure that took sixteen seconds to load
+dies with it. So `setStyle('cartoon')` now asks `_cartoonWouldFit()` first and
+refuses the switch rather than the tab: 20 kB x positions against
+`jsHeapSizeLimit - usedJSHeapSize`, with a 0.8 margin because the build's peak
+is above its residue. `performance.memory` is Chrome-only; without it the test
+falls back to a flat 120,000-position cap. `renderer.cartoonForce = true`
+bypasses it.
+
+Capsid now reports `{ok: false, positions: 313236, needMB: 6052, freeMB: 2198}`
+and stays in tube; 4UG0 reports `{ok: true, needMB: 339, freeMB: 3758}` and
+switches as before, its measured build cost 314 MB against the 339 estimate.
+
+**This is a ceiling, not a fix.** Making the cartoon reach capsid scale means
+not holding the three intermediates at once - prims, the per-face objects and
+the edge table - which is the streaming rebuild that the edge-stage profile
+also points at. Until then the honest number is ~120k positions in a 4 GB heap,
+less if the structure itself is large.

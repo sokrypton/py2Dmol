@@ -2444,6 +2444,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
             if (this.style === style) return;
+            // WILL THE CARTOON EVEN FIT?
+            //
+            // The cartoon build materialises prims, one object per face and an
+            // edge table all at once, and that costs about 20 kB PER POSITION -
+            // measured 339 MB for 4UG0's 17,544. A capsid is 313,236 positions,
+            // so it would ask for 6.3 GB on top of the ~1.9 GB the structure
+            // already occupies, against a 4.2 GB heap. It does not fail
+            // gracefully: the tab dies, and a structure that took sixteen
+            // seconds to load dies with it.
+            //
+            // So the switch is refused before anything is allocated. This is a
+            // ceiling, not a fix - see GPU3D_NOTES - and cartoonForce bypasses
+            // it for anyone who wants to find their own limit.
+            if (style === 'cartoon' && !this.cartoonForce) {
+                const fit = this._cartoonWouldFit();
+                if (!fit.ok) {
+                    console.warn('py2dmol: staying in tube style - the cartoon '
+                        + 'build needs about ' + fit.needMB + ' MB for '
+                        + fit.positions + ' positions and only ' + fit.freeMB
+                        + ' MB of heap is left. Set renderer.cartoonForce = true '
+                        + 'to try anyway.');
+                    if (this.onStyleRefused) this.onStyleRefused(fit);
+                    if (this.styleSelect && this.styleSelect.value !== this.style) {
+                        this.styleSelect.value = this.style;
+                    }
+                    return;
+                }
+            }
             this.style = style;
             // The build-up is cartoon-only, so leaving cartoon leaves the mode
             // too - otherwise the save button goes on offering to record a
@@ -2466,6 +2494,36 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
             if (this._syncStylePanel) this._syncStylePanel();
             this.render('setStyle');
+        }
+
+        /**
+         * CAN A CARTOON BUILD FOR THIS STRUCTURE FIT IN THE HEAP THAT IS LEFT?
+         *
+         * 20 kB per position is measured, not guessed: a 4UG0 cartoon build
+         * takes the heap from 118 MB to 457 MB for 17,544 positions. It is a
+         * generous per-position figure because the count of FACES per position
+         * varies with secondary structure, so the estimate is deliberately on
+         * the pessimistic side of the average.
+         *
+         * performance.memory is Chrome-only and non-standard. Where it is
+         * missing there is no way to ask how much room is left, so the test
+         * falls back to a flat position count - chosen as what fits in a 4 GB
+         * heap with a typical structure already in it.
+         */
+        _cartoonWouldFit() {
+            const positions = (this.coords && this.coords.length) || 0;
+            const needMB = Math.round(positions * 20261 / 1048576);
+            const m = (typeof performance !== 'undefined') && performance.memory;
+            if (!m || !m.jsHeapSizeLimit) {
+                const CAP = 120000;
+                return { ok: positions <= CAP, positions, needMB, freeMB: -1 };
+            }
+            const freeMB = Math.round(
+                (m.jsHeapSizeLimit - m.usedJSHeapSize) / 1048576);
+            // 0.8 of what is left: the build's peak is higher than its
+            // residue, and a tab that survives the allocation only to die on
+            // the next one has not been saved from anything.
+            return { ok: needMB < freeMB * 0.8, positions, needMB, freeMB };
         }
 
         /**
