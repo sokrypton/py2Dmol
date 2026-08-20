@@ -2176,6 +2176,30 @@ t('the style toggles are grouped together, three to a row', () => {
     }
 });
 
+// THE WEB APP DEFAULTS TO THE GPU, THE PYTHON VIEWER DOES NOT, and the split is
+// deliberate. index.html is a page someone opened in a browser they are sitting
+// in front of; a py2Dmol.view() is embedded in a notebook that may be rendered
+// anywhere, so it keeps the conservative default and has no such control.
+//
+// It is safe on the page because it is only ever a REQUEST: useGpuRow removes
+// itself when WebGL2 is absent, and the renderer falls back to the 2D path for
+// anything the GPU declines. Worth 1,813 ms -> 301 on a capsid's first render.
+t('the GPU is on by default on the web page and off in the Python viewer', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    const m = html.match(/<input[^>]*id="useGpuCheckbox"[^>]*>/);
+    if (!m) throw new Error('the Use GPU checkbox is gone from index.html');
+    if (!/\bchecked\b/.test(m[0])) {
+        throw new Error('the web app no longer defaults to the GPU: '
+            + 'a capsid then draws its first frame on the 2D path, 1.8 s '
+            + 'against 0.3, and every frame after it 840 ms against 26');
+    }
+    const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
+    if (!/"gpu":\s*False/.test(py)) {
+        throw new Error('the Python viewer default changed with the web app; '
+            + 'they are deliberately different - see the comment in index.html');
+    }
+});
+
 // Cyclic is NOT cartoon-only, so the tag that hides Smooth and Arrows in tube
 // style must sit on those two cells and not on the row - otherwise switching to
 // tube takes Cyclic off the screen with them.

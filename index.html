@@ -153,10 +153,26 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                      It lives here rather than in the Style panel
                                      because it applies to both styles equally -
                                      tagged per-style it was hidden in whichever
-                                     one you were not in. -->
+                                     one you were not in.
+                                
+                                     ON BY DEFAULT, on this page only. Measured
+                                     first render of 3J3Q: 1,813 ms on the 2D
+                                     path against 455 with the GPU, and every
+                                     frame after it 840 ms against 26 - turning
+                                     a capsid is not usable without it. Small
+                                     structures are unaffected either way (1TIM
+                                     306 vs 327 ms, 4UG0 332 vs 333).
+                                
+                                     Safe as a default because it is only ever a
+                                     REQUEST: the row above removes itself when
+                                     WebGL2 is absent, and the renderer falls
+                                     back to the 2D path by itself for anything
+                                     the GPU declines. The Python viewer keeps
+                                     its own default (gpu=False in viewer.py)
+                                     and does not have this control. -->
                                 <div class="upload-toggle-item" id="useGpuRow">
                                     <label class="switch">
-                                        <input type="checkbox" id="useGpuCheckbox">
+                                        <input type="checkbox" id="useGpuCheckbox" checked>
                                         <span class="slider-toggle"></span>
                                     </label>
                                     <label for="useGpuCheckbox" class="upload-toggle-label"
