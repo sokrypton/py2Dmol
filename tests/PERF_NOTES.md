@@ -642,3 +642,65 @@ continued rows split in two. The count is what keeps the two paths walking in
 step. Making the pre-scan cheap means not materialising the lines at all -
 walking the flat text with a cursor, the way the atom loop already does - which
 is a real change to that function, not a tweak to this branch.
+
+### The cursor pre-scan, and where the capsid load actually goes now
+
+The pre-scan was rewritten to do exactly that - walk the flat text with a
+cursor, materialising no lines - and the token counting on skipped rows moved
+out of `readCIFCols` into a dedicated `countCIFTokens`, which drops the want
+mask, the output array and the early-abort hook that a count does not need.
+The counting itself stays, for the 42-loops reason above.
+
+    3J3Q pre-scan  1,450 -> 806 ms
+    3J3Q parse     2,655 -> 2,152 ms
+
+One trap on the way in, worth naming because it failed silently: folding case
+with `c | 32` corrupts `_`, which is 95 and folds to 127. Every CIF keyword
+this function looks for ends in an underscore, so `loop_` never matched and
+the function cheerfully returned zero loops for every file on earth. Fold both
+sides or neither.
+
+With that done, 3J3Q (242 MB, 2.4M atoms, 313k positions) breaks down as:
+
+| stage | ms |
+| --- | --- |
+| pre-scan (`parseMinimalCIF_light`) | 810 |
+| metadata loops + `_atom_site` header | 185 |
+| atom row loop | 1,153 |
+| &nbsp;&nbsp;- of which tokenising | ~908 |
+| &nbsp;&nbsp;- of which building atom objects | ~270 |
+| `maybeFilterLigands` | 141 |
+| `convertParsedToFrameData` | ~490 |
+| &nbsp;&nbsp;- residue grouping | 114 |
+| &nbsp;&nbsp;- sort + nucleic resolution | 35 |
+| &nbsp;&nbsp;- classification loop | 149 |
+| &nbsp;&nbsp;- `buildSidechainTable` | 185 |
+| rest of `processFiles` | ~640 |
+| `applyPendingObjects` | 632 |
+
+Two things were measured and found NOT to be the problem, which is worth
+recording so nobody spends the afternoon on them:
+
+- **`localeCompare` in the residue sort.** It looks like the classic mistake -
+  a locale-aware comparison inside a sort over 313,000 items - and it costs
+  **17 ms**. The residues arrive very nearly sorted and there are only a few
+  hundred distinct chains.
+- **The `hasFrame` pre-pass in `buildSidechainTable`**, which calls `localFrame`
+  once per residue: **9 ms**. All 290 ms of that function was the per-residue
+  loop underneath it, and specifically its allocations.
+
+The two wins that followed both came from not allocating:
+
+- Atoms arrive in residue order, so grouping them by comparing three fields
+  against the previous atom avoids building and hashing `chain:seq:resName`
+  1.5 million times. The map stays for the atoms that interrupt a run.
+  `maybeFilterLigands` 215 -> 141, grouping 179 -> 114.
+- `buildSidechainTable` allocated ten containers per residue - two Sets, a Map,
+  an array per atom, a stack per walk - about three million objects for the
+  capsid. Hoisted into typed-array scratch that grows to the largest residue
+  and is then only cleared: 290 -> 185 ms.
+
+**Verify loader changes with the signature harness, ligands ON.** A hash over
+every coordinate, chain, type, residue name and number, the whole side-chain
+table and the bond list. With ligands off the bond list is empty and the check
+is close to vacuous - that mistake has been made twice in this codebase.
