@@ -1197,7 +1197,6 @@ out float vRpx;         // the radius actually DRAWN, in device pixels
 out float vRfill;
 out float vZA, vZB;     // view-space depth at each end
 out vec3 vTCol;
-out vec2 vPx;           // this vertex's own device-pixel position
 out float vCapA, vCapB;
 out float vNoAO;
 void main() {
@@ -1239,7 +1238,6 @@ void main() {
   float along = (c == 0 || c == 3) ? -vRpx : L + vRpx;
   float across = (c == 0 || c == 1) ? -vRpx : vRpx;
   vec2 p = vA + t * along + n * across;
-  vPx = p;
   vec2 ndc = vec2(p.x / uSize.x * 2.0 - 1.0, 1.0 - p.y / uSize.y * 2.0);
   // A CONSERVATIVE DEPTH FOR THE QUAD, WHICH IS WHAT BUYS BACK EARLY-Z.
   //
@@ -1412,7 +1410,6 @@ in float vRpx;
 in float vRfill;
 in float vZA, vZB;
 in vec3 vTCol;
-in vec2 vPx;
 in float vCapA, vCapB;
 in float vNoAO;
 uniform vec2 uZRange;
@@ -1434,6 +1431,24 @@ uniform vec2 uSizeF;
 uniform sampler2D uAOTex;
 out vec4 fragColor;
 void main() {
+  // THE FRAGMENT'S OWN POSITION, TAKEN FROM gl_FragCoord RATHER THAN
+  // INTERPOLATED ACROSS THE QUAD.
+  //
+  // It used to arrive as a varying, which made it a function of the quad's
+  // corners: the same pixel on a differently-sized quad interpolates to a
+  // last-bit-different position, and since the bulge is sqrt(r^2 - dist^2),
+  // whose slope is unbounded at the silhouette, that becomes a LARGE difference
+  // in depth right at a tube's edge. The prepass and the draw both write depth
+  // and the draw tests LEQUAL against the prepass, so they have to agree - and
+  // with a varying the only way to make them agree was to rasterise the same
+  // grown quad in both, which had the prepass shading four times the fragments
+  // it kept, at a capsid's outline-to-tube ratio.
+  //
+  // Read from gl_FragCoord it is the pixel centre, exactly, whatever quad
+  // carried the fragment there. The two passes agree by construction and the
+  // prepass can go back to the tube's own quad. vA/vB measure y downward from
+  // the top, gl_FragCoord upward from the bottom.
+  vec2 vPx = vec2(gl_FragCoord.x, uSizeF.y - gl_FragCoord.y);
   // distance to the segment, in pixels, and how far along it the nearest point is
   vec2 d = vB - vA;
   float L2 = dot(d, d);
@@ -1543,6 +1558,14 @@ void main() {
   //
   // uPushZ moves it AWAY from the eye for the outline pass, so a segment's own
   // fill wins where the two coincide.
+  // THE DRAW TESTS LEQUAL AGAINST WHAT THE PREPASS LEFT HERE, so the two have
+  // to agree to the last bit. They do, and only because they rasterise the same
+  // triangles: vPx is interpolated across the quad, and the same pixel on a
+  // differently-sized quad lands on different barycentric weights. That is not
+  // a rounding curiosity - the bulge is sqrt(r^2 - dist^2), whose slope is
+  // unbounded at the silhouette, so a last-bit difference in vPx becomes a
+  // large difference in depth exactly at a tube's edge. Trying to absorb it
+  // with a tolerance instead cost every outline in the picture.
   gl_FragDepth = clamp(1.0 - t01 + (skirt ? uPushZ : 0.0), 0.0, 1.0);
   // THE CAPSULE'S OWN NORMAL, which is what the screen-space occlusion was
   // standing in for. The 2D pass has no surface to light, so it fakes depth by
@@ -1617,6 +1640,18 @@ vec3 grainAt(vec3 c) {
   return c * mix(vec3(1.0), g, uPencil);
 }`;
 
+// THE PICTURE ONTO THE CANVAS. blitFramebuffer would be the obvious way and it
+// is not available: the context is created with antialias: true, so the default
+// framebuffer is multisampled, and blitting a single-sample buffer into one is
+// an INVALID_OPERATION - silently, as far as the picture is concerned, which is
+// what a blank white frame turned out to be. A textured triangle has no such
+// restriction and costs nothing measurable.
+const FSCOPY = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+out vec4 fragColor;
+void main() { fragColor = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); }`;
+
 const FSINK = `#version 300 es
 precision highp float;
 in vec3 vInk; out vec4 fragColor;
@@ -1686,9 +1721,13 @@ function tmCollect() {
         acc.mean = +(acc.sum / acc.n).toFixed(3);
     }
 }
+let progCopy = null;            // the offscreen picture onto the canvas
 let progAO = null;              // screen-space occlusion
 let progBlur = null;            // ...and its 4x4 depth-aware resolve
 let zFbo = null, zTex = null, zRb = null;   // the view-depth prepass target
+// THE PICTURE'S OWN TARGET, sharing the prepass's DEPTH renderbuffer - which is
+// the whole point of it (see drawTube).
+let gFbo = null, cTex = null;
 let aoFbo = null, aoTex = null;             // its shadow/tint answer
 let aoFbo2 = null, aoTex2 = null;           // ...resolved
 let occW = 0, occH = 0;
@@ -1823,6 +1862,11 @@ function initGL(cv) {
     gl.attachShader(progBlur, mk(gl.FRAGMENT_SHADER, FBLUR));
     gl.linkProgram(progBlur);
     if (!gl.getProgramParameter(progBlur, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progBlur));
+    progCopy = gl.createProgram();
+    gl.attachShader(progCopy, mk(gl.VERTEX_SHADER, VSQUAD));
+    gl.attachShader(progCopy, mk(gl.FRAGMENT_SHADER, FSCOPY));
+    gl.linkProgram(progCopy);
+    if (!gl.getProgramParameter(progCopy, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progCopy));
     progInk = gl.createProgram();
     gl.attachShader(progInk, mk(gl.VERTEX_SHADER, VSINK));
     gl.attachShader(progInk, mk(gl.FRAGMENT_SHADER, FSINK));
@@ -4034,6 +4078,10 @@ function drawTube(cv, renderer, prm) {
     u('uDepthCue', 0);
     gl.uniform2f(gl.getUniformLocation(progTube, 'uSizeF'), cv.width, cv.height);
 
+    // THE OUTLINE'S WIDTH, needed before the prepass because the prepass has to
+    // rasterise EXACTLY the geometry the draw will (see below).
+    const outW = (renderer.outlineMode !== 'none')
+        ? Math.max(0, prm.outlineWidthPx || 0) : 0;
     // PASS 0: THE DEPTH PREPASS AND THE OCCLUSION.
     // Same instances, same shader, one uniform different: the colour channel
     // carries view z. Then one full-screen pass turns that depth field into the
@@ -4049,6 +4097,10 @@ function drawTube(cv, renderer, prm) {
         gl.clearColor(-1e9, 0, 0, 1);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         u('uZOnly', 1); u('uUseAO', 0);
+        // THE TUBE'S OWN QUAD - no skirt, so no wasted fragments and a depth
+        // field of surfaces only. Its depths still line up with the draw's to
+        // the bit, because neither depends on the quad any more.
+        u('uZOnly', 1);
         u('uGrowPx', 0); u('uPushZ', 0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 1.0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'), 0);
@@ -4107,14 +4159,34 @@ function drawTube(cv, renderer, prm) {
         tmEnd(tmB);
 
         gl.useProgram(progTube);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        // INTO THE SHARED-DEPTH TARGET, KEEPING THE PREPASS'S DEPTH.
+        //
+        // The depth buffer already holds every visible surface, so this draw
+        // must not clear it and must not write to it: the test becomes LEQUAL
+        // so the surface that produced each stored value is the one admitted,
+        // and depthMask stays off so nothing disturbs the answer. Only the
+        // colour is cleared.
+        //
+        // DEPTH WRITES STAY ON, and that is not optional. A skirt sits at its
+        // tube's nearest point, in front of the surface the prepass recorded
+        // there, and it has to leave that depth behind or the fill it is
+        // supposed to outline passes LEQUAL straight over the top of it. Turned
+        // off, the picture came back with most of its outlines missing - the
+        // one thing about a tube drawing you notice immediately.
+        //
+        // Writing costs nothing here: the rejection that makes this fast is the
+        // hardware testing against a buffer that is already complete, and a
+        // fragment that passes writes the depth that was already there.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, gFbo || null);
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, aoTex2);
         gl.uniform1i(gl.getUniformLocation(progTube, 'uAOTex'), 1);
         gl.viewport(0, 0, cv.width, cv.height);
-        gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthMask(true);
+        if (gFbo) gl.depthFunc(gl.LEQUAL);
         gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.clear(gl.COLOR_BUFFER_BIT | (gFbo ? 0 : gl.DEPTH_BUFFER_BIT));
     }
     u('uZOnly', 0);
     u('uUseAO', wantAO ? 1 : 0);
@@ -4135,8 +4207,6 @@ function drawTube(cv, renderer, prm) {
     // calls it the gap filler. uGrowPx is what tells the shader a skirt is
     // wanted at all: at 0 there is no ring outside the tube and the draw is a
     // plain fill.
-    const outW = (renderer.outlineMode !== 'none')
-        ? Math.max(0, prm.outlineWidthPx || 0) : 0;
     u('uGrowPx', outW * 0.5);
     u('uPushZ', 0.0008);
     gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 0.7);
@@ -4148,6 +4218,24 @@ function drawTube(cv, renderer, prm) {
     const tmF = tmStart('4-draw');
     drawTubeInstances();
     tmEnd(tmF);
+    // ...and onto the canvas. Colour only: the default framebuffer's depth is
+    // nobody's business and blitting it would cost for nothing.
+    if (wantAO && gFbo) {
+        const tmC = tmStart('5-copy');
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.disable(gl.DEPTH_TEST);
+        gl.useProgram(progCopy);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, cTex);
+        gl.uniform1i(gl.getUniformLocation(progCopy, 'uSrc'), 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.enable(gl.DEPTH_TEST);
+        tmEnd(tmC);
+        // handed back for the next frame, which starts by clearing the canvas
+        gl.depthFunc(gl.LESS);
+        gl.depthMask(true);
+    }
     for (const l of bound) gl.vertexAttribDivisor(l, 0);
     tmCollect();
     return true;
@@ -4167,6 +4255,9 @@ function ensureOcc(w, h) {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         return t;
     };
+    if (cTex) gl.deleteTexture(cTex);
+    if (gFbo) gl.deleteFramebuffer(gFbo);
+    cTex = null; gFbo = null;
     if (zTex) gl.deleteTexture(zTex);
     if (aoTex) gl.deleteTexture(aoTex);
     if (aoTex2) gl.deleteTexture(aoTex2);
@@ -4196,9 +4287,28 @@ function ensureOcc(w, h) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo2);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, aoTex2, 0);
     const okB = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    // THE PICTURE, WITH THE PREPASS'S DEPTH BUFFER ALREADY IN IT.
+    //
+    // A renderbuffer can be attached to more than one framebuffer, and that one
+    // fact is the optimisation: the prepass leaves zRb holding the depth of
+    // every visible surface, so the draw that follows can test against a
+    // COMPLETE depth buffer instead of building one as it goes. With the
+    // conservative-depth quad in front of it, the hardware then rejects a
+    // hidden capsule before its fragment shader runs - all of them, not just
+    // the ones that happen to be drawn after their occluder.
+    //
+    // The cost is that the picture lands in a texture and has to be blitted to
+    // the canvas, which is one full-screen copy the GPU does in its sleep.
+    cTex = tex(gl.RGBA, gl.UNSIGNED_BYTE, gl.RGBA8);
+    gFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, gFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, cTex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, zRb);
+    const okG = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     occW = w; occH = h;
     if (!okZ || !okA || !okB) { occOk = false; return false; }
+    if (!okG) { gFbo = null; }      // the draw then goes straight to the canvas
     return true;
 }
 
