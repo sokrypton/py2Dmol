@@ -2897,41 +2897,6 @@ const CC_DQUOTE = 34;     // "
 const CC_DOT = 46;        // .
 const CC_QMARK = 63;      // ?
 
-// JUST HOW MANY TOKENS ARE ON THIS LINE.
-//
-// The skipped-loop branch of parseMinimalCIF_light asks readCIFCols for a token
-// count against an empty mask, which means it carries the whole apparatus -
-// the want test, the out array, the early-abort hook - through 2.4 million rows
-// of _atom_site to return a number. The tokenisation rule has to stay identical
-// to readCIFCols, quotes included, or the two walk a continued row differently
-// and a loop comes back split; everything else can go.
-function countCIFTokens(s, from, n) {
-    let i = from;
-    let col = 0;
-    while (i < n) {
-        let c = s.charCodeAt(i);
-        while (i < n && (c === CC_SPACE || c === CC_TAB || c === CC_CR || c === CC_LF)) {
-            c = s.charCodeAt(++i);
-        }
-        if (i >= n) break;
-        if (c === CC_QUOTE || c === CC_DQUOTE) {
-            let j = ++i;
-            while (j < n && s.charCodeAt(j) !== c) j++;
-            i = j < n ? j + 1 : n;
-        } else {
-            let j = i;
-            while (j < n) {
-                const d = s.charCodeAt(j);
-                if (d === CC_SPACE || d === CC_TAB || d === CC_CR || d === CC_LF) break;
-                j++;
-            }
-            i = j;
-        }
-        col++;
-    }
-    return col;
-}
-
 function readCIFCols(s, from, n, wantMask, out, dropAfter, dropTest) {
     const maxCol = wantMask.length;
     let i = from;
@@ -2988,24 +2953,32 @@ function readCIFCols(s, from, n, wantMask, out, dropAfter, dropTest) {
 const NO_COLUMNS_WANTED = new Uint8Array(0);
 
 function parseMinimalCIF_light(text, keepPrefixes) {
-    // WALKED WITH A CURSOR, NOT SPLIT INTO LINES.
+    // SOUGHT, NOT WALKED.
     //
     // This is the pre-scan that finds the small metadata loops - struct_conn,
-    // chem_comp, chem_comp_bond, the assembly operators - and on a capsid it
-    // was 1,274 ms of a 2,655 ms parse, which is half. All of it was spent on
-    // the one loop it does NOT want: `text.split(/\r?\n/)` allocates a string
-    // per line, 2.4 million of them for _atom_site alone, and every skipped row
-    // was then re-examined as one of those strings.
+    // chem_comp, chem_comp_bond, the assembly operators. It used to read the
+    // file from front to back, and on a capsid essentially all of that was
+    // spent on the one loop it does not want: 2.4 million _atom_site rows,
+    // each one tokenised just to learn how many tokens it had, so the walk
+    // would still be in step when the loop ended.
     //
-    // Nothing here needs a line to exist as a string. Row boundaries are found
-    // with charCodeAt over the flat text, and the only slices taken are the
-    // header lines of every loop and the rows of the few loops actually read -
-    // thousands of characters instead of hundreds of millions.
+    // It does not need to be in step with a loop it is not reading. The tags
+    // it wants can be found directly, and String.indexOf over the flat text is
+    // a different order of thing from a per-line walk: 242 MB in 30-70 ms per
+    // tag. So each wanted category is sought, the header block around the hit
+    // is recovered by walking BACKWARDS over the tag lines above it, and only
+    // the rows of loops actually being read are ever tokenised. The 2.4 M rows
+    // are not visited at all.
+    //
+    // Consequence worth stating: the returned list now holds ONLY the loops
+    // asked for. It used to carry a header-only entry for every other loop in
+    // the file too, and nothing ever read them - `skipped` marked those and
+    // had no consumer either.
     const n = text.length;
     const loops = [];
-    const unread = (keepPrefixes && keepPrefixes.length)
-        ? (col) => !keepPrefixes.some((p) => col && col.startsWith(p))
-        : null;
+    if (!keepPrefixes || !keepPrefixes.length) return loops;
+    const unread = (col) => !keepPrefixes.some((p) => col && col.startsWith(p));
+
     let i = 0;                       // cursor, always at the start of a line
     // A line's extent, and where the next one starts. The \r of a CRLF pair is
     // excluded so a range behaves exactly as split(/\r?\n/) did.
@@ -3039,79 +3012,104 @@ function parseMinimalCIF_light(text, keepPrefixes) {
         }
         return true;
     };
+    // start of the line above the one beginning at `p`, or -1 if there is none
+    const lineAbove = (p) => {
+        if (p <= 0) return -1;
+        const nl = text.lastIndexOf('\n', p - 2);
+        return nl < 0 ? 0 : nl + 1;
+    };
 
-    while (i < n) {
-        takeLine();
-        const f = firstCh();
-        if (f < 0 || text.charCodeAt(f) === CC_HASH) {   // blank, or a comment
-            i = next;
-            continue;
+    // Every line that opens a wanted category, in file order. A category is
+    // written once, but seeking each prefix separately and merging keeps this
+    // independent of how many times it appears.
+    // The old walk asked whether a line's first NON-BLANK character began the
+    // tag, so seeking "\n_struct_conn." instead would quietly stop matching an
+    // indented header. Seeking the bare tag and then checking backwards that
+    // only spaces and tabs separate it from the line start is the same
+    // predicate, and it also throws out the tag appearing mid-line inside a
+    // value.
+    const hits = [];
+    const atLineStart = (p) => {
+        let k = p - 1;
+        while (k >= 0) {
+            const c = text.charCodeAt(k);
+            if (c === CC_LF) return k + 1;
+            if (c !== CC_SPACE && c !== CC_TAB) return -1;
+            k--;
         }
+        return 0;
+    };
+    for (const pfx of keepPrefixes) {
+        let q = text.indexOf(pfx);
+        while (q >= 0) {
+            const s = atLineStart(q);
+            if (s >= 0) hits.push(s);
+            q = text.indexOf(pfx, q + 1);
+        }
+    }
+    hits.sort((a, b) => a - b);
 
-        if (startsWordAt(f, 'loop_')) {
+    const done = new Set();
+    for (const hit of hits) {
+        // Back up over the tag lines above the hit to the head of the block -
+        // the wanted tag is rarely the first column of its own loop.
+        let bs = hit;
+        for (;;) {
+            const above = lineAbove(bs);
+            if (above < 0) break;
+            i = above; takeLine();
+            const f = firstCh();
+            if (f < 0 || text.charCodeAt(f) !== CC_UNDERSCORE) break;
+            bs = above;
+        }
+        if (done.has(bs)) continue;
+        done.add(bs);
+
+        // A block not introduced by `loop_` is a set of key-value items, which
+        // this function never returned and no caller has ever asked for.
+        const lp = lineAbove(bs);
+        if (lp < 0) continue;
+        i = lp; takeLine();
+        const lf = firstCh();
+        if (lf < 0 || !startsWordAt(lf, 'loop_')) continue;
+
+        i = bs;
+        const cols = [];
+        while (i < n) {
+            takeLine();
+            const h = firstCh();
+            if (h < 0 || text.charCodeAt(h) !== CC_UNDERSCORE) break;
+            cols.push(text.slice(h, le).trim());
             i = next;
-            const cols = [];
-            const rows = [];
+        }
+        // the old rule, kept: a loop is read on the strength of its FIRST column
+        if (unread(cols[0])) continue;
 
-            while (i < n) {
+        const rows = [];
+        // i is already at the first row: takeLine above left ls/le on it
+        for (;;) {
+            if (i >= n) break;
+            takeLine();
+            const r = firstCh();
+            if (r < 0) break;
+            const c0 = text.charCodeAt(r);
+            if (c0 === CC_HASH || c0 === CC_UNDERSCORE
+                    || startsWordAt(r, 'loop_') || startsWordAt(r, 'data_')) break;
+
+            let vals = tokenizeCIFLine_light(text.slice(ls, le));
+            i = next;
+            // a row shorter than its header continues onto the next line
+            while (vals.length < cols.length && i < n) {
                 takeLine();
-                const h = firstCh();
-                if (h < 0 || text.charCodeAt(h) !== CC_UNDERSCORE) break;
-                cols.push(text.slice(h, le).trim());
+                vals = vals.concat(tokenizeCIFLine_light(text.slice(ls, le)));
                 i = next;
             }
 
-            const skipping = unread ? unread(cols[0]) : false;
-
-            // i is already at the first row: takeLine above left ls/le on it
-            for (;;) {
-                if (i >= n) break;
-                takeLine();
-                const r = firstCh();
-                if (r < 0) break;
-                const c0 = text.charCodeAt(r);
-                if (c0 === CC_HASH || c0 === CC_UNDERSCORE
-                        || startsWordAt(r, 'loop_') || startsWordAt(r, 'data_')) break;
-
-                if (skipping) {
-                    // COUNTED, NOT JUST STEPPED OVER, and the count is taken the
-                    // same way the reading branch takes its tokens - readCIFCols
-                    // against an empty mask walks them and slices none.
-                    //
-                    // A row shorter than its header continues onto the next line
-                    // and the reading branch swallows that line as part of the
-                    // row. Advancing one line at a time instead does not: the
-                    // continuation is examined as a row of its own, and a loop
-                    // with continued rows comes back split in two. Measured -
-                    // 4UG0 reported 42 loops instead of 40.
-                    let count = countCIFTokens(text, ls, le);
-                    i = next;
-                    while (count < cols.length && i < n) {
-                        takeLine();
-                        count += countCIFTokens(text, ls, le);
-                        i = next;
-                    }
-                    continue;
-                }
-
-                let vals = tokenizeCIFLine_light(text.slice(ls, le));
-                i = next;
-                while (vals.length < cols.length && i < n) {
-                    takeLine();
-                    vals = vals.concat(tokenizeCIFLine_light(text.slice(ls, le)));
-                    i = next;
-                }
-
-                if (vals.length >= cols.length) {
-                    rows.push(vals.slice(0, cols.length));
-                }
+            if (vals.length >= cols.length) {
+                rows.push(vals.slice(0, cols.length));
             }
-            const entry = [cols, rows];
-            if (skipping) entry.skipped = true;   // rows empty by request, not by absence
-            loops.push(entry);
-            continue;
         }
-        i = next;
+        loops.push([cols, rows]);
     }
     return loops;
 }
