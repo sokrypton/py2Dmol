@@ -904,6 +904,26 @@ function parseCIF(text) {
         headerMap['_atom_site.auth_seq_id'], idxX, idxY, idxZ, idxB, idxElement, idxModelID];
     let maxWanted = -1;
     for (const w of wantIdx) if (w >= 0 && w > maxWanted) maxWanted = w;
+    // A STANDARD RESIDUE'S N, C AND O ARE READ BY NOTHING, so they are never
+    // built - and the scanner is told early enough that it can stop reading the
+    // row at all (see readCIFCols). The condition is what makes it safe:
+    //
+    //   - isRealAminoAcid only falls back to looking for N/CA/C atoms for a
+    //     residue NOT in STANDARD_AMINO_ACIDS. For a standard one it returns at
+    //     the name test and never reads an atom. Dropping these unconditionally
+    //     makes any unrecognised residue VANISH - measured, five renamed
+    //     residues of 4HHB took it from 748 positions to 743.
+    //   - buildSidechainTable already drops every backbone atom but CA.
+    //   - only the CA of a standard residue reaches `coords`, so nothing
+    //     addressed by atom index could resolve to one of these anyway.
+    //
+    // The cartoon rebuilding C, N and O from the C-alpha trace is a different
+    // fact and does not license it: reconstruction says where a KNOWN residue's
+    // backbone is; the classifier asks whether an unknown residue is one.
+    const dropAfter = (idxAtomName >= 0 && idxResName >= 0)
+        ? Math.max(idxAtomName, idxResName) + 1 : -1;
+    const dropTest = (out) => DROPPABLE_BACKBONE.has(out[idxAtomName])
+        && STANDARD_AMINO_ACIDS.has(out[idxResName]);
     const wantMask = new Uint8Array(maxWanted + 1);
     for (const w of wantIdx) if (w >= 0) wantMask[w] = 1;
     // reused across rows; a column is only read when it is < nCols, and every
@@ -950,37 +970,11 @@ function parseCIF(text) {
         // Skip semicolon lines
         if (lineLen > 0 && text.charCodeAt(lineStart) === 59 /* ; */) continue;
 
-        const nCols = readCIFCols(text, lineStart, end, wantMask, values);
+        const nCols = readCIFCols(text, lineStart, end, wantMask, values,
+            dropAfter, dropTest);
+        if (nCols === -1) continue;      // a standard residue's N, C or O
         if (nCols < minReqLen) continue;
 
-        // A STANDARD RESIDUE'S N, C AND O ARE READ BY NOTHING, so they are not
-        // built. This is the largest single saving available in the parse -
-        // they are 38.6% of the atoms in a capsid - and the condition is what
-        // makes it safe, because an unconditional version is NOT:
-        //
-        //   - isRealAminoAcid only falls back to looking for N/CA/C atoms for a
-        //     residue NOT in STANDARD_AMINO_ACIDS. For a standard one it
-        //     returns at the name test and never reads an atom. Strip N and C
-        //     from a residue it does not recognise and that residue vanishes
-        //     from the structure entirely - measured, five renamed residues of
-        //     4HHB went from 748 positions to 743.
-        //   - buildSidechainTable already drops every backbone atom but CA
-        //     (`PROTEIN_BACKBONE_ATOMS` minus CA), so a side chain never sees
-        //     them either.
-        //   - only the CA of a standard residue reaches `coords`, so nothing
-        //     addressed by atom index - struct_conn, chem_comp_bond,
-        //     atomIdToIndex - could resolve to one of these in the first place.
-        //
-        // The cartoon rebuilding C, N and O from the C-alpha trace is a
-        // different fact and does NOT license this: reconstruction says where a
-        // known residue's backbone is, the classifier asks whether an unknown
-        // residue is a residue at all.
-        if (idxAtomName >= 0 && idxAtomName < nCols
-                && idxResName >= 0 && idxResName < nCols
-                && DROPPABLE_BACKBONE.has(values[idxAtomName])
-                && STANDARD_AMINO_ACIDS.has(values[idxResName])) {
-            continue;
-        }
 
         // Direct array access - much faster than function calls
         // Update modelID if needed
@@ -1050,7 +1044,6 @@ function parseCIF(text) {
     const models = Array.from(modelMap.keys())
         .sort((a, b) => a - b)
         .map(id => modelMap.get(id));
-
     return { models, loops, chemCompMap, structConn, chemCompBondMap };
 }
 
@@ -2834,11 +2827,21 @@ const CC_DQUOTE = 34;     // "
 const CC_DOT = 46;        // .
 const CC_QMARK = 63;      // ?
 
-function readCIFCols(s, from, n, wantMask, out) {
+function readCIFCols(s, from, n, wantMask, out, dropAfter, dropTest) {
     const maxCol = wantMask.length;
     let i = from;
     let col = 0;
     while (i < n) {
+        // ABORT AS SOON AS THE ROW IS KNOWN TO BE UNWANTED.
+        //
+        // The atom loop drops a standard residue's N, C and O, and decides that
+        // from two columns - the atom name and the residue name - that sit near
+        // the front of the row. Deciding it after the scan means reading all 21
+        // columns of _atom_site to throw the row away; deciding it here means
+        // reading six. That is 38.6% of the rows in a capsid.
+        //
+        // -1 says "dropped", which no honest column count can be.
+        if (col === dropAfter && dropTest(out)) return -1;
         // Char codes rather than s[i]. NOT because single-character strings
         // are expensive - V8 caches them, and measured on sliced line strings
         // the two were within 2% of each other. It is because this now scans a

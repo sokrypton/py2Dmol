@@ -611,3 +611,34 @@ downstream, in the passes that walk the atoms afterwards. The parse is
 dominated by scanning the text - `readCIFCols` visits every line whatever it
 decides to do with it - not by building the objects. Anyone hoping to make the
 parse itself faster should attack the scan, not the allocation.
+
+### Telling the scanner early, and what that revealed about the parse
+
+The filter above ran AFTER `readCIFCols` had read all 21 columns of `_atom_site`,
+to throw the row away. It only needs two columns - the atom name and the
+residue name - and both sit near the front, so the scanner now takes the test
+and aborts the row at column 6, returning -1. Parse 2,781 -> 2,655 ms.
+
+That number is the interesting part. Skipping ~15 columns on 38.6% of 2.4M rows
+saved 126 ms, which puts the WHOLE column scan at about 450 ms of a 2.65 s
+parse. Splitting it further:
+
+| | ms |
+| --- | --- |
+| `parseMinimalCIF_light` (the pre-scan for metadata loops) | 1,274 |
+| header, atom loop and everything after | 1,414 |
+
+**Half the parse is the pre-scan**, which walks the entire 242 MB file to find
+`struct_conn`, `chem_comp`, `chem_comp_bond` and the assembly operators - all
+tiny - and pays for `_atom_site` twice: once in `text.split(/\r?\n/)`, which
+allocates a string per line for 2.4 million lines, and again counting tokens on
+every skipped row.
+
+**Do not "fix" the token counting by advancing a line at a time.** That was
+tried earlier in this session and 4UG0 came back with 42 loops instead of 40: a
+row shorter than its header continues onto the next line, the reading path
+swallows the continuation and the skipping path did not, so a loop with
+continued rows split in two. The count is what keeps the two paths walking in
+step. Making the pre-scan cheap means not materialising the lines at all -
+walking the flat text with a cursor, the way the atom loop already does - which
+is a real change to that function, not a tweak to this branch.
