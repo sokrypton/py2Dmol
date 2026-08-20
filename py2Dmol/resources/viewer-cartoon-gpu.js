@@ -672,8 +672,8 @@ void main() {
   float aUnlit = mod(floor(aFlags2.z / 2.0), 2.0) > 0.5 ? 1.0 : 0.0;
   // two triangles over the quad's four corners; 0 and 1 sit at the near
   // station, 2 and 3 at the far one, which is what picks the frame
-  int ids[6] = int[6](0, 1, 2, 0, 2, 3);
-  int corner = ids[gl_VertexID];
+  // drawn with an index buffer, so gl_VertexID IS the corner (see quadIdx)
+  int corner = gl_VertexID;
   // coincident at THIS end of the quad - corners 0 and 1 sit at the near
   // station, 2 and 3 at the far one, the same split the frames use. Declared
   // after the corner index because GLSL does not hoist: one line earlier
@@ -1060,8 +1060,8 @@ void main() {
       ? max(0.5, aEdgeW * uScale * peW) + (aAlways > 3.5 && isContact ? uWidth : 0.0)
       : uWidth;
   vec2 perp = vec2(-dir.y, dir.x) * (w * 0.5);
-  int ids[6] = int[6](0, 1, 2, 0, 2, 3);
-  int c = ids[gl_VertexID];
+  // drawn with an index buffer, so gl_VertexID IS the corner (see quadIdx)
+  int c = gl_VertexID;
   bool far = (c == 1 || c == 2);
   vec2 p = far ? s1 : s0;
   p += (c >= 2) ? perp : -perp;
@@ -1233,8 +1233,8 @@ void main() {
   float L = length(d);
   vec2 t = L > 1e-6 ? d / L : vec2(1.0, 0.0);
   vec2 n = vec2(-t.y, t.x);
-  int ids[6] = int[6](0, 1, 2, 0, 2, 3);
-  int c = ids[gl_VertexID];
+  // drawn with an index buffer, so gl_VertexID IS the corner (see quadIdx)
+  int c = gl_VertexID;
   float along = (c == 0 || c == 3) ? -vRpx : L + vRpx;
   float across = (c == 0 || c == 1) ? -vRpx : vRpx;
   vec2 p = vA + t * along + n * across;
@@ -1756,6 +1756,7 @@ function tmCollect() {
         acc.mean = +(acc.sum / acc.n).toFixed(3);
     }
 }
+let quadIdx = null;             // [0,1,2,0,2,3], shared by every quad pass
 let progCopy = null;            // the offscreen picture onto the canvas
 let progAO = null;              // screen-space occlusion
 let progBlur = null;            // ...and its 4x4 depth-aware resolve
@@ -1966,6 +1967,25 @@ function initGL(cv) {
     gl.linkProgram(progInk);
     if (!gl.getProgramParameter(progInk, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progInk));
     bufInk = gl.createBuffer();
+    // SIX VERTICES FROM FOUR CORNERS.
+    //
+    // Every instanced quad here is two triangles over four corners, and each
+    // pass synthesised the six vertices from gl_VertexID - which means the
+    // vertex shader runs SIX times per quad, because two of the six carry
+    // distinct gl_VertexID values for the same corner and nothing can tell the
+    // GPU they are the same point.
+    //
+    // Drawn through an index buffer, gl_VertexID is the index VALUE, so the two
+    // repeats are the same vertex and the post-transform cache serves them. It
+    // is four invocations per quad instead of six for one buffer of six bytes.
+    // That is worth having because the cartoon draw is GEOMETRY-bound: measured
+    // on 4UG0, shrinking the structure to a 144th of its screen area only takes
+    // the surface pass from 11.07 ms to 8.15, so the floor is the million
+    // vertex invocations and not the fragments.
+    quadIdx = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIdx);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,
+        new Uint8Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW);
     return true;
 }
 
@@ -3303,7 +3323,11 @@ function drawResident(cv, prm) {
     u('uDepthFloor', sp.depthFloor);
     u('uCel', sp.cel);
     u('uExact', sp.exact ? 1 : 0);
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, resident.count);
+    timerOn = (typeof window !== 'undefined' && window.__gpuTimers === true);
+    const tmS = tmStart('c1-surfaces');
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIdx);
+    gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_BYTE, 0, resident.count);
+    tmEnd(tmS);
     // divisors live on the attribute, not the program: leaving them at 1 makes
     // the next non-instanced draw read one vertex and stretch it over the mesh
     for (const l of bound) gl.vertexAttribDivisor(l, 0);
@@ -3420,7 +3444,11 @@ function drawInk(cv, prm) {
     // the 2D pass grains the FINISHED frame, outline included, so the ink takes
     // the same paper - and takes it from the same tile
     bindPaper(progInk, cv, spI.pencil);
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, edgeCount);
+    const tmI = tmStart('c2-ink');
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIdx);
+    gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_BYTE, 0, edgeCount);
+    tmEnd(tmI);
+    tmCollect();
     // PUT THE DIVISORS BACK. They live on the attribute, not on the program, so
     // leaving them at 1 makes the next non-instanced draw read one vertex and
     // stretch it over the whole mesh - which shows up as the fills vanishing on
@@ -3868,11 +3896,15 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
             // back with model coordinates that were both offset and oversized -
             // the structure drawn half again too big and off to one side. The
             // ratio is applied ONCE, at the draw, and nowhere else.
+            const RB = (window.__rebuild = { t0: performance.now() });
             const { prims, scale, capZoom, pos } = captureFrom(renderer,
                 displayWidth, displayHeight, colors);
+            RB.capture = +(performance.now() - RB.t0).toFixed(1);
             if (!prims.length) return false;
             const { faces, lines, paletteComplete } = facesOf(prims, prm);
+            RB.facesOf = +(performance.now() - RB.t0).toFixed(1);
             makeResident(faces, scale, prm, lines);
+            RB.total = +(performance.now() - RB.t0).toFixed(1);
             // the mesh's scale already carries the zoom it was captured at, so
             // the draw multiplies by the RATIO rather than by the zoom itself
             if (resident) resident.capZoom = capZoom;
@@ -4467,7 +4499,8 @@ function ensureOcc(w, h) {
 }
 
 function drawTubeInstances() {
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, tubeCount);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIdx);
+    gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_BYTE, 0, tubeCount);
 }
 
 /* The tube style's app entry. Same contract as renderApp: draws into the

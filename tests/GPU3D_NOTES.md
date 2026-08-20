@@ -1452,3 +1452,69 @@ which is a very convincing way to be shown your own reference render and told
 it is the new one. Check `__gpuLastError` before believing a GPU result that
 looks too good, and treat "the outline got better AND something unrelated
 broke" as the signature of a silent fallback.
+
+## Cartoon: the draw is geometry-bound, and six vertices per quad were four
+
+The cartoon path's steady-state frame cost 12.1 ms of GPU on 4UG0 - surfaces
+8.27, ink 3.87 - against the tube's 4.1 ms on the same structure. The CPU
+submit reads 1 ms, so none of this is visible without a timer query.
+
+**It is geometry-bound, not fragment-bound**, and that is what decided the fix.
+Shrinking the drawing to a 144th of its screen area moves the surface pass from
+11.07 ms (zoom 3) to 8.15 (zoom 0.25) - so the floor is not the fragments, it
+is 167,817 instances x 6 vertices = a million vertex invocations. The tube's
+depth-prepass trick would have made this WORSE: it would add a second geometry
+pass to a pass that is already geometry-limited.
+
+Every instanced quad here is two triangles over four corners, and each pass
+synthesised its six vertices from `gl_VertexID` through `ids[6] = {0,1,2,0,2,3}`.
+That runs the vertex shader SIX times per quad: two of the six carry distinct
+`gl_VertexID` values for the same corner, and nothing can tell the GPU they are
+the same point. Drawn through a six-byte index buffer, `gl_VertexID` is the
+index VALUE, the two repeats are the same vertex, and the post-transform cache
+serves them.
+
+| 4UG0, GPU ms | before | after |
+| --- | --- | --- |
+| cartoon surfaces | 8.27 | **2.60** |
+| cartoon ink | 3.87 | **1.98** |
+| **cartoon total** | **12.14** | **4.58** |
+
+2.7x, against the 1.5x that six-invocations-to-four predicts - the cache is
+evidently saving more than the arithmetic. 1TIM's whole frame is now 0.51 ms.
+The same buffer is used by the tube, where it changes nothing measurable
+because that pass is fragment-bound.
+
+**Pixel check, and why it had to be done on the tube.** The tube is
+bit-identical across the change: 0 of 357,604 pixels differ. The cartoon cannot
+be checked this way at all - two page loads of IDENTICAL code differ in 162,575
+pixels with a maximum of 40, and the before/after pair differs in 162,718 with
+a maximum of 39. Cross-load comparison measures the cartoon's own
+non-determinism and nothing else. The tube exercises the same index buffer and
+the same corner mapping, so it is the honest place to prove the mechanism.
+
+### What the rebuild costs, and what did NOT help
+
+A cartoon rebuild is ~770 ms on 4UG0 and runs on load, on any geometry slider
+(width, thickness, sheet flat, detail - all in `signatureOf`), on a visibility
+change and on a canvas resize. Colour is NOT in the signature; it goes through
+the palette texture without a rebuild.
+
+| stage | ms | |
+| --- | --- | --- |
+| capture | 174 | 23% |
+| edges | ~320 | 43% |
+| normals | 75 | |
+| rails, facesAndEmit, pieceFrames, buffers | ~105 | |
+
+Turning the outline off takes the whole rebuild to ~390 ms, which both confirms
+the edge stage is half of it and is a usable workaround on huge structures.
+
+**Two micro-optimisations of the edge stage measured as nothing and were
+reverted**: replacing its Map-of-Maps and per-edge object with an open-addressed
+typed-array table, and removing the `new Set()` allocated per face (167,000 of
+them). Over 14 rebuilds, warm samples only, minimum / median: HEAD 676 / 772 ms,
+both changes 685 / 752 ms. The minima are identical and the medians sit well
+inside a +-15% spread. This is the class of change PERF_NOTES already warns
+gives nothing in Chrome, and the warning was right again. Measure the minimum
+of many warm samples here; a single rebuild is worthless as a signal.
