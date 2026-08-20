@@ -1248,3 +1248,55 @@ The levels already agree to within 2.8 through the calibrated
 `TUBE_AO_DENSITY`, so what this would have bought is agreement by construction
 instead of by tuning - a maintenance property, not a visible one, and not worth
 a flicker.
+
+### The outline: mostly antialiasing, and one free half-radius
+
+Reported as the GPU outline still differing from the 2D pass - "some parts
+missing, some lines added that aren't needed". Both are true and they have
+different causes, and only one of them is worth paying for.
+
+**Most of it is antialiasing, not geometry.** 1TIM at zoom 2.2, ink measured as
+how much darker a pixel is than the median of its neighbourhood:
+
+| | total ink mass | px at depth>10 | >22 | >40 |
+| --- | --- | --- | --- | --- |
+| 2D | 677,715 | 20,419 | 14,558 | 5,485 |
+| GPU | 641,992 | 13,839 | 12,346 | 9,819 |
+
+The same amount of ink to within 5%, spread differently: the canvas feathers
+its strokes, so its rim is wide and soft, while the GPU's rim boundary is a
+`discard` threshold and comes out narrow and hard. Counting "ink pixels" makes
+that look like 5,500 missing pixels; it is a fringe, and it is why the GPU's
+lines read as broken where the 2D's read as drawn.
+
+MSAA is not the missing ingredient, which is worth recording because it looks
+like the obvious answer: routing the draw back to the multisampled default
+framebuffer instead of the single-sample gFbo changed nothing (missing 5,561
+against 5,507). Multisampling cannot smooth an edge defined by `discard` -
+coverage is decided per fragment, not per sample. Fixing it properly means
+supersampling (4x the fragment cost) or alpha-to-coverage with an MSAA depth
+target, which the prepass shares and would therefore pay for too. That is a
+real cost for a fringe, so it is not being paid.
+
+**The part that was free: the skirt sat a whole radius toward the eye.** That
+was chosen so a rim could never lose to its own fill, and it is too near - the
+rim punches through tubes in front of it, and along a boundary shared with a
+neighbour the contest with that neighbour's bulge alternates pixel by pixel,
+which is the rim "chopped into dashes" from FSTUBE and shows as ink the 2D pass
+does not draw.
+
+Swept against the 2D pass on the difference in BLURRED ink maps - blurring
+makes the metric blind to the antialiasing fringe above, without which the
+measurement just re-finds the fringe:
+
+| | 0 | 0.25 | **0.5** | 0.75 | 1.0 |
+| --- | --- | --- | --- | --- | --- |
+| 1TIM zoom 2.2 | 1.0592 | 1.0397 | **1.0255** | 1.0310 | 1.0499 |
+| 1TIM zoom 9 | 0.3300 | 0.3169 | **0.3005** | 0.3048 | 0.3293 |
+| 3CHY | 0.6089 | 0.5949 | **0.5817** | 0.5935 | 0.6247 |
+| 1UBQ | 0.4747 | 0.4505 | **0.4381** | 0.4460 | 0.4638 |
+| 4UG0 | 2.1126 | 2.0926 | 2.0756 | **2.0639** | 2.0652 |
+
+`SKIRT_Z = 0.5`. Shallow - 2% to 9% - but it is one multiply in the fragment
+shader and no extra pass, and 4UG0's preference for 0.75 is 0.6% away. Frame
+time on 4UG0 is unchanged at 4.1 ms.

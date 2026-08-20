@@ -1418,6 +1418,7 @@ uniform float uScale, uPersp, uFL, uPushZ;
 // The vertex shader grows the quad by it; the fragment shader needs it too,
 // now that a fragment decides for itself whether it is skirt or fill.
 uniform float uGrowPx;
+uniform float uSkirtZ;
 // the skirt is the fill darkened - the 2D pass's own gap-filler colour
 uniform float uDarken;
 // 1 = light the capsule per fragment, 0 = flat (the outline skirt)
@@ -1547,7 +1548,13 @@ void main() {
     // it beats everything its own tube beats and the rim comes back in one
     // piece. uPushZ then settles the exact ties (a joint, where both tubes'
     // front surfaces meet at the shared point) in the fill's favour.
-    zSurf = zAxis + vRfill / max(1e-6, uScale * pe);
+    // HOW FAR TOWARD THE EYE THE SKIRT SITS, as a fraction of the tube's
+    // radius, and it is the one number that decides whether the outline is
+    // right. Too near and a rim punches through tubes that are in front of it,
+    // which is ink the 2D pass does not draw; too far and other tubes' bulges
+    // beat it and the rim breaks into dashes, which is ink the 2D pass does
+    // draw and this one loses.
+    zSurf = zAxis + uSkirtZ * vRfill / max(1e-6, uScale * pe);
   }
   float t01 = (zSurf - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
   // NDC z is 1 - 2*t01, the same mapping the other programs put in gl_Position,
@@ -1792,6 +1799,22 @@ let tubeDensity = 0.1;          // visible segments per square Angstrom
 // magnitude in size. See buildTube for the measurements and why it is not
 // measured per structure any more.
 const TUBE_AO_DENSITY = 0.164;
+// WHERE THE OUTLINE SKIRT SITS IN DEPTH, as a fraction of the tube radius
+// toward the eye. It was a whole radius - as near as the tube ever gets, chosen
+// so a rim would never lose to its own fill - and that is too near: a rim then
+// punches through tubes that are in front of it, and along a shared boundary
+// the contest with the neighbour's bulge alternates pixel by pixel, which is
+// the rim "chopped into dashes" recorded in FSTUBE.
+//
+// Half a radius measured best against the 2D pass, and by the same margin
+// wherever it was checked: 1TIM at zoom 2.2 and at zoom 9, 3CHY and 1UBQ. 4UG0
+// prefers 0.75 by 0.6%, which is inside the noise of the others. The metric is
+// the difference in BLURRED ink maps, which is deliberately blind to
+// antialiasing - see GPU3D_NOTES for why that matters here.
+//
+// It costs nothing: one multiply in the fragment shader, no extra pass.
+// cartoonSkirtZ overrides it.
+const SKIRT_Z = 0.5;
 // ...and the user-facing multiplier on it, now that the density carries the
 // calibration itself.
 const AO_GAIN = 1.0;
@@ -4135,7 +4158,7 @@ function drawTube(cv, renderer, prm) {
         // field of surfaces only. Its depths still line up with the draw's to
         // the bit, because neither depends on the quad any more.
         u('uZOnly', 1);
-        u('uGrowPx', 0); u('uPushZ', 0);
+        u('uGrowPx', 0); u('uPushZ', 0); u('uSkirtZ', 0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 1.0);
         gl.uniform1f(gl.getUniformLocation(progTube, 'uLit'), 0);
         const tmZ = tmStart('1-prepass');
@@ -4243,6 +4266,8 @@ function drawTube(cv, renderer, prm) {
     // plain fill.
     u('uGrowPx', outW * 0.5);
     u('uPushZ', 0.0008);
+    u('uSkirtZ', typeof renderer.cartoonSkirtZ === 'number'
+        ? renderer.cartoonSkirtZ : SKIRT_Z);
     gl.uniform1f(gl.getUniformLocation(progTube, 'uDarken'), 0.7);
     // FLAT BY DEFAULT. Per-fragment cylinder lighting is in the shader and
     // works, but it turns the drawing into shiny rods - a different style, not
