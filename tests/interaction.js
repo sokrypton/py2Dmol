@@ -36,7 +36,7 @@ eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
-    'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN', 'CLIP_GHOST']) {
+    'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
     if (!line) throw new Error('constant not found in viewer-mol.js: ' + name);
     eval('global.' + line.trim().replace('const ', ''));
@@ -44,7 +44,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipBoxDefault','clipInsideSet','setClipEditing','applyClip','clearClip','_reapplyClipForFrame','_clipGhostColors','setClipPlane','_paintClipBox','_clipViewCoords','_viewToScreen','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1064,178 +1064,85 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
 });
 
 
-// ---- CLIP BOX -------------------------------------------------------------
+// ---- CLIP -----------------------------------------------------------------
 //
-// A box you drag round what you want to keep. While it is being edited the
-// outside is GHOSTED so you can see what you are cutting; switching it off
-// commits, and the outside is hidden through the ordinary visibility mask -
-// the same road Hide takes, so save, copy and Show all need no new code.
+// PyMOL's clip: a slab in CAMERA space that CUTS the drawing between a near and
+// a far plane. Not a selection and not a visibility state - the geometry is cut,
+// so a ribbon crossing a plane is drawn up to it and stops.
 
-// The planes are VIEW-space, so the coordinates they test are rotatedCoords.
-// Identity view here: the harness is scoring the planes, not the projection.
 function clipViewer(pts) {
     const v = new Cls();
     v.coords = pts.map(([x, y, z]) => ({ x, y, z }));
     v.rotatedCoords = pts.map(([x, y, z]) => ({ x, y, z }));
     v._rotPending = false;
-    v.viewerState = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] };
-    v.objectsData = {};
-    // Vec3 lives in the real module's closure, so the centre is stubbed rather
-    // than lifted - this harness is scoring the planes, not the camera.
-    v._computeViewCentre = () => ({ x: 0, y: 0, z: 0 });
     v.render = () => {};
     return v;
 }
 
-t('the default clip box holds the whole structure', () => {
-    const v = clipViewer([[0, 0, 0], [10, -4, 2], [-3, 7, 9]]);
-    const b = v.clipBoxDefault();
-    for (const c of v.coords) {
-        if (c.x < b.min[0] || c.x > b.max[0] || c.y < b.min[1] || c.y > b.max[1]
-            || c.z < b.min[2] || c.z > b.max[2]) {
-            throw new Error('the default box clips a position - it must start by '
+t('the default slab holds the whole structure', () => {
+    const v = clipViewer([[0, 0, -10], [0, 0, 4], [0, 0, 22]]);
+    const s = v.clipSlabDefault();
+    for (const c of v.rotatedCoords) {
+        if (c.z > s.near || c.z < s.far) {
+            throw new Error('the default slab cuts something - it must start by '
                 + 'cutting nothing');
         }
     }
-    if (v.clipInsideSet(b).size !== 3) throw new Error('the default box is not everything');
 });
 
-t('the clip box keeps what is inside it, boundary included', () => {
-    const v = clipViewer([[0, 0, 0], [5, 0, 0], [10, 0, 0]]);
-    const inside = v.clipInsideSet({ min: [-1, -1, -1], max: [5, 1, 1] });
-    if (inside.size !== 2 || !inside.has(0) || !inside.has(1)) {
-        throw new Error('inside is ' + [...inside] + ', expected 0 and 1 - a '
-            + 'position exactly on the face is inside');
-    }
-});
-
-t('a clip plane cannot be pushed past its opposite', () => {
-    const v = clipViewer([[0, 0, 0], [10, 0, 0]]);
-    v.clipBox = { min: [0, 0, 0], max: [10, 10, 10] };
-    v.setClipPlane(0, 1, -1000);      // the max plane, far past the min one
-    if (!(v.clipBox.max[0] > v.clipBox.min[0])) {
-        throw new Error('the box turned inside out: min ' + v.clipBox.min[0]
-            + ' max ' + v.clipBox.max[0]);
-    }
-    v.setClipPlane(0, 0, 1000);       // ...and the other way
-    if (!(v.clipBox.max[0] > v.clipBox.min[0])) {
-        throw new Error('the min plane crossed the max one');
+t('the clip planes cannot cross', () => {
+    const v = clipViewer([[0, 0, 0]]);
+    v.setClipSlab(-100, 50);          // near behind far
+    if (!(v.clipNear > v.clipFar)) {
+        throw new Error('near ' + v.clipNear + ' is not in front of far ' + v.clipFar
+            + ' - a slab of nothing draws nothing and reads as a bug');
     }
 });
 
-t('the clip is relative to the VIEW, not to the molecule', () => {
-    // "Near" has to go on meaning near the camera when the structure turns, so
-    // the planes test rotatedCoords. Two positions on the x axis; with the view
-    // turned a quarter turn about y they lie along the view's z instead, and a
-    // box that only admits x <= 6 must now admit both.
-    const v = clipViewer([[0, 0, 0], [50, 0, 0]]);
-    const box = { min: [-1, -1, -100], max: [6, 1, 100] };
-    if (v.clipInsideSet(box).size !== 1) throw new Error('head-on, only one is inside');
-    v.rotatedCoords = [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 50 }];
-    if (v.clipInsideSet(box).size !== 2) {
-        throw new Error('after the turn both are within the x planes - the box '
-            + 'is being tested against model coordinates, not the view');
+t('the slab is a depth test, and off is off', () => {
+    const v = clipViewer([[0, 0, 0]]);
+    if (!v.clipAccepts(1e6)) throw new Error('with no slab set, nothing is clipped');
+    v.setClipSlab(10, -10);
+    if (!v.clipAccepts(0)) throw new Error('a point inside the slab was clipped');
+    if (v.clipAccepts(11)) throw new Error('a point in front of Near survived');
+    if (v.clipAccepts(-11)) throw new Error('a point behind Far survived');
+    if (!v.clipAccepts(10) || !v.clipAccepts(-10)) {
+        throw new Error('a point exactly on a plane must be kept, as the shader keeps it');
     }
+    v.setClipSlab(null, null);
+    if (!v.clipAccepts(1e6)) throw new Error('switching the slab off left it clipping');
 });
 
-t('committing freezes the view the planes were set in', () => {
-    // Re-deriving a committed clip from the LIVE view would rewrite the
-    // visibility mask on every frame of a drag, which rebuilds the GPU mesh.
-    const v = clipViewer([[0, 0, 0], [50, 0, 0]]);
-    v.setVisibility = (p) => { v._seen = p; };
-    v.clipBox = { min: [-1, -1, -1], max: [6, 1, 1] };
-    v.clipEditing = true;
-    v.setClipEditing(false);
-    if (!v.clipFrozen) throw new Error('the view was not frozen with the box');
-    const kept = new Set(v._seen.positions);
-    // turn the view: the committed clip must not re-cut
-    v.rotatedCoords = [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 50 }];
-    v._reapplyClipForFrame();
-    const after = v._seen.positions;
-    if (after.size !== kept.size || ![...kept].every((i) => after.has(i))) {
-        throw new Error('rotating changed a committed clip - it would rewrite the '
-            + 'mask on every frame of a drag');
-    }
+t('the clip cuts the drawing, it does not touch visibility', () => {
+    // The whole reason this moved out of the mask: clipping is a camera state,
+    // and writing it into visibility made it a per-object edit that had to be
+    // committed, frozen against a view, and undone.
+    const v = clipViewer([[0, 0, 0], [0, 0, 100]]);
+    let touched = false;
+    v.setVisibility = () => { touched = true; };
+    v.setClipSlab(10, -10);
+    if (touched) throw new Error('setClipSlab wrote to the visibility mask');
+    if (v.visiblePositions) throw new Error('the clip hid a position');
 });
 
-t('switching the clip off commits it through the visibility mask', () => {
-    const v = clipViewer([[0, 0, 0], [5, 0, 0], [50, 0, 0]]);
-    let patch = null;
-    v.setVisibility = (p) => { patch = p; };
-    v.clipBox = { min: [-1, -1, -1], max: [6, 1, 1] };
-    v.clipEditing = true;
-    v.setClipEditing(false);
-    if (!patch) throw new Error('nothing was written to the visibility mask');
-    if (patch.visibilityMode !== 'explicit') {
-        throw new Error('committed as ' + patch.visibilityMode + ' - an empty box '
-            + 'must mean "nothing", not "everything"');
+t('every draw path asks the same clip test', () => {
+    // Four paths draw: 2D tube, 2D cartoon, and both GPU programs. The two
+    // canvas paths cull whole primitives by depth (a canvas cannot cut one);
+    // the GPU cuts per fragment. They must at least be reading the same slab.
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/clipped\(vZv\)/.test(gpu) || !/clipped\(zSurf\)/.test(gpu)) {
+        throw new Error('a GPU program draws without the clip test - the ribbon '
+            + 'and the tube must both be cut');
     }
-    if (patch.positions.size !== 2 || patch.positions.has(2)) {
-        throw new Error('the mask kept ' + [...patch.positions] + ', expected 0 and 1');
+    if (!/setClipSlab\(renderer\.clipSlabOn/.test(gpu)) {
+        throw new Error('the GPU never reads the slab off the renderer');
     }
-    if (v.clipEditing) throw new Error('still editing after the commit');
-});
-
-t('a committed clip follows the atoms when the frame changes', () => {
-    // The mask is position INDICES and the positions move; a clip that was
-    // committed on one frame would otherwise keep cutting whatever was in the
-    // way then.
-    const v = clipViewer([[0, 0, 0], [50, 0, 0]]);
-    v.setVisibility = (p) => { v._seen = p; };
-    v.clipBox = { min: [-1, -1, -1], max: [6, 1, 1] };
-    v.clipCommitted = true;
-    v.clipFrozen = { rot: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], centre: [0, 0, 0] };
-    v._reapplyClipForFrame();
-    if (v._seen.positions.size !== 1 || !v._seen.positions.has(0)) {
-        throw new Error('first frame kept ' + [...v._seen.positions]);
+    if (!/renderer\.clipAccepts/.test(cart)) {
+        throw new Error('the 2D cartoon path ignores the slab');
     }
-    // the two positions swap places
-    v.coords = [{ x: 50, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }];
-    v.rotatedCoords = v.coords;
-    v._reapplyClipForFrame();
-    if (v._seen.positions.size !== 1 || !v._seen.positions.has(1)) {
-        throw new Error('after the move it kept ' + [...v._seen.positions]
-            + ' - the mask was not re-derived from the box');
-    }
-});
-
-t('the ghost washes only what the box would cut', () => {
-    const v = clipViewer([[0, 0, 0], [5, 0, 0], [50, 0, 0], [60, 0, 0]]);
-    v.backgroundColor = '#ffffff';
-    v.clipBox = { min: [-1, -1, -1], max: [6, 1, 1] };
-    v.clipEditing = true;
-    // segment 0 joins two inside, 1 straddles the face, 2 joins two outside
-    v.segmentIndices = [
-        { idx1: 0, idx2: 1 }, { idx1: 1, idx2: 2 }, { idx1: 2, idx2: 3 },
-    ];
-    const base = [{ r: 0, g: 0, b: 0 }, { r: 0, g: 0, b: 0 }, { r: 0, g: 0, b: 0 }];
-    const out = v._clipGhostColors(base);
-    if (out[0] !== base[0]) throw new Error('an inside segment was washed');
-    if (out[1] !== base[1]) {
-        throw new Error('the segment straddling the face was washed - it is half '
-            + 'of what is being kept');
-    }
-    const want = Math.round(255 * CLIP_GHOST);
-    if (Math.round(out[2].r) !== want) {
-        throw new Error('an outside segment washed to ' + out[2].r + ', expected ' + want);
-    }
-    // ...and the array is stable while the box is, so the GPU uploads nothing
-    if (v._clipGhostColors(base) !== out) {
-        throw new Error('a still box handed back a new colour array - the GPU '
-            + 'keys its recolour on identity and would upload every frame');
-    }
-});
-
-t('Show all forgets the clip', () => {
-    const v = clipViewer([[0, 0, 0], [50, 0, 0]]);
-    v.setVisibility = () => {};
-    v.chains = ['A', 'A'];
-    v.clipBox = { min: [-1, -1, -1], max: [6, 1, 1] };
-    v.clipCommitted = true;
-    v.showAll();
-    if (v.clipCommitted || v.clipBox) {
-        throw new Error('Show all left the clip committed - the next frame would '
-            + 'undo it one frame later');
+    if (!/this\.clipAccepts\(zValues\[i\]\)/.test(src)) {
+        throw new Error('the 2D tube path ignores the slab');
     }
 });
 

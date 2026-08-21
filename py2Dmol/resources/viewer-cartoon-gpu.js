@@ -521,11 +521,27 @@ function paintCPU(cv, faces, zMin, zMax) {
 
 /* ------------------------------------------------------------------- GPU */
 
+// PyMOL'S CLIP, IN THE FRAGMENT.
+//
+// A slab in camera space: keep what lies between uClipFar and uClipNear along
+// view z and discard the rest. Per FRAGMENT, not per face, because that is what
+// makes it a CUT - a ribbon crossing the plane is drawn up to it and stops, and
+// the interior it exposes is open to the camera. Dropping whole faces instead
+// would only remove geometry near the plane, which is hiding, not clipping.
+//
+// Off is uClipNear <= uClipFar, which no live slab can be (setClipSlab keeps
+// them half an Angstrom apart), so one comparison turns the whole thing off.
+const CLIP_GLSL = `
+uniform float uClipNear, uClipFar;
+bool clipped(float z) { return uClipNear > uClipFar && (z > uClipNear || z < uClipFar); }
+`;
+
 const VS = `#version 300 es
 in vec2 aPos; in float aZ; in vec3 aCol;
 uniform vec2 uSize; uniform vec2 uZRange;
 out vec3 vCol;
 out float vCull;      // the shared fragment shader reads it; nothing to cull here
+out float vZv;        // view z, for the clip slab in the fragment
 void main() {
   vec2 ndc = vec2(aPos.x / uSize.x * 2.0 - 1.0, 1.0 - aPos.y / uSize.y * 2.0);
   // z grows toward the eye, so NEAR must become SMALL depth for gl.LESS
@@ -533,6 +549,7 @@ void main() {
   gl_Position = vec4(ndc, 1.0 - 2.0 * t, 1.0);
   vCol = aCol;
   vCull = 0.0;
+  vZv = aZ;
 }`;
 
 // RESIDENT GEOMETRY. The mesh is uploaded ONCE in model space and the camera is
@@ -571,6 +588,7 @@ in vec4 aFlags0;        // k, top, iMul, stick
 in vec4 aFlags1;        // side, cap, sheet, residue
 in vec4 aFlags2;        // palette slot, colour mode, -, -
 out float vCull;
+out float vZv;        // view z, for the clip slab in the fragment
 in vec3 aDots;          // captured oB, oLb, oT - only true at the capture view
 in vec3 aFlatN;         // the FACE's own OUTWARD normal, constant over it
 in vec3 aFlatShade;     // ...and the normal a FLAT face shades from
@@ -688,6 +706,7 @@ void main() {
   vec3 aNormal = (corner == 0 || corner == 1) ? aNA : aNB;
   vec3 aTangent = (corner == 0 || corner == 1) ? aTA : aTB;
   vec3 v = uRot * (aModel + uShift);
+  vZv = v.z;
   // THE RENDERER'S OWN PROJECTION. pe = fl / (fl - z), applied to x and y and
   // not to z - which is what leaves z invertible on the way back in.
   float pe = uPersp > 0.5 ? uFL / max(0.1, uFL - v.z) : 1.0;
@@ -922,6 +941,7 @@ in vec3 aEdgeCol;
 // the 2D pass does.
 in float aEdgeW;
 out vec3 vInk;
+out float vZv;        // view z, for the clip slab in the fragment
 uniform mat3 uRot; uniform vec2 uSize, uZRange, uShadeRange;
 uniform float uScale, uWidth, uBias, uPersp, uFL;
 uniform vec3 uShift;            // see VS3D - the view centre's move since capture
@@ -1087,6 +1107,9 @@ void main() {
   float over = isContact ? 0.0 : (w * 0.5);
   p += dir * (far ? over : -over);
   float zv = far ? v1.z : v0.z;
+  // ...and the clip slab reads the same depth this vertex is placed at, so an
+  // outline crossing the plane is cut at it rather than dropping whole
+  vZv = zv;
   vec2 ndc = vec2(p.x / uSize.x * 2.0 - 1.0, 1.0 - p.y / uSize.y * 2.0);
   float t01 = (zv - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
 
@@ -1420,6 +1443,7 @@ in float vCapA, vCapB;
 in float vNoAO;
 uniform vec2 uZRange;
 uniform float uScale, uPersp, uFL, uPushZ;
+${CLIP_GLSL}
 // HOW WIDE THE SKIRT IS, in device pixels, and whether there is one at all.
 // The vertex shader grows the quad by it; the fragment shader needs it too,
 // now that a fragment decides for itself whether it is skirt or fill.
@@ -1529,6 +1553,11 @@ void main() {
   float dIn = min(dist, vRfill);
   float bulgePx = sqrt(max(0.0, vRfill * vRfill - dIn * dIn));
   float zSurf = zAxis + bulgePx / max(1e-6, uScale * pe);
+  // THE CLIP SLAB CUTS THE SURFACE, NOT THE AXIS. zSurf is where this fragment
+  // of the tube actually is in depth, so a capsule crossing the plane is opened
+  // at it - a hole with the tube's own rim - which is what clipping into a
+  // tube looks like. Cutting on the axis depth would take whole segments.
+  if (clipped(zSurf)) discard;
   // THE OUTLINE IS A SKIRT OUTSIDE THE TUBE, NOT A FATTER TUBE BEHIND IT.
   // This is the whole of what makes a depth buffer behave like the 2D pass's
   // painter, which strokes each segment's rim and then its fill, in depth
@@ -1694,18 +1723,24 @@ void main() { fragColor = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); }`;
 
 const FSINK = `#version 300 es
 precision highp float;
-in vec3 vInk; out vec4 fragColor;
+in vec3 vInk; in float vZv; out vec4 fragColor;
+${CLIP_GLSL}
 ${GRAIN_GLSL}
-void main() { fragColor = vec4(grainAt(vInk), 1.0); }`;
+void main() {
+  if (clipped(vZv)) discard;
+  fragColor = vec4(grainAt(vInk), 1.0);
+}`;
 
 const FS = `#version 300 es
 precision highp float;
-in vec3 vCol; in float vCull; out vec4 fragColor;
+in vec3 vCol; in float vCull; in float vZv; out vec4 fragColor;
+${CLIP_GLSL}
 ${GRAIN_GLSL}
 void main() {
   // the per-frame version of the renderer's STICK_CULL: a face is dropped when
   // it turns away, decided now rather than when the mesh was captured
   if (vCull > 0.5) discard;
+  if (clipped(vZv)) discard;
   fragColor = vec4(grainAt(vCol), 1.0);
 }`;
 
@@ -2426,6 +2461,18 @@ const shiftZ = () => {
     const R = currentRot();
     return R[2][0] * viewShift[0] + R[2][1] * viewShift[1] + R[2][2] * viewShift[2];
 };
+
+// The clip slab, in view space, straight from the renderer. off = near <= far.
+let clipNear = 0, clipFar = 0;
+function setClipSlab(near, far) {
+    clipNear = (typeof near === 'number' && isFinite(near)) ? near : 0;
+    clipFar = (typeof far === 'number' && isFinite(far)) ? far : 0;
+}
+// ...and onto whichever program is about to draw.
+function uploadClip(prog) {
+    gl.uniform1f(gl.getUniformLocation(prog, 'uClipNear'), clipNear);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uClipFar'), clipFar);
+}
 
 let viewZoom = 1;
 let capturing = false;
@@ -3374,6 +3421,7 @@ function drawResident(cv, prm) {
     // shader now evaluates a shifted one - so it travels with them
     gl.uniform2f(gl.getUniformLocation(prog3, 'uShadeRange'), sr[0] + dzprog3, sr[1] + dzprog3);
     gl.uniform1f(gl.getUniformLocation(prog3, 'uScale'), drawScale());
+    uploadClip(prog3);
     gl.uniform1f(gl.getUniformLocation(prog3, 'uPersp'), isPersp() ? 1 : 0);
     gl.uniform1f(gl.getUniformLocation(prog3, 'uFL'), focalLength());
     gl.uniform1f(gl.getUniformLocation(prog3, 'uShowRibbon'), showRibbon ? 1 : 0);
@@ -3456,6 +3504,7 @@ function drawInk(cv, prm) {
     // shader now evaluates a shifted one - so it travels with them
     gl.uniform2f(gl.getUniformLocation(progInk, 'uShadeRange'), srI[0] + dzprogInk, srI[1] + dzprogInk);
     gl.uniform1f(gl.getUniformLocation(progInk, 'uScale'), drawScale());
+    uploadClip(progInk);
     gl.uniform1f(gl.getUniformLocation(progInk, 'uPersp'), isPersp() ? 1 : 0);
     gl.uniform1f(gl.getUniformLocation(progInk, 'uFL'), focalLength());
     gl.uniform1f(gl.getUniformLocation(progInk, 'uShowRibbon'), showRibbon ? 1 : 0);
@@ -3950,6 +3999,9 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         setZoomExact((renderer.viewerState && renderer.viewerState.zoom) || 1);
         setPixelRatio(displayWidth > 0 ? w / displayWidth : 1);
         setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
+        // the clip slab, in the same view space the geometry is drawn in
+        setClipSlab(renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipNear : 0,
+            renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipFar : 0);
         // dark mode is the renderer's background, exactly as the 2D pass reads it
         const dark = renderer.backgroundColor === '#000000';
         setPaper(dark ? [0, 0, 0] : [255, 255, 255], dark ? 255 : 0);
@@ -4381,6 +4433,7 @@ function drawTube(cv, renderer, prm) {
     gl.uniform2f(gl.getUniformLocation(progTube, 'uSize'), cv.width, cv.height);
     gl.uniform2f(gl.getUniformLocation(progTube, 'uZRange'), tubeRange[0], tubeRange[1]);
     u('uScale', (renderer._viewScale || 1) * ratio);
+    uploadClip(progTube);
     u('uPersp', isPersp() ? 1 : 0);
     u('uFL', focalLength());
     u('uRatio', ratio);
@@ -4669,6 +4722,9 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         setRot(renderer.viewerState.rotation);
         setOrtho(renderer.viewerState && renderer.viewerState.ortho);
         setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
+        // the clip slab, in the same view space the geometry is drawn in
+        setClipSlab(renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipNear : 0,
+            renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipFar : 0);
         const dark = renderer.backgroundColor === '#000000';
         setPaper(dark ? [0, 0, 0] : [255, 255, 255], dark ? 255 : 0);
 

@@ -1675,73 +1675,85 @@ function handleObjectChange() {
 // BEST VIEW ROTATION ANIMATION
 // ============================================================================
 
-// The six sliders, in the order the renderer indexes them: axis 0/1/2 for the
-// screen's x, y and depth, side 0 for the min plane and 1 for the max.
-const CLIP_SLIDERS = [
-    ['clipXMin', 0, 0], ['clipXMax', 0, 1],
-    ['clipYMin', 1, 0], ['clipYMax', 1, 1],
-    ['clipZMin', 2, 0], ['clipZMax', 2, 1],
-];
-
-// Range and value for every slider, from the box the renderer just built round
-// the object IN THIS VIEW. The travel is the box plus half its size again at
-// each end, so a plane can be pushed past the structure (hiding everything, a
-// legible mistake) and pulled back out beyond it (hiding nothing).
-function fillClipPanel() {
+// PyMOL's clip, as a panel: Near and Far, in Angstrom along the view's own
+// depth. The renderer cuts the drawing between them - see setClipSlab.
+//
+// The travel is the structure's depth range plus half of it at either end, so
+// a plane can be pushed right through (drawing nothing, a legible mistake) or
+// pulled clear of it (cutting nothing).
+function fillClipPanel(slab) {
     const r = viewerApi?.renderer;
-    const box = r && r.clipBox;
-    if (!box) return;
-    for (const [id, axis, side] of CLIP_SLIDERS) {
+    if (!r || !slab) return;
+    const span = slab.near - slab.far;
+    const slack = Math.max(1, span * 0.5);
+    for (const [id, v] of [['clipNear', slab.near], ['clipFar', slab.far]]) {
         const el = document.getElementById(id);
         if (!el) continue;
-        const lo = box.min[axis]; const hi = box.max[axis];
-        const slack = Math.max(1, (hi - lo) * 0.5);
-        el.min = (lo - slack).toFixed(2);
-        el.max = (hi + slack).toFixed(2);
-        el.step = Math.max(0.05, (hi - lo) / 400).toFixed(3);
-        el.value = (side ? hi : lo).toFixed(2);
+        el.min = (slab.far - slack).toFixed(2);
+        el.max = (slab.near + slack).toFixed(2);
+        el.step = Math.max(0.05, span / 400).toFixed(3);
+        el.value = v.toFixed(2);
     }
+    showClipValues();
+}
+
+function showClipValues() {
+    const r = viewerApi?.renderer;
+    if (!r) return;
+    const n = document.getElementById('clipNearValue');
+    const f = document.getElementById('clipFarValue');
+    if (n) n.textContent = r.clipNear === null ? '' : r.clipNear.toFixed(1) + ' A';
+    if (f) f.textContent = r.clipFar === null ? '' : r.clipFar.toFixed(1) + ' A';
 }
 
 function setupClipPanel() {
     const cb = document.getElementById('clipCheckbox');
     const panel = document.getElementById('clipPanel');
     if (!cb) return;
-    for (const [id, axis, side] of CLIP_SLIDERS) {
+    const push = () => {
+        const r = viewerApi?.renderer;
+        const near = document.getElementById('clipNear');
+        const far = document.getElementById('clipFar');
+        if (!r || !near || !far) return;
+        r.setClipSlab(parseFloat(near.value), parseFloat(far.value));
+        // the renderer keeps the two planes apart rather than letting them
+        // cross, so read back what it took instead of leaving a slider
+        // claiming a plane the slab does not have
+        near.value = r.clipNear.toFixed(2);
+        far.value = r.clipFar.toFixed(2);
+        showClipValues();
+    };
+    for (const id of ['clipNear', 'clipFar']) {
         const el = document.getElementById(id);
-        if (!el) continue;
-        el.addEventListener('input', () => {
-            const r = viewerApi?.renderer;
-            if (!r || !r.setClipPlane) return;
-            r.setClipPlane(axis, side, parseFloat(el.value));
-            // the renderer refuses to let a plane pass its opposite, so read
-            // back what it actually took rather than leaving the slider
-            // claiming a position the box does not have
-            const box = r.clipBox;
-            if (box) el.value = (side ? box.max[axis] : box.min[axis]).toFixed(2);
-        });
+        if (el) el.addEventListener('input', push);
     }
     const reset = document.getElementById('clipResetButton');
     if (reset) {
         reset.addEventListener('click', (e) => {
             e.preventDefault();
             const r = viewerApi?.renderer;
-            if (!r || !r.clipEditing) return;
-            r.clipBox = r.clipBoxDefault();
-            r._clipVersion++;
-            fillClipPanel();
-            r.render('clip reset');
+            if (!r || !r.clipSlabOn()) return;
+            const slab = r.clipSlabDefault();
+            if (!slab) return;
+            r.setClipSlab(slab.near, slab.far);
+            fillClipPanel(slab);
         });
     }
     cb.addEventListener('change', () => {
         const r = viewerApi?.renderer;
-        if (!r || !r.setClipEditing) { cb.checked = false; return; }
-        // A box needs something to be a box AROUND: with nothing loaded the
-        // renderer declines, and the control must not claim otherwise.
-        const open = r.setClipEditing(cb.checked);
-        cb.checked = open;
-        if (panel) panel.hidden = !open;
-        if (open) fillClipPanel();
+        if (!r || !r.setClipSlab) { cb.checked = false; return; }
+        if (!cb.checked) {
+            r.setClipSlab(null, null);
+            if (panel) panel.hidden = true;
+            return;
+        }
+        // A slab needs something to cut: with nothing loaded the renderer has
+        // no depth range to offer, and the control must not claim otherwise.
+        const slab = r.clipSlabDefault();
+        if (!slab) { cb.checked = false; return; }
+        r.setClipSlab(slab.near, slab.far);
+        if (panel) panel.hidden = false;
+        fillClipPanel(slab);
     });
 }
 

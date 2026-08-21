@@ -475,11 +475,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const HOVER_TEXT_LIGHT_CSS = 'rgba(40, 40, 40, 0.9)';    // on white paper
     const HOVER_TEXT_DARK_CSS = 'rgba(235, 235, 235, 0.9)';  // on the 3d preset's black
     const HOVER_TEXT_MARGIN = 10;
-    // How far toward the paper the clip box washes what it would cut. 0.75 is
-    // "a quarter of its presence left" - enough to place a face against, not
-    // enough to be mistaken for what is being kept.
-    const CLIP_GHOST = 0.75;
-    const CLIP_EDGE_CSS = 'rgba(37, 99, 235, 0.9)';       // the box
     // Half-width in screen pixels at unit perspective, before the per-residue
     // radius is added. Wide enough to read as a band around the ribbon rather
     // than a line on it.
@@ -1208,18 +1203,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // visible. Was called visibilityMask, which invited the wrong
             // mental model - it is not a per-residue boolean array.
             this.visiblePositions = null;
-            // THE CLIP BOX, in MODEL space so it turns with the structure
-            // instead of sliding over it. {min:[x,y,z], max:[x,y,z]}, or null
-            // for "never set one". clipEditing means it is on screen and
-            // draggable and everything outside it is ghosted; committing hands
-            // the inside set to setVisibility, which is the same road Hide
-            // takes, so save, copy and the sequence strip all follow with no
-            // work of their own.
-            this.clipBox = null;
-            this.clipEditing = false;
-            this.clipCommitted = false;
-            this.clipFrozen = null;     // the view a committed box was set in
-            this._clipVersion = 0;
+            // THE CLIP SLAB, in view space: keep what lies between clipFar
+            // and clipNear along the camera's own z. null for no clipping. It
+            // cuts the DRAWING, not the visibility - see the note on setClipSlab.
+            this.clipNear = null;
+            this.clipFar = null;
             this.highlightedAtom = null; // To store position index for highlighting (property name kept for API compatibility)
             this.highlightedAtoms = null; // To store Set of position indices for highlighting multiple positions (property name kept for API compatibility)
 
@@ -1391,10 +1379,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Reset to default state: show all positions
         showAll() {
-            // ...INCLUDING WHATEVER THE CLIP BOX WAS HOLDING BACK. Without
-            // this the box is still committed, and the next frame re-derives
-            // the mask from it - Show all would undo itself one frame later.
-            this.clearClip();
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
                 this.resetVisibility();
@@ -3387,225 +3371,76 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         // ====================================================================
-        // CLIP
+        // CLIP, THE WAY PyMOL DOES IT
         //
-        // Six planes round what you want to keep, set from a panel: left and
-        // right, bottom and top, near and far. PyMOL's clipping, with two more
-        // pairs than its near/far.
+        // A slab in CAMERA space: keep what lies between clipFar and clipNear
+        // along the view's own z, and cut everything else. Not a selection and
+        // not a visibility state - the geometry is CUT, so a ribbon that
+        // crosses the plane is drawn up to it and stops, and the interior it
+        // exposes is open to the camera. That is what "clip" means in PyMOL,
+        // and it is why this lives in the draw rather than in the mask.
         //
-        // THE BOX IS RELATIVE TO THE VIEW, not to the molecule. "Near" means
-        // near the camera, and it goes on meaning that when the structure
-        // turns - so the planes are in the space rotatedCoords are already in,
-        // and turning the structure while the panel is open re-cuts it live.
+        // Being camera space it follows the view for nothing: turn the
+        // structure and the slab stays where the camera is, which is the whole
+        // point of clipping into something.
         //
-        // COMMITTING FREEZES THE VIEW IT WAS SET IN. A committed clip has to
-        // survive rotation, and re-deriving it from the live view every frame
-        // would rewrite the visibility mask on every frame of a drag - which
-        // rebuilds the GPU mesh, seconds at a time on the structures that need
-        // clipping most. So the transform is stored with the box, the kept set
-        // is what was inside at that moment, and you can turn the result over
-        // and look at it.
+        // Nothing is committed and nothing is remembered per object: switch it
+        // off and the drawing is whole again.
         // ====================================================================
 
-        /** The object's own extent in VIEW space - the box's starting point. */
-        clipBoxDefault() {
+        /** The structure's own depth range, the slab's starting point. */
+        clipSlabDefault() {
             this._ensureRotated();
             const n = this.coords ? this.coords.length : 0;
             const rc = this.rotatedCoords;
             if (!n || !rc || rc.length < n) return null;
-            let x0 = Infinity, y0 = Infinity, z0 = Infinity;
-            let x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+            let lo = Infinity; let hi = -Infinity;
             for (let i = 0; i < n; i++) {
-                const c = rc[i];
-                if (c.x < x0) x0 = c.x; if (c.x > x1) x1 = c.x;
-                if (c.y < y0) y0 = c.y; if (c.y > y1) y1 = c.y;
-                if (c.z < z0) z0 = c.z; if (c.z > z1) z1 = c.z;
+                const z = rc[i].z;
+                if (z < lo) lo = z;
+                if (z > hi) hi = z;
             }
-            if (!(x1 >= x0)) return null;
-            // AIR ROUND IT: a box that starts by clipping something is a box
-            // that starts by lying about itself.
-            const pad = Math.max(2, 0.02 * Math.max(x1 - x0, y1 - y0, z1 - z0));
-            return {
-                min: [x0 - pad, y0 - pad, z0 - pad],
-                max: [x1 + pad, y1 + pad, z1 + pad],
-            };
+            if (!(hi >= lo)) return null;
+            // AIR AT BOTH ENDS, so the slab starts by cutting nothing.
+            const pad = Math.max(2, (hi - lo) * 0.02);
+            return { far: lo - pad, near: hi + pad };
         }
 
         /**
-         * View-space coordinates to test the planes against.
-         *
-         * While the panel is open that is the LIVE view; once committed it is
-         * the view the box was set in, recomputed for this frame's positions so
-         * a trajectory keeps cutting the same planes rather than the same
-         * indices.
+         * Set the slab. near is the plane closer to the camera (larger z), far
+         * the one further away; near <= far is refused rather than swapped,
+         * because a slab of nothing is a drawing of nothing and reads as a bug.
+         * Pass nulls to clip nothing.
          */
-        _clipViewCoords() {
-            const frozen = this.clipFrozen;
-            if (!frozen) {
-                this._ensureRotated();
-                return this.rotatedCoords;
+        setClipSlab(near, far) {
+            if (near === null || far === null) {
+                this.clipNear = null;
+                this.clipFar = null;
+            } else {
+                const nz = Number(near); const fz = Number(far);
+                if (!isFinite(nz) || !isFinite(fz)) return;
+                const MIN = 0.5;
+                this.clipNear = Math.max(nz, fz + MIN);
+                this.clipFar = Math.min(fz, this.clipNear - MIN);
             }
-            const n = this.coords ? this.coords.length : 0;
-            const m = frozen.rot; const c = frozen.centre;
-            const out = new Array(n);
-            for (let i = 0; i < n; i++) {
-                const v = this.coords[i];
-                const sx = v.x - c[0]; const sy = v.y - c[1]; const sz = v.z - c[2];
-                out[i] = {
-                    x: m[0][0] * sx + m[0][1] * sy + m[0][2] * sz,
-                    y: m[1][0] * sx + m[1][1] * sy + m[1][2] * sz,
-                    z: m[2][0] * sx + m[2][1] * sy + m[2][2] * sz,
-                };
-            }
-            return out;
+            this.render('clip slab');
         }
 
-        /** Position indices inside the box; null when there is no box. */
-        clipInsideSet(box = this.clipBox) {
-            const n = this.coords ? this.coords.length : 0;
-            if (!box || !n) return null;
-            const rc = this._clipViewCoords();
-            if (!rc || rc.length < n) return null;
-            const [ax, ay, az] = box.min;
-            const [bx, by, bz] = box.max;
-            const out = new Set();
-            for (let i = 0; i < n; i++) {
-                const c = rc[i];
-                if (!c) continue;
-                if (c.x >= ax && c.x <= bx && c.y >= ay && c.y <= by
-                    && c.z >= az && c.z <= bz) out.add(i);
-            }
-            return out;
+        // NUMBERS, not "not null". A renderer built before this existed - a
+        // saved state, the lifted class the tests build - has neither field at
+        // all, and `undefined !== null` is true, which turned a viewer with no
+        // slab into one that clipped everything.
+        clipSlabOn() {
+            return typeof this.clipNear === 'number' && typeof this.clipFar === 'number';
         }
 
         /**
-         * Open the panel (show the box, ghost the outside) or close it (commit).
-         * Returns whether the box is now open, so a control can follow.
+         * Is this view-space depth inside the slab? The one test, so the 2D
+         * paths and the shaders cannot drift apart about where the planes are.
          */
-        setClipEditing(on) {
-            const want = !!on;
-            if (want === this.clipEditing) return this.clipEditing;
-            if (want) {
-                // A FRESH BOX EACH TIME IT OPENS, because it is measured in the
-                // view and the view has moved since the last one was set.
-                this.clipFrozen = null;
-                this.clipBox = this.clipBoxDefault();
-                if (!this.clipBox) return false;           // nothing loaded yet
-                this.clipEditing = true;
-                this._clipVersion++;
-                this.render('clip open');
-                return true;
-            }
-            this.clipEditing = false;
-            this._clipVersion++;
-            this.applyClip();
-            return false;
-        }
-
-        /** Move one plane. axis 0/1/2 = x/y/z, side 0 = min, 1 = max. */
-        setClipPlane(axis, side, value) {
-            const b = this.clipBox;
-            if (!b || !(axis >= 0 && axis < 3)) return;
-            const v = Number(value);
-            if (!isFinite(v)) return;
-            // A plane cannot pass its opposite: the box would turn inside out
-            // and "inside" would stop meaning anything.
-            const MIN = 0.5;
-            if (side) b.max[axis] = Math.max(v, b.min[axis] + MIN);
-            else b.min[axis] = Math.min(v, b.max[axis] - MIN);
-            this._clipVersion++;
-            this.render('clip plane');
-        }
-
-        /** Hand the inside of the box to the visibility mask. */
-        applyClip() {
-            const inside = this.clipInsideSet();
-            if (!inside) { this.render('clip off'); return; }
-            // FREEZE THE VIEW THE PLANES WERE SET IN - see the note above.
-            const c = this._computeViewCentre(
-                this.objectsData[this.currentObjectName]);
-            this.clipFrozen = {
-                rot: this.viewerState.rotation.map((r) => r.slice()),
-                centre: [c.x, c.y, c.z],
-            };
-            this.clipCommitted = true;
-            // 'explicit', because an empty inside means "nothing", not "all" -
-            // a box set off the structure must show nothing, which is a legible
-            // mistake, rather than silently showing everything.
-            this.setVisibility({ positions: inside, visibilityMode: 'explicit' });
-        }
-
-        /**
-         * A COMMITTED CLIP IS A SET OF PLANES, NOT A LIST. The mask is position
-         * indices and the positions move, so a clip applied on one frame of a
-         * trajectory would keep cutting the residues that were in the way THEN.
-         * Re-derived through the frozen view whenever the frame changes.
-         */
-        _reapplyClipForFrame() {
-            if (!this.clipCommitted || !this.clipBox || this.clipEditing) return;
-            const inside = this.clipInsideSet();
-            if (inside) {
-                this.setVisibility({ positions: inside, visibilityMode: 'explicit' },
-                    true);
-            }
-        }
-
-        /** Forget the box and everything it did. */
-        clearClip() {
-            this.clipBox = null;
-            this.clipEditing = false;
-            this.clipCommitted = false;
-            this.clipFrozen = null;
-            this._clipVersion++;
-        }
-
-        /**
-         * The colour array with everything outside the box washed toward the
-         * paper. Cached against the array it came from, the box's version and
-         * the VIEW - the box is view-relative, so turning the structure changes
-         * what is outside it without the box moving at all. The GPU keys its
-         * recolour on this array's identity, so a still view uploads nothing.
-         */
-        _clipGhostColors(colors) {
-            const m = this.viewerState.rotation;
-            const key = this._clipVersion + '|' + (m ? m[0].concat(m[1], m[2]).join(',') : '');
-            if (this._clipTintFrom === colors && this._clipTintKey === key) {
-                return this._clipTint;
-            }
-            const box = this.clipBox;
-            const segs = this.segmentIndices;
-            if (!box || !segs || segs.length !== colors.length) return colors;
-            const rc = this._clipViewCoords();
-            if (!rc) return colors;
-            const [ax, ay, az] = box.min;
-            const [bx, by, bz] = box.max;
-            const paper = (this.backgroundColor === '#000000') ? 0 : 255;
-            const K = CLIP_GHOST;
-            const inBox = (i) => {
-                const c = rc[i];
-                if (!c) return true;
-                return c.x >= ax && c.x <= bx && c.y >= ay && c.y <= by
-                    && c.z >= az && c.z <= bz;
-            };
-            const out = new Array(colors.length);
-            for (let i = 0; i < colors.length; i++) {
-                const c = colors[i];
-                // A SEGMENT SPANS TWO POSITIONS and is ghosted only when BOTH
-                // are outside: the one that straddles a plane is half of what
-                // is being kept, and washing it out frays the edge of the very
-                // thing the box is holding on to.
-                const seg = segs[i];
-                if (inBox(seg.idx1) || inBox(seg.idx2)) { out[i] = c; continue; }
-                out[i] = {
-                    r: c.r + (paper - c.r) * K,
-                    g: c.g + (paper - c.g) * K,
-                    b: c.b + (paper - c.b) * K,
-                };
-            }
-            this._clipTintFrom = colors;
-            this._clipTintKey = key;
-            this._clipTint = out;
-            return out;
+        clipAccepts(z) {
+            if (!this.clipSlabOn()) return true;
+            return z <= this.clipNear && z >= this.clipFar;
         }
 
         /**
@@ -6547,11 +6382,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.showAll();
             }
 
-            // A CLIP IS A BOX, AND THE ATOMS MOVED. Re-derive the mask from it
-            // for this frame - see _reapplyClipForFrame. A no-op when there is
-            // no committed box.
-            this._reapplyClipForFrame();
-
             // Update UI controls (but don't render yet)
             this.updateUIControls();
 
@@ -7114,9 +6944,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._paintSelectionHalo(ctx, pxScale, band);
             if (!this._exportPxScale) {
                 this._paintHoverReadout(ctx, pxScale);
-                // The box is a tool, not part of the drawing - it goes with the
-                // hover marks, not with the selection.
-                this._paintClipBox(ctx, pxScale);
             }
         }
 
@@ -7129,60 +6956,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return new Set([this.highlightedAtom]);
             }
             return null;
-        }
-
-        /** View space to display pixels, as the draw does. */
-        _viewToScreen(v) {
-            const W = this.displayWidth || (this.canvas ? this.canvas.width : 0);
-            const H = this.displayHeight || (this.canvas ? this.canvas.height : 0);
-            const scale = this._viewScale || 1;
-            let pe = 1;
-            if (isPerspective(this.viewerState)) {
-                const d = this.viewerState.focalLength - v.z;
-                if (d <= 0.1) return null;                 // behind the camera
-                pe = this.viewerState.focalLength / d;
-            }
-            return { x: W / 2 + v.x * scale * pe, y: H / 2 - v.y * scale * pe };
-        }
-
-        /**
-         * The box drawn over the finished frame: twelve edges, no handles.
-         *
-         * The planes are VIEW-space, so the box needs no projecting of its own
-         * beyond the perspective divide - and under perspective its near face
-         * really is larger than its far one, which is why this draws as a
-         * truncated pyramid rather than a rectangle. That is the shape the
-         * planes actually cut.
-         */
-        _paintClipBox(ctx, pxScale = 1) {
-            if (!this.clipEditing || !this.clipBox) return;
-            const b = this.clipBox;
-            const [ax, ay, az] = b.min;
-            const [bx, by, bz] = b.max;
-            const pts = [
-                [ax, ay, az], [bx, ay, az], [bx, by, az], [ax, by, az],
-                [ax, ay, bz], [bx, ay, bz], [bx, by, bz], [ax, by, bz],
-            ];
-            const c = [];
-            for (const p of pts) {
-                const q = this._viewToScreen({ x: p[0], y: p[1], z: p[2] });
-                if (!q) return;                            // some corner is behind us
-                c.push(q);
-            }
-            const E = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7],
-                [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
-            ctx.save();
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.scale(pxScale, pxScale);
-            ctx.strokeStyle = CLIP_EDGE_CSS;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            for (const [i, j] of E) {
-                ctx.moveTo(c[i].x, c[i].y);
-                ctx.lineTo(c[j].x, c[j].y);
-            }
-            ctx.stroke();
-            ctx.restore();
         }
 
         /**
@@ -7198,9 +6971,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const text = this.hoverInfo && this.hoverInfo.text;
             if (!text) return;
             const H = this.displayHeight || (this.canvas ? this.canvas.height : 0);
+            // NO setTransform HERE. The app has already scaled this context by
+            // the device ratio, and everything else on this canvas - the halo,
+            // the structure itself - is drawn through it in DISPLAY pixels.
+            // Resetting the transform threw that scale away: on a 2x screen the
+            // text came out half size and "the bottom" landed in the middle of
+            // the canvas, which is exactly how it was reported. There is no
+            // pxScale here because this never runs in an export.
             ctx.save();
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.scale(pxScale, pxScale);
             ctx.font = '14px monospace';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'bottom';
@@ -8574,15 +8352,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // GHOST WHAT THE CLIP BOX WOULD CUT. Through the COLOURS, not
-            // through an alpha: both styles already take this array, and the
-            // GPU treats a colour change as three texels a segment rather than
-            // a rebuild - so the box can be dragged without the mesh being
-            // rebuilt behind it. Per-position colour overrides would have done
-            // the same job and cost a full rebuild per drag frame, because they
-            // mark the GPU palette incomplete.
-            if (this.clipEditing && this.clipBox) colors = this._clipGhostColors(colors);
-
             // STYLE DELEGATION: 'cartoon' replaces the entire draw stage below.
             // The cartoon renderer (viewer-cartoon.js) reuses the rotation and
             // per-segment colors computed above, plus this renderer's projection
@@ -8874,6 +8643,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Use the sorted array directly
             let visibleOrder = visibleSegmentIndices;
+
+            // THE CLIP SLAB, on the 2D path, is a CULL rather than a cut: a
+            // canvas paints whole segments, so one straddling a plane is kept
+            // or dropped by its own depth and the cut comes out stepped at the
+            // scale of one segment. The GPU path cuts per fragment and is
+            // exact; this is the fallback, asking the same clipAccepts.
+            if (this.clipSlabOn()) {
+                visibleOrder = visibleOrder.filter((i) => this.clipAccepts(zValues[i]));
+            }
 
             // Apply culling immediately after sorting
             // visibleOrder is sorted back-to-front (index 0 is furthest, index N-1 is closest)

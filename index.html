@@ -269,11 +269,9 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <span><i class="fa-solid fa-rotate"></i>Rotate</span>
                                 </label>
 
-                                <!-- Clip: six planes round what you want to keep, set
-                                     from the panel below. While it is open the outside
-                                     is ghosted; closing it hides the outside for real. -->
+                                <!-- Clip: PyMOL's near/far slab, cutting the drawing. -->
                                 <label class="btn-toggle btn-flex" id="clipToggle"
-                                    title="Clip the view to a box; close the panel to hide what is outside">
+                                    title="Clip the view to a slab, as in PyMOL: near and far planes that cut the drawing">
                                     <input type="checkbox" id="clipCheckbox">
                                     <span><i class="fa-solid fa-cube"></i>Clip</span>
                                 </label>
@@ -302,37 +300,30 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             /* Open cue is the shared .btn-toggle[aria-expanded] rule
                                in style.css - the same green as a checked toggle. */
                         </style>
-                        <!-- CLIP PANEL. Six planes, in Angstrom, RELATIVE TO THE VIEW:
-                             left/right across the screen, bottom/top up it, and
-                             near/far into it. The ranges and starting values are the
-                             object's own extent in that view, set when the panel opens
-                             (fillClipPanel in app.js). -->
+                        <!-- CLIP PANEL. PyMOL's clip: a slab in CAMERA space. Near
+                             is the plane closer to you, Far the one behind - what lies
+                             between them is drawn, and the geometry is CUT at each,
+                             not hidden. Both are in Angstrom along the view's own
+                             depth; the range comes from the structure (fillClipPanel
+                             in app.js). -->
                         <div id="clipPanel" hidden class="control-group"
                             style="display: flex; flex-direction: column; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
                             <div style="font-size: 11px; color: #6b7280;">
-                                Planes are relative to the view: turn the structure and the
-                                cut follows the camera. Close Clip to hide what is outside.
+                                The slab belongs to the camera: turn the structure and the
+                                cut stays where you are looking from.
                             </div>
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label class="font-medium text-gray-700" style="width: 46px; font-size: 12px; flex-shrink: 0;">Left</label>
-                                <input type="range" id="clipXMin" style="flex: 1; min-width: 0;">
-                                <label class="font-medium text-gray-700" style="width: 46px; font-size: 12px; flex-shrink: 0; text-align: right;">Right</label>
-                                <input type="range" id="clipXMax" style="flex: 1; min-width: 0;">
+                                <label for="clipNear" class="font-medium text-gray-700" style="width: 40px; font-size: 12px; flex-shrink: 0;">Near</label>
+                                <input type="range" id="clipNear" style="flex: 1; min-width: 0;">
+                                <span id="clipNearValue" style="width: 52px; font-size: 11px; color: #6b7280; text-align: right;"></span>
                             </div>
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label class="font-medium text-gray-700" style="width: 46px; font-size: 12px; flex-shrink: 0;">Bottom</label>
-                                <input type="range" id="clipYMin" style="flex: 1; min-width: 0;">
-                                <label class="font-medium text-gray-700" style="width: 46px; font-size: 12px; flex-shrink: 0; text-align: right;">Top</label>
-                                <input type="range" id="clipYMax" style="flex: 1; min-width: 0;">
-                            </div>
-                            <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label class="font-medium text-gray-700" style="width: 46px; font-size: 12px; flex-shrink: 0;">Far</label>
-                                <input type="range" id="clipZMin" style="flex: 1; min-width: 0;">
-                                <label class="font-medium text-gray-700" style="width: 46px; font-size: 12px; flex-shrink: 0; text-align: right;">Near</label>
-                                <input type="range" id="clipZMax" style="flex: 1; min-width: 0;">
+                                <label for="clipFar" class="font-medium text-gray-700" style="width: 40px; font-size: 12px; flex-shrink: 0;">Far</label>
+                                <input type="range" id="clipFar" style="flex: 1; min-width: 0;">
+                                <span id="clipFarValue" style="width: 52px; font-size: 11px; color: #6b7280; text-align: right;"></span>
                             </div>
                             <div style="display: flex; gap: 8px;">
-                                <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset box</button>
+                                <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset slab</button>
                             </div>
                         </div>
 

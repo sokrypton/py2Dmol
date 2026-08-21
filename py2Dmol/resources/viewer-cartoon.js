@@ -9376,6 +9376,19 @@
         // in residues) and c, which is what makes a colour boundary measurable
         // in residue units rather than in pixels
         if (renderer._primProbe === null) renderer._primProbe = prims;
+        // THE CLIP SLAB, on the 2D path, is a CULL rather than a cut: a canvas
+        // paints whole primitives, so a piece straddling a plane is kept or
+        // dropped by its own depth and the cut comes out stepped at the scale
+        // of one station (a residue over `detail`). The GPU path cuts per
+        // fragment and is exact; this is the fallback, and it is the same slab
+        // - renderer.clipAccepts is the single test both ask.
+        if (renderer.clipSlabOn && renderer.clipSlabOn()) {
+            let k = 0;
+            for (let i = 0; i < prims.length; i++) {
+                if (renderer.clipAccepts(prims[i].z)) prims[k++] = prims[i];
+            }
+            prims.length = k;
+        }
         prims.sort((a, b) => a.z - b.z);
         if (renderer._phase) { renderer._phase.prims = prims.length;
             renderer._phase.sorted = (typeof performance !== 'undefined' ? performance.now() : 0); }
