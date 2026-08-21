@@ -1120,14 +1120,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
 
-            // [OPTIMIZATION] Phase 4: Allocation-free rendering
+            // Allocation-free rendering
             // Pre-allocated arrays to replace Maps/Sets in render loop
             this.adjList = null;         // Array of arrays: adjList[posIdx] = [segIdx1, segIdx2, ...]
             this.segmentOrder = null;    // Int32Array: segmentOrder[segIdx] = renderOrderIndex
             this.segmentFrame = null;    // Int32Array: segmentFrame[segIdx] = frameId (last rendered frame)
             this.renderFrameId = 0;      // Counter for render frames to validate segmentFrame entries
 
-            // [OPTIMIZATION] Phase 5: Micro-optimizations
+            // Micro-optimizations
             this.segmentEndpointFlags = null; // Uint8Array: bit 0=start, bit 1=end
             this.screenX = null;              // Float32Array: screen X for each position
             this.screenY = null;              // Float32Array: screen Y for each position
@@ -1161,7 +1161,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.recordingFrameSequence = null; // Timeout ID for sequential recording
 
             // Overlay mode (for merging multiple frames in same view)
-            // UNIFIED overlay state object (Commit 1 refactor)
+            // UNIFIED overlay state object
             this.overlayState = {
                 enabled: false,              // Is overlay mode currently active?
                 shouldAutoEnable: (typeof config.overlay?.enabled === 'boolean') ? config.overlay.enabled : false,
@@ -1200,7 +1200,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.highlightedAtom = null; // To store position index for highlighting (property name kept for API compatibility)
             this.highlightedAtoms = null; // To store Set of position indices for highlighting multiple positions (property name kept for API compatibility)
 
-            // [PATCH] Unified selection model (sequence/chain + PAE)
+            // Unified selection model (sequence/chain + PAE)
             // positions: Set of position indices (0, 1, 2, ...) - one position per entry in frame data
             // chains: Set of chain IDs (empty => all chains)
             // paeBoxes: Array of selection rectangles in PAE position space {i_start,i_end,j_start,j_end}
@@ -1283,7 +1283,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.render('setClearColor'); // Re-render with new clear color
         }
 
-        // [PATCH] --- Unified Selection API ---
+        // --- Unified Selection API ---
         setVisibility(patch, skip3DRender = false) {
             if (!patch) return;
             if (patch.positions !== undefined) {
@@ -1636,7 +1636,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.scatterRenderer = scatterRenderer;
         }
 
-        // [PATCH] Re-routed setResidueVisibility to use the new unified selection model
+        // Re-routed setResidueVisibility to use the new unified selection model
         setResidueVisibility(selection) {
             if (selection === null) {
                 // Clear only PAE contribution; leave sequence/chain selections intact
@@ -2991,7 +2991,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
 
             // If this is the first frame and overlay should be auto-enabled, enable it now
-            // Commit 6: Use _enterOverlayMode instead of toggleOverlay for atomic state management
+            // Use _enterOverlayMode instead of toggleOverlay for atomic state management
             let justAutoEnabledOverlay = false;
             if (this.overlayState.shouldAutoEnable && object.frames.length === 1 && !this.overlayState.enabled) {
                 // Use atomic entry to overlay mode
@@ -3072,7 +3072,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // If in overlay mode, re-merge to include the new frame
             // Skip re-merge if we just auto-enabled overlay on this frame (toggleOverlay already did it)
             if (this.overlayState.enabled && !this._batchLoading && !justAutoEnabledOverlay) {
-                // Re-merge all frames when new frame added in overlay mode (Commit 2)
+                // Re-merge all frames when new frame added in overlay mode
                 const merged = this._mergeFrameRange(object, 0, object.frames.length - 1);
 
                 if (merged) {
@@ -3990,7 +3990,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._invalidateShadowCache();
             this.lastShadowRotationMatrix = null;
 
-            // Commit 4: Make setFrame overlay-aware
+            // Make setFrame overlay-aware
             // In overlay mode, DON'T reload frame data (would destroy merged data)
             // Just update display and render
             if (this.overlayState.enabled) {
@@ -4476,7 +4476,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         /**
          * Merge a range of frames into a single coordinate/property set with frameIdMap tracking.
-         * This is the SINGLE SOURCE OF TRUTH for frame merging logic (Commit 2 refactor).
+         * This is the SINGLE SOURCE OF TRUTH for frame merging logic.
          * Used by both toggleOverlay() and addFrame() to ensure consistent behavior.
          *
          * @param {Object} object - The object containing frames to merge
@@ -4606,7 +4606,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         /**
          * Atomically enter overlay mode for the current object.
          * Merges all frames and loads the merged data.
-         * This is the SINGLE PATH to enter overlay mode (Commit 3 refactor).
+         * This is the SINGLE PATH to enter overlay mode.
          */
         _enterOverlayMode(object, skipRender = false) {
             if (!object || object.frames.length === 0) {
@@ -4646,7 +4646,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         /**
          * Atomically exit overlay mode and return to single frame view.
          * Clears all overlay state and loads the target frame.
-         * This is the SINGLE PATH to exit overlay mode (Commit 3 refactor).
+         * This is the SINGLE PATH to exit overlay mode.
          */
         _exitOverlayMode(object, targetFrame = 0, skipRender = false) {
             if (!object || object.frames.length === 0) {
@@ -4690,7 +4690,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const object = this.objectsData[this.currentObjectName];
             if (!object || object.frames.length === 0) return;
 
-            // Use atomic state transition methods (Commit 3)
+            // Use atomic state transition methods
             if (!this.overlayState.enabled) {
                 // Enter overlay mode using unified method
                 this._enterOverlayMode(object, false);
@@ -6179,7 +6179,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.cachedSegmentIndicesObjectName = this.currentObjectName;
             }
 
-            // [OPTIMIZATION] Ensure static adjacency list and arrays exist
+            // Ensure static adjacency list and arrays exist
             // This must run regardless of whether we used cache or generated segments
             const numSegments = this.segmentIndices.length;
             const numPositions = this.coords.length;
@@ -6245,7 +6245,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.plddtColors = [];
             this.plddtColorsNeedUpdate = true;
 
-            // [PATCH] Apply initial mask and render once
+            // Apply initial mask and render once
             // Don't render before applying mask - _composeAndApplyMask will handle rendering
             this._composeAndApplyMask(skipRender);
 
@@ -8439,7 +8439,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const RENDER_CUTOFF = 1000000; // Fully opaque segments
 
 
-            // [OPTIMIZATION] Allocation-free sorting
+            // Allocation-free sorting
             // Sort visibleSegmentIndices in-place using zValues lookup
             // This avoids creating N objects and 2 intermediate arrays per frame
             // Sort by z-depth (back to front)
@@ -8448,7 +8448,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Use the sorted array directly
             let visibleOrder = visibleSegmentIndices;
 
-            // [OPTIMIZATION] Apply culling immediately after sorting
+            // Apply culling immediately after sorting
             // visibleOrder is sorted back-to-front (index 0 is furthest, index N-1 is closest)
             // We want to keep the END of the array (closest segments)
             const totalVisible = visibleOrder.length;
@@ -8464,7 +8464,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // We must update it so those loops only process the segments we intend to render
             const numRendered = visibleOrder.length;
 
-            // [OPTIMIZATION] Removed redundant 'order' array sorting
+            // Removed redundant 'order' array sorting
             // Previously we sorted all N segments here, but it was never used for rendering
             // This saves O(N log N) operations and significant memory allocation
 
@@ -8620,7 +8620,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // DETECT OUTER ENDPOINTS - For rounded edges on outer segments
             // ====================================================================
             // Build a map of position connections to identify outer endpoints
-            // [OPTIMIZATION] Phase 4: Allocation-free endpoint detection
+            // Allocation-free endpoint detection
             // Use pre-computed adjList and frame-based tracking to avoid Map/Set creation
 
             // 1. Mark visible segments in the frame tracking array
@@ -8637,7 +8637,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // 2. Pre-compute which endpoints should be rounded
             // Iterate over visible segments and check their endpoints using adjList
-            // [OPTIMIZATION] Use Uint8Array for flags instead of Map
+            // Use Uint8Array for flags instead of Map
             const segmentEndpointFlags = this.segmentEndpointFlags;
 
             for (let i = 0; i < numRendered; i++) {
@@ -8715,7 +8715,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 segmentEndpointFlags[segIdx] = flags;
             }
 
-            // [OPTIMIZATION] Phase 5: SoA Projection Loop
+            // SoA Projection Loop
             // Project all visible atoms once and store in SoA arrays
             this.screenFrameId++;
             const currentScreenFrameId = this.screenFrameId;
@@ -8773,7 +8773,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 projectPosition(segInfo.idx2);
             }
 
-            // [OPTIMIZATION] Ensure highlighted atoms are projected even if not in visible segments
+            // Ensure highlighted atoms are projected even if not in visible segments
             const numPositions = rotated.length;
             if (this.highlightedAtoms && this.highlightedAtoms.size > 0) {
                 for (const idx of this.highlightedAtoms) {
@@ -8822,7 +8822,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // the context is lost, or this is an export - and the stroking loop
             // below is the answer, unchanged.
 
-            // [OPTIMIZATION] Simplified loop - visibleOrder is already culled
+            // Simplified loop - visibleOrder is already culled
             // Only iterate over visible segments - no need for visibility check inside loop
             for (let i = 0; i < numRendered; i++) {
                 const idx = visibleOrder[i];
@@ -9011,7 +9011,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // ====================================================================
             // STORE POSITION SCREEN POSITIONS for fast highlight drawing
             // ====================================================================
-            // [OPTIMIZATION] Phase 5: Removed redundant position loop
+            // Removed redundant position loop
             // Screen positions are already computed in SoA arrays (screenX, screenY, screenRadius)
             // during the projection phase above.
             // The sequence viewer will access these arrays directly.
@@ -9029,7 +9029,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             }
         }
 
-        // [OPTIMIZATION] Phase 6: Public API for highlights
+        // Public API for highlights
         // Returns array of {x, y, radius} for currently highlighted atoms
         // Decouples external viewers from internal SoA arrays
         getHighlightCoordinates() {
@@ -11101,7 +11101,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     renderer._updateEntropyOptionVisibility();
                 }
 
-                // Commit 7: In overlay mode, DON'T call setFrame - it would load individual frame data
+                // In overlay mode, DON'T call setFrame - it would load individual frame data
                 // Instead, just render the merged data that's already been loaded via auto-enable
                 if (renderer.overlayState.enabled) {
                     renderer.currentFrame = 0;

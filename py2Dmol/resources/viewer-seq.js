@@ -2182,7 +2182,7 @@
             }
         }
 
-        // [OPTIMIZATION] Removed legacy check for positionScreenPositions
+        // Removed legacy check for positionScreenPositions
         // The renderer now uses SoA arrays or getHighlightCoordinates API
         // if (!renderer.positionScreenPositions) {
         //    return;
@@ -2206,7 +2206,7 @@
         highlightOverlayCtx.lineWidth = highlightLineWidth;
 
         // Highlight multiple positions if specified (preferred method)
-        // [OPTIMIZATION] Phase 6: Use public API for highlights
+        // Use public API for highlights
         // This decouples the sequence viewer from the internal implementation details of the renderer
         // These are the HOVER highlight only. The selection is outlined by the
         // renderer's own ink pass (viewer-cartoon.js), not from here.

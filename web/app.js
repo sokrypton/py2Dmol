@@ -3253,7 +3253,7 @@ function applyPendingObjects() {
     }
 }
 
-// [NEW] This function updates the chain buttons and sequence view
+// This function updates the chain buttons and sequence view
 // based on the renderer's selection model
 function syncChainPillsToSelection() {
     // Chain buttons and sequence are now drawn on canvas, update via updateSelection
