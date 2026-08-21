@@ -468,6 +468,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // changes width when you switch style is exactly what this exists to stop.
     const CONTACT_WIDTH_A = 1.175;
     const SELECTION_HALO_CSS = 'rgba(255, 255, 0, 0.45)';
+    // ...and the same colour split in two, for the scratch layer: opaque while
+    // the widths are drawn, composited once at the alpha they share.
+    const SELECTION_HALO_SOLID_CSS = 'rgb(255, 255, 0)';
+    const SELECTION_HALO_ALPHA = 0.45;
     // The hover MARK has no colour of its own: it is the selection band, drawn
     // over what the pointer is on. Only the readout needs one, and it follows
     // the paper rather than sitting on a plate of its own.
@@ -7496,23 +7500,91 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // flat. That is also why an isolated atom is a ZERO-LENGTH segment
             // rather than a filled arc - with a round cap it draws the same
             // circle, but inside the same path and the same single stroke.
-            let w = 0;
-            for (const i of idx) w = Math.max(w, sr[i] || 2);
-            const reach = Math.min(SELECTION_HALO_MAX_PX * pxScale,
-                Math.max(SELECTION_HALO_MIN_PX * pxScale, SELECTION_HALO_GAIN * w));
-            ctx.lineWidth = 2 * (w + reach);
-            ctx.beginPath();
+            // EACH PART GETS THE BAND ITS OWN THICKNESS ASKS FOR. One width for
+            // the whole selection is the max over it, so a side chain - a stick
+            // a third the backbone's width - was marked with the backbone's
+            // band and disappeared inside it. The width is a function of the
+            // radius, so the edges are bucketed by the width they want and each
+            // bucket is stroked once.
+            // ...AND A SIDE-CHAIN ATOM IS DRAWN THINNER THAN ITS RADIUS SAYS.
+            // screenRadius is the PICKING radius - a residue-sized target,
+            // the same for a CA and for the CD1 hanging off it - while the
+            // stick is drawn at SIDECHAIN_WIDTH of the backbone. Measured on
+            // 1TIM at the default view: 5.29 px against 5.33, for geometry that
+            // is half as wide. Banding those at face value put the backbone's
+            // band around a stick a third its width, which is what "especially
+            // for side chains" was.
+            const radiusAt = (i) => (sr[i] || 2)
+                * ((sc && sc.has(i)) ? SIDECHAIN_WIDTH : 1);
+            const bandFor = (r) => {
+                const rad = r || 2;
+                return 2 * (rad + Math.min(SELECTION_HALO_MAX_PX * pxScale,
+                    Math.max(SELECTION_HALO_MIN_PX * pxScale,
+                        SELECTION_HALO_GAIN * rad)));
+            };
+            // ...QUANTISED, so a hundred residues do not become a hundred
+            // strokes: half a pixel is finer than the eye reads on a band.
+            const bucketOf = (r) => Math.round(bandFor(r) * 2) / 2;
+            const groups = new Map();
+            const addTo = (key, fn) => {
+                let g = groups.get(key);
+                if (!g) { g = []; groups.set(key, g); }
+                g.push(fn);
+            };
+            // an edge takes the THINNER of its two ends: the band has to sit
+            // inside the thicker one rather than swallow the thinner
             for (let k = 0; k + 1 < edges.length; k += 2) {
-                ctx.moveTo(sx[edges[k]], sy[edges[k]]);
-                ctx.lineTo(sx[edges[k + 1]], sy[edges[k + 1]]);
+                const a = edges[k]; const b = edges[k + 1];
+                const r = Math.min(radiusAt(a), radiusAt(b));
+                addTo(bucketOf(r), (c) => {
+                    c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]);
+                });
             }
             for (const i of idx) {
                 if (touched.has(i)) continue;
+                const r = radiusAt(i);
                 // a hair of length, so a round cap has something to cap
-                ctx.moveTo(sx[i], sy[i]);
-                ctx.lineTo(sx[i] + 0.01, sy[i]);
+                addTo(bucketOf(r), (c) => {
+                    c.moveTo(sx[i], sy[i]); c.lineTo(sx[i] + 0.01, sy[i]);
+                });
             }
-            ctx.stroke();
+            // ONE COMPOSITE, HOWEVER MANY WIDTHS. A translucent colour darkens
+            // wherever two strokes overlap - a backbone band and the side-chain
+            // band leaving it would show a blot at every CA - so the widths are
+            // drawn OPAQUE into a scratch layer and that layer is composited
+            // once. Same flat wash as the single stroke this replaces, without
+            // being held to a single width.
+            const one = groups.size <= 1;
+            let lctx = ctx;
+            let layer = null;
+            if (!one && typeof document !== 'undefined' && ctx.canvas) {
+                layer = this._haloLayer
+                    || (this._haloLayer = document.createElement('canvas'));
+                if (layer.width !== ctx.canvas.width || layer.height !== ctx.canvas.height) {
+                    layer.width = ctx.canvas.width; layer.height = ctx.canvas.height;
+                }
+                lctx = layer.getContext('2d');
+                lctx.setTransform(1, 0, 0, 1, 0, 0);
+                lctx.clearRect(0, 0, layer.width, layer.height);
+                if (ctx.getTransform) {
+                    const m = ctx.getTransform();
+                    lctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
+                }
+                lctx.strokeStyle = SELECTION_HALO_SOLID_CSS;
+                lctx.lineJoin = 'round';
+                lctx.lineCap = 'round';
+            }
+            for (const [width, fns] of groups) {
+                lctx.lineWidth = width;
+                lctx.beginPath();
+                for (const fn of fns) fn(lctx);
+                lctx.stroke();
+            }
+            if (layer) {
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                ctx.globalAlpha = SELECTION_HALO_ALPHA;
+                ctx.drawImage(layer, 0, 0);
+            }
             ctx.restore();
         }
 

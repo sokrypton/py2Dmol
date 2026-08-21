@@ -510,7 +510,7 @@ const panelBody = (() => {
 // flag, and one option it hides where the selection has no nucleotides.
 function modeSelectNode() {
     return {
-        value: '', disabled: false,
+        value: '', disabled: false, hidden: null,
         _opts: { plate: { hidden: false } },
         querySelector(sel) {
             const m = /option\[value="([^"]+)"\]/.exec(sel);
@@ -528,6 +528,7 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         elementsShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
         sidechainModeSelect: modeSelectNode(),
+        sidechainShowToggle: { checked: false, indeterminate: false, hidden: null },
         contactShowToggle: { checked: false, indeterminate: false },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
@@ -618,7 +619,7 @@ t('the panel says how big the selection is, and which residues', () => {
 
 t('the panel keeps two matching part rows, with SSE and Copy below them', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const need = ['sidechainModeSelect', 'elementsShowToggle',
+    const need = ['sidechainModeSelect', 'sidechainShowToggle', 'elementsShowToggle',
         'mainchainShowToggle', 'contactShowToggle',
         'scColorButton', 'selColorButton', 'selSsSelect'];
     for (const id of need) {
@@ -635,7 +636,7 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
         'basesShowButton', 'basesHideButton',
         // ...and the two controls the mode select replaced, plus the row the
         // plate had to itself: three ways to say the same thing was the bug
-        'basesShowToggle', 'basesRow', 'sidechainShowToggle', 'backboneShowToggle',
+        'basesShowToggle', 'basesRow', 'backboneShowToggle',
         'elementsShowButton', 'elementsHideButton',
         'contactAddButton', 'contactRemoveButton']) {
         if (html.includes('id="' + gone + '"')) {
@@ -655,8 +656,8 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     }
     // Each toggle must SAY what it is - the visible text is its accessible
     // name - and carry a title, since "Show" alone does not say show what.
-    for (const id of ['elementsShowToggle', 'mainchainShowToggle',
-        'contactShowToggle']) {
+    for (const id of ['sidechainShowToggle', 'elementsShowToggle',
+        'mainchainShowToggle', 'contactShowToggle']) {
         const at2 = html.indexOf('id="' + id + '"');
         const open = html.lastIndexOf('<label', at2);
         const close = html.indexOf('</label>', at2);
@@ -717,6 +718,26 @@ t('SSE is offered for protein and withheld from nucleic acid', () => {
     }
     if (panelRun(null, new Set(), false, PROT).selSsSelect.hidden !== true) {
         throw new Error('SSE is offered with nothing selected');
+    }
+});
+
+t('a protein gets a Show toggle, a nucleotide gets the three-way', () => {
+    // A protein side chain is drawn or it is not - two states, and a select to
+    // pick between two is a menu where a switch would do. Only a nucleotide has
+    // the third state. One or the other is on screen, never both.
+    const NUC = ['D', 'D'];
+    const PROT = ['P', 'P'];
+    const prot = panelRun([0, 1], new Set(), false, PROT);
+    if (prot.sidechainShowToggle.hidden !== false || prot.sidechainModeSelect.hidden !== true) {
+        throw new Error('a protein selection is not offered the plain toggle');
+    }
+    const nuc = panelRun([0, 1], new Set(), false, NUC);
+    if (nuc.sidechainShowToggle.hidden !== true || nuc.sidechainModeSelect.hidden !== false) {
+        throw new Error('a nucleic selection is not offered the three-way');
+    }
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/setSelectionSidechainMode\(p2, v \? 'full' : 'none'\)/.test(app)) {
+        throw new Error('the toggle does not drive the same action as the select');
     }
 });
 
@@ -3385,6 +3406,7 @@ t('the selection toggles show all, none and mixed', () => {
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
         sidechainModeSelect: modeSelectNode(),
+        sidechainShowToggle: { checked: false, indeterminate: false, hidden: null },
         elementsShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
         contactShowToggle: { checked: false, indeterminate: false },
@@ -3559,7 +3581,8 @@ t('the show toggles are disabled along with the rest of the panel', () => {
 // carried aria-labels for the same reason and they went with the buttons.
 t('every selection toggle has a name of its own', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const ids = ['elementsShowToggle', 'mainchainShowToggle', 'contactShowToggle'];
+    const ids = ['sidechainShowToggle', 'elementsShowToggle', 'mainchainShowToggle',
+        'contactShowToggle'];
     const seen = new Set();
     for (const id of ids) {
         const m = html.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));

@@ -653,6 +653,15 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="scColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
+                                <!-- A PROTEIN HAS TWO STATES, so it gets a toggle.
+                                     Only a nucleotide has a third - the plate - and
+                                     only then is the select worth the reading: one
+                                     of the two is shown, never both. -->
+                                <label class="btn-toggle btn-small selection-toggle" title="Draw side chains for the selected residues">
+                                    <input type="checkbox" id="sidechainShowToggle"
+                                        aria-label="Draw side chains for the selected residues">
+                                    <span>Show</span>
+                                </label>
                                 <!-- ONE CONTROL, THREE STATES. Show/hide was two
                                      toggles once the bases could be drawn as real
                                      atoms - Show for the plate and Show for the
