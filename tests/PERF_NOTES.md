@@ -927,3 +927,52 @@ need a format version:
 
 Together roughly 20% of the file. `coef` and `bonds` are the larger half and
 would need real encoding, not just de-duplication.
+
+### Chunking the cartoon mesh build: the design is sound, the cheap routes are not
+
+Chunking by CHAIN is exact, and this is the evidence:
+
+- **The interior weld never spans chains.** Coincident quads, hashed the way
+  the build hashes them (0.001 A): 0 cross-chain on 4HHB, 1AOI and 9FOG. So a
+  per-chunk weld is the same weld.
+- **Edges DO span chains** - 49 on 1AOI, 5 on 9FOG, 0 on 4HHB - and they are
+  real, not an artefact of attributing a piece to a chain by flooring its
+  fractional residue index: the pieces involved are 89-109 residues apart, and
+  the count of cross-chain edges between ADJACENT residues, which is what a
+  boundary mislabelling would produce, is zero. So the edge table has to stay
+  GLOBAL. That is fine - it already is, and it is what makes chunking exact
+  rather than approximate.
+- Component analysis agrees the geometry decomposes: the largest connected
+  component of the piece graph is 1.4-11% of faces. But almost no component is
+  a contiguous range of pieceIds, so the partition cannot be derived cheaply
+  from the prim stream - it has to come from chain identity.
+
+**The prize**, from the LIVE heap after each stage on 1OHF (1,199,700 faces,
+full collection between stages):
+
+| stage | live | added |
+| --- | --- | --- |
+| after facesOf | 891 MB | faces + fill buffer |
+| rails | 1,154 | +263 |
+| normals | 1,395 | +274 |
+| edges | 2,049 | +651 |
+
+Chunking moves faces, rails and normals off the peak; the fill buffer and the
+edge table stay. 2,049 -> about 880 MB, and the capsid with it.
+
+**Everything cheaper than that has now been tried and measured as nothing.**
+Recorded so nobody repeats them:
+
+| attempt | result |
+| --- | --- |
+| Release each prim as facesOf consumes it | live peak 1,697 -> 1,697. The prims are already dead before the peak. |
+| `pieceFrame.clear()` before the edge stage | 1,395 -> 1,395 at normals. The frames are reachable from the FACES; clearing the map frees nothing. |
+| Flat arrays instead of ~600k per-vertex Maps | 7,220-7,584 ms vs 7,288-7,466. No change either way. |
+| Stop allocating `[r,g,b]` per addEdge call (~4.8 M arrays) | peak 2,039 vs 2,040 MB, time unchanged. |
+
+The memory is genuinely live and genuinely needed until the end of the build.
+The only lever left is not holding all of it at once.
+
+**And there is now an instrument for attempting it**: `__fillHash` and
+`__edgeHash` pin both GPU buffers bit-for-bit, which face and edge counts do
+not, and which the pixels cannot.
