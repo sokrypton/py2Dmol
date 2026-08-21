@@ -9722,7 +9722,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.render();
         }
 
-        /** Camera button reads "Save Video" while either animation is on. */
+        /** Keeps the camera button's label and icon fixed as the mode changes. */
         _syncSaveButtonMode() {
             const b = this.saveImageButton;
             if (!b) return;
@@ -9742,11 +9742,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (span) {
                 let replaced = false;
                 span.childNodes.forEach((n) => {
-                    if (n.nodeType === 3 && n.textContent.trim()) { n.textContent = 'Save'; replaced = true; }
+                    if (n.nodeType === 3 && n.textContent.trim()) { n.textContent = 'Capture'; replaced = true; }
                 });
-                if (!replaced) span.appendChild(document.createTextNode('Save'));
+                if (!replaced) span.appendChild(document.createTextNode('Capture'));
             }
-            b.title = 'Save an image or a video (shift-click saves a PNG straight away)';
+            // CAPTURE, not Save: the toolbar already has a Save, which writes
+            // the session file. Two buttons reading "Save" a few centimetres
+            // apart is a coin toss over which one keeps your work.
+            b.title = 'Capture an image or a video (shift-click saves a PNG straight away)';
             // the open panel belongs to the other mode now
             if (this._savePanel) {
                 this._savePanel.remove();

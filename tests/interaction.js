@@ -1909,21 +1909,25 @@ t('a side chain colour reaches its CA-CB bond', () => {
 });
 
 
-// SAVE IS ONE CONTROL WITH ONE NAME.
+// CAPTURE IS ONE CONTROL WITH ONE NAME.
 //
 // It used to relabel itself "Save Video" whenever Rotate or Draw was on and
 // swap its icon, so the same button in the same place meant different things
 // depending on state - next to a separate record button that meant a third
 // thing (recording the frames playing through). Reported as confusing. What
 // gets made is now chosen INSIDE the panel, where the options are visible.
-t('the Save button does not change identity with the animation state', () => {
+//
+// The name is "Capture", not "Save": the toolbar's other Save writes the
+// session file, and two buttons reading Save a few centimetres apart is a coin
+// toss over which one keeps your work.
+t('the Capture button does not change identity with the animation state', () => {
     const btn = {
         title: '',
         _icon: { classes: new Set(['fa-camera']),
             classList: { add(c) { btn._icon.classes.add(c); },
                 remove(c) { btn._icon.classes.delete(c); },
                 toggle(c, on) { if (on) btn._icon.classes.add(c); else btn._icon.classes.delete(c); } } },
-        _text: { nodeType: 3, textContent: 'Save' },
+        _text: { nodeType: 3, textContent: 'Capture' },
         querySelector(sel) { return sel === 'i' ? btn._icon : btn._span; },
         setAttribute() {},
     };
@@ -1940,13 +1944,13 @@ t('the Save button does not change identity with the animation state', () => {
         v._syncSaveButtonMode();
         seen.add(btn._text.textContent);
         if (!btn._icon.classes.has('fa-camera') || btn._icon.classes.has('fa-video')) {
-            throw new Error('the Save button swapped its icon with rotate=' + rot
+            throw new Error('the Capture button swapped its icon with rotate=' + rot
                 + ' draw=' + draw + ' - one control, one face');
         }
     }
-    if (seen.size !== 1 || !seen.has('Save')) {
-        throw new Error('the Save button called itself ' + [...seen].join(' / ')
-            + ' depending on state; it must always read Save');
+    if (seen.size !== 1 || !seen.has('Capture')) {
+        throw new Error('the Capture button called itself ' + [...seen].join(' / ')
+            + ' depending on state; it must always read Capture');
     }
 });
 
