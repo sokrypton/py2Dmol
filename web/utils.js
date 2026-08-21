@@ -1158,6 +1158,37 @@ const STANDARD_NUCLEIC_ACIDS = new Set([
  * @param {string} type - 'P' for protein, 'D' for DNA, 'R' for RNA
  * @returns {boolean} - True if residue is connected to at least one neighbor
  */
+// WHERE THE NEIGHBOURS ARE, so nobody has to look through everything to find
+// four of them.
+//
+// isResidueConnected wants the residues in the same chain whose number is
+// within two of its own - at most four candidates - and used to find them by
+// walking the whole residue list. That is fine when a handful of residues ask.
+// 7Y7A asks 8,830 times of a list 309,602 long, twice over, which is billions
+// of comparisons and a browser that never comes back. 3J3Q never showed it
+// because a capsid is standard residues nearly all the way down, and standard
+// residues answer without asking.
+//
+// The index is cached on the array itself. Both callers build the list, sort
+// it and then only read it, so it cannot go stale underneath us; the length
+// check catches the case where someone starts.
+function residuesByChainSeq(allResidues) {
+    const cached = allResidues.__neighborIndex;
+    if (cached && cached.n === allResidues.length) return cached.map;
+    const map = new Map();
+    for (const r of allResidues) {
+        if (!r) continue;
+        const key = r.chain + '\u0000' + r.resSeq;
+        const at = map.get(key);
+        if (at) at.push(r); else map.set(key, [r]);
+    }
+    try {
+        Object.defineProperty(allResidues, '__neighborIndex',
+            { value: { n: allResidues.length, map }, configurable: true, writable: true });
+    } catch (e) { /* frozen array: just pay for the rebuild */ }
+    return map;
+}
+
 function isResidueConnected(residue, allResidues, type) {
     if (!residue || !residue.atoms || !allResidues) {
         return false;
@@ -1185,9 +1216,23 @@ function isResidueConnected(residue, allResidues, type) {
     const residueNum = residue.resSeq;  // Use residue number directly
     const chain = residue.chain;
 
-    // Check neighbors in the same chain by comparing residue numbers
-    // Look for residues within ±2 residue numbers in the same chain
-    for (const neighbor of allResidues) {
+    // Neighbours in the same chain within +/-2 of this residue's number. Looked
+    // up rather than searched for - see residuesByChainSeq. A number that is
+    // not a whole one cannot be reached by stepping, so that case keeps the
+    // original walk and the original answer.
+    let candidates;
+    if (Number.isInteger(residueNum)) {
+        const index = residuesByChainSeq(allResidues);
+        candidates = [];
+        for (const d of [-2, -1, 1, 2]) {
+            const at = index.get(chain + '\u0000' + (residueNum + d));
+            if (at) for (const r of at) candidates.push(r);
+        }
+    } else {
+        candidates = allResidues;
+    }
+
+    for (const neighbor of candidates) {
         if (!neighbor || neighbor.chain !== chain) continue;
 
         // Check if neighbor is within ±2 residue numbers
