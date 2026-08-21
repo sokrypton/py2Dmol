@@ -3288,11 +3288,50 @@ function expandOperExpr_light(expr) {
         return out.filter(Boolean);
     }
 
+    // ADJACENT SETS, WRITTEN WITH NO SEPARATOR AT ALL.
+    //
+    // "(1-60)(61-88)" is a product of two operator sets - 1,680 operators -
+    // and it is how large icosahedral assemblies are written; "(X0)(1-60)" is
+    // the other common shape. Splitting a part on the letter x, as this did,
+    // finds no separator in either, so the whole expression came back as one
+    // operator id of "1-60)(61-88", which matches nothing in oper_list. The
+    // assembly then silently collapses to the asymmetric unit: 1M4X loaded
+    // 1,239 positions of its 2.08 million and said nothing.
+    //
+    // So groups are taken by bracket structure. A lone x or * between two of
+    // them is still accepted, since some writers use one.
+    const splitProduct = (p) => {
+        const groups = [];
+        let k = 0;
+        while (k < p.length) {
+            if (p[k] === '(') {
+                const s = k;
+                let depth = 0;
+                for (; k < p.length; k++) {
+                    if (p[k] === '(') depth++;
+                    else if (p[k] === ')') { depth--; if (depth === 0) { k++; break; } }
+                }
+                groups.push(p.slice(s, k));
+            } else {
+                const s = k;
+                while (k < p.length && p[k] !== '(') k++;
+                let term = p.slice(s, k);
+                if (term === 'x' || term === '*') continue;
+                // a separator hanging off the end of a bare term, as in 1x(2-3)
+                if ((term.endsWith('x') || term.endsWith('*')) && k < p.length) {
+                    term = term.slice(0, -1);
+                }
+                if (term) groups.push(term);
+            }
+        }
+        return groups;
+    };
+
     const parts = splitTop(expr, ',');
     const seqs = [];
 
     for (const p of parts) {
-        const groups = splitTop(p, 'x');
+        const groups = splitProduct(p);
         let expanded = groups.map(term => {
             if (term.startsWith('(') && term.endsWith(')')) {
                 term = term.slice(1, -1);
@@ -3321,7 +3360,12 @@ function expandOperExpr_light(expr) {
             }
             acc = next;
         }
-        seqs.push(...acc);
+        // RIGHTMOST SET APPLIED FIRST, which is what the dictionary means by
+        // adjacent sets, and the reverse of the order composeBiounitOperations
+        // walks - it applies a list left to right with the last one outermost.
+        // Only products have more than one element, and products have never
+        // worked until now, so nothing existing changes order under this.
+        for (const seq of acc) seqs.push(seq.length > 1 ? seq.slice().reverse() : seq);
     }
     return seqs;
 }
