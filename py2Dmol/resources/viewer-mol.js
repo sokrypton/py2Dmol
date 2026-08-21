@@ -3391,35 +3391,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // off and the drawing is whole again.
         // ====================================================================
 
-        /** The structure's own depth range, the slab's starting point. */
-        clipSlabDefault() {
-            this._ensureRotated();
-            const n = this.coords ? this.coords.length : 0;
-            const rc = this.rotatedCoords;
-            if (!n || !rc || rc.length < n) return null;
-            let lo = Infinity; let hi = -Infinity;
-            for (let i = 0; i < n; i++) {
-                const z = rc[i].z;
-                if (z < lo) lo = z;
-                if (z > hi) hi = z;
-            }
-            if (!(hi >= lo)) return null;
-            // AIR AT BOTH ENDS, so the slab starts by cutting nothing.
-            const pad = Math.max(2, (hi - lo) * 0.02);
-            return { far: lo - pad, near: hi + pad };
-        }
-
         /**
-         * How wide to draw the slab's frame - the structure's bounding RADIUS
-         * about the view centre.
+         * How far the drawing reaches from the view centre, in Angstrom: the
+         * furthest position, plus what the STYLE adds around it.
          *
-         * A radius, not the view-space x/y extent, because a radius does not
-         * change when the structure turns. The extent does, so a frame drawn
-         * from it would breathe as you rotate and would have to be recomputed
-         * over every position every frame; this is measured once, when the slab
-         * is switched on, and always contains the structure whatever the view.
+         * A radius, and deliberately not the view's depth extent. The extent
+         * changes as the structure turns - a molecule seen end-on is deeper
+         * than the same molecule side-on - so a slab set from it starts cutting
+         * the moment you rotate, without anyone touching a control. That is
+         * what "resetting doesn't recover everything" was: reset restored the
+         * extent OF THAT VIEW, and the next rotation ate into the structure
+         * again. A radius cannot do that: it is the same number from every
+         * angle, so a slab set to it cuts nothing until a slider is moved.
+         *
+         * The pad is the style's own reach past the positions: a ribbon is
+         * drawn lineWidth Angstrom wide about its backbone and a tube has a
+         * radius, so a slab tight to the ATOMS would shave the surface drawn
+         * around them.
          */
-        _clipFrameRadius() {
+        _clipReach() {
             this._ensureRotated();
             const n = this.coords ? this.coords.length : 0;
             const rc = this.rotatedCoords;
@@ -3427,12 +3417,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             let r2 = 0;
             for (let i = 0; i < n; i++) {
                 const c = rc[i];
-                const d = c.x * c.x + c.y * c.y;
+                const d = c.x * c.x + c.y * c.y + c.z * c.z;
                 if (d > r2) r2 = d;
             }
-            const r = Math.sqrt(r2);
-            return r > 0 ? r * 1.02 : 0;
+            if (!(r2 > 0)) return 0;
+            return Math.sqrt(r2) + Math.max(2, 2 * (this.lineWidth || 3));
         }
+
+        /** A slab that holds the whole structure however it is turned. */
+        clipSlabDefault() {
+            const R = this._clipReach();
+            if (!(R > 0)) return null;
+            return { far: -R, near: R };
+        }
+
+        /**
+         * How wide to draw the slab's frame. The same reach the slab itself is
+         * measured with, so the frame is exactly as big as an uncut slab and
+         * the two cannot tell different stories.
+         */
+        _clipFrameRadius() { return this._clipReach(); }
 
         /**
          * Set the slab. near is the plane closer to the camera (larger z), far

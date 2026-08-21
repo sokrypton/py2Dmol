@@ -51,7 +51,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','_paintClipSlab','_viewToScreen','_clipFrameRadius','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','_paintClipSlab','_viewToScreen','_clipFrameRadius','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1086,15 +1086,24 @@ function clipViewer(pts) {
     return v;
 }
 
-t('the default slab holds the whole structure', () => {
-    const v = clipViewer([[0, 0, -10], [0, 0, 4], [0, 0, 22]]);
+t('the default slab holds the structure from ANY angle', () => {
+    // A slab set from the view's DEPTH EXTENT starts cutting the moment you
+    // rotate - a molecule seen end-on is deeper than the same one side-on - and
+    // that is what "resetting doesn't recover everything" was. The default is a
+    // RADIUS, which is the same number from every angle.
+    const pts = [[0, 0, -10], [30, 0, 4], [0, -18, 22]];
+    const v = clipViewer(pts);
     const s = v.clipSlabDefault();
-    for (const c of v.rotatedCoords) {
-        if (c.z > s.near || c.z < s.far) {
-            throw new Error('the default slab cuts something - it must start by '
-                + 'cutting nothing');
-        }
+    // the worst case: whatever is furthest, turned to point straight at the eye
+    let far = 0;
+    for (const [x, y, z] of pts) far = Math.max(far, Math.hypot(x, y, z));
+    if (s.near < far || s.far > -far) {
+        throw new Error('the default slab (' + s.far.toFixed(1) + ' to '
+            + s.near.toFixed(1) + ') is tighter than the structure\'s reach of '
+            + far.toFixed(1) + ' - a rotation would cut it');
     }
+    // ...and it clears the drawn surface, not just the atom centres
+    if (s.near <= far) throw new Error('no room for the width the style draws');
 });
 
 t('the clip planes cannot cross', () => {
