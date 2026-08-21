@@ -1233,7 +1233,17 @@
      * This is the frame the carbonyl table is written in, and the one the
      * cached sheet coefficients are expressed in, so the two cannot drift.
      */
-    function localFrame(at, n, i, out, wrap) {
+    // HOW FAR APART TWO TRACE POINTS MAY BE. The default pair is the peptide's:
+    // CA to CA is 3.8 A and anything outside 3.0-4.2 is a chain break. A
+    // NUCLEIC trace is C4' to C4', which is 5.5-6.5 A in both A and B form, so
+    // the same test called every nucleotide a break - and a position with no
+    // frame has no side chain, which is why bases could not be drawn as atoms
+    // at all. Passed in rather than widened: a range that admits both would
+    // stop catching a break in either.
+    const NUCLEIC_STEP_MIN = 4.5;
+    const NUCLEIC_STEP_MAX = 7.5;
+
+    function localFrame(at, n, i, out, wrap, stepMin, stepMax) {
         // `wrap` makes the frame available at the ends of a CYCLIC run, where
         // i-1 or i+1 falls outside [0, n) but the chain genuinely continues.
         // Without it the last residues of a ring have no frame, which is not a
@@ -1246,7 +1256,9 @@
         const p0 = at(iP), p1 = at(i), p2 = at(iN);
         let ux = p2.x - p1.x, uy = p2.y - p1.y, uz = p2.z - p1.z;
         const ul = Math.sqrt(ux * ux + uy * uy + uz * uz);
-        if (ul < CO_BOND_MIN || ul > CO_BOND_MAX) return false;   // chain break
+        const loStep = stepMin || CO_BOND_MIN;
+        const hiStep = stepMax || CO_BOND_MAX;
+        if (ul < loStep || ul > hiStep) return false;             // chain break
         ux /= ul; uy /= ul; uz /= ul;
         const bx = p0.x - p1.x, by = p0.y - p1.y, bz = p0.z - p1.z;
         let wx = uy * bz - uz * by;
@@ -9391,16 +9403,30 @@
         // of one station (a residue over `detail`). The GPU path cuts per
         // fragment and is exact; this is the fallback, and it is the same slab
         // - renderer.clipAccepts is the single test both ask.
-        // THE BACKBONE SWITCH, at the same place the clip cuts: a prim knows
-        // its own class, and only the ribbon and the loop tube are backbone.
-        // Sticks, joints, base plates and contact lines are what a side chain
-        // is made of, and they stay - together with the CA the sticks are drawn
-        // from, which is a point on a face rather than a prim of its own.
-        if (renderer.backboneShown && !renderer.backboneShown()) {
+        // THE BACKBONE SWITCH, at the same place the clip cuts. Two questions,
+        // both per prim: is this backbone at all - only the ribbon and the loop
+        // tube are, while sticks, joints, base plates and contact lines are
+        // what a side chain is made of - and does it belong to a residue whose
+        // backbone the user hid. The CA stays either way: the sticks are drawn
+        // from it and it is a point on a face, not a prim of its own.
+        const bbHide = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
+        if (bbHide) {
+            const isBackbonePrim = (kd) => kd === 'rib' || kd === 'ribStroke' || kd === 'tube';
+            // WHICH RESIDUE A PRIM IS, from the position it carries along the
+            // backbone. A piece spans a fraction of a residue to a couple of
+            // them, so it is asked at its MIDDLE - the ends of a piece are
+            // shared with its neighbours and would each answer twice.
+            const resOf = (g) => {
+                if (typeof g.gs0 !== 'number') return -1;
+                const ns = (g.Lp && g.Lp.length) || (g.pts && g.pts.length) || 1;
+                const step = typeof g.gsStep === 'number' ? g.gsStep : 0;
+                return Math.round(g.gs0 + step * (ns - 1) / 2);
+            };
             let k = 0;
             for (let i = 0; i < prims.length; i++) {
-                const kd = prims[i].kind;
-                if (kd !== 'rib' && kd !== 'ribStroke' && kd !== 'tube') prims[k++] = prims[i];
+                const g = prims[i];
+                if (isBackbonePrim(g.kind) && bbHide.has(resOf(g))) continue;
+                prims[k++] = g;
             }
             prims.length = k;
         }
@@ -11341,12 +11367,18 @@
             // outlines pale with their fills instead of floating full-black
             // over ghost geometry. 12 levels keeps stroke batching coarse.
             const clipInk = !!(renderer.clipSlabOn && renderer.clipSlabOn());
-            const noBackboneInk = !!(renderer.backboneShown && !renderer.backboneShown());
+            const bbHideInk = renderer.backboneHiddenSet
+                ? renderer.backboneHiddenSet() : null;
             const inkGroups = new Map();
             const selKey = '\u0000sel';   // cannot collide with a colour string
             const sketchKey = '\u0000sketch';
             for (const cv of inkCurves) {
-                if (noBackboneInk && cv.bb) continue;
+                // ...and the outline of a backbone the user hid, which is
+                // collected nowhere near the prim list above
+                if (bbHideInk && cv.bb
+                    && bbHideInk.has(Math.round(cv.gs0
+                        + (typeof cv.gsStep === 'number' ? cv.gsStep : 0)
+                            * ((cv.pts ? cv.pts.length : 1) - 1) / 2))) continue;
                 // Selected curves batch under one key and skip the depth fade -
                 // an indicator that pales into the background is not doing its
                 // job. Unselected curves are dropped entirely when the style
@@ -12024,6 +12056,7 @@
     window.py2dmolCartoon = { render, makeSec, smoothSec, extendSec, SS_PARAMS: SS,
         predictBackbone, predictBaseFrames, assignSecondary, assignSecondaryOpen,
         ringsOf, buildSheetFrames, localFrame,
+        NUCLEIC_STEP_MIN, NUCLEIC_STEP_MAX,
         // THE PAPER, and the three numbers that place it. The WebGL2 port
         // multiplies the same grain in its fragment shaders, and it has to be
         // the SAME SHEET: the tile is built from Math.random(), so a second

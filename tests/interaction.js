@@ -50,7 +50,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','_isSidechainSegment','backboneShown','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -706,15 +706,17 @@ t('SSE is offered for protein and withheld from nucleic acid', () => {
     }
 });
 
-t('the nucleic row is the side-chain row by another name', () => {
-    // Bases are to a nucleotide what side chains are to an amino acid, and the
-    // panel now says so. The two rows never both apply to one residue, and each
-    // is offered only where it can do something.
+t('a nucleotide gets both rows: its real atoms, and the plate', () => {
+    // The plate row used to be called "Side chain", because to a nucleotide a
+    // base IS the side chain. It is named for what it draws now, because the
+    // side-chain row above it draws the base's REAL ATOMS: a nucleotide is in
+    // the side-chain table like any other residue, so the row that was protein
+    // only appears for it too and needs no wiring of its own.
     const html = fs.readFileSync('index.html', 'utf8');
     const at = html.indexOf('id="basesRow"');
     if (at < 0) throw new Error('basesRow is gone');
     const label = html.slice(at, at + 400).match(/selection-panel-label">([^<]+)</);
-    if (!label || label[1].trim() !== 'Side chain') {
+    if (!label || label[1].trim() !== 'Base plate') {
         throw new Error('the nucleic row is labelled ' + JSON.stringify(label && label[1]));
     }
     const NUC = ['D', 'D'];
@@ -724,6 +726,43 @@ t('the nucleic row is the side-chain row by another name', () => {
     }
     if (panelRun([0, 1], new Set(), false, PROT).basesRow.hidden !== true) {
         throw new Error('the nucleic row is offered on a protein selection');
+    }
+
+    // A BASE IS A SIDE CHAIN, in the table as well as on the panel: the
+    // capture takes the base ring plus the two sugar atoms that carry it, so
+    // every stick drawn is a real bond - C4' - O4' - C1' - N9/N1 - ring.
+    const utils = fs.readFileSync('web/utils.js', 'utf8');
+    if (!/sidechainEntries\.push\(\{ pos: newIndex, residue, nucleic: true \}\)/.test(utils)) {
+        throw new Error('nucleotides are not offered to the side-chain table');
+    }
+    if (!/NUCLEIC_BACKBONE_ATOMS/.test(utils) || !/NUCLEIC_SIDECHAIN_BONDS/.test(utils)) {
+        throw new Error('the nucleic backbone set or its bond table is gone');
+    }
+    // the bonds come from CHEMISTRY, as the protein's do - a distance rule
+    // draws an open ring where one atom is missing and a bond across the hole
+    const tbl = utils.slice(utils.indexOf('const NUCLEIC_SIDECHAIN_BONDS'),
+        utils.indexOf('const NUCLEIC_ATOM_ALIASES'));
+    for (const need of ["\\[\"C4'\", \"O4'\"\\]", "\\[\"O4'\", \"C1'\"\\]", "'N9', 'C8'", "'C6', 'N1'"]) {
+        if (!new RegExp(need).test(tbl)) throw new Error('the base table is missing ' + need);
+    }
+    if (!/known = e\.nucleic\s*\n?\s*\? NUCLEIC_SIDECHAIN_BONDS/.test(utils)) {
+        throw new Error('a base still falls to the distance rule');
+    }
+    // ...AND THE FRAME IT IS EXPRESSED IN. A nucleic trace steps 5.5-6.5 A and
+    // localFrame's default range is the peptide's 3.0-4.2, so every nucleotide
+    // read as a chain break and no base could be built at all.
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/NUCLEIC_STEP_MIN = 4\.5/.test(cart) || !/NUCLEIC_STEP_MAX = 7\.5/.test(cart)) {
+        throw new Error('the nucleic step range is gone');
+    }
+    if (!/function localFrame\(at, n, i, out, wrap, stepMin, stepMax\)/.test(cart)) {
+        throw new Error('localFrame takes no step range, so it cannot frame a base');
+    }
+    // the draw-time rebuild must use the SAME range, or the coefficients mean
+    // something else there than they did at capture
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (!/localFrame\(at, n, i, fr, null, nucLo, nucHi\)/.test(mol)) {
+        throw new Error('_materialiseSidechains rebuilds a base through the peptide range');
     }
 });
 
@@ -1343,14 +1382,32 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     }
 });
 
-t('the backbone has its own switch, and the side chains keep their CA', () => {
+t('the backbone hides per selection, and the side chains keep their CA', () => {
     // Hiding a RESIDUE takes its side chain with it. This is the other cut:
     // the fold goes and the side chains stay, which is how you look at a
-    // binding site without the backbone in front of it.
+    // binding site without the backbone in front of it. Per residue and per
+    // object, beside `sidechains` and `bases` - a global switch was the first
+    // shape of this and it is not what anyone wants to reach for.
     const v = clipViewer([[0, 0, 0], [3, 0, 0], [6, 0, 0]]);
-    if (!v.backboneShown()) throw new Error('the backbone starts hidden');
-    v.showBackbone = false;
-    if (v.backboneShown()) throw new Error('the switch does not turn it off');
+    v.objectsData = { obj: {} };
+    v.currentObjectName = 'obj';
+    if (v.backboneHiddenSet()) throw new Error('something starts hidden');
+    if (!v.setBackboneHiddenFor([1], true)) throw new Error('hiding changed nothing');
+    if (!v.backboneHiddenAt(1) || v.backboneHiddenAt(0)) {
+        throw new Error('the wrong residues are hidden');
+    }
+    if (v.setBackboneHiddenFor([1], true)) {
+        throw new Error('hiding what is already hidden asks for a redraw');
+    }
+    // a NEW set each time, or the mesh signatures compare it by identity and
+    // never see the change
+    const first = v.objectsData.obj.hiddenBackbone;
+    v.setBackboneHiddenFor([2], true);
+    if (v.objectsData.obj.hiddenBackbone === first) {
+        throw new Error('the set is edited in place, so the GPU will not rebuild');
+    }
+    v.setBackboneHiddenFor([1, 2], false);
+    if (v.backboneHiddenSet()) throw new Error('showing again left the set behind');
 
     // WHAT COUNTS AS SIDE CHAIN. One endpoint in the map is enough - that is
     // what keeps the CA-CB bond, whose CA is a base position - and a contact
@@ -1366,41 +1423,48 @@ t('the backbone has its own switch, and the side chains keep their CA', () => {
         throw new Error('a contact is being treated as backbone');
     }
 
-    // every draw path asks it, and the two caches that could outlive it name it
+    // every draw path asks it, on BOTH endpoints - so the cut lands at the
+    // edge of the selection rather than a residue short of it
     const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
     const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
     const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
-    if (!/noBackbone && !this\._isSidechainSegment\(segInfo\)/.test(mol)) {
+    if (!/bbHidden\.has\(segInfo\.idx1\) && bbHidden\.has\(segInfo\.idx2\)/.test(mol)) {
         throw new Error('the 2D tube path draws the backbone regardless');
     }
-    if (!/noBB && !this\._isSidechainSegment\(s\)/.test(mol)
-        || !/this\._gpuTubeNoBB === noBB/.test(mol)) {
-        throw new Error('the GPU tube path ignores the switch, or caches past it');
+    if (!/noBB\.has\(s\.idx1\) && noBB\.has\(s\.idx2\)/.test(mol)) {
+        throw new Error('the GPU tube path ignores the switch');
     }
-    if (!/renderer\.backboneShown && !renderer\.backboneShown\(\)/.test(cart)) {
+    if (!/const bbHide = renderer\.backboneHiddenSet/.test(cart)
+        || !/isBackbonePrim\(g\.kind\) && bbHide\.has\(resOf\(g\)\)/.test(cart)) {
         throw new Error('the 2D cartoon draws the backbone regardless');
     }
     // ...INCLUDING THE INK, which is collected somewhere else entirely - the
-    // same trap the clip fell into: the prims went and the outline stayed,
-    // measured as 33,837 drawn pixels against the GPU's 7,241.
-    if (!/bb: isBackbone \? 1 : 0/.test(cart) || !/noBackboneInk && cv\.bb/.test(cart)) {
+    // same trap the clip fell into: the prims went and the outline stayed.
+    if (!/bb: isBackbone \? 1 : 0/.test(cart) || !/bbHideInk && cv\.bb/.test(cart)) {
         throw new Error('the 2D outline is not tagged by class, so hiding the '
             + 'backbone leaves its outline drawn over empty paper');
     }
-    if (!/setVisible\(\{ ribbon: !renderer\.backboneShown/.test(gpu)) {
-        throw new Error('the GPU cartoon never hears about the switch');
+    // the GPU cartoon needs no shader for it - the capture takes what the 2D
+    // pass builds - but the signature has to notice
+    if (!/o && o\.hiddenBackbone \? 'nb' \+ idOf\(o\.hiddenBackbone\)/.test(gpu)) {
+        throw new Error('the cartoon mesh signature does not name the hidden set');
     }
-    if (!/backboneShown\(\) \? 'bb' : 'nobb'/.test(gpu)) {
-        throw new Error('the tube mesh signature does not name the switch');
+    if (!/backboneHiddenSet\(\)\s*\n?\s*\? 'nobb'/.test(gpu)) {
+        throw new Error('the tube mesh signature does not name the hidden set');
     }
-    // and there is a control, which the session remembers
+    // and it lives on the selection panel, travels with a Copy, and is saved
     const html = fs.readFileSync('index.html', 'utf8');
     const app = fs.readFileSync('web/app.js', 'utf8');
-    if (html.indexOf('id="backboneCheckbox"') < 0) throw new Error('no Backbone control');
-    if (!/r\.showBackbone = cb\.checked/.test(app)) throw new Error('the control is not wired');
-    if (!/show_backbone: renderer\.showBackbone !== false/.test(app)
-        || !/vs\.show_backbone/.test(app)) {
-        throw new Error('the switch is not saved with the session');
+    if (html.indexOf('id="backboneShowToggle"') < 0) throw new Error('no Chain toggle');
+    if (html.indexOf('id="backboneCheckbox"') >= 0) {
+        throw new Error('the global Backbone button is back');
+    }
+    if (!/setSelectionBackbone\(p2, v\)/.test(app)) throw new Error('the toggle is not wired');
+    if (!/'sidechains', 'elements', 'bases', 'hiddenBackbone'/.test(mol)) {
+        throw new Error('a Copy loses which backbones were hidden');
+    }
+    if (!/objToSave\.hidden_backbone/.test(app) || !/objData\.hidden_backbone/.test(app)) {
+        throw new Error('the session does not carry the hidden backbone');
     }
 });
 

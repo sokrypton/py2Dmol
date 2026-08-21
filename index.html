@@ -566,15 +566,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </label>
                                 </div>
                                 <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                    <!-- BACKBONE is not the same question as hiding a
-                                         residue: hiding takes the side chain with it,
-                                         this leaves the side chains (and the CA they
-                                         are drawn from) and takes the fold away. -->
-                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
-                                        title="Draw the backbone. Off leaves the side chains, bases and contacts on their own.">
-                                        <input type="checkbox" id="backboneCheckbox" checked>
-                                        <span>Backbone</span>
-                                    </label>
                                     <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1;">
                                         <input type="checkbox" id="colorblindCheckbox">
                                         <span>Colorblind</span>
@@ -678,13 +669,15 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 </label>
                             </div>
                             <!-- Hidden unless the selection contains nucleotides.
-                                 See hasBasesFor. Called "Side chain" and not
-                                 "Bases" because it is the same thing this panel
-                                 offers a protein: the part that hangs off the
-                                 backbone, drawn or not drawn. -->
+                                 See hasBasesFor. It used to be called "Side
+                                 chain", because to a nucleotide a base is
+                                 exactly that - but the row above now draws the
+                                 base's REAL ATOMS for a nucleotide, so this one
+                                 is named for what it actually is: the plate,
+                                 the schematic those atoms have a shape in. -->
                             <div class="selection-panel-row" id="basesRow" hidden>
-                                <span class="selection-panel-label">Side chain</span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw base plates for the selected nucleotides">
+                                <span class="selection-panel-label">Base plate</span>
+                                <label class="btn-toggle btn-small selection-toggle" title="Draw the schematic base plate for the selected nucleotides. The row above draws their real atoms.">
                                     <input type="checkbox" id="basesShowToggle"
                                         aria-label="Draw base plates for the selected nucleotides">
                                     <span>Show</span>
@@ -709,6 +702,18 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <input type="checkbox" id="mainchainShowToggle"
                                         aria-label="Show or hide the selected residues">
                                     <span>Show</span>
+                                </label>
+                                <!-- HIDING A RESIDUE takes its side chain with
+                                     it. This takes the ribbon or tube and
+                                     leaves the side chain - and the CA it is
+                                     drawn from - which is how you look at a
+                                     binding site without the fold in front of
+                                     it. Per selection, like everything else on
+                                     this panel. -->
+                                <label class="btn-toggle btn-small selection-toggle" title="Draw the backbone of the selected residues. Off leaves their side chains, bases and contacts.">
+                                    <input type="checkbox" id="backboneShowToggle" checked
+                                        aria-label="Draw the backbone of the selected residues">
+                                    <span>Chain</span>
                                 </label>
                                 <!-- SSE lives HERE because it is a BACKBONE
                                      property: a side chain has no secondary

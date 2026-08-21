@@ -113,20 +113,6 @@ function initializeApp() {
         apply();
     })();
 
-    // THE BACKBONE SWITCH. A draw-time flag, so it costs a redraw and no
-    // rebuild on the GPU (the mesh carries every face and its class).
-    (() => {
-        const cb = document.getElementById('backboneCheckbox');
-        if (!cb) return;
-        const apply = () => {
-            const r = viewerApi && viewerApi.renderer;
-            if (!r) return;
-            r.showBackbone = cb.checked;
-            r.render('backboneCheckbox');
-        };
-        cb.addEventListener('change', apply);
-    })();
-
     // Setup MSA viewer callbacks (after viewerApi is initialized)
     if (window.MSA) {
         window.MSA.setCallbacks({
@@ -982,7 +968,8 @@ function setupEventListeners() {
         };
         if (none || !renderer || !obj) {
             for (const id of ['sidechainShowToggle', 'elementsShowToggle',
-                'basesShowToggle', 'mainchainShowToggle', 'contactShowToggle']) {
+                'basesShowToggle', 'mainchainShowToggle', 'backboneShowToggle',
+                'contactShowToggle']) {
                 set(id, false);
             }
             return;
@@ -1007,6 +994,12 @@ function setupEventListeners() {
         // visibility: null means everything is visible
         const vis = renderer.visiblePositions;
         set('mainchainShowToggle', tally(live, vis, true));
+        // the backbone reads the other way round: the set names what is HIDDEN,
+        // so a position in it is a toggle that is off
+        const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
+        set('backboneShowToggle', !hidBB ? true
+            : (live.every((i) => !hidBB.has(i)) ? true
+                : (live.every((i) => hidBB.has(i)) ? false : null)));
         set('contactShowToggle', list.length === 2 && !!findContact(list));
     }
 
@@ -1031,6 +1024,18 @@ function setupEventListeners() {
         }
         if (!renderer.setBasesFor(positions, on)) return;   // nothing to redraw
         renderer.render('selection bases');
+    }
+
+    // THE BACKBONE OF THE SELECTED RESIDUES. Not the same question as hiding
+    // them: hiding takes the side chain too, and this leaves it. Stored on the
+    // OBJECT beside `sidechains` and `bases`, and a pure DRAWING change - the
+    // positions are all still there, so this is a repaint (the GPU recaptures,
+    // because prims that are not built cannot be in a mesh).
+    function setSelectionBackbone(positions, on) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.setBackboneHiddenFor) return;
+        if (!renderer.setBackboneHiddenFor(positions, !on)) return;
+        renderer.render('selection backbone');
     }
 
     // VISIBILITY. Two things make this less obvious than it looks:
@@ -1403,6 +1408,7 @@ function setupEventListeners() {
         onToggle('elementsShowToggle', (p2, v) => setSelectionElements(p2, v));
         onToggle('basesShowToggle', (p2, v) => setSelectionBases(p2, v));
         onToggle('mainchainShowToggle', (p2, v) => setSelectionVisible(p2, v, false));
+        onToggle('backboneShowToggle', (p2, v) => setSelectionBackbone(p2, v));
         onToggle('contactShowToggle', (p2, v) => (v
             ? addSelectionContact(p2) : removeSelectionContact(p2)));
 
@@ -6819,6 +6825,12 @@ function saveViewerState() {
             if (objectData.elements instanceof Set) {
                 objToSave.elements = Array.from(objectData.elements);
             }
+            // ...and whose backbone is hidden. Absent means none, so this one
+            // is only worth writing when there is something in it.
+            if (objectData.hiddenBackbone instanceof Set
+                && objectData.hiddenBackbone.size) {
+                objToSave.hidden_backbone = Array.from(objectData.hiddenBackbone);
+            }
             if (objectData.sidechainColor) {
                 objToSave.sidechain_color = objectData.sidechainColor;
             }
@@ -6877,7 +6889,6 @@ function saveViewerState() {
             ss_palette: renderer.ssPalette || 'pymol',
             line_width: renderer.lineWidth || 3.0,
             shadow_enabled: renderer.shadowEnabled !== false,
-            show_backbone: renderer.showBackbone !== false,
             shade: renderer.cartoonShade !== undefined ? renderer.cartoonShade : 1,
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
@@ -7199,6 +7210,10 @@ async function loadViewerState(stateData) {
                     }
                     renderer.objectsData[objData.name].bases = new Set(objData.bases);
                 }
+                if (Array.isArray(objData.hidden_backbone)) {
+                    renderer.objectsData[objData.name].hiddenBackbone
+                        = new Set(objData.hidden_backbone);
+                }
                 if (objData.sidechain_color) {
                     if (!renderer.objectsData[objData.name]) {
                         renderer.objectsData[objData.name] = {};
@@ -7460,11 +7475,6 @@ async function loadViewerState(stateData) {
             // Restore shadow
             if (typeof vs.shadow_enabled === 'boolean') {
                 renderer.shadowEnabled = vs.shadow_enabled;
-            }
-            if (typeof vs.show_backbone === 'boolean') {
-                renderer.showBackbone = vs.show_backbone;
-                const bb = document.getElementById('backboneCheckbox');
-                if (bb) bb.checked = vs.show_backbone;
             }
 
 

@@ -1215,12 +1215,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // shows it as a percentage, and a tenth is the default: enough to
             // read as a soft edge, little enough to keep the cut a cut.
             this.clipFade = CLIP_FADE_DEFAULT;
-            // BACKBONE ON ITS OWN SWITCH. Hiding a residue takes its side chain
-            // with it; this takes the ribbon (or the tube) and LEAVES the side
-            // chains, which is how you look at a binding site without the fold
-            // in front of it. The CA stays: a side chain is drawn from it, so
-            // the bond that anchors it is a side-chain bond by this test.
-            this.showBackbone = true;
             // Whether the CONTROLS are up. Separate from the slab itself,
             // which stays where it was set: switching Clip off puts the panel
             // away, it does not undo the cut. Reset is what uncuts.
@@ -3627,8 +3621,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             for (let i = 0; i < selectedIndices.length; i++) {
                 renumber.set(selectedIndices[i], i);
             }
-            // position sets: sidechains, elements, bases
-            for (const key of ['sidechains', 'elements', 'bases']) {
+            // position sets: sidechains, elements, bases, hiddenBackbone
+            for (const key of ['sidechains', 'elements', 'bases', 'hiddenBackbone']) {
                 const set = src[key];
                 if (!(set instanceof Set)) continue;
                 const out = new Set();
@@ -3637,9 +3631,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (to !== undefined) out.add(to);
                 }
                 // An empty result is NOT the same as absent for every one of
-                // these - null means ALL for bases and elements and NONE for
-                // side chains - so an empty set is stored as empty rather than
-                // collapsed to null, which would invert two of the three.
+                // these - null means ALL for bases and elements, NONE for side
+                // chains and NONE HIDDEN for the backbone - so an empty set is
+                // stored as empty rather than collapsed to null, which would
+                // invert two of the four.
                 dst[key] = out;
             }
             // forced secondary structure: position -> letter
@@ -5699,9 +5694,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const at = (i) => ({ x: data.coords[i][0], y: data.coords[i][1], z: data.coords[i][2] });
             const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
             const frames = new Map();
+            // A NUCLEIC TRACE STEPS FURTHER. localFrame's default range is the
+            // peptide's, and a base rebuilt through it lands nowhere: the frame
+            // fails, the atom is dropped, and the table looks empty. Same range
+            // the table was BUILT with, or the coefficients mean something else
+            // here than they did there.
+            const C0 = window.py2dmolCartoon;
+            const nucLo = C0 && C0.NUCLEIC_STEP_MIN;
+            const nucHi = C0 && C0.NUCLEIC_STEP_MAX;
+            const posTypes = this.positionTypes || [];
             const frameAt = (i) => {
                 if (!frames.has(i)) {
-                    frames.set(i, localFrame(at, n, i, fr, null) ? fr.slice() : null);
+                    const nuc = posTypes[i] === 'D' || posTypes[i] === 'R';
+                    const ok = nuc
+                        ? localFrame(at, n, i, fr, null, nucLo, nucHi)
+                        : localFrame(at, n, i, fr, null);
+                    frames.set(i, ok ? fr.slice() : null);
                 }
                 return frames.get(i);
             };
@@ -6989,9 +6997,50 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return out.size ? out : set;
         }
 
-        /** Does the drawing include the backbone? Off leaves the side chains. */
-        backboneShown() {
-            return this.showBackbone !== false;
+        /**
+         * WHICH RESIDUES ARE DRAWN WITHOUT THEIR BACKBONE.
+         *
+         * Hiding a residue takes its side chain with it; this takes the ribbon
+         * (or the tube) and LEAVES the side chain, which is how you look at a
+         * binding site without the fold in front of it. Per residue and per
+         * object, beside `sidechains` and `bases` and for the same reason -
+         * position indices only mean anything against the object they were set
+         * on. Empty or missing means the whole backbone is drawn.
+         */
+        backboneHiddenSet() {
+            const obj = this.objectsData && this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const set = obj && obj.hiddenBackbone;
+            return (set instanceof Set && set.size) ? set : null;
+        }
+
+        /** Is this position's backbone hidden? */
+        backboneHiddenAt(i) {
+            const set = this.backboneHiddenSet();
+            return !!set && set.has(i);
+        }
+
+        /**
+         * Hide or show the backbone of these positions. Returns false when
+         * nothing changed, so the caller can skip the redraw.
+         */
+        setBackboneHiddenFor(positions, hidden) {
+            const obj = this.objectsData && this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            if (!obj) return false;
+            const cur = obj.hiddenBackbone instanceof Set
+                ? new Set(obj.hiddenBackbone) : new Set();
+            let changed = false;
+            for (const i of positions) {
+                if (hidden ? !cur.has(i) : cur.has(i)) changed = true;
+                if (hidden) cur.add(i); else cur.delete(i);
+            }
+            if (!changed) return false;
+            // A NEW SET EVERY TIME, like the visibility mask: both mesh
+            // signatures compare it by identity, so editing one in place would
+            // leave the GPU redrawing the cached backbone.
+            obj.hiddenBackbone = cur.size ? cur : null;
+            return true;
         }
 
         sidechainOwners() {
@@ -8454,7 +8503,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // the list. Left out of the key the cached order outlived the
             // toggle and the backbone stayed on screen until something else
             // invalidated it.
-            const noBB = !this.backboneShown();
+            const noBB = this.backboneHiddenSet();
             let order = this._gpuTubeOrder;
             let cnt;
             if (order && this._gpuTubeVisSrc === vis && this._gpuTubeSegSrc === segments
@@ -8466,7 +8515,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (let i = 0; i < n; i++) {
                     const s = segments[i];
                     let ok;
-                    if (noBB && !this._isSidechainSegment(s)) {
+                    if (noBB && !this._isSidechainSegment(s)
+                            && noBB.has(s.idx1) && noBB.has(s.idx2)) {
                         ok = false;
                     } else if (!vis) {
                         ok = true;
@@ -8862,13 +8912,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // A segment is visible if both positions are visible (or no mask = all visible)
             // For contact segments, check visibility based on original contact endpoints, not intermediate positions
             const visibleSegmentIndices = [];
-            const noBackbone = !this.backboneShown();
+            const bbHidden = this.backboneHiddenSet();
             for (let i = 0; i < n; i++) {
                 const segInfo = segments[i];
                 let isVisible = false;
                 // the backbone switch, before the visibility mask: a hidden
-                // backbone is not a hidden RESIDUE, so its side chain stays
-                if (noBackbone && !this._isSidechainSegment(segInfo)) continue;
+                // backbone is not a hidden RESIDUE, so its side chain stays.
+                // BOTH ends, so the cut lands at the edge of the selection
+                // rather than a residue short of it.
+                if (bbHidden && !this._isSidechainSegment(segInfo)
+                    && bbHidden.has(segInfo.idx1) && bbHidden.has(segInfo.idx2)) continue;
 
                 if (!visiblePositions) {
                     // No mask = all segments visible (including overlay mode with no selection)

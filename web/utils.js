@@ -1461,6 +1461,47 @@ const PROTEIN_SIDECHAIN_BONDS = {
 // the tip comes away. Symmetric pairs that merely swap between files - ASP's
 // OD1/OD2, PHE's CD1/CD2 - need nothing here: both bond to the same parent, so
 // which is which does not change the connectivity.
+// ...AND THE SAME FOR A BASE, from the chemistry rather than from distances.
+//
+// The anchor is C4' (the trace atom the position was taken from), and the two
+// sugar atoms that carry the base come with it: C4'-O4'-C1' are real bonds and
+// they are what puts the ring where it belongs. Everything after C1' is the
+// base itself.
+//
+// Written out for the same reason the protein table is: a distance rule has to
+// be tuned between the shortest bond and the shortest non-bond, and it gets
+// both wrong on refined-but-scattered geometry - a ring that misses one bond
+// draws as an open chain, and a base with an unmodelled atom draws a bond
+// across the hole. Purines and pyrimidines here, DNA and RNA both; anything
+// else (a modified base) still falls to the distance rule.
+const NUCLEIC_SIDECHAIN_BONDS = (() => {
+    const sugar = [["C4'", "O4'"], ["O4'", "C1'"]];
+    const purine = (n9) => [...sugar, ["C1'", n9]];
+    const A = [...purine('N9'), ['N9', 'C8'], ['C8', 'N7'], ['N7', 'C5'],
+        ['C5', 'C4'], ['C4', 'N9'], ['C4', 'N3'], ['N3', 'C2'], ['C2', 'N1'],
+        ['N1', 'C6'], ['C6', 'C5'], ['C6', 'N6']];
+    const G = [...purine('N9'), ['N9', 'C8'], ['C8', 'N7'], ['N7', 'C5'],
+        ['C5', 'C4'], ['C4', 'N9'], ['C4', 'N3'], ['N3', 'C2'], ['C2', 'N1'],
+        ['N1', 'C6'], ['C6', 'C5'], ['C6', 'O6'], ['C2', 'N2']];
+    const C = [...sugar, ["C1'", 'N1'], ['N1', 'C2'], ['C2', 'N3'], ['N3', 'C4'],
+        ['C4', 'C5'], ['C5', 'C6'], ['C6', 'N1'], ['C2', 'O2'], ['C4', 'N4']];
+    const T = [...sugar, ["C1'", 'N1'], ['N1', 'C2'], ['C2', 'N3'], ['N3', 'C4'],
+        ['C4', 'C5'], ['C5', 'C6'], ['C6', 'N1'], ['C2', 'O2'], ['C4', 'O4'],
+        ['C5', 'C7']];
+    const U = [...sugar, ["C1'", 'N1'], ['N1', 'C2'], ['C2', 'N3'], ['N3', 'C4'],
+        ['C4', 'C5'], ['C5', 'C6'], ['C6', 'N1'], ['C2', 'O2'], ['C4', 'O4']];
+    const out = {};
+    // every spelling a file might use for the same residue
+    for (const [names, bonds] of [[['A', 'DA', 'ADE', 'RA'], A],
+        [['G', 'DG', 'GUA', 'RG'], G], [['C', 'DC', 'CYT', 'RC'], C],
+        [['T', 'DT', 'THY', 'RT'], T], [['U', 'DU', 'URA', 'RU'], U]]) {
+        for (const nm of names) out[nm] = bonds;
+    }
+    return out;
+})();
+// THY's methyl is C7 in the modern dictionary and C5M in older files.
+const NUCLEIC_ATOM_ALIASES = { C5M: 'C7' };
+
 const SIDECHAIN_ATOM_ALIASES = {
     ILE: { CD: 'CD1' },
     MSE: { SED: 'SE' },
@@ -1492,6 +1533,23 @@ const SIDECHAIN_ATOM_ALIASES = {
 // the identical table on 4HHB, because whatever the threshold misses the
 // repair puts back. It is the repair's reach below that decides the answer,
 // which is where the tests are pointed.
+// A NUCLEOTIDE'S BACKBONE, for the same job: everything the table must NOT
+// carry. What is left is the base ring plus the two sugar atoms that hold it -
+// O4' and C1' - so the drawn chain runs C4'(the trace position) - O4' - C1' -
+// N9/N1 - ring, and every stick in it is a real bond. Dropping O4' as well
+// would leave the base to be anchored straight to C4', which is 3.9 A of
+// nothing through the middle of the sugar.
+//
+// Both spellings: PDB v2 wrote the primes as asterisks (C1*, O4*) and plenty
+// of files still do.
+const NUCLEIC_BACKBONE_ATOMS = new Set([
+    'P', 'OP1', 'OP2', 'OP3', 'O1P', 'O2P', 'O3P',
+    "O5'", "C5'", "C4'", "C3'", "O3'", "C2'", "O2'",
+    'O5*', 'C5*', 'C4*', 'C3*', 'O3*', 'C2*', 'O2*',
+]);
+// The primes normalised, so one name answers for either spelling.
+const primed = (nm) => (nm ? nm.replace(/\*/g, "'") : nm);
+
 const SIDECHAIN_BOND_MAX = 2.0;
 const SIDECHAIN_BOND_MAX_SQ = SIDECHAIN_BOND_MAX * SIDECHAIN_BOND_MAX;
 // The repair's reach. Below the 2.41 A aromatic 1,3 distance, so a fragment
@@ -1542,9 +1600,13 @@ const SIDECHAIN_LINK_MAX_SQ = 2.35 * 2.35;
  * @returns {object|null} - the side-chain table, or null if there is nothing
  */
 function buildSidechainTable(coords, entries) {
-    const localFrame = (typeof window !== 'undefined' && window.py2dmolCartoon)
-        ? window.py2dmolCartoon.localFrame : null;
+    const C = (typeof window !== 'undefined') ? window.py2dmolCartoon : null;
+    const localFrame = C ? C.localFrame : null;
     if (!localFrame || !entries.length) return null;
+    // A nucleic trace steps 5.5-6.5 A, not the peptide's 3.8 - see localFrame.
+    const stepMin = C ? C.NUCLEIC_STEP_MIN : 4.5;
+    const stepMax = C ? C.NUCLEIC_STEP_MAX : 7.5;
+    const frameArgs = (isNucleic) => (isNucleic ? [stepMin, stepMax] : [undefined, undefined]);
 
     const n = coords.length;
     const at = (i) => ({ x: coords[i][0], y: coords[i][1], z: coords[i][2] });
@@ -1552,7 +1614,8 @@ function buildSidechainTable(coords, entries) {
     const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
     const hasFrame = new Uint8Array(n);
     for (const e of entries) {
-        if (localFrame(at, n, e.pos, fr, null)) hasFrame[e.pos] = 1;
+        const [lo, hi] = frameArgs(e.nucleic);
+        if (localFrame(at, n, e.pos, fr, null, lo, hi)) hasFrame[e.pos] = 1;
     }
     // nearest framed position, searching outward - only used at chain ends
     const framedNear = (pos) => {
@@ -1595,11 +1658,25 @@ function buildSidechainTable(coords, entries) {
     };
 
     for (const e of entries) {
-        const ca = e.residue.caAtom;
+        // WHICH ATOM THE GROUP HANGS OFF, and what counts as backbone around
+        // it. A protein's is the CA; a nucleotide's is the C4' its position
+        // was taken from. Everything else in here is generic.
+        const anchorName = e.nucleic ? "C4'" : 'CA';
+        const backboneOf = e.nucleic ? NUCLEIC_BACKBONE_ATOMS : PROTEIN_BACKBONE_ATOMS;
+        // ...and the cache is a convenience, not a guarantee: c4Atom is only
+        // set where the parser saw the name it was looking for
+        const ca = e.nucleic
+            ? (e.residue.c4Atom
+                || e.residue.atoms.find((a) => primed(a.atomName) === "C4'"))
+            : e.residue.caAtom;
         if (!ca) continue;
+        if (typeof window !== 'undefined' && window.__scTrace) {
+            window.__scTrace.push([e.pos, !!e.nucleic, e.residue.atoms.length]);
+        }
         const anchor = framedNear(e.pos);
         if (anchor < 0) continue;                 // too short to frame: skip
-        if (!localFrame(at, n, anchor, fr, null)) continue;
+        const [flo, fhi] = frameArgs(e.nucleic);
+        if (!localFrame(at, n, anchor, fr, null, flo, fhi)) continue;
         const o = at(anchor);
 
         // ONE CONFORMER, THE FIRST. A residue modelled in two positions writes
@@ -1634,7 +1711,8 @@ function buildSidechainTable(coords, entries) {
         for (let ai = 0; ai < atoms.length; ai++) {
             const a = atoms[ai];
             if (isHydrogen(a)) continue;
-            if (a.atomName !== 'CA' && PROTEIN_BACKBONE_ATOMS.has(a.atomName)) continue;
+            const nm0 = primed(a.atomName);
+            if (nm0 !== anchorName && backboneOf.has(a.atomName)) continue;
             // first-wins by name, over a handful of entries - a linear scan
             // beats hashing at this size, and there is nothing to allocate
             let dup = false;
@@ -1648,7 +1726,7 @@ function buildSidechainTable(coords, entries) {
         // swapped: the rows are emitted in group order, so the atoms after it
         // have to keep the order the file gave them.
         for (let k = 1; k < gn; k++) {
-            if (group[k].atomName !== 'CA') continue;
+            if (primed(group[k].atomName) !== anchorName) continue;
             const ca0 = group[k];
             for (let m = k; m > 0; m--) group[m] = group[m - 1];
             group[0] = ca0;
@@ -1665,12 +1743,20 @@ function buildSidechainTable(coords, entries) {
             adj[i * cap + adjN[i]++] = j;
             adj[j * cap + adjN[j]++] = i;
         };
-        const known = PROTEIN_SIDECHAIN_BONDS[e.residue.resName];
+        // ...from the right table. A base has its own, and a modified one that
+        // is in neither falls to the distance rule.
+        const rn = (e.residue.resName || '').trim().toUpperCase();
+        const known = e.nucleic
+            ? NUCLEIC_SIDECHAIN_BONDS[rn]
+            : PROTEIN_SIDECHAIN_BONDS[e.residue.resName];
         if (known) {
-            const alias = SIDECHAIN_ATOM_ALIASES[e.residue.resName];
+            const alias = e.nucleic
+                ? NUCLEIC_ATOM_ALIASES : SIDECHAIN_ATOM_ALIASES[e.residue.resName];
             const rowName = [];
             for (let i = 0; i < gn; i++) {
-                const n0 = group[i].atomName;
+                // primes normalised for a base, so a file written with
+                // asterisks matches the table's C1'
+                const n0 = e.nucleic ? primed(group[i].atomName) : group[i].atomName;
                 rowName.push((alias && alias[n0]) || n0);
             }
             const rowIdx = (nm) => {
@@ -2377,6 +2463,13 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
                 position_types.push(nucleicType);
                 residues.push(c4_atom.res_name || c4_atom.resName || residue.resName);
                 residue_numbers.push(c4_atom.res_seq || c4_atom.resSeq || residue.resSeq);
+
+                // A BASE IS A SIDE CHAIN. Same machinery as a protein's:
+                // coefficients in the residue's local frame, materialised as
+                // positions when the user asks for them. The plate stays what
+                // it always was - a schematic - and this is the real thing
+                // beside it.
+                sidechainEntries.push({ pos: newIndex, residue, nucleic: true });
 
                 // Map serial/ID to new index
                 if (c4_atom.serial !== undefined) atomSerialToIndex.set(c4_atom.serial, newIndex);
