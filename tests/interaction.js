@@ -1563,6 +1563,13 @@ t('Capture draws on the GPU too, at the size it is exporting', () => {
         || (gpu.match(/if \(!bufferFits\(w, h\)\) return false;/g) || []).length < 2) {
         throw new Error('an oversized export is not handed back to the 2D path');
     }
+    // AND THE INK IS A NUMBER OF PIXELS. The mesh is captured at the export's
+    // size so the geometry carries k already, but the outline width does not -
+    // left at the display value a 300 dpi export drew it four times too thin,
+    // measured as 45.7 dark pixels per 10k against the 2D export's 103.2.
+    if (!/\* \(r\._exportPxScale \|\| 1\)/.test(gpu)) {
+        throw new Error('the cartoon outline does not follow the export scale');
+    }
     // ...and a transparent export must stay transparent: the GPU clears to
     // paper, which would put an opaque square under the drawing
     if ((gpu.match(/setClearAlpha\(renderer\.isTransparent \? 0 : 1\)/g) || []).length < 2) {

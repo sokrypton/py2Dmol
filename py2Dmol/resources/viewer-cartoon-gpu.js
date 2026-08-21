@@ -3901,8 +3901,15 @@ function paramsFromRenderer(r) {
         // moved. It is the ribbon's own THICKNESS fade that was removed, and
         // that one lived entirely in the 2D geometry, so this path inherits its
         // removal through the capture.
+        // ...and TIMES THE EXPORT SCALE, which is the other half of the 2D
+        // expression: pxScale multiplies both of its terms. On screen it is 1
+        // and this is the display width as before; in a 300 dpi export the
+        // mesh is captured at the export's size but the ink is not - it is a
+        // number of PIXELS, and left at the display value it came out four
+        // times too thin, which is most of an outline missing.
         inkWidth: Math.max(num(ref().INK_W_MIN, 0.35),
-            outlineW * zoomW * num(ref().INK_W_MUL, 0.55)),
+            outlineW * zoomW * num(ref().INK_W_MUL, 0.55))
+            * (r._exportPxScale || 1),
         handoff: num(r.cartoonHandoff, HANDOFF_TOL),
         inkBias: 0.002,
         biasMax: 0.004,
