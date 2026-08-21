@@ -709,7 +709,21 @@ const CIF_LOOPS_READ = [
     '_pdbx_struct_oper_list.',
 ];
 
-function parseCIF(text) {
+// PARSING, IN SLICES YOU CAN STOP BETWEEN.
+//
+// The body below is a generator so the same code can be drained two ways: all
+// at once by parseCIF, which is what the tests and any synchronous caller
+// want, or a slice at a time by parseCIFAsync, which hands control back to the
+// browser between slices so the tab stays alive and the progress line can move
+// on something real - the cursor's position in the file, not a timer.
+//
+// It yields a number in [0,1]: how much of the text the atom walk has passed.
+// A slice is a fixed number of BYTES rather than of rows, since that is what
+// the fraction is measured in and what makes each slice take about the same
+// time.
+const PARSE_SLICE_BYTES = 8 << 20;
+
+function* parseCIFSteps(text) {
 
     // THE FIVE LOOPS ANYONE ACTUALLY READS.
     //
@@ -944,7 +958,12 @@ function parseCIF(text) {
     // is ever materialised: startsWith takes a position, and the row tests read
     // a character code straight out of the parent.
     const textLen = text.length;
+    let sliceMark = PARSE_SLICE_BYTES;
     for (let pos = 0; pos < textLen; ) {
+        if (pos >= sliceMark) {
+            sliceMark = pos + PARSE_SLICE_BYTES;
+            yield pos / textLen;
+        }
         let eol = text.indexOf('\n', pos);
         if (eol < 0) eol = textLen;
         // a trailing \r belongs to the line ending, not to the last column
@@ -1045,6 +1064,46 @@ function parseCIF(text) {
         .sort((a, b) => a - b)
         .map(id => modelMap.get(id));
     return { models, loops, chemCompMap, structConn, chemCompBondMap };
+}
+
+// Drained in one go. Nothing observes the slices, so this is exactly the old
+// parseCIF.
+function parseCIF(text) {
+    const it = parseCIFSteps(text);
+    let r = it.next();
+    while (!r.done) r = it.next();
+    return r.value;
+}
+
+// Hand the browser a turn, so the bar it was just told about can actually be
+// painted before the next slice of work begins.
+//
+// NOT setTimeout(0). Nested timeouts are clamped to about 4 ms, and at sixty
+// slices that clamp alone added 300 ms to a capsid load - a third of a second
+// spent waiting for permission to continue. A MessageChannel message is
+// delivered on the next turn of the event loop with no floor, so the browser
+// still gets its turn and the load does not pay for it. Measured: 2,871 ms
+// back down to 2,612.
+const yieldChannel = (typeof MessageChannel === 'function') ? new MessageChannel() : null;
+let yieldWaiting = null;
+if (yieldChannel) {
+    yieldChannel.port1.onmessage = () => { const f = yieldWaiting; yieldWaiting = null; if (f) f(); };
+}
+function yieldToBrowser() {
+    if (!yieldChannel || yieldWaiting) return new Promise((s) => setTimeout(s, 0));
+    return new Promise((s) => { yieldWaiting = s; yieldChannel.port2.postMessage(0); });
+}
+
+// Drained a slice at a time, giving the browser a turn in between. onProgress
+// is called with the real fraction of the file the walk has passed.
+async function parseCIFAsync(text, onProgress) {
+    const it = parseCIFSteps(text);
+    for (;;) {
+        const r = it.next();
+        if (r.done) return r.value;
+        if (onProgress) onProgress(r.value);
+        await yieldToBrowser();
+    }
 }
 
 /**
@@ -2118,7 +2177,12 @@ function normalizePlddt(value) {
     return value;
 }
 
-function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, includeAllResidues = false, conectMap = null, structConn = null, chemCompBondMap = null) {
+// CONVERSION, ALSO IN SLICES. Same reason as parseCIFSteps: this is half a
+// second on a capsid, made of five passes of 20-200 ms each, and run as one
+// block it is half a second in which the browser produces no frames and the
+// progress line is a still picture. Yielding a fraction between the passes -
+// and inside the long one - is what lets it keep moving.
+function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = null, includeAllResidues = false, conectMap = null, structConn = null, chemCompBondMap = null) {
     const coords = [];
     const plddts = [];
     const position_chains = [];
@@ -2181,6 +2245,7 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
         }
     }
 
+    yield 0.25;
     // Convert residueMap to array for connectivity checks
     const allResidues = Array.from(residueMap.values());
 
@@ -2192,6 +2257,7 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
         return a.resSeq - b.resSeq;
     });
 
+    yield 0.4;
     // One DNA/RNA answer per chain - see resolveChainNucleicTypes.
     const chainNucleic = resolveChainNucleicTypes(allResidues);
 
@@ -2200,8 +2266,13 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
     // is dropped, and the file text is not retained, so an atom not taken now
     // cannot be recovered later. The table it builds is never read by the
     // draw path unless a residue is actually selected - see buildSidechainTable.
+    yield 0.45;
     const sidechainEntries = [];
+    const CONVERT_SLICE_RESIDUES = 60000;
     for (let idx = 0; idx < allResidues.length; idx++) {
+        if (idx > 0 && idx % CONVERT_SLICE_RESIDUES === 0) {
+            yield 0.45 + 0.30 * (idx / allResidues.length);
+        }
         const residue = allResidues[idx];
 
         // Use unified classification functions
@@ -2464,12 +2535,32 @@ function convertParsedToFrameData(atoms, modresMap = null, chemCompMap = null, i
         result.residue_numbers = residue_numbers;
     }
 
+    yield 0.75;
     const sidechains = buildSidechainTable(coords, sidechainEntries);
     if (sidechains) {
         result.sidechains = sidechains;
     }
 
     return result;
+}
+
+// Drained in one go - exactly the old convertParsedToFrameData.
+function convertParsedToFrameData(...args) {
+    const it = convertParsedToFrameDataSteps(...args);
+    let r = it.next();
+    while (!r.done) r = it.next();
+    return r.value;
+}
+
+// Drained a slice at a time, reporting how far through it is.
+async function convertParsedToFrameDataAsync(onProgress, ...args) {
+    const it = convertParsedToFrameDataSteps(...args);
+    for (;;) {
+        const r = it.next();
+        if (r.done) return r.value;
+        if (onProgress) onProgress(r.value);
+        await yieldToBrowser();
+    }
 }
 
 /**

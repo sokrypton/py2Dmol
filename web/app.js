@@ -1425,7 +1425,107 @@ function setupEventListeners() {
 // UI HELPER FUNCTIONS
 // ============================================================================
 
+// A BAR THAT MOVES ON WHAT ACTUALLY HAPPENED.
+//
+// The last attempt at this was a bar that appeared and sat still, which is
+// worse than none: it claims to be reporting and is not. The reason it sat
+// still is that the load was one synchronous block - there was no moment
+// between "started" and "finished" at which the browser could paint anything.
+//
+// So the bar is not a UI feature, it is a consequence of the loader running in
+// slices. Inside the parse the fraction is the cursor's real position in the
+// file; between stages it is which stage finished. The weights below are how
+// the time actually divides on a 242 MB capsid - they are estimates for any
+// other file, and they are the only estimated part.
+const LOAD_STAGES = [
+    ['download', 0.15],
+    ['parse', 0.50],
+    ['build', 0.20],
+    ['display', 0.15],
+];
+// Nothing is shown for a load that finishes quickly. A bar that flashes up and
+// vanishes reads as a glitch, and under this it is most loads.
+const PROGRESS_REVEAL_MS = 250;
+let progressShownAt = 0;
+let progressRevealTimer = 0;
+let progressHighWater = 0;
+
+function progressAt(stage, within = 0) {
+    let base = 0;
+    for (const [name, weight] of LOAD_STAGES) {
+        if (name === stage) return base + weight * Math.max(0, Math.min(1, within));
+        base += weight;
+    }
+    return base;
+}
+
+function beginProgress() {
+    progressHighWater = 0;
+    progressShownAt = 0;
+    const box = document.getElementById('load-progress');
+    if (!box) return;
+    if (progressRevealTimer) clearTimeout(progressRevealTimer);
+    progressRevealTimer = setTimeout(() => {
+        progressRevealTimer = 0;
+        progressShownAt = 1;
+        box.style.display = 'block';
+    }, PROGRESS_REVEAL_MS);
+}
+
+function setProgress(fraction, label) {
+    // Monotonic. A stage that turns out cheaper than its weight must not pull
+    // the bar backwards - the bar is a claim about work done, and work does
+    // not get undone.
+    progressHighWater = Math.max(progressHighWater, Math.max(0, Math.min(1, fraction)));
+    const bar = document.getElementById('load-progress-bar');
+    const text = document.getElementById('load-progress-label');
+    if (bar) bar.style.width = (progressHighWater * 100).toFixed(1) + '%';
+    if (text && label) text.textContent = label;
+}
+
+function endProgress() {
+    if (progressRevealTimer) { clearTimeout(progressRevealTimer); progressRevealTimer = 0; }
+    const box = document.getElementById('load-progress');
+    const bar = document.getElementById('load-progress-bar');
+    if (bar) bar.style.width = '0%';
+    if (box) box.style.display = 'none';
+    progressShownAt = 0;
+    progressHighWater = 0;
+}
+
+
+// Drain a response body, reporting bytes against Content-Length when the
+// server gave one. Falls back to response.text() when it did not, or when the
+// body cannot be streamed.
+async function readBodyWithProgress(response) {
+    const total = +(response.headers.get('content-length') || 0);
+    if (!response.body || !response.body.getReader || !total) {
+        setProgress(progressAt('download', 0), 'Downloading');
+        return response.text();
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let got = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
+        setProgress(progressAt('download', got / total), 'Downloading');
+    }
+    const all = new Uint8Array(got);
+    let at = 0;
+    for (const c of chunks) { all.set(c, at); at += c.length; }
+    return new TextDecoder().decode(all);
+}
+
 function setStatus(message, isError = false) {
+    // A LOAD THAT FAILED IS A LOAD THAT ENDED. Every failure path in the
+    // loader reports through here, so this is the one place that reliably
+    // catches them all - without it a thrown parse leaves the bar sitting on
+    // screen at whatever fraction it had reached, which is the exact dishonesty
+    // the bar exists to avoid.
+    if (isError && typeof endProgress === 'function') endProgress();
     // Check if we're on msa.html (has status-message with different styling) or index.html
     const statusElement = document.getElementById('status-message');
     if (statusElement) {
@@ -2376,7 +2476,7 @@ async function addMetadataToExistingObject({ msaFiles, jsonFiles, contactFiles, 
     return { objectsLoaded: 0, framesAdded: 0, structureCount: 0, paePairedCount: 0, isTrajectory: false };
 }
 
-function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, chainFilter) {
+async function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, chainFilter) {
     let models;
     let modresMap = null;
     let chemCompMap = null;
@@ -2394,7 +2494,11 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
         let parseResult;
 
         if (isCIF) {
-            parseResult = parseCIF(text);
+            setProgress(progressAt('parse', 0), 'Reading metadata');
+            await yieldToBrowser();
+            parseResult = await parseCIFAsync(text, (f) => {
+                setProgress(progressAt('parse', f), 'Reading atoms');
+            });
             models = parseResult.models;
             cachedLoops = parseResult.loops;
             chemCompMap = parseResult.chemCompMap;
@@ -2673,13 +2777,18 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
         }
 
         // Filter ligands from model
+        setProgress(progressAt('build', 0), 'Grouping residues');
+        await yieldToBrowser();
         const model = maybeFilterLigands(models[i]);
         const originalPositionCount = models[i].length;
         const filteredPositionCount = model.length;
 
         // Convert parsed atoms to frame data
         // Pass conectMap (PDB) and structConn (CIF) for bond resolution
-        let frameData = convertParsedToFrameData(
+        setProgress(progressAt('build', 0.4), 'Building positions');
+        await yieldToBrowser();
+        let frameData = await convertParsedToFrameDataAsync(
+            (f) => setProgress(progressAt('build', 0.4 + 0.55 * f), 'Building positions'),
             model,
             modresMap,
             chemCompMap,
@@ -2688,6 +2797,7 @@ function buildPendingObject(text, name, paeData, targetObjectName, tempBatch, ch
             structConn,
             chemCompBondMap
         );
+        setProgress(progressAt('build', 0.95), 'Preparing frames');
         if (frameData.coords.length === 0) continue;
 
         // Store PAE data
@@ -4059,12 +4169,16 @@ async function handleFetch() {
         paeEnabled = false;
     }
 
+    beginProgress();
     try {
         const structResponse = await fetch(structUrl);
         if (!structResponse.ok) {
             throw new Error(`Failed to fetch structure (HTTP ${structResponse.status})`);
         }
-        const structText = await structResponse.text();
+        // READ THROUGH, so the download half of the bar is measured too. The
+        // server usually says how long the body is; when it does not, there is
+        // no honest fraction to report and the stage just names itself.
+        const structText = await readBodyWithProgress(structResponse);
 
         let paeData = null;
         if (paeEnabled && paeUrl && loadPAE) {
@@ -4081,7 +4195,7 @@ async function handleFetch() {
             }
         }
 
-        const framesAdded = buildPendingObject(
+        const framesAdded = await buildPendingObject(
             structText,
             name,
             paeData,
@@ -4097,7 +4211,10 @@ async function handleFetch() {
         if (!framesAdded || tempBatch.length === 0) return;
 
         pendingObjects.push(...tempBatch);
+        setProgress(progressAt('display', 0), 'Drawing');
+        await yieldToBrowser();
         applyPendingObjects();
+        endProgress();
 
         // Auto-download MSA for PDB structures (only if Load MSA is enabled)
         if (isPDB && window.MSA && loadMSA) {
@@ -5247,6 +5364,7 @@ function applySelectionToMSA() {
 }
 
 async function processFiles(files, loadAsFrames, groupName = null) {
+    beginProgress();
     const tempBatch = [];
     let overallTotalFramesAdded = 0;
     let paePairedCount = 0;
@@ -5505,7 +5623,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
                 (groupName || cleanObjectName(structureFiles[0].name)) :
                 baseName;
 
-            const framesAdded = buildPendingObject(
+            const framesAdded = await buildPendingObject(
                 text,
                 file.name,
                 paeData,
@@ -5558,7 +5676,10 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     }
 
     if (tempBatch.length > 0) pendingObjects.push(...tempBatch);
+    setProgress(progressAt('display', 0), 'Drawing');
+    await yieldToBrowser();
     applyPendingObjects();
+    endProgress();
 
     // Process MSA files AFTER structures are loaded (only if Load MSA is enabled)
     if (msaFilesToProcess.length > 0 && loadMSA) {
