@@ -1117,6 +1117,29 @@ function setupEventListeners() {
         renderer.render('selection bases');
     }
 
+    // WITHIN N ANGSTROM OF WHAT IS SELECTED, atom to atom. The renderer does
+    // the search (see residuesWithin); this is the button, and the reporting -
+    // a shell that found nothing has to say so, or it reads as a dead control.
+    function selectNearby(cutoff) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer || !renderer.residuesWithin) return;
+        const sel = renderer.residueSelection;
+        const seed = sel ? (sel instanceof Set ? sel : new Set(sel)) : null;
+        if (!seed || !seed.size) {
+            setStatus('Select something first, then Within finds what is near it.');
+            return;
+        }
+        const found = renderer.residuesWithin(seed, cutoff);
+        const added = found.size - seed.size;
+        if (!added) {
+            setStatus(`Nothing else within ${cutoff} \u00c5 of the selection.`);
+            return;
+        }
+        renderer.setResidueSelection(found);
+        setStatus(`${added} more residue${added === 1 ? '' : 's'} within ${cutoff} \u00c5`
+            + ` - ${found.size} selected.`);
+    }
+
     // THE BACKBONE OF THE SELECTED RESIDUES. Not the same question as hiding
     // them: hiding takes the side chain too, and this leaves it. Stored on the
     // OBJECT beside `sidechains` and `bases`, and a pure DRAWING change - the
@@ -1490,6 +1513,15 @@ function setupEventListeners() {
             setSelectionBackbone(p2, v);
             syncSelectionVisibility(p2);
         });
+        const nearBtn = document.getElementById('selectNearby');
+        const nearA = document.getElementById('selectNearbyA');
+        if (nearBtn) {
+            nearBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const d = nearA ? parseFloat(nearA.value) : 5;
+                selectNearby(isFinite(d) && d > 0 ? d : 5);
+            });
+        }
         // ...and the protein form of the same control: two states, one toggle
         onToggle('sidechainShowToggle', (p2, v) => setSelectionSidechainMode(p2, v ? 'full' : 'none'));
         // the side-chain MODE is a select, not a toggle, but it reads the

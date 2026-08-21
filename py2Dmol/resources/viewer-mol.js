@@ -453,6 +453,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // anyone would want to tune, and expressing it as a boost meant retuning
     // the LIGAND width would silently move side chains with it.
     const SIDECHAIN_WIDTH = 0.5;
+    // How far an atom can sit from its residue's trace point: an arginine's tip
+    // is ~7 A from its CA and a purine's ~7 from its C4'. Used to widen a
+    // distance search's first pass, so the exact one never misses a pair.
+    const SIDECHAIN_REACH_A = 8;
     // A CONTACT IS ONE WIDTH IN BOTH STYLES, and does not follow the Line Width
     // control in either. That control sets how heavy the BACKBONE is drawn; a
     // contact is an annotation over the structure, and one that changed weight
@@ -6972,6 +6976,175 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sc = this.sidechainMap;
             if (!sc || !sc.size) return false;
             return sc.has(segInfo.idx1) || sc.has(segInfo.idx2);
+        }
+
+        /**
+         * EVERY RESIDUE WITHIN `cutoff` ANGSTROM OF THIS ONE, atom to atom.
+         *
+         * The same question PyMOL answers with `byres (all within 5 of sele)`,
+         * and it has to be asked of ATOMS: a 5 A neighbourhood measured between
+         * trace points is not a contact shell, it is a list of residues whose
+         * CAs happen to be close, and it misses the side chain reaching past
+         * them - which is the whole reason anyone asks.
+         *
+         * The atoms exist whether or not they are DRAWN. A side chain is a
+         * table of coefficients in the residue's own frame (see
+         * _materialiseSidechains); this rebuilds them for the test and throws
+         * them away, so a neighbourhood is the same before and after anyone
+         * turns side chains on.
+         *
+         * Two passes, because rebuilding every side chain in a 300,000-residue
+         * assembly to answer a question about twelve of them is not a search,
+         * it is a rebuild. The first bins TRACE points and keeps anything whose
+         * trace is within cutoff + 2 x SIDECHAIN_REACH; the second rebuilds
+         * only those and measures exactly.
+         *
+         * The seed comes back with the answer, as PyMOL's byres does.
+         */
+        residuesWithin(seed, cutoff) {
+            const out = new Set(seed || []);
+            const co = this.coords;
+            const n = co ? co.length : 0;
+            const cut = Number(cutoff);
+            if (!n || !out.size || !isFinite(cut) || cut <= 0) return out;
+            const xyz = (i) => {
+                const c = co[i];
+                if (!c) return null;
+                return Array.isArray(c) ? c : [c.x, c.y, c.z];
+            };
+            // ---- pass 1: trace points, on a grid ----------------------------
+            const REACH = SIDECHAIN_REACH_A;
+            const coarse = cut + 2 * REACH;
+            const cell = Math.max(coarse, 1e-3);
+            const key = (x, y, z) => x + ',' + y + ',' + z;
+            const cellOf = (p) => [Math.floor(p[0] / cell), Math.floor(p[1] / cell),
+                Math.floor(p[2] / cell)];
+            // KEPT BETWEEN CALLS. Binning every position is the whole cost on a
+            // large assembly - 313,236 of them on 3J3Q, 40 ms of a 48 ms search
+            // - and growing a shell means asking again and again against the
+            // same coordinates. Keyed by the array's identity and the cell
+            // size: viewer-mol only ever ASSIGNS coords, so an unchanged
+            // pointer is an unchanged structure.
+            let g = this._nearGrid;
+            if (!g || g.src !== co || g.cell !== cell || g.n !== n) {
+                const bins0 = new Map();
+                for (let i = 0; i < n; i++) {
+                    const p = xyz(i);
+                    if (!p) continue;
+                    const c = cellOf(p);
+                    const k = key(c[0], c[1], c[2]);
+                    let arr = bins0.get(k);
+                    if (!arr) { arr = []; bins0.set(k, arr); }
+                    arr.push(i);
+                }
+                g = { src: co, cell, n, bins: bins0 };
+                this._nearGrid = g;
+            }
+            const bins = g.bins;
+            const near = new Set();
+            const coarse2 = coarse * coarse;
+            for (const i of out) {
+                const p = xyz(i);
+                if (!p) continue;
+                const c = cellOf(p);
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dz = -1; dz <= 1; dz++) {
+                            const arr = bins.get(key(c[0] + dx, c[1] + dy, c[2] + dz));
+                            if (!arr) continue;
+                            for (const j of arr) {
+                                if (out.has(j)) continue;
+                                const q = xyz(j);
+                                if (!q) continue;
+                                const ddx = p[0] - q[0]; const ddy = p[1] - q[1];
+                                const ddz = p[2] - q[2];
+                                if (ddx * ddx + ddy * ddy + ddz * ddz <= coarse2) near.add(j);
+                            }
+                        }
+                    }
+                }
+            }
+            if (!near.size) return out;
+            // ---- pass 2: every atom of the seed against every atom of those --
+            const atomsFor = this._atomsOfResidues(new Set([...out, ...near]));
+            const cut2 = cut * cut;
+            const seedAtoms = [];
+            for (const i of out) {
+                const list = atomsFor.get(i);
+                if (list) for (const p of list) seedAtoms.push(p);
+            }
+            for (const j of near) {
+                const list = atomsFor.get(j);
+                if (!list) continue;
+                let hit = false;
+                for (const q of list) {
+                    for (const p of seedAtoms) {
+                        const dx = p[0] - q[0]; const dy = p[1] - q[1]; const dz = p[2] - q[2];
+                        if (dx * dx + dy * dy + dz * dz <= cut2) { hit = true; break; }
+                    }
+                    if (hit) break;
+                }
+                if (hit) out.add(j);
+            }
+            return out;
+        }
+
+        /**
+         * Every atom of each of these residues, in world space: the position
+         * itself, plus its side-chain table rows rebuilt through the frame they
+         * were measured in - drawn or not. Keyed by residue.
+         */
+        _atomsOfResidues(want) {
+            const co = this.coords;
+            const out = new Map();
+            if (!co || !want || !want.size) return out;
+            const xyz = (i) => {
+                const c = co[i];
+                if (!c) return null;
+                return Array.isArray(c) ? c : [c.x, c.y, c.z];
+            };
+            for (const i of want) {
+                const p = xyz(i);
+                if (p) out.set(i, [p]);
+            }
+            const sc = this.sidechains;
+            const C = (typeof window !== 'undefined') ? window.py2dmolCartoon : null;
+            const localFrame = C && C.localFrame;
+            if (!sc || !sc.pos || !localFrame) return out;
+            const n = co.length;
+            const at = (i) => {
+                const p = xyz(i);
+                return p ? { x: p[0], y: p[1], z: p[2] } : { x: 0, y: 0, z: 0 };
+            };
+            const types = this.positionTypes || [];
+            const fr = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+            const frames = new Map();
+            const frameAt = (i) => {
+                if (!frames.has(i)) {
+                    const nuc = types[i] === 'D' || types[i] === 'R';
+                    const ok = nuc
+                        ? localFrame(at, n, i, fr, null, C.NUCLEIC_STEP_MIN, C.NUCLEIC_STEP_MAX)
+                        : localFrame(at, n, i, fr, null);
+                    frames.set(i, ok ? fr.slice() : null);
+                }
+                return frames.get(i);
+            };
+            for (let k = 0; k < sc.pos.length; k++) {
+                const owner = sc.pos[k];
+                if (!out.has(owner)) continue;
+                const anchor = sc.frameOf[k];
+                const f = anchor >= 0 ? frameAt(anchor) : null;
+                if (anchor >= 0 && !f) continue;
+                const o = at(anchor >= 0 ? anchor : owner);
+                const cx = sc.coef[k * 3]; const cy = sc.coef[k * 3 + 1];
+                const cz = sc.coef[k * 3 + 2];
+                out.get(owner).push(f ? [
+                    o.x + f[0] * cx + f[3] * cy + f[6] * cz,
+                    o.y + f[1] * cx + f[4] * cy + f[7] * cz,
+                    o.z + f[2] * cx + f[5] * cy + f[8] * cz,
+                ] : [o.x + cx, o.y + cy, o.z + cz]);
+            }
+            return out;
         }
 
         /**

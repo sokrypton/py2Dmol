@@ -41,7 +41,7 @@ eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
-    'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_MAX_PX', 'SIDECHAIN_WIDTH',
+    'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_MAX_PX', 'SIDECHAIN_WIDTH', 'SIDECHAIN_REACH_A',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
     'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
@@ -51,7 +51,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1239,6 +1239,62 @@ t('the slab is a depth test, and off is off', () => {
     }
     v.setClipSlab(null, null);
     if (!v.clipAccepts(1e6)) throw new Error('switching the slab off left it clipping');
+});
+
+t('Within finds neighbours atom to atom, and keeps the seed', () => {
+    // The same question PyMOL answers with byres (all within 5 of sele). It has
+    // to be asked of ATOMS: a shell measured between trace points is a list of
+    // residues whose CAs are close, and it misses the side chain reaching past
+    // them, which is the whole reason anyone asks.
+    const v = clipViewer([[0, 0, 0], [4, 0, 0], [9, 0, 0], [20, 0, 0]]);
+    const near5 = v.residuesWithin(new Set([0]), 5);
+    if (!near5.has(0)) throw new Error('the seed did not come back with the answer');
+    if (!near5.has(1) || near5.has(2) || near5.has(3)) {
+        throw new Error('the 5 A shell is ' + [...near5].join(',') + ', expected 0,1');
+    }
+    const near10 = v.residuesWithin(new Set([0]), 10);
+    if (!near10.has(2) || near10.has(3)) {
+        throw new Error('the 10 A shell is ' + [...near10].join(','));
+    }
+    // a seed of two takes the union of their shells
+    const both = v.residuesWithin(new Set([0, 3]), 5);
+    if (!(both.has(0) && both.has(1) && both.has(3)) || both.has(2)) {
+        throw new Error('two seeds did not union: ' + [...both].join(','));
+    }
+    // nonsense in, the selection back out - not an empty one
+    if (v.residuesWithin(new Set([0]), 0).size !== 1) throw new Error('zero cutoff grew the selection');
+    if (v.residuesWithin(new Set(), 5).size !== 0) throw new Error('an empty seed found something');
+
+    // THE ATOMS ARE REBUILT FOR THE TEST, drawn or not: a side chain is a table
+    // of coefficients, and a neighbourhood must not change when someone turns
+    // it on. Two passes, or a 300,000-residue assembly rebuilds every side
+    // chain to answer a question about twelve of them.
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const body = mol.slice(mol.indexOf('residuesWithin(seed, cutoff) {'),
+        mol.indexOf('_atomsOfResidues(want) {'));
+    if (!/const coarse = cut \+ 2 \* REACH/.test(body)) {
+        throw new Error('the first pass does not widen by the side-chain reach, '
+            + 'so an atom reaching past its trace point is missed');
+    }
+    if (!/this\._atomsOfResidues/.test(body)) {
+        throw new Error('the exact pass does not use the rebuilt atoms');
+    }
+    if (!/g\.src !== co \|\| g\.cell !== cell/.test(body)) {
+        throw new Error('the grid is rebuilt on every call - 40 ms of a 48 ms '
+            + 'search on 3J3Q');
+    }
+    // and there is a button, with a distance beside it
+    const html = fs.readFileSync('index.html', 'utf8');
+    if (html.indexOf('id="selectNearby"') < 0 || html.indexOf('id="selectNearbyA"') < 0) {
+        throw new Error('no Within control');
+    }
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/renderer\.residuesWithin\(seed, cutoff\)/.test(app)) {
+        throw new Error('the button does not ask the renderer');
+    }
+    if (!/Nothing else within/.test(app)) {
+        throw new Error('a search that finds nothing says nothing, so the button reads as dead');
+    }
 });
 
 t('the soft edge is a ramp, and half of it is the line picking draws', () => {
