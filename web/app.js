@@ -1419,30 +1419,32 @@ function setupEventListeners() {
 // UI HELPER FUNCTIONS
 // ============================================================================
 
-// A BAR THAT MOVES ON WHAT ACTUALLY HAPPENED.
+// PROGRESS THAT MOVES ON WHAT ACTUALLY HAPPENED.
 //
-// The last attempt at this was a bar that appeared and sat still, which is
-// worse than none: it claims to be reporting and is not. The reason it sat
-// still is that the load was one synchronous block - there was no moment
-// between "started" and "finished" at which the browser could paint anything.
+// The percentage goes in the status line - there is no separate bar. The last
+// attempt at this was a bar that appeared and sat still, which is worse than
+// none: it claims to be reporting and is not. The reason it sat still is that
+// the load was one synchronous block - there was no moment between "started"
+// and "finished" at which the browser could paint anything.
 //
-// So the bar is not a UI feature, it is a consequence of the loader running in
-// slices. Inside the parse the fraction is the cursor's real position in the
-// file; between stages it is which stage finished. The weights below are how
-// the time actually divides on a 242 MB capsid - they are estimates for any
-// other file, and they are the only estimated part.
+// So the reporting is not a UI feature, it is a consequence of the loader
+// running in slices. Inside the parse the fraction is the cursor's real
+// position in the file; between stages it is which stage finished. The weights
+// below are how the time actually divides on a 242 MB capsid - they are
+// estimates for any other file, and they are the only estimated part.
 const LOAD_STAGES = [
     ['download', 0.15],
     ['parse', 0.50],
     ['build', 0.20],
     ['display', 0.15],
 ];
-// Nothing is shown for a load that finishes quickly. A bar that flashes up and
-// vanishes reads as a glitch, and under this it is most loads.
+// Nothing is shown for a load that finishes quickly. A percentage that flashes
+// up and vanishes reads as a glitch, and under this it is most loads.
 const PROGRESS_REVEAL_MS = 250;
-let progressShownAt = 0;
+let progressShown = 0;
 let progressRevealTimer = 0;
 let progressHighWater = 0;
+let progressLabel = '';
 
 function progressAt(stage, within = 0) {
     let base = 0;
@@ -1455,47 +1457,44 @@ function progressAt(stage, within = 0) {
 
 function beginProgress() {
     progressHighWater = 0;
-    progressShownAt = 0;
-    const box = document.getElementById('load-progress');
-    if (!box) return;
+    progressLabel = '';
+    progressShown = 0;
     if (progressRevealTimer) clearTimeout(progressRevealTimer);
     progressRevealTimer = setTimeout(() => {
         progressRevealTimer = 0;
-        progressShownAt = 1;
-        box.style.display = 'block';
+        progressShown = 1;
+        paintProgress();
     }, PROGRESS_REVEAL_MS);
+}
+
+function paintProgress() {
+    if (!progressShown || !progressLabel) return;
+    setStatus(`${progressLabel}... ${Math.round(progressHighWater * 100)}%`);
 }
 
 function setProgress(fraction, label) {
     // Monotonic. A stage that turns out cheaper than its weight must not pull
-    // the bar backwards - the bar is a claim about work done, and work does
-    // not get undone.
+    // the number backwards - it is a claim about work done, and work does not
+    // get undone.
     progressHighWater = Math.max(progressHighWater, Math.max(0, Math.min(1, fraction)));
-    const bar = document.getElementById('load-progress-bar');
-    const text = document.getElementById('load-progress-label');
-    if (bar) bar.style.width = (progressHighWater * 100).toFixed(1) + '%';
-    if (text && label) text.textContent = label;
+    if (label) progressLabel = label;
+    paintProgress();
 }
 
-function endProgress() {
+function endProgress(silent = false) {
     if (progressRevealTimer) { clearTimeout(progressRevealTimer); progressRevealTimer = 0; }
-    const box = document.getElementById('load-progress');
-    const bar = document.getElementById('load-progress-bar');
-    const hide = () => {
-        if (bar) bar.style.width = '0%';
-        if (box) box.style.display = 'none';
-        progressShownAt = 0;
-        progressHighWater = 0;
-    };
-    // LET IT FINISH. The last stage - setCoords and the first render - runs
-    // with the main thread pinned, so the last fraction anyone can SEE is
-    // whatever was painted before it started: the bar stalls around 80% and
-    // then disappears, which reads as a bar that died rather than one that
-    // arrived. Showing the full bar for a moment is not decoration; it is the
-    // one part of the load the user could not otherwise observe finishing.
-    if (!progressShownAt || !box) { hide(); return; }
-    setProgress(1, 'Done');
-    setTimeout(hide, 250);
+    const wasShowing = progressShown && progressLabel;
+    progressShown = 0;
+    progressHighWater = 0;
+    progressLabel = '';
+    // THE LAST PERCENTAGE MUST NOT BE THE LAST WORD. The final stage - setCoords
+    // and the first render - runs with the main thread pinned, so the last thing
+    // painted is whatever the number reached before it started, around 85%. Not
+    // every caller writes its own result line afterwards, and the ones that do
+    // write it after this returns, so leaving 85% on screen would strand a
+    // finished load looking stuck. silent is for setStatus, which is about to
+    // write the real message itself.
+    if (wasShowing && !silent) setStatus('Loaded.');
 }
 
 
@@ -1527,10 +1526,9 @@ async function readBodyWithProgress(response) {
 function setStatus(message, isError = false) {
     // A LOAD THAT FAILED IS A LOAD THAT ENDED. Every failure path in the
     // loader reports through here, so this is the one place that reliably
-    // catches them all - without it a thrown parse leaves the bar sitting on
-    // screen at whatever fraction it had reached, which is the exact dishonesty
-    // the bar exists to avoid.
-    if (isError && typeof endProgress === 'function') endProgress();
+    // catches them all - without it a later slice's percentage overwrites the
+    // error message with a claim that the load is still going.
+    if (isError && typeof endProgress === 'function') endProgress(true);
     // Check if we're on msa.html (has status-message with different styling) or index.html
     const statusElement = document.getElementById('status-message');
     if (statusElement) {
@@ -4114,7 +4112,7 @@ async function handleFetch() {
         if (!structResponse.ok) {
             throw new Error(`Failed to fetch structure (HTTP ${structResponse.status})`);
         }
-        // READ THROUGH, so the download half of the bar is measured too. The
+        // READ THROUGH, so the download stage is measured too. The
         // server usually says how long the body is; when it does not, there is
         // no honest fraction to report and the stage just names itself.
         const structText = await readBodyWithProgress(structResponse);
