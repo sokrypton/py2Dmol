@@ -77,6 +77,16 @@ function initializeApp() {
     // Get viewer API reference
     viewerApi = window.py2dmol_viewers[window.viewerConfig.viewer_id];
 
+    // OPEN ON RICHARDSON. config.rendering.style only picks the draw path; the
+    // values that make a preset look like itself - thickness, tint, highlight,
+    // outline width, pencil, smooth - live in STYLE_DEFAULTS and are applied by
+    // setPreset. The constructor does not call it (the Python path sends those
+    // values itself), and the deferred py2dmol_cartoon_loaded route does not
+    // help here: the plugin is already loaded by DOMContentLoaded, so that
+    // event has long since fired. Without this line the page draws a cartoon
+    // wearing tube's sliders.
+    if (viewerApi?.renderer?.setPreset) viewerApi.renderer.setPreset('richardson');
+
     // USE GPU: the rendering backend, for both styles. Hidden entirely where
     // WebGL2 is absent - a control that cannot do anything is worse than none -
     // and the renderer falls back to the 2D path by itself for anything the GPU
@@ -285,6 +295,12 @@ function initializeViewerConfig() {
             shadow: true,
             outline: "full",  // "none", "partial", or "full"
             width: 3.0,
+            // The web app opens on the Richardson cartoon. The concrete slider
+            // values do not come from here - they come from STYLE_DEFAULTS, via
+            // the setPreset call in initializeApp - so this names the look and
+            // the table supplies it. Python still opens on tube.
+            style: "cartoon",
+            preset: "richardson",
             ortho: 0.5,  // Normalized 0-1 range (1.0 = full orthographic)
             // OFF here, though the renderer's own default (and Python's) is on.
             // The test is a distance one - a chain's first and last residue
@@ -1442,6 +1458,9 @@ const LOAD_STAGES = [
 // up and vanishes reads as a glitch, and under this it is most loads.
 const PROGRESS_REVEAL_MS = 250;
 let progressShown = 0;
+// Set when a load has to change the style out from under the user; see
+// dropToTubeIfCartoonWontFit.
+let styleFallbackNote = '';
 let progressRevealTimer = 0;
 let progressHighWater = 0;
 let progressLabel = '';
@@ -1456,6 +1475,15 @@ function progressAt(stage, within = 0) {
 }
 
 function beginProgress() {
+    // ...and take it off the screen with it. The note is sticky so the messages
+    // that follow it in ITS load cannot bury it; leaving it up through the next
+    // load would have it describing a structure that is no longer there - and a
+    // quick load writes nothing over it, so nothing else would clear it.
+    if (styleFallbackNote) {
+        const el = document.getElementById('status-message');
+        if (el && el.textContent.indexOf(styleFallbackNote) >= 0) el.textContent = '';
+    }
+    styleFallbackNote = '';
     progressHighWater = 0;
     progressLabel = '';
     progressShown = 0;
@@ -1530,6 +1558,9 @@ function setStatus(message, isError = false) {
     // error message with a claim that the load is still going.
     if (isError && typeof endProgress === 'function') endProgress(true);
     // Check if we're on msa.html (has status-message with different styling) or index.html
+    if (styleFallbackNote && !isError) {
+        message = message ? `${message} ${styleFallbackNote}` : styleFallbackNote;
+    }
     const statusElement = document.getElementById('status-message');
     if (statusElement) {
         // msa.html style
@@ -3095,6 +3126,27 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
     return framesAdded;
 }
 
+// THE PAGE OPENS ON CARTOON, so a structure can arrive that the cartoon build
+// cannot survive - a capsid asks for gigabytes of prims and takes the tab with
+// it. setStyle refuses that switch, but nothing refuses a structure loaded into
+// a viewer already in cartoon, which before the default changed could not
+// happen. Same test setStyle uses, same escape hatch (renderer.cartoonForce).
+function dropToTubeIfCartoonWontFit(r) {
+    if (!r || r.style !== 'cartoon' || r.cartoonForce) return;
+    if (!r._cartoonWouldFit || !r.setStyle) return;
+    const fit = r._cartoonWouldFit();
+    if (fit.ok) return;
+    r.setStyle('tube');
+    // STICKY, because this happens mid-load and the messages that come after it
+    // - "Loaded.", the fetch summary, an MSA result - would each bury it. It
+    // rides along on whatever the load ends up saying, and the next load clears
+    // it. Silently changing what the user is looking at is not an option.
+    styleFallbackNote = `Too large for the cartoon style `
+        + `(${fit.positions.toLocaleString()} positions need about ${fit.needMB} MB); `
+        + `showing tube.`;
+    setStatus('');
+}
+
 function applyPendingObjects() {
     const viewerContainer = document.getElementById('viewer-container');
     const topPanelContainer = document.getElementById('sequence-viewer-container');
@@ -3205,6 +3257,7 @@ function applyPendingObjects() {
         // Show the last new object
         const show = newNames[newNames.length - 1];
         if (r?._switchToObject) r._switchToObject(show);
+        dropToTubeIfCartoonWontFit(r);
         if (r?.objectSelect) r.objectSelect.value = show;
         if (objectSelect) objectSelect.value = show;
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();
