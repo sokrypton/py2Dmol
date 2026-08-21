@@ -523,6 +523,21 @@ function setupEventListeners() {
     const prevObjectButton = document.getElementById('prevObjectButton');
     const nextObjectButton = document.getElementById('nextObjectButton');
 
+    // CLIP. The renderer owns the box and what it does; this only reports the
+    // checkbox. Switching it OFF is what commits, so the label reads as a mode
+    // rather than as an action - which is what it is.
+    const clipCheckbox = document.getElementById('clipCheckbox');
+    if (clipCheckbox) {
+        clipCheckbox.addEventListener('change', () => {
+            const r = viewerApi?.renderer;
+            if (!r || !r.setClipEditing) return;
+            r.setClipEditing(clipCheckbox.checked);
+            // A box needs something to be a box AROUND: with nothing loaded the
+            // renderer declines, and the control must not claim otherwise.
+            clipCheckbox.checked = !!r.clipEditing;
+        });
+    }
+
     if (orientToggle) {
         // Handle click on the label/span (not the hidden checkbox)
         const orientSpan = orientToggle.querySelector('span');

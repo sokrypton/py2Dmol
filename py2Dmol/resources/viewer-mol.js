@@ -475,6 +475,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const HOVER_TEXT_LIGHT_CSS = 'rgba(40, 40, 40, 0.9)';    // on white paper
     const HOVER_TEXT_DARK_CSS = 'rgba(235, 235, 235, 0.9)';  // on the 3d preset's black
     const HOVER_TEXT_MARGIN = 10;
+    // How far toward the paper the clip box washes what it would cut. 0.75 is
+    // "a quarter of its presence left" - enough to place a face against, not
+    // enough to be mistaken for what is being kept.
+    const CLIP_GHOST = 0.75;
+    const CLIP_EDGE_CSS = 'rgba(37, 99, 235, 0.9)';       // the box
+    const CLIP_FACE_CSS = 'rgba(37, 99, 235, 0.35)';      // its face handles
+    const CLIP_HANDLE_PX = 7;                             // handle radius, screen px
+    const CLIP_GRAB_PX = 14;                              // how near counts as a grab
     // Half-width in screen pixels at unit perspective, before the per-residue
     // radius is added. Wide enough to read as a band around the ribbon rather
     // than a line on it.
@@ -1203,6 +1211,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // visible. Was called visibilityMask, which invited the wrong
             // mental model - it is not a per-residue boolean array.
             this.visiblePositions = null;
+            // THE CLIP BOX, in MODEL space so it turns with the structure
+            // instead of sliding over it. {min:[x,y,z], max:[x,y,z]}, or null
+            // for "never set one". clipEditing means it is on screen and
+            // draggable and everything outside it is ghosted; committing hands
+            // the inside set to setVisibility, which is the same road Hide
+            // takes, so save, copy and the sequence strip all follow with no
+            // work of their own.
+            this.clipBox = null;
+            this.clipEditing = false;
+            this.clipCommitted = false;
+            this._clipVersion = 0;
             this.highlightedAtom = null; // To store position index for highlighting (property name kept for API compatibility)
             this.highlightedAtoms = null; // To store Set of position indices for highlighting multiple positions (property name kept for API compatibility)
 
@@ -1374,6 +1393,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         // Reset to default state: show all positions
         showAll() {
+            // ...INCLUDING WHATEVER THE CLIP BOX WAS HOLDING BACK. Without
+            // this the box is still committed, and the next frame re-derives
+            // the mask from it - Show all would undo itself one frame later.
+            this.clearClip();
             const n = this.coords ? this.coords.length : 0;
             if (n === 0) {
                 this.resetVisibility();
@@ -1684,6 +1707,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.canvas.addEventListener('mousedown', (e) => {
                 if (e.target !== this.canvas) return;
 
+                // A GRAB ON A CLIP FACE IS NOT A ROTATE. Tested first, because
+                // the handle sits on top of the structure and every other
+                // gesture here would otherwise claim the press.
+                if (this.clipEditing && e.button === 0 && !e.metaKey && !e.ctrlKey) {
+                    const r = this.canvas.getBoundingClientRect();
+                    const face = this._clipFaceAt(e.clientX - r.left, e.clientY - r.top);
+                    if (face && this._clipBeginDrag(face, e.clientX - r.left,
+                        e.clientY - r.top)) {
+                        e.preventDefault();
+                        const move = (ev) => {
+                            const rr = this.canvas.getBoundingClientRect();
+                            if (this._clipDragTo(ev.clientX - rr.left, ev.clientY - rr.top)) {
+                                this.render('clip drag');
+                            }
+                        };
+                        const up = () => {
+                            this._clipDrag = null;
+                            window.removeEventListener('mousemove', move);
+                            window.removeEventListener('mouseup', up);
+                        };
+                        window.addEventListener('mousemove', move);
+                        window.addEventListener('mouseup', up);
+                        return;
+                    }
+                }
 
                 // PAN instead of rotate on the middle button, or Cmd/Ctrl with
                 // the left - the same two gestures PyMOL uses. preventDefault
@@ -3364,6 +3412,163 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (typeof document !== 'undefined') {
                 document.dispatchEvent(new CustomEvent('py2dmol-residue-selection-change'));
             }
+        }
+
+        // ====================================================================
+        // CLIP BOX
+        //
+        // A box you drag around the part you want to keep. While it is being
+        // edited everything outside it is ghosted rather than hidden, so you
+        // can see what you are about to cut; turning it off commits, and the
+        // outside becomes hidden through the ordinary visibility mask.
+        //
+        // Model space, not view space: the box belongs to the structure, so it
+        // turns when the structure does and a face you set stays on the feature
+        // you set it against.
+        // ====================================================================
+
+        /** A box round everything, with a little air - the starting point. */
+        clipBoxDefault() {
+            const n = this.coords ? this.coords.length : 0;
+            if (!n) return null;
+            let x0 = Infinity, y0 = Infinity, z0 = Infinity;
+            let x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+            for (let i = 0; i < n; i++) {
+                const c = this.coords[i];
+                if (c.x < x0) x0 = c.x; if (c.x > x1) x1 = c.x;
+                if (c.y < y0) y0 = c.y; if (c.y > y1) y1 = c.y;
+                if (c.z < z0) z0 = c.z; if (c.z > z1) z1 = c.z;
+            }
+            if (!(x1 >= x0)) return null;
+            // AIR ROUND IT, so the default box contains the whole structure
+            // rather than grazing its outermost atom - a box that starts by
+            // clipping something is a box that starts by lying about itself.
+            const pad = Math.max(2, 0.02 * Math.max(x1 - x0, y1 - y0, z1 - z0));
+            return {
+                min: [x0 - pad, y0 - pad, z0 - pad],
+                max: [x1 + pad, y1 + pad, z1 + pad],
+            };
+        }
+
+        /** Position indices inside the box; null when there is no box. */
+        clipInsideSet(box = this.clipBox) {
+            const n = this.coords ? this.coords.length : 0;
+            if (!box || !n) return null;
+            const [ax, ay, az] = box.min;
+            const [bx, by, bz] = box.max;
+            const out = new Set();
+            for (let i = 0; i < n; i++) {
+                const c = this.coords[i];
+                if (c.x >= ax && c.x <= bx && c.y >= ay && c.y <= by
+                    && c.z >= az && c.z <= bz) out.add(i);
+            }
+            return out;
+        }
+
+        /**
+         * Turn the box on (show and edit it) or off (commit it).
+         *
+         * Committing writes the inside set as the visibility, which is the
+         * mechanism Hide already uses - so a clip is undone by Show all, saved
+         * with the object, and carried by Copy selection, none of which this
+         * has to know about.
+         */
+        setClipEditing(on) {
+            const want = !!on;
+            if (want === this.clipEditing) return;
+            if (want) {
+                if (!this.clipBox) this.clipBox = this.clipBoxDefault();
+                if (!this.clipBox) return;                 // nothing loaded yet
+                this.clipEditing = true;
+                this._clipVersion++;
+                this.render('clip on');
+                return;
+            }
+            this.clipEditing = false;
+            this._clipDrag = null;
+            this._clipVersion++;
+            this.applyClip();
+        }
+
+        /** Hand the inside of the box to the visibility mask. */
+        applyClip() {
+            const inside = this.clipInsideSet();
+            if (!inside) { this.render('clip off'); return; }
+            this.clipCommitted = true;
+            // 'explicit', because an empty inside means "nothing", not "all" -
+            // a box dragged off the structure must show nothing, which is a
+            // legible mistake, rather than silently showing everything.
+            this.setVisibility({ positions: inside, visibilityMode: 'explicit' });
+        }
+
+        /**
+         * A COMMITTED CLIP IS A BOX, NOT A LIST. The mask is position indices,
+         * and the positions move when the frame does - so a clip applied on one
+         * frame of a trajectory would keep cutting the residues that were in
+         * the way THEN. Re-derived from the box whenever the frame changes.
+         */
+        _reapplyClipForFrame() {
+            if (!this.clipCommitted || !this.clipBox || this.clipEditing) return;
+            const inside = this.clipInsideSet();
+            if (inside) {
+                this.setVisibility({ positions: inside, visibilityMode: 'explicit' },
+                    true);
+            }
+        }
+
+        /** Forget the box and everything it did. */
+        clearClip() {
+            this.clipBox = null;
+            this.clipEditing = false;
+            this.clipCommitted = false;
+            this._clipDrag = null;
+            this._clipVersion++;
+        }
+
+        /**
+         * The colour array with everything outside the box washed toward the
+         * paper. Cached against the array it came from and the box's version,
+         * so a still box uploads nothing on the GPU (which keys its recolour on
+         * the array's identity) and a moving one uploads once per move.
+         */
+        _clipGhostColors(colors) {
+            const key = this._clipVersion;
+            if (this._clipTintFrom === colors && this._clipTintKey === key) {
+                return this._clipTint;
+            }
+            const box = this.clipBox;
+            const segs = this.segmentIndices;
+            if (!box || !segs || segs.length !== colors.length) return colors;
+            const [ax, ay, az] = box.min;
+            const [bx, by, bz] = box.max;
+            const paper = (this.backgroundColor === '#000000') ? 0 : 255;
+            const K = CLIP_GHOST;
+            const inBox = (i) => {
+                const c = this.coords && this.coords[i];
+                if (!c) return true;
+                return c.x >= ax && c.x <= bx && c.y >= ay && c.y <= by
+                    && c.z >= az && c.z <= bz;
+            };
+            const out = new Array(colors.length);
+            for (let i = 0; i < colors.length; i++) {
+                const c = colors[i];
+                // A SEGMENT SPANS TWO POSITIONS and is ghosted only when BOTH
+                // are outside: the one that straddles the face is half of what
+                // is being kept, and washing it out frays the edge of the very
+                // thing the box is holding on to.
+                const seg = segs[i];
+                const keep = inBox(seg.idx1) || inBox(seg.idx2);
+                if (keep) { out[i] = c; continue; }
+                out[i] = {
+                    r: c.r + (paper - c.r) * K,
+                    g: c.g + (paper - c.g) * K,
+                    b: c.b + (paper - c.b) * K,
+                };
+            }
+            this._clipTintFrom = colors;
+            this._clipTintKey = key;
+            this._clipTint = out;
+            return out;
         }
 
         /**
@@ -6305,6 +6510,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.showAll();
             }
 
+            // A CLIP IS A BOX, AND THE ATOMS MOVED. Re-derive the mask from it
+            // for this frame - see _reapplyClipForFrame. A no-op when there is
+            // no committed box.
+            this._reapplyClipForFrame();
+
             // Update UI controls (but don't render yet)
             this.updateUIControls();
 
@@ -6865,7 +7075,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (sel) for (const i of sel) band.add(i);
             }
             this._paintSelectionHalo(ctx, pxScale, band);
-            if (!this._exportPxScale) this._paintHoverReadout(ctx, pxScale);
+            if (!this._exportPxScale) {
+                this._paintHoverReadout(ctx, pxScale);
+                // The box is a tool, not part of the drawing - it goes with the
+                // hover marks, not with the selection.
+                this._paintClipBox(ctx, pxScale);
+            }
         }
 
         /** The hovered positions, from either field, or null. */
@@ -6877,6 +7092,186 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return new Set([this.highlightedAtom]);
             }
             return null;
+        }
+
+        /**
+         * ONE MODEL POINT INTO VIEW SPACE, by the same road _rotateCoords takes
+         * every atom down: the object's own best_view rotation about its centre
+         * first, then the view centre off, then the user's rotation. The clip
+         * box is model geometry that no frame data holds, so it cannot ride
+         * along in rotatedCoords and has to be projected on its own.
+         */
+        _modelToView(p) {
+            const object = this.objectsData[this.currentObjectName];
+            let x = p[0]; let y = p[1]; let z = p[2];
+            const oR = (object && object.rotation_matrix && object.center)
+                ? object.rotation_matrix : null;
+            if (oR) {
+                const oc = object.center;
+                const cx = x - oc[0]; const cy = y - oc[1]; const cz = z - oc[2];
+                x = oR[0][0] * cx + oR[0][1] * cy + oR[0][2] * cz + oc[0];
+                y = oR[1][0] * cx + oR[1][1] * cy + oR[1][2] * cz + oc[1];
+                z = oR[2][0] * cx + oR[2][1] * cy + oR[2][2] * cz + oc[2];
+            }
+            const c = this._computeViewCentre(object);
+            const sx = x - c.x; const sy = y - c.y; const sz = z - c.z;
+            const m = this.viewerState.rotation;
+            return {
+                x: m[0][0] * sx + m[0][1] * sy + m[0][2] * sz,
+                y: m[1][0] * sx + m[1][1] * sy + m[1][2] * sz,
+                z: m[2][0] * sx + m[2][1] * sy + m[2][2] * sz,
+            };
+        }
+
+        /** ...and from view space to display pixels, as the draw does. */
+        _viewToScreen(v) {
+            const W = this.displayWidth || (this.canvas ? this.canvas.width : 0);
+            const H = this.displayHeight || (this.canvas ? this.canvas.height : 0);
+            const scale = this._viewScale || 1;
+            let pe = 1;
+            if (isPerspective(this.viewerState)) {
+                const d = this.viewerState.focalLength - v.z;
+                if (d <= 0.1) return null;                 // behind the camera
+                pe = this.viewerState.focalLength / d;
+            }
+            return { x: W / 2 + v.x * scale * pe, y: H / 2 - v.y * scale * pe, pe };
+        }
+
+        /** The box's eight corners in display pixels, or null if unprojectable. */
+        _clipCorners() {
+            const b = this.clipBox;
+            if (!b) return null;
+            const [ax, ay, az] = b.min;
+            const [bx, by, bz] = b.max;
+            const pts = [
+                [ax, ay, az], [bx, ay, az], [bx, by, az], [ax, by, az],
+                [ax, ay, bz], [bx, ay, bz], [bx, by, bz], [ax, by, bz],
+            ];
+            const out = [];
+            for (const p of pts) {
+                const q = this._viewToScreen(this._modelToView(p));
+                if (!q) return null;
+                out.push(q);
+            }
+            return out;
+        }
+
+        /**
+         * The six faces, as {axis, side, centre} - axis 0/1/2 for x/y/z, side 0
+         * for the min face and 1 for the max. The handle sits at the face's
+         * centre, which is the one point on a face that is always on it however
+         * the box is turned.
+         */
+        _clipFaces() {
+            const b = this.clipBox;
+            if (!b) return [];
+            const mid = [
+                (b.min[0] + b.max[0]) / 2,
+                (b.min[1] + b.max[1]) / 2,
+                (b.min[2] + b.max[2]) / 2,
+            ];
+            const out = [];
+            for (let axis = 0; axis < 3; axis++) {
+                for (let side = 0; side < 2; side++) {
+                    const p = mid.slice();
+                    p[axis] = side ? b.max[axis] : b.min[axis];
+                    const q = this._viewToScreen(this._modelToView(p));
+                    if (q) out.push({ axis, side, sx: q.x, sy: q.y, model: p });
+                }
+            }
+            return out;
+        }
+
+        /** The clip box over the finished frame: twelve edges, six handles. */
+        _paintClipBox(ctx, pxScale = 1) {
+            if (!this.clipEditing || !this.clipBox) return;
+            const c = this._clipCorners();
+            if (!c) return;
+            const E = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7],
+                [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.scale(pxScale, pxScale);
+            ctx.strokeStyle = CLIP_EDGE_CSS;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (const [a, b] of E) {
+                ctx.moveTo(c[a].x, c[a].y);
+                ctx.lineTo(c[b].x, c[b].y);
+            }
+            ctx.stroke();
+            ctx.fillStyle = CLIP_FACE_CSS;
+            for (const f of this._clipFaces()) {
+                ctx.beginPath();
+                ctx.arc(f.sx, f.sy, CLIP_HANDLE_PX, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        /** Which face handle is under this point, or null. */
+        _clipFaceAt(px, py) {
+            if (!this.clipEditing || !this.clipBox) return null;
+            let best = null; let bestD = CLIP_GRAB_PX * CLIP_GRAB_PX;
+            for (const f of this._clipFaces()) {
+                const dx = f.sx - px; const dy = f.sy - py;
+                const d = dx * dx + dy * dy;
+                if (d <= bestD) { bestD = d; best = f; }
+            }
+            return best;
+        }
+
+        /**
+         * Drag one face along its own axis.
+         *
+         * The axis is a model direction; on screen it is however that direction
+         * happens to point under the current rotation. So the drag is the mouse
+         * movement PROJECTED onto the axis's screen direction, divided by how
+         * many pixels an Angstrom of it covers - which is what makes a face
+         * follow the pointer rather than a fixed number of Angstrom per pixel.
+         * A face seen edge-on has almost no screen direction to project onto,
+         * so it barely moves: correct, and the reason for the floor.
+         */
+        _clipDragTo(px, py) {
+            const d = this._clipDrag;
+            if (!d) return false;
+            const b = this.clipBox;
+            const axis = d.axis;
+            const dx = px - d.px; const dy = py - d.py;
+            const along = dx * d.ux + dy * d.uy;
+            if (!(d.pxPerA > 1e-6)) return false;
+            let v = d.start + along / d.pxPerA;
+            // A face cannot pass its opposite: the box would turn inside out
+            // and "inside" would stop meaning anything.
+            const MIN = 0.5;
+            if (d.side) v = Math.max(v, b.min[axis] + MIN);
+            else v = Math.min(v, b.max[axis] - MIN);
+            if (d.side) b.max[axis] = v; else b.min[axis] = v;
+            this._clipVersion++;
+            return true;
+        }
+
+        /** Set up a face drag: remember where it started and its screen axis. */
+        _clipBeginDrag(face, px, py) {
+            const b = this.clipBox;
+            const step = 1;
+            const p0 = face.model.slice();
+            const p1 = face.model.slice();
+            p1[face.axis] += step;
+            const s0 = this._viewToScreen(this._modelToView(p0));
+            const s1 = this._viewToScreen(this._modelToView(p1));
+            if (!s0 || !s1) return false;
+            let ux = s1.x - s0.x; let uy = s1.y - s0.y;
+            const len = Math.hypot(ux, uy);
+            if (!(len > 1e-6)) return false;              // the axis points at us
+            ux /= len; uy /= len;
+            this._clipDrag = {
+                axis: face.axis, side: face.side, px, py, ux, uy,
+                pxPerA: len / step,
+                start: face.side ? b.max[face.axis] : b.min[face.axis],
+            };
+            return true;
         }
 
         /**
@@ -8267,6 +8662,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     return; // Still bad, abort render
                 }
             }
+
+            // GHOST WHAT THE CLIP BOX WOULD CUT. Through the COLOURS, not
+            // through an alpha: both styles already take this array, and the
+            // GPU treats a colour change as three texels a segment rather than
+            // a rebuild - so the box can be dragged without the mesh being
+            // rebuilt behind it. Per-position colour overrides would have done
+            // the same job and cost a full rebuild per drag frame, because they
+            // mark the GPU palette incomplete.
+            if (this.clipEditing && this.clipBox) colors = this._clipGhostColors(colors);
 
             // STYLE DELEGATION: 'cartoon' replaces the entire draw stage below.
             // The cartoon renderer (viewer-cartoon.js) reuses the rotation and
