@@ -103,7 +103,7 @@ function initializeApp() {
         const apply = () => {
             const r = viewerApi && viewerApi.renderer;
             if (!r) return;
-            r.cartoonGPU = cb.checked;
+            r.useGPU = cb.checked;
             // the mesh was built from state that may have moved on while this
             // was off, so ask for a fresh one rather than trusting it
             G.invalidate();
@@ -6814,7 +6814,7 @@ function saveViewerState() {
             thickness: renderer.cartoonThickness,
             detail: renderer.cartoonDetail,
             smooth: renderer.cartoonSmooth === true,
-            cartoon_gpu: renderer.cartoonGPU === true,
+            use_gpu: renderer.useGPU === true,
             arrows: renderer.cartoonArrows !== false,
             sheet_flat: renderer.cartoonSheetFlat,
             pencil: renderer.cartoonPencil,
@@ -7322,7 +7322,7 @@ async function loadViewerState(stateData) {
             restoreCartoon('outline_tint', 'cartoonOutlineTint', 'outlineTintSlider');
             restoreCartoon('shade', 'cartoonShade', 'shadeSlider');
             restoreCartoon('smooth', 'cartoonSmooth', 'smoothCheckbox', 'bool');
-            restoreCartoon('cartoon_gpu', 'cartoonGPU', 'useGpuCheckbox', 'bool');
+            restoreCartoon('use_gpu', 'useGPU', 'useGpuCheckbox', 'bool');
             restoreCartoon('arrows', 'cartoonArrows', 'arrowsCheckbox', 'bool');
 
             // Restore color mode

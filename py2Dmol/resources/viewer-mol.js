@@ -1041,7 +1041,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // option like any other - and it is checked against WebGL2 at the
             // point of use rather than here, because a context can be lost long
             // after the viewer was built.
-            this.cartoonGPU = config.rendering?.gpu === true;
+            this.useGPU = config.rendering?.gpu === true;
             // Highlight gain: 0 = the old ceiling at the base colour, 1 = a
             // full lift toward white on faces pointing at the light.
             const hg = Number(config.rendering?.highlight);
@@ -8184,7 +8184,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * cost when wrong is a repaint, never a wrong picture.
          */
         _gpuWillTake(ctx) {
-            if (this.cartoonGPU !== true) return false;
+            if (this.useGPU !== true) return false;
             // DRAW IS A 2D EFFECT, so the frame has to be a 2D one.
             //
             // The build-up is three layers in an illustrator's order - graphite
@@ -8431,7 +8431,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         _gpuWillDraw() {
-            if (this.cartoonGPU !== true) return false;
+            if (this.useGPU !== true) return false;
             if (this.drawMode) return false;      // see _gpuWillTake
             const G = window.py2dmolCartoonGPU;
             if (!G || typeof G.available !== 'function' || !G.available()) return false;
@@ -8653,7 +8653,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // do - no WebGL2, a lost context, an export context, a shader
                 // that will not link on some driver - and the 2D renderer below
                 // then draws the frame as if the option had never been set.
-                const gpuOk = this.cartoonGPU === true
+                const gpuOk = this.useGPU === true
                     && !this.drawMode                      // see _gpuWillTake
                     && window.py2dmolCartoonGPU
                     && window.py2dmolCartoonGPU.render(this, ctx,
@@ -8701,7 +8701,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // see gpuDrewLastFrame in the cartoon branch: the two paths differ
             // by more than an order of magnitude and decline silently, so a
             // frame time means nothing without knowing which one produced it
-            if (deferRot) this.gpuDrewLastFrame = tubeGPUTook;
+            // WHICH PATH DREW THIS FRAME, on every frame and not only the ones
+            // the GPU was asked about. Assigned under `if (deferRot)` it went
+            // stale the moment the GPU was switched off: the flag still said
+            // true while the 2D pass was drawing, and it is what the harnesses
+            // read to know which renderer they just measured.
+            this.gpuDrewLastFrame = deferRot ? tubeGPUTook : false;
             if (deferRot && !tubeGPUTook) {
                 // declined - the 2D pass below reads what was skipped above
                 this._ensureRotated();
@@ -11390,7 +11395,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             renderer.render('smoothCheckbox');
         });
     }
-    // NO GPU CONTROL HERE. `cartoonGPU` is a rendering BACKEND and applies to
+    // NO GPU CONTROL HERE. `useGPU` is a rendering BACKEND and applies to
     // both styles, so the Style panel was the wrong home for it: tagged for one
     // style it was hidden in the other, and tagged for both it was still sitting
     // among the things that change what the picture IS. The web app owns the

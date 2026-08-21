@@ -1406,7 +1406,7 @@ t('a hidden or clipped selection is still marked', () => {
 // most people's Draw.
 t('Draw takes the 2D path, whatever the GPU setting says', () => {
     const src2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const at = src2.indexOf('const gpuOk = this.cartoonGPU === true');
+    const at = src2.indexOf('const gpuOk = this.useGPU === true');
     if (at < 0) throw new Error('the cartoon GPU gate moved');
     const gate = src2.slice(at, at + 260);
     if (!/!this\.drawMode/.test(gate)) {
@@ -2640,15 +2640,15 @@ t('the style toggles are grouped together, three to a row', () => {
     }
 });
 
-// THE WEB APP DEFAULTS TO THE GPU, THE PYTHON VIEWER DOES NOT, and the split is
-// deliberate. index.html is a page someone opened in a browser they are sitting
-// in front of; a py2Dmol.view() is embedded in a notebook that may be rendered
-// anywhere, so it keeps the conservative default and has no such control.
+// BOTH DEFAULT TO THE GPU. The Python viewer held out while the GPU only drove
+// the cartoon; it drives the tube too now, so the conservative default was
+// costing a notebook the same 1,813 ms -> 455 on a capsid's first render, and
+// 840 ms -> 26 on every frame after it, that the page already had.
 //
-// It is safe on the page because it is only ever a REQUEST: useGpuRow removes
-// itself when WebGL2 is absent, and the renderer falls back to the 2D path for
-// anything the GPU declines. Worth 1,813 ms -> 301 on a capsid's first render.
-t('the GPU is on by default on the web page and off in the Python viewer', () => {
+// Safe in both because it is only ever a REQUEST: the control removes itself
+// when WebGL2 is absent, the renderer falls back to the 2D path for anything
+// the GPU declines, and PNG/SVG export goes through 2D whatever it says.
+t('the GPU is on by default, on the page and in the Python viewer', () => {
     const html = fs.readFileSync('index.html', 'utf8');
     const m = html.match(/<input[^>]*id="useGpuCheckbox"[^>]*>/);
     if (!m) throw new Error('the Use GPU checkbox is gone from index.html');
@@ -2658,9 +2658,18 @@ t('the GPU is on by default on the web page and off in the Python viewer', () =>
             + 'against 0.3, and every frame after it 840 ms against 26');
     }
     const py = fs.readFileSync('py2Dmol/viewer.py', 'utf8');
-    if (!/"gpu":\s*False/.test(py)) {
-        throw new Error('the Python viewer default changed with the web app; '
-            + 'they are deliberately different - see the comment in index.html');
+    if (!/"gpu":\s*True/.test(py)) {
+        throw new Error('the Python viewer no longer defaults to the GPU');
+    }
+    if (!/gpu=True/.test(py)) {
+        throw new Error("view()'s own default disagrees with DEFAULT_CONFIG");
+    }
+    // ...and the flag is not called cartoon anything any more: it drives both
+    // styles, and the name said otherwise for as long as it only drove one.
+    for (const f of ['py2Dmol/resources/viewer-mol.js', 'web/app.js', 'py2Dmol/viewer.py']) {
+        if (/cartoonGPU|cartoon_gpu\b/.test(fs.readFileSync(f, 'utf8'))) {
+            throw new Error(f + ' still calls the backend flag a cartoon one');
+        }
     }
     // ...AND IT IS A GLOBAL SETTING, so it sits with Save and Clear All rather
     // than among the fetch options, where it read as something about the file

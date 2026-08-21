@@ -87,7 +87,7 @@ declines both and returns false, and `_renderToContext` falls through.
 ## The TUBE style on the GPU
 
 A second, much simpler renderer in the same module, and a separate entry:
-`py2dmolCartoonGPU.renderTube`. Same `cartoonGPU` flag, same fall-back contract.
+`py2dmolCartoonGPU.renderTube`. Same `useGPU` flag, same fall-back contract.
 
 The tube style is one CAPSULE per segment - the 2D pass strokes a thick
 round-capped line between two projected positions - so there is **nothing to

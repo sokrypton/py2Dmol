@@ -1158,7 +1158,7 @@ Q5VSL9's farthest CA is 77.9 A out; its RMS radius is 35.7.
 
 Swapping the extreme for the RMS radius (the standard deviation of the
 positions about their centre) fixes the shape dependence. Sweeping
-`cartoonAOGain` against the 2D pass and reading off the gain that matches it:
+`tubeAOGain` against the 2D pass and reading off the gain that matches it:
 
 | | max radius | RMS radius |
 | --- | --- | --- |
@@ -1181,7 +1181,7 @@ and 5.3x for the measured one. **The measurement was contributing the variance
 rather than removing it.** The occlusion estimate already responds to crowding
 on its own - a tap in a crowded structure hits something nearer - so scaling it
 by crowding a second time overshot. `TUBE_AO_DENSITY = 0.164`, `AO_GAIN = 1.0`,
-and `cartoonAOGain` remains the knob.
+and `tubeAOGain` remains the knob.
 
 Mean luminance over structure pixels, GPU against the 2D pass:
 

@@ -876,7 +876,7 @@ costs, which is what they do.
 
 **But the first run of that sweep read 740 ms for render, 1,854 ms for rotate
 and 1,900 ms for showAll**, and it was the 2D fallback: the GPU had not been
-available in that run. `cartoonGPU` is a REQUEST, not a fact. Timing a frame
+available in that run. `useGPU` is a REQUEST, not a fact. Timing a frame
 without knowing which path drew it measures nothing, so
 `renderer.gpuDrewLastFrame` now records it - set by both branches, since the
 cartoon delegation and the tube path reach the GPU by different routes.

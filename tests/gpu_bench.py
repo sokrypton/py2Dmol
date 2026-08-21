@@ -43,7 +43,7 @@ window.addEventListener('load', () => {
       window.__gpuTimers = true;
       const r = window.py2dmol_viewers['standalone-viewer-1'].renderer;
       r.setStyle('tube');
-      r.cartoonGPU = true;
+      r.useGPU = true;
       r.render('warm');
       await new Promise((s) => setTimeout(s, 300));
       R.segments = r.segmentIndices ? r.segmentIndices.length : -1;

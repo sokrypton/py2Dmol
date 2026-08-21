@@ -1902,7 +1902,7 @@ const GPU_RICH_HELIX_TH = 0;
 let tubeDensity = 0.1;          // visible segments per square Angstrom
 // Calibrated against the 2D render of 1TIM, matching the mean and spread of
 // the drawn pixels: CPU 175.7 +/- 19.9, this 175.3 +/- 21.0. Overridable per
-// renderer as cartoonAOGain.
+// renderer as tubeAOGain.
 // The occlusion's areal density, in segments per square Angstrom: a constant,
 // calibrated against the 2D pass across six structures spanning four orders of
 // magnitude in size. See buildTube for the measurements and why it is not
@@ -3471,7 +3471,7 @@ function runOcclusion(cv, o) {
         // The areal density the kernel is scaled by: a calibrated constant now
         // rather than a measurement - see buildTube for the six-structure sweep
         // that says the measurement was the thing making structures disagree -
-        // with cartoonAOGain as the knob on top of it.
+        // with tubeAOGain as the knob on top of it.
         ua('uDensity', o.density);
         // A sample less than about a tube's radius nearer is the SAME tube's
         // own bulge, not something in front of it. Without this every capsule
@@ -4585,7 +4585,7 @@ function buildTube(renderer, S) {
     // hits something nearer - which is presumably why scaling it by crowding
     // a second time overshot.
     //
-    // cartoonAOGain still multiplies this, so it stays the knob it was.
+    // tubeAOGain still multiplies this, so it stays the knob it was.
     tubeDensity = TUBE_AO_DENSITY;
     tubeCount = count;
     gl.bindBuffer(gl.ARRAY_BUFFER, bufTube);
@@ -4680,7 +4680,7 @@ function drawTube(cv, renderer, prm) {
             strength: typeof renderer.shadowStrength === 'number' ? renderer.shadowStrength : 0.5,
             intensity: typeof renderer.shadowIntensity === 'number' ? renderer.shadowIntensity : 0.95,
             density: tubeDensity
-                * (typeof renderer.cartoonAOGain === 'number' ? renderer.cartoonAOGain : AO_GAIN),
+                * (typeof renderer.tubeAOGain === 'number' ? renderer.tubeAOGain : AO_GAIN),
             // A sample less than about a tube's radius nearer is the SAME tube's
             // own bulge, not something in front of it. Without this every capsule
             // shades its own rim and the flat segments come out looking moulded.
