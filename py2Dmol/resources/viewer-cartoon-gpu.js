@@ -2402,11 +2402,15 @@ function zoomBy(f) { setZoom(viewZoom * f); }
 // Build the resident buffer once: model-space corners, a model-space face
 // normal, and the face's base colour. Shading happens in the shader from then on.
 
-function makeResident(faces, scale, prm, lines) {
+// nextChunk() yields one array of faces at a time and null when there are no
+// more. Nothing here ever holds two chunks, which is the whole point: faces,
+// their rails and their normals are 1.2 GB of the 2.0 GB peak on a 135,780-
+// position assembly, and they are dead as soon as their chunk has been emitted.
+function makeResident(nextChunk, scale, prm, lines) {
     const P0 = prm || defaultParams();
     if (P0.ortho !== undefined) setOrtho(P0.ortho);
     // Stage timings, for finding what a build actually spends its time on.
-    const MP = (window.__mrPhase = { t0: performance.now(), faces: faces.length });
+    const MP = (window.__mrPhase = { t0: performance.now(), faces: 0 });
     const mark = (k) => { MP[k] = +(performance.now() - MP.t0).toFixed(1); };
     const VR = currentRot();
     const inv = matT(VR);                                 // rotations are orthonormal
@@ -2453,8 +2457,33 @@ function makeResident(faces, scale, prm, lines) {
     // face's flat-shading normal - 31 in all. KEEP THIS IN STEP WITH `stride`
     // and the bind offsets below: a mismatch does not error, it silently
     // reads the wrong attribute, and an unbound one reads (0,0,0).
-    const data = new Float32Array(faces.length * 48);
+    // GROWN, NOT SIZED UP FRONT. The total face count is not known until the
+    // last chunk has been built, and counting them first would mean building
+    // every face twice - or keeping the prims alive across both passes, which
+    // is the 552 MB this is trying to avoid.
+    let data = new Float32Array(1 << 18);
     let o = 0;
+    const ensureData = (n) => {
+        if (o + n <= data.length) return;
+        let cap = data.length;
+        while (cap < o + n) cap *= 2;
+        const nd = new Float32Array(cap);
+        nd.set(data.subarray(0, o));
+        data = nd;
+    };
+    let cen = new Float32Array(1 << 16);
+    let ci2 = 0;
+    const ensureCen = (n) => {
+        if (ci2 + n <= cen.length) return;
+        let cap = cen.length;
+        while (cap < ci2 + n) cap *= 2;
+        const nc = new Float32Array(cap);
+        nc.set(cen.subarray(0, ci2));
+        cen = nc;
+    };
+    let nFaces = 0;
+    let rad = 0;
+    const diagFaces = window.__gpuDiag ? [] : null;
     let zMin = Infinity, zMax = -Infinity;
 
     // PASS ONE: A FRAME AT EVERY STATION, not one per piece.
@@ -2860,6 +2889,7 @@ function makeResident(faces, scale, prm, lines) {
         mark('normals');
         for (const f of faces) {
             if (!f._emit) continue;
+            ensureData(48);
             const m = f._emit;
             const c = f.c;
             const nA = f._nA; const nB = f._nB;
@@ -2913,15 +2943,18 @@ function makeResident(faces, scale, prm, lines) {
             // WebGL canvas, so this is the only check that actually pins the
             // geometry that reaches the card.
             let h = 2166136261 >>> 0;
-            for (let i = 0; i < data.length; i++) {
+            // TO `o`, NOT data.length. The buffer is grown in powers of two and
+            // is larger than what was written; hashing the slack counted 191,744
+            // trailing zeros and made an identical mesh look changed.
+            for (let i = 0; i < o; i++) {
                 const q = Math.round(data[i] * 1000);
                 h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
                 h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
                 h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
             }
-            window.__fillHash = { hash: h >>> 0, floats: data.length };
+            window.__fillHash = { hash: h >>> 0, floats: o };
         }
-        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, o), gl.STATIC_DRAW);
 
         mark('facesAndEmit');
         if (wantEdges) {
@@ -3098,10 +3131,34 @@ function makeResident(faces, scale, prm, lines) {
                 }
             }
         }
-    };
-    runChunk(faces);
 
-    window.__edgeStats = { edges: 0, faces: faces.length, skipped: !wantEdges };
+        // THE RADIUS AND THE CENTROIDS, per chunk. Both are pure accumulators -
+        // a max and an append - so they fold over chunks exactly as they folded
+        // over one array, and doing them here is what lets the faces go.
+        for (const f of faces) {
+            const m = f._m;
+            if (!m) continue;
+            for (const q2 of m) {
+                const d = q2[0] * q2[0] + q2[1] * q2[1] + q2[2] * q2[2];
+                if (d > rad) rad = d;          // compare squared, root once
+            }
+        }
+        ensureCen(faces.length * 3);
+        for (const f of faces) {
+            const m = f._m;
+            if (!m) { ci2 += 3; continue; }
+            let ax = 0; let ay = 0; let az = 0;
+            for (const q2 of m) { ax += q2[0]; ay += q2[1]; az += q2[2]; }
+            const k2 = 1 / m.length;
+            cen[ci2++] = ax * k2; cen[ci2++] = ay * k2; cen[ci2++] = az * k2;
+        }
+        nFaces += faces.length;
+        MP.faces = nFaces;
+        if (diagFaces) for (const f of faces) diagFaces.push(f);
+    };
+    for (let faces = nextChunk(); faces; faces = nextChunk()) runChunk(faces);
+
+    window.__edgeStats = { edges: 0, faces: nFaces, skipped: !wantEdges };
     if (wantEdges) {
         // ---- the edge instance buffer: p0, p1, n0, n1, always = 13 floats ----
         const creaseDeg = P0.creaseDeg;
@@ -3243,7 +3300,7 @@ function makeResident(faces, scale, prm, lines) {
         gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
         gl.bufferData(gl.ARRAY_BUFFER, ed.subarray(0, eo), gl.STATIC_DRAW);
         window.__edgeStats = { edges: edgeCount, boundary: nBoundary, crease: nCrease,
-            faces: faces.length, interiorDropped: nInterior, nonManifoldDropped: nNonManifold,
+            faces: nFaces, interiorDropped: nInterior, nonManifoldDropped: nNonManifold,
             ghostOnly: nGhostOnly };
     }
     mark('edges');
@@ -3255,22 +3312,13 @@ function makeResident(faces, scale, prm, lines) {
     //
     // REUSE THE CORNERS ALREADY UNPROJECTED, rather than unprojecting every one
     // a second time just to find the model radius.
-    let rad = 0;
-    for (const f of faces) {
-        const m = f._m;
-        if (!m) continue;
-        for (const q2 of m) {
-            const d = q2[0] * q2[0] + q2[1] * q2[1] + q2[2] * q2[2];
-            if (d > rad) rad = d;          // compare squared, root once
-        }
-    }
     rad = Math.sqrt(rad);
     // DIAGNOSTICS ONLY, AND OFF BY DEFAULT. This held the entire face array -
     // every face's model-space corners, outward normal and interior flag - on
     // a global for the lifetime of the page, which is a rebuild's whole
     // geometry pinned after it has been uploaded and is no longer needed.
     // Nothing read it. Set window.__gpuDiag before a rebuild to get it back.
-    if (window.__gpuDiag) window.__faces = faces;
+    if (diagFaces) window.__faces = diagFaces;
     mark('buffers');
     // one texel per residue, sized to the structure
     ensureVisTexture(resMap && resMap.nBase ? resMap.nBase : 1);
@@ -3282,18 +3330,10 @@ function makeResident(faces, scale, prm, lines) {
     // MODEL-SPACE FACE CENTROIDS, for the shading range above. Kept as a flat
     // Float32Array rather than an array of triples: the per-frame loop over it
     // is the only thing in the draw path that is O(faces).
-    const cen = new Float32Array(faces.length * 3);
-    let ci2 = 0;
-    for (const f of faces) {
-        const m = f._m;
-        if (!m) { ci2 += 3; continue; }
-        let ax = 0; let ay = 0; let az = 0;
-        for (const q2 of m) { ax += q2[0]; ay += q2[1]; az += q2[2]; }
-        const k2 = 1 / m.length;
-        cen[ci2++] = ax * k2; cen[ci2++] = ay * k2; cen[ci2++] = az * k2;
-    }
+
     srCache = null; srKey = '';
-    resident = { count: faces.length, zMin: -rad, zMax: rad, scale, centroids: cen };
+    resident = { count: nFaces, zMin: -rad, zMax: rad, scale,
+        centroids: cen.subarray(0, ci2) };
     return resident;
 }
 
@@ -3980,7 +4020,9 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
             // releases every prim the faces did not keep a reference to.
             prims.length = 0;
             RB.facesOf = +(performance.now() - RB.t0).toFixed(1);
-            makeResident(faces, scale, prm, lines);
+            let onlyChunk = faces;
+            makeResident(() => { const c = onlyChunk; onlyChunk = null; return c; },
+                scale, prm, lines);
             RB.total = +(performance.now() - RB.t0).toFixed(1);
             // the mesh's scale already carries the zoom it was captured at, so
             // the draw multiplies by the RATIO rather than by the zoom itself
