@@ -228,6 +228,7 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
         ? obj.msa.chainToSequence[activeChainId]
         : null;
     const activeEntropy = activeFilteredMSAData?.entropy;
+    const activeFreqs = activeFilteredMSAData?.frequencies;
 
     // Short-circuit if only one unique MSA and we already have its entropy
     const uniqueMSAs = Object.keys(obj.msa.msasBySequence);
@@ -235,6 +236,10 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
         const msaEntry = obj.msa.msasBySequence[uniqueMSAs[0]];
         if (msaEntry?.msaData) {
             msaEntry.msaData.entropy = activeEntropy;
+            // the frequencies THOSE came from, or the object carries the
+            // filtered entropy beside the unfiltered counts - see the note
+            // further down, where the same pairing is kept
+            if (activeFreqs) msaEntry.msaData.frequencies = activeFreqs;
         }
         return;
     }
@@ -260,6 +265,20 @@ function applyFiltersToAllMSAs(objectName, options = {}) {
             sourceData.entropy = filteredMSA.entropy;
         } else {
             delete sourceData.entropy;
+        }
+        // ...AND THE FREQUENCIES THEY CAME FROM. The entropy here is over the
+        // FILTERED alignment, while sourceData.frequencies were computed over
+        // every sequence in the file when the MSA was merged - two numbers on
+        // one object describing two different alignments. The logo and the PSSM
+        // read the frequencies (setMSA copies them into the displayed MSA), so
+        // the picture disagreed with the colours the structure was wearing:
+        // measured on AF-P0A8I3, column 173 read E = 0.9438 over 12,021
+        // sequences while the entropy beside it was over the 10,613 that passed
+        // the filters, where E is 0.9754.
+        if (filteredMSA.frequencies) {
+            sourceData.frequencies = filteredMSA.frequencies;
+        } else {
+            delete sourceData.frequencies;
         }
     }
 }
