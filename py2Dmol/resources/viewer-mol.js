@@ -2499,11 +2499,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         /**
          * CAN A CARTOON BUILD FOR THIS STRUCTURE FIT IN THE HEAP THAT IS LEFT?
          *
-         * 20 kB per position is measured, not guessed: a 4UG0 cartoon build
-         * takes the heap from 118 MB to 457 MB for 17,544 positions. It is a
-         * generous per-position figure because the count of FACES per position
-         * varies with secondary structure, so the estimate is deliberately on
-         * the pessimistic side of the average.
+         * THE FIGURE IS THE BUILD'S PEAK, not what it keeps. Those are very
+         * different numbers and the distinction matters, because it is the
+         * peak that kills the tab:
+         *
+         *   retained after a build      163 bytes per position
+         *   peak during the build    ~14,000 bytes per position
+         *
+         * The build holds the captured 2D primitives, a face object per quad,
+         * the per-piece rails and the normals all at once, and only the mesh
+         * survives. An earlier version of this comment quoted 20 kB as the
+         * RETAINED cost, measured by watching the heap after a build without
+         * forcing a collection first - most of what it saw was garbage, and
+         * `window.gc` is a no-op unless Chrome is started with
+         * --js-flags=--expose-gc. Measure live data only after a real
+         * collection.
+         *
+         * 14 kB/position is the large-structure figure (135,780 positions,
+         * peak 2.0 GB). Small structures cost more per position because the
+         * build has fixed overheads; erring high is the right way to err.
          *
          * performance.memory is Chrome-only and non-standard. Where it is
          * missing there is no way to ask how much room is left, so the test
@@ -2512,7 +2526,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _cartoonWouldFit() {
             const positions = (this.coords && this.coords.length) || 0;
-            const needMB = Math.round(positions * 20261 / 1048576);
+            const needMB = Math.round(positions * 14000 / 1048576);
             const m = (typeof performance !== 'undefined') && performance.memory;
             if (!m || !m.jsHeapSizeLimit) {
                 const CAP = 120000;
