@@ -744,3 +744,41 @@ Also: the bar must be seen to FINISH. The last stage - setCoords and the first
 render - runs with the main thread pinned, so the last value anyone can see is
 whatever was painted before it began, around 80%, and then the bar is hidden.
 Stall-then-vanish reads as death, not arrival.
+
+### 7Y7A, and why a capsid never showed the worst bug in the loader
+
+`isResidueConnected` looks for the residues in the same chain within two of
+its own number - four candidates at most - and used to find them by walking
+the whole residue list. A standard amino acid never calls it, so 3J3Q, which
+is standard residues nearly all the way down, ran clean at 313,000 residues.
+
+7Y7A has 8,830 non-standard residues (3,540 UNK, 2,988 PEB, and a long tail of
+pigments and lipids) among 309,602, and every one of them asks - once in
+`maybeFilterLigands` and again in `convertParsedToFrameData`. Billions of
+comparisons, landing as a fifteen-second frozen block with the progress line
+stopped on "Grouping residues".
+
+    7Y7A, ligands off   32,270 -> 3,899 ms
+    worst frozen block  14,832 -> 611 ms
+
+The lesson for the next one of these: a structure being LARGE is not what
+finds quadratic behaviour in this loader, because the fast paths are keyed on
+residues being standard. A structure being UNUSUAL is. Keep a file like 7Y7A
+in the bench set alongside a capsid; they exercise different code.
+
+### Still bad: ligands ON for a structure this size
+
+Measured on 7Y7A with ligands enabled - not a regression, and not something
+anything above touches, but worth writing down before someone rediscovers it:
+
+| | |
+| --- | --- |
+| positions | 511,958 (vs 305,004 with ligands off) |
+| bonds | 223,276 |
+| side-chain rows | 1,065,107 |
+| processFiles | 17.1 s |
+| applyPendingObjects | 14.3 s |
+| first render | 97.6 s |
+
+The render figure is the one that looks like a bug rather than merely a large
+structure, and has not been investigated.
