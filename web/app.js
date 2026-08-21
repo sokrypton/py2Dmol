@@ -537,6 +537,26 @@ function setupEventListeners() {
         });
     }
 
+    // DELETE, beside Copy in the panel's corner. The renderer does the work;
+    // this only reports what happened, since a delete that silently did nothing
+    // (an empty selection, or one covering everything) is worse than a refusal.
+    const deleteSelectionButton = document.getElementById('deleteSelectionButton');
+    if (deleteSelectionButton) {
+        deleteSelectionButton.addEventListener('click', () => {
+            const r = viewerApi?.renderer;
+            if (!r || !r.deleteSelection) return;
+            const gone = r.residueSelection ? r.residueSelection.size : 0;
+            if (r.deleteSelection()) {
+                setStatus(`Deleted ${gone} residue${gone === 1 ? '' : 's'}. `
+                    + `Reload the file to get them back.`);
+                if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
+                    (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
+                }
+                applySelectionToMSA();
+            }
+        });
+    }
+
     // Navigation buttons
     const orientToggle = document.getElementById('orientToggle');
     const prevObjectButton = document.getElementById('prevObjectButton');
@@ -1064,12 +1084,21 @@ function setupEventListeners() {
         // louder cue than five buttons changing opacity in a header.
         const panel = document.getElementById('selectionPanel');
         if (panel) panel.hidden = none;
-        // The count is the one thing the buttons cannot tell you, and it
-        // changes what pressing them does.
+        // WHICH RESIDUES, not just how many. The count changes what pressing a
+        // button does; the ranges say what it will do it TO, which is the thing
+        // you check before pressing the one that deletes them. Long selections
+        // are cut short on screen and given in full in the tooltip.
         const count = document.getElementById('selectionPanelCount');
         if (count) {
-            count.textContent = none ? ''
-                : `${picked.length} residue${picked.length === 1 ? '' : 's'}`;
+            if (none) {
+                count.textContent = '';
+                count.title = '';
+            } else {
+                const ranges = describeSelectionRanges(picked);
+                const n = `${picked.length} residue${picked.length === 1 ? '' : 's'}`;
+                count.textContent = ranges ? `${n} · ${ranges}` : n;
+                count.title = ranges || '';
+            }
         }
         // A contact is a line between a PAIR: nothing to draw for one residue or
         // for five, so the row is offered only for exactly two. Within it the
@@ -1840,6 +1869,39 @@ function setupClipPanel() {
 // Frames carry a name only when they were loaded from separate files (or from a
 // multi-model file); anything else leaves the label empty rather than inventing
 // one.
+// THE SELECTION AS RANGES: "A 12-18, 40, B 5-9".
+//
+// By chain, in the order the chains appear, with consecutive residue NUMBERS
+// run together - numbers rather than position indices, because that is what the
+// structure calls them and what the sequence strip shows. A gap in the
+// numbering breaks a run, which is right: 41-45 and 47-50 are not one stretch.
+function describeSelectionRanges(picked) {
+    const r = viewerApi?.renderer;
+    if (!r || !picked || !picked.length) return '';
+    const byChain = new Map();
+    for (const i of picked) {
+        const chain = (r.chains && r.chains[i]) || '?';
+        const num = (r.residueNumbers && r.residueNumbers[i] != null)
+            ? Number(r.residueNumbers[i]) : i;
+        if (!byChain.has(chain)) byChain.set(chain, []);
+        byChain.get(chain).push(num);
+    }
+    const parts = [];
+    for (const [chain, nums] of byChain) {
+        nums.sort((a, b) => a - b);
+        const runs = [];
+        let from = nums[0]; let prev = nums[0];
+        for (let k = 1; k <= nums.length; k++) {
+            const v = nums[k];
+            if (k < nums.length && (v === prev || v === prev + 1)) { prev = v; continue; }
+            runs.push(from === prev ? `${from}` : `${from}-${prev}`);
+            from = v; prev = v;
+        }
+        parts.push(`${chain} ${runs.join(', ')}`);
+    }
+    return parts.join('; ');
+}
+
 function updateFrameNameLabel() {
     const el = document.getElementById('frameNameLabel');
     if (!el) return;

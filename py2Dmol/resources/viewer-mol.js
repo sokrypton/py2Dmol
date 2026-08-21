@@ -3799,6 +3799,71 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
         }
 
+        /**
+         * DELETE THE SELECTED RESIDUES from this object.
+         *
+         * The inverse of Copy, and built out of it: copy everything that is NOT
+         * selected, then put the result back under the original name so the
+         * object you were working on is still the object you are working on.
+         * Doing it the other way round - editing the frames in place - would
+         * mean a second implementation of the position-by-position rebuild that
+         * extractSelection already does, and its per-object state remapping
+         * with it, which is the part that has silently dropped side chains
+         * twice.
+         *
+         * Destructive in the session only: nothing is written, so reloading the
+         * file brings it all back.
+         */
+        deleteSelection() {
+            const name = this.currentObjectName;
+            const object = name ? this.objectsData[name] : null;
+            if (!object || !object.frames || !object.frames.length) return false;
+            const sel = this.residueSelection;
+            if (!sel || !sel.size) {
+                console.warn('Nothing selected - nothing to delete.');
+                return false;
+            }
+            const n = (object.frames[0].coords || []).length;
+            const keep = new Set();
+            for (let i = 0; i < n; i++) if (!sel.has(i)) keep.add(i);
+            if (!keep.size) {
+                console.warn('That would delete every residue - use Clear All instead.');
+                return false;
+            }
+            // extractSelection reads residueSelection and installs a new object
+            const before = new Set(Object.keys(this.objectsData));
+            this.residueSelection = keep;
+            this.extractSelection();
+            this.residueSelection = null;
+            const made = Object.keys(this.objectsData).find((k) => !before.has(k));
+            if (!made) return false;
+            // ...and it takes the old one's place, and its name
+            const kept = this.objectsData[made];
+            delete this.objectsData[made];
+            delete this.objectsData[name];
+            this.objectsData[name] = kept;
+            for (const sels of [this.objectSelect,
+                (typeof document !== 'undefined' ? document.getElementById('objectSelect') : null)]) {
+                if (!sels) continue;
+                const dead = Array.from(sels.options).find((o) => o.value === made);
+                if (dead) dead.remove();
+                const old = Array.from(sels.options).find((o) => o.value === name);
+                if (!old) {
+                    const option = document.createElement('option');
+                    option.value = name;
+                    option.textContent = name;
+                    sels.appendChild(option);
+                }
+                sels.value = name;
+            }
+            this.currentObjectName = null;    // force the switch to do its work
+            this._switchToObject(name);
+            this.setFrame(this.currentFrame >= 0 ? this.currentFrame : 0);
+            this.clearResidueSelection();
+            this.render('delete selection');
+            return true;
+        }
+
         extractSelection() {
             // Check if we have a current object and frame
             if (!this.currentObjectName) {

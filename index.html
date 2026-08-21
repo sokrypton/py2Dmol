@@ -584,9 +584,27 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                          Hidden until something is selected: with nothing picked
                          every one of them is a no-op. -->
                     <div id="selectionPanel" class="container-box selection-panel" hidden>
+                        <!-- THE HEAD CARRIES THE ACTIONS, as icons. Copy used to be a
+                             full-width button at the bottom of the panel, where it sat
+                             under the pointer after every other control and was pressed
+                             by accident. Small, cornered and iconic, it takes a
+                             deliberate move to reach - which is what an action that
+                             makes a new object should take. -->
                         <div class="selection-panel-head">
                             <span class="selection-panel-title">Selection</span>
                             <span id="selectionPanelCount" class="selection-panel-count"></span>
+                            <span class="selection-panel-actions">
+                                <button id="copySelectionButton" class="selection-icon-btn"
+                                    title="Copy the selected residues into a new object"
+                                    aria-label="Copy the selection into a new object">
+                                    <i class="fa-regular fa-copy"></i>
+                                </button>
+                                <button id="deleteSelectionButton" class="selection-icon-btn selection-icon-danger"
+                                    title="Delete the selected residues from this object"
+                                    aria-label="Delete the selected residues">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
+                            </span>
                         </div>
                         <!-- WHAT IS DRAWN, one labelled row per part, because
                              the two are independent: a residue can show its main
@@ -710,13 +728,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     min="0.15" max="1" step="0.05" value="1" hidden
                                     aria-label="Width of this contact"
                                     title="Width of this contact (full width is the maximum)">
-                            </div>
-                            <!-- Whole-selection actions. Copy is the only one
-                                 left: it acts on the selection as a whole
-                                 rather than on one part of it. -->
-                            <div class="selection-panel-row">
-                                <button id="copySelectionButton" class="btn btn-grey btn-small"
-                                    title="Copy the selected residues into a new object">Copy</button>
                             </div>
                         </div>
                     </div>

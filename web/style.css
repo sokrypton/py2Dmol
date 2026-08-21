@@ -1323,13 +1323,56 @@ table.layout-table td {
     font-size: 13px;
 }
 
-/* How many residues are in play. The panel appearing says THAT there is a
-   selection; this says how big it is, which is the thing you cannot see from
-   the buttons and the one number that changes what pressing them does. */
+/* WHAT IS IN PLAY, by name. A count said how many; the ranges say WHICH, which
+   is what you check before pressing anything - and the count is still there in
+   front of them. Truncated with an ellipsis rather than wrapped, so the head
+   stays one line however wide the selection is; the whole list is in the title. */
 .selection-panel-count {
     font-size: 12px;
     color: #6b7280;
     font-variant-numeric: tabular-nums;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The panel's own actions, as icons in the corner: they act on the selection as
+   a whole rather than on one part of it, and they are the two that are hard to
+   undo. */
+.selection-panel-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.selection-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fff;
+    color: #6b7280;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.selection-icon-btn:hover {
+    background: var(--color-gray-200, #e5e7eb);
+    color: #374151;
+}
+
+.selection-icon-danger:hover {
+    background: #fee2e2;
+    border-color: #fecaca;
+    color: #b91c1c;
 }
 
 /* Selection tools: act on the residues currently selected. Stacked as labelled
