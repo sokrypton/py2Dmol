@@ -4334,16 +4334,17 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         // sets it for the same reason (viewer-mol.js).
         renderer._viewScale = drawScale() / pixelRatio;
         // THE CARTOON'S OWN OCCLUSION, when it is asked for. GPU only, and off
-        // ON WITH THE SHADOW SWITCH, like the tube's - the 2D cartoon has no
-        // occlusion of its own, so turning GPU off drops the shadow with it.
-        // renderer.cartoonAO === false turns it off on its own.
+        // OFF UNTIL ASKED FOR, renderer.cartoonAO === true. It works and it is
+        // calibrated (see CARTOON_AO_DENSITY), but it is a look being invented
+        // rather than a pass being ported: the 2D cartoon has no occlusion, so
+        // with it on by default the GPU switch would change the drawing.
         //
         // Its two constants are not the tube's. Density is the areal weight of
         // the kernel and a ribbon covers far more Angstrom per drawn thing than
         // a tube does; the self-bias is what stops a surface shading itself, so
         // for a slab it is about half the thickness rather than a tube radius -
         // with a floor, because the ribbon preset's thickness is 0.
-        const wantAO = renderer.cartoonAO !== false
+        const wantAO = renderer.cartoonAO === true
             && renderer.shadowEnabled !== false;
         const aoOpts = wantAO ? {
             scale: drawScale(),

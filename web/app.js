@@ -107,9 +107,6 @@ function initializeApp() {
             // the mesh was built from state that may have moved on while this
             // was off, so ask for a fresh one rather than trusting it
             G.invalidate();
-            // the Shadow slider is dead in a 2D cartoon, so the panel has to
-            // hear about this too
-            if (r._syncStylePanel) r._syncStylePanel();
             r.render('useGpuCheckbox');
         };
         cb.addEventListener('change', apply);
