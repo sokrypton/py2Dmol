@@ -706,6 +706,40 @@ t('SSE is offered for protein and withheld from nucleic acid', () => {
     }
 });
 
+t('the Shadow slider is offered in both styles, and dead where it cannot act', () => {
+    // The cartoon grew a shadow, so the control that has always driven the
+    // tube's now drives both - the same strength, through the same occlusion
+    // pass. It is drawn by the GPU path only, so in a 2D cartoon the slider is
+    // disabled and says why rather than moving with nothing happening.
+    for (const f of ['index.html', 'py2Dmol/resources/viewer.html']) {
+        const html = fs.readFileSync(f, 'utf8');
+        const at = html.indexOf('id="shadowSlider"');
+        if (at < 0) throw new Error('the shadow slider is gone from ' + f);
+        // the cell that carries the style tag is the slider's own parent
+        const cell = html.lastIndexOf('<div', at);
+        const tag = html.slice(cell, at).match(/data-style="([^"]*)"/);
+        if (!tag || !/tube/.test(tag[1]) || !/cartoon/.test(tag[1])) {
+            throw new Error(f + ' offers the shadow slider under '
+                + JSON.stringify(tag && tag[1]));
+        }
+        // ...and its row must not end up with three sliders squeezed into it
+        const rowStart = html.lastIndexOf('class="toggle-item"', at);
+        let rowEnd = html.indexOf('class="toggle-item"', at);
+        if (rowEnd < 0) rowEnd = html.length;
+        const row = html.slice(rowStart, rowEnd);
+        const cells = (row.match(/data-style="/g) || []).length;
+        if (cells > 2) throw new Error(f + ' has ' + cells + ' cells in the shadow row');
+    }
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const sy = mol.indexOf('function syncStylePanel() {');
+    const body = mol.slice(sy, mol.indexOf('\n    }', sy));
+    if (!/shadowSlider/.test(body) || !/useGPU !== true/.test(body)
+        || !/\.disabled = dead/.test(body)) {
+        throw new Error('syncStylePanel no longer disables the shadow slider '
+            + 'for a 2D cartoon');
+    }
+});
+
 t('the nucleic row is the side-chain row by another name', () => {
     // Bases are to a nucleotide what side chains are to an amino acid, and the
     // panel now says so. The two rows never both apply to one residue, and each

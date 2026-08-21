@@ -295,20 +295,22 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                         <label for="pencilSlider" title="Coloured-pencil paper grain (0 = clean)">Pencil:</label>
                         <input type="range" id="pencilSlider" min="0" max="1" value="0" step="0.05">
                     </div>
-                    <div class="half" data-style="tube">
-                        <label for="shadowSlider" title="Shadow strength. 0 turns shadow off. Cartoon reads on/off only.">Shadow:</label>
+                    <div class="half" data-style="tube cartoon">
+                        <label for="shadowSlider" title="Shadow strength. 0 turns it off. In cartoon mode the shadow is drawn by the GPU path only.">Shadow:</label>
                         <input type="range" id="shadowSlider" min="0" max="1" value="0.5" step="0.01">
-                    </div>
-                    <div class="half" data-style="cartoon">
-                        <label for="outlineTintSlider" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
-                        <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05">
                     </div>
                 </div>
                 <div class="toggle-item">
                     <div class="half" data-style="cartoon">
+                        <label for="outlineTintSlider" title="Outline colour: 0 = black, 1 = tint of the element colour (as in ribbon mode)">Ink:</label>
+                        <input type="range" id="outlineTintSlider" min="0" max="1" value="0" step="0.05">
+                    </div>
+                    <div class="half" data-style="cartoon">
                         <label for="detailSlider" title="Subdivisions per residue, 2-8 (low = faceted and faster)">Detail:</label>
                         <input type="range" id="detailSlider" min="2" max="8" value="4" step="1">
                     </div>
+                </div>
+                <div class="toggle-item">
                     <div class="half">
                         <label for="orthoSlider">Ortho:</label>
                         <input type="range" id="orthoSlider" min="0" max="1" value="0.5" step="0.01">

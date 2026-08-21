@@ -2299,8 +2299,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.shadowSlider.addEventListener('input', (e) => {
                     const s = parseFloat(e.target.value);
                     this.shadowStrength = s;
-                    // Strength IS the shadow switch: 0 turns it off. Skipped when a
-                    // separate toggle exists. Cartoon reads only the on/off flag.
+                    // Strength IS the shadow switch: 0 turns it off. Both styles
+                    // read the number: on the GPU cartoon it scales the same
+                    // occlusion the tube uses, measured on 1TIM as 2.2 levels of
+                    // darkening at 0.1 and 19.6 at 1.0.
                     this.shadowEnabled = s > 0;
                     // Invalidate shadow cache to force recalculation with new strength
                     this._invalidateShadowCache();
@@ -11123,6 +11125,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (!cells.length || cells.length !== row.children.length) return;
             row.hidden = Array.prototype.every.call(cells, (c) => c.hidden);
         });
+        // THE SHADOW SLIDER IS LIVE IN BOTH STYLES, BUT ONLY THE GPU DRAWS A
+        // CARTOON SHADOW. The 2D cartoon has no occlusion pass of its own, so
+        // with GPU off the control would move and nothing would happen - it is
+        // disabled there and says why, rather than lying.
+        const shadowCell = stylePanel.querySelector('#shadowSlider');
+        if (shadowCell) {
+            const dead = style === 'cartoon' && renderer.useGPU !== true;
+            shadowCell.disabled = dead;
+            shadowCell.style.opacity = dead ? '0.4' : '';
+            shadowCell.title = dead
+                ? 'Cartoon shadows are drawn by the GPU path - turn GPU on to use this'
+                : '';
+        }
         // The SSE palette row exists only while colouring by secondary
         // structure.
         const ssOn = (renderer._getEffectiveColorMode
