@@ -7967,10 +7967,21 @@
                             nx = -nx; ny = -ny; nz = -nz;
                         }
                     }
+                    // THE JUNCTION IS AT AN ATOM, so it takes THAT atom's
+                    // colour. It used to take the whole bond's - legs[0].c -
+                    // which under element colouring is the segment's base
+                    // colour, so the triangle filling a three-way nitrogen came
+                    // out in the residue's colour with three blue legs meeting
+                    // in it. Which half belongs here is the same question the
+                    // stick faces answer: end `a` or end `b`.
+                    const jbd = legs[0];
+                    const jHalf = (jbd.halfC && jbd.halfC.a && jbd.halfC.b)
+                        ? (jbd.a === atom ? jbd.halfC.a : jbd.halfC.b) : null;
                     prims.push({
                         kind: 'joint', q: poly, z: zs / poly.length,
-                        c: legs[0].c, gs0: atom,
-                        ci: legs[0].ci, half: 0,
+                        c: jHalf || jbd.c, gs0: atom,
+                        ci: jbd.ci,
+                        half: jHalf ? (jbd.a === atom ? 1 : 2) : 0,
                         nl: nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2],
                         // same as the flat stick face above: at zero thickness
                         // the junction polygon is emitted ONCE and oriented at

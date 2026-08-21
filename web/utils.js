@@ -1670,9 +1670,6 @@ function buildSidechainTable(coords, entries) {
                 || e.residue.atoms.find((a) => primed(a.atomName) === "C4'"))
             : e.residue.caAtom;
         if (!ca) continue;
-        if (typeof window !== 'undefined' && window.__scTrace) {
-            window.__scTrace.push([e.pos, !!e.nucleic, e.residue.atoms.length]);
-        }
         const anchor = framedNear(e.pos);
         if (anchor < 0) continue;                 // too short to frame: skip
         const [flo, fhi] = frameArgs(e.nucleic);
