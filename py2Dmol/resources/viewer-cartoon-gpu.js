@@ -3201,7 +3201,12 @@ function makeResident(faces, scale, prm, lines) {
         }
     }
     rad = Math.sqrt(rad);
-    window.__faces = faces;      // for diagnostics: carries _m, _outN, _interior
+    // DIAGNOSTICS ONLY, AND OFF BY DEFAULT. This held the entire face array -
+    // every face's model-space corners, outward normal and interior flag - on
+    // a global for the lifetime of the page, which is a rebuild's whole
+    // geometry pinned after it has been uploaded and is no longer needed.
+    // Nothing read it. Set window.__gpuDiag before a rebuild to get it back.
+    if (window.__gpuDiag) window.__faces = faces;
     mark('buffers');
     // one texel per residue, sized to the structure
     ensureVisTexture(resMap && resMap.nBase ? resMap.nBase : 1);
