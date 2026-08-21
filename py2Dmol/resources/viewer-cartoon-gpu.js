@@ -2580,7 +2580,7 @@ function makeResident(faces, scale, prm, lines) {
     // the rails of adjacent strip quads are the SAME computed point, so they
     // agree to floating point, and the quantisation is only insurance.
     const edgeMap = new Map();
-    const vkey = (q) => `${Math.round(q[0] * 1000)},${Math.round(q[1] * 1000)},${Math.round(q[2] * 1000)}`;
+
     // ...and a NUMERIC version of the same thing, cached on the point. The edge
     // pass asks for a corner's identity about eight times (four edges, two ends
     // each), and on a structure the size of 9FOG that was half a million
@@ -2599,7 +2599,6 @@ function makeResident(faces, scale, prm, lines) {
     // A single packed number would need 64 bits and silently collide past 2^53.
     const edgeAt = (h1, h2) => {
         const lo = h1 < h2 ? h1 : h2;
-        const hi = h1 < h2 ? h2 : h1;
         let inner = edgeMap.get(lo);
         if (!inner) { inner = new Map(); edgeMap.set(lo, inner); }
         return inner;

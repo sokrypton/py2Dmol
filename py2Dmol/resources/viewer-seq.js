@@ -2182,12 +2182,6 @@
             }
         }
 
-        // Removed legacy check for positionScreenPositions
-        // The renderer now uses SoA arrays or getHighlightCoordinates API
-        // if (!renderer.positionScreenPositions) {
-        //    return;
-        // }
-
         // Update overlay canvas size to match main canvas
         updateHighlightOverlaySize();
 

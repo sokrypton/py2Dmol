@@ -3062,8 +3062,6 @@ function readCIFCols(s, from, n, wantMask, out, dropAfter, dropTest) {
     return col;
 }
 
-// a mask that wants nothing: readCIFCols then counts columns and slices none
-const NO_COLUMNS_WANTED = new Uint8Array(0);
 
 function parseMinimalCIF_light(text, keepPrefixes) {
     // SOUGHT, NOT WALKED.
