@@ -11791,7 +11791,9 @@
         // three values equal that latch no longer decides what you see.
         richardson: {
             width: PRESET_WIDTH,
-            outlineWidth: 2.0,
+            // Lighter ink than the plain ribbon's 2.0. A Richardson drawing is
+            // pencil: the outline states the edge, it does not weigh it down.
+            outlineWidth: 1.0,
             thickness: RICH_THICK_DEFAULT,
             outlineTint: RICH_TINT_DEFAULT,
             highlight: RICH_HILITE_DEFAULT,
@@ -11874,7 +11876,7 @@
     // this one. Spelling out only what differs keeps the two in step as the
     // table grows.
     STYLE_DEFAULTS.tube = Object.assign({}, STYLE_DEFAULTS.cartoon, {
-        // the heavier outline tube has always had; Ribbon and Richardson are 2.0
+        // the heavier outline tube has always had; Ribbon is 2.0, Richardson 1.0
         outlineWidth: 3.0,
     });
 
