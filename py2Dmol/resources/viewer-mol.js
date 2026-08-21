@@ -392,7 +392,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         mul(s) { return new Vec3(this.x * s, this.y * s, this.z * s); }
         dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z; }
         length() { return Math.sqrt(this.dot(this)); }
-        distanceTo(v) { return this.sub(v).length(); }
         distanceToSq(v) { const s = this.sub(v); return s.dot(s); }
         normalize() {
             const len = this.length();
@@ -631,8 +630,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
     }
 
-    function getChainColor(chainIndex) { if (chainIndex < 0) chainIndex = 0; return hexToRgb(pymolColors[chainIndex % pymolColors.length]); }
-
     // PAE color functions moved to viewer-pae.js
 
     // ============================================================================
@@ -783,8 +780,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const TINT_CUTOFF_MULTIPLIER = 0.5;     // tint_cutoff = avgLen * 0.5
     const SHADOW_OFFSET_MULTIPLIER = 2.5;   // Proportional offset multiplier
     const TINT_OFFSET_MULTIPLIER = 2.5;     // Proportional offset multiplier
-    const WIDTH_RATIO_CLAMP_MIN = 0.01;     // Minimum width ratio for shadow/tint
-    const WIDTH_RATIO_CLAMP_MAX = 10.0;     // Maximum width ratio for shadow/tint
     const MAX_SHADOW_SUM = 12;              // Maximum accumulated shadow sum (saturating accumulation)
 
     // Default nested config used by both Python and standalone HTML
@@ -9597,42 +9592,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._paintOverlays(ctx, this._exportPxScale || 1, true);
         }
 
-        // Public API for highlights
-        // Returns array of {x, y, radius} for currently highlighted atoms
-        // Decouples external viewers from internal SoA arrays
-        getHighlightCoordinates() {
-            const coords = [];
-            // Ensure arrays exist
-            if (!this.screenValid || !this.screenX || !this.screenY || !this.screenRadius) {
-                return coords;
-            }
-
-            const addCoord = (idx) => {
-                // Check if projected in current frame
-                if (idx >= 0 && idx < this.screenValid.length && this.screenValid[idx] === this.screenFrameId) {
-                    coords.push({
-                        x: this.screenX[idx],
-                        y: this.screenY[idx],
-                        radius: this.screenRadius[idx]
-                    });
-                }
-            };
-
-            // Add multiple highlights
-            if (this.highlightedAtoms && this.highlightedAtoms.size > 0) {
-                for (const idx of this.highlightedAtoms) {
-                    addCoord(idx);
-                }
-            }
-
-            // Add single highlight
-            if (this.highlightedAtom !== null && this.highlightedAtom !== undefined) {
-                addCoord(this.highlightedAtom);
-            }
-
-            return coords;
-        }
-
         // Ensure the animation loop is running (without creating duplicates)
         ensureAnimationLoop() {
             if (this.animationFrameId !== null) return;
@@ -10358,7 +10317,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // one; the button simply falls to the next line when it has to.
             const ROW = 'display:flex; align-items:center; gap:6px;'
                 + ' flex-wrap:wrap; row-gap:6px;';
-            const LBL = 'font-size:12px; flex-shrink:0;';
 
             const p = document.createElement('div');
             p.id = 'savePanel';

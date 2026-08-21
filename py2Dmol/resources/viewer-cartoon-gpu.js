@@ -2634,7 +2634,6 @@ function makeResident(faces, scale, prm, lines) {
         const l = Math.hypot(v[0], v[1], v[2]) || 1;
         return [v[0] / l, v[1] / l, v[2] / l];
     };
-    const STRIDE = 22;      // ...plus the sheet flag and its second colour
     // 25 floats of per-vertex data, plus the face's outward normal and the
     // face's flat-shading normal - 31 in all. KEEP THIS IN STEP WITH `stride`
     // and the bind offsets below: a mismatch does not error, it silently

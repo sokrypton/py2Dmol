@@ -462,7 +462,6 @@
     let visibleSequenceEnd = 0;
     let scrollTop = 0;
     let scrollLeft = 0;
-    const MAX_VISIBLE_SEQUENCES = 100;
     const SEQUENCE_ROW_HEIGHT = 20;
     const CHAR_WIDTH = 20;
     const NAME_COLUMN_WIDTH = 200;
