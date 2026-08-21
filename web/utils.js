@@ -107,49 +107,8 @@ function mean3(coords) {
     return m;
 }
 
-function covarianceXXT(coords) {
-    const mu = mean3(coords);
-    const X = coords.map(c => [
-        c[0] - mu[0],
-        c[1] - mu[1],
-        c[2] - mu[2]
-    ]);
-    return numeric.dot(numeric.transpose(X), X);
-}
-
-function ensureRightHand(V) {
-    const det = numeric.det(V);
-    if (det < 0) {
-        V = V.map(r => [r[0], r[1], -r[2]]);
-    }
-    return V;
-}
-
-function multCols(V, s) {
-    return [
-        [V[0][0] * s[0], V[0][1] * s[1], V[0][2] * s[2]],
-        [V[1][0] * s[0], V[1][1] * s[1], V[1][2] * s[2]],
-        [V[2][0] * s[0], V[2][1] * s[1], V[2][2] * s[2]]
-    ];
-}
-
 function trace(M) {
     return M[0][0] + M[1][1] + M[2][2];
-}
-
-function polar2x2_withScore(A) {
-    const svd = numeric.svd(A);
-    const U = [[svd.U[0][0], svd.U[0][1]], [svd.U[1][0], svd.U[1][1]]];
-    const V = [[svd.V[0][0], svd.V[0][1]], [svd.V[1][0], svd.V[1][1]]];
-    let R2 = numeric.dot(V, numeric.transpose(U));
-    const det = R2[0][0] * R2[1][1] - R2[0][1] * R2[1][0];
-    if (det < 0) {
-        V[0][1] *= -1;
-        V[1][1] *= -1;
-        R2 = numeric.dot(V, numeric.transpose(U));
-    }
-    const nuclear = (svd.S[0] || 0) + (svd.S[1] || 0);
-    return { R2, nuclear };
 }
 
 /**
@@ -3024,8 +2983,9 @@ function tokenizeCIFLine_light(s) {
  * Measured cold on 4UG0: walking every loop was 2,698 ms of a 5,342 ms parse.
  * Naming only the loops that are read takes it to a fraction of that.
  *
- * Only parseCIF passes a list. buildBioFromCIF genuinely does read atom rows
- * out of this and calls it without one, so it still gets everything.
+ * parseCIF is now the only caller, and it always names its loops. Omitting the
+ * list still means "every loop", which is what the biounit reader that used to
+ * call it that way needed.
  */
 /* tokenizeCIFLine_light, but it only KEEPS the columns asked for.
  *
@@ -3370,15 +3330,6 @@ function expandOperExpr_light(expr) {
     return seqs;
 }
 
-function applyOp_light(atom, R, t) {
-    return {
-        ...atom,
-        x: R[0] * atom.x + R[1] * atom.y + R[2] * atom.z + t[0],
-        y: R[3] * atom.x + R[4] * atom.y + R[5] * atom.z + t[1],
-        z: R[6] * atom.x + R[7] * atom.y + R[8] * atom.z + t[2]
-    };
-}
-
 /**
  * Parse first biological assembly from PDB/CIF text
  * @param {string} text - Structure file content
@@ -3668,241 +3619,6 @@ function applyBiounitOperationsToAtoms(atoms, operations) {
     }
 
     return out.length > 0 ? out : atoms;
-}
-
-function parseFirstBioAssembly(text) {
-    const isCIF = /^\s*data_/i.test(text) || /_atom_site\./i.test(text);
-    return isCIF ? buildBioFromCIF(text) : buildBioFromPDB(text);
-}
-
-function buildBioFromPDB(text) {
-    const parseResult = parsePDB(text);
-    const models = parseResult.models;
-    const atoms = (models && models[0]) ? models[0] : [];
-
-    // Extract biounit operations using unified function
-    const operations = extractPDBBiounitOperations(text);
-
-    if (!operations || operations.length === 0) {
-        return { atoms, meta: { source: 'pdb', assembly: 'asymmetric_unit' } };
-    }
-
-    // Collect chains from operations or atoms
-    const chains = new Set();
-    operations.forEach(op => {
-        if (op.chains && op.chains.length > 0) {
-            op.chains.forEach(c => chains.add(c));
-        }
-    });
-    if (chains.size === 0) {
-        for (const a of atoms) {
-            if (a.chain) chains.add(a.chain);
-        }
-    }
-
-    // Apply operations using unified function
-    const out = applyBiounitOperationsToAtoms(atoms, operations);
-
-    return {
-        atoms: out,
-        meta: {
-            source: 'pdb',
-            assembly: '1',
-            ops: operations.length,
-            chains: [...chains]
-        }
-    };
-}
-
-function buildBioFromCIF(text) {
-    const loops = parseMinimalCIF_light(text);
-    const getLoop = (name) => loops.find(([cols]) => cols.includes(name));
-
-    // Parse chemical component table to identify modified residues
-    const chemCompMap = new Map();
-    const chemCompL = getLoop('_chem_comp.id');
-    if (chemCompL) {
-        const chemCompCols = chemCompL[0], chemCompRows = chemCompL[1];
-        const ccol_id = chemCompCols.indexOf('_chem_comp.id');
-        const ccol_type = chemCompCols.indexOf('_chem_comp.type');
-        const ccol_mon_nstd = chemCompCols.indexOf('_chem_comp.mon_nstd_flag');
-
-        if (ccol_id >= 0 && ccol_type >= 0) {
-            for (const row of chemCompRows) {
-                const resName = row[ccol_id]?.trim();
-                const type = row[ccol_type]?.trim();
-                const mon_nstd = ccol_mon_nstd >= 0 ? row[ccol_mon_nstd]?.trim() : null;
-
-                if (resName && type) {
-                    // Map residue type: 'RNA linking' -> 'R', 'DNA linking' -> 'D', 'L-peptide linking' -> 'P'
-                    let mappedType = null;
-                    if (type.includes('RNA linking')) {
-                        mappedType = 'R';
-                    } else if (type.includes('DNA linking')) {
-                        mappedType = 'D';
-                    } else if (type.includes('peptide linking') || type.includes('L-peptide linking')) {
-                        mappedType = 'P';
-                    }
-
-                    // Store: is it a modified (non-standard) residue?
-                    // mon_nstd_flag = 'n' means non-standard (modified)
-                    const isModified = mon_nstd === 'n' || mon_nstd === 'y' || mon_nstd === 'Y';
-                    chemCompMap.set(resName, { type: mappedType, isModified, originalType: type });
-                }
-            }
-        }
-    }
-
-    // Atom table
-    const atomL = loops.find(([cols]) => cols.some(c => c.startsWith('_atom_site.')));
-    if (!atomL) return { atoms: [], meta: { source: 'mmcif', assembly: 'empty' }, chemCompMap };
-
-    const atomCols = atomL[0], atomRows = atomL[1];
-    const acol = (n) => atomCols.indexOf(n);
-
-    const ixX = acol('_atom_site.Cartn_x');
-    const ixY = acol('_atom_site.Cartn_y');
-    const ixZ = acol('_atom_site.Cartn_z');
-    const ixEl = acol('_atom_site.type_symbol');
-    const ixLA = acol('_atom_site.label_asym_id');
-    const ixRes = (acol('_atom_site.label_comp_id') >= 0 ?
-        acol('_atom_site.label_comp_id') : acol('_atom_site.auth_comp_id'));
-    const ixSeq = (acol('_atom_site.label_seq_id') >= 0 ?
-        acol('_atom_site.label_seq_id') : acol('_atom_site.auth_seq_id'));
-    const ixNm = acol('_atom_site.label_atom_id');
-    const ixGrp = acol('_atom_site.group_PDB');
-    const ixB = acol('_atom_site.B_iso_or_equiv');
-
-    const baseAtoms = atomRows.map(r => {
-        // Always use label_asym_id (required by mmCIF spec for biounit operations)
-        // Normalize: convert to string and trim whitespace
-        const labelChain = (ixLA >= 0 ? String(r[ixLA] || '').trim() : '');
-        return {
-            record: r[ixGrp] || 'ATOM',
-            atomName: r[ixNm] || '',
-            resName: r[ixRes] || '',
-            lchain: labelChain,
-            chain: labelChain,
-            resSeq: r[ixSeq] ? parseInt(r[ixSeq], 10) : 0,
-            x: parseFloat(r[ixX]),
-            y: parseFloat(r[ixY]),
-            z: parseFloat(r[ixZ]),
-            b: ixB >= 0 ? (parseFloat(r[ixB]) || 0.0) : 0.0,
-            element: (r[ixEl] || '').toUpperCase()
-        };
-    });
-
-    // Extract biounit operations using unified function
-    const operations = extractCIFBiounitOperations(text);
-
-    if (!operations || operations.length === 0) {
-        return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' }, chemCompMap: chemCompMap };
-    }
-
-    // CIF-specific assembly: need to map operations to asym_id_list and apply with lchain filtering
-    const asmL = getLoop('_pdbx_struct_assembly_gen.assembly_id');
-    if (!asmL) {
-        // Fallback: use unified application function
-        const out = applyBiounitOperationsToAtoms(baseAtoms, operations);
-        const chains = new Set();
-        operations.forEach(op => {
-            if (op.chains && op.chains.length > 0) {
-                op.chains.forEach(c => chains.add(c));
-            }
-        });
-        return {
-            atoms: out,
-            meta: {
-                source: 'mmcif',
-                assembly: '1',
-                chains: [...chains]
-            },
-            chemCompMap: chemCompMap
-        };
-    }
-
-    // Build operator map for composition
-    const operL = getLoop('_pdbx_struct_oper_list.id');
-    const opCols = operL ? operL[0] : [];
-    const opRows = operL ? operL[1] : [];
-    const o = (n) => opCols.indexOf(n);
-    const opMap = new Map();
-    for (const r of opRows) {
-        const id = (r[o('_pdbx_struct_oper_list.id')] || '').toString();
-        const R = [
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][1]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][2]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[1][3]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][1]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][2]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[2][3]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][1]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][2]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.matrix[3][3]')])
-        ];
-        const t = [
-            parseFloat(r[o('_pdbx_struct_oper_list.vector[1]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.vector[2]')]),
-            parseFloat(r[o('_pdbx_struct_oper_list.vector[3]')])
-        ];
-        if (Number.isFinite(R[0])) {
-            opMap.set(id, { R, t });
-        }
-    }
-    if (opMap.size === 0) {
-        opMap.set('1', { R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] });
-    }
-
-    // Choose assembly 1
-    const a = (n) => asmL[0].indexOf(n);
-    let candidates = asmL[1].filter(r =>
-        (r[a('_pdbx_struct_assembly_gen.assembly_id')] || '') === '1');
-    if (candidates.length === 0 && asmL[1].length > 0) {
-        candidates = [asmL[1][0]];
-    }
-    if (candidates.length === 0) {
-        return { atoms: baseAtoms, meta: { source: 'mmcif', assembly: 'asymmetric_unit' }, chemCompMap: chemCompMap };
-    }
-
-    // Assemble using CIF-specific logic (filter by lchain/asymIds)
-    const out = [];
-    const seen = new Set();
-    for (const r of candidates) {
-        const asymList = (r[a('_pdbx_struct_assembly_gen.asym_id_list')] ||
-            r[a('_pdbx_struct_assembly_gen.oper_asym_id_list')] || '').toString();
-        // Normalize chain IDs: trim whitespace and convert to string
-        const asymIds = asymList.split(',').map(s => String(s).trim()).filter(Boolean);
-        asymIds.forEach(c => seen.add(c));
-
-        const expr = (r[a('_pdbx_struct_assembly_gen.oper_expression')] || '1').toString();
-        const seqs = expandOperExpr_light(expr);
-        const seqsUse = (seqs && seqs.length) ? seqs : [['1']];
-
-        for (const seq of seqsUse) {
-            const seqLabel = seq.join('x');
-            const { R, t } = composeBiounitOperations(seq, opMap);
-
-            for (const aAtom of baseAtoms) {
-                // Match by label_asym_id (lchain) - asym_id_list contains label_asym_id values per mmCIF spec
-                if (!asymIds.includes(aAtom.lchain)) continue;
-                const ax = applyOp_light(aAtom, R, t);
-                ax.chain = (seqLabel === '1') ?
-                    String(aAtom.lchain || aAtom.chain || '') :
-                    (String(aAtom.lchain || aAtom.chain || '') + '|' + seqLabel);
-                out.push(ax);
-            }
-        }
-    }
-
-    return {
-        atoms: out,
-        meta: {
-            source: 'mmcif',
-            assembly: '1',
-            chains: [...seen]
-        },
-        chemCompMap: chemCompMap
-    };
 }
 // ============================================================================
 // RESIDUE MAPPING UTILITIES

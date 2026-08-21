@@ -445,12 +445,6 @@ function showMSACanvasContainers() {
     });
 }
 
-function hideMSACanvasContainers() {
-    getMSACanvasContainers().forEach(container => {
-        container.style.display = 'none';
-    });
-}
-
 function removeMSACanvasContainers() {
     const containers = getMSACanvasContainers();
     containers.forEach(container => {
@@ -3264,40 +3258,6 @@ function applyPendingObjects() {
     }
 }
 
-
-function updateChainSelectionUI() {
-    /* [EDIT] This function no longer builds UI (pills). 
-       It just sets the default selected state if there is truly no saved selection. */
-
-    const r = viewerApi?.renderer;
-    const name = r?.currentObjectName;
-    if (!r || !name) return;
-
-    const obj = r.objectsData?.[name];
-    if (!obj?.frames?.length) return;
-
-    const ss = r.objectsData?.[name]?.visibilityState;
-    // Only default if there is truly no user selection saved
-    const hasAnySelection =
-        ss &&
-        (
-            ss.visibilityMode !== 'default' ||
-            (ss.positions && ss.positions.size > 0) ||
-            (ss.chains && ss.chains.size > 0) ||
-            (ss.paeBoxes && ss.paeBoxes.length > 0)
-        );
-
-    if (hasAnySelection) return;
-
-    // Let the renderer compute the correct "all" internally
-    if (typeof r.showAll === 'function') {
-        r.showAll();
-    } else if (typeof r.setVisibility === 'function') {
-        // Fallback: empty/default request which the renderer normalizes to "all"
-        r.setVisibility({ visibilityMode: 'default', positions: new Set(), chains: new Set() });
-    }
-}
-
 // [NEW] This function updates the chain buttons and sequence view
 // based on the renderer's selection model
 function syncChainPillsToSelection() {
@@ -3776,33 +3736,6 @@ async function loadStandaloneMSA(file) {
     } catch (error) {
         console.error('Error loading MSA:', error);
         setStatus('Error loading MSA file: ' + error.message, true);
-        throw error;
-    }
-}
-
-/**
- * Resolve PDB ID to UniProt ID using PDBe API
- * @param {string} pdbId - 4-character PDB ID
- * @returns {Promise<string>} - UniProt ID
- */
-async function resolvePDBToUniProt(pdbId) {
-    setStatus(`Looking up UniProt ID for PDB ${pdbId}...`);
-    try {
-        const mappings = await fetchPDBeMappings(pdbId);
-        const uniprotIds = Object.values(mappings)
-            .map(m => m.uniprot_id)
-            .filter(id => id); // Filter out null/undefined
-
-        if (uniprotIds.length === 0) {
-            throw new Error(`No UniProt mapping found for PDB ID ${pdbId}`);
-        }
-
-        // Use the first UniProt ID found
-        const uniprotId = uniprotIds[0];
-        setStatus(`Found UniProt ID ${uniprotId} for PDB ${pdbId}`);
-        return uniprotId;
-    } catch (error) {
-        console.error('Error fetching PDBe mappings:', error);
         throw error;
     }
 }
