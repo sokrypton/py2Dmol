@@ -1672,10 +1672,14 @@ function fillClipPanel() {
     if (!r) return;
     const rest = r.clipSlabDefault();
     if (!rest) return;
+    // THE TRACK IS THE OBJECT. Its ends are the object's own reach - the rest
+    // state - so a knob at either end cuts nothing and every millimetre of
+    // travel in between does something. It used to run half a span past each
+    // end, which put the useful range in the middle third and left the rest of
+    // the track doing nothing at all.
     const span = rest.near - rest.far;
-    const slack = Math.max(1, span * 0.5);
-    const lo = rest.far - slack;
-    const hi = rest.near + slack;
+    const lo = rest.far;
+    const hi = rest.near;
     const at = { clipNear: r.clipSlabOn() ? r.clipNear : rest.near,
         clipFar: r.clipSlabOn() ? r.clipFar : rest.far };
     for (const id of ['clipNear', 'clipFar']) {
