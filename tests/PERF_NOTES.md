@@ -793,3 +793,65 @@ measures 0 ms on this structure. The harness timed `r.render()` together with
 a `setTimeout(300)` wait, and what actually ran during the wait was the
 deferred sequence build. Any figure that brackets a wait is measuring
 everything the event loop chose to do in it. Time the call, not the window.
+
+### The cartoon build's memory, and what is actually left
+
+The capsid could not enter cartoon mode. Three findings, in the order they
+mattered.
+
+**A diagnostic global was holding every face forever.** `makeResident` ended
+with `window.__faces = faces`, added during the GPU port and read by nothing -
+not the app, not the tests, not the benchmark harnesses. It pinned each face's
+four model-space corners, its outward normal and its interior flag for the life
+of the page, after the geometry had been uploaded.
+
+    cartoon build, GPU on   10,017 -> 317 bytes per position retained
+
+**Measure live data only after a real collection.** The 20 kB/position the
+memory guard was built on was garbage: `window.gc` is a silent no-op unless
+Chrome is started with `--js-flags=--expose-gc`, and without it the heap after
+a build is mostly uncollected. With a real collection the same build retains
+163 bytes per position. The guard now names the PEAK, which is the number that
+actually kills a tab, and says so.
+
+**Verify a rendering change on geometry, not on pixels - here, pixels cannot
+be measured at all.** Three runs of the SAME build gave ink counts of 660, 503
+and 486 while canvas size, zoom, extent, face count and edge count were
+identical every time. A WebGL canvas without `preserveDrawingBuffer` has been
+cleared by the time `drawImage` runs. Pinning the camera does not help. The
+usable check is the edge stage's own output: faces and edges per structure.
+
+Where the build stands, on 1OHF (135,780 positions, 1,199,700 faces):
+
+| stage | time | heap after |
+| --- | --- | --- |
+| capture (288,611 2D prims) | 2,180 ms | 147 -> 699 MB |
+| facesOf | 250 ms | -> 1,078 MB |
+| rails | 320 ms | -> 1,558 MB |
+| normals | 540 ms | -> 2,026 MB |
+| facesAndEmit | 1,050 ms | -> 2,042 MB |
+| edges | 2,600 ms | -> 2,007 MB |
+| buffers | 130 ms | -> 2,020 MB |
+
+The capsid does build now, with `cartoonForce`: 20.8 s, peak 4,160 MB against
+a ~4.3 GB limit, and then it DRAWS at 11-18 ms a frame. The guard still refuses
+it and that is right - 140 MB of headroom is not a margin.
+
+**Two things that measured as nothing, so nobody need retry them:**
+
+- Replacing the edge table's inner Map-per-vertex (about 600,000 Maps) with
+  flat arrays: 7,220-7,584 ms against 7,288-7,466, peak unchanged. Reverted.
+- The Detail control has no headroom left at this scale. detail 1, 2 and 4 all
+  produce exactly 1,199,700 faces, because the screen-space subdivision cap has
+  already driven stations to MIN_SUB.
+
+**And one that settles the direction.** Forcing a full collection between every
+stage costs 25% more time and takes the peak from 2,050 MB to 1,697 MB - only
+17%. So the peak is LIVE data, not collectable garbage, and slicing the rebuild
+to let V8 breathe cannot fix it. 12.5 kB per position is genuinely alive at the
+worst moment.
+
+That leaves two levers, and only two: make fewer faces (the structure is 8.8
+faces per position, which for a capsid is 2.7 M faces for a 600 px image - 0.06
+px per residue), or never hold them all at once (build, upload and discard per
+chain).
