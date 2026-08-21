@@ -50,7 +50,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1181,6 +1181,39 @@ t('no clip code path touches visibility', () => {
     if (!m) throw new Error('setClipSlab is gone');
     if (/setVisibility|visiblePositions/.test(m[0])) {
         throw new Error('setClipSlab writes visibility');
+    }
+});
+
+t('the clip track measures the view, the rest state measures the object', () => {
+    // Two different numbers, deliberately. The TRACK is the structure's depth
+    // in this view, so moving a knob cuts something straight away - padded, it
+    // spent the first 6 Angstrom of a 36 Angstrom structure doing nothing. The
+    // REST STATE is a radius, so parking a knob at the end cuts nothing however
+    // the structure is then turned. The ends mean off; app.js stores the rest
+    // state for a knob within one step of its limit.
+    const v = clipViewer([[0, 0, -10], [30, 0, 4], [0, -18, 22]]);
+    v.lineWidth = 3;
+    const view = v.clipViewExtent();
+    const rest = v.clipSlabDefault();
+    if (view.near !== 22 || view.far !== -10) {
+        throw new Error('the track is not the view depth: ' + JSON.stringify(view));
+    }
+    if (!(rest.near > view.near)) {
+        throw new Error('the rest state does not reach past the view - a knob '
+            + 'parked at the end would cut as soon as the structure turned');
+    }
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const at = app.indexOf('WITHIN ONE STEP OF THE END IS AT THE END');
+    if (at < 0) throw new Error('the end-of-track rule is gone');
+    const block = app.slice(at, at + 700);
+    if (!/rest\.near/.test(block) || !/rest\.far/.test(block)) {
+        throw new Error('a knob at the end no longer stores the rest state');
+    }
+    // ...and a new object has to re-range the panel: loading one does not go
+    // through the object dropdown
+    if (!/syncClipPanelToObject/.test(app.slice(app.indexOf('dropToTubeIfCartoonWontFit(r);'),
+        app.indexOf('dropToTubeIfCartoonWontFit(r);') + 300))) {
+        throw new Error('loading an object does not refresh the clip panel');
     }
 });
 

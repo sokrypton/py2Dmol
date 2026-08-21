@@ -1696,19 +1696,19 @@ function handleObjectChange() {
 // the range from the current slab instead shrinks the track every time it is
 // refilled: after switching away from a clipped object and back, the handles
 // could not be pulled out past the cut they were already at.
+// THE TRACK IS THE STRUCTURE'S DEPTH IN THIS VIEW, so moving a knob cuts
+// something straight away. The ENDS mean off - a knob at its limit stores the
+// rest state (a radius) rather than this number, so parking it there cuts
+// nothing however the structure is then turned. See clipViewExtent.
 function fillClipPanel() {
     const r = viewerApi?.renderer;
     if (!r) return;
+    const view = r.clipViewExtent();
     const rest = r.clipSlabDefault();
-    if (!rest) return;
-    // THE TRACK IS THE OBJECT. Its ends are the object's own reach - the rest
-    // state - so a knob at either end cuts nothing and every millimetre of
-    // travel in between does something. It used to run half a span past each
-    // end, which put the useful range in the middle third and left the rest of
-    // the track doing nothing at all.
-    const span = rest.near - rest.far;
-    const lo = rest.far;
-    const hi = rest.near;
+    if (!view || !rest) return;
+    const span = view.near - view.far;
+    const lo = view.far;
+    const hi = view.near;
     const at = { clipNear: r.clipSlabOn() ? r.clipNear : rest.near,
         clipFar: r.clipSlabOn() ? r.clipFar : rest.far };
     for (const id of ['clipNear', 'clipFar']) {
@@ -1717,6 +1717,7 @@ function fillClipPanel() {
         el.min = lo.toFixed(2);
         el.max = hi.toFixed(2);
         el.step = Math.max(0.05, span / 400).toFixed(3);
+        // a plane parked beyond the structure shows as a knob at the end
         el.value = Math.max(lo, Math.min(hi, at[id])).toFixed(2);
     }
     showClipValues();
@@ -1730,11 +1731,16 @@ function showClipValues() {
     if (!r) return;
     const bar = document.getElementById('clipSpan');
     const near = document.getElementById('clipNear');
-    if (!bar || !near || r.clipNear === null) return;
+    const far = document.getElementById('clipFar');
+    if (!bar || !near || !far || !r.clipSlabOn()) return;
     const lo = parseFloat(near.min); const hi = parseFloat(near.max);
-    const at = (v) => (100 * (v - lo) / Math.max(1e-6, hi - lo));
-    bar.style.left = at(r.clipFar).toFixed(2) + '%';
-    bar.style.width = Math.max(0, at(r.clipNear) - at(r.clipFar)).toFixed(2) + '%';
+    const at = (v) => Math.max(0, Math.min(100, 100 * (v - lo) / Math.max(1e-6, hi - lo)));
+    // from the KNOBS, which are clamped into the track - a plane parked out at
+    // the rest state belongs at the end of the bar, not off it
+    const l = at(parseFloat(far.value));
+    const rgt = at(parseFloat(near.value));
+    bar.style.left = l.toFixed(2) + '%';
+    bar.style.width = Math.max(0, rgt - l).toFixed(2) + '%';
 }
 
 // THE PANEL FOLLOWS THE OBJECT. The slab rides with the object (see
@@ -1764,12 +1770,30 @@ function setupClipPanel() {
         const near = document.getElementById('clipNear');
         const far = document.getElementById('clipFar');
         if (!r || !near || !far) return;
-        r.setClipSlab(parseFloat(near.value), parseFloat(far.value));
+        // A KNOB AT ITS END MEANS NO PLANE ON THAT SIDE. The track spans what
+        // is in front of you now; the rest state spans the structure from any
+        // angle. Storing the track's end would mean a slab tight to this view,
+        // which starts cutting the moment you turn - the fault that put the
+        // rest state on a radius in the first place.
+        const rest = r.clipSlabDefault() || { near: parseFloat(near.value), far: parseFloat(far.value) };
+        // WITHIN ONE STEP OF THE END IS AT THE END. The value is quantised to
+        // the step, so a knob dragged all the way to the right lands on 12.637
+        // against a maximum of 12.65 and an exact test never fires - which put
+        // the plane a step inside the structure and started cutting the moment
+        // it was turned.
+        const step = parseFloat(near.step) || 0;
+        const nz = parseFloat(near.value) >= parseFloat(near.max) - step
+            ? rest.near : parseFloat(near.value);
+        const fz = parseFloat(far.value) <= parseFloat(far.min) + step
+            ? rest.far : parseFloat(far.value);
+        r.setClipSlab(nz, fz);
         // the renderer keeps the two apart rather than letting them cross, so
-        // read back what it took - otherwise a handle dragged past the other
-        // sits where the slab is not
-        near.value = r.clipNear.toFixed(2);
-        far.value = r.clipFar.toFixed(2);
+        // read back what it took - clamped into the track, since a plane parked
+        // out at the rest state has no position on it
+        near.value = Math.max(parseFloat(near.min),
+            Math.min(parseFloat(near.max), r.clipNear)).toFixed(2);
+        far.value = Math.max(parseFloat(far.min),
+            Math.min(parseFloat(far.max), r.clipFar)).toFixed(2);
         showClipValues();
     };
     for (const id of ['clipNear', 'clipFar']) {
@@ -3465,6 +3489,9 @@ function applyPendingObjects() {
         const show = newNames[newNames.length - 1];
         if (r?._switchToObject) r._switchToObject(show);
         dropToTubeIfCartoonWontFit(r);
+        // a new object is a new depth range, and loading one does not go
+        // through the object dropdown's change event
+        setTimeout(syncClipPanelToObject, 0);
         if (r?.objectSelect) r.objectSelect.value = show;
         if (objectSelect) objectSelect.value = show;
         if (r?.updatePAEContainerVisibility) r.updatePAEContainerVisibility();

@@ -3465,6 +3465,41 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             return Math.sqrt(r2) + Math.max(2, 2 * (this.lineWidth || 3));
         }
 
+        /**
+         * The structure's actual depth range IN THIS VIEW - what the control's
+         * track spans, so that moving a knob cuts something immediately.
+         *
+         * Not the same as the rest state: that is a radius, deliberately, so
+         * that rotating cannot start a cut on its own. The radius is bigger
+         * than this whenever the structure is wider than it is deep, and a
+         * track drawn to the radius spends its first stretch crossing empty
+         * space - which is what "the endpoints do not hide anything when I move
+         * them" is. So the track measures the view and the ENDS mean off: a
+         * knob at its limit is stored as the rest state, not as this number.
+         */
+        clipViewExtent() {
+            this._ensureRotated();
+            const n = this.coords ? this.coords.length : 0;
+            const rc = this.rotatedCoords;
+            if (!n || !rc || rc.length < n) return null;
+            let lo = Infinity; let hi = -Infinity;
+            for (let i = 0; i < n; i++) {
+                const z = rc[i].z;
+                if (z < lo) lo = z;
+                if (z > hi) hi = z;
+            }
+            if (!(hi >= lo)) return null;
+            // NO PAD. The rest state pads, because a slab tight to the ATOMS
+            // would shave the surface drawn around them - but the track is
+            // where the knobs travel, and padding it spends the first stretch
+            // of that travel on empty space: 6 Angstrom of a 36 Angstrom
+            // structure, during which moving the knob visibly did nothing. A
+            // knob at the end is off anyway (see the caller), so the end has no
+            // shaving to avoid; one step in cuts the front of the drawing,
+            // which is what a knob at the front of the structure should do.
+            return { far: lo, near: hi };
+        }
+
         /** A slab that holds the whole structure however it is turned. */
         clipSlabDefault() {
             const R = this._clipReach();
