@@ -2434,6 +2434,39 @@ t('the GPU is on by default on the web page and off in the Python viewer', () =>
         throw new Error('the Python viewer default changed with the web app; '
             + 'they are deliberately different - see the comment in index.html');
     }
+    // ...AND IT IS A GLOBAL SETTING, so it sits with Save and Clear All rather
+    // than among the fetch options, where it read as something about the file
+    // being loaded.
+    const top = html.indexOf('id="saveStateButton"');
+    const gpu = html.indexOf('id="useGpuRow"');
+    if (!(gpu >= 0 && gpu < top)) {
+        throw new Error('Use GPU is no longer beside Save/Clear All - it is a '
+            + 'global setting, not a property of the file being fetched');
+    }
+});
+
+// ALIGN ON A NAMED CHAIN. The alignment used to take the first chain in the
+// reference frame and say nothing about it; blank still means exactly that.
+t('the alignment chain can be named, and a wrong name is reported', () => {
+    const html = fs.readFileSync('index.html', 'utf8');
+    if (!/id="alignChainInput"/.test(html)) {
+        throw new Error('the Align chain field is gone from index.html');
+    }
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const i = app.indexOf("const wanted = ");
+    if (i < 0) throw new Error('the alignment never reads the field');
+    const block = app.slice(i, i + 1600);
+    if (!/toUpperCase\(\) === wanted\.toUpperCase\(\)/.test(block)) {
+        throw new Error('a chain typed in the other case is not matched');
+    }
+    if (!/No chain/.test(block)) {
+        throw new Error('a name the structure does not have is silently ignored -'
+            + ' asking for B and getting A is only noticed later, in a figure');
+    }
+    // ...and blank must still fall through to the first chain
+    if (!/Find first non-empty chain ID/.test(block)) {
+        throw new Error('the blank case no longer falls back to the first chain');
+    }
 });
 
 // Cyclic is NOT cartoon-only, so the tag that hides Smooth and Arrows in tube

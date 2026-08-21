@@ -1643,3 +1643,57 @@ table.layout-table td {
     cursor: not-allowed;
     pointer-events: none;
 }
+
+/* A TOGGLE THAT LIVES OUTSIDE THE VIEWER. The .btn-toggle rules are scoped to
+   .py2dmol-viewer-instance, and Use GPU sits in the page header beside Save and
+   Clear All - it is a global setting, not a viewer control. Same skin as those
+   toggles (green on, grey off), same size as the buttons it stands next to. */
+.btn-toggle-global {
+    position: relative;
+    display: inline-flex;
+    height: var(--btn-height);
+    border-radius: var(--btn-radius);
+    cursor: pointer;
+}
+
+.btn-toggle-global input[type="checkbox"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    margin: 0;
+    cursor: pointer;
+}
+
+.btn-toggle-global>span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: var(--btn-height);
+    padding: 0 var(--btn-padding-x);
+    border-radius: var(--btn-radius);
+    font-size: var(--btn-font-size);
+    font-weight: 600;
+    box-shadow: var(--shadow-sm);
+    transition: all 0.2s;
+    background: var(--color-gray-200);
+    color: var(--color-gray-700);
+    box-sizing: border-box;
+}
+
+.btn-toggle-global input:checked+span {
+    background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+    color: #fff;
+}
+
+.btn-toggle-global input:not(:checked)+span:hover {
+    background: var(--color-gray-300);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+.btn-toggle-global input:checked+span:hover {
+    background: linear-gradient(135deg, var(--color-success-hover) 0%, var(--color-success-dark) 100%);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}

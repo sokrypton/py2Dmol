@@ -39,7 +39,30 @@ AI Context: STANDALONE WEB APP ENTRY POINT
 
     <!-- Total width (600 + 8 + 340 = 948px) -->
     <div class="mx-auto" style="width: 948px; position: relative;">
-        <div style="position: absolute; top: 0; right: 0; display: flex; gap: 8px;">
+        <div style="position: absolute; top: 0; right: 0; display: flex; gap: 8px; align-items: center;">
+            <!-- USE GPU sits with Save and Clear All because it is a GLOBAL setting,
+                 not something about the file being fetched. It is the rendering
+                 BACKEND and applies to both styles equally, and it wears the same
+                 skin as the toggles in the Style panel - green on, grey off - at the
+                 size of the two buttons beside it.
+
+                 ON BY DEFAULT, on this page only. Measured first render of 3J3Q:
+                 1,813 ms on the 2D path against 455 with the GPU, and every frame
+                 after it 840 ms against 26 - turning a capsid is not usable
+                 without it. Small structures are unaffected either way (1TIM 306
+                 vs 327 ms, 4UG0 332 vs 333).
+
+                 Safe as a default because it is only ever a REQUEST: this control
+                 removes itself when WebGL2 is absent, and the renderer falls back
+                 to the 2D path by itself for anything the GPU declines. The Python
+                 viewer keeps its own default (gpu=False in viewer.py) and has no
+                 such control. -->
+            <label id="useGpuRow" class="btn-toggle-global"
+                title="Draw on the GPU (WebGL2): the same picture, but turning and zooming cost one draw call instead of a full repaint. Applies to both styles.">
+                <input type="checkbox" id="useGpuCheckbox" checked>
+                <span><i class="fa-solid fa-microchip"></i>Use GPU</span>
+            </label>
+
             <button id="saveStateButton" class="btn btn-primary">
                 <i class="fa-solid fa-floppy-disk"></i>
                 <span>Save</span>
@@ -149,34 +172,17 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <label for="alignFramesCheckbox" class="upload-toggle-label">Align Frames</label>
                                 </div>
 
-                                <!-- Use GPU: the rendering BACKEND, not a style.
-                                     It lives here rather than in the Style panel
-                                     because it applies to both styles equally -
-                                     tagged per-style it was hidden in whichever
-                                     one you were not in.
-                                
-                                     ON BY DEFAULT, on this page only. Measured
-                                     first render of 3J3Q: 1,813 ms on the 2D
-                                     path against 455 with the GPU, and every
-                                     frame after it 840 ms against 26 - turning
-                                     a capsid is not usable without it. Small
-                                     structures are unaffected either way (1TIM
-                                     306 vs 327 ms, 4UG0 332 vs 333).
-                                
-                                     Safe as a default because it is only ever a
-                                     REQUEST: the row above removes itself when
-                                     WebGL2 is absent, and the renderer falls
-                                     back to the 2D path by itself for anything
-                                     the GPU declines. The Python viewer keeps
-                                     its own default (gpu=False in viewer.py)
-                                     and does not have this control. -->
-                                <div class="upload-toggle-item" id="useGpuRow">
-                                    <label class="switch">
-                                        <input type="checkbox" id="useGpuCheckbox" checked>
-                                        <span class="slider-toggle"></span>
-                                    </label>
-                                    <label for="useGpuCheckbox" class="upload-toggle-label"
-                                        title="Draw on the GPU (WebGL2): the same picture, but turning and zooming cost one draw call instead of a full repaint. Applies to both styles.">Use GPU</label>
+                                <!-- WHICH CHAIN THE FRAMES ARE ALIGNED ON. Blank keeps
+                                     the old behaviour - the first chain in the reference
+                                     frame - which is right until the first chain is not
+                                     the one you care about. Only read when Align Frames
+                                     is on. -->
+                                <div class="upload-toggle-item" id="alignChainRow">
+                                    <label for="alignChainInput" class="upload-toggle-label"
+                                        title="Align the frames on this chain. Blank uses the first chain in the structure.">Align chain</label>
+                                    <input type="text" id="alignChainInput" placeholder="auto"
+                                        maxlength="4" autocomplete="off" spellcheck="false"
+                                        style="width: 64px; height: 26px; font-size: 12px; padding: 0 6px; border: 1px solid #d1d5db; border-radius: 6px;">
                                 </div>
 
                             </div>
