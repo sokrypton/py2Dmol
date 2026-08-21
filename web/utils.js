@@ -1070,6 +1070,34 @@ function yieldToBrowser() {
     return new Promise((s) => setTimeout(s, 0));
 }
 
+// HOW OFTEN A LOAD LETS THE BROWSER IN. A yield is a setTimeout, which the
+// browser clamps to about 4 ms whatever you ask for, so yielding is only free
+// next to work that takes longer than that.
+//
+// It was yielded UNCONDITIONALLY: once per parse slice, once per convert slice,
+// and twice per model in the loader. That is right for one huge structure,
+// where a slice is 100 ms of work, and ruinous for a simulation, where a model
+// is 0.1 ms: a 275-model trajectory paid about 30 ms of clamped timers PER
+// MODEL and took 8.3 seconds to load 39 positions.
+//
+// So the rule is time, not steps: hand the frame back only when this load has
+// been holding the thread for longer than a frame's worth. A capsid still
+// yields on every slice; the trajectory yields a handful of times in total.
+const YIELD_EVERY_MS = 25;
+let _lastYieldAt = 0;
+function yieldIfBusy() {
+    const now = (typeof performance !== 'undefined' && performance.now)
+        ? performance.now() : Date.now();
+    if (now - _lastYieldAt < YIELD_EVERY_MS) return Promise.resolve();
+    _lastYieldAt = now;
+    return yieldToBrowser().then(() => {
+        // ...measured from when the browser gave the thread BACK, or the time
+        // spent waiting counts as time spent working
+        _lastYieldAt = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now() : Date.now();
+    });
+}
+
 // Drained a slice at a time, giving the browser a turn in between. onProgress
 // is called with the real fraction of the file the walk has passed.
 async function parseCIFAsync(text, onProgress) {
@@ -1078,7 +1106,7 @@ async function parseCIFAsync(text, onProgress) {
         const r = it.next();
         if (r.done) return r.value;
         if (onProgress) onProgress(r.value);
-        await yieldToBrowser();
+        await yieldIfBusy();
     }
 }
 
@@ -2580,7 +2608,7 @@ async function convertParsedToFrameDataAsync(onProgress, ...args) {
         const r = it.next();
         if (r.done) return r.value;
         if (onProgress) onProgress(r.value);
-        await yieldToBrowser();
+        await yieldIfBusy();
     }
 }
 

@@ -1205,6 +1205,38 @@ t('every draw path asks the same clip test', () => {
     }
 });
 
+// YIELDING IS NOT FREE. A setTimeout is clamped to about 4 ms whatever you ask
+// for, so handing the browser a turn only pays where the work between turns is
+// longer than that. Yielded per STEP, a 275-model simulation - 0.1 ms of work a
+// model - spent 30 ms of clamped timers per model and took 8.3 seconds to load
+// 39 positions. Yielded on TIME, the same file takes 164 ms.
+t('a load yields on time, not on steps', () => {
+    const u = fs.readFileSync('web/utils.js', 'utf8');
+    if (!/function yieldIfBusy/.test(u)) {
+        throw new Error('yieldIfBusy is gone - loads are yielding per step again');
+    }
+    const body = u.slice(u.indexOf('function yieldIfBusy'), u.indexOf('function yieldIfBusy') + 700);
+    if (!/YIELD_EVERY_MS/.test(body)) throw new Error('the yield has no time budget');
+    // the drainers and the loader loop must all use it: any one left on the
+    // unconditional yield is a per-step timer again
+    for (const [file, want] of [['web/utils.js', 2], ['web/app.js', 2]]) {
+        const src2 = fs.readFileSync(file, 'utf8');
+        const n = (src2.match(/await yieldIfBusy\(\)/g) || []).length;
+        if (n < want) {
+            throw new Error(file + ' has ' + n + ' time-budgeted yields, expected '
+                + want + ' - a step-yield is back in the load path');
+        }
+    }
+    // ...and the per-model loop must not hold an unconditional one
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    const loop = app.slice(app.indexOf('for (let i = 0; i < models.length'),
+        app.indexOf('rawFrames.push(frameObj)'));
+    if (/await yieldToBrowser\(\)/.test(loop)) {
+        throw new Error('the per-model loop yields unconditionally - that is 4 ms '
+            + 'a model, and a simulation is thousands of models');
+    }
+});
+
 // A HOVER MARK IS NOT PART OF THE PICTURE. The selection is something the user
 // asked to have marked and belongs in a saved image; where the pointer happens
 // to be does not - and an export renders from a different context entirely, so

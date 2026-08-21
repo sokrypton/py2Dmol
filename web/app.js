@@ -2916,7 +2916,10 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
 
         // Filter ligands from model
         setProgress(progressAt('build', 0), 'Grouping residues');
-        await yieldToBrowser();
+        // ...but only where there is something to wait for: a trajectory runs
+        // this loop once per model, and a model can be 0.1 ms of work against a
+        // 4 ms clamped timer. See yieldIfBusy in utils.js.
+        await yieldIfBusy();
         const model = maybeFilterLigands(models[i]);
         const originalPositionCount = models[i].length;
         const filteredPositionCount = model.length;
@@ -2924,7 +2927,7 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         // Convert parsed atoms to frame data
         // Pass conectMap (PDB) and structConn (CIF) for bond resolution
         setProgress(progressAt('build', 0.4), 'Building positions');
-        await yieldToBrowser();
+        await yieldIfBusy();
         let frameData = await convertParsedToFrameDataAsync(
             (f) => setProgress(progressAt('build', 0.4 + 0.55 * f), 'Building positions'),
             model,
