@@ -60,7 +60,7 @@ AI Context: STANDALONE WEB APP ENTRY POINT
             <label id="useGpuRow" class="btn-toggle-global"
                 title="Draw on the GPU (WebGL2): the same picture, but turning and zooming cost one draw call instead of a full repaint. Applies to both styles.">
                 <input type="checkbox" id="useGpuCheckbox" checked>
-                <span><i class="fa-solid fa-microchip"></i>Use GPU</span>
+                <span><i class="fa-solid fa-microchip"></i>GPU</span>
             </label>
 
             <button id="saveStateButton" class="btn btn-primary">
@@ -307,9 +307,11 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                in style.css - the same green as a checked toggle. */
                         </style>
                         <!-- CLIP PANEL. PyMOL's clip: a slab in camera space, set as a
-                             RANGE - two handles on one track, Far on the left and Near
-                             on the right, which cannot cross. Switching Clip off puts
-                             the panel away and LEAVES the cut; Reset is what uncuts. -->
+                             RANGE - two knobs on one track, far on the left and near on
+                             the right, which cannot cross. No figures: where the knobs
+                             are IS the answer, and the picture shows the rest.
+                             Switching Clip off puts the panel away and LEAVES the cut;
+                             Reset is what uncuts. -->
                         <style>
                             /* [hidden] is a UA rule and an inline display:flex outranks
                                it - the same trap the style panel documents below. */
@@ -349,14 +351,12 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                              no width at all - the handles were there and unusable. -->
                         <div id="clipPanel" hidden class="control-group"
                             style="display: flex; flex-direction: row; align-items: center; gap: 8px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
-                            <span id="clipFarValue" style="width: 52px; font-size: 11px; color: #6b7280;"></span>
-                            <div id="clipRange">
+                            <div id="clipRange" title="Drag the two knobs to clip the view between them">
                                 <div class="track"></div>
                                 <div class="span" id="clipSpan"></div>
                                 <input type="range" id="clipFar" aria-label="Far clipping plane">
                                 <input type="range" id="clipNear" aria-label="Near clipping plane">
                             </div>
-                            <span id="clipNearValue" style="width: 52px; font-size: 11px; color: #6b7280; text-align: right;"></span>
                             <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset</button>
                         </div>
 
@@ -728,6 +728,15 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <option value="chain">Chain</option>
                     </select>
                 </div>
+
+                <!-- WHICH FILE THIS FRAME CAME FROM, in the gap between the mode
+                     dropdown and the buttons. Loading a folder of predictions as
+                     frames gives one object and a frame number; this says which
+                     file you are looking at. Empty when the frames have no names
+                     of their own (a single structure, or a session from before
+                     they were kept). -->
+                <div id="frameNameLabel"
+                    style="flex: 1; min-width: 0; text-align: center; font-size: 12px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div>
 
                 <!-- Action buttons aligned to the right -->
                 <div class="sequence-actions" style="margin-left: auto;">

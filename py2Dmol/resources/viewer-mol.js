@@ -3846,6 +3846,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Extract frame data for selected positions
                 const extractedFrame = {
                     coords: [],
+                    // the file this frame came from: a copy is the same frames
+                    // with fewer positions, so it is still that file's frame
+                    name: frame.name,
                     chains: frame.chains ? [] : undefined,
                     plddts: sourcePlddt ? [] : undefined,
                     position_types: frame.position_types ? [] : undefined,

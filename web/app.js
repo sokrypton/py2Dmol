@@ -1400,6 +1400,8 @@ function setupEventListeners() {
 
 
     // Listen for the custom event dispatched by the renderer when color settings change
+    // the strip's header names the frame, so it follows the frame
+    document.addEventListener('py2dmol-frame-change', updateFrameNameLabel);
     document.addEventListener('py2dmol-color-change', () => {
         // Update colors in sequence view when color mode changes
         window.SEQ?.updateColors();
@@ -1616,6 +1618,9 @@ function updateObjectNavigationButtons() {
 }
 
 function handleObjectChange() {
+    // a different object is a different set of frames, and frame 0 of the new
+    // one may be the same INDEX as the old - so no frame-change event fires
+    setTimeout(updateFrameNameLabel, 0);
     const objectSelect = document.getElementById('objectSelect');
 
     const selectedObject = objectSelect.value;
@@ -1700,14 +1705,12 @@ function fillClipPanel(slab) {
     showClipValues();
 }
 
-// The blue bar between the handles, and the two readouts.
+// The blue bar between the knobs. No figures beside it: where the knobs are is
+// the answer, and Angstrom along the camera's own depth is not a number anyone
+// reads off a slider.
 function showClipValues() {
     const r = viewerApi?.renderer;
     if (!r) return;
-    const n = document.getElementById('clipNearValue');
-    const f = document.getElementById('clipFarValue');
-    if (n) n.textContent = r.clipNear === null ? '' : r.clipNear.toFixed(1) + ' A';
-    if (f) f.textContent = r.clipFar === null ? '' : r.clipFar.toFixed(1) + ' A';
     const bar = document.getElementById('clipSpan');
     const near = document.getElementById('clipNear');
     if (!bar || !near || r.clipNear === null) return;
@@ -1772,6 +1775,26 @@ function setupClipPanel() {
         if (panel) panel.hidden = false;
         fillClipPanel(slab);
     });
+}
+
+// WHICH FILE THE CURRENT FRAME CAME FROM, in the sequence strip's header.
+// Frames carry a name only when they were loaded from separate files (or from a
+// multi-model file); anything else leaves the label empty rather than inventing
+// one.
+function updateFrameNameLabel() {
+    const el = document.getElementById('frameNameLabel');
+    if (!el) return;
+    const r = viewerApi?.renderer;
+    const obj = r && r.objectsData ? r.objectsData[r.currentObjectName] : null;
+    const frames = obj && obj.frames;
+    if (!frames || !frames.length) { el.textContent = ''; return; }
+    // ...and only where there is more than one, since for a single structure the
+    // object selector beside it already says the same word.
+    if (frames.length < 2) { el.textContent = ''; el.title = ''; return; }
+    const i = (typeof r.currentFrame === 'number' && r.currentFrame >= 0) ? r.currentFrame : 0;
+    const f = frames[i];
+    el.textContent = (f && f.name) ? f.name : '';
+    el.title = el.textContent;
 }
 
 function applyBestViewRotation(animate = true) {
@@ -3027,7 +3050,14 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             //
             // Coefficients are relative to the residue's own backbone frame, so
             // the re-centring that happens to coords below does not touch them.
-            sidechains: frameData.sidechains
+            sidechains: frameData.sidechains,
+            // WHERE THIS FRAME CAME FROM. Loading a folder of predictions as
+            // frames used to lose which file each one was: the object took one
+            // name and the frames were numbered. The strip shows this beside
+            // the frame counter, so a frame you are looking at can be named.
+            // A multi-model file adds the model's own number, since the file
+            // name alone would say the same thing for every frame in it.
+            name: models.length > 1 ? `${name} #${i + 1}` : name
         };
 
         // Only include bond data if it differs from previous frame (optimization)
@@ -3414,6 +3444,7 @@ function applyPendingObjects() {
         if (window.updateMSAChainSelectorIndex) window.updateMSAChainSelectorIndex();
         if (window.updateMSAContainerVisibility) window.updateMSAContainerVisibility();
         if (r?.updateUIControls) r.updateUIControls();
+        updateFrameNameLabel();
 
         // Load frame and apply best view rotation WITHOUT intermediate renders
         if (r?.setFrame) {
@@ -6437,6 +6468,9 @@ function saveViewerState() {
 
                 // Copy other fields as-is (omit null/undefined)
                 if (frame.chains) frameData.chains = frame.chains;
+                // the file this frame came from, so a reloaded session can still
+                // say which one you are looking at
+                if (frame.name) frameData.name = frame.name;
                 if (frame.position_types) frameData.position_types = frame.position_types;
                 if (frame.residue_numbers) frameData.residue_numbers = frame.residue_numbers;
                 if (frame.bonds) frameData.bonds = frame.bonds;
@@ -6836,6 +6870,11 @@ async function loadViewerState(stateData) {
                         // them already. JSON has no typed arrays, so the numeric
                         // columns come back plain and are put back into shape.
                         sidechains: reviveSidechainTable(frameData.sidechains),
+                        // ...and which file it came from, or a restored session
+                        // knows the frames' names no better than before they
+                        // were kept - which is the fault this comment warns of,
+                        // one field along.
+                        name: frameData.name,
                     };
 
                     renderer.addFrame(resolvedFrame, objData.name);
