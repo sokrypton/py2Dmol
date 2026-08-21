@@ -769,14 +769,8 @@ void main() {
   // because that is what the reference quantises.
   vec3 nSrc = uCel > 0.5 ? aFlatShade : aNormal;
   vec3 ub = normalize(uRot * nSrc);
-  // THE CULL DOES NOT FOLLOW THE SHADING NORMAL. Which side of a zero-thickness
-  // ribbon faces the eye is a fact about the geometry, and the interpolated
-  // test is what partitions a quad exactly where the surface turns over. Read
-  // through the FLAT normal it is constant across the face, so the whole quad
-  // keeps whichever side its piece mean happened to face - and the pale inner
-  // face breaks through the coloured outer one in patches, on a plain helix,
-  // with nothing near it. That is a per-face cull by the back door, and it only
-  // appeared with Smooth off, because only then is nSrc the flat normal.
+  // The per-station frame, interpolated. The SHADING reads it; the cull does
+  // not - see the piece mean at the aSheet test below.
   vec3 ubTrue = normalize(uRot * aNormal);
   vec3 tg = normalize(uRot * aTangent);         // along the strip
   // THE VIEW VECTOR, which under perspective is per point rather than (0,0,1).
@@ -929,9 +923,25 @@ void main() {
   // zero at the same point, and one picks up precisely where the other leaves
   // off. Nothing falls through the gap because there is no gap.
   //
+  // ...AND THE SIDE IS CHOSEN PER PIECE, WHICH IS WHAT THE REFERENCE DOES.
+  //
+  // The interpolated normal partitions a quad exactly where the surface turns
+  // over, which sounds right and is not what the 2D pass draws: it paints both
+  // faces of a piece back to front, keyed on bAvg - the piece MEAN - so one
+  // side wins over the whole piece and a fold shows as a clean edge. Read per
+  // fragment, the GPU flipped sides part-way through a piece the reference had
+  // not cut, and the pale inner face came through the coloured outer one as a
+  // wedge at every helix fold. That is the 6MRR report.
+  //
+  // aFlatShade is the piece mean for a broad face, and this branch only ever
+  // sees broad faces (a side band is never marked thin). Measured over four
+  // views each of 6MRR, 1TIM, 1UBQ and 3CHY: 1,047 pixels moved to agreeing
+  // with the 2D pass, 149 away from it, and every structure's big-difference
+  // count fell.
+  //
   // window.__flatCull = true restores the per-face test.
   if (aSheet > 0.5) {
-    float oBcull = dot(ubTrue, vd);
+    float oBcull = dot(normalize(uRot * aFlatShade), vd);
     bool away = uFlatCull > 0.5 ? (dot(fn, vd) <= 0.0) : ((aTop > 0.5) != (oBcull > 0.0));
     if (away) vCull = 1.0;
   }

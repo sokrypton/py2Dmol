@@ -1601,6 +1601,34 @@ t('Draw takes the 2D path, whatever the GPU setting says', () => {
 // the texture units its caller is using: run on units 0 and 1 it left the depth
 // field where the fill program's visibility map should be and the raw occlusion
 // where its palette should be, and half the drawing came out white.
+t('a zero-thickness ribbon picks its side per PIECE, as the reference does', () => {
+    // Both faces of a flat helix sit at the same depth, so one of them has to
+    // be culled or they fight. WHICH one is the question this settles: the 2D
+    // pass paints both back to front keyed on the piece mean, so a fold comes
+    // out as a clean edge, and the GPU used the per-station normal instead -
+    // which flips sides part-way through a piece and puts the pale inner face
+    // through the outer one as a wedge (6MRR).
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const at = gpu.indexOf('if (aSheet > 0.5) {');
+    if (at < 0) throw new Error('the zero-thickness side test is gone');
+    const branch = gpu.slice(at, at + 300);
+    if (!/oBcull = dot\(normalize\(uRot \* aFlatShade\), vd\)/.test(branch)) {
+        throw new Error('the side test no longer reads the piece mean');
+    }
+    if (/oBcull = dot\(ubTrue/.test(branch)) {
+        throw new Error('the side test is back on the interpolated normal');
+    }
+    // aFlatShade IS the piece mean for a broad face, and this branch only sees
+    // broad faces - a side band is never marked thin
+    if (!/const nFlat = isRibFace \? \(\(pf && pf\.nMean\)/.test(gpu)) {
+        throw new Error('aFlatShade is no longer the piece mean');
+    }
+    if (!/sheetA: \(!isSide && thinAt\[k\]\)/.test(gpu)) {
+        throw new Error('a side band can now be marked thin, and the piece mean '
+            + 'is the wrong vector for one');
+    }
+});
+
 t('the occlusion pass is shared, and stays off the low texture units', () => {
     const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
     const at = gpu.indexOf('function runOcclusion(cv, o) {');
