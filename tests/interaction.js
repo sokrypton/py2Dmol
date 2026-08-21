@@ -1422,6 +1422,33 @@ t('Draw takes the 2D path, whatever the GPU setting says', () => {
     }
 });
 
+// ONE OCCLUSION PASS, TWO STYLES. FSAO reads a field of view depths and knows
+// nothing about what drew it, so the cartoon needs no shader of its own - only
+// its own constants. What it does need is for the pass to keep its hands off
+// the texture units its caller is using: run on units 0 and 1 it left the depth
+// field where the fill program's visibility map should be and the raw occlusion
+// where its palette should be, and half the drawing came out white.
+t('the occlusion pass is shared, and stays off the low texture units', () => {
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const at = gpu.indexOf('function runOcclusion(cv, o) {');
+    if (at < 0) throw new Error('runOcclusion is gone - the tube and the cartoon '
+        + 'have two copies of the occlusion again');
+    const body = gpu.slice(at, gpu.indexOf('\nfunction ', at + 10));
+    for (const unit of ['TEXTURE0', 'TEXTURE1']) {
+        if (body.includes('gl.activeTexture(gl.' + unit + ')')) {
+            throw new Error('runOcclusion binds ' + unit + ', which its callers are using');
+        }
+    }
+    // ...and both callers ask it, rather than one of them inlining it
+    const calls = (gpu.match(/runOcclusion\(cv/g) || []).length;
+    if (calls < 2) throw new Error('only ' + calls + ' caller uses the shared pass');
+    // the cartoon's AO is off unless asked for: the 2D path has no occlusion to
+    // match, so this is a look being invented, not a pass being ported
+    if (!/renderer\.cartoonAO === true/.test(gpu)) {
+        throw new Error('the cartoon occlusion is no longer behind its flag');
+    }
+});
+
 // A HOVER MARK IS NOT PART OF THE PICTURE. The selection is something the user
 // asked to have marked and belongs in a saved image; where the pointer happens
 // to be does not - and an export renders from a different context entirely, so

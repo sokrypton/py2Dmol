@@ -1734,6 +1734,15 @@ void main() {
 const FS = `#version 300 es
 precision highp float;
 in vec3 vCol; in float vCull; in float vZv; out vec4 fragColor;
+// THE OCCLUSION, BORROWED WHOLE FROM THE TUBE. uZOnly makes this pass the depth
+// prepass the shadow is computed from - the same fragment writing its view
+// depth in Angstrom instead of a colour - and uAOTex is the answer coming back.
+// Nothing in FSAO is about capsules: it reads a depth field and returns how
+// buried each pixel is, so the cartoon needs no shader of its own, only its own
+// constants (see drawResident).
+uniform float uZOnly, uUseAO;
+uniform vec2 uSizeF;
+uniform sampler2D uAOTex;
 ${CLIP_GLSL}
 ${GRAIN_GLSL}
 void main() {
@@ -1741,7 +1750,16 @@ void main() {
   // it turns away, decided now rather than when the mesh was captured
   if (vCull > 0.5) discard;
   if (clipped(vZv)) discard;
-  fragColor = vec4(grainAt(vCol), 1.0);
+  if (uZOnly > 0.5) { fragColor = vec4(vZv, 0.0, 0.0, 1.0); return; }
+  vec3 col = vCol;
+  if (uUseAO > 0.5) {
+    // the tube's own two terms in the tube's own order: whiten by how exposed
+    // the pixel is, then darken by how much lies in front of it
+    vec2 ao = texture(uAOTex, gl_FragCoord.xy / uSizeF).rg;
+    col += (1.0 - col) * ((0.50 * ao.g) / 3.0);
+    col *= (0.20 + 0.80 * ao.r);
+  }
+  fragColor = vec4(grainAt(col), 1.0);
 }`;
 
 let gl, prog, buf, locPos, locZ, locCol;
@@ -1890,6 +1908,10 @@ let tubeDensity = 0.1;          // visible segments per square Angstrom
 // magnitude in size. See buildTube for the measurements and why it is not
 // measured per structure any more.
 const TUBE_AO_DENSITY = 0.164;
+// The cartoon's own areal weight for the same kernel. A starting point, not a
+// calibration: the 2D cartoon has no occlusion to match, so this was chosen by
+// looking - see the sweep in the commit that added it.
+const CARTOON_AO_DENSITY = 0.05;
 // WHERE THE OUTLINE SKIRT SITS IN DEPTH, as a fraction of the tube radius
 // toward the eye. It was a whole radius - as near as the tube ever gets, chosen
 // so a rim would never lose to its own fill - and that is too near: a rim then
@@ -3408,7 +3430,74 @@ function shadeRange() {
     return srCache;
 }
 
-function drawResident(cv, prm) {
+// THE OCCLUSION ITSELF: a depth field in, a shadow/tint pair out, and a resolve
+// that matches the interleaved rotation the sampling uses. Nothing here knows
+// what drew the depth - FSAO reads a texture of view depths - which is why the
+// tube and the cartoon can share it and differ only in what they hand in.
+//
+//   scale     device pixels per Angstrom at pe = 1
+//   density   the kernel's areal weight, in segments per square Angstrom
+//   selfBias  how much nearer a sample must be to count as something ELSE
+//   strength  the Shadow control; intensity the per-unit darkening
+function runOcclusion(cv, o) {
+    // UNITS 4 AND 5, NOT 0 AND 1. The callers leave their own textures bound
+    // on the low units - the cartoon reads its visibility map on 0 and its
+    // palette on 1 - and this pass ran between those binds and the draw that
+    // uses them. On 0 and 1 it left the depth field where the visibility map
+    // should be and the raw occlusion where the palette should be: half the
+    // drawing turned white and the density knob did nothing, because the damage
+    // was in the palette rather than in the shadow.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+        gl.useProgram(progAO);
+        const ua = (nm, v) => gl.uniform1f(gl.getUniformLocation(progAO, nm), v);
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, zTex);
+        gl.uniform1i(gl.getUniformLocation(progAO, 'uZTex'), 4);
+        gl.uniform2f(gl.getUniformLocation(progAO, 'uTexel'), 1 / cv.width, 1 / cv.height);
+        ua('uScale', o.scale);
+        ua('uPersp', isPersp() ? 1 : 0);
+        ua('uFL', focalLength());
+        // The 2D renderer's own numbers: cutoff 2.0 x the reference bond and an
+        // offset 2.5 x it for the shadow, 0.5 x / 2.5 x for the tint.
+        const refLen = 3.8;
+        ua('uShadowCut', refLen * 2.0);
+        ua('uShadowMax', refLen * 2.0 + refLen * 2.5);
+        ua('uTintCut', refLen * 0.5);
+        ua('uTintMax', refLen * 0.5 + refLen * 2.5);
+        ua('uStrength', o.strength);
+        ua('uIntensity', o.intensity);
+        // The areal density the kernel is scaled by: a calibrated constant now
+        // rather than a measurement - see buildTube for the six-structure sweep
+        // that says the measurement was the thing making structures disagree -
+        // with cartoonAOGain as the knob on top of it.
+        ua('uDensity', o.density);
+        // A sample less than about a tube's radius nearer is the SAME tube's
+        // own bulge, not something in front of it. Without this every capsule
+        // shades its own rim and the flat segments come out looking moulded.
+        ua('uSelfBias', o.selfBias);
+        const tmA = tmStart('2-ao');
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        tmEnd(tmA);
+
+        // RESOLVE: the 4x4 box that matches the interleaved rotation.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo2);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.useProgram(progBlur);
+        gl.activeTexture(gl.TEXTURE5);
+        gl.bindTexture(gl.TEXTURE_2D, aoTex);
+        gl.uniform1i(gl.getUniformLocation(progBlur, 'uAOTex'), 5);
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, zTex);
+        gl.uniform1i(gl.getUniformLocation(progBlur, 'uZTex'), 4);
+        gl.uniform2f(gl.getUniformLocation(progBlur, 'uTexel'), 1 / cv.width, 1 / cv.height);
+        const tmB = tmStart('3-blur');
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        tmEnd(tmB);
+}
+
+function drawResident(cv, prm, prmAO) {
     const P0 = prm || defaultParams();
     if (P0.ortho !== undefined) setOrtho(P0.ortho);
     if (!resident) return;              // nothing built yet; the caller builds
@@ -3483,8 +3572,50 @@ function drawResident(cv, prm) {
     u('uCel', sp.cel);
     u('uExact', sp.exact ? 1 : 0);
     timerOn = (typeof window !== 'undefined' && window.__gpuTimers === true);
-    const tmS = tmStart('c1-surfaces');
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIdx);
+
+    // ---- OCCLUSION, when it is asked for -------------------------------
+    //
+    // The tube's three passes, over the cartoon's own fills: the same
+    // instances rasterised once with uZOnly to leave a field of view depths,
+    // one full-screen pass turning that into a shadow/tint pair, and a resolve
+    // that matches its interleaved rotation. FSAO reads a depth field and
+    // knows nothing about what drew it, which is why this needs no shader of
+    // its own - only its own two constants. See cartoonAOSelfBias.
+    const wantAO = !!prmAO && ensureOcc(cv.width, cv.height);
+    if (wantAO) {
+        const tmZ = tmStart('c0-prepass');
+        gl.bindFramebuffer(gl.FRAMEBUFFER, zFbo);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+        gl.clearColor(-1e9, 0, 0, 1);       // -1e9 is "no surface here"
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        u('uZOnly', 1);
+        gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_BYTE, 0, resident.count);
+        u('uZOnly', 0);
+        tmEnd(tmZ);
+        runOcclusion(cv, prmAO);
+        // ...AND PUT BACK WHAT WAS BOUND. ensureOcc creates its textures on
+        // whatever unit happens to be active, so the very first AO frame - the
+        // one that allocates them - left the fill program reading a depth
+        // texture as its visibility map: half the drawing came out white, once,
+        // and never again. Rebinding both is cheaper than reasoning about it.
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, visTex);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, palTex);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, cv.width, cv.height);
+        gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+        gl.useProgram(prog3);
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, aoTex2);
+        gl.uniform1i(gl.getUniformLocation(prog3, 'uAOTex'), 3);
+        gl.uniform2f(gl.getUniformLocation(prog3, 'uSizeF'), cv.width, cv.height);
+    }
+    u('uUseAO', wantAO ? 1 : 0);
+
+    const tmS = tmStart('c1-surfaces');
     gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_BYTE, 0, resident.count);
     tmEnd(tmS);
     // divisors live on the attribute, not the program: leaving them at 1 makes
@@ -4187,7 +4318,29 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         // a pan after an Orient moves by the wrong amount. The tube GPU path
         // sets it for the same reason (viewer-mol.js).
         renderer._viewScale = drawScale() / pixelRatio;
-        drawResident(appCv, prm);
+        // THE CARTOON'S OWN OCCLUSION, when it is asked for. GPU only, and off
+        // unless renderer.cartoonAO says otherwise: the 2D path has no shadow
+        // of its own to match, so this is a look being invented rather than a
+        // pass being ported, and it should be looked at before it is a default.
+        //
+        // Its two constants are not the tube's. Density is the areal weight of
+        // the kernel and a ribbon covers far more Angstrom per drawn thing than
+        // a tube does; the self-bias is what stops a surface shading itself, so
+        // for a slab it is about half the thickness rather than a tube radius -
+        // with a floor, because the ribbon preset's thickness is 0.
+        const wantAO = renderer.cartoonAO === true
+            && renderer.shadowEnabled !== false;
+        const aoOpts = wantAO ? {
+            scale: drawScale(),
+            strength: typeof renderer.shadowStrength === 'number' ? renderer.shadowStrength : 0.5,
+            intensity: typeof renderer.shadowIntensity === 'number' ? renderer.shadowIntensity : 0.95,
+            density: (typeof renderer.cartoonAODensity === 'number'
+                ? renderer.cartoonAODensity : CARTOON_AO_DENSITY),
+            selfBias: (typeof renderer.cartoonAOSelfBias === 'number'
+                ? renderer.cartoonAOSelfBias
+                : Math.max(0.8, (renderer.cartoonThickness || 0) * 0.5 + 0.5)),
+        } : null;
+        drawResident(appCv, prm, aoOpts);
         projectPositions(renderer, displayWidth, displayHeight);
         // ...and onto the canvas the app owns, under whatever transform it is
         // holding, which is why this saves and restores it.
@@ -4522,55 +4675,17 @@ function drawTube(cv, renderer, prm) {
         drawTubeInstances();
         tmEnd(tmZ);
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo);
-        gl.viewport(0, 0, cv.width, cv.height);
-        gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
-        gl.useProgram(progAO);
-        const ua = (nm, v) => gl.uniform1f(gl.getUniformLocation(progAO, nm), v);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, zTex);
-        gl.uniform1i(gl.getUniformLocation(progAO, 'uZTex'), 0);
-        gl.uniform2f(gl.getUniformLocation(progAO, 'uTexel'), 1 / cv.width, 1 / cv.height);
-        ua('uScale', (renderer._viewScale || 1) * ratio);
-        ua('uPersp', isPersp() ? 1 : 0);
-        ua('uFL', focalLength());
-        // The 2D renderer's own numbers: cutoff 2.0 x the reference bond and an
-        // offset 2.5 x it for the shadow, 0.5 x / 2.5 x for the tint.
-        const refLen = 3.8;
-        ua('uShadowCut', refLen * 2.0);
-        ua('uShadowMax', refLen * 2.0 + refLen * 2.5);
-        ua('uTintCut', refLen * 0.5);
-        ua('uTintMax', refLen * 0.5 + refLen * 2.5);
-        ua('uStrength', typeof renderer.shadowStrength === 'number' ? renderer.shadowStrength : 0.5);
-        ua('uIntensity', typeof renderer.shadowIntensity === 'number' ? renderer.shadowIntensity : 0.95);
-        // The areal density the kernel is scaled by: a calibrated constant now
-        // rather than a measurement - see buildTube for the six-structure sweep
-        // that says the measurement was the thing making structures disagree -
-        // with cartoonAOGain as the knob on top of it.
-        ua('uDensity', tubeDensity
-            * (typeof renderer.cartoonAOGain === 'number' ? renderer.cartoonAOGain : AO_GAIN));
-        // A sample less than about a tube's radius nearer is the SAME tube's
-        // own bulge, not something in front of it. Without this every capsule
-        // shades its own rim and the flat segments come out looking moulded.
-        ua('uSelfBias', Math.max(0.6, (renderer.lineWidth || 3) * 0.5 * 1.1));
-        const tmA = tmStart('2-ao');
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-        tmEnd(tmA);
-
-        // RESOLVE: the 4x4 box that matches the interleaved rotation.
-        gl.bindFramebuffer(gl.FRAMEBUFFER, aoFbo2);
-        gl.viewport(0, 0, cv.width, cv.height);
-        gl.useProgram(progBlur);
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, aoTex);
-        gl.uniform1i(gl.getUniformLocation(progBlur, 'uAOTex'), 1);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, zTex);
-        gl.uniform1i(gl.getUniformLocation(progBlur, 'uZTex'), 0);
-        gl.uniform2f(gl.getUniformLocation(progBlur, 'uTexel'), 1 / cv.width, 1 / cv.height);
-        const tmB = tmStart('3-blur');
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-        tmEnd(tmB);
+        runOcclusion(cv, {
+            scale: (renderer._viewScale || 1) * ratio,
+            strength: typeof renderer.shadowStrength === 'number' ? renderer.shadowStrength : 0.5,
+            intensity: typeof renderer.shadowIntensity === 'number' ? renderer.shadowIntensity : 0.95,
+            density: tubeDensity
+                * (typeof renderer.cartoonAOGain === 'number' ? renderer.cartoonAOGain : AO_GAIN),
+            // A sample less than about a tube's radius nearer is the SAME tube's
+            // own bulge, not something in front of it. Without this every capsule
+            // shades its own rim and the flat segments come out looking moulded.
+            selfBias: Math.max(0.6, (renderer.lineWidth || 3) * 0.5 * 1.1),
+        });
 
         gl.useProgram(progTube);
         // INTO THE SHARED-DEPTH TARGET, KEEPING THE PREPASS'S DEPTH.
