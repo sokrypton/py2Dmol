@@ -2143,7 +2143,7 @@ function paintGPU(cv, faces, zMin, zMax, useDepth) {
     // ...and the frame is cleared to the paper, not to white. The GPU canvas is
     // blitted over whatever the app painted, so a white clear paints a white
     // square over a black page.
-    gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+    clearToPaper();
     gl.clearDepth(1.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -3553,7 +3553,7 @@ function drawResident(cv, prm, prmAO) {
     gl.viewport(0, 0, cv.width, cv.height);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LESS);
-    gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+    clearToPaper();
     gl.clearDepth(1.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
@@ -3821,6 +3821,17 @@ function drawInk(cv, prm) {
  * Anything in it rebuilds, which costs one 2D render with the painter switched
  * off - the same work the app was doing every frame before.
  */
+// WHAT THE FRAME IS CLEARED TO. Paper on screen - the GPU canvas is blitted
+// over whatever the app painted, so a white clear paints a white square over a
+// black page - and NOTHING at all for an export asked to be transparent, which
+// is what saveImage asks for. Premultiplied alpha, so transparent is (0,0,0,0)
+// and not paper-with-zero-alpha.
+let clearAlpha = 1;
+function setClearAlpha(a) { clearAlpha = (a === 0) ? 0 : 1; }
+function clearToPaper() {
+    if (clearAlpha === 0) gl.clearColor(0, 0, 0, 0);
+    else gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+}
 let appCv = null;                  // the offscreen drawing buffer
 let appSig = null;                 // what the resident mesh was built from
 let appColors = null;              // the palette the app last handed over
@@ -4190,16 +4201,27 @@ function projectPositions(renderer, dw, dh) {
 // walking 300,000 colour objects to conclude that none of them had changed.
 // See tubeKeyOf, which makes the same argument at greater length.
 
+// HOW BIG THE DRAWING BUFFER MAY BE, and whether it came out that big.
+//
+// A canvas larger than the driver's limit does not fail: the drawing buffer is
+// CLAMPED and canvas.width goes on reporting what was asked for, so the blit
+// would silently scale a small picture up. A 1200 dpi export of a wide viewport
+// asks for 16,000 px; a laptop's limit is often 8,192 or 16,384. Where it does
+// not fit, this says so and the 2D path draws the export instead - which is
+// what it did for every export before this.
+function bufferFits(w, h) {
+    if (!gl) return true;                 // nothing made yet; the caller inits
+    return gl.drawingBufferWidth === w && gl.drawingBufferHeight === h;
+}
+
 function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
     if (!window.py2dmolCartoon || typeof document === 'undefined') return false;
-    // THE REAL CANVAS ONLY. Export runs this same draw stage against an SVG
-    // context and against an offscreen 2D context at a different scale; both
-    // want the vector or the exact-size raster the 2D path produces, and
-    // neither can take a blit from a canvas sized for the screen.
+    // ANY 2D CANVAS, AT ITS OWN SIZE - the screen's, or the one saveImage makes
+    // for an export. An SVG context is still the 2D path's: there is no vector
+    // to hand back from a raster. See appSizeFor for the rest of the argument.
     if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
-    if (ctx.canvas !== renderer.canvas) return false;
-    const w = renderer.canvas.width;
-    const h = renderer.canvas.height;
+    const w = ctx.canvas.width;
+    const h = ctx.canvas.height;
     if (!(w > 0 && h > 0)) return false;
     try {
         if (!appCv) {
@@ -4222,9 +4244,17 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         if (!gl && !initGL(appCv)) return false;
         if (fresh) appSig = null;
 
+        if (!bufferFits(w, h)) return false;
         setRot(renderer.viewerState.rotation);
         setZoomExact((renderer.viewerState && renderer.viewerState.zoom) || 1);
+        // DEVICE PIXELS PER CSS PIXEL - and for an export that is 1, not k.
+        // The mesh is CAPTURED by running the 2D pass at the export's own size,
+        // so the k is already in the geometry; multiplying it in again here
+        // drew the structure three times too large in a 300 dpi frame while
+        // 96 dpi was pixel-correct. What _exportPxScale still has to do is done
+        // where it was always done: inside the capture.
         setPixelRatio(displayWidth > 0 ? w / displayWidth : 1);
+        setClearAlpha(renderer.isTransparent ? 0 : 1);
         setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
         // the clip slab, in the same view space the geometry is drawn in
         setClipSlab(renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipNear : 0,
@@ -4656,14 +4686,20 @@ function buildTube(renderer, S) {
 function drawTube(cv, renderer, prm) {
     if (!gl || !tubeCount) return false;
     timerOn = (typeof window !== 'undefined' && window.__gpuTimers === true);
-    const dw = renderer.displayWidth || cv.width;
+    // DEVICE PIXELS PER DISPLAY PIXEL, measured against the display size THIS
+    // frame is for. renderer.displayWidth is the screen's, and an export is a
+    // different size entirely: read from it, a 300 dpi export scaled the tube
+    // by the ratio between the two and drew the structure three times too
+    // large. The caller passes the size it is drawing at.
+    const dw = (prm && prm.displayWidth > 0 ? prm.displayWidth : 0)
+        || renderer.displayWidth || cv.width;
     const ratio = dw > 0 ? cv.width / dw : 1;
     gl.useProgram(progTube);
     gl.viewport(0, 0, cv.width, cv.height);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LESS);
     gl.depthMask(true);
-    gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+    clearToPaper();
     gl.clearDepth(1.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.bindBuffer(gl.ARRAY_BUFFER, bufTube);
@@ -4768,7 +4804,7 @@ function drawTube(cv, renderer, prm) {
         gl.enable(gl.DEPTH_TEST);
         gl.depthMask(true);
         if (gFbo) gl.depthFunc(gl.LEQUAL);
-        gl.clearColor(PAPER[0] / 255, PAPER[1] / 255, PAPER[2] / 255, 1);
+        clearToPaper();
         gl.clear(gl.COLOR_BUFFER_BIT | (gFbo ? 0 : gl.DEPTH_BUFFER_BIT));
     }
     u('uZOnly', 0);
@@ -4927,9 +4963,8 @@ function drawTubeInstances() {
 function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
     if (typeof document === 'undefined') return false;
     if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
-    if (ctx.canvas !== renderer.canvas) return false;
-    const w = renderer.canvas.width;
-    const h = renderer.canvas.height;
+    const w = ctx.canvas.width;
+    const h = ctx.canvas.height;
     if (!(w > 0 && h > 0)) return false;
     try {
         if (!appCv) {
@@ -4945,9 +4980,11 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         if (!gl && !initGL(appCv)) return false;
         if (fresh) tubeSig = null;
 
+        if (!bufferFits(w, h)) return false;
         setRot(renderer.viewerState.rotation);
         setOrtho(renderer.viewerState && renderer.viewerState.ortho);
         setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
+        setClearAlpha(renderer.isTransparent ? 0 : 1);
         // the clip slab, in the same view space the geometry is drawn in
         setClipSlab(renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipNear : 0,
             renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipFar : 0,
@@ -4981,7 +5018,8 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         }
         if (!tubeCount) return false;
         if (!drawTube(appCv, renderer,
-            { outlineWidthPx: S.outlineWidthPx || 0, hasOcclusion: !!S.renderShadows })) return false;
+            { outlineWidthPx: S.outlineWidthPx || 0, hasOcclusion: !!S.renderShadows,
+                displayWidth })) return false;
         const prev = ctx.getTransform ? ctx.getTransform() : null;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.drawImage(appCv, 0, 0);

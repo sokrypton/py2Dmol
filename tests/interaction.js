@@ -1501,6 +1501,75 @@ t('a hidden or clipped selection is still marked', () => {
 // measured 33% of the way through, the canvas held 99.5% of the finished ink
 // against 31% on the 2D path. The GPU is the default on this page, so that was
 // most people's Draw.
+t('Capture draws on the GPU too, at the size it is exporting', () => {
+    // CAPTURE USED TO BE THE 2D DRAWING, ALWAYS. saveImage renders into a
+    // canvas of its own, and both GPU entries refused any canvas that was not
+    // the screen's - so the picture you exported was made by a different
+    // renderer from the one you were looking at.
+    const v = clipViewer([[0, 0, 0]]);
+    v.useGPU = true;
+    v.drawMode = false;
+    // the class closed over global.window when it was built, so the stubs have
+    // to be PUT ON that object and taken off again - swapping the object does
+    // nothing, and leaving them on tells every later test the GPU is present
+    const had = { g: window.py2dmolCartoonGPU, c: window.py2dmolCartoon };
+    window.py2dmolCartoonGPU = { render: () => true, renderTube: () => true };
+    window.py2dmolCartoon = {};
+    if (!v.canvas) v.canvas = mkCanvas(600, 600);
+    try {
+        const canvasCtx = (cv) => ({ canvas: cv, drawImage: () => {} });
+        const screen = canvasCtx(v.canvas);
+        const exportCv = canvasCtx({ width: 1869, height: 1869 });
+        if (!v._gpuWillTake(screen)) throw new Error('the GPU stopped taking the screen');
+        if (!v._gpuWillTake(exportCv)) {
+            throw new Error('an export canvas is still refused - Capture is back on the 2D path');
+        }
+        // an SVG context is a different matter: there is no vector in a raster
+        const svg = { canvas: {width: 10, height: 10}, drawImage: () => {},
+            getSerializedSvg: () => '' };
+        if (v._gpuWillTake(svg)) throw new Error('the GPU offered to draw an SVG export');
+        v.drawMode = true;
+        if (v._gpuWillTake(exportCv)) throw new Error('Draw stopped taking the 2D path');
+    } finally {
+        if (had.g === undefined) delete window.py2dmolCartoonGPU;
+        else window.py2dmolCartoonGPU = had.g;
+        if (had.c === undefined) delete window.py2dmolCartoon;
+        else window.py2dmolCartoon = had.c;
+    }
+
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (/ctx\.canvas !== renderer\.canvas/.test(gpu)
+        || /ctx\.canvas !== this\.canvas/.test(mol)) {
+        throw new Error('a draw path still insists on the screen canvas');
+    }
+    // AT THE EXPORT'S SIZE, NOT THE SCREEN'S, and only once. Both scales were
+    // wrong in the same way first: the cartoon multiplied _exportPxScale into
+    // the pixel ratio on top of a mesh captured at the export size, and the
+    // tube measured its ratio against renderer.displayWidth. Both drew the
+    // structure three times too large at 300 dpi.
+    if (/setPixelRatio\([^;]*_exportPxScale/.test(gpu)) {
+        throw new Error('the cartoon counts the export scale twice');
+    }
+    const dt = gpu.slice(gpu.indexOf('function drawTube(cv, renderer, prm) {'),
+        gpu.indexOf('const ratio = dw > 0'));
+    if (!/prm\.displayWidth/.test(dt)) {
+        throw new Error('the tube scales an export against the screen size');
+    }
+    // AND A BUFFER THE DRIVER WILL NOT MAKE THAT BIG IS NOT A PICTURE. A canvas
+    // over the limit is CLAMPED silently, so the blit would scale a small
+    // drawing up; measured headless, a 7,475 px export came back as 5,760.
+    if (!/function bufferFits\(w, h\)/.test(gpu)
+        || (gpu.match(/if \(!bufferFits\(w, h\)\) return false;/g) || []).length < 2) {
+        throw new Error('an oversized export is not handed back to the 2D path');
+    }
+    // ...and a transparent export must stay transparent: the GPU clears to
+    // paper, which would put an opaque square under the drawing
+    if ((gpu.match(/setClearAlpha\(renderer\.isTransparent \? 0 : 1\)/g) || []).length < 2) {
+        throw new Error('a GPU export paints its own background over the transparency');
+    }
+});
+
 t('Draw takes the 2D path, whatever the GPU setting says', () => {
     const src2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
     const at = src2.indexOf('const gpuOk = this.useGPU === true');

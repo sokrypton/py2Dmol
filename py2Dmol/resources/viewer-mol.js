@@ -8259,8 +8259,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.style === 'cartoon') {
                 if (typeof G.render !== 'function' || !window.py2dmolCartoon) return false;
             } else if (typeof G.renderTube !== 'function') return false;
+            // A 2D CANVAS IS A 2D CANVAS, the screen's or an export's. It used
+            // to insist on the screen one, which is why Capture was always the
+            // 2D drawing however the viewer was drawn: saveImage renders into a
+            // canvas of its own at k times the size, and that is a display of
+            // k times the density as far as this stage is concerned. An SVG
+            // context is still refused - there is no vector to hand back from a
+            // raster - and so is a buffer the driver will not make that big,
+            // which the GPU module checks for itself.
             if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
-            return ctx.canvas === this.canvas;
+            return true;
         }
 
         /* THE POINT THE VIEW TURNS ABOUT. O(1), and separate from the rotation
@@ -8348,10 +8356,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const G = window.py2dmolCartoonGPU;
             if (!G || !G.renderTube) return false;
             // the same refusals renderTube makes, asked before spending
-            // anything: an export wants the vector or the exact-size raster the
-            // 2D pass produces, not a blit from a screen-sized canvas
+            // anything: an SVG export wants the vector the 2D pass produces,
+            // and there is none in a raster. A PNG export is a canvas like any
+            // other and the GPU draws it - see _gpuWillTake.
             if (!ctx || !ctx.canvas || !ctx.drawImage || ctx.getSerializedSvg) return false;
-            if (ctx.canvas !== this.canvas) return false;
 
             const segments = this.segmentIndices;
             const n = segments ? segments.length : 0;
