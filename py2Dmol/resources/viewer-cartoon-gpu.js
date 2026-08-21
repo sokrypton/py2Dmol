@@ -2471,424 +2471,6 @@ function makeResident(faces, scale, prm, lines) {
     // centre line through it, normal their cross product. Neighbouring faces
     // then SHARE the frame at the station between them, so the interpolated
     // shading is continuous across the join by construction.
-    mark('unprojectFrames');
-    const pieceFrame = new Map();
-    const pieceRails = new Map();
-    for (const f of faces) {
-        if (f.pieceId === undefined || f.surf !== 0) continue;
-        // KEPT FOR THE NORMALS PASS BELOW, which wants the same four corners in
-        // the same space and used to unproject them a second time. Nothing
-        // between here and there writes into a corner, and the emit pass
-        // already shares this array through f._emit, so one computation serves
-        // all three.
-        const m = f._mv = f.q.map((q2) => apply(inv, unproject(q2, scale)));
-        let e = pieceRails.get(f.pieceId);
-        if (!e) { e = { L: [], R: [], oB: f.oB, kAvg: f.kAvg }; pieceRails.set(f.pieceId, e); }
-        e.L[f.st] = m[0]; e.R[f.st] = m[1];          // station k
-        e.L[f.st + 1] = m[3]; e.R[f.st + 1] = m[2];  // station k+1
-        if (f.ubA && f.waA && f.tvA) {
-            if (!e.frames) e.frames = [];
-            // BACK OUT OF THE VIEW ROTATION, exactly as the corner positions
-            // are. mkRenderer hands the renderer coordinates that are ALREADY
-            // turned, so everything it computes - including this frame - comes
-            // back in the rotated frame, while the resident mesh is built in
-            // the unrotated one. Using them as-is rotates the lighting away
-            // from the geometry by the whole view matrix.
-            const un = (v) => normv(apply(inv, v));
-            // the width normal points centre->L (L is the +n corner), and `w`
-            // here is R - L, so it is stored negated
-            const neg = (v) => [-v[0], -v[1], -v[2]];
-            e.frames[f.st] = { n: un(f.ubA), t: un(f.tvA), w: neg(un(f.waA)) };
-            if (f.ubB) {
-                e.frames[f.st + 1] = { n: un(f.ubB), t: un(f.tvB), w: neg(un(f.waB)) };
-            }
-        }
-    }
-    const cross = (a2, b2) => [a2[1] * b2[2] - a2[2] * b2[1],
-        a2[2] * b2[0] - a2[0] * b2[2], a2[0] * b2[1] - a2[1] * b2[0]];
-    const sub = (a2, b2) => [a2[0] - b2[0], a2[1] - b2[1], a2[2] - b2[2]];
-    const mid = (a2, b2) => [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, (a2[2] + b2[2]) / 2];
-    mark('rails');
-    for (const [id, e] of pieceRails) {
-        const ns2 = e.L.length;
-        const cen = [];
-        for (let k = 0; k < ns2; k++) if (e.L[k] && e.R[k]) cen[k] = mid(e.L[k], e.R[k]);
-        const frames = [];
-        for (let k = 0; k < ns2; k++) {
-            if (!e.L[k] || !e.R[k]) continue;
-            const prev = cen[k - 1] || cen[k];
-            const next = cen[k + 1] || cen[k];
-            let t = sub(next, prev);
-            if (Math.hypot(t[0], t[1], t[2]) < 1e-9) t = [1, 0, 0];
-            const w = sub(e.R[k], e.L[k]);
-            // `n` is the BROAD face normal (+-b) and `w` the width direction,
-            // R MINUS L. Mind the sign: the renderer puts the L rail at +wa
-            // (`lp = P(1, 1)`, `rp = P(-1, 1)`) and defines oN as wa . view, so
-            // R - L runs along -wa and the L side's OUTWARD direction is minus
-            // this vector. Getting that backwards lights each band with its
-            // neighbour's value, which is worse than not interpolating at all
-            // and is what the first cut of this measured.
-            // THE RENDERER'S FRAME IF IT GAVE US ONE. Rebuilding it from the
-            // projected rails recovers a direction but not a SIGN - nothing in
-            // a drawing says which side of a ribbon was the outside - and each
-            // attempt to pin that sign afterwards got a different set of faces
-            // wrong. `_frameProbe` asks the renderer for the vector instead.
-            const src = e.frames && e.frames[k];
-            frames[k] = src
-                ? { n: src.n, t: src.t, w: src.w }
-                : { n: normv(cross(t, w)), t: normv(t), w: normv(w) };
-        }
-        // NOTHING TO DECIDE when the frame came from the renderer: its sign is
-        // the one every captured dot product was taken against, so it is right
-        // by construction. Only a rebuilt frame needs making self-consistent -
-        // and a rebuilt frame's overall sign is simply not recoverable from a
-        // projected drawing, which is what three failed attempts established.
-        if (!e.frames) {
-            let ref = null;
-            for (let k = 0; k < ns2; k++) if (frames[k]) { ref = frames[k].n; break; }
-            if (ref) {
-                for (const fr of frames) {
-                    if (!fr) continue;
-                    if (dotv(fr.n, ref) < 0) fr.n = [-fr.n[0], -fr.n[1], -fr.n[2]];
-                }
-            }
-        }
-        // THE PIECE MEAN OUTWARD DIRECTION, for the flat path. The reference
-        // quantises ONE value per piece per side; the shader quantises what
-        // reaches the fragment. Feed it a per-quad value and the two snap to
-        // different bands wherever the quad disagrees with the piece - a
-        // difference that simply averaged out before quantisation existed.
-        let wm = [0, 0, 0];
-        let nm = [0, 0, 0];
-        for (const fr of frames) if (fr) { wm[0] += fr.w[0]; wm[1] += fr.w[1]; wm[2] += fr.w[2]; }
-        // ...AND THE SAME FOR THE BROAD FACES, which is what this comment was
-        // about all along and only the sides ever got. A flat broad face took
-        // its own station's normal, so consecutive quads of one piece quantised
-        // into different bands and every station boundary came out as a step -
-        // the ribbon visibly darker between positions with Smooth off, which is
-        // the default in plain cartoon.
-        for (const fr of frames) if (fr) { nm[0] += fr.n[0]; nm[1] += fr.n[1]; nm[2] += fr.n[2]; }
-        pieceFrame.set(id, { frames, oB: e.oB, wMean: normv(wm), nMean: normv(nm) });
-        // the rails for this piece have now become its frames, and the two
-        // arrays of corner points behind them are nobody's business after that
-        e.L = null; e.R = null; e.frames = null;
-    }
-
-
-    // EDGE TABLE for the outline pass, keyed by the two endpoints so the two
-    // faces that share an edge find each other. Quantised to 1e-3 model units:
-    // the rails of adjacent strip quads are the SAME computed point, so they
-    // agree to floating point, and the quantisation is only insurance.
-    const edgeMap = new Map();
-    const vkey = (q) => `${Math.round(q[0] * 1000)},${Math.round(q[1] * 1000)},${Math.round(q[2] * 1000)}`;
-    // ...and a NUMERIC version of the same thing, cached on the point. The edge
-    // pass asks for a corner's identity about eight times (four edges, two ends
-    // each), and on a structure the size of 9FOG that was half a million
-    // template literals built out of three Math.rounds apiece. The hash is
-    // arithmetic, and stashing it on the array means each corner is hashed
-    // once however often it is looked at.
-    const hashPt = (q2) => {
-        let h = Math.round(q2[0] * 1000) * 73856093
-            ^ Math.round(q2[1] * 1000) * 19349663
-            ^ Math.round(q2[2] * 1000) * 83492791;
-        return h >>> 0;
-    };
-    const ptH = (q) => (q.__h !== undefined ? q.__h : (q.__h = hashPt(q)));
-    // Two-level Map instead of a composed key: an edge is identified by its two
-    // endpoint hashes, and nesting them avoids building a key object at all.
-    // A single packed number would need 64 bits and silently collide past 2^53.
-    const edgeAt = (h1, h2) => {
-        const lo = h1 < h2 ? h1 : h2;
-        const hi = h1 < h2 ? h2 : h1;
-        let inner = edgeMap.get(lo);
-        if (!inner) { inner = new Map(); edgeMap.set(lo, inner); }
-        return inner;
-    };
-    // GHOST EDGES. A face may need to be COUNTED along an edge without being
-    // allowed to ink it. The cross-strip edges of a rib quad are the case: the
-    // reference never runs ink across a ribbon, so a rib face must not create
-    // one - but the flat CAP at a piece end lands on exactly those four edges,
-    // and if the rib does not register there the cap's rim has one incident
-    // face, reads as an open boundary, and is drawn whatever the view. That is
-    // the square permanently ruled across the blunt back of every arrow.
-    //
-    // A ghost contributes its normal and its count and nothing else; an edge
-    // with no REAL face is never emitted. So a mid-strip cross edge still has
-    // two ghosts and stays invisible, while a cap rim has one real face and one
-    // ghost - two normals, and the ordinary silhouette test decides it.
-    const addEdge = (a2, b2, nrm, isStick, pal, ghost, two, noInk, col, full, seam, outer) => {
-        const ha = ptH(a2);
-        const hb = ptH(b2);
-        if (ha === hb) return;      // the repeated corner of a fan-padded quad
-        const inner = edgeAt(ha, hb);
-        const other = ha < hb ? hb : ha;
-        let e = inner.get(other);
-        if (!e) {
-            // TWO SLOTS, NOT AN ARRAY. Only the first two normals are ever
-            // kept, and an array per edge is an allocation per edge - about
-            // seven million of them on a capsid - to hold at most two things.
-            e = { p0: a2, p1: b2, n0: null, n1: null, nCount: 0,
-                count: 0, real: 0, stick: 0, two: 0,
-                noInk: 0, pal: -1, full: 0, seam: 0, outer: 0 };
-            inner.set(other, e);
-        }
-        if (!ghost) e.real++;
-        if (two && !ghost) e.two = 1;
-        if (noInk) e.noInk = 1;      // any face may veto the whole edge
-        if (isStick) e.stick = 1;   // so show/hide can drop its outline too
-        if (full && !ghost) e.full = 1;   // a fully-outlined surface (see below)
-        // A SEAM CROSS EDGE IS VETOED ON THE EDGE, NOT ON THE FACE, and that is
-        // the whole reason this works. The arrow's step is its own two-station
-        // piece, so its far cross edge is shared with the NEXT PRIM - which
-        // knows nothing about the seam and claimed the edge as real, so a
-        // per-face ghost could never remove it. The edge object is looked up by
-        // the hash of its two endpoints and is therefore the SAME object for
-        // both prims, so a flag set here survives whoever else claims it.
-        if (seam) e.seam = 1;
-        if (outer && !ghost) e.outer = 1;
-
-        // AND ITS COLOUR. The Ink control tints an outline toward its own
-        // element's colour, so an edge has to know which palette slot it
-        // belongs to. The first face to claim the edge lends it one.
-        if (e.pal < 0 && pal !== undefined && pal >= 0) e.pal = pal;
-        // ...and its colour, for when there is no slot to look up
-        if (!e.col && col && !ghost) e.col = col;
-        // and WHICH faces they are, for the ID test
-        // COUNT EVERY incident face, keep the first two normals. The count is
-        // what decides whether the silhouette rule even applies - see below.
-        e.count++;
-        if (e.nCount === 0) { e.n0 = nrm; e.nCount = 1; }
-        else if (e.nCount === 1) { e.n1 = nrm; e.nCount = 2; }
-    };
-
-
-    pieceRails.clear();
-    mark('pieceFrames');
-    for (const f of faces) {
-        // the rails pass above already did this for every surf-0 rib face
-        const m = f._mv || (f.q.map((p) => apply(inv, unproject(p, scale))));
-        // NEWELL, not a single cross product. A mitred junction is emitted as
-        // a triangle fan padded to a quad - [q0, qk, qk+1, q0] - so its fourth
-        // corner repeats the first and cross(m1-m0, m3-m0) is exactly zero.
-        // A zero normal makes max(0, n.L) clamp, the face falls to flat
-        // ambient, and every three-way side-chain junction comes out as dark
-        // triangles. Summing over all edges is immune to a repeated vertex.
-        const n = [0, 0, 0];
-        for (let i2 = 0; i2 < m.length; i2++) {
-            const a2 = m[i2];
-            const b2 = m[(i2 + 1) % m.length];
-            n[0] += (a2[1] - b2[1]) * (a2[2] + b2[2]);
-            n[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
-            n[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
-        }
-        const nl = Math.hypot(n[0], n[1], n[2]) || 1;
-        let nn = [n[0] / nl, n[1] / nl, n[2] / nl];
-        // ORIENT IT LIKE ub, and for a rib face use the PIECE's mean frame -
-        // the renderer's tone is one value for the whole strip.
-        const pf = f.pieceId !== undefined ? pieceFrame.get(f.pieceId) : null;
-        const frA = pf && pf.frames ? pf.frames[f.st] : null;
-        const frB = pf && pf.frames ? pf.frames[f.st + 1] : null;
-        // A SIDE IS A SURFACE TOO. Per-station frames - the whole mechanism
-        // smooth shading rides on - were handed only to surf 0 and 1, so with
-        // smooth ON the broad faces interpolated and the two thickness bands
-        // stayed one flat tone per quad. Same defect as the 2D renderer's
-        // missing `cel` branch in paintSide, running the other way: there the
-        // sides refused to go flat, here they refuse to go smooth. Both are
-        // one routine handling the broad faces and nobody handling the bands.
-        //
-        // The outward direction is +w on the L side (surf 2) and -w on the R
-        // (surf 3), which is exactly the sign `paintSide` passes as `outward`.
-        // The shader's side branch hardcodes isTop = 1, so what it wants is
-        // the ALREADY-ORIENTED outward normal, not a normal plus a flag.
-        const sideSign = f.surf === 2 ? -1 : 1;   // see the frame comment: L is at +wa = -w
-        const isRibSide = (f.surf === 2 || f.surf === 3);
-        const wOf = (fr) => (fr && fr.w
-            ? [sideSign * fr.w[0], sideSign * fr.w[1], sideSign * fr.w[2]] : null);
-        // flat: the piece mean, matching what the reference quantises
-        const wFlat = (pf && pf.wMean)
-            ? [sideSign * pf.wMean[0], sideSign * pf.wMean[1], sideSign * pf.wMean[2]] : null;
-        if (frA && (f.surf === 0 || f.surf === 1)) {
-            nn = frA.n;
-        } else if (isRibSide && wOf(frA)) {
-            nn = wOf(frA);
-        } else if ((f.stick || f.cap) && f.nl !== undefined) {
-            // orient it so n.L reproduces the prim's own nl
-            const rn = apply(VR, nn);
-            const vdF = viewVecAt(apply(VR, m[0]));
-            if (f.cap) {
-                // for a cap the carried number is its FACING, so orient by z
-                if ((dotv(rn, vdF) < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
-            } else {
-                const L = [-0.45, 0.6, 0.75];
-                const lm = Math.hypot(L[0], L[1], L[2]);
-                const dot = (rn[0] * L[0] + rn[1] * L[1] + rn[2] * L[2]) / lm;
-                if ((dot < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
-            }
-        } else if (f.oB !== undefined && f.oB !== 0) {
-            const zAtCapture = dotv(apply(VR, nn), viewVecAt(apply(VR, m[0])));
-            if ((zAtCapture < 0) !== (f.oB < 0)) nn = [-nn[0], -nn[1], -nn[2]];
-        }
-        // OUTWARD normals, and it has to be outward or the test is noise. The
-        // silhouette rule is "one adjacent face points at the eye and the other
-        // does not", which is only meaningful if both normals point OUT of the
-        // same solid. The raw winding normal does not: the strip emits its +b
-        // and -b faces with the same corner order, so both their Newell normals
-        // point the same way, and a rail edge would find its two faces always
-        // agreeing.
-        //
-        // `nn` is already outward for sides, sticks and caps. For the two broad
-        // faces it is the +b direction for BOTH, with `top` carrying which side
-        // this one is - the same convention the shader reads - so -b is the one
-        // that needs flipping.
-        const topF = f.top === undefined ? 1 : f.top;
-        // NOT `isRibFace` - that is declared 30 lines further down and this is
-        // above it. A `const` read before its declaration is a TDZ throw, not
-        // undefined, and it takes the whole render with it.
-        const broadFace = (f.surf === 0 || f.surf === 1);
-        // Edges are built in a SECOND pass (below), because two of the rules
-        // need to see every face first: dropping interior face pairs, and
-        // knowing a rib face's strip direction.
-        f._m = m;
-        f._outN = (broadFace && topF < 0.5) ? [-nn[0], -nn[1], -nn[2]] : nn;
-        // SIDE-FACE NORMALS ARE ALREADY OUTWARD - measured, not assumed.
-        //
-        // It was argued from the winding that one of the pair must be inward:
-        //   quad = [A[k], B[k], B[k+1], A[k+1]],  nn ~ (B-A) x (chain step)
-        //   surf 2 = [Lp, Lm] and surf 3 = [Rp, Rm] both give -w, on opposite
-        //   sides, so one of them should point at the axis.
-        // Acting on that put inner lines on every loop and helix. Testing it
-        // instead - each side face's centroid against its piece's centroid,
-        // over a whole DNA structure - flipped ZERO of 228 side faces. The
-        // derivation is wrong somewhere and the normals are fine; the ink and
-        // the cull can share them.
-        f._inkN = f._outN;
-        const c = f.c;
-        // the strip tangent, unprojected and unrotated the same way
-        const tv = (frA && (f.surf === 0 || f.surf === 1 || isRibSide)) ? frA.t
-            : (f.tan ? apply(inv, [f.tan[0] / scale, -f.tan[1] / scale, f.tan[2]]) : [1, 0, 0]);
-        const tl = Math.hypot(tv[0], tv[1], tv[2]) || 1;
-        const tt = [tv[0] / tl, tv[1] / tl, tv[2] / tl];
-        // PER-STATION NORMALS. A quad spans two stations - corners 0,1 are the
-        // near one and 3,2 the far one - and the ribbon TWISTS between them, so
-        // one normal for the whole face throws away exactly the variation the
-        // smooth path draws as a gradient. The width vector at each station
-        // gives its own frame; the shader then interpolates the shading across
-        // the face for free, which is what the 2D renderer is approximating
-        // with a two-stop gradient.
-        // the frame at each END of the quad; neighbouring faces share these,
-        // so the interpolation runs continuously along the whole strip
-        // A/B IN ONE SESSION. Reloading between variants let a dropdown reset
-        // swap the structure underneath a comparison once already: a reading of
-        // 1.4% was a four-atom fixture, not the protein it was being compared
-        // against. Switching the variant at runtime removes that whole class
-        // of mistake.
-        // A flat reference is shaded per PIECE; a smooth one per station. The
-        // frame control follows that by default and can still be forced.
-        const fm = P0.frame;
-        // SMOOTH IS NO LONGER A BUILD-TIME DECISION. Both normals are emitted -
-        // the per-station pair that a smooth face interpolates between, and the
-        // single per-face one a flat face uses - and the shader picks. It reads
-        // uCel, which is already "not smooth", so no new uniform is needed.
-        //
-        // The flat normal is not simply nA: a broad face takes its own station's
-        // frame, while a width band takes the PIECE MEAN, which is what the
-        // reference quantises. That difference is why this could not just be
-        // dropped in the shader.
-        const isRibFace = (f.surf === 0 || f.surf === 1);
-        const nA = isRibFace ? (frA ? frA.n : nn) : (isRibSide ? (wOf(frA) || nn) : nn);
-        const nB = isRibFace ? (frB ? frB.n : nA)
-            : (isRibSide ? (wOf(frB) || nA) : nA);
-        const nFlat = isRibFace ? ((pf && pf.nMean) || nA)
-            : (isRibSide ? ((wFlat || wOf(frA)) || nn) : nn);
-        const tA = (frA && (isRibFace || isRibSide)) ? frA.t : tt;
-        const tB = (frB && (isRibFace || isRibSide)) ? frB.t : tA;
-        f._nA = nA; f._nB = nB; f._nFlat = nFlat; f._tA = tA; f._tB = tB;
-        f._emit = m;
-    }
-
-    // THE VERTEX WELD IS GONE. It averaged the normals of every face meeting
-    // at a shared position, to hide a discontinuity that no longer exists:
-    // pieces disagreed at their shared station only because the frame was
-    // REBUILT from the projected rails, with a one-sided tangent over a
-    // two-station piece. `_frameProbe` hands over the renderer's own frame,
-    // which is continuous across pieces by construction - measured, `welded`
-    // and `station` came out identical to the pixel once it was in.
-    //
-    // Deleting it takes the smoothing-angle threshold and the surface-class
-    // keying with it, both of which existed only to stop the averaging from
-    // rounding off creases it should not have been touching in the first place.
-
-    // ITS INSTANCE INDEX IS ITS IDENTITY. The fill pass writes gl_InstanceID
-    // into an ID buffer, so a face's index in the DRAW - not in this array,
-    // which also holds faces that were skipped - is what the outline compares
-    // against.
-    mark('normals');
-    for (const f of faces) {
-        if (!f._emit) continue;
-        const m = f._emit;
-        const c = f.c;
-        const nA = f._nA; const nB = f._nB;
-        const tA = f._tA; const tB = f._tB;
-        // ONE INSTANCE PER FACE, 48 floats. It used to be six VERTICES of 36
-        // floats each - 216 - and of those 36 only the position and the
-        // normal/tangent pair differ between a face's corners at all. The other
-        // 21 were written six times over.
-        //
-        // On 9FOG that array was 111 MB, and filling and uploading it was 420 ms
-        // of a 894 ms build. Per face it is now 48 floats: the four corners, the
-        // two ends' frames, and one copy of everything else. The shader picks a
-        // corner off gl_VertexID, which is what the outline pass already does.
-        //
-        // `aBaseIn` went with it - it was bound and uploaded and never read.
-        const fo = f._outN || nA;              // outward normal, for culling
-        const nf = f._nFlat || nA;             // flat shading normal
-        for (let i = 0; i < 4; i++) {          // the quad's corners
-            data[o++] = m[i][0]; data[o++] = m[i][1]; data[o++] = m[i][2];
-        }
-        data[o++] = nA[0]; data[o++] = nA[1]; data[o++] = nA[2];
-        data[o++] = nB[0]; data[o++] = nB[1]; data[o++] = nB[2];
-        data[o++] = tA[0]; data[o++] = tA[1]; data[o++] = tA[2];
-        data[o++] = tB[0]; data[o++] = tB[1]; data[o++] = tB[2];
-        data[o++] = fo[0]; data[o++] = fo[1]; data[o++] = fo[2];
-        data[o++] = nf[0]; data[o++] = nf[1]; data[o++] = nf[2];
-        data[o++] = f.oB || 0; data[o++] = f.oLb || 0; data[o++] = f.oT || 0;
-        data[o++] = c.r; data[o++] = c.g; data[o++] = c.b;
-        // flags0: k, top, iMul, stick
-        data[o++] = f.kAvg || 0; data[o++] = f.top === undefined ? 1 : f.top;
-        data[o++] = f.iMul === undefined ? 1 : f.iMul;
-        data[o++] = f.stick ? 1 : 0;
-        // flags1: side, cap, sheet, residue
-        data[o++] = f.side ? 1 : 0; data[o++] = f.cap ? 1 : 0;
-        data[o++] = f.sheetA ? 1 : 0; data[o++] = f.res || 0;
-        // flags2: palette slot, colour mode, double-sided, coincident at the FAR station
-        data[o++] = f.pal === undefined ? -1 : f.pal;
-        data[o++] = f.colMode || 0;
-        data[o++] = (f.two ? 1 : 0) + (f.unlit ? 2 : 0) + (f.plate ? 4 : 0);
-        data[o++] = f.sheetB ? 1 : 0;
-        for (const p of f.q) {
-            const z = p[2];
-            if (z < zMin) zMin = z;
-            if (z > zMax) zMax = z;
-        }
-    }
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
-    if (window.__gpuDiag) {
-        // THE MESH ITSELF, hashed. Face and edge COUNTS can match while the
-        // contents differ, and the pixels cannot be read back reliably from a
-        // WebGL canvas, so this is the only check that actually pins the
-        // geometry that reaches the card.
-        let h = 2166136261 >>> 0;
-        for (let i = 0; i < data.length; i++) {
-            const q = Math.round(data[i] * 1000);
-            h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
-            h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
-            h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
-        }
-        window.__fillHash = { hash: h >>> 0, floats: data.length };
-    }
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-
-    mark('facesAndEmit');
     // ---- EDGES, only when something is going to draw them -----------------
     // This is 91% of a build: on 9FOG the edge table costs 519 ms and turning
     // it into instances another 401 ms, against 93 ms for the fills. None of it
@@ -2903,182 +2485,624 @@ function makeResident(faces, scale, prm, lines) {
     const wantEdges = !!P0.ink || contactEdges.length > 0;
     const wantOutline = !!P0.ink;
     edgeCount = 0;
-    window.__edgeStats = { edges: 0, faces: faces.length, skipped: !wantEdges };
-    if (wantEdges) {
-        // ---- EDGES, second pass ------------------------------------------------
-        // INTERIOR FACES FIRST. Where two solids are butted together - consecutive
-        // bond boxes of a side chain, consecutive ribbon pieces - each contributes
-        // its own end cap and the two land on exactly the same four corners. Those
-        // caps are inside the joined shape, and their rims are the "extra lines
-        // between bonds" and the lines across a helix. The renderer solves the
-        // same problem by refusing to emit them ("cap rings are dropped at any atom
-        // that carries another bond"); here the faces are already built, so the
-        // equivalent is to weld - a quad that appears twice is interior, and both
-        // copies drop out along with every edge they would have contributed.
-        // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot tell
-        // them apart by geometry: both are two coincident quads with opposing
-        // normals. The difference is what lies between them - solid for a seam,
-        // NOTHING for a flat ribbon, which is one surface with two sides.
-        //
-        // Richardson gives a helix RICH_TH_REL.H = 0, so this is not a corner case:
-        // welding them deleted both faces of every helix in the default preset, the
-        // rails contributed no edges, and helices came out with no outline at all
-        // while everything around them had one. `sheet` already marks exactly this
-        // pair, so it is the one thing the weld must skip.
-        // An order-independent key for a quad: the sum of its corner hashes. Two
-        // quads on the same four corners agree however their windings differ, which
-        // is what the interior weld is asking.
-        // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot tell
-        // them apart by geometry - both are two coincident quads with opposing
-        // normals. The difference is what lies between them: solid for a seam,
-        // NOTHING for a flat ribbon, which is one surface with two sides. The
-        // weld has to skip exactly the faces that are coincident along their
-        // WHOLE length, which is both stations thin. Splitting the old single
-        // `sheet` flag into a per-station pair for the cull left these two
-        // reading a field that no longer existed, so every helix welded itself
-        // away and came out with no outline at all - the same failure the flag
-        // was introduced to prevent, arriving from the other direction.
-        const flatPair = (f) => !!(f.sheetA && f.sheetB);
-        const faceKey = (m) => {
-            let a = 0;
-            let b = 1;
-            for (const q2 of m) { const h = hashPt(q2); a = (a + h) >>> 0; b = (b ^ h) >>> 0; }
-            return a * 4294967296 + b;     // sum AND xor: order-free, collision-shy
+    let nInterior = 0;
+
+    // ONE CHUNK OF FACES, START TO FINISH.
+    //
+    // Everything from here to the edge table is per-face work whose only
+    // outputs are the shared accumulators this closes over - `data`, `cen`,
+    // `edgeMap`, the depth range and the radius. Running it over a SUBSET of
+    // the faces and then throwing that subset away is what keeps the build
+    // from holding every face, every rail and every normal at once, which is
+    // 1.2 GB of the 2.0 GB peak on a 135,780-position assembly.
+    //
+    // What may NOT be chunked is in the caller: the edge table, because edges
+    // are genuinely shared between chains (49 of them on 1AOI, pieces 89-109
+    // residues apart - not a boundary artefact), and the instance buffers,
+    // which are the mesh. The interior weld CAN be per chunk: coincident
+    // quads never span chains, measured at 0 on 4HHB, 1AOI and 9FOG.
+    // THE EDGE TABLE IS SHARED BY EVERY CHUNK, and has to be: edges are
+    // genuinely shared between chains, so an edge first seen in one chunk can
+    // get its second incident face from another. Chunking is exact only
+    // because this stays whole.
+    const edgeMap = new Map();
+    const runChunk = (faces) => {
+        mark('unprojectFrames');
+        const pieceFrame = new Map();
+        const pieceRails = new Map();
+        for (const f of faces) {
+            if (f.pieceId === undefined || f.surf !== 0) continue;
+            // KEPT FOR THE NORMALS PASS BELOW, which wants the same four corners in
+            // the same space and used to unproject them a second time. Nothing
+            // between here and there writes into a corner, and the emit pass
+            // already shares this array through f._emit, so one computation serves
+            // all three.
+            const m = f._mv = f.q.map((q2) => apply(inv, unproject(q2, scale)));
+            let e = pieceRails.get(f.pieceId);
+            if (!e) { e = { L: [], R: [], oB: f.oB, kAvg: f.kAvg }; pieceRails.set(f.pieceId, e); }
+            e.L[f.st] = m[0]; e.R[f.st] = m[1];          // station k
+            e.L[f.st + 1] = m[3]; e.R[f.st + 1] = m[2];  // station k+1
+            if (f.ubA && f.waA && f.tvA) {
+                if (!e.frames) e.frames = [];
+                // BACK OUT OF THE VIEW ROTATION, exactly as the corner positions
+                // are. mkRenderer hands the renderer coordinates that are ALREADY
+                // turned, so everything it computes - including this frame - comes
+                // back in the rotated frame, while the resident mesh is built in
+                // the unrotated one. Using them as-is rotates the lighting away
+                // from the geometry by the whole view matrix.
+                const un = (v) => normv(apply(inv, v));
+                // the width normal points centre->L (L is the +n corner), and `w`
+                // here is R - L, so it is stored negated
+                const neg = (v) => [-v[0], -v[1], -v[2]];
+                e.frames[f.st] = { n: un(f.ubA), t: un(f.tvA), w: neg(un(f.waA)) };
+                if (f.ubB) {
+                    e.frames[f.st + 1] = { n: un(f.ubB), t: un(f.tvB), w: neg(un(f.waB)) };
+                }
+            }
+        }
+        const cross = (a2, b2) => [a2[1] * b2[2] - a2[2] * b2[1],
+            a2[2] * b2[0] - a2[0] * b2[2], a2[0] * b2[1] - a2[1] * b2[0]];
+        const sub = (a2, b2) => [a2[0] - b2[0], a2[1] - b2[1], a2[2] - b2[2]];
+        const mid = (a2, b2) => [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2, (a2[2] + b2[2]) / 2];
+        mark('rails');
+        for (const [id, e] of pieceRails) {
+            const ns2 = e.L.length;
+            const cen = [];
+            for (let k = 0; k < ns2; k++) if (e.L[k] && e.R[k]) cen[k] = mid(e.L[k], e.R[k]);
+            const frames = [];
+            for (let k = 0; k < ns2; k++) {
+                if (!e.L[k] || !e.R[k]) continue;
+                const prev = cen[k - 1] || cen[k];
+                const next = cen[k + 1] || cen[k];
+                let t = sub(next, prev);
+                if (Math.hypot(t[0], t[1], t[2]) < 1e-9) t = [1, 0, 0];
+                const w = sub(e.R[k], e.L[k]);
+                // `n` is the BROAD face normal (+-b) and `w` the width direction,
+                // R MINUS L. Mind the sign: the renderer puts the L rail at +wa
+                // (`lp = P(1, 1)`, `rp = P(-1, 1)`) and defines oN as wa . view, so
+                // R - L runs along -wa and the L side's OUTWARD direction is minus
+                // this vector. Getting that backwards lights each band with its
+                // neighbour's value, which is worse than not interpolating at all
+                // and is what the first cut of this measured.
+                // THE RENDERER'S FRAME IF IT GAVE US ONE. Rebuilding it from the
+                // projected rails recovers a direction but not a SIGN - nothing in
+                // a drawing says which side of a ribbon was the outside - and each
+                // attempt to pin that sign afterwards got a different set of faces
+                // wrong. `_frameProbe` asks the renderer for the vector instead.
+                const src = e.frames && e.frames[k];
+                frames[k] = src
+                    ? { n: src.n, t: src.t, w: src.w }
+                    : { n: normv(cross(t, w)), t: normv(t), w: normv(w) };
+            }
+            // NOTHING TO DECIDE when the frame came from the renderer: its sign is
+            // the one every captured dot product was taken against, so it is right
+            // by construction. Only a rebuilt frame needs making self-consistent -
+            // and a rebuilt frame's overall sign is simply not recoverable from a
+            // projected drawing, which is what three failed attempts established.
+            if (!e.frames) {
+                let ref = null;
+                for (let k = 0; k < ns2; k++) if (frames[k]) { ref = frames[k].n; break; }
+                if (ref) {
+                    for (const fr of frames) {
+                        if (!fr) continue;
+                        if (dotv(fr.n, ref) < 0) fr.n = [-fr.n[0], -fr.n[1], -fr.n[2]];
+                    }
+                }
+            }
+            // THE PIECE MEAN OUTWARD DIRECTION, for the flat path. The reference
+            // quantises ONE value per piece per side; the shader quantises what
+            // reaches the fragment. Feed it a per-quad value and the two snap to
+            // different bands wherever the quad disagrees with the piece - a
+            // difference that simply averaged out before quantisation existed.
+            let wm = [0, 0, 0];
+            let nm = [0, 0, 0];
+            for (const fr of frames) if (fr) { wm[0] += fr.w[0]; wm[1] += fr.w[1]; wm[2] += fr.w[2]; }
+            // ...AND THE SAME FOR THE BROAD FACES, which is what this comment was
+            // about all along and only the sides ever got. A flat broad face took
+            // its own station's normal, so consecutive quads of one piece quantised
+            // into different bands and every station boundary came out as a step -
+            // the ribbon visibly darker between positions with Smooth off, which is
+            // the default in plain cartoon.
+            for (const fr of frames) if (fr) { nm[0] += fr.n[0]; nm[1] += fr.n[1]; nm[2] += fr.n[2]; }
+            pieceFrame.set(id, { frames, oB: e.oB, wMean: normv(wm), nMean: normv(nm) });
+            // the rails for this piece have now become its frames, and the two
+            // arrays of corner points behind them are nobody's business after that
+            e.L = null; e.R = null; e.frames = null;
+        }
+
+
+        // EDGE TABLE for the outline pass, keyed by the two endpoints so the two
+        // faces that share an edge find each other. Quantised to 1e-3 model units:
+        // the rails of adjacent strip quads are the SAME computed point, so they
+        // agree to floating point, and the quantisation is only insurance.
+        const vkey = (q) => `${Math.round(q[0] * 1000)},${Math.round(q[1] * 1000)},${Math.round(q[2] * 1000)}`;
+        // ...and a NUMERIC version of the same thing, cached on the point. The edge
+        // pass asks for a corner's identity about eight times (four edges, two ends
+        // each), and on a structure the size of 9FOG that was half a million
+        // template literals built out of three Math.rounds apiece. The hash is
+        // arithmetic, and stashing it on the array means each corner is hashed
+        // once however often it is looked at.
+        const hashPt = (q2) => {
+            let h = Math.round(q2[0] * 1000) * 73856093
+                ^ Math.round(q2[1] * 1000) * 19349663
+                ^ Math.round(q2[2] * 1000) * 83492791;
+            return h >>> 0;
         };
-        // A STEP FACE BORROWS ITS NEIGHBOUR'S NORMAL. The arrow's step quad has
-        // no area, so the Newell normal computed for it above is noise - and
-        // that is why its shoulders had to be forced to draw. Forcing them is
-        // wrong in one visible way: it draws the pair on the UNDERSIDE as well,
-        // which reads as a stray line under the arrowhead.
+        const ptH = (q) => (q.__h !== undefined ? q.__h : (q.__h = hashPt(q)));
+        // Two-level Map instead of a composed key: an edge is identified by its two
+        // endpoint hashes, and nesting them avoids building a key object at all.
+        // A single packed number would need 64 bits and silently collide past 2^53.
+        const edgeAt = (h1, h2) => {
+            const lo = h1 < h2 ? h1 : h2;
+            const hi = h1 < h2 ? h2 : h1;
+            let inner = edgeMap.get(lo);
+            if (!inner) { inner = new Map(); edgeMap.set(lo, inner); }
+            return inner;
+        };
+        // GHOST EDGES. A face may need to be COUNTED along an edge without being
+        // allowed to ink it. The cross-strip edges of a rib quad are the case: the
+        // reference never runs ink across a ribbon, so a rib face must not create
+        // one - but the flat CAP at a piece end lands on exactly those four edges,
+        // and if the rib does not register there the cap's rim has one incident
+        // face, reads as an open boundary, and is drawn whatever the view. That is
+        // the square permanently ruled across the blunt back of every arrow.
         //
-        // The step lies in the same plane as the quad next to it on the same
-        // surface of the same piece, so that quad's normal is the one it should
-        // have had. With a real normal the ordinary facing test applies and each
-        // side's shoulders appear only when that side is the one being looked at.
-        const normDonor = new Map();
+        // A ghost contributes its normal and its count and nothing else; an edge
+        // with no REAL face is never emitted. So a mid-strip cross edge still has
+        // two ghosts and stays invisible, while a cap rim has one real face and one
+        // ghost - two normals, and the ordinary silhouette test decides it.
+        const addEdge = (a2, b2, nrm, isStick, pal, ghost, two, noInk, col, full, seam, outer) => {
+            const ha = ptH(a2);
+            const hb = ptH(b2);
+            if (ha === hb) return;      // the repeated corner of a fan-padded quad
+            const inner = edgeAt(ha, hb);
+            const other = ha < hb ? hb : ha;
+            let e = inner.get(other);
+            if (!e) {
+                // TWO SLOTS, NOT AN ARRAY. Only the first two normals are ever
+                // kept, and an array per edge is an allocation per edge - about
+                // seven million of them on a capsid - to hold at most two things.
+                e = { p0: a2, p1: b2, n0: null, n1: null, nCount: 0,
+                    count: 0, real: 0, stick: 0, two: 0,
+                    noInk: 0, pal: -1, full: 0, seam: 0, outer: 0 };
+                inner.set(other, e);
+            }
+            if (!ghost) e.real++;
+            if (two && !ghost) e.two = 1;
+            if (noInk) e.noInk = 1;      // any face may veto the whole edge
+            if (isStick) e.stick = 1;   // so show/hide can drop its outline too
+            if (full && !ghost) e.full = 1;   // a fully-outlined surface (see below)
+            // A SEAM CROSS EDGE IS VETOED ON THE EDGE, NOT ON THE FACE, and that is
+            // the whole reason this works. The arrow's step is its own two-station
+            // piece, so its far cross edge is shared with the NEXT PRIM - which
+            // knows nothing about the seam and claimed the edge as real, so a
+            // per-face ghost could never remove it. The edge object is looked up by
+            // the hash of its two endpoints and is therefore the SAME object for
+            // both prims, so a flag set here survives whoever else claims it.
+            if (seam) e.seam = 1;
+            if (outer && !ghost) e.outer = 1;
+
+            // AND ITS COLOUR. The Ink control tints an outline toward its own
+            // element's colour, so an edge has to know which palette slot it
+            // belongs to. The first face to claim the edge lends it one.
+            if (e.pal < 0 && pal !== undefined && pal >= 0) e.pal = pal;
+            // ...and its colour, for when there is no slot to look up
+            if (!e.col && col && !ghost) e.col = col;
+            // and WHICH faces they are, for the ID test
+            // COUNT EVERY incident face, keep the first two normals. The count is
+            // what decides whether the silhouette rule even applies - see below.
+            e.count++;
+            if (e.nCount === 0) { e.n0 = nrm; e.nCount = 1; }
+            else if (e.nCount === 1) { e.n1 = nrm; e.nCount = 2; }
+        };
+
+
+        pieceRails.clear();
+        mark('pieceFrames');
         for (const f of faces) {
-            if (f.gA && f.gB) continue;               // the step itself
-            if (f.pieceId === undefined || f.surf === undefined) continue;
-            const k2 = f.pieceId + ':' + f.surf;
-            if (!normDonor.has(k2) && f._inkN) normDonor.set(k2, f._inkN);
-        }
-        for (const f of faces) {
-            if (!(f.gA && f.gB)) continue;
-            const d = normDonor.get(f.pieceId + ':' + f.surf);
-            if (d) f._inkN = d;
-        }
-        const faceSeen = new Map();
-        for (const f of (wantOutline ? faces : [])) {
-            if (!f._m || flatPair(f)) continue;
-            // Four string keys, an array sort and a join, per face. The key only
-            // has to be order-independent, so add the corner keys' hashes instead:
-            // addition commutes, which is the whole requirement.
-            const k = faceKey(f._m);
-            faceSeen.set(k, (faceSeen.get(k) || 0) + 1);
-            f._fkey = k;
-        }
-        const ownKeys = [0, 0, 0, 0, 0, 0, 0, 0];
-        let nInterior = 0;
-        for (const f of (wantOutline ? faces : [])) {
-            if (!f._m || flatPair(f) || faceSeen.get(f._fkey) < 2) continue;
-            f._interior = 1;
-            nInterior++;
-        }
-        for (const f of (wantOutline ? faces : [])) {
-            if (!f._m || f._interior) continue;
-            // THE ARROW'S STEP QUAD BOUNDS NOTHING. Its two stations sit at the
-            // SAME point along the chain - the renderer samples the seam twice,
-            // once at shaft width and once at barb width - so all four corners
-            // are collinear and the quad has zero area. Its Newell normal is
-            // therefore meaningless, and "does this face turn toward the eye"
-            // is a coin toss: whichever way it lands, the silhouette test can
-            // read the two sides as disagreeing and draw the edge. That is the
-            // line across the base of the arrowhead, and it survives the crease
-            // rule being switched off entirely because it was never a crease.
-            //
-            // gA and gB both set means both of this quad's stations are seam
-            // stations, which only the step quad satisfies.
-            //
-            // ONLY ITS RAILS SURVIVE, and they are the SHOULDERS - each runs
-            // from a shaft corner out to a barb corner, which is the step the
-            // arrow's outline has to turn through. Dropping the quad outright
-            // took them with it, and the arrowhead and the shaft then closed
-            // their own outlines separately: two shapes side by side instead of
-            // one arrow. Its two CROSS edges are the shaft's and the barb's
-            // cross-sections, which are interior to the base and must not draw.
-            //
-            // The rails are now TESTED, not forced: the step face borrows a
-            // usable normal from its neighbour above, so the ordinary rule can
-            // decide. Forcing them drew the underside pair too, which is the
-            // stray line beneath the arrowhead.
-            const stepQuad = !!(f.gA && f.gB);
-            const m = f._m;
-            // A DEGENERATE FACE BOUNDS NOTHING. At zero thickness the two width
-            // faces collapse to a line: their quad is [P, P, Q, Q], so the two
-            // surviving sides are BOTH the rail P-Q and one face registers the same
-            // edge twice. That pushed every rail of every flat ribbon to four
-            // incident faces, and the non-manifold rule then dropped it - the
-            // helices lost their outline to the fix for the junction triangle
-            // rather than to the weld.
-            const nv = [0, 0, 0];
+            // the rails pass above already did this for every surf-0 rib face
+            const m = f._mv || (f.q.map((p) => apply(inv, unproject(p, scale))));
+            // NEWELL, not a single cross product. A mitred junction is emitted as
+            // a triangle fan padded to a quad - [q0, qk, qk+1, q0] - so its fourth
+            // corner repeats the first and cross(m1-m0, m3-m0) is exactly zero.
+            // A zero normal makes max(0, n.L) clamp, the face falls to flat
+            // ambient, and every three-way side-chain junction comes out as dark
+            // triangles. Summing over all edges is immune to a repeated vertex.
+            const n = [0, 0, 0];
             for (let i2 = 0; i2 < m.length; i2++) {
                 const a2 = m[i2];
                 const b2 = m[(i2 + 1) % m.length];
-                nv[0] += (a2[1] - b2[1]) * (a2[2] + b2[2]);
-                nv[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
-                nv[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
+                n[0] += (a2[1] - b2[1]) * (a2[2] + b2[2]);
+                n[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
+                n[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
             }
-            if (Math.hypot(nv[0], nv[1], nv[2]) < 1e-6) continue;   // zero area
-            // ...and belt and braces: one face may not count one edge twice.
-            // FOUR SLOTS, NOT A SET. A quad registers at most four edges, and
-            // one Set per face is one allocation per face - a couple of million
-            // on a capsid - to hold at most four numbers.
-            let ownN = 0;
-            // A RIB FACE INKS ALONG THE STRIP ONLY. The reference does not run a
-            // face-normal test over a slab at all - it inks the four CORNER CURVES
-            // (the rails) and picks, per segment, the two that are extreme
-            // perpendicular to the chain's screen direction. What matters for us is
-            // the consequence: its ink never runs ACROSS the ribbon, so a strip can
-            // not grow an inner line however the surface turns. A quad here is
-            // [A[k], B[k], B[k+1], A[k+1]], so edges 0-1 and 2-3 are the cross-strip
-            // pair and 1-2 and 3-0 are the rails. Emitting the cross pair drew a
-            // line across the helix everywhere its face rolled through edge-on -
-            // a true silhouette of the surface, and not a line the reference has.
-            // A RUNG IS A STRIP LIKE ANY OTHER, and the reference treats it as
-            // one. It used to be exempted here so its ends would ink and a base
-            // pair would read as a box rather than as two loose lines - a
-            // deliberate deviation, and the source of both differences against
-            // the 2D pass: an end line it does not draw, and an asymmetry in
-            // which of them survived.
+            const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+            let nn = [n[0] / nl, n[1] / nl, n[2] / nl];
+            // ORIENT IT LIKE ub, and for a rib face use the PIECE's mean frame -
+            // the renderer's tone is one value for the whole strip.
+            const pf = f.pieceId !== undefined ? pieceFrame.get(f.pieceId) : null;
+            const frA = pf && pf.frames ? pf.frames[f.st] : null;
+            const frB = pf && pf.frames ? pf.frames[f.st + 1] : null;
+            // A SIDE IS A SURFACE TOO. Per-station frames - the whole mechanism
+            // smooth shading rides on - were handed only to surf 0 and 1, so with
+            // smooth ON the broad faces interpolated and the two thickness bands
+            // stayed one flat tone per quad. Same defect as the 2D renderer's
+            // missing `cel` branch in paintSide, running the other way: there the
+            // sides refused to go flat, here they refuse to go smooth. Both are
+            // one routine handling the broad faces and nobody handling the bands.
             //
-            // viewer-cartoon.js inks a rung through emitSlabInk with the LOOP
-            // rule (`outerOnly` true - "THE LOOP RULE, so the rung carries no
-            // INNER line"), and emitSlabInk only ever emits the four corner
-            // rails. So a base plate there is two silhouette lines, no box and
-            // no crease. Matching that is what parity means.
-            const alongOnly = f.surf !== undefined && f.surf < 4 && !f.fullOutline;
-            for (let i2 = 0; i2 < m.length; i2++) {
-                // the cross-strip pair is registered as a GHOST rather than
-                // skipped: it must not ink, but the cap that shares it needs a
-                // second normal to be testable at all
-                // The cross pair is edges 0-1 (station k) and 2-3 (station
-                // k+1); a fully-outlined surface keeps them except at the seam.
-                if (stepQuad && (i2 === 0 || i2 === 2)) continue;   // its cross-sections
-                const seamCross = (i2 === 0 && f.gA) || (i2 === 2 && f.gB);
-                const ghost = alongOnly && (i2 === 0 || i2 === 2);
-                const ka = ptH(m[i2]);
-                const kb = ptH(m[(i2 + 1) % m.length]);
-                const ek = ka < kb ? ka * 4294967296 + kb : kb * 4294967296 + ka;
-                let dup = false;
-                for (let k2 = 0; k2 < ownN; k2++) if (ownKeys[k2] === ek) { dup = true; break; }
-                if (dup) continue;
-                if (ownN < ownKeys.length) ownKeys[ownN++] = ek;
-                addEdge(m[i2], m[(i2 + 1) % m.length], f._inkN, !!f.stick, f.pal, ghost,
-                    !!f.two, !!f.noInk, f.c ? [f.c.r, f.c.g, f.c.b] : null,
-                    !!f.fullOutline, seamCross, !!f.outerOnly);
+            // The outward direction is +w on the L side (surf 2) and -w on the R
+            // (surf 3), which is exactly the sign `paintSide` passes as `outward`.
+            // The shader's side branch hardcodes isTop = 1, so what it wants is
+            // the ALREADY-ORIENTED outward normal, not a normal plus a flag.
+            const sideSign = f.surf === 2 ? -1 : 1;   // see the frame comment: L is at +wa = -w
+            const isRibSide = (f.surf === 2 || f.surf === 3);
+            const wOf = (fr) => (fr && fr.w
+                ? [sideSign * fr.w[0], sideSign * fr.w[1], sideSign * fr.w[2]] : null);
+            // flat: the piece mean, matching what the reference quantises
+            const wFlat = (pf && pf.wMean)
+                ? [sideSign * pf.wMean[0], sideSign * pf.wMean[1], sideSign * pf.wMean[2]] : null;
+            if (frA && (f.surf === 0 || f.surf === 1)) {
+                nn = frA.n;
+            } else if (isRibSide && wOf(frA)) {
+                nn = wOf(frA);
+            } else if ((f.stick || f.cap) && f.nl !== undefined) {
+                // orient it so n.L reproduces the prim's own nl
+                const rn = apply(VR, nn);
+                const vdF = viewVecAt(apply(VR, m[0]));
+                if (f.cap) {
+                    // for a cap the carried number is its FACING, so orient by z
+                    if ((dotv(rn, vdF) < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
+                } else {
+                    const L = [-0.45, 0.6, 0.75];
+                    const lm = Math.hypot(L[0], L[1], L[2]);
+                    const dot = (rn[0] * L[0] + rn[1] * L[1] + rn[2] * L[2]) / lm;
+                    if ((dot < 0) !== (f.nl < 0)) nn = [-nn[0], -nn[1], -nn[2]];
+                }
+            } else if (f.oB !== undefined && f.oB !== 0) {
+                const zAtCapture = dotv(apply(VR, nn), viewVecAt(apply(VR, m[0])));
+                if ((zAtCapture < 0) !== (f.oB < 0)) nn = [-nn[0], -nn[1], -nn[2]];
             }
+            // OUTWARD normals, and it has to be outward or the test is noise. The
+            // silhouette rule is "one adjacent face points at the eye and the other
+            // does not", which is only meaningful if both normals point OUT of the
+            // same solid. The raw winding normal does not: the strip emits its +b
+            // and -b faces with the same corner order, so both their Newell normals
+            // point the same way, and a rail edge would find its two faces always
+            // agreeing.
+            //
+            // `nn` is already outward for sides, sticks and caps. For the two broad
+            // faces it is the +b direction for BOTH, with `top` carrying which side
+            // this one is - the same convention the shader reads - so -b is the one
+            // that needs flipping.
+            const topF = f.top === undefined ? 1 : f.top;
+            // NOT `isRibFace` - that is declared 30 lines further down and this is
+            // above it. A `const` read before its declaration is a TDZ throw, not
+            // undefined, and it takes the whole render with it.
+            const broadFace = (f.surf === 0 || f.surf === 1);
+            // Edges are built in a SECOND pass (below), because two of the rules
+            // need to see every face first: dropping interior face pairs, and
+            // knowing a rib face's strip direction.
+            f._m = m;
+            f._outN = (broadFace && topF < 0.5) ? [-nn[0], -nn[1], -nn[2]] : nn;
+            // SIDE-FACE NORMALS ARE ALREADY OUTWARD - measured, not assumed.
+            //
+            // It was argued from the winding that one of the pair must be inward:
+            //   quad = [A[k], B[k], B[k+1], A[k+1]],  nn ~ (B-A) x (chain step)
+            //   surf 2 = [Lp, Lm] and surf 3 = [Rp, Rm] both give -w, on opposite
+            //   sides, so one of them should point at the axis.
+            // Acting on that put inner lines on every loop and helix. Testing it
+            // instead - each side face's centroid against its piece's centroid,
+            // over a whole DNA structure - flipped ZERO of 228 side faces. The
+            // derivation is wrong somewhere and the normals are fine; the ink and
+            // the cull can share them.
+            f._inkN = f._outN;
+            const c = f.c;
+            // the strip tangent, unprojected and unrotated the same way
+            const tv = (frA && (f.surf === 0 || f.surf === 1 || isRibSide)) ? frA.t
+                : (f.tan ? apply(inv, [f.tan[0] / scale, -f.tan[1] / scale, f.tan[2]]) : [1, 0, 0]);
+            const tl = Math.hypot(tv[0], tv[1], tv[2]) || 1;
+            const tt = [tv[0] / tl, tv[1] / tl, tv[2] / tl];
+            // PER-STATION NORMALS. A quad spans two stations - corners 0,1 are the
+            // near one and 3,2 the far one - and the ribbon TWISTS between them, so
+            // one normal for the whole face throws away exactly the variation the
+            // smooth path draws as a gradient. The width vector at each station
+            // gives its own frame; the shader then interpolates the shading across
+            // the face for free, which is what the 2D renderer is approximating
+            // with a two-stop gradient.
+            // the frame at each END of the quad; neighbouring faces share these,
+            // so the interpolation runs continuously along the whole strip
+            // A/B IN ONE SESSION. Reloading between variants let a dropdown reset
+            // swap the structure underneath a comparison once already: a reading of
+            // 1.4% was a four-atom fixture, not the protein it was being compared
+            // against. Switching the variant at runtime removes that whole class
+            // of mistake.
+            // A flat reference is shaded per PIECE; a smooth one per station. The
+            // frame control follows that by default and can still be forced.
+            const fm = P0.frame;
+            // SMOOTH IS NO LONGER A BUILD-TIME DECISION. Both normals are emitted -
+            // the per-station pair that a smooth face interpolates between, and the
+            // single per-face one a flat face uses - and the shader picks. It reads
+            // uCel, which is already "not smooth", so no new uniform is needed.
+            //
+            // The flat normal is not simply nA: a broad face takes its own station's
+            // frame, while a width band takes the PIECE MEAN, which is what the
+            // reference quantises. That difference is why this could not just be
+            // dropped in the shader.
+            const isRibFace = (f.surf === 0 || f.surf === 1);
+            const nA = isRibFace ? (frA ? frA.n : nn) : (isRibSide ? (wOf(frA) || nn) : nn);
+            const nB = isRibFace ? (frB ? frB.n : nA)
+                : (isRibSide ? (wOf(frB) || nA) : nA);
+            const nFlat = isRibFace ? ((pf && pf.nMean) || nA)
+                : (isRibSide ? ((wFlat || wOf(frA)) || nn) : nn);
+            const tA = (frA && (isRibFace || isRibSide)) ? frA.t : tt;
+            const tB = (frB && (isRibFace || isRibSide)) ? frB.t : tA;
+            f._nA = nA; f._nB = nB; f._nFlat = nFlat; f._tA = tA; f._tB = tB;
+            f._emit = m;
         }
 
+        // THE VERTEX WELD IS GONE. It averaged the normals of every face meeting
+        // at a shared position, to hide a discontinuity that no longer exists:
+        // pieces disagreed at their shared station only because the frame was
+        // REBUILT from the projected rails, with a one-sided tangent over a
+        // two-station piece. `_frameProbe` hands over the renderer's own frame,
+        // which is continuous across pieces by construction - measured, `welded`
+        // and `station` came out identical to the pixel once it was in.
+        //
+        // Deleting it takes the smoothing-angle threshold and the surface-class
+        // keying with it, both of which existed only to stop the averaging from
+        // rounding off creases it should not have been touching in the first place.
+
+        // ITS INSTANCE INDEX IS ITS IDENTITY. The fill pass writes gl_InstanceID
+        // into an ID buffer, so a face's index in the DRAW - not in this array,
+        // which also holds faces that were skipped - is what the outline compares
+        // against.
+        mark('normals');
+        for (const f of faces) {
+            if (!f._emit) continue;
+            const m = f._emit;
+            const c = f.c;
+            const nA = f._nA; const nB = f._nB;
+            const tA = f._tA; const tB = f._tB;
+            // ONE INSTANCE PER FACE, 48 floats. It used to be six VERTICES of 36
+            // floats each - 216 - and of those 36 only the position and the
+            // normal/tangent pair differ between a face's corners at all. The other
+            // 21 were written six times over.
+            //
+            // On 9FOG that array was 111 MB, and filling and uploading it was 420 ms
+            // of a 894 ms build. Per face it is now 48 floats: the four corners, the
+            // two ends' frames, and one copy of everything else. The shader picks a
+            // corner off gl_VertexID, which is what the outline pass already does.
+            //
+            // `aBaseIn` went with it - it was bound and uploaded and never read.
+            const fo = f._outN || nA;              // outward normal, for culling
+            const nf = f._nFlat || nA;             // flat shading normal
+            for (let i = 0; i < 4; i++) {          // the quad's corners
+                data[o++] = m[i][0]; data[o++] = m[i][1]; data[o++] = m[i][2];
+            }
+            data[o++] = nA[0]; data[o++] = nA[1]; data[o++] = nA[2];
+            data[o++] = nB[0]; data[o++] = nB[1]; data[o++] = nB[2];
+            data[o++] = tA[0]; data[o++] = tA[1]; data[o++] = tA[2];
+            data[o++] = tB[0]; data[o++] = tB[1]; data[o++] = tB[2];
+            data[o++] = fo[0]; data[o++] = fo[1]; data[o++] = fo[2];
+            data[o++] = nf[0]; data[o++] = nf[1]; data[o++] = nf[2];
+            data[o++] = f.oB || 0; data[o++] = f.oLb || 0; data[o++] = f.oT || 0;
+            data[o++] = c.r; data[o++] = c.g; data[o++] = c.b;
+            // flags0: k, top, iMul, stick
+            data[o++] = f.kAvg || 0; data[o++] = f.top === undefined ? 1 : f.top;
+            data[o++] = f.iMul === undefined ? 1 : f.iMul;
+            data[o++] = f.stick ? 1 : 0;
+            // flags1: side, cap, sheet, residue
+            data[o++] = f.side ? 1 : 0; data[o++] = f.cap ? 1 : 0;
+            data[o++] = f.sheetA ? 1 : 0; data[o++] = f.res || 0;
+            // flags2: palette slot, colour mode, double-sided, coincident at the FAR station
+            data[o++] = f.pal === undefined ? -1 : f.pal;
+            data[o++] = f.colMode || 0;
+            data[o++] = (f.two ? 1 : 0) + (f.unlit ? 2 : 0) + (f.plate ? 4 : 0);
+            data[o++] = f.sheetB ? 1 : 0;
+            for (const p of f.q) {
+                const z = p[2];
+                if (z < zMin) zMin = z;
+                if (z > zMax) zMax = z;
+            }
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
+        if (window.__gpuDiag) {
+            // THE MESH ITSELF, hashed. Face and edge COUNTS can match while the
+            // contents differ, and the pixels cannot be read back reliably from a
+            // WebGL canvas, so this is the only check that actually pins the
+            // geometry that reaches the card.
+            let h = 2166136261 >>> 0;
+            for (let i = 0; i < data.length; i++) {
+                const q = Math.round(data[i] * 1000);
+                h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
+                h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
+                h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
+            }
+            window.__fillHash = { hash: h >>> 0, floats: data.length };
+        }
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+
+        mark('facesAndEmit');
+        if (wantEdges) {
+            // ---- EDGES, second pass ------------------------------------------------
+            // INTERIOR FACES FIRST. Where two solids are butted together - consecutive
+            // bond boxes of a side chain, consecutive ribbon pieces - each contributes
+            // its own end cap and the two land on exactly the same four corners. Those
+            // caps are inside the joined shape, and their rims are the "extra lines
+            // between bonds" and the lines across a helix. The renderer solves the
+            // same problem by refusing to emit them ("cap rings are dropped at any atom
+            // that carries another bond"); here the faces are already built, so the
+            // equivalent is to weld - a quad that appears twice is interior, and both
+            // copies drop out along with every edge they would have contributed.
+            // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot tell
+            // them apart by geometry: both are two coincident quads with opposing
+            // normals. The difference is what lies between them - solid for a seam,
+            // NOTHING for a flat ribbon, which is one surface with two sides.
+            //
+            // Richardson gives a helix RICH_TH_REL.H = 0, so this is not a corner case:
+            // welding them deleted both faces of every helix in the default preset, the
+            // rails contributed no edges, and helices came out with no outline at all
+            // while everything around them had one. `sheet` already marks exactly this
+            // pair, so it is the one thing the weld must skip.
+            // An order-independent key for a quad: the sum of its corner hashes. Two
+            // quads on the same four corners agree however their windings differ, which
+            // is what the interior weld is asking.
+            // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot tell
+            // them apart by geometry - both are two coincident quads with opposing
+            // normals. The difference is what lies between them: solid for a seam,
+            // NOTHING for a flat ribbon, which is one surface with two sides. The
+            // weld has to skip exactly the faces that are coincident along their
+            // WHOLE length, which is both stations thin. Splitting the old single
+            // `sheet` flag into a per-station pair for the cull left these two
+            // reading a field that no longer existed, so every helix welded itself
+            // away and came out with no outline at all - the same failure the flag
+            // was introduced to prevent, arriving from the other direction.
+            const flatPair = (f) => !!(f.sheetA && f.sheetB);
+            const faceKey = (m) => {
+                let a = 0;
+                let b = 1;
+                for (const q2 of m) { const h = hashPt(q2); a = (a + h) >>> 0; b = (b ^ h) >>> 0; }
+                return a * 4294967296 + b;     // sum AND xor: order-free, collision-shy
+            };
+            // A STEP FACE BORROWS ITS NEIGHBOUR'S NORMAL. The arrow's step quad has
+            // no area, so the Newell normal computed for it above is noise - and
+            // that is why its shoulders had to be forced to draw. Forcing them is
+            // wrong in one visible way: it draws the pair on the UNDERSIDE as well,
+            // which reads as a stray line under the arrowhead.
+            //
+            // The step lies in the same plane as the quad next to it on the same
+            // surface of the same piece, so that quad's normal is the one it should
+            // have had. With a real normal the ordinary facing test applies and each
+            // side's shoulders appear only when that side is the one being looked at.
+            const normDonor = new Map();
+            for (const f of faces) {
+                if (f.gA && f.gB) continue;               // the step itself
+                if (f.pieceId === undefined || f.surf === undefined) continue;
+                const k2 = f.pieceId + ':' + f.surf;
+                if (!normDonor.has(k2) && f._inkN) normDonor.set(k2, f._inkN);
+            }
+            for (const f of faces) {
+                if (!(f.gA && f.gB)) continue;
+                const d = normDonor.get(f.pieceId + ':' + f.surf);
+                if (d) f._inkN = d;
+            }
+            const faceSeen = new Map();
+            for (const f of (wantOutline ? faces : [])) {
+                if (!f._m || flatPair(f)) continue;
+                // Four string keys, an array sort and a join, per face. The key only
+                // has to be order-independent, so add the corner keys' hashes instead:
+                // addition commutes, which is the whole requirement.
+                const k = faceKey(f._m);
+                faceSeen.set(k, (faceSeen.get(k) || 0) + 1);
+                f._fkey = k;
+            }
+            const ownKeys = [0, 0, 0, 0, 0, 0, 0, 0];
+            for (const f of (wantOutline ? faces : [])) {
+                if (!f._m || flatPair(f) || faceSeen.get(f._fkey) < 2) continue;
+                f._interior = 1;
+                nInterior++;
+            }
+            for (const f of (wantOutline ? faces : [])) {
+                if (!f._m || f._interior) continue;
+                // THE ARROW'S STEP QUAD BOUNDS NOTHING. Its two stations sit at the
+                // SAME point along the chain - the renderer samples the seam twice,
+                // once at shaft width and once at barb width - so all four corners
+                // are collinear and the quad has zero area. Its Newell normal is
+                // therefore meaningless, and "does this face turn toward the eye"
+                // is a coin toss: whichever way it lands, the silhouette test can
+                // read the two sides as disagreeing and draw the edge. That is the
+                // line across the base of the arrowhead, and it survives the crease
+                // rule being switched off entirely because it was never a crease.
+                //
+                // gA and gB both set means both of this quad's stations are seam
+                // stations, which only the step quad satisfies.
+                //
+                // ONLY ITS RAILS SURVIVE, and they are the SHOULDERS - each runs
+                // from a shaft corner out to a barb corner, which is the step the
+                // arrow's outline has to turn through. Dropping the quad outright
+                // took them with it, and the arrowhead and the shaft then closed
+                // their own outlines separately: two shapes side by side instead of
+                // one arrow. Its two CROSS edges are the shaft's and the barb's
+                // cross-sections, which are interior to the base and must not draw.
+                //
+                // The rails are now TESTED, not forced: the step face borrows a
+                // usable normal from its neighbour above, so the ordinary rule can
+                // decide. Forcing them drew the underside pair too, which is the
+                // stray line beneath the arrowhead.
+                const stepQuad = !!(f.gA && f.gB);
+                const m = f._m;
+                // A DEGENERATE FACE BOUNDS NOTHING. At zero thickness the two width
+                // faces collapse to a line: their quad is [P, P, Q, Q], so the two
+                // surviving sides are BOTH the rail P-Q and one face registers the same
+                // edge twice. That pushed every rail of every flat ribbon to four
+                // incident faces, and the non-manifold rule then dropped it - the
+                // helices lost their outline to the fix for the junction triangle
+                // rather than to the weld.
+                const nv = [0, 0, 0];
+                for (let i2 = 0; i2 < m.length; i2++) {
+                    const a2 = m[i2];
+                    const b2 = m[(i2 + 1) % m.length];
+                    nv[0] += (a2[1] - b2[1]) * (a2[2] + b2[2]);
+                    nv[1] += (a2[2] - b2[2]) * (a2[0] + b2[0]);
+                    nv[2] += (a2[0] - b2[0]) * (a2[1] + b2[1]);
+                }
+                if (Math.hypot(nv[0], nv[1], nv[2]) < 1e-6) continue;   // zero area
+                // ...and belt and braces: one face may not count one edge twice.
+                // FOUR SLOTS, NOT A SET. A quad registers at most four edges, and
+                // one Set per face is one allocation per face - a couple of million
+                // on a capsid - to hold at most four numbers.
+                let ownN = 0;
+                // A RIB FACE INKS ALONG THE STRIP ONLY. The reference does not run a
+                // face-normal test over a slab at all - it inks the four CORNER CURVES
+                // (the rails) and picks, per segment, the two that are extreme
+                // perpendicular to the chain's screen direction. What matters for us is
+                // the consequence: its ink never runs ACROSS the ribbon, so a strip can
+                // not grow an inner line however the surface turns. A quad here is
+                // [A[k], B[k], B[k+1], A[k+1]], so edges 0-1 and 2-3 are the cross-strip
+                // pair and 1-2 and 3-0 are the rails. Emitting the cross pair drew a
+                // line across the helix everywhere its face rolled through edge-on -
+                // a true silhouette of the surface, and not a line the reference has.
+                // A RUNG IS A STRIP LIKE ANY OTHER, and the reference treats it as
+                // one. It used to be exempted here so its ends would ink and a base
+                // pair would read as a box rather than as two loose lines - a
+                // deliberate deviation, and the source of both differences against
+                // the 2D pass: an end line it does not draw, and an asymmetry in
+                // which of them survived.
+                //
+                // viewer-cartoon.js inks a rung through emitSlabInk with the LOOP
+                // rule (`outerOnly` true - "THE LOOP RULE, so the rung carries no
+                // INNER line"), and emitSlabInk only ever emits the four corner
+                // rails. So a base plate there is two silhouette lines, no box and
+                // no crease. Matching that is what parity means.
+                const alongOnly = f.surf !== undefined && f.surf < 4 && !f.fullOutline;
+                for (let i2 = 0; i2 < m.length; i2++) {
+                    // the cross-strip pair is registered as a GHOST rather than
+                    // skipped: it must not ink, but the cap that shares it needs a
+                    // second normal to be testable at all
+                    // The cross pair is edges 0-1 (station k) and 2-3 (station
+                    // k+1); a fully-outlined surface keeps them except at the seam.
+                    if (stepQuad && (i2 === 0 || i2 === 2)) continue;   // its cross-sections
+                    const seamCross = (i2 === 0 && f.gA) || (i2 === 2 && f.gB);
+                    const ghost = alongOnly && (i2 === 0 || i2 === 2);
+                    const ka = ptH(m[i2]);
+                    const kb = ptH(m[(i2 + 1) % m.length]);
+                    const ek = ka < kb ? ka * 4294967296 + kb : kb * 4294967296 + ka;
+                    let dup = false;
+                    for (let k2 = 0; k2 < ownN; k2++) if (ownKeys[k2] === ek) { dup = true; break; }
+                    if (dup) continue;
+                    if (ownN < ownKeys.length) ownKeys[ownN++] = ek;
+                    addEdge(m[i2], m[(i2 + 1) % m.length], f._inkN, !!f.stick, f.pal, ghost,
+                        !!f.two, !!f.noInk, f.c ? [f.c.r, f.c.g, f.c.b] : null,
+                        !!f.fullOutline, seamCross, !!f.outerOnly);
+                }
+            }
+        }
+    };
+    runChunk(faces);
+
+    window.__edgeStats = { edges: 0, faces: faces.length, skipped: !wantEdges };
+    if (wantEdges) {
         // ---- the edge instance buffer: p0, p1, n0, n1, always = 13 floats ----
         const creaseDeg = P0.creaseDeg;
         const creaseCos = Math.cos(creaseDeg * Math.PI / 180);
