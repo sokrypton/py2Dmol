@@ -1442,10 +1442,24 @@ t('the occlusion pass is shared, and stays off the low texture units', () => {
     // ...and both callers ask it, rather than one of them inlining it
     const calls = (gpu.match(/runOcclusion\(cv/g) || []).length;
     if (calls < 2) throw new Error('only ' + calls + ' caller uses the shared pass');
-    // the cartoon's AO is off unless asked for: the 2D path has no occlusion to
-    // match, so this is a look being invented, not a pass being ported
-    if (!/renderer\.cartoonAO === true/.test(gpu)) {
-        throw new Error('the cartoon occlusion is no longer behind its flag');
+    // the cartoon's AO follows the shadow switch, and can still be turned off
+    // on its own
+    if (!/renderer\.cartoonAO !== false/.test(gpu)
+        || !/renderer\.shadowEnabled !== false/.test(gpu)) {
+        throw new Error('the cartoon occlusion no longer follows the shadow switch');
+    }
+    // ...AND THE ALLOCATION MUST GIVE THE UNIT BACK. ensureOcc binds every
+    // texture it creates to whatever unit is current, which is the fill
+    // program's uVis: without a restore, the frame that allocates them reads
+    // the depth texture as its visibility map, every face counts as hidden and
+    // the depth prepass comes out empty - a shadow that measures as no shadow
+    // at any density, on the first AO frame and on every canvas resize.
+    const oc = gpu.indexOf('function ensureOcc(w, h) {');
+    if (oc < 0) throw new Error('ensureOcc is gone');
+    const ocBody = gpu.slice(oc, gpu.indexOf('\nfunction ', oc + 10));
+    if (!/getParameter\(gl\.TEXTURE_BINDING_2D\)/.test(ocBody)
+        || !/bindTexture\(gl\.TEXTURE_2D, hadBound\)/.test(ocBody)) {
+        throw new Error('ensureOcc does not put back the texture binding it borrows');
     }
 });
 

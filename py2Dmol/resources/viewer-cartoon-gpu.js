@@ -1741,6 +1741,8 @@ in vec3 vCol; in float vCull; in float vZv; out vec4 fragColor;
 // buried each pixel is, so the cartoon needs no shader of its own, only its own
 // constants (see drawResident).
 uniform float uZOnly, uUseAO;
+// how much of the colour the shadow may take where it is fully buried
+uniform float uAOAmt;
 uniform vec2 uSizeF;
 uniform sampler2D uAOTex;
 ${CLIP_GLSL}
@@ -1753,11 +1755,15 @@ void main() {
   if (uZOnly > 0.5) { fragColor = vec4(vZv, 0.0, 0.0, 1.0); return; }
   vec3 col = vCol;
   if (uUseAO > 0.5) {
-    // the tube's own two terms in the tube's own order: whiten by how exposed
-    // the pixel is, then darken by how much lies in front of it
+    // THE SHADOW TERM ONLY. The tube applies two: it whitens by how EXPOSED a
+    // pixel is and then darkens by how much lies in front of it, because that
+    // pair is what its 2D pass computes and this had to match it. The cartoon's
+    // 2D pass has no exposure term to reproduce, and carrying it here made the
+    // whole drawing 11 levels LIGHTER with no shadow to show for it: every
+    // inked pixel lighter, not one darker, and barely a difference between the
+    // crowded places and the bare ones.
     vec2 ao = texture(uAOTex, gl_FragCoord.xy / uSizeF).rg;
-    col += (1.0 - col) * ((0.50 * ao.g) / 3.0);
-    col *= (0.20 + 0.80 * ao.r);
+    col *= (1.0 - uAOAmt) + uAOAmt * ao.r;
   }
   fragColor = vec4(grainAt(col), 1.0);
 }`;
@@ -1908,10 +1914,18 @@ let tubeDensity = 0.1;          // visible segments per square Angstrom
 // magnitude in size. See buildTube for the measurements and why it is not
 // measured per structure any more.
 const TUBE_AO_DENSITY = 0.164;
-// The cartoon's own areal weight for the same kernel. A starting point, not a
-// calibration: the 2D cartoon has no occlusion to match, so this was chosen by
-// looking - see the sweep in the commit that added it.
-const CARTOON_AO_DENSITY = 0.05;
+// The cartoon's own areal weight for the same kernel, and how much of a
+// colour the shadow may take where a pixel is fully buried.
+//
+// Chosen by looking, over a sweep on 1TIM measured against the same view with
+// the shadow off. 0.05 is real but barely legible (mean 3.4 levels darker,
+// crowded places 1.6 more than bare); 0.4 reads as a shadow but starts to mud
+// the colours; the tube's own density lands in between at 10.5 levels, with
+// the crowded fifth of the drawing 4 levels darker than the bare fifth. Every
+// inked pixel darkens or stays put - the cartoon has no exposure term, so
+// nothing here can lighten the drawing.
+const CARTOON_AO_DENSITY = 0.164;
+const CARTOON_AO_AMOUNT = 0.8;
 // WHERE THE OUTLINE SKIRT SITS IN DEPTH, as a fraction of the tube radius
 // toward the eye. It was a whole radius - as near as the tube ever gets, chosen
 // so a rim would never lose to its own fill - and that is too near: a rim then
@@ -3614,6 +3628,7 @@ function drawResident(cv, prm, prmAO) {
         gl.uniform2f(gl.getUniformLocation(prog3, 'uSizeF'), cv.width, cv.height);
     }
     u('uUseAO', wantAO ? 1 : 0);
+    u('uAOAmt', wantAO && prmAO ? (typeof prmAO.amount === 'number' ? prmAO.amount : 0.8) : 0);
 
     const tmS = tmStart('c1-surfaces');
     gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_BYTE, 0, resident.count);
@@ -4319,16 +4334,16 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         // sets it for the same reason (viewer-mol.js).
         renderer._viewScale = drawScale() / pixelRatio;
         // THE CARTOON'S OWN OCCLUSION, when it is asked for. GPU only, and off
-        // unless renderer.cartoonAO says otherwise: the 2D path has no shadow
-        // of its own to match, so this is a look being invented rather than a
-        // pass being ported, and it should be looked at before it is a default.
+        // ON WITH THE SHADOW SWITCH, like the tube's - the 2D cartoon has no
+        // occlusion of its own, so turning GPU off drops the shadow with it.
+        // renderer.cartoonAO === false turns it off on its own.
         //
         // Its two constants are not the tube's. Density is the areal weight of
         // the kernel and a ribbon covers far more Angstrom per drawn thing than
         // a tube does; the self-bias is what stops a surface shading itself, so
         // for a slab it is about half the thickness rather than a tube radius -
         // with a floor, because the ribbon preset's thickness is 0.
-        const wantAO = renderer.cartoonAO === true
+        const wantAO = renderer.cartoonAO !== false
             && renderer.shadowEnabled !== false;
         const aoOpts = wantAO ? {
             scale: drawScale(),
@@ -4339,6 +4354,9 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
             selfBias: (typeof renderer.cartoonAOSelfBias === 'number'
                 ? renderer.cartoonAOSelfBias
                 : Math.max(0.8, (renderer.cartoonThickness || 0) * 0.5 + 0.5)),
+            // how much of the colour the shadow may take at its darkest
+            amount: (typeof renderer.cartoonAOAmount === 'number'
+                ? renderer.cartoonAOAmount : CARTOON_AO_AMOUNT),
         } : null;
         drawResident(appCv, prm, aoOpts);
         projectPositions(renderer, displayWidth, displayHeight);
@@ -4775,9 +4793,18 @@ function drawTube(cv, renderer, prm) {
 }
 // The two offscreen targets, at the drawing buffer's own size. Recreated only
 // when that size changes.
+//
+// IT BORROWS THE ACTIVE TEXTURE UNIT AND MUST GIVE IT BACK. Every texture it
+// makes is bound to whatever unit is current, and the unit that is current here
+// is the fills program's uVis - so on the frame that allocates these, the
+// visibility map became a depth texture, every residue read as hidden, and the
+// cartoon's depth prepass came out EMPTY: no depth field, therefore no shadow,
+// at any density. It resized on the first AO frame and again on every canvas
+// resize, which is exactly the frame anyone looks at.
 function ensureOcc(w, h) {
     if (!occOk) return false;
     if (zFbo && occW === w && occH === h) return true;
+    const hadBound = gl.getParameter(gl.TEXTURE_BINDING_2D);
     const tex = (fmt, type, internal) => {
         const t = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, t);
@@ -4840,6 +4867,7 @@ function ensureOcc(w, h) {
     const okG = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     occW = w; occH = h;
+    gl.bindTexture(gl.TEXTURE_2D, hadBound);
     if (!okZ || !okA || !okB) { occOk = false; return false; }
     if (!okG) { gFbo = null; }      // the draw then goes straight to the canvas
     return true;
