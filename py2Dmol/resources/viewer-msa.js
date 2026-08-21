@@ -5143,6 +5143,18 @@
                 }
             }
 
+            // WHICH SEQUENCES THE PARENT'S ENTROPY WAS OVER. A copy has to show
+            // the same conservation for a residue as the structure it was cut
+            // from - anything else means the same residue reads two ways in two
+            // windows. The parent's entropy is over the sequences passing the
+            // current cutoffs, measured on the WHOLE alignment, so that is the
+            // set sliced here. Everything else still comes across in
+            // sequencesOriginal, so the copy's own sliders can widen it again.
+            const passing = new Set(filterByIdentity(
+                filterByCoverage(allSequences, minCoverageThreshold),
+                originalQuerySequence, minIdentityThreshold));
+            const extractedPassing = [];
+
             // Extract from ALL sequences (including those hidden by coverage/identity filters)
             // But only extract the selected MSA positions (columns)
             for (const seq of allSequences) {
@@ -5166,6 +5178,7 @@
                 }
 
                 extractedSequences.push(extractedSeq);
+                if (passing.has(seq)) extractedPassing.push(extractedSeq);
             }
 
             // Create new MSA data with extracted sequences (selected positions only, but all sequences)
@@ -5237,7 +5250,20 @@
             };
 
             // Compute MSA properties (frequencies, logOdds) for extracted sequences
-            computeMSAProperties(extractedMSAData);
+            //
+            // FROM THE SEQUENCES THE PARENT COUNTED, not from all of them. Over
+            // everything, the copy of AF-P0A8I3 residues 101-150 read entropy
+            // 0.2881 at residue 105 where the structure it came from read
+            // 0.2569 - the difference between 12,391 sequences and the 10,613
+            // that passed the filters.
+            const forProperties = {
+                querySequence: extractedMSAData.querySequence,
+                queryLength: extractedMSAData.queryLength,
+                sequences: extractedPassing.length ? extractedPassing : extractedSequences,
+            };
+            computeMSAProperties(forProperties);
+            extractedMSAData.entropy = forProperties.entropy;
+            extractedMSAData.frequencies = forProperties.frequencies;
 
             // Check if extracted chain sequence matches the extracted query sequence (no gaps)
             const extractedChainSeq = extractedChainSequences[chainId];
