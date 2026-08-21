@@ -1430,44 +1430,27 @@ function setupEventListeners() {
 // UI HELPER FUNCTIONS
 // ============================================================================
 
-// PROGRESS THAT MOVES ON WHAT ACTUALLY HAPPENED.
+// WHICH STEP THE LOAD IS ON - and nothing more precise than that.
 //
-// The percentage goes in the status line - there is no separate bar. The last
-// attempt at this was a bar that appeared and sat still, which is worse than
-// none: it claims to be reporting and is not. The reason it sat still is that
-// the load was one synchronous block - there was no moment between "started"
-// and "finished" at which the browser could paint anything.
+// There was a percentage here, weighted per stage and driven by the parser's
+// real position in the file. It was honest and it was not worth its keep: the
+// weights were guesses for every structure except the one they were measured
+// on, and a number that jumps 20% and then sits still tells you less than the
+// word "Building positions" does.
 //
-// So the reporting is not a UI feature, it is a consequence of the loader
-// running in slices. Inside the parse the fraction is the cursor's real
-// position in the file; between stages it is which stage finished. The weights
-// below are how the time actually divides on a 242 MB capsid - they are
-// estimates for any other file, and they are the only estimated part.
-const LOAD_STAGES = [
-    ['download', 0.15],
-    ['parse', 0.50],
-    ['build', 0.20],
-    ['display', 0.15],
-];
-// Nothing is shown for a load that finishes quickly. A percentage that flashes
-// up and vanishes reads as a glitch, and under this it is most loads.
-const PROGRESS_REVEAL_MS = 250;
-let progressShown = 0;
+// The reporting exists at all only because the loader runs in slices - without
+// a yield there is no moment between "started" and "finished" at which the
+// browser could paint anything, and the line would never change.
+//
+// Nothing is shown for a load that finishes quickly. A word that flashes up and
+// vanishes reads as a glitch, and under this it is most loads.
+const STAGE_REVEAL_MS = 250;
+let stageShown = 0;
 // Set when a load has to change the style out from under the user; see
 // dropToTubeIfCartoonWontFit.
 let styleFallbackNote = '';
-let progressRevealTimer = 0;
-let progressHighWater = 0;
-let progressLabel = '';
-
-function progressAt(stage, within = 0) {
-    let base = 0;
-    for (const [name, weight] of LOAD_STAGES) {
-        if (name === stage) return base + weight * Math.max(0, Math.min(1, within));
-        base += weight;
-    }
-    return base;
-}
+let stageRevealTimer = 0;
+let stageLabel = '';
 
 function beginProgress() {
     // ...and take it off the screen with it. The note is sticky so the messages
@@ -1479,72 +1462,43 @@ function beginProgress() {
         if (el && el.textContent.indexOf(styleFallbackNote) >= 0) el.textContent = '';
     }
     styleFallbackNote = '';
-    progressHighWater = 0;
-    progressLabel = '';
-    progressShown = 0;
-    if (progressRevealTimer) clearTimeout(progressRevealTimer);
-    progressRevealTimer = setTimeout(() => {
-        progressRevealTimer = 0;
-        progressShown = 1;
-        paintProgress();
-    }, PROGRESS_REVEAL_MS);
+    stageLabel = '';
+    stageShown = 0;
+    if (stageRevealTimer) clearTimeout(stageRevealTimer);
+    stageRevealTimer = setTimeout(() => {
+        stageRevealTimer = 0;
+        stageShown = 1;
+        paintStage();
+    }, STAGE_REVEAL_MS);
 }
 
-function paintProgress() {
-    if (!progressShown || !progressLabel) return;
-    setStatus(`${progressLabel}... ${Math.round(progressHighWater * 100)}%`);
+function paintStage() {
+    if (!stageShown || !stageLabel) return;
+    setStatus(`${stageLabel}...`);
 }
 
-function setProgress(fraction, label) {
-    // Monotonic. A stage that turns out cheaper than its weight must not pull
-    // the number backwards - it is a claim about work done, and work does not
-    // get undone.
-    progressHighWater = Math.max(progressHighWater, Math.max(0, Math.min(1, fraction)));
-    if (label) progressLabel = label;
-    paintProgress();
+/** Name the step the load has reached. Repeats are free. */
+function setStage(label) {
+    if (!label || label === stageLabel) return;
+    stageLabel = label;
+    paintStage();
 }
 
 function endProgress(silent = false) {
-    if (progressRevealTimer) { clearTimeout(progressRevealTimer); progressRevealTimer = 0; }
-    const wasShowing = progressShown && progressLabel;
-    progressShown = 0;
-    progressHighWater = 0;
-    progressLabel = '';
-    // THE LAST PERCENTAGE MUST NOT BE THE LAST WORD. The final stage - setCoords
-    // and the first render - runs with the main thread pinned, so the last thing
-    // painted is whatever the number reached before it started, around 85%. Not
-    // every caller writes its own result line afterwards, and the ones that do
-    // write it after this returns, so leaving 85% on screen would strand a
+    if (stageRevealTimer) { clearTimeout(stageRevealTimer); stageRevealTimer = 0; }
+    const wasShowing = stageShown && stageLabel;
+    stageShown = 0;
+    stageLabel = '';
+    // THE LAST STEP MUST NOT BE THE LAST WORD. The final stage - setCoords and
+    // the first render - runs with the main thread pinned, so the last thing
+    // painted is whatever step had been reached before it started. Not every
+    // caller writes its own result line afterwards, and the ones that do write
+    // it after this returns, so leaving "Drawing..." on screen would strand a
     // finished load looking stuck. silent is for setStatus, which is about to
     // write the real message itself.
     if (wasShowing && !silent) setStatus('Loaded.');
 }
 
-
-// Drain a response body, reporting bytes against Content-Length when the
-// server gave one. Falls back to response.text() when it did not, or when the
-// body cannot be streamed.
-async function readBodyWithProgress(response) {
-    const total = +(response.headers.get('content-length') || 0);
-    if (!response.body || !response.body.getReader || !total) {
-        setProgress(progressAt('download', 0), 'Downloading');
-        return response.text();
-    }
-    const reader = response.body.getReader();
-    const chunks = [];
-    let got = 0;
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        got += value.length;
-        setProgress(progressAt('download', got / total), 'Downloading');
-    }
-    const all = new Uint8Array(got);
-    let at = 0;
-    for (const c of chunks) { all.set(c, at); at += c.length; }
-    return new TextDecoder().decode(all);
-}
 
 function setStatus(message, isError = false) {
     // A LOAD THAT FAILED IS A LOAD THAT ENDED. Every failure path in the
@@ -2637,11 +2591,10 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         let parseResult;
 
         if (isCIF) {
-            setProgress(progressAt('parse', 0), 'Reading metadata');
+            setStage('Reading metadata');
             await yieldToBrowser();
-            parseResult = await parseCIFAsync(text, (f) => {
-                setProgress(progressAt('parse', f), 'Reading atoms');
-            });
+            setStage('Reading atoms');
+            parseResult = await parseCIFAsync(text);
             models = parseResult.models;
             cachedLoops = parseResult.loops;
             chemCompMap = parseResult.chemCompMap;
@@ -2915,7 +2868,7 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         }
 
         // Filter ligands from model
-        setProgress(progressAt('build', 0), 'Grouping residues');
+        setStage('Grouping residues');
         // ...but only where there is something to wait for: a trajectory runs
         // this loop once per model, and a model can be 0.1 ms of work against a
         // 4 ms clamped timer. See yieldIfBusy in utils.js.
@@ -2926,10 +2879,9 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
 
         // Convert parsed atoms to frame data
         // Pass conectMap (PDB) and structConn (CIF) for bond resolution
-        setProgress(progressAt('build', 0.4), 'Building positions');
+        setStage('Building positions');
         await yieldIfBusy();
         let frameData = await convertParsedToFrameDataAsync(
-            (f) => setProgress(progressAt('build', 0.4 + 0.55 * f), 'Building positions'),
             model,
             modresMap,
             chemCompMap,
@@ -2938,7 +2890,7 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             structConn,
             chemCompBondMap
         );
-        setProgress(progressAt('build', 0.95), 'Preparing frames');
+        setStage('Preparing frames');
         if (frameData.coords.length === 0) continue;
 
         // Store PAE data
@@ -4280,7 +4232,8 @@ async function handleFetch() {
         // READ THROUGH, so the download stage is measured too. The
         // server usually says how long the body is; when it does not, there is
         // no honest fraction to report and the stage just names itself.
-        const structText = await readBodyWithProgress(structResponse);
+        setStage('Downloading');
+        const structText = await structResponse.text();
 
         let paeData = null;
         if (paeEnabled && paeUrl && loadPAE) {
@@ -4313,7 +4266,7 @@ async function handleFetch() {
         if (!framesAdded || tempBatch.length === 0) return;
 
         pendingObjects.push(...tempBatch);
-        setProgress(progressAt('display', 0), 'Drawing');
+        setStage('Drawing');
         await yieldToBrowser();
         applyPendingObjects();
         endProgress();
@@ -5778,7 +5731,7 @@ async function processFiles(files, loadAsFrames, groupName = null) {
     }
 
     if (tempBatch.length > 0) pendingObjects.push(...tempBatch);
-    setProgress(progressAt('display', 0), 'Drawing');
+    setStage('Drawing');
     await yieldToBrowser();
     applyPendingObjects();
     endProgress();

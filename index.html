@@ -322,28 +322,48 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                off for the input body and back on for the thumb, or the
                                upper input would swallow every click meant for the lower
                                one. */
-                            #clipRange { position: relative; height: 24px; flex: 1; min-width: 0; }
-                            #clipRange .track {
-                                position: absolute; left: 0; right: 0; top: 11px; height: 4px;
+                            /* TWO IDS, DELIBERATELY. web/style.css styles every range
+                               input in the viewer with
+                               `.py2dmol-viewer-instance input[type="range"]:not(#frameSlider)`,
+                               and :not(#frameSlider) counts an ID - so that rule outranks
+                               a single-id selector here and kept painting its own 6px grey
+                               bar and its own blue thumb. That bar on top of this one is
+                               the "two bars" this control was showing. */
+                            #clipPanel #clipRange { position: relative; height: 24px; flex: 1; min-width: 0; }
+                            #clipPanel #clipRange .track {
+                                position: absolute; left: 0; right: 0; top: 10px; height: 4px;
                                 background: #e5e7eb; border-radius: 2px;
                             }
-                            #clipRange .span {
-                                position: absolute; top: 11px; height: 4px;
+                            #clipPanel #clipRange .span {
+                                position: absolute; top: 10px; height: 4px;
                                 background: #2563eb; border-radius: 2px;
                             }
-                            #clipRange input[type=range] {
+                            #clipPanel #clipRange input[type=range] {
                                 position: absolute; left: 0; top: 0; width: 100%; height: 24px;
-                                margin: 0; background: none; pointer-events: none;
+                                margin: 0; padding: 0; background: transparent; pointer-events: none;
+                                border-radius: 0; outline: none;
                                 -webkit-appearance: none; appearance: none;
                             }
-                            #clipRange input[type=range]::-webkit-slider-thumb {
-                                pointer-events: auto; -webkit-appearance: none; appearance: none;
-                                width: 14px; height: 14px; border-radius: 50%;
-                                background: #fff; border: 2px solid #2563eb; cursor: pointer;
+                            /* the track each input paints for itself, out of the way */
+                            #clipPanel #clipRange input[type=range]::-webkit-slider-runnable-track {
+                                background: transparent; border: none; height: 24px;
                             }
-                            #clipRange input[type=range]::-moz-range-thumb {
+                            #clipPanel #clipRange input[type=range]::-moz-range-track {
+                                background: transparent; border: none; height: 24px;
+                            }
+                            #clipPanel #clipRange input[type=range]::-moz-range-progress {
+                                background: transparent;
+                            }
+                            #clipPanel #clipRange input[type=range]::-webkit-slider-thumb {
+                                pointer-events: auto; -webkit-appearance: none; appearance: none;
+                                width: 14px; height: 14px; margin-top: 5px; border-radius: 50%;
+                                background: #fff; border: 2px solid #2563eb; box-shadow: none;
+                                cursor: pointer;
+                            }
+                            #clipPanel #clipRange input[type=range]::-moz-range-thumb {
                                 pointer-events: auto; width: 14px; height: 14px; border-radius: 50%;
-                                background: #fff; border: 2px solid #2563eb; cursor: pointer;
+                                background: #fff; border: 2px solid #2563eb; box-shadow: none;
+                                cursor: pointer;
                             }
                         </style>
                         <!-- flex-direction ROW spelled out: .control-group is a COLUMN,

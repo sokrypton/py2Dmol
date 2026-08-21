@@ -1098,14 +1098,15 @@ function yieldIfBusy() {
     });
 }
 
-// Drained a slice at a time, giving the browser a turn in between. onProgress
-// is called with the real fraction of the file the walk has passed.
-async function parseCIFAsync(text, onProgress) {
+// Drained a slice at a time, giving the browser a turn in between - see
+// yieldIfBusy for how often that actually is. The steps used to carry the
+// fraction of the file they had reached, for a percentage that no longer
+// exists; the loader names the STEP it is on instead, so nothing reads them.
+async function parseCIFAsync(text) {
     const it = parseCIFSteps(text);
     for (;;) {
         const r = it.next();
         if (r.done) return r.value;
-        if (onProgress) onProgress(r.value);
         await yieldIfBusy();
     }
 }
@@ -2602,12 +2603,13 @@ function convertParsedToFrameData(...args) {
 }
 
 // Drained a slice at a time, reporting how far through it is.
-async function convertParsedToFrameDataAsync(onProgress, ...args) {
+// ...and the same for the converter: sliced so the browser can have a turn,
+// with nothing to report but the step it is on, which the loader names.
+async function convertParsedToFrameDataAsync(...args) {
     const it = convertParsedToFrameDataSteps(...args);
     for (;;) {
         const r = it.next();
         if (r.done) return r.value;
-        if (onProgress) onProgress(r.value);
         await yieldIfBusy();
     }
 }
