@@ -1258,8 +1258,15 @@ t('every draw path asks the same clip test', () => {
     if (!/renderer\.clipAccepts/.test(cart)) {
         throw new Error('the 2D cartoon path ignores the slab');
     }
-    if (!/this\.clipAccepts\(zValues\[i\]\)/.test(src)) {
+    if (!/clipCull && !this\.clipAccepts\(zValues\[idx\]\)/.test(src)) {
         throw new Error('the 2D tube path ignores the slab');
+    }
+    // ...and it culls at the PAINT, not in the order it projects from: a
+    // position with no screen coordinates carries no selection band, and the
+    // band has to show where the selection is even where the slab cut it away.
+    if (/visibleOrder = visibleOrder\.filter/.test(src)) {
+        throw new Error('the clip is culling the projection order again - the '
+            + 'selection band vanishes with the geometry');
     }
 });
 

@@ -8778,9 +8778,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // or dropped by its own depth and the cut comes out stepped at the
             // scale of one segment. The GPU path cuts per fragment and is
             // exact; this is the fallback, asking the same clipAccepts.
-            if (this.clipSlabOn()) {
-                visibleOrder = visibleOrder.filter((i) => this.clipAccepts(zValues[i]));
-            }
+            //
+            // CULLED AT THE PAINT, NOT HERE. visibleOrder is what gets
+            // PROJECTED, and a position with no screen coordinates cannot carry
+            // a selection band, a hover mark or a click - so dropping clipped
+            // segments from this list made the selection vanish along with the
+            // geometry, which it must not: the band is a UI indicator drawn over
+            // the finished frame, and it says where the selection IS even when
+            // that is behind something or outside the slab.
+            const clipCull = this.clipSlabOn();
 
             // Apply culling immediately after sorting
             // visibleOrder is sorted back-to-front (index 0 is furthest, index N-1 is closest)
@@ -9160,6 +9166,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Only iterate over visible segments - no need for visibility check inside loop
             for (let i = 0; i < numRendered; i++) {
                 const idx = visibleOrder[i];
+                // ...except by the clip, which is applied here rather than to
+                // the order, so that what it cuts is still projected
+                if (clipCull && !this.clipAccepts(zValues[idx])) continue;
 
                 // Calculate opacity based on position in visibleOrder
                 // i=0 is furthest (start of sliced array), i=numRendered-1 is closest
