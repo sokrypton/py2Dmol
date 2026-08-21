@@ -35,7 +35,8 @@ eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH',
-    'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A']) {
+    'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_FILL_CSS', 'HOVER_STROKE_CSS',
+    'HOVER_TIP_BG_CSS', 'HOVER_TIP_TEXT_CSS']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
     if (!line) throw new Error('constant not found in viewer-mol.js: ' + name);
     eval('global.' + line.trim().replace('const ', ''));
@@ -43,7 +44,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverMarks','_snapshotCleanFrame','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1032,12 +1033,26 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
     const src = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
     // `this.` prefixed, so the method DEFINITION is not counted as a call -
     // without that this passed with the cartoon branch's call deleted
-    const calls = src.split('this._paintSelectionHalo(ctx').length - 1;
-    if (calls < 2) throw new Error('the halo is painted in only ' + calls
+    const calls = src.split('this._paintOverlays(ctx').length - 1;
+    if (calls < 2) throw new Error('the overlays are painted in only ' + calls
         + ' of the two draw paths (cartoon and tube)');
     const cartoonAt = src.indexOf('py2dmolCartoon.render(this, ctx');
-    const haloAt = src.indexOf('_paintSelectionHalo(ctx', cartoonAt);
-    if (!(haloAt > cartoonAt)) throw new Error('the halo is painted before the cartoon');
+    const haloAt = src.indexOf('_paintOverlays(ctx', cartoonAt);
+    if (!(haloAt > cartoonAt)) throw new Error('the overlays are painted before the cartoon');
+    // ONE PASS FOR EVERYTHING ON TOP. The hover marks used to be a second
+    // canvas the sequence viewer painted on its own schedule, which is how they
+    // went out of step with the picture underneath. They go down here or not at
+    // all: no overlay canvas anywhere, and nothing calling out to one.
+    if (/_paintHoverMarks/.test(src) === false) {
+        throw new Error('the hover marks are not painted by the renderer');
+    }
+    for (const f of ['py2Dmol/resources/viewer-mol.js', 'py2Dmol/resources/viewer-seq.js',
+        'web/app.js']) {
+        const t = fs.readFileSync(f, 'utf8');
+        if (/highlightOverlay|drawHighlights/.test(t)) {
+            throw new Error(f + ' still refers to the second highlight canvas');
+        }
+    }
     // and the old in-geometry ink must be gone from both
     if (/const selSet = this\.selectionInk\(\);/.test(src)) {
         throw new Error('tube still inks the selection into the depth-sorted geometry');
@@ -1048,6 +1063,38 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
     }
 });
 
+
+// A HOVER MARK IS NOT PART OF THE PICTURE. The selection is something the user
+// asked to have marked and belongs in a saved image; where the pointer happens
+// to be does not - and an export renders from a different context entirely, so
+// there is nobody to move the pointer off first.
+t('hover marks are drawn on screen and left out of exports', () => {
+    const v = haloViewer([], 8);
+    v.residueSelection = null;
+    v.highlightedAtoms = new Set([2, 3]);
+    v.hoverInfo = { lines: ['Chain: A'] };
+    v.displayWidth = 100; v.displayHeight = 80;
+    v._ensurePickProjection = () => {};
+
+    const stub = (c) => {
+        c.measureText = () => ({ width: 40 });
+        c.setTransform = () => {}; c.scale = () => {}; c.rect = () => {};
+        c.fillText = (t) => { c.ops.push(['text', t]); };
+        return c;
+    };
+    const on = stub(haloCtx());
+    v._paintOverlays(on, 1);
+    const discs = on.ops.filter((o) => o[0] === 'arc');
+    if (discs.length !== 2) throw new Error('drew ' + discs.length + ' hover marks, expected 2');
+    if (!on.ops.some((o) => o[0] === 'fill')) throw new Error('the readout box was not drawn');
+
+    const off = stub(haloCtx());
+    v._exportPxScale = 2;
+    v._paintOverlays(off, 2);
+    if (off.ops.some((o) => o[0] === 'arc')) {
+        throw new Error('a hover mark reached an export');
+    }
+});
 
 t('a drag previews live without re-rendering the molecule', () => {
     // Committing on every mousemove would be a full re-render per pointer
@@ -1063,12 +1110,16 @@ t('a drag previews live without re-rendering the molecule', () => {
     ctx.drawImage = () => { blits.push(1); };
     v.ctx = ctx;
     v.canvas = { width: 100, height: 80, getContext: () => ctx };
+    ctx.canvas = v.canvas;      // the snapshot refuses any other target - an export
     v.displayWidth = 100; v.displayHeight = 80;
     // a snapshot canvas, as document.createElement would give
     const snapCtx = { setTransform() {}, clearRect() {}, drawImage() {} };
     global.document = { createElement: () => ({ width: 0, height: 0, getContext: () => snapCtx }) };
 
-    if (!v.beginSelectionPreview()) throw new Error('could not snapshot the frame');
+    // the snapshot is taken BY A RENDER, at the one moment the canvas holds the
+    // molecule and no overlays - so stand in for that frame here
+    v._snapshotCleanFrame(ctx);
+    if (!v._previewLive) throw new Error('the frame was not snapshotted');
     v.updateSelectionPreview(new Set([4, 5]));
     if (renders !== 0) throw new Error('a preview update re-rendered the molecule');
     if (!blits.length) throw new Error('the snapshot was not blitted back');

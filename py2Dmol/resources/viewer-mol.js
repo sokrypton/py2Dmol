@@ -469,6 +469,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // changes width when you switch style is exactly what this exists to stop.
     const CONTACT_WIDTH_A = 1.175;
     const SELECTION_HALO_CSS = 'rgba(255, 255, 0, 0.45)';
+    // The HOVER mark, a brighter yellow than the selection band it sits over -
+    // the two are on screen at once and mean different things. Taken from the
+    // sequence viewer's overlay, which used to draw them.
+    const HOVER_FILL_CSS = 'rgba(255, 255, 0, 0.8)';
+    const HOVER_STROKE_CSS = 'rgba(255, 255, 0, 1.0)';
+    const HOVER_TIP_BG_CSS = 'rgba(0, 0, 0, 0.75)';
+    const HOVER_TIP_TEXT_CSS = 'rgba(255, 255, 255, 0.95)';
     // Half-width in screen pixels at unit perspective, before the per-residue
     // radius is added. Wide enough to read as a band around the ribbon rather
     // than a line on it.
@@ -1676,10 +1683,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             });
 
             this.canvas.addEventListener('mousedown', (e) => {
-                // Only start dragging if we clicked directly on the canvas or the highlight overlay
-                // (the overlay has pointer-events: none, but we check for it just in case)
-                const isHighlightOverlay = e.target.id === 'highlightOverlay';
-                if (e.target !== this.canvas && !isHighlightOverlay) return;
+                if (e.target !== this.canvas) return;
 
 
                 // PAN instead of rotate on the middle button, or Cmd/Ctrl with
@@ -1920,8 +1924,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 clearTimeout(this.zoomTimeout);
                 this.zoomTimeout = setTimeout(() => {
                     this.isZooming = false;
-                    // gesture over: bring the highlight overlay back in sync
-                    if (window.SEQ && window.SEQ.drawHighlights) window.SEQ.drawHighlights();
                 }, 100);
             }, { passive: false });
 
@@ -6701,22 +6703,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * leave a stale picture behind - the next update just re-snapshots.
          */
         beginSelectionPreview() {
-            const c = this.canvas;
-            if (!c || !c.width || !c.height) return false;
-            if (typeof document === 'undefined' || !document.createElement) return false;
-            if (!this._previewCanvas) this._previewCanvas = document.createElement('canvas');
-            const snap = this._previewCanvas;
-            if (snap.width !== c.width || snap.height !== c.height) {
-                snap.width = c.width;
-                snap.height = c.height;
-            }
-            const sctx = snap.getContext('2d');
-            if (!sctx) return false;
-            sctx.setTransform(1, 0, 0, 1, 0, 0);
-            sctx.clearRect(0, 0, snap.width, snap.height);
-            sctx.drawImage(c, 0, 0);
-            this._previewLive = true;
-            return true;
+            // Kept as the public way in, but the snapshot itself is taken by
+            // the render (_snapshotCleanFrame) - which is the only moment the
+            // canvas holds the molecule and nothing else. Capturing here would
+            // take the last frame's overlays with it.
+            if (this._previewLive) return true;
+            this.render('selection preview snapshot');
+            return !!this._previewLive;
         }
 
         /**
@@ -6725,20 +6718,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * has to decide which path it is on.
          */
         updateSelectionPreview(set) {
-            if (!this._previewLive && !this.beginSelectionPreview()) {
-                this._selectionPreview = set || null;
-                this.render('selection preview');
-                return;
-            }
             this._selectionPreview = set || null;
-            const ctx = this.ctx || (this.canvas && this.canvas.getContext('2d'));
-            if (!ctx) return;
-            ctx.save();
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-            ctx.drawImage(this._previewCanvas, 0, 0);
-            ctx.restore();
-            this._paintSelectionHalo(ctx, this._exportPxScale || 1);
+            // ONE compositor for everything drawn on top of the molecule: the
+            // preview is a selection that has not been committed, and it lands
+            // on the same clean frame the hover marks do.
+            this._repaintOverlays();
         }
 
         /** Drop the preview; the next real render draws the committed selection. */
@@ -6770,6 +6754,166 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * the flattened, projected coordinates), so it sits on the ribbon you
          * can see rather than on the raw trace.
          */
+        /**
+         * Keep the finished molecule frame, overlays not yet painted, so that a
+         * change to what is MARKED does not have to redraw what is DRAWN.
+         *
+         * Not during a gesture: mid-drag the picture is superseded a frame
+         * later, and the copy would be paid for on every frame of a rotation
+         * for a hover that cannot happen while the pointer is holding the
+         * canvas. The gesture just leaves no snapshot, and the first hover
+         * afterwards pays one ordinary render to make one.
+         */
+        _snapshotCleanFrame(ctx) {
+            this._previewLive = false;
+            if (this._exportPxScale) return;
+            const c = this.canvas;
+            if (!c || !c.width || !c.height) return;
+            if (!ctx || ctx.canvas !== c) return;              // an export target
+            if (this.isDragging || this.isZooming || this.isOrientAnimating) return;
+            if (typeof document === 'undefined' || !document.createElement) return;
+            if (!this._previewCanvas) this._previewCanvas = document.createElement('canvas');
+            const snap = this._previewCanvas;
+            if (snap.width !== c.width || snap.height !== c.height) {
+                snap.width = c.width;
+                snap.height = c.height;
+            }
+            const sctx = snap.getContext('2d');
+            if (!sctx) return;
+            sctx.setTransform(1, 0, 0, 1, 0, 0);
+            sctx.clearRect(0, 0, snap.width, snap.height);
+            sctx.drawImage(c, 0, 0);
+            this._previewLive = true;
+        }
+
+        /**
+         * WHAT IS HOVERED, from whoever knows - the sequence strip, today.
+         * `atoms` are position indices to mark, `info` is {lines: [...]} for the
+         * corner tooltip, or null for neither. Repaints the overlays over the
+         * clean frame; falls back to an ordinary render when there is no
+         * snapshot to blit.
+         */
+        setHover(atoms, info) {
+            const next = (atoms && atoms.size) ? atoms : null;
+            const had = !!(this.highlightedAtoms && this.highlightedAtoms.size)
+                || !!this.hoverInfo;
+            this.highlightedAtoms = next;
+            // the singular field is the older API for the same thing; a set
+            // arriving here supersedes it, or the two disagree on screen
+            this.highlightedAtom = null;
+            this.hoverInfo = (info && info.lines && info.lines.length) ? info : null;
+            if (!next && !this.hoverInfo && !had) return;      // nothing to undraw
+            this._repaintOverlays();
+        }
+
+        /** Blit the clean frame back and put the overlays on it. */
+        _repaintOverlays() {
+            const ctx = this.ctx || (this.canvas && this.canvas.getContext('2d'));
+            if (!ctx || !this._previewLive || !this._previewCanvas) {
+                this.render('overlay repaint');
+                return;
+            }
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            ctx.drawImage(this._previewCanvas, 0, 0);
+            ctx.restore();
+            this._paintOverlays(ctx, this._exportPxScale || 1);
+        }
+
+        /**
+         * EVERYTHING THAT SITS ON TOP OF THE MOLECULE, in one pass at the end
+         * of the frame: the selection band, then the hover marks and their
+         * tooltip.
+         *
+         * This used to be two canvases. The hover half lived on a second canvas
+         * the sequence viewer owned and painted on its own schedule, which is
+         * how it went out of step with the picture underneath: that paint
+         * resized its canvas and read getBoundingClientRect twice - a forced
+         * synchronous layout per frame - so the frame skipped it during a drag,
+         * a zoom and the orient fly-to, and skipped it BEFORE the clear. The
+         * marks stayed where they were while the structure turned under them,
+         * and a settle timer put them right afterwards. Painted here they are
+         * the same frame, from the same projection, and cannot disagree.
+         */
+        _paintOverlays(ctx, pxScale = 1, fromRender = false) {
+            // THE CLEAN FRAME, taken here because here is the only moment it
+            // exists: the molecule is finished and nothing has been drawn on
+            // top of it yet. Hover marks and the drag preview then repaint by
+            // blitting it back, which costs the same on a hexapeptide and a
+            // ribosome. Snapshotting lazily at the START of a gesture (what
+            // beginSelectionPreview did on its own) catches the canvas WITH the
+            // last frame's overlays already on it, and bakes them in.
+            if (fromRender) this._snapshotCleanFrame(ctx);
+            this._paintSelectionHalo(ctx, pxScale);
+            // NOT IN AN EXPORT. The selection is something the user asked to
+            // see marked and belongs in a saved image; where the pointer
+            // happens to be does not.
+            if (!this._exportPxScale) this._paintHoverMarks(ctx, pxScale);
+        }
+
+        /**
+         * The hover marks: a disc per highlighted position, and the tooltip for
+         * whatever the sequence strip says is under the pointer. State only -
+         * `highlightedAtoms` and `hoverInfo` - so the sequence viewer sets what
+         * is hovered and this decides how it looks.
+         */
+        _paintHoverMarks(ctx, pxScale = 1) {
+            const marks = this.highlightedAtoms || this.highlightedAtom !== null;
+            // SETTLE THE PROJECTION FIRST, exactly as the halo does. On a GPU
+            // frame the molecule is drawn from a mesh on the card and nothing
+            // is projected unless something asks - so a mark whose screen
+            // position was never written would silently not appear, and would
+            // appear on the 2D path. Same debt, same place it is paid.
+            if (marks) this._ensurePickProjection();
+            const coords = this.getHighlightCoordinates
+                ? this.getHighlightCoordinates() : [];
+            const info = this.hoverInfo;
+            if (!coords.length && !info) return;
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.scale(pxScale, pxScale);
+            if (coords.length) {
+                ctx.fillStyle = HOVER_FILL_CSS;
+                ctx.strokeStyle = HOVER_STROKE_CSS;
+                ctx.lineWidth = 1;
+                for (const p of coords) {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+            }
+            // The same box the sequence viewer's overlay drew, to the pixel:
+            // 14px monospace, 10 from the bottom-right corner, 8 of padding
+            // inside, 18 a line, corners rounded by 4.
+            const lines = info ? info.lines : null;
+            if (lines && lines.length) {
+                const W = this.displayWidth || (this.canvas ? this.canvas.width : 0);
+                const H = this.displayHeight || (this.canvas ? this.canvas.height : 0);
+                const margin = 10; const inset = 8; const lineHeight = 18; const r = 4;
+                ctx.font = '14px monospace';
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'bottom';
+                let wide = 0;
+                for (const ln of lines) wide = Math.max(wide, ctx.measureText(ln).width);
+                const boxW = wide + inset * 2;
+                const boxH = lines.length * lineHeight + inset * 2;
+                const x = W - margin; const y = H - margin;
+                ctx.fillStyle = HOVER_TIP_BG_CSS;
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(x - boxW, y - boxH, boxW, boxH, r);
+                else ctx.rect(x - boxW, y - boxH, boxW, boxH);
+                ctx.fill();
+                ctx.fillStyle = HOVER_TIP_TEXT_CSS;
+                for (let i = 0; i < lines.length; i++) {
+                    ctx.fillText(lines[i], x - inset,
+                        y - inset - (lines.length - 1 - i) * lineHeight);
+                }
+            }
+            ctx.restore();
+        }
+
         _paintSelectionHalo(ctx, pxScale = 1) {
             // a live drag preview wins: it is what the user is pointing at
             const sel = this._selectionPreview
@@ -7639,11 +7783,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _updateCanvasDimensions() {
             this.displayWidth = parseInt(this.canvas.style.width) || this.canvas.width;
             this.displayHeight = parseInt(this.canvas.style.height) || this.canvas.height;
-
-            // Update highlight overlay canvas size to match (managed by sequence viewer)
-            if (window.SEQ && window.SEQ.updateHighlightOverlaySize) {
-                window.SEQ.updateHighlightOverlaySize();
-            }
         }
 
         // RENDER (Core drawing logic)
@@ -8177,20 +8316,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // A real frame supersedes any snapshot taken from an older one.
                 this._invalidateSelectionPreview();
                 // over the finished drawing, so it is never occluded
-                this._paintSelectionHalo(ctx, this._exportPxScale || 1);
-                // Sequence-viewer highlight overlay, skipped during ANY active
-                // gesture. drawHighlights() resizes its overlay canvas and
-                // reads getBoundingClientRect twice, forcing a synchronous
-                // layout every call - on the web app (which has the sequence
-                // viewer) that dominated the frame. Rotation was already
-                // exempt via isDragging, but ZOOM sets isZooming instead, so
-                // wheel zoom paid it on every frame while rotation did not -
-                // exactly the "cartoon zoom lags, rotation is fine" report.
-                // Each gesture's settle timer repaints it once at the end.
-                if (!this.isDragging && !this.isZooming && !this.isOrientAnimating
-                    && window.SEQ && window.SEQ.drawHighlights) {
-                    window.SEQ.drawHighlights();
-                }
+                this._paintOverlays(ctx, this._exportPxScale || 1, true);
                 return;
             }
 
@@ -8222,11 +8348,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this._ensureRotated();
             } else if (deferRot) {
                 this._invalidateSelectionPreview();
-                this._paintSelectionHalo(ctx, this._exportPxScale || 1);
-                if (!this.isDragging && !this.isZooming && !this.isOrientAnimating
-                    && window.SEQ && window.SEQ.drawHighlights) {
-                    window.SEQ.drawHighlights();
-                }
+                this._paintOverlays(ctx, this._exportPxScale || 1, true);
                 return;
             }
 
@@ -9019,14 +9141,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // A real frame supersedes any snapshot taken from an older one.
             this._invalidateSelectionPreview();
             // over the finished drawing, so it is never occluded
-            this._paintSelectionHalo(ctx, this._exportPxScale || 1);
-
-            // Draw highlights on overlay canvas (doesn't require full render)
-            // Highlight overlay is now managed by sequence viewer
-            // Skip drawing highlights during dragging to prevent interference
-            if (!this.isDragging && window.SEQ && window.SEQ.drawHighlights) {
-                window.SEQ.drawHighlights();
-            }
+            this._paintOverlays(ctx, this._exportPxScale || 1, true);
         }
 
         // Public API for highlights

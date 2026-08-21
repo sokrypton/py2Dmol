@@ -23,9 +23,15 @@
     let sequenceViewMode = true;  // Default: show sequence (enabled by default)
     let lastSequenceUpdateHash = null;
     let renderScheduled = false; // Flag to prevent multiple queued renders
-    let highlightOverlayCanvas = null; // Overlay canvas for drawing highlights on main viewer
-    let highlightOverlayCtx = null;
-    let hoveredResidueInfo = null; // { chain, resName, resSeq } for tooltip display
+    // HOVER IS THE RENDERER'S, NOT OURS. This module used to own a second
+    // canvas over the molecule and paint the hover marks and their tooltip on
+    // it, on its own schedule - which is how they went out of step with the
+    // picture underneath (see _paintOverlays in viewer-mol.js). It now reports
+    // what is hovered and the renderer draws it in the same frame as the
+    // molecule. These two are kept only so a change to one does not clear the
+    // other: the strip sets the marks, the 3D canvas sets the readout.
+    let hoverAtoms = null;         // Set of position indices, or null
+    let hoveredResidueInfo = null; // { chain, resName, resSeq } for the readout
 
     // Virtual scrolling state
     let scrollTop = 0;
@@ -43,9 +49,8 @@
     let callbacks = {
         getRenderer: null,           // () => renderer instance
         getObjectSelect: null,        // () => objectSelect element
-        highlightAtom: null,          // (positionIndex) => void
-        highlightAtoms: null,         // (positionIndices) => void
-        clearHighlight: null,        // () => void
+        // no highlight callbacks: hover goes straight to renderer.setHover,
+        // which paints it with the frame
         applyResidueSelection: null          // (previewPositions) => void
     };
 
@@ -1630,16 +1635,16 @@
 
             if (residuePos && residuePos.residueData) {
                 const residueData = residuePos.residueData;
-                if (residueData.isLigandToken && residueData.positionIndices && callbacks.highlightAtoms) {
-                    // Highlight all positions in ligand
-                    callbacks.highlightAtoms(new Set(residueData.positionIndices));
+                if (residueData.isLigandToken && residueData.positionIndices) {
+                    // the whole ligand marks as one thing
+                    setHoverAtoms(new Set(residueData.positionIndices));
                     hoveredResidueInfo = {
                         chain: residueData.chain,
                         resName: residueData.ligandName || residueData.resName,
                         resSeq: residueData.resSeq
                     };
-                } else if (residueData.positionIndex >= 0 && callbacks.highlightAtom) {
-                    callbacks.highlightAtom(residueData.positionIndex);
+                } else if (residueData.positionIndex >= 0) {
+                    setHoverAtoms(new Set([residueData.positionIndex]));
                     // Store hovered position info for tooltip
                     hoveredResidueInfo = {
                         chain: residueData.chain,
@@ -1647,29 +1652,26 @@
                         resSeq: residueData.resSeq
                     };
                 } else {
+                    setHoverAtoms(null);
                     hoveredResidueInfo = null;
                 }
-            } else if (chainLabelPos && callbacks.highlightAtoms) {
+            } else if (chainLabelPos) {
                 // In both sequence mode and chain mode, highlight entire chain on hover over chain button
                 const chainId = chainLabelPos.chainId;
                 const boundary = chainBoundaries.find(b => b.chain === chainId);
                 if (boundary) {
                     const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
                     if (chainPositions.length > 0) {
-                        const positionIndices = new Set(chainPositions.map(a => a.positionIndex));
-                        callbacks.highlightAtoms(positionIndices);
+                        setHoverAtoms(new Set(chainPositions.map(a => a.positionIndex)));
                     }
                 }
                 // Clear tooltip when hovering over chain button (in both modes)
                 hoveredResidueInfo = null;
             } else {
-                if (callbacks.clearHighlight) callbacks.clearHighlight();
+                setHoverAtoms(null);
                 hoveredResidueInfo = null; // Clear tooltip when not hovering over position
             }
-            // Trigger highlight redraw to show tooltip
-            if (window.SEQ && window.SEQ.drawHighlights) {
-                window.SEQ.drawHighlights();
-            }
+            pushHover();
         });
 
         newCanvas.addEventListener('mouseup', () => {
@@ -1677,11 +1679,9 @@
         });
         newCanvas.addEventListener('mouseleave', () => {
             // Clear hover state when mouse leaves
-            if (callbacks.clearHighlight) callbacks.clearHighlight();
+            setHoverAtoms(null);
             hoveredResidueInfo = null;
-            if (window.SEQ && window.SEQ.drawHighlights) {
-                window.SEQ.drawHighlights();
-            }
+            pushHover();
         });
 
         // Touch event handlers - same logic as mouse handlers
@@ -2082,218 +2082,21 @@
     }
 
     // ============================================================================
-    // HIGHLIGHT OVERLAY MANAGEMENT
+    // HOVER
     // ============================================================================
 
-    // Initialize highlight overlay canvas (positioned over main molecule viewer)
-    function initializeHighlightOverlay() {
+    // Hand the renderer what is hovered; it paints it with the frame.
+    function pushHover() {
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-        if (!renderer || !renderer.canvas) return;
-
-        // Remove existing overlay if it exists
-        if (highlightOverlayCanvas && highlightOverlayCanvas.parentElement) {
-            highlightOverlayCanvas.parentElement.removeChild(highlightOverlayCanvas);
-        }
-
-        // Create highlight overlay canvas that sits on top of main canvas
-        highlightOverlayCanvas = document.createElement('canvas');
-        highlightOverlayCanvas.id = 'highlightOverlay';
-        highlightOverlayCanvas.style.position = 'absolute';
-        highlightOverlayCanvas.style.pointerEvents = 'none'; // Allow mouse events to pass through
-        highlightOverlayCanvas.style.zIndex = '10';
-        highlightOverlayCanvas.style.left = '0';
-        highlightOverlayCanvas.style.top = '0';
-
-        // Position it relative to the canvas container
-        const container = renderer.canvas.parentElement;
-        if (container) {
-            container.style.position = 'relative';
-            container.appendChild(highlightOverlayCanvas);
-        }
-
-        highlightOverlayCtx = highlightOverlayCanvas.getContext('2d');
-
-        // Update overlay canvas size to match main canvas
-        updateHighlightOverlaySize();
+        if (!renderer || !renderer.setHover) return;
+        const i = hoveredResidueInfo;
+        renderer.setHover(hoverAtoms, i ? {
+            lines: [`Chain: ${i.chain}`, `Residue: ${i.resName}`, `Index: ${i.resSeq}`],
+        } : null);
     }
 
-    // Update highlight overlay canvas size and position to match main canvas
-    function updateHighlightOverlaySize() {
-        const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-        if (!renderer || !highlightOverlayCanvas || !highlightOverlayCtx || !renderer.canvas) return;
-
-        const displayWidth = renderer.displayWidth || renderer.canvas.width;
-        const displayHeight = renderer.displayHeight || renderer.canvas.height;
-
-        // IDEMPOTENT. Every statement below is expensive to repeat: assigning
-        // canvas.width/height REALLOCATES (and clears) the overlay even when
-        // the value is unchanged, and the two getBoundingClientRect calls
-        // force a synchronous layout - interleaved with the style writes that
-        // is layout thrashing. This runs once per highlight repaint, so on a
-        // per-frame caller it dominated the frame. Bail out when nothing has
-        // actually moved or resized.
-        const sizeChanged = highlightOverlayCanvas.width !== displayWidth
-            || highlightOverlayCanvas.height !== displayHeight;
-        if (sizeChanged) {
-            highlightOverlayCanvas.width = displayWidth;
-            highlightOverlayCanvas.height = displayHeight;
-            highlightOverlayCanvas.style.width = displayWidth + 'px';
-            highlightOverlayCanvas.style.height = displayHeight + 'px';
-        }
-
-        // Position overlay to match main canvas position within container
-        const mainCanvas = renderer.canvas;
-        const container = mainCanvas.parentElement;
-        if (container) {
-            const containerRect = container.getBoundingClientRect();
-            const canvasRect = mainCanvas.getBoundingClientRect();
-
-            // Calculate offset of canvas within container
-            const offsetLeft = canvasRect.left - containerRect.left;
-            const offsetTop = canvasRect.top - containerRect.top;
-
-            // only write when it actually changed - a style write invalidates
-            // layout, so an unconditional one makes the next read reflow again
-            const l = offsetLeft + 'px';
-            const t = offsetTop + 'px';
-            if (highlightOverlayCanvas.style.left !== l) highlightOverlayCanvas.style.left = l;
-            if (highlightOverlayCanvas.style.top !== t) highlightOverlayCanvas.style.top = t;
-        }
-    }
-
-    // Draw highlights on overlay canvas without re-rendering main scene
-    function drawHighlights() {
-        const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-        if (!renderer || !renderer.canvas) {
-            return;
-        }
-
-        // Skip drawing highlights during dragging to prevent interference with drag operations
-        if (renderer.isDragging) {
-            return;
-        }
-
-        // Initialize overlay if it doesn't exist yet
-        if (!highlightOverlayCanvas || !highlightOverlayCtx) {
-            initializeHighlightOverlay();
-            // If still not created, return early
-            if (!highlightOverlayCanvas || !highlightOverlayCtx) {
-                return;
-            }
-        }
-
-        // Update overlay canvas size to match main canvas
-        updateHighlightOverlaySize();
-
-        // Clear overlay canvas
-        const displayWidth = renderer.displayWidth || renderer.canvas.width;
-        const displayHeight = renderer.displayHeight || renderer.canvas.height;
-        highlightOverlayCtx.clearRect(0, 0, displayWidth, displayHeight);
-
-        // Draw highlights if any
-        const highlightFillStyle = 'rgba(255, 255, 0, 0.8)'; // Bright yellow for highlight
-        const highlightStrokeStyle = 'rgba(255, 255, 0, 1.0)'; // Yellow border
-        const highlightLineWidth = 1;
-
-        highlightOverlayCtx.fillStyle = highlightFillStyle;
-        highlightOverlayCtx.strokeStyle = highlightStrokeStyle;
-        highlightOverlayCtx.lineWidth = highlightLineWidth;
-
-        // Highlight multiple positions if specified (preferred method)
-        // Use public API for highlights
-        // This decouples the sequence viewer from the internal implementation details of the renderer
-        // These are the HOVER highlight only. The selection is outlined by the
-        // renderer's own ink pass (viewer-cartoon.js), not from here.
-        if (renderer.getHighlightCoordinates) {
-            const coords = renderer.getHighlightCoordinates();
-            for (const pos of coords) {
-                highlightOverlayCtx.beginPath();
-                highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
-                highlightOverlayCtx.fill();
-                highlightOverlayCtx.stroke();
-            }
-        } else {
-            // Fallback for older renderer versions (if any)
-            if (renderer.highlightedAtoms !== null && renderer.highlightedAtoms instanceof Set && renderer.highlightedAtoms.size > 0) {
-                for (const positionIndex of renderer.highlightedAtoms) {
-                    if (renderer.positionScreenPositions &&
-                        positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
-                        const pos = renderer.positionScreenPositions[positionIndex];
-                        if (pos) {
-                            highlightOverlayCtx.beginPath();
-                            highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
-                            highlightOverlayCtx.fill();
-                            highlightOverlayCtx.stroke();
-                        }
-                    }
-                }
-            } else if (renderer.highlightedAtom !== null && renderer.highlightedAtom !== undefined && typeof renderer.highlightedAtom === 'number') {
-                const positionIndex = renderer.highlightedAtom;
-                if (renderer.positionScreenPositions &&
-                    positionIndex >= 0 && positionIndex < renderer.positionScreenPositions.length) {
-                    const pos = renderer.positionScreenPositions[positionIndex];
-                    if (pos) {
-                        highlightOverlayCtx.beginPath();
-                        highlightOverlayCtx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
-                        highlightOverlayCtx.fill();
-                        highlightOverlayCtx.stroke();
-                    }
-                }
-            }
-        }
-
-        // Draw tooltip in bottom right corner if hovering over sequence
-        if (hoveredResidueInfo) {
-            const padding = 10;
-            const fontSize = 14;
-            const lineHeight = 18;
-            const textColor = 'rgba(255, 255, 255, 0.95)';
-            const bgColor = 'rgba(0, 0, 0, 0.75)';
-            const cornerRadius = 4;
-
-            highlightOverlayCtx.font = `${fontSize}px monospace`;
-            highlightOverlayCtx.textAlign = 'right';
-            highlightOverlayCtx.textBaseline = 'bottom';
-
-            // Build tooltip text
-            const lines = [
-                `Chain: ${hoveredResidueInfo.chain}`,
-                `Residue: ${hoveredResidueInfo.resName}`,
-                `Index: ${hoveredResidueInfo.resSeq}`
-            ];
-
-            // Measure text to size background
-            const textMetrics = lines.map(line => highlightOverlayCtx.measureText(line));
-            const maxWidth = Math.max(...textMetrics.map(m => m.width));
-            const totalHeight = lines.length * lineHeight;
-            const bgPadding = 8;
-            const bgWidth = maxWidth + bgPadding * 2;
-            const bgHeight = totalHeight + bgPadding * 2;
-
-            // Position in bottom right corner
-            const x = displayWidth - padding;
-            const y = displayHeight - padding;
-
-            // Draw background with rounded corners
-            highlightOverlayCtx.fillStyle = bgColor;
-            highlightOverlayCtx.beginPath();
-            highlightOverlayCtx.moveTo(x - bgWidth + cornerRadius, y - bgHeight);
-            highlightOverlayCtx.arcTo(x - bgWidth, y - bgHeight, x - bgWidth, y - bgHeight + cornerRadius, cornerRadius);
-            highlightOverlayCtx.lineTo(x - bgWidth, y - cornerRadius);
-            highlightOverlayCtx.arcTo(x - bgWidth, y, x - bgWidth + cornerRadius, y, cornerRadius);
-            highlightOverlayCtx.lineTo(x - cornerRadius, y);
-            highlightOverlayCtx.arcTo(x, y, x, y - cornerRadius, cornerRadius);
-            highlightOverlayCtx.lineTo(x, y - bgHeight + cornerRadius);
-            highlightOverlayCtx.arcTo(x, y - bgHeight, x - cornerRadius, y - bgHeight, cornerRadius);
-            highlightOverlayCtx.closePath();
-            highlightOverlayCtx.fill();
-
-            // Draw text
-            highlightOverlayCtx.fillStyle = textColor;
-            lines.forEach((line, i) => {
-                highlightOverlayCtx.fillText(line, x - bgPadding, y - bgPadding - (lines.length - 1 - i) * lineHeight);
-            });
-        }
+    function setHoverAtoms(atoms) {
+        hoverAtoms = (atoms && atoms.size) ? atoms : null;
     }
 
     // ============================================================================
@@ -2304,14 +2107,6 @@
         // Initialize callbacks
         setCallbacks: function (cb) {
             callbacks = Object.assign({}, callbacks, cb);
-            // Try to initialize highlight overlay when callbacks are set
-            // (will be re-initialized when renderer becomes available if not ready yet)
-            if (cb.getRenderer) {
-                const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
-                if (renderer && renderer.canvas) {
-                    initializeHighlightOverlay();
-                }
-            }
         },
 
         // Main functions
@@ -2320,19 +2115,22 @@
         updateColors: updateSequenceViewColors,
         updateSelection: updateSequenceViewSelectionState,
 
-        // HOVERING THE 3D VIEW USES THE SAME READOUT as hovering the sequence.
-        // The box is drawn from hoveredResidueInfo inside drawHighlights, which
-        // is module-local, so the structure canvas needs a way in - otherwise it
-        // would have to grow a second tooltip that could drift out of step with
-        // this one. Pass null to clear.
+        // HOVERING THE 3D VIEW USES THE SAME READOUT as hovering the sequence -
+        // one box, wherever the pointer is, rather than two that could drift
+        // apart. The renderer calls this; this module owns the text, the
+        // renderer draws it. Pass null to clear.
         setHoveredResidue: function (info) {
             hoveredResidueInfo = info || null;
-            drawHighlights();
+            pushHover();
         },
 
-        // Highlight overlay functions
-        drawHighlights: drawHighlights,
-        updateHighlightOverlaySize: updateHighlightOverlaySize,
+        // WHICH POSITIONS ARE MARKED. The marks and the readout are set
+        // separately - the strip sets marks while the 3D canvas sets the
+        // readout - so each is its own call and neither clears the other.
+        setHoverAtoms: function (atoms) {
+            setHoverAtoms(atoms);
+            pushHover();
+        },
 
         // State management
         setMode: function (mode) {

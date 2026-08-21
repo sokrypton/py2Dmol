@@ -118,9 +118,6 @@ function initializeApp() {
         window.MSA.setCallbacks({
             getRenderer: () => viewerApi?.renderer || null,
             getObjectSelect: () => document.getElementById('objectSelect'),
-            highlightAtom: highlightPosition,
-            highlightAtoms: highlightPositions,
-            clearHighlight: clearHighlight,
             applySelection: applySelection,
             onMSAFilterChange: (filteredMSAData, chainId) => {
                 // Recompute properties when MSA filters change
@@ -153,15 +150,6 @@ function initializeApp() {
                 refreshEntropyColors();
             }
         });
-    }
-
-    // Initialize highlight overlay after viewer is created
-    if (viewerApi?.renderer && window.SEQ && window.SEQ.drawHighlights) {
-        // Trigger initialization by calling drawHighlights (which will initialize if needed)
-        const renderer = viewerApi.renderer;
-        if (renderer.canvas) {
-            window.SEQ.drawHighlights();
-        }
     }
 
     // Setup all event listeners
@@ -3350,40 +3338,6 @@ function applySelection(previewPositions = null) {
 }
 
 
-function highlightPosition(positionIndex) {
-    if (viewerApi && viewerApi.renderer) {
-        viewerApi.renderer.highlightedAtom = positionIndex;
-        viewerApi.renderer.highlightedAtoms = null; // Clear multi-position highlight
-        // Draw highlights on overlay canvas without re-rendering main scene
-        if (window.SEQ && window.SEQ.drawHighlights) {
-            window.SEQ.drawHighlights();
-        }
-    }
-}
-
-function highlightPositions(positionIndices) {
-    if (viewerApi && viewerApi.renderer) {
-        viewerApi.renderer.highlightedAtoms = positionIndices instanceof Set ? positionIndices : new Set(positionIndices);
-        viewerApi.renderer.highlightedAtom = null; // Clear single position highlight
-        // Draw highlights on overlay canvas without re-rendering main scene
-        if (window.SEQ && window.SEQ.drawHighlights) {
-            window.SEQ.drawHighlights();
-        }
-    }
-}
-
-function clearHighlight() {
-    if (viewerApi && viewerApi.renderer) {
-        viewerApi.renderer.highlightedAtom = null;
-        viewerApi.renderer.highlightedAtoms = null;
-        // Clear highlights on overlay canvas without re-rendering main scene
-        if (window.SEQ && window.SEQ.drawHighlights) {
-            window.SEQ.drawHighlights();
-        }
-    }
-}
-
-
 function clearAllObjects() {
     // Clear all batched objects
     pendingObjects = [];
@@ -3445,31 +3399,8 @@ if (window.SEQ) {
     window.SEQ.setCallbacks({
         getRenderer: () => viewerApi?.renderer || null,
         getObjectSelect: () => document.getElementById('objectSelect'),
-        highlightAtom: highlightPosition,
-        highlightAtoms: highlightPositions,
-        clearHighlight: clearHighlight,
         applySelection: applySelection
     });
-
-    // Initialize highlight overlay after viewer is created
-    // This will be called after initializePy2DmolViewer completes
-    function initializeHighlightOverlayIfNeeded() {
-        if (viewerApi?.renderer && window.SEQ && window.SEQ.drawHighlights) {
-            // Trigger initialization by calling drawHighlights (which will initialize if needed)
-            // But first make sure we have a renderer with canvas
-            const renderer = viewerApi.renderer;
-            if (renderer.canvas) {
-                // Force initialization by calling the internal function
-                // We'll do this by calling drawHighlights which will lazy-init
-                window.SEQ.drawHighlights();
-            }
-        }
-    }
-
-    // Initialize overlay when viewer is ready
-    if (viewerApi?.renderer) {
-        initializeHighlightOverlayIfNeeded();
-    }
 }
 
 // MSA viewer callbacks are now set up in initializeApp() after viewerApi is initialized
