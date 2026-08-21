@@ -374,6 +374,9 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <div id="clipPanel" hidden class="control-group"
                             style="display: flex; flex-direction: column; align-items: stretch; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
                             <div style="display: flex; flex-direction: row; align-items: center; gap: 8px;">
+                                <label for="clipNear" class="font-medium text-gray-700"
+                                    style="width: 34px; font-size: 11px; flex-shrink: 0;"
+                                    title="Drag the two knobs to clip the view between them">Clip:</label>
                                 <div id="clipRange" title="Drag the two knobs to clip the view between them">
                                     <div class="track"></div>
                                     <div class="span" id="clipSpan"></div>
@@ -389,6 +392,11 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 <input type="range" id="clipFadeSlider" min="0" max="1" value="0" step="0.05"
                                     style="flex: 1; min-width: 0; outline: none;"
                                     title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">
+                                <!-- Reset stands over this space on the row above; without
+                                     it the two tracks would end in different places, which
+                                     is the whole reason the rows were split. -->
+                                <span aria-hidden="true" id="clipResetSpacer"
+                                    style="width: 51px; flex-shrink: 0;"></span>
                             </div>
                         </div>
 
