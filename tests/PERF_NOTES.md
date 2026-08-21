@@ -899,8 +899,21 @@ round trip is NOT lossless in either version: coordinates are rounded on save
 and MSE is normalised to MET, so the restored state differs from the loaded
 one by design. The test is that it differs by the same amount as before.
 
-Loading a session is healthy: ~1.2 s for a 73 MB file, of which JSON.parse is
-168 ms and reviving the side-chain table 6 ms.
+**Loading a session is the fast path, and measure it COLD.** Timed in the same
+page that had just parsed the 274 MB CIF, a session load read 7.3 s and looked
+slower than re-parsing the original. It is not - that page was under heap
+pressure with a major collection pending. Each in its own fresh page, 7Y7A,
+same 305,004 positions:
+
+| | fetch | processFiles | until coords exist |
+| --- | --- | --- | --- |
+| 7Y7A.cif (274 MB) | 390 ms | 3,100 ms | 3,100 ms |
+| session (61.6 MB) | 130 ms | 170 ms | 810 ms |
+
+So a session restores in 0.94 s against 3.5 s for the file it came from, about
+4x. Note `processFiles` returns at 170 ms while the coordinates do not exist
+until 810 ms - the state loader applies asynchronously, so anything timing a
+session load has to wait for the object rather than for the call.
 
 **What is left in a session, if anyone wants to go further.** On 7Y7A the 57 MB
 payload is 43.7 MB of side-chain table: coef 17.6, bonds 10.8, pos 6.7,
