@@ -8164,6 +8164,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     && window.py2dmolCartoonGPU
                     && window.py2dmolCartoonGPU.render(this, ctx,
                         displayWidth, displayHeight, colors);
+                // WHICH PATH DREW THIS FRAME. The GPU declining is silent by
+                // design - that is the point of returning false - but it makes
+                // the two paths indistinguishable from outside, and they differ
+                // by more than an order of magnitude on a large structure.
+                // Timing a render without knowing which one ran measures
+                // nothing: on a 305,000-position assembly the same operation
+                // read 740 ms and 0 ms on consecutive runs, purely because the
+                // GPU was available in one and not the other.
+                this.gpuDrewLastFrame = !!gpuOk;
                 if (!gpuOk) {
                     // it declined: the 2D renderer below is built on rotatedCoords
                     this._ensureRotated();
@@ -8206,7 +8215,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // whole block below it is now what runs only when the GPU declines
             // the frame - which it still can, and then nothing above has been
             // skipped that the 2D pass needs.
-            if (deferRot && !this._tubeGPUFrame(ctx, displayWidth, displayHeight, colors, object)) {
+            const tubeGPUTook = deferRot
+                && this._tubeGPUFrame(ctx, displayWidth, displayHeight, colors, object);
+            // see gpuDrewLastFrame in the cartoon branch: the two paths differ
+            // by more than an order of magnitude and decline silently, so a
+            // frame time means nothing without knowing which one produced it
+            if (deferRot) this.gpuDrewLastFrame = tubeGPUTook;
+            if (deferRot && !tubeGPUTook) {
                 // declined - the 2D pass below reads what was skipped above
                 this._ensureRotated();
             } else if (deferRot) {
