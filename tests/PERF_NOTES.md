@@ -766,19 +766,30 @@ finds quadratic behaviour in this loader, because the fast paths are keyed on
 residues being standard. A structure being UNUSUAL is. Keep a file like 7Y7A
 in the bench set alongside a capsid; they exercise different code.
 
-### Still bad: ligands ON for a structure this size
+### Ligands ON for a structure this size: two more of the same bug
 
-Measured on 7Y7A with ligands enabled - not a regression, and not something
-anything above touches, but worth writing down before someone rediscovers it:
+7Y7A with ligands enabled is 511,958 positions, 223,276 bonds, ~8,800 ligand
+groups and 6,390 chains. Both remaining cliffs were per-ligand scans of a
+whole-structure list, exactly like isResidueConnected:
 
-| | |
-| --- | --- |
-| positions | 511,958 (vs 305,004 with ligands off) |
-| bonds | 223,276 |
-| side-chain rows | 1,065,107 |
-| processFiles | 17.1 s |
-| applyPendingObjects | 14.3 s |
-| first render | 97.6 s |
+- **`fileKnowsIt`** (viewer-mol.js, inside setCoords) walked every bond in the
+  structure to decide whether the file already describes ONE ligand's
+  connectivity. Two billion comparisons. Now every bond is looked at once and
+  charged to the group both its ends sit in - the same question from the other
+  side.
+- **The sequence view** rebuilt its position -> ligand-group reverse map inside
+  the per-chain loop, though it does not depend on the chain: 6,390 chains x
+  207,000 ligand positions = 1.3 billion Map writes to produce the same map
+  6,390 times.
 
-The render figure is the one that looks like a bug rather than merely a large
-structure, and has not been investigated.
+| | before | after |
+| --- | --- | --- |
+| processFiles | 17,342 ms | 3,489 ms |
+| sequence build | ~97,000 ms | 327 ms |
+
+**And a correction worth keeping, about the harness rather than the code.**
+That 97 s was first reported as a "first render". It was not: `render()`
+measures 0 ms on this structure. The harness timed `r.render()` together with
+a `setTimeout(300)` wait, and what actually ran during the wait was the
+deferred sequence build. Any figure that brackets a wait is measuring
+everything the event loop chose to do in it. Time the call, not the window.
