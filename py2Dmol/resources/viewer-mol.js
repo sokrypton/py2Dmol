@@ -1208,6 +1208,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // cuts the DRAWING, not the visibility - see the note on setClipSlab.
             this.clipNear = null;
             this.clipFar = null;
+            // ...and how soft its edges are: a FRACTION of the slab's own
+            // thickness over which the drawing fades out instead of stopping.
+            // 0 is the knife. A fraction rather than Angstrom because the
+            // useful softness scales with what is being looked at - the same
+            // 0.2 reads the same on a peptide and on a ribosome.
+            this.clipFade = 0;
             // Whether the CONTROLS are up. Separate from the slab itself,
             // which stays where it was set: switching Clip off puts the panel
             // away, it does not undo the cut. Reset is what uncuts.
@@ -2670,7 +2676,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // half, and one set on a ribosome does nothing to a peptide.
                     // It rides with the rest of the per-object view state.
                     clipNear: this.clipNear,
-                    clipFar: this.clipFar
+                    clipFar: this.clipFar,
+                    clipFade: this.clipFade
                 };
 
                 // Persist scatter metadata (labels/limits) from renderer before switching away
@@ -2790,7 +2797,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 extent: null,
                 currentFrame: -1,
                 clipNear: null,
-                clipFar: null
+                clipFar: null,
+                clipFade: 0
             };
             this.viewerState = {
                 rotation: this._deepCopyMatrix(saved.rotation),
@@ -2809,6 +2817,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // screen before it.
             this.clipNear = (typeof saved.clipNear === 'number') ? saved.clipNear : null;
             this.clipFar = (typeof saved.clipFar === 'number') ? saved.clipFar : null;
+            this.clipFade = (typeof saved.clipFade === 'number') ? saved.clipFade : 0;
 
             // Restore currentFrame from viewerState
             this.currentFrame = this.viewerState.currentFrame;
@@ -3491,6 +3500,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (obj && obj.viewerState) {
                 obj.viewerState.clipNear = this.clipNear;
                 obj.viewerState.clipFar = this.clipFar;
+                obj.viewerState.clipFade = this.clipFade;
             }
             this.render('clip slab');
         }
@@ -3504,12 +3514,55 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * Is this view-space depth inside the slab? The one test, so the 2D
-         * paths and the shaders cannot drift apart about where the planes are.
+         * Set the soft edge, as a fraction of the slab's thickness. 0 is a
+         * hard cut. Clamped to 1: a fade wider than the slab itself leaves
+         * nothing at full strength anywhere, which reads as a bug rather than
+         * as a setting.
+         */
+        setClipFade(f) {
+            const v = Number(f);
+            if (!isFinite(v)) return;
+            this.clipFade = Math.max(0, Math.min(1, v));
+            const obj = this.objectsData && this.objectsData[this.currentObjectName];
+            if (obj && obj.viewerState) obj.viewerState.clipFade = this.clipFade;
+            this.render('clip fade');
+        }
+
+        /**
+         * The soft edge in ANGSTROM - what the shaders and the 2D paths want.
+         * Zero whenever there is no slab to be soft about.
+         */
+        clipFadeWidth() {
+            if (!this.clipSlabOn()) return 0;
+            const f = (typeof this.clipFade === 'number') ? this.clipFade : 0;
+            if (!(f > 0)) return 0;
+            return Math.max(0, (this.clipNear - this.clipFar)) * f;
+        }
+
+        /**
+         * How much of this view-space depth survives the clip: 1 inside the
+         * slab, 0 past the fade, a straight ramp between. THE one test, so the
+         * 2D paths and the shaders cannot drift apart about where the planes
+         * are or how soft they are.
+         */
+        clipCoverage(z) {
+            if (!this.clipSlabOn()) return 1;
+            const d = Math.min(this.clipNear - z, z - this.clipFar);
+            if (d >= 0) return 1;
+            const w = this.clipFadeWidth();
+            if (!(w > 0)) return 0;
+            return Math.max(0, 1 + d / w);
+        }
+
+        /**
+         * Is this depth inside the slab enough to be treated as there? Drawing
+         * asks clipCoverage, because it can draw a ghost; picking and the
+         * cheap culls ask this, because a click cannot land on half a residue.
+         * Half covered is the line.
          */
         clipAccepts(z) {
             if (!this.clipSlabOn()) return true;
-            return z <= this.clipNear && z >= this.clipFar;
+            return this.clipCoverage(z) >= 0.5;
         }
 
         /**

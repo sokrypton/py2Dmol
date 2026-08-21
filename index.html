@@ -377,6 +377,12 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 <input type="range" id="clipFar" aria-label="Far clipping plane">
                                 <input type="range" id="clipNear" aria-label="Near clipping plane">
                             </div>
+                            <label for="clipFadeSlider" class="font-medium text-gray-700"
+                                style="font-size: 11px; flex-shrink: 0;"
+                                title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">Fade:</label>
+                            <input type="range" id="clipFadeSlider" min="0" max="1" value="0" step="0.05"
+                                style="width: 70px; flex-shrink: 0; outline: none;"
+                                title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">
                             <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset</button>
                         </div>
 

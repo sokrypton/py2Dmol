@@ -1749,6 +1749,9 @@ function fillClipPanel() {
         // a plane parked beyond the structure shows as a knob at the end
         el.value = Math.max(lo, Math.min(hi, at[id])).toFixed(2);
     }
+    // ...and the soft edge, which rides with the object like the planes do
+    const fade = document.getElementById('clipFadeSlider');
+    if (fade) fade.value = String(typeof r.clipFade === 'number' ? r.clipFade : 0);
     showClipValues();
 }
 
@@ -1828,6 +1831,16 @@ function setupClipPanel() {
     for (const id of ['clipNear', 'clipFar']) {
         const el = document.getElementById(id);
         if (el) el.addEventListener('input', push);
+    }
+    // THE SOFT EDGE IS A FRACTION OF THE SLAB, not an Angstrom count: the same
+    // setting then reads the same on a peptide and on a ribosome, and it does
+    // not have to be re-set every time the planes move.
+    const fadeEl = document.getElementById('clipFadeSlider');
+    if (fadeEl) {
+        fadeEl.addEventListener('input', () => {
+            const r = viewerApi?.renderer;
+            if (r && r.setClipFade) r.setClipFade(parseFloat(fadeEl.value));
+        });
     }
     const reset = document.getElementById('clipResetButton');
     if (reset) {

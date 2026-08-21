@@ -531,9 +531,41 @@ function paintCPU(cv, faces, zMin, zMax) {
 //
 // Off is uClipNear <= uClipFar, which no live slab can be (setClipSlab keeps
 // them half an Angstrom apart), so one comparison turns the whole thing off.
+//
+// AND A SOFT EDGE, IF ONE IS ASKED FOR. uClipFade is the width in Angstrom over
+// which coverage ramps 1 -> 0 outside each plane; 0 is the knife.
+//
+// Partial coverage is drawn by DROPPING PIXELS, not by blending: a 4x4 ordered
+// dither, so a half-covered fragment keeps half its pixels and those write
+// depth like any other. Blended fills would need back-to-front order this path
+// does not keep - a ghost in front of the slab would paint over what should
+// show through it - and this needs no order at all, is exact against whatever
+// is behind it, and at export resolution the pattern is finer than the ink.
 const CLIP_GLSL = `
-uniform float uClipNear, uClipFar;
-bool clipped(float z) { return uClipNear > uClipFar && (z > uClipNear || z < uClipFar); }
+uniform float uClipNear, uClipFar, uClipFade;
+// 1 inside the slab, 0 past the fade, a straight ramp between. The mirror of
+// the renderer's own clipCoverage - the two are tested against each other.
+float clipCover(float z) {
+  if (uClipNear <= uClipFar) return 1.0;
+  float d = min(uClipNear - z, z - uClipFar);
+  if (d >= 0.0) return 1.0;
+  if (uClipFade <= 0.0) return 0.0;
+  return max(0.0, 1.0 + d / uClipFade);
+}
+bool clipped(float z) {
+  float c = clipCover(z);
+  if (c >= 1.0) return false;
+  if (c <= 0.0) return true;
+  // Bayer 4x4, in SCREEN space so the pattern does not swim as the model turns
+  const float BAYER[16] = float[16](
+     0.0,  8.0,  2.0, 10.0,
+    12.0,  4.0, 14.0,  6.0,
+     3.0, 11.0,  1.0,  9.0,
+    15.0,  7.0, 13.0,  5.0);
+  ivec2 pxy = ivec2(gl_FragCoord.xy);
+  int bi = (pxy.y - (pxy.y / 4) * 4) * 4 + (pxy.x - (pxy.x / 4) * 4);
+  return c < (BAYER[bi] + 0.5) / 16.0;
+}
 `;
 
 const VS = `#version 300 es
@@ -2521,15 +2553,17 @@ const shiftZ = () => {
 };
 
 // The clip slab, in view space, straight from the renderer. off = near <= far.
-let clipNear = 0, clipFar = 0;
-function setClipSlab(near, far) {
+let clipNear = 0, clipFar = 0, clipFade = 0;
+function setClipSlab(near, far, fade) {
     clipNear = (typeof near === 'number' && isFinite(near)) ? near : 0;
     clipFar = (typeof far === 'number' && isFinite(far)) ? far : 0;
+    clipFade = (typeof fade === 'number' && isFinite(fade) && fade > 0) ? fade : 0;
 }
 // ...and onto whichever program is about to draw.
 function uploadClip(prog) {
     gl.uniform1f(gl.getUniformLocation(prog, 'uClipNear'), clipNear);
     gl.uniform1f(gl.getUniformLocation(prog, 'uClipFar'), clipFar);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uClipFade'), clipFade);
 }
 
 let viewZoom = 1;
@@ -4194,7 +4228,8 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
         // the clip slab, in the same view space the geometry is drawn in
         setClipSlab(renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipNear : 0,
-            renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipFar : 0);
+            renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipFar : 0,
+            renderer.clipFadeWidth ? renderer.clipFadeWidth() : 0);
         // dark mode is the renderer's background, exactly as the 2D pass reads it
         const dark = renderer.backgroundColor === '#000000';
         setPaper(dark ? [0, 0, 0] : [255, 255, 255], dark ? 255 : 0);
@@ -4915,7 +4950,8 @@ function renderTubeApp(renderer, ctx, displayWidth, displayHeight, S) {
         setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
         // the clip slab, in the same view space the geometry is drawn in
         setClipSlab(renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipNear : 0,
-            renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipFar : 0);
+            renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipFar : 0,
+            renderer.clipFadeWidth ? renderer.clipFadeWidth() : 0);
         const dark = renderer.backgroundColor === '#000000';
         setPaper(dark ? [0, 0, 0] : [255, 255, 255], dark ? 255 : 0);
 

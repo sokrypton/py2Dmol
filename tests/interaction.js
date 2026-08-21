@@ -50,7 +50,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1161,6 +1161,86 @@ t('the slab is a depth test, and off is off', () => {
     }
     v.setClipSlab(null, null);
     if (!v.clipAccepts(1e6)) throw new Error('switching the slab off left it clipping');
+});
+
+t('the soft edge is a ramp, and half of it is the line picking draws', () => {
+    // FADE, THE OTHER WAY TO END A CLIP. Instead of stopping at the plane the
+    // drawing thins out over a band outside it, and the band is a FRACTION of
+    // the slab's own thickness so the same setting reads the same on a peptide
+    // and on a ribosome.
+    const v = clipViewer([[0, 0, 0]]);
+    v.setClipSlab(10, -10);                 // 20 Angstrom thick
+    if (v.clipFadeWidth() !== 0) throw new Error('a new slab starts soft');
+    if (v.clipCoverage(11) !== 0) throw new Error('fade 0 is not a hard cut');
+    v.setClipFade(0.25);
+    if (Math.abs(v.clipFadeWidth() - 5) > 1e-9) {
+        throw new Error('a quarter of a 20 Angstrom slab is not ' + v.clipFadeWidth());
+    }
+    if (v.clipCoverage(0) !== 1 || v.clipCoverage(10) !== 1) {
+        throw new Error('the fade ate into the slab itself');
+    }
+    for (const [z, want] of [[11.25, 0.75], [12.5, 0.5], [13.75, 0.25]]) {
+        if (Math.abs(v.clipCoverage(z) - want) > 1e-9) {
+            throw new Error('coverage at ' + z + ' is ' + v.clipCoverage(z)
+                + ', not the straight ramp ' + want);
+        }
+    }
+    if (v.clipCoverage(15.01) !== 0) throw new Error('the ghost runs past its band');
+    if (Math.abs(v.clipCoverage(-12.5) - 0.5) > 1e-9) {
+        throw new Error('the far plane got a different ramp from the near one');
+    }
+    // ...and a click cannot land on a ghost that is more gone than there
+    if (!v.clipAccepts(12.4) || v.clipAccepts(12.6)) {
+        throw new Error('picking does not cut at half coverage');
+    }
+    // the fraction is a fraction: out of range is clamped, not obeyed
+    v.setClipFade(4);
+    if (v.clipFade !== 1) throw new Error('a fade wider than the slab was allowed');
+    v.setClipFade(-1);
+    if (v.clipFade !== 0) throw new Error('a negative fade was allowed');
+    // and with no slab there is nothing to be soft about
+    v.setClipSlab(null, null);
+    if (v.clipFadeWidth() !== 0) throw new Error('an unclipped view has a fade width');
+});
+
+t('the ghost is stippled, not blended, and the shader ramps as the renderer does', () => {
+    // A blended fill needs back-to-front order this path does not keep, so a
+    // ghost in front of the slab would paint over what should show through it.
+    // Dropping pixels needs no order at all.
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const at = gpu.indexOf('const CLIP_GLSL');
+    const glsl = gpu.slice(at, gpu.indexOf('`;', at));
+    if (!/uClipFade/.test(glsl) || !/clipCover/.test(glsl)) {
+        throw new Error('the shader has no soft edge');
+    }
+    if (!/BAYER\[bi\]/.test(glsl) || !/gl_FragCoord/.test(glsl)
+        || !/c < \(BAYER\[bi\] \+ 0\.5\) \/ 16\.0/.test(glsl)) {
+        throw new Error('partial coverage is not being dithered - a blended ghost '
+            + 'paints over what is behind it');
+    }
+    // the same ramp on both sides of the wire: 1 + d / width
+    if (!/1\.0 \+ d \/ uClipFade/.test(glsl)) {
+        throw new Error('the shader ramp is not the renderer ramp');
+    }
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (!/1 \+ d \/ w/.test(mol)) throw new Error('the renderer ramp changed shape');
+    if (!/uniform1f\(gl\.getUniformLocation\(prog, 'uClipFade'\)/.test(gpu)) {
+        throw new Error('the fade never reaches the shader');
+    }
+    if (!/renderer\.clipFadeWidth \? renderer\.clipFadeWidth\(\) : 0/.test(gpu)) {
+        throw new Error('the GPU path does not read the fade off the renderer');
+    }
+    // it rides with the object, like the planes
+    if (!/clipFade: this\.clipFade/.test(mol) || !/saved\.clipFade/.test(mol)) {
+        throw new Error('the fade does not travel with the object');
+    }
+    // ...and there is a control for it
+    const html = fs.readFileSync('index.html', 'utf8');
+    if (html.indexOf('id="clipFadeSlider"') < 0) throw new Error('no Fade control');
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/setClipFade\(parseFloat\(fadeEl\.value\)\)/.test(app)) {
+        throw new Error('the Fade control is not wired to the renderer');
+    }
 });
 
 t('the clip is one range control, and nothing is drawn over the picture', () => {
