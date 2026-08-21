@@ -1320,6 +1320,29 @@ t('a clip cuts the ink with the fills, and double-click still takes the chain', 
     }
 });
 
+t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
+    // A base plate is built from the ribbon frame, not from a position, so
+    // hiding one moves NOTHING else the signature was watching - not the
+    // coordinate count, not the segment list, not the visibility mask. The
+    // mesh was reused and the GPU went on drawing the plate: measured on 1BNA,
+    // 64,454 drawn pixels with the bases hidden and 64,454 with them shown,
+    // against the 2D pass's 50,030.
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const at = gpu.indexOf('function signatureOf(');
+    const sig = gpu.slice(at, gpu.indexOf('\n}', at));
+    if (!/o && o\.bases \? 'b' \+ idOf\(o\.bases\)/.test(sig)) {
+        throw new Error('the mesh signature does not name the base set');
+    }
+    if (!/cartoonBasePlates === false \? 'noplates'/.test(sig)) {
+        throw new Error('the plates switch is not in the signature either');
+    }
+    // ...and the 2D pass is what it has to agree with
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/const baseShown = \(res\) => !baseSet \|\| baseSet\.has\(res\)/.test(cart)) {
+        throw new Error('the 2D pass no longer decides plates per residue');
+    }
+});
+
 t('the backbone has its own switch, and the side chains keep their CA', () => {
     // Hiding a RESIDUE takes its side chain with it. This is the other cut:
     // the fold goes and the side chains stay, which is how you look at a

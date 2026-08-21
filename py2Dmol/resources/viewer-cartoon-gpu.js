@@ -4014,6 +4014,14 @@ function signatureOf(r, w, h, colors) {
             ? window.py2dmolCartoon.sseKey(r) : ''),
         // per-residue side chains and contacts change the segment list
         r.sidechainMap ? r.sidechainMap.size : 0,
+        // A BASE PLATE IS GEOMETRY, and which residues have one is a per-object
+        // set the 2D pass reads while it builds them (baseShown). Nothing else
+        // here moves when it changes - a plate is drawn from the ribbon frame,
+        // not from a position - so hiding a base rebuilt nothing and the GPU
+        // went on drawing the plate from the cached mesh. By identity, like the
+        // visibility mask: setBasesFor assigns a new Set every time.
+        o && o.bases ? 'b' + idOf(o.bases) + ':' + o.bases.size : 'ball',
+        r.cartoonBasePlates === false ? 'noplates' : 'plates',
         contactKey,
     ].join('|');
 }
