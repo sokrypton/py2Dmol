@@ -366,24 +366,30 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                 cursor: pointer;
                             }
                         </style>
-                        <!-- flex-direction ROW spelled out: .control-group is a COLUMN,
-                             and inheriting that stacked the readouts above a track with
-                             no width at all - the handles were there and unusable. -->
+                        <!-- TWO LINES: the planes, then how soft they are. Each row
+                             spells out flex-direction ROW - the panel is a COLUMN and
+                             .control-group is one too, and inheriting that once stacked
+                             the readouts above a track with no width at all: the handles
+                             were there and unusable. -->
                         <div id="clipPanel" hidden class="control-group"
-                            style="display: flex; flex-direction: row; align-items: center; gap: 8px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
-                            <div id="clipRange" title="Drag the two knobs to clip the view between them">
-                                <div class="track"></div>
-                                <div class="span" id="clipSpan"></div>
-                                <input type="range" id="clipFar" aria-label="Far clipping plane">
-                                <input type="range" id="clipNear" aria-label="Near clipping plane">
+                            style="display: flex; flex-direction: column; align-items: stretch; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
+                            <div style="display: flex; flex-direction: row; align-items: center; gap: 8px;">
+                                <div id="clipRange" title="Drag the two knobs to clip the view between them">
+                                    <div class="track"></div>
+                                    <div class="span" id="clipSpan"></div>
+                                    <input type="range" id="clipFar" aria-label="Far clipping plane">
+                                    <input type="range" id="clipNear" aria-label="Near clipping plane">
+                                </div>
+                                <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset</button>
                             </div>
-                            <label for="clipFadeSlider" class="font-medium text-gray-700"
-                                style="font-size: 11px; flex-shrink: 0;"
-                                title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">Fade:</label>
-                            <input type="range" id="clipFadeSlider" min="0" max="1" value="0" step="0.05"
-                                style="width: 70px; flex-shrink: 0; outline: none;"
-                                title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">
-                            <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset</button>
+                            <div style="display: flex; flex-direction: row; align-items: center; gap: 8px;">
+                                <label for="clipFadeSlider" class="font-medium text-gray-700"
+                                    style="width: 34px; font-size: 11px; flex-shrink: 0;"
+                                    title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">Fade:</label>
+                                <input type="range" id="clipFadeSlider" min="0" max="1" value="0" step="0.05"
+                                    style="flex: 1; min-width: 0; outline: none;"
+                                    title="Soft edge: how far outside each plane the drawing fades out instead of stopping. 0 is a hard cut.">
+                            </div>
                         </div>
 
                         <div id="styleAppearanceContainer" class="control-group">
