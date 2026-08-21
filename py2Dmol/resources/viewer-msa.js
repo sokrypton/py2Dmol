@@ -646,9 +646,6 @@
         return { x: displayX * scaleX, y: displayY * scaleY };
     }
 
-    // ============================================================================
-    // HELPER FUNCTIONS (continued)
-    // ============================================================================
 
     function truncateSequenceName(name, maxLength = 32) {
         if (!name) return '';
@@ -1106,9 +1103,6 @@
         };
     }
 
-    // ============================================================================
-    // HELPER FUNCTIONS (continued)
-    // ============================================================================
 
     function getCharWidthForMode(mode) {
         if (mode === 'msa') {
@@ -1158,9 +1152,6 @@
         };
     }
 
-    // ============================================================================
-    // HELPER FUNCTIONS (continued)
-    // ============================================================================
 
     function getLogicalCanvasDimensions(canvas) {
         const logicalWidth = canvas.width / DPI_MULTIPLIER;

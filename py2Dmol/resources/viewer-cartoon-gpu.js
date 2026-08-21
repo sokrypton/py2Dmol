@@ -2915,29 +2915,25 @@ function makeResident(faces, scale, prm, lines) {
         // that carries another bond"); here the faces are already built, so the
         // equivalent is to weld - a quad that appears twice is interior, and both
         // copies drop out along with every edge they would have contributed.
-        // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot tell
-        // them apart by geometry: both are two coincident quads with opposing
-        // normals. The difference is what lies between them - solid for a seam,
-        // NOTHING for a flat ribbon, which is one surface with two sides.
+        // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot
+        // tell them apart by geometry: both are two coincident quads with
+        // opposing normals. The difference is what lies between them - solid
+        // for a seam, NOTHING for a flat ribbon, which is one surface with two
+        // sides.
         //
-        // Richardson gives a helix RICH_TH_REL.H = 0, so this is not a corner case:
-        // welding them deleted both faces of every helix in the default preset, the
-        // rails contributed no edges, and helices came out with no outline at all
-        // while everything around them had one. `sheet` already marks exactly this
-        // pair, so it is the one thing the weld must skip.
-        // An order-independent key for a quad: the sum of its corner hashes. Two
-        // quads on the same four corners agree however their windings differ, which
-        // is what the interior weld is asking.
-        // A ZERO-THICKNESS PIECE IS NOT AN INTERIOR SEAM, and the weld cannot tell
-        // them apart by geometry - both are two coincident quads with opposing
-        // normals. The difference is what lies between them: solid for a seam,
-        // NOTHING for a flat ribbon, which is one surface with two sides. The
-        // weld has to skip exactly the faces that are coincident along their
-        // WHOLE length, which is both stations thin. Splitting the old single
-        // `sheet` flag into a per-station pair for the cull left these two
-        // reading a field that no longer existed, so every helix welded itself
-        // away and came out with no outline at all - the same failure the flag
-        // was introduced to prevent, arriving from the other direction.
+        // Richardson gives a helix RICH_TH_REL.H = 0, so this is not a corner
+        // case: welding them deleted both faces of every helix in the default
+        // preset, the rails contributed no edges, and helices came out with no
+        // outline at all while everything around them had one. What the weld
+        // must skip is exactly the faces coincident along their WHOLE length -
+        // both stations thin - which is what sheetA && sheetB marks. Splitting
+        // the old single `sheet` flag into a per-station pair once left this
+        // test reading a field that no longer existed, and every helix welded
+        // itself away again: the same failure arriving from the other side.
+        //
+        // The key is order-independent - the sum AND the xor of the corner
+        // hashes - so two quads on the same four corners agree however their
+        // windings differ, which is what the weld is asking.
         const flatPair = (f) => !!(f.sheetA && f.sheetB);
         const faceKey = (m) => {
             let a = 0;

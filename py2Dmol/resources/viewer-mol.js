@@ -2765,8 +2765,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const saved = obj.viewerState || {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
-                // seeded from the control, not hardcoded: a new object must not
-                // silently discard the ortho setting the viewer is already on
+                // seeded from the control - see the first of these three defaults
                 ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
                 focalLength: 200.0,
                 center: null,
@@ -5160,8 +5159,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this.viewerState = {
                 rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 zoom: 1.0,
-                // seeded from the control, not hardcoded: a new object must not
-                // silently discard the ortho setting the viewer is already on
+                // seeded from the control - see the first of these three defaults
                 ortho: this.orthoSlider ? parseFloat(this.orthoSlider.value) : 1,
                 focalLength: 200.0,
                 center: null,

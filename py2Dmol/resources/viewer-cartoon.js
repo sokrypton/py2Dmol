@@ -10516,11 +10516,7 @@
                     // merged. Pieces are quarter-interval cuts (~25 deg of
                     // turn), so the straight axis is a close approximation.
                     if (svgStrips && ns >= 2) {
-                        // export culling, per STRIP: a visible piece's turned-
-                        // away face sits a slab thickness behind its own front
-                        // face, which is past the depth margin - so buried
-                        // faces of visible pieces drop out here even when the
-                        // piece as a whole survives.
+                        // export culling, per STRIP - see the identical guard above.
                         if (exportHidden) {
                             let anyVis = false;
                             for (let s = 0; s < ns && !anyVis; s++) {
