@@ -523,20 +523,10 @@ function setupEventListeners() {
     const prevObjectButton = document.getElementById('prevObjectButton');
     const nextObjectButton = document.getElementById('nextObjectButton');
 
-    // CLIP. The renderer owns the box and what it does; this only reports the
-    // checkbox. Switching it OFF is what commits, so the label reads as a mode
-    // rather than as an action - which is what it is.
-    const clipCheckbox = document.getElementById('clipCheckbox');
-    if (clipCheckbox) {
-        clipCheckbox.addEventListener('change', () => {
-            const r = viewerApi?.renderer;
-            if (!r || !r.setClipEditing) return;
-            r.setClipEditing(clipCheckbox.checked);
-            // A box needs something to be a box AROUND: with nothing loaded the
-            // renderer declines, and the control must not claim otherwise.
-            clipCheckbox.checked = !!r.clipEditing;
-        });
-    }
+    // CLIP. The renderer owns the planes and what they do; this is the panel
+    // that sets them. Closing the panel is what commits, so Clip reads as a
+    // mode rather than as an action - which is what it is.
+    setupClipPanel();
 
     if (orientToggle) {
         // Handle click on the label/span (not the hidden checkbox)
@@ -1684,6 +1674,76 @@ function handleObjectChange() {
 // ============================================================================
 // BEST VIEW ROTATION ANIMATION
 // ============================================================================
+
+// The six sliders, in the order the renderer indexes them: axis 0/1/2 for the
+// screen's x, y and depth, side 0 for the min plane and 1 for the max.
+const CLIP_SLIDERS = [
+    ['clipXMin', 0, 0], ['clipXMax', 0, 1],
+    ['clipYMin', 1, 0], ['clipYMax', 1, 1],
+    ['clipZMin', 2, 0], ['clipZMax', 2, 1],
+];
+
+// Range and value for every slider, from the box the renderer just built round
+// the object IN THIS VIEW. The travel is the box plus half its size again at
+// each end, so a plane can be pushed past the structure (hiding everything, a
+// legible mistake) and pulled back out beyond it (hiding nothing).
+function fillClipPanel() {
+    const r = viewerApi?.renderer;
+    const box = r && r.clipBox;
+    if (!box) return;
+    for (const [id, axis, side] of CLIP_SLIDERS) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const lo = box.min[axis]; const hi = box.max[axis];
+        const slack = Math.max(1, (hi - lo) * 0.5);
+        el.min = (lo - slack).toFixed(2);
+        el.max = (hi + slack).toFixed(2);
+        el.step = Math.max(0.05, (hi - lo) / 400).toFixed(3);
+        el.value = (side ? hi : lo).toFixed(2);
+    }
+}
+
+function setupClipPanel() {
+    const cb = document.getElementById('clipCheckbox');
+    const panel = document.getElementById('clipPanel');
+    if (!cb) return;
+    for (const [id, axis, side] of CLIP_SLIDERS) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.addEventListener('input', () => {
+            const r = viewerApi?.renderer;
+            if (!r || !r.setClipPlane) return;
+            r.setClipPlane(axis, side, parseFloat(el.value));
+            // the renderer refuses to let a plane pass its opposite, so read
+            // back what it actually took rather than leaving the slider
+            // claiming a position the box does not have
+            const box = r.clipBox;
+            if (box) el.value = (side ? box.max[axis] : box.min[axis]).toFixed(2);
+        });
+    }
+    const reset = document.getElementById('clipResetButton');
+    if (reset) {
+        reset.addEventListener('click', (e) => {
+            e.preventDefault();
+            const r = viewerApi?.renderer;
+            if (!r || !r.clipEditing) return;
+            r.clipBox = r.clipBoxDefault();
+            r._clipVersion++;
+            fillClipPanel();
+            r.render('clip reset');
+        });
+    }
+    cb.addEventListener('change', () => {
+        const r = viewerApi?.renderer;
+        if (!r || !r.setClipEditing) { cb.checked = false; return; }
+        // A box needs something to be a box AROUND: with nothing loaded the
+        // renderer declines, and the control must not claim otherwise.
+        const open = r.setClipEditing(cb.checked);
+        cb.checked = open;
+        if (panel) panel.hidden = !open;
+        if (open) fillClipPanel();
+    });
+}
 
 function applyBestViewRotation(animate = true) {
     if (!viewerApi || !viewerApi.renderer) return;

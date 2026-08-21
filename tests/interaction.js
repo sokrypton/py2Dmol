@@ -44,7 +44,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipBoxDefault','clipInsideSet','setClipEditing','applyClip','clearClip','_reapplyClipForFrame','_clipGhostColors','_clipDragTo','_paintClipBox','_clipCorners','_clipFaces','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipBoxDefault','clipInsideSet','setClipEditing','applyClip','clearClip','_reapplyClipForFrame','_clipGhostColors','setClipPlane','_paintClipBox','_clipViewCoords','_viewToScreen','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1071,9 +1071,18 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
 // commits, and the outside is hidden through the ordinary visibility mask -
 // the same road Hide takes, so save, copy and Show all need no new code.
 
+// The planes are VIEW-space, so the coordinates they test are rotatedCoords.
+// Identity view here: the harness is scoring the planes, not the projection.
 function clipViewer(pts) {
     const v = new Cls();
     v.coords = pts.map(([x, y, z]) => ({ x, y, z }));
+    v.rotatedCoords = pts.map(([x, y, z]) => ({ x, y, z }));
+    v._rotPending = false;
+    v.viewerState = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] };
+    v.objectsData = {};
+    // Vec3 lives in the real module's closure, so the centre is stubbed rather
+    // than lifted - this harness is scoring the planes, not the camera.
+    v._computeViewCentre = () => ({ x: 0, y: 0, z: 0 });
     v.render = () => {};
     return v;
 }
@@ -1100,15 +1109,52 @@ t('the clip box keeps what is inside it, boundary included', () => {
     }
 });
 
-t('a clip face cannot be pushed past its opposite', () => {
+t('a clip plane cannot be pushed past its opposite', () => {
     const v = clipViewer([[0, 0, 0], [10, 0, 0]]);
     v.clipBox = { min: [0, 0, 0], max: [10, 10, 10] };
-    // drag the max face far past the min one
-    v._clipDrag = { axis: 0, side: 1, px: 0, py: 0, ux: 1, uy: 0, pxPerA: 1, start: 10 };
-    v._clipDragTo(-1000, 0);
+    v.setClipPlane(0, 1, -1000);      // the max plane, far past the min one
     if (!(v.clipBox.max[0] > v.clipBox.min[0])) {
         throw new Error('the box turned inside out: min ' + v.clipBox.min[0]
             + ' max ' + v.clipBox.max[0]);
+    }
+    v.setClipPlane(0, 0, 1000);       // ...and the other way
+    if (!(v.clipBox.max[0] > v.clipBox.min[0])) {
+        throw new Error('the min plane crossed the max one');
+    }
+});
+
+t('the clip is relative to the VIEW, not to the molecule', () => {
+    // "Near" has to go on meaning near the camera when the structure turns, so
+    // the planes test rotatedCoords. Two positions on the x axis; with the view
+    // turned a quarter turn about y they lie along the view's z instead, and a
+    // box that only admits x <= 6 must now admit both.
+    const v = clipViewer([[0, 0, 0], [50, 0, 0]]);
+    const box = { min: [-1, -1, -100], max: [6, 1, 100] };
+    if (v.clipInsideSet(box).size !== 1) throw new Error('head-on, only one is inside');
+    v.rotatedCoords = [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 50 }];
+    if (v.clipInsideSet(box).size !== 2) {
+        throw new Error('after the turn both are within the x planes - the box '
+            + 'is being tested against model coordinates, not the view');
+    }
+});
+
+t('committing freezes the view the planes were set in', () => {
+    // Re-deriving a committed clip from the LIVE view would rewrite the
+    // visibility mask on every frame of a drag, which rebuilds the GPU mesh.
+    const v = clipViewer([[0, 0, 0], [50, 0, 0]]);
+    v.setVisibility = (p) => { v._seen = p; };
+    v.clipBox = { min: [-1, -1, -1], max: [6, 1, 1] };
+    v.clipEditing = true;
+    v.setClipEditing(false);
+    if (!v.clipFrozen) throw new Error('the view was not frozen with the box');
+    const kept = new Set(v._seen.positions);
+    // turn the view: the committed clip must not re-cut
+    v.rotatedCoords = [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 50 }];
+    v._reapplyClipForFrame();
+    const after = v._seen.positions;
+    if (after.size !== kept.size || ![...kept].every((i) => after.has(i))) {
+        throw new Error('rotating changed a committed clip - it would rewrite the '
+            + 'mask on every frame of a drag');
     }
 });
 
@@ -1138,12 +1184,14 @@ t('a committed clip follows the atoms when the frame changes', () => {
     v.setVisibility = (p) => { v._seen = p; };
     v.clipBox = { min: [-1, -1, -1], max: [6, 1, 1] };
     v.clipCommitted = true;
+    v.clipFrozen = { rot: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], centre: [0, 0, 0] };
     v._reapplyClipForFrame();
     if (v._seen.positions.size !== 1 || !v._seen.positions.has(0)) {
         throw new Error('first frame kept ' + [...v._seen.positions]);
     }
     // the two positions swap places
     v.coords = [{ x: 50, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }];
+    v.rotatedCoords = v.coords;
     v._reapplyClipForFrame();
     if (v._seen.positions.size !== 1 || !v._seen.positions.has(1)) {
         throw new Error('after the move it kept ' + [...v._seen.positions]
