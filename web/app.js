@@ -3056,9 +3056,32 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         const firstFrame = referenceFrames[0];
 
         if (firstFrame && rawFrames.length > 0) {
-            // Determine which chain to use for alignment (use first available chain from reference frame)
+            // WHICH CHAIN TO ALIGN ON. The Align chain field, when it names one
+            // the structure has; otherwise the first chain in the reference
+            // frame, which is what this always did.
+            //
+            // A name that is not there is SAID, not silently ignored: asking to
+            // align on B and getting A without being told is the kind of thing
+            // that is only noticed much later, in a figure.
             let alignmentChainId = null;
-            if (firstFrame.chains && firstFrame.chains.length > 0) {
+            const wanted = (document.getElementById('alignChainInput')?.value || '').trim();
+            if (wanted && firstFrame.chains) {
+                if (firstFrame.chains.includes(wanted)) {
+                    alignmentChainId = wanted;
+                } else {
+                    // ...case-insensitively too, since chain ids are usually
+                    // typed in whatever case is to hand
+                    const hit = firstFrame.chains.find((c) => c
+                        && c.toUpperCase() === wanted.toUpperCase());
+                    if (hit) alignmentChainId = hit;
+                }
+                if (alignmentChainId === null) {
+                    setStatus(`No chain "${wanted}" in ${targetObjectName} - aligning on `
+                        + `the first chain instead.`, true);
+                }
+            }
+            if (alignmentChainId === null
+                && firstFrame.chains && firstFrame.chains.length > 0) {
                 // Find first non-empty chain ID
                 for (let j = 0; j < firstFrame.chains.length; j++) {
                     const chainId = firstFrame.chains[j];
@@ -3142,6 +3165,22 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
     // ========================================================================
     // STEP 3: Center each frame based on first available chain
     // ========================================================================
+    // ...BUT NOT EACH FRAME SEPARATELY WHEN THEY HAVE JUST BEEN ALIGNED.
+    //
+    // Centring subtracts a frame's own centroid, which is a TRANSLATION - and
+    // an alignment is a rotation AND a translation. Doing this per frame after
+    // aligning throws the alignment's half away and puts every frame back on
+    // its own centre, so the superposition survives only where the two happen
+    // to coincide. Measured on a two-chain fixture aligned on chain B: the
+    // frame moved 14.8 A after the alignment placed it, and chain B came out
+    // 14.9 A from where it was aligned to - the whole of the error.
+    //
+    // Aligned frames are already in the reference's frame of reference, so they
+    // are shifted TOGETHER by one offset: the reference's, which is zero once
+    // the object holds a centred frame already. Unaligned trajectories keep the
+    // old per-frame centring, which is what removes their drift.
+    const alignedTogether = isTrajectory && shouldAlign;
+    let sharedOffset = null;
     // Determine which chain to use for centering
     let centeringChainId = null;
     if (rawFrames.length > 0 && rawFrames[0].chains && rawFrames[0].chains.length > 0) {
@@ -3184,6 +3223,16 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
             center[0] /= centeringCoords.length;
             center[1] /= centeringCoords.length;
             center[2] /= centeringCoords.length;
+
+            if (alignedTogether) {
+                // one offset for the whole set - see the note above. Frames
+                // added to an object that already holds one are already in its
+                // space, so their offset is nothing at all.
+                if (sharedOffset === null) {
+                    sharedOffset = targetObject.frames.length > 0 ? [0, 0, 0] : center;
+                }
+                center = sharedOffset;
+            }
 
             // Subtract center from all coordinates
             for (const coord of frame.coords) {
