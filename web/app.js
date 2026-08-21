@@ -1876,8 +1876,15 @@ function setupClipPanel() {
 // structure calls them and what the sequence strip shows. A gap in the
 // numbering breaks a run, which is right: 41-45 and 47-50 are not one stretch.
 function describeSelectionRanges(picked) {
-    const r = viewerApi?.renderer;
+    // ...and it says nothing at all without a viewer to ask. This is a label
+    // helper, reachable before one exists and lifted on its own by the panel
+    // test, so it may not assume the app is up around it.
+    const r = (typeof viewerApi !== 'undefined' && viewerApi) ? viewerApi.renderer : null;
     if (!r || !picked || !picked.length) return '';
+    // ...and nothing rather than nonsense: without chains and residue numbers
+    // the "ranges" would be position indices under a made-up chain, which reads
+    // like data and is not.
+    if (!r.chains || !r.residueNumbers) return '';
     const byChain = new Map();
     for (const i of picked) {
         const chain = (r.chains && r.chains[i]) || '?';

@@ -3957,7 +3957,12 @@ function projectPositions(renderer, dw, dh) {
     // turned, and steadily wrong afterwards. Precisely the fault this function
     // exists to fix, reintroduced one line below the fix.
     const mask = renderer.visiblePositions;
-    const shown = (i) => !mask || (mask.has ? mask.has(i) : !!mask[i]);
+    // ...and a SELECTED position is projected whether or not it is drawn: the
+    // band over it says where the selection is, which is worth most when the
+    // thing itself is hidden. See _projectForPicking, which does the same.
+    const marked = renderer.selectionInk ? renderer.selectionInk() : renderer.residueSelection;
+    const shown = (i) => !mask || (mask.has ? mask.has(i) : !!mask[i])
+        || !!(marked && marked.has(i));
     const lw = (renderer.lineWidth || 3.0) * sc;
     for (let i = 0; i < n; i++) {
         const o = i * 3;

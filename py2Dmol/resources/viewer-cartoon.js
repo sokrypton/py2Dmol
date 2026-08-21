@@ -11639,8 +11639,17 @@
         renderer.screenFrameId++;
         const fid = renderer.screenFrameId;
         if (renderer.screenX && renderer.screenX.length >= n) {
+            // A SELECTED POSITION IS PROJECTED WHETHER OR NOT IT IS DRAWN. The
+            // band over it is a UI indicator: it says where the selection is,
+            // and a selection that has been hidden is the one that most needs
+            // saying. Over nothing, if that is what is left there. The same
+            // rule is in _projectForPicking and in the GPU's projectPositions.
+            const marked = renderer.selectionInk
+                ? renderer.selectionInk() : renderer.residueSelection;
             for (let i = 0; i < n; i++) {
-                if (!vis(i)) { renderer.screenValid[i] = 0; continue; }
+                if (!vis(i) && !(marked && marked.has(i))) {
+                    renderer.screenValid[i] = 0; continue;
+                }
                 // The DRAWN position, not the input one. These feed hover,
                 // click-picking and the highlight overlay, and sheet flattening
                 // moves a strand up to ~2 A (median 0.89 A on 1TIM) from where

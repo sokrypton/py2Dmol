@@ -491,7 +491,9 @@ const panelBody = (() => {
     // ...and syncSelectionToggles with it: the panel calls it, so lifting one
     // without the other leaves the panel throwing on an undefined function.
     const lift = (name) => {
-        const i = appSrc.indexOf('    function ' + name + '(');
+        // nested (four spaces) or top level - the panel calls both kinds
+        let i = appSrc.indexOf('    function ' + name + '(');
+        if (i < 0) i = appSrc.indexOf('\nfunction ' + name + '(');
         if (i < 0) throw new Error(name + ' not found in web/app.js');
         let j = appSrc.indexOf('{', i), dd = 0, kk = j;
         for (; kk < appSrc.length; kk++) {
@@ -500,7 +502,8 @@ const panelBody = (() => {
         }
         return appSrc.slice(i, kk + 1);
     };
-    return appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles');
+    return appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles')
+        + '\n' + lift('describeSelectionRanges');
 })();
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null) {
     const nodes = {
@@ -568,8 +571,9 @@ t('the selection panel appears with a selection and hides without one', () => {
     }
 });
 
-t('the panel says how big the selection is', () => {
-    // the one thing the buttons cannot tell you, and it changes what they do
+t('the panel says how big the selection is, and which residues', () => {
+    // the count changes what the buttons do; the ranges say what they will do
+    // it to, which is what you check before pressing the one that deletes them
     if (panelRun([4]).selectionPanelCount.textContent !== '1 residue') {
         throw new Error('singular count is wrong: '
             + panelRun([4]).selectionPanelCount.textContent);
@@ -579,6 +583,25 @@ t('the panel says how big the selection is', () => {
     }
     if (panelRun(null).selectionPanelCount.textContent !== '') {
         throw new Error('a stale count survived the selection being cleared');
+    }
+    // ...and the ranges themselves, scored on their own: by chain, consecutive
+    // NUMBERS run together, a gap in the numbering breaking the run
+    const ranges = new Function('viewerApi', 'return (' + (() => {
+        const src = fs.readFileSync('web/app.js', 'utf8');
+        const i = src.indexOf('\nfunction describeSelectionRanges(');
+        let j = src.indexOf('{', i), d = 0, k = j;
+        for (; k < src.length; k++) {
+            if (src[k] === '{') d++;
+            else if (src[k] === '}') { d--; if (!d) break; }
+        }
+        return src.slice(i + 1, k + 1);
+    })() + ')')({ renderer: {
+        chains: ['A', 'A', 'A', 'A', 'A', 'B', 'B'],
+        residueNumbers: [11, 12, 13, 20, 21, 5, 7],
+    } });
+    const got = ranges([0, 1, 2, 3, 4, 5, 6]);
+    if (got !== 'A 11-13, 20-21; B 5, 7') {
+        throw new Error('ranges read "' + got + '", expected "A 11-13, 20-21; B 5, 7"');
     }
 });
 
@@ -643,10 +666,22 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     const mcHide = html.indexOf('id="mainchainShowToggle"');
     const sse = html.indexOf('id="selSsSelect"');
     const copy = html.indexOf('id="copySelectionButton"');
+    const del = html.indexOf('id="deleteSelectionButton"');
     if (!(scHide < mcHide && mcHide < sse)) {
         throw new Error('SSE is inside one of the part rows');
     }
-    if (!(sse < copy)) throw new Error('SSE is not next to Copy');
+    // COPY AND DELETE LIVE IN THE HEAD, above everything else in the panel.
+    // Copy used to be a full-width button at the bottom, under the pointer
+    // after every other control, and was pressed by accident - which makes a
+    // new object each time.
+    const head = html.indexOf('class="selection-panel-head"');
+    if (!(head >= 0 && head < copy && copy < scHide)) {
+        throw new Error('Copy is not in the panel head - at the bottom it sits '
+            + 'under the pointer after every other control');
+    }
+    if (!(copy < del && del < scHide)) {
+        throw new Error('Delete is not beside Copy in the head');
+    }
 });
 
 t('SSE is offered for protein and withheld from nucleic acid', () => {
@@ -1328,6 +1363,35 @@ t('the ribbon keeps its outline at zero thickness', () => {
     const cap = gpu.slice(capAt, capAt + 2200);
     if (!/renderer\.cartoonThickness = Math\.max\(renderer\.cartoonThickness \|\| 0, ribThick\)/.test(cap)) {
         throw new Error('the floor is no longer applied to the capture');
+    }
+});
+
+// A SELECTION IS MARKED WHETHER OR NOT IT IS DRAWN.
+//
+// The band is a UI indicator - the reason it is not depth-sorted is that it has
+// to say where the selection IS. Hiding those residues, or clipping them away,
+// takes the geometry and must leave the mark, over nothing if that is what is
+// there. All four projections have to agree about it: the two 2D paths, the
+// picking projection, and the GPU's.
+t('a hidden or clipped selection is still marked', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    // picking projection
+    if (!/const wanted = \(i\) => !mask \|\| mask\.has\(i\) \|\| \(marked && marked\.has\(i\)\)/.test(mol)) {
+        throw new Error('_projectForPicking drops hidden positions, band and all');
+    }
+    // the 2D tube path
+    if (!/for \(const i of markedSel\)/.test(mol)) {
+        throw new Error('the 2D tube path does not project a hidden selection');
+    }
+    // the 2D cartoon path
+    if (!/if \(!vis\(i\) && !\(marked && marked\.has\(i\)\)\)/.test(cart)) {
+        throw new Error('the 2D cartoon path does not project a hidden selection');
+    }
+    // and the GPU's
+    if (!/\|\| !!\(marked && marked\.has\(i\)\)/.test(gpu)) {
+        throw new Error('the GPU path does not project a hidden selection');
     }
 });
 

@@ -3042,46 +3042,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.render('addFrame-color');
             }
 
-            // Recompute global center and extent across all frames (handles overlay/non-overlay)
-            let globalCenter = new Vec3(0, 0, 0);
-            let totalCount = 0;
-            for (const frame of object.frames) {
-                if (frame && frame.coords) {
-                    for (let i = 0; i < frame.coords.length; i++) {
-                        const c = frame.coords[i];
-                        globalCenter = globalCenter.add(new Vec3(c[0], c[1], c[2]));
-                        totalCount++;
-                    }
-                }
-            }
-            if (totalCount > 0) {
-                globalCenter = globalCenter.mul(1 / totalCount);
-            }
-
-            // Recalculate maxExtent and standard deviation using the global center
-            let maxDistSq = 0;
-            let sumDistSq = 0;
-            let positionCount = 0;
-            for (const frame of object.frames) {
-                if (frame && frame.coords) {
-                    for (let i = 0; i < frame.coords.length; i++) {
-                        const c = frame.coords[i];
-                        const coordVec = new Vec3(c[0], c[1], c[2]);
-                        const centeredCoord = coordVec.sub(globalCenter);
-                        const distSq = centeredCoord.dot(centeredCoord);
-                        if (distSq > maxDistSq) maxDistSq = distSq;
-                        sumDistSq += distSq;
-                        positionCount++;
-                    }
-                }
-            }
-            object.maxExtent = Math.sqrt(maxDistSq);
-            // Calculate standard deviation: sqrt(mean of squared distances)
-            object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
-            object.center = [globalCenter.x, globalCenter.y, globalCenter.z];
-            this.viewerState.center = { x: globalCenter.x, y: globalCenter.y, z: globalCenter.z };
-            object.totalPositions = totalCount;
-            object.globalCenterSum = new Vec3(globalCenter.x * totalCount, globalCenter.y * totalCount, globalCenter.z * totalCount);
+            this._recomputeObjectStats(object);
 
             // First frame in: re-apply the Ortho slider, which sets both the
             // perspective flag and a focal length scaled to the object's size.
@@ -3800,19 +3761,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * DELETE THE SELECTED RESIDUES from this object.
+         * DELETE THE SELECTED RESIDUES from this object, in place.
          *
-         * The inverse of Copy, and built out of it: copy everything that is NOT
-         * selected, then put the result back under the original name so the
-         * object you were working on is still the object you are working on.
-         * Doing it the other way round - editing the frames in place - would
-         * mean a second implementation of the position-by-position rebuild that
-         * extractSelection already does, and its per-object state remapping
-         * with it, which is the part that has silently dropped side chains
-         * twice.
+         * The object stays the object: same name, same entry in the list, same
+         * camera, same frame, same everything except the residues that are
+         * gone. It is Hide with the positions actually removed - and it looks
+         * the same while it happens, because nothing switches and nothing is
+         * rebuilt around it.
          *
-         * Destructive in the session only: nothing is written, so reloading the
-         * file brings it all back.
+         * The frames come from the shared subset builder, which is also what
+         * Copy uses, so there is one implementation of "these positions,
+         * renumbered" rather than two that can drift. Everything keyed by
+         * position index travels through the same remap Copy uses: side chains,
+         * bases, per-residue colours, contacts, the MSA columns, and the
+         * visibility mask.
+         *
+         * Destructive in the session only: nothing is written to disk.
          */
         deleteSelection() {
             const name = this.currentObjectName;
@@ -3823,45 +3787,286 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 console.warn('Nothing selected - nothing to delete.');
                 return false;
             }
-            const n = (object.frames[0].coords || []).length;
-            const keep = new Set();
-            for (let i = 0; i < n; i++) if (!sel.has(i)) keep.add(i);
-            if (!keep.size) {
+            const first = object.frames[0];
+            const n = (first.coords || []).length;
+            const keep = [];
+            for (let i = 0; i < n; i++) if (!sel.has(i)) keep.push(i);
+            if (!keep.length) {
                 console.warn('That would delete every residue - use Clear All instead.');
                 return false;
             }
-            // extractSelection reads residueSelection and installs a new object
-            const before = new Set(Object.keys(this.objectsData));
-            this.residueSelection = keep;
-            this.extractSelection();
-            this.residueSelection = null;
-            const made = Object.keys(this.objectsData).find((k) => !before.has(k));
-            if (!made) return false;
-            // ...and it takes the old one's place, and its name
-            const kept = this.objectsData[made];
-            delete this.objectsData[made];
-            delete this.objectsData[name];
-            this.objectsData[name] = kept;
-            for (const sels of [this.objectSelect,
-                (typeof document !== 'undefined' ? document.getElementById('objectSelect') : null)]) {
-                if (!sels) continue;
-                const dead = Array.from(sels.options).find((o) => o.value === made);
-                if (dead) dead.remove();
-                const old = Array.from(sels.options).find((o) => o.value === name);
-                if (!old) {
-                    const option = document.createElement('option');
-                    option.value = name;
-                    option.textContent = name;
-                    sels.appendChild(option);
-                }
-                sels.value = name;
+            if (keep.length === n) return false;              // nothing selected here
+
+            // WHERE EACH SURVIVOR ENDS UP, for everything that is keyed by
+            // position index rather than carried in the frames.
+            const newIndexOf = new Map();
+            for (let k = 0; k < keep.length; k++) newIndexOf.set(keep[k], k);
+
+            const frames = this._subsetFrames(object, keep);
+            if (!frames.length) return false;
+
+            // ...the pose, through the same remap Copy uses. Into a scratch
+            // object first: the remap reads the source while it writes, and the
+            // source here is the destination.
+            const moved = {};
+            this._remapObjectState(object, moved, keep);
+            for (const key of Object.keys(moved)) object[key] = moved[key];
+
+            // ...the MSA columns for the residues that are left
+            if (object.msa && window.MSA && typeof window.MSA.extractSubset === 'function') {
+                const holder = { frames: frames, msa: null };
+                window.MSA.extractSubset(object, holder, first, keep);
+                object.msa = holder.msa || null;
             }
-            this.currentObjectName = null;    // force the switch to do its work
-            this._switchToObject(name);
-            this.setFrame(this.currentFrame >= 0 ? this.currentFrame : 0);
+
+            object.frames = frames;
+            this._recomputeObjectStats(object, false);        // ...but do not move the camera
+
+            // THE MASK IS POSITION INDICES TOO. Renumbered rather than reset:
+            // a delete is not a reason to un-hide the chain you were hiding.
+            const vm = this.visibilityModel;
+            if (vm && vm.positions && vm.positions.size) {
+                const next = new Set();
+                for (const i of vm.positions) {
+                    const at = newIndexOf.get(i);
+                    if (at !== undefined) next.add(at);
+                }
+                vm.positions = next;
+            }
+            if (object.visibilityState && object.visibilityState.positions) {
+                const next = new Set();
+                for (const i of object.visibilityState.positions) {
+                    const at = newIndexOf.get(i);
+                    if (at !== undefined) next.add(at);
+                }
+                object.visibilityState.positions = next;
+            }
+
+            // the selection named the residues that are gone
             this.clearResidueSelection();
-            this.render('delete selection');
+            this._invalidateSegmentCache();
+            this._invalidateShadowCache();
+            this.lastShadowRotationMatrix = null;
+            if (window.py2dmolCartoonGPU) window.py2dmolCartoonGPU.invalidate();
+            // ...and the frame reloads where it was, which is what makes this
+            // look like a hide rather than a reload
+            const at = (this.currentFrame >= 0 && this.currentFrame < frames.length)
+                ? this.currentFrame : 0;
+            this.setFrame(at);
+            this.updateUIControls();
             return true;
+        }
+
+        /**
+         * THE FRAMES OF A SUBSET, position by position - the half of Copy that
+         * Delete needs too.
+         *
+         * Lifted out of extractSelection unchanged rather than paraphrased: it
+         * is the third field-by-field frame build in this codebase and the one
+         * that has silently dropped side chains twice, so there is exactly one
+         * of it. `keep` is sorted position indices; the frames come back
+         * renumbered to match, and nothing is installed anywhere.
+         */
+        /**
+         * The object's own measurements - centre, extent, spread - recomputed
+         * over every frame it holds. Lifted out of addFrame so that anything
+         * which CHANGES the frames can refresh them, and taking a flag for the
+         * one part that is not a measurement: addFrame recentres the camera on
+         * what it just loaded, and a delete must not.
+         */
+        _recomputeObjectStats(object, moveCamera = true) {
+            if (!object || !object.frames) return;
+            // Recompute global center and extent across all frames (handles overlay/non-overlay)
+            let globalCenter = new Vec3(0, 0, 0);
+            let totalCount = 0;
+            for (const frame of object.frames) {
+                if (frame && frame.coords) {
+                    for (let i = 0; i < frame.coords.length; i++) {
+                        const c = frame.coords[i];
+                        globalCenter = globalCenter.add(new Vec3(c[0], c[1], c[2]));
+                        totalCount++;
+                    }
+                }
+            }
+            if (totalCount > 0) {
+                globalCenter = globalCenter.mul(1 / totalCount);
+            }
+
+            // Recalculate maxExtent and standard deviation using the global center
+            let maxDistSq = 0;
+            let sumDistSq = 0;
+            let positionCount = 0;
+            for (const frame of object.frames) {
+                if (frame && frame.coords) {
+                    for (let i = 0; i < frame.coords.length; i++) {
+                        const c = frame.coords[i];
+                        const coordVec = new Vec3(c[0], c[1], c[2]);
+                        const centeredCoord = coordVec.sub(globalCenter);
+                        const distSq = centeredCoord.dot(centeredCoord);
+                        if (distSq > maxDistSq) maxDistSq = distSq;
+                        sumDistSq += distSq;
+                        positionCount++;
+                    }
+                }
+            }
+            object.maxExtent = Math.sqrt(maxDistSq);
+            // Calculate standard deviation: sqrt(mean of squared distances)
+            object.stdDev = positionCount > 0 ? Math.sqrt(sumDistSq / positionCount) : 0;
+            object.center = [globalCenter.x, globalCenter.y, globalCenter.z];
+            if (moveCamera) {
+                this.viewerState.center = { x: globalCenter.x, y: globalCenter.y, z: globalCenter.z };
+            }
+            object.totalPositions = totalCount;
+            object.globalCenterSum = new Vec3(globalCenter.x * totalCount, globalCenter.y * totalCount, globalCenter.z * totalCount);
+        }
+
+        _subsetFrames(object, keep) {
+            const selectedIndices = keep;
+            const selectedIndicesSet = new Set(keep);
+            const out = [];
+        // Extract all frames, not just the current one
+        for (let frameIndex = 0; frameIndex < object.frames.length; frameIndex++) {
+            const frame = object.frames[frameIndex];
+            if (!frame || !frame.coords) {
+                continue; // Skip invalid frames
+            }
+
+            // Resolve inherited plddt and PAE data before extracting
+            const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
+            const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : null;
+
+            // Use resolved data if available, otherwise use frame's own data
+            const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
+            const sourcePae = resolvedPae !== null ? resolvedPae : frame.pae;
+
+            // Extract frame data for selected positions
+            const extractedFrame = {
+                coords: [],
+                // the file this frame came from: a copy is the same frames
+                // with fewer positions, so it is still that file's frame
+                name: frame.name,
+                chains: frame.chains ? [] : undefined,
+                plddts: sourcePlddt ? [] : undefined,
+                position_types: frame.position_types ? [] : undefined,
+                position_names: frame.position_names ? [] : undefined,
+                residue_numbers: frame.residue_numbers ? [] : undefined,
+                pae: undefined, // Will be handled separately
+                bonds: undefined, // Will be handled separately
+                // Keyed by position index, so a copy has to renumber it -
+                // see _remapSidechains. Named here because this object is
+                // built field by field and anything left out is dropped in
+                // silence, which is how the copy came to have no side
+                // chains at all. FILLED IN BELOW, once the coordinates
+                // exist: the remap has to ask whether the COPY can build a
+                // local frame at each anchor, and it cannot answer that
+                // against coordinates that have not been extracted yet.
+                sidechains: null,
+            };
+
+            // Extract data for each selected position
+            for (const idx of selectedIndices) {
+                if (idx >= 0 && idx < frame.coords.length) {
+                    extractedFrame.coords.push(frame.coords[idx]);
+
+                    if (frame.chains && idx < frame.chains.length) {
+                        extractedFrame.chains.push(frame.chains[idx]);
+                    }
+                    if (sourcePlddt && idx < sourcePlddt.length) {
+                        extractedFrame.plddts.push(sourcePlddt[idx]);
+                    }
+                    if (frame.position_types && idx < frame.position_types.length) {
+                        extractedFrame.position_types.push(frame.position_types[idx]);
+                    }
+                    if (frame.position_names && idx < frame.position_names.length) {
+                        extractedFrame.position_names.push(frame.position_names[idx]);
+                    }
+                    if (frame.residue_numbers && idx < frame.residue_numbers.length) {
+                        extractedFrame.residue_numbers.push(frame.residue_numbers[idx]);
+                    }
+                }
+            }
+
+            extractedFrame.sidechains = this._remapSidechains(
+                frame.sidechains, selectedIndices, frame.coords, extractedFrame.coords);
+
+            // Filter PAE matrix if present (use resolved PAE data)
+            // PAE can be Uint8Array (flattened, scaled x8) or 2D array (legacy)
+            if (sourcePae) {
+                const isUint8 = sourcePae instanceof Uint8Array;
+                const is2DArray = Array.isArray(sourcePae) && sourcePae.length > 0 && Array.isArray(sourcePae[0]);
+                const isFlatArray = Array.isArray(sourcePae) && sourcePae.length > 0 && !Array.isArray(sourcePae[0]);
+
+                if (isUint8 || isFlatArray) {
+                    // Uint8Array or flat array format: flattened N x N matrix
+                    // Calculate N from the original PAE size
+                    const originalN = Math.round(Math.sqrt(sourcePae.length));
+                    const newN = selectedIndices.length;
+
+                    // Create new flattened PAE array for extracted selection
+                    const newPAE = new Uint8Array(newN * newN);
+
+                    for (let i = 0; i < newN; i++) {
+                        for (let j = 0; j < newN; j++) {
+                            const originalI = selectedIndices[i];
+                            const originalJ = selectedIndices[j];
+
+                            // Bounds check
+                            if (originalI < originalN && originalJ < originalN) {
+                                const originalIdx = originalI * originalN + originalJ;
+                                newPAE[i * newN + j] = sourcePae[originalIdx];
+                            } else {
+                                newPAE[i * newN + j] = 0; // Default value
+                            }
+                        }
+                    }
+
+                    extractedFrame.pae = newPAE;
+                } else if (is2DArray) {
+                    // Legacy 2D array format
+                    const newPAE = [];
+                    for (let i = 0; i < selectedIndices.length; i++) {
+                        const row = [];
+                        for (let j = 0; j < selectedIndices.length; j++) {
+                            const originalI = selectedIndices[i];
+                            const originalJ = selectedIndices[j];
+                            if (originalI < sourcePae.length && originalJ < sourcePae[originalI].length) {
+                                row.push(sourcePae[originalI][originalJ]);
+                            } else {
+                                row.push(0); // Default value if out of bounds
+                            }
+                        }
+                        newPAE.push(row);
+                    }
+                    extractedFrame.pae = newPAE;
+                }
+            }
+
+            // Filter bonds if present
+            if (frame.bonds && Array.isArray(frame.bonds) && frame.bonds.length > 0) {
+                const selectedIndicesSet = new Set(selectedIndices);
+                // Create mapping from original indices to new indices
+                const indexMap = new Map();
+                for (let newIdx = 0; newIdx < selectedIndices.length; newIdx++) {
+                    indexMap.set(selectedIndices[newIdx], newIdx);
+                }
+
+                // Extract bonds where both endpoints are in selection
+                const extractedBonds = [];
+                for (const [idx1, idx2] of frame.bonds) {
+                    if (selectedIndicesSet.has(idx1) && selectedIndicesSet.has(idx2)) {
+                        const newIdx1 = indexMap.get(idx1);
+                        const newIdx2 = indexMap.get(idx2);
+                        extractedBonds.push([newIdx1, newIdx2]);
+                    }
+                }
+                if (extractedBonds.length > 0) {
+                    extractedFrame.bonds = extractedBonds;
+                }
+            }
+
+            out.push(extractedFrame);
+        }
+            return out;
         }
 
         extractSelection() {
@@ -3975,147 +4180,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Create new object
             this.addObject(extractName);
 
-            // Extract all frames, not just the current one
-            for (let frameIndex = 0; frameIndex < object.frames.length; frameIndex++) {
-                const frame = object.frames[frameIndex];
-                if (!frame || !frame.coords) {
-                    continue; // Skip invalid frames
-                }
-
-                // Resolve inherited plddt and PAE data before extracting
-                const resolvedPlddt = this._resolvePlddtData(object, frameIndex);
-                const resolvedPae = window.PAE ? window.PAE.resolveData(object, frameIndex) : null;
-
-                // Use resolved data if available, otherwise use frame's own data
-                const sourcePlddt = resolvedPlddt !== null ? resolvedPlddt : frame.plddts;
-                const sourcePae = resolvedPae !== null ? resolvedPae : frame.pae;
-
-                // Extract frame data for selected positions
-                const extractedFrame = {
-                    coords: [],
-                    // the file this frame came from: a copy is the same frames
-                    // with fewer positions, so it is still that file's frame
-                    name: frame.name,
-                    chains: frame.chains ? [] : undefined,
-                    plddts: sourcePlddt ? [] : undefined,
-                    position_types: frame.position_types ? [] : undefined,
-                    position_names: frame.position_names ? [] : undefined,
-                    residue_numbers: frame.residue_numbers ? [] : undefined,
-                    pae: undefined, // Will be handled separately
-                    bonds: undefined, // Will be handled separately
-                    // Keyed by position index, so a copy has to renumber it -
-                    // see _remapSidechains. Named here because this object is
-                    // built field by field and anything left out is dropped in
-                    // silence, which is how the copy came to have no side
-                    // chains at all. FILLED IN BELOW, once the coordinates
-                    // exist: the remap has to ask whether the COPY can build a
-                    // local frame at each anchor, and it cannot answer that
-                    // against coordinates that have not been extracted yet.
-                    sidechains: null,
-                };
-
-                // Extract data for each selected position
-                for (const idx of selectedIndices) {
-                    if (idx >= 0 && idx < frame.coords.length) {
-                        extractedFrame.coords.push(frame.coords[idx]);
-
-                        if (frame.chains && idx < frame.chains.length) {
-                            extractedFrame.chains.push(frame.chains[idx]);
-                        }
-                        if (sourcePlddt && idx < sourcePlddt.length) {
-                            extractedFrame.plddts.push(sourcePlddt[idx]);
-                        }
-                        if (frame.position_types && idx < frame.position_types.length) {
-                            extractedFrame.position_types.push(frame.position_types[idx]);
-                        }
-                        if (frame.position_names && idx < frame.position_names.length) {
-                            extractedFrame.position_names.push(frame.position_names[idx]);
-                        }
-                        if (frame.residue_numbers && idx < frame.residue_numbers.length) {
-                            extractedFrame.residue_numbers.push(frame.residue_numbers[idx]);
-                        }
-                    }
-                }
-
-                extractedFrame.sidechains = this._remapSidechains(
-                    frame.sidechains, selectedIndices, frame.coords, extractedFrame.coords);
-
-                // Filter PAE matrix if present (use resolved PAE data)
-                // PAE can be Uint8Array (flattened, scaled x8) or 2D array (legacy)
-                if (sourcePae) {
-                    const isUint8 = sourcePae instanceof Uint8Array;
-                    const is2DArray = Array.isArray(sourcePae) && sourcePae.length > 0 && Array.isArray(sourcePae[0]);
-                    const isFlatArray = Array.isArray(sourcePae) && sourcePae.length > 0 && !Array.isArray(sourcePae[0]);
-
-                    if (isUint8 || isFlatArray) {
-                        // Uint8Array or flat array format: flattened N x N matrix
-                        // Calculate N from the original PAE size
-                        const originalN = Math.round(Math.sqrt(sourcePae.length));
-                        const newN = selectedIndices.length;
-
-                        // Create new flattened PAE array for extracted selection
-                        const newPAE = new Uint8Array(newN * newN);
-
-                        for (let i = 0; i < newN; i++) {
-                            for (let j = 0; j < newN; j++) {
-                                const originalI = selectedIndices[i];
-                                const originalJ = selectedIndices[j];
-
-                                // Bounds check
-                                if (originalI < originalN && originalJ < originalN) {
-                                    const originalIdx = originalI * originalN + originalJ;
-                                    newPAE[i * newN + j] = sourcePae[originalIdx];
-                                } else {
-                                    newPAE[i * newN + j] = 0; // Default value
-                                }
-                            }
-                        }
-
-                        extractedFrame.pae = newPAE;
-                    } else if (is2DArray) {
-                        // Legacy 2D array format
-                        const newPAE = [];
-                        for (let i = 0; i < selectedIndices.length; i++) {
-                            const row = [];
-                            for (let j = 0; j < selectedIndices.length; j++) {
-                                const originalI = selectedIndices[i];
-                                const originalJ = selectedIndices[j];
-                                if (originalI < sourcePae.length && originalJ < sourcePae[originalI].length) {
-                                    row.push(sourcePae[originalI][originalJ]);
-                                } else {
-                                    row.push(0); // Default value if out of bounds
-                                }
-                            }
-                            newPAE.push(row);
-                        }
-                        extractedFrame.pae = newPAE;
-                    }
-                }
-
-                // Filter bonds if present
-                if (frame.bonds && Array.isArray(frame.bonds) && frame.bonds.length > 0) {
-                    const selectedIndicesSet = new Set(selectedIndices);
-                    // Create mapping from original indices to new indices
-                    const indexMap = new Map();
-                    for (let newIdx = 0; newIdx < selectedIndices.length; newIdx++) {
-                        indexMap.set(selectedIndices[newIdx], newIdx);
-                    }
-
-                    // Extract bonds where both endpoints are in selection
-                    const extractedBonds = [];
-                    for (const [idx1, idx2] of frame.bonds) {
-                        if (selectedIndicesSet.has(idx1) && selectedIndicesSet.has(idx2)) {
-                            const newIdx1 = indexMap.get(idx1);
-                            const newIdx2 = indexMap.get(idx2);
-                            extractedBonds.push([newIdx1, newIdx2]);
-                        }
-                    }
-                    if (extractedBonds.length > 0) {
-                        extractedFrame.bonds = extractedBonds;
-                    }
-                }
-
-                // Add extracted frame to new object
+            // the frames themselves, built by the shared subset builder
+            for (const extractedFrame of this._subsetFrames(object, selectedIndices)) {
                 this.addFrame(extractedFrame, extractName);
             }
 
@@ -8324,8 +8390,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const types = this.positionTypes;
             const tw = this.typeWidthMultipliers;
             const mask = this.visiblePositions;
+            // A SELECTED POSITION IS PROJECTED WHETHER OR NOT IT IS DRAWN. The
+            // band over it is a UI indicator, not part of the molecule: it says
+            // where the selection is, and a selection you have hidden is
+            // precisely the one you need told about. Over nothing, if that is
+            // what is there.
+            const marked = this.selectionInk ? this.selectionInk() : this.residueSelection;
+            const wanted = (i) => !mask || mask.has(i) || (marked && marked.has(i));
             for (let i = 0; i < np; i++) {
-                if (mask && !mask.has(i)) { sv[i] = 0; continue; }
+                if (!wanted(i)) { sv[i] = 0; continue; }
                 const v = rotated[i];
                 let pe = 1;
                 if (persp) {
@@ -9169,6 +9242,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 screenRadius[idx] = radius;
                 screenValid[idx] = currentScreenFrameId;
             };
+
+            // ...and the selected positions the mask left out, for the same
+            // reason _projectForPicking does: the band over a hidden selection
+            // is the one you most need to see.
+            const markedSel = this.selectionInk ? this.selectionInk() : this.residueSelection;
+            if (markedSel && markedSel.size) {
+                for (const i of markedSel) {
+                    if (i >= 0 && i < rotated.length) projectPosition(i);
+                }
+            }
 
             // Iterate visible segments and project their endpoints
             for (let i = 0; i < numRendered; i++) {
