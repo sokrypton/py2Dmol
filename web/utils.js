@@ -721,7 +721,19 @@ const CIF_LOOPS_READ = [
 // A slice is a fixed number of BYTES rather than of rows, since that is what
 // the fraction is measured in and what makes each slice take about the same
 // time.
-const PARSE_SLICE_BYTES = 8 << 20;
+// HOW OFTEN THE BAR CAN MOVE, which is the same question as how much the
+// smoothness costs. Every yield lets the browser produce a frame, and a frame
+// on this page is not free. Measured end to end on a 242 MB capsid through the
+// real fetch button, counting the DISTINCT values the bar actually showed at
+// frame time:
+//
+//   3 MB slices, timer yield    47 steps   3,650 ms
+//   12 MB slices, timer yield   34 steps   3,225 ms
+//   8 MB slices, scheduler.yield 17 steps  3,125 ms
+//
+// 12 MB is a step roughly every 90 ms - plainly moving - for about 100 ms over
+// the cheapest option that still yields at all.
+const PARSE_SLICE_BYTES = 12 << 20;
 
 function* parseCIFSteps(text) {
 
@@ -1078,20 +1090,25 @@ function parseCIF(text) {
 // Hand the browser a turn, so the bar it was just told about can actually be
 // painted before the next slice of work begins.
 //
-// NOT setTimeout(0). Nested timeouts are clamped to about 4 ms, and at sixty
-// slices that clamp alone added 300 ms to a capsid load - a third of a second
-// spent waiting for permission to continue. A MessageChannel message is
-// delivered on the next turn of the event loop with no floor, so the browser
-// still gets its turn and the load does not pay for it. Measured: 2,871 ms
-// back down to 2,612.
-const yieldChannel = (typeof MessageChannel === 'function') ? new MessageChannel() : null;
-let yieldWaiting = null;
-if (yieldChannel) {
-    yieldChannel.port1.onmessage = () => { const f = yieldWaiting; yieldWaiting = null; if (f) f(); };
-}
+// A PLAIN TIMER, and the two cleverer options were both tried and rejected.
+// Measured on a capsid, sampling the bar inside requestAnimationFrame - which
+// is what the screen actually got, rather than what style.width was set to:
+//
+//   MessageChannel   the usual trick for dodging the ~4 ms timer clamp. A
+//                    stream of postMessage tasks gets serviced ahead of both
+//                    timers and rendering, so the load yields and the frame
+//                    still never comes: the last 700 ms painted nothing and
+//                    the bar's final visible value was 81%.
+//   scheduler.yield  continues at high priority, which throttles rendering to
+//                    about 18 fps however fine the slices are - 17 visible
+//                    steps over the load.
+//   setTimeout       36 fps, 37 visible steps. Costs the 4 ms clamp per yield,
+//                    which is why the slices above are megabytes and not
+//                    kilobytes: at 8 MB that is 30 yields, ~120 ms.
+//
+// The bar exists to be watched. The one that lets the browser draw wins.
 function yieldToBrowser() {
-    if (!yieldChannel || yieldWaiting) return new Promise((s) => setTimeout(s, 0));
-    return new Promise((s) => { yieldWaiting = s; yieldChannel.port2.postMessage(0); });
+    return new Promise((s) => setTimeout(s, 0));
 }
 
 // Drained a slice at a time, giving the browser a turn in between. onProgress

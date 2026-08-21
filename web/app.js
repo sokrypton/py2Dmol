@@ -1487,10 +1487,21 @@ function endProgress() {
     if (progressRevealTimer) { clearTimeout(progressRevealTimer); progressRevealTimer = 0; }
     const box = document.getElementById('load-progress');
     const bar = document.getElementById('load-progress-bar');
-    if (bar) bar.style.width = '0%';
-    if (box) box.style.display = 'none';
-    progressShownAt = 0;
-    progressHighWater = 0;
+    const hide = () => {
+        if (bar) bar.style.width = '0%';
+        if (box) box.style.display = 'none';
+        progressShownAt = 0;
+        progressHighWater = 0;
+    };
+    // LET IT FINISH. The last stage - setCoords and the first render - runs
+    // with the main thread pinned, so the last fraction anyone can SEE is
+    // whatever was painted before it started: the bar stalls around 80% and
+    // then disappears, which reads as a bar that died rather than one that
+    // arrived. Showing the full bar for a moment is not decoration; it is the
+    // one part of the load the user could not otherwise observe finishing.
+    if (!progressShownAt || !box) { hide(); return; }
+    setProgress(1, 'Done');
+    setTimeout(hide, 250);
 }
 
 
