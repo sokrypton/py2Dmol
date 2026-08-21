@@ -967,11 +967,12 @@ function setupEventListeners() {
             return null;
         };
         if (none || !renderer || !obj) {
-            for (const id of ['sidechainShowToggle', 'elementsShowToggle',
-                'basesShowToggle', 'mainchainShowToggle', 'backboneShowToggle',
+            for (const id of ['elementsShowToggle', 'mainchainShowToggle',
                 'contactShowToggle']) {
                 set(id, false);
             }
+            const scSel0 = document.getElementById('sidechainModeSelect');
+            if (scSel0) scSel0.value = '';
             return;
         }
         // ...and only positions that still EXIST. A selection outlives the
@@ -983,21 +984,36 @@ function setupEventListeners() {
         const live = list.filter((i) => i < nPos);
         const owners = renderer.sidechainOwners ? renderer.sidechainOwners() : null;
         const scAble = owners ? live.filter((i) => owners.has(i)) : [];
-        set('sidechainShowToggle', tally(scAble,
-            obj.sidechains instanceof Set ? obj.sidechains : null, false));
         set('elementsShowToggle', tally(scAble,
             obj.elements instanceof Set ? obj.elements : null, true));
         const t = renderer.positionTypes || [];
         const nuc = live.filter((i) => t[i] === 'D' || t[i] === 'R');
-        set('basesShowToggle', tally(nuc,
-            obj.bases instanceof Set ? obj.bases : null, true));
-        // visibility: null means everything is visible
-        const vis = renderer.visiblePositions;
-        set('mainchainShowToggle', tally(live, vis, true));
-        // the backbone reads the other way round: the set names what is HIDDEN,
-        // so a position in it is a toggle that is off
+        // THE SIDE-CHAIN MODE, read back per residue and shown only when the
+        // whole selection agrees. Plate is offered only where the selection has
+        // nucleotides - a protein has no such thing, and an option that does
+        // nothing is worse than one that is not there.
+        const scSel = document.getElementById('sidechainModeSelect');
+        if (scSel) {
+            const scSet = obj.sidechains instanceof Set ? obj.sidechains : null;
+            const bSet = obj.bases instanceof Set ? obj.bases : null;
+            const modeOf = (i) => {
+                if (scSet && scSet.has(i)) return 'full';
+                const isNuc = t[i] === 'D' || t[i] === 'R';
+                if (isNuc && (!bSet || bSet.has(i))) return 'plate';
+                return 'none';
+            };
+            const modes = new Set(live.map(modeOf));
+            scSel.value = modes.size === 1 ? [...modes][0] : '';
+            const plateOpt = scSel.querySelector('option[value="plate"]');
+            if (plateOpt) plateOpt.hidden = !nuc.length;
+            // ...and the row itself is offered only where there is something to
+            // draw: a structure with no side-chain atoms and no bases has none
+            scSel.disabled = !scAble.length && !nuc.length;
+        }
+        // MAIN CHAIN IS THE BACKBONE. The set names what is HIDDEN, so a
+        // position in it is a toggle that is off.
         const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
-        set('backboneShowToggle', !hidBB ? true
+        set('mainchainShowToggle', !hidBB ? true
             : (live.every((i) => !hidBB.has(i)) ? true
                 : (live.every((i) => hidBB.has(i)) ? false : null)));
         set('contactShowToggle', list.length === 2 && !!findContact(list));
@@ -1010,6 +1026,70 @@ function setupEventListeners() {
         if (!renderer || !renderer.setElementsFor) return;
         if (!renderer.setElementsFor(positions, on)) return;   // nothing to redraw
         renderer.render('selection elements');
+    }
+
+    // HOW A SELECTION'S SIDE CHAINS ARE DRAWN: none, the nucleic plate, or the
+    // real atoms. One control, because the three are alternatives - a pair of
+    // toggles cannot say "one or the other", and with the plate on its own row
+    // the panel had two rows called Side chain.
+    function setSelectionSidechainMode(positions, mode) {
+        const renderer = viewerApi?.renderer;
+        if (!renderer) return;
+        const t = renderer.positionTypes || [];
+        const nuc = positions.filter((i) => t[i] === 'D' || t[i] === 'R');
+        // the plate is nucleic only; a protein asked for it gets nothing drawn
+        // rather than a control that silently does something else
+        if (mode === 'plate' && !nuc.length) {
+            setStatus('Only nucleotides have a base plate.');
+            updateSelectionToolsState();
+            return;
+        }
+        if (nuc.length && renderer.setBasesFor) {
+            renderer.setBasesFor(nuc, mode === 'plate');
+        }
+        // ...and the atoms, which are a frame RELOAD rather than a repaint
+        setSelectionSidechains(positions, mode === 'full');
+        syncSelectionVisibility(positions);
+        renderer.render('selection side chain mode');
+    }
+
+    // A RESIDUE WITH NOTHING DRAWN IS HIDDEN, and one with any part drawn is
+    // not. The panel used to carry a Show toggle for the whole residue beside
+    // the per-part ones, which is a third thing to keep consistent with the
+    // other two; composing it means the mask always agrees with the picture,
+    // and Orient, the clip and picking all read the mask.
+    function syncSelectionVisibility(positions) {
+        const renderer = viewerApi?.renderer;
+        const obj = renderer?.objectsData?.[renderer.currentObjectName];
+        if (!renderer || !obj) return;
+        const t = renderer.positionTypes || [];
+        const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
+        const sc = obj.sidechains instanceof Set ? obj.sidechains : null;
+        const bases = obj.bases instanceof Set ? obj.bases : null;
+        const drawsSomething = (i) => {
+            if (!hidBB || !hidBB.has(i)) return true;              // backbone drawn
+            if (sc && sc.has(i)) return true;                      // real atoms
+            const isNuc = t[i] === 'D' || t[i] === 'R';
+            if (isNuc && (!bases || bases.has(i))) return true;    // plate
+            return false;
+        };
+        // ...AND THEIR ATOMS WITH THEM. A shown side chain is APPENDED to the
+        // coordinate array, and the mask is a set of position indices - so a
+        // residue marked visible without its atoms leaves them out of it, and
+        // the side chain the user just asked for is not drawn. They inherit
+        // their owner's visibility at materialisation; this keeps that true
+        // afterwards.
+        const scMap = renderer.sidechainMap;
+        const withAtoms = (list) => {
+            if (!scMap || !scMap.size) return list;
+            const set = new Set(list);
+            for (const [idx, e] of scMap) if (e && set.has(e.owner)) set.add(idx);
+            return [...set];
+        };
+        const show = []; const hide = [];
+        for (const i of positions) (drawsSomething(i) ? show : hide).push(i);
+        if (hide.length) setSelectionVisible(withAtoms(hide), false, false);
+        if (show.length) setSelectionVisible(withAtoms(show), true, false);
     }
 
     // Base plates, per nucleotide. Unlike side chains this is a pure DRAWING
@@ -1144,9 +1224,10 @@ function setupEventListeners() {
         }
         syncSelectionToggles(picked, none);
         // The side-chain row is offered only when there is something to show:
-        // glycine has no side chain, nor does a nucleotide, nor any residue in
-        // a backbone-only model, and a control that cannot do anything is worse
-        // than no control.
+        // glycine has no side chain, nor does any residue in a backbone-only
+        // model, and a control that cannot do anything is worse than no
+        // control. A NUCLEOTIDE HAS ONE NOW - its base, in the same table -
+        // so the row appears for it too and its Plate option with it.
         const scRow = document.getElementById('sidechainRow');
         if (scRow) {
             const renderer = viewerApi?.renderer;
@@ -1157,17 +1238,6 @@ function setupEventListeners() {
         // the atoms the row draws, so wherever there are none it is already
         // gone with them.
         //
-        // ...and the nucleic row on the same rule, from the other side: it is
-        // offered only where the selection HAS nucleotides. It is labelled
-        // "Side chain" like the row above it, because to a nucleotide a base is
-        // exactly that; they are separate rows because the two are gated from
-        // opposite sides and a mixed selection can show both.
-        const bRow = document.getElementById('basesRow');
-        if (bRow) {
-            const renderer = viewerApi?.renderer;
-            bRow.hidden = none || !renderer || !renderer.hasBasesFor
-                || !renderer.hasBasesFor(picked);
-        }
         // SSE on the same rule, from the protein side. Secondary structure is
         // a property of a protein backbone: a nucleotide is never assigned a
         // letter, so on a DNA or RNA selection this menu offered four states
@@ -1404,11 +1474,20 @@ function setupEventListeners() {
                 updateSelectionToolsState();
             }));
         };
-        onToggle('sidechainShowToggle', (p2, v) => setSelectionSidechains(p2, v));
         onToggle('elementsShowToggle', (p2, v) => setSelectionElements(p2, v));
-        onToggle('basesShowToggle', (p2, v) => setSelectionBases(p2, v));
-        onToggle('mainchainShowToggle', (p2, v) => setSelectionVisible(p2, v, false));
-        onToggle('backboneShowToggle', (p2, v) => setSelectionBackbone(p2, v));
+        onToggle('mainchainShowToggle', (p2, v) => {
+            setSelectionBackbone(p2, v);
+            syncSelectionVisibility(p2);
+        });
+        // the side-chain MODE is a select, not a toggle, but it reads the
+        // selection the same way every control on this panel does
+        const scMode = document.getElementById('sidechainModeSelect');
+        if (scMode) {
+            scMode.addEventListener('change', withSelection((positions) => {
+                if (scMode.value) setSelectionSidechainMode(positions, scMode.value);
+                updateSelectionToolsState();
+            }));
+        }
         onToggle('contactShowToggle', (p2, v) => (v
             ? addSelectionContact(p2) : removeSelectionContact(p2)));
 

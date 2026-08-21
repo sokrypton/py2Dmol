@@ -505,6 +505,18 @@ const panelBody = (() => {
     return appSrc.slice(a, k + 1) + '\n' + lift('syncSelectionToggles')
         + '\n' + lift('describeSelectionRanges');
 })();
+// The mode select, as much of one as the panel touches: a value, a disabled
+// flag, and one option it hides where the selection has no nucleotides.
+function modeSelectNode() {
+    return {
+        value: '', disabled: false,
+        _opts: { plate: { hidden: false } },
+        querySelector(sel) {
+            const m = /option\[value="([^"]+)"\]/.exec(sel);
+            return m ? this._opts[m[1]] || null : null;
+        },
+    };
+}
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
@@ -512,15 +524,13 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         selectionPanelCount: { textContent: null },
         contactRow: { hidden: null },
         clearAllResidues: { disabled: null },
-        sidechainShowToggle: { checked: false, indeterminate: false },
         elementsShowToggle: { checked: false, indeterminate: false },
-        basesShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
+        sidechainModeSelect: modeSelectNode(),
         contactShowToggle: { checked: false, indeterminate: false },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
-        basesRow: { hidden: null },
         selSsSelect: { hidden: null, disabled: null },
     };
     const doc = { getElementById: (id) => nodes[id] || null };
@@ -607,8 +617,8 @@ t('the panel says how big the selection is, and which residues', () => {
 
 t('the panel keeps two matching part rows, with SSE and Copy below them', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const need = ['sidechainShowToggle', 'elementsShowToggle',
-        'mainchainShowToggle', 'basesShowToggle', 'contactShowToggle',
+    const need = ['sidechainModeSelect', 'elementsShowToggle',
+        'mainchainShowToggle', 'contactShowToggle',
         'scColorButton', 'selColorButton', 'selSsSelect'];
     for (const id of need) {
         if (!html.includes('id="' + id + '"')) throw new Error('missing control: ' + id);
@@ -622,6 +632,9 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     for (const gone of ['sidechainShowButton', 'sidechainHideButton',
         'mainchainShowButton', 'mainchainHideButton',
         'basesShowButton', 'basesHideButton',
+        // ...and the two controls the mode select replaced, plus the row the
+        // plate had to itself: three ways to say the same thing was the bug
+        'basesShowToggle', 'basesRow', 'sidechainShowToggle', 'backboneShowToggle',
         'elementsShowButton', 'elementsHideButton',
         'contactAddButton', 'contactRemoveButton']) {
         if (html.includes('id="' + gone + '"')) {
@@ -641,8 +654,8 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     }
     // Each toggle must SAY what it is - the visible text is its accessible
     // name - and carry a title, since "Show" alone does not say show what.
-    for (const id of ['sidechainShowToggle', 'elementsShowToggle',
-        'basesShowToggle', 'mainchainShowToggle', 'contactShowToggle']) {
+    for (const id of ['elementsShowToggle', 'mainchainShowToggle',
+        'contactShowToggle']) {
         const at2 = html.indexOf('id="' + id + '"');
         const open = html.lastIndexOf('<label', at2);
         const close = html.indexOf('</label>', at2);
@@ -706,26 +719,34 @@ t('SSE is offered for protein and withheld from nucleic acid', () => {
     }
 });
 
-t('a nucleotide gets both rows: its real atoms, and the plate', () => {
-    // The plate row used to be called "Side chain", because to a nucleotide a
-    // base IS the side chain. It is named for what it draws now, because the
-    // side-chain row above it draws the base's REAL ATOMS: a nucleotide is in
-    // the side-chain table like any other residue, so the row that was protein
-    // only appears for it too and needs no wiring of its own.
+t('a nucleotide picks None, Plate or Full from one control', () => {
+    // The plate had a row of its own, called "Side chain", next to the row
+    // called "Side chains" that draws the real atoms - two controls for one
+    // question, and no way to say "one or the other". One select answers it.
     const html = fs.readFileSync('index.html', 'utf8');
-    const at = html.indexOf('id="basesRow"');
-    if (at < 0) throw new Error('basesRow is gone');
-    const label = html.slice(at, at + 400).match(/selection-panel-label">([^<]+)</);
-    if (!label || label[1].trim() !== 'Base plate') {
-        throw new Error('the nucleic row is labelled ' + JSON.stringify(label && label[1]));
+    if (html.indexOf('id="basesRow"') >= 0) throw new Error('the plate row is back');
+    const at = html.indexOf('id="sidechainModeSelect"');
+    if (at < 0) throw new Error('no side-chain mode control');
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/setSelectionSidechainMode\(positions, scMode\.value\)/.test(app)) {
+        throw new Error('the mode control is not wired');
     }
+    // ...and it means what it says: plate on for the nucleotides, atoms off,
+    // and the other way round for full
+    const body = app.slice(app.indexOf('function setSelectionSidechainMode'),
+        app.indexOf('function syncSelectionVisibility'));
+    if (!/setBasesFor\(nuc, mode === 'plate'\)/.test(body)
+        || !/setSelectionSidechains\(positions, mode === 'full'\)/.test(body)) {
+        throw new Error('the three modes do not drive the two stores');
+    }
+    // the Plate option is offered only where the selection HAS nucleotides
     const NUC = ['D', 'D'];
     const PROT = ['P', 'P'];
-    if (panelRun([0, 1], new Set(), false, NUC).basesRow.hidden !== false) {
-        throw new Error('the row is hidden on a nucleic selection');
+    if (panelRun([0, 1], new Set(), false, NUC).sidechainModeSelect._opts.plate.hidden !== false) {
+        throw new Error('Plate is hidden on a nucleic selection');
     }
-    if (panelRun([0, 1], new Set(), false, PROT).basesRow.hidden !== true) {
-        throw new Error('the nucleic row is offered on a protein selection');
+    if (panelRun([0, 1], new Set(), false, PROT).sidechainModeSelect._opts.plate.hidden !== true) {
+        throw new Error('Plate is offered on a protein selection');
     }
 
     // A BASE IS A SIDE CHAIN, in the table as well as on the panel: the
@@ -738,8 +759,6 @@ t('a nucleotide gets both rows: its real atoms, and the plate', () => {
     if (!/NUCLEIC_BACKBONE_ATOMS/.test(utils) || !/NUCLEIC_SIDECHAIN_BONDS/.test(utils)) {
         throw new Error('the nucleic backbone set or its bond table is gone');
     }
-    // the bonds come from CHEMISTRY, as the protein's do - a distance rule
-    // draws an open ring where one atom is missing and a bond across the hole
     const tbl = utils.slice(utils.indexOf('const NUCLEIC_SIDECHAIN_BONDS'),
         utils.indexOf('const NUCLEIC_ATOM_ALIASES'));
     for (const need of ["\\[\"C4'\", \"O4'\"\\]", "\\[\"O4'\", \"C1'\"\\]", "'N9', 'C8'", "'C6', 'N1'"]) {
@@ -758,8 +777,6 @@ t('a nucleotide gets both rows: its real atoms, and the plate', () => {
     if (!/function localFrame\(at, n, i, out, wrap, stepMin, stepMax\)/.test(cart)) {
         throw new Error('localFrame takes no step range, so it cannot frame a base');
     }
-    // the draw-time rebuild must use the SAME range, or the coefficients mean
-    // something else there than they did at capture
     const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
     if (!/localFrame\(at, n, i, fr, null, nucLo, nucHi\)/.test(mol)) {
         throw new Error('_materialiseSidechains rebuilds a base through the peptide range');
@@ -1455,11 +1472,20 @@ t('the backbone hides per selection, and the side chains keep their CA', () => {
     // and it lives on the selection panel, travels with a Copy, and is saved
     const html = fs.readFileSync('index.html', 'utf8');
     const app = fs.readFileSync('web/app.js', 'utf8');
-    if (html.indexOf('id="backboneShowToggle"') < 0) throw new Error('no Chain toggle');
+    // MAIN CHAIN'S "Show" IS THE BACKBONE. It used to hide the whole residue,
+    // with a second toggle beside it for the chain alone - two controls where
+    // one says "draw this part", which is what Show means on every other row.
+    if (html.indexOf('id="mainchainShowToggle"') < 0) throw new Error('no Show toggle');
     if (html.indexOf('id="backboneCheckbox"') >= 0) {
         throw new Error('the global Backbone button is back');
     }
     if (!/setSelectionBackbone\(p2, v\)/.test(app)) throw new Error('the toggle is not wired');
+    // ...and a residue with no part drawn drops out of the visibility mask, so
+    // Orient, the clip and picking still agree with the picture
+    if (!/function syncSelectionVisibility/.test(app)
+        || !/const drawsSomething = \(i\) =>/.test(app)) {
+        throw new Error('nothing composes visibility from the parts');
+    }
     if (!/'sidechains', 'elements', 'bases', 'hiddenBackbone'/.test(mol)) {
         throw new Error('a Copy loses which backbones were hidden');
     }
@@ -3040,8 +3066,10 @@ t('the global Bases checkbox is gone from the style panel', () => {
         throw new Error('index.html still has the global Bases checkbox - it'
             + ' moved to the selection tools');
     }
-    if (!/id="basesRow"/.test(html) || !/id="basesShowToggle"/.test(html)) {
-        throw new Error('the selection tools have no Bases row');
+    // ...and the plate is offered where it belongs: as one of the side-chain
+    // modes on the selection panel, not as a row of its own
+    if (!/id="sidechainModeSelect"/.test(html) || !/value="plate"/.test(html)) {
+        throw new Error('the selection tools cannot draw a base plate');
     }
 });
 
@@ -3316,10 +3344,8 @@ t('the selection toggles show all, none and mixed', () => {
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
-        basesRow: { hidden: null },
-        sidechainShowToggle: { checked: false, indeterminate: false },
+        sidechainModeSelect: modeSelectNode(),
         elementsShowToggle: { checked: false, indeterminate: false },
-        basesShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
         contactShowToggle: { checked: false, indeterminate: false },
     };
@@ -3341,21 +3367,20 @@ t('the selection toggles show all, none and mixed', () => {
             } },
             () => null, () => ({ w: 4, col: 5 }));
         f();
-        return nodes.sidechainShowToggle;
+        return nodes.sidechainModeSelect;
     };
     let t2 = run([1, 2], new Set([1, 2]));
-    if (!t2.checked || t2.indeterminate) throw new Error('all shown did not read as on');
+    if (t2.value !== 'full') throw new Error('all shown did not read as full');
     t2 = run([1, 2], new Set());
-    if (t2.checked || t2.indeterminate) throw new Error('none shown did not read as off');
+    if (t2.value !== 'none') throw new Error('none shown did not read as none');
     t2 = run([1, 2], new Set([1]));
-    if (!t2.indeterminate || t2.checked) {
-        throw new Error('a MIXED selection did not read as indeterminate - it was'
-            + ' shown as ' + (t2.checked ? 'on' : 'off') + ', which is a lie about'
-            + ' half of what was picked');
+    if (t2.value !== '') {
+        throw new Error('a MIXED selection did not read as mixed - it was shown as "'
+            + t2.value + '", which is a lie about half of what was picked');
     }
-    // ...and with nothing selected everything reads off rather than stale
+    // ...and with nothing selected the control reads blank rather than stale
     t2 = run([], new Set([1, 2]));
-    if (t2.checked || t2.indeterminate) throw new Error('an empty selection left a stale state');
+    if (t2.value !== '') throw new Error('an empty selection left a stale state');
 });
 
 // Elements default ON, so their toggle must read on for an untouched object -
@@ -3494,8 +3519,7 @@ t('the show toggles are disabled along with the rest of the panel', () => {
 // carried aria-labels for the same reason and they went with the buttons.
 t('every selection toggle has a name of its own', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const ids = ['sidechainShowToggle', 'elementsShowToggle', 'basesShowToggle',
-        'mainchainShowToggle', 'contactShowToggle'];
+    const ids = ['elementsShowToggle', 'mainchainShowToggle', 'contactShowToggle'];
     const seen = new Set();
     for (const id of ids) {
         const m = html.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
@@ -3505,6 +3529,15 @@ t('every selection toggle has a name of its own', () => {
             + ' visible text, and three of these say only "Show"');
         if (seen.has(label)) throw new Error('two toggles share the name "' + label + '"');
         seen.add(label);
+    }
+    // the side-chain mode is a select and needs the same
+    const sel = html.match(/<select[^>]*id="sidechainModeSelect"[^>]*>/);
+    if (!sel) throw new Error('no sidechainModeSelect');
+    if (!/aria-label="/.test(sel[0])) throw new Error('the mode select has no name');
+    for (const v of ['none', 'plate', 'full']) {
+        if (!new RegExp('value="' + v + '"').test(html)) {
+            throw new Error('the mode select has no ' + v + ' option');
+        }
     }
 });
 

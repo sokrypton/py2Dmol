@@ -653,11 +653,27 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="scColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw side chains for the selected residues">
-                                    <input type="checkbox" id="sidechainShowToggle"
-                                        aria-label="Draw side chains for the selected residues">
-                                    <span>Show</span>
-                                </label>
+                                <!-- ONE CONTROL, THREE STATES. Show/hide was two
+                                     toggles once the bases could be drawn as real
+                                     atoms - Show for the plate and Show for the
+                                     atoms, on two rows both called "Side chain" -
+                                     and a pair of toggles cannot say "one or the
+                                     other". Plate is offered only where the
+                                     selection has nucleotides; a protein has
+                                     None and Full. -->
+                                <select id="sidechainModeSelect" class="btn btn-grey btn-small"
+                                    aria-label="How to draw the side chains of the selected residues"
+                                    title="How to draw the side chains of the selected residues">
+                                    <!-- A READOUT, NOT A CHOICE. The select shows
+                                         this when the selected residues disagree -
+                                         some full, some none - and there is nothing
+                                         to DO with "mixed", so it is hidden from the
+                                         list and cannot be picked. -->
+                                    <option value="" disabled hidden>Mixed</option>
+                                    <option value="none">None</option>
+                                    <option value="plate">Plate</option>
+                                    <option value="full">Full</option>
+                                </select>
                                 <!-- Element colours ride WITH the side chains rather than in a
                                      row of their own: they are a property of the atoms this row
                                      draws, and a row that only ever applies to whatever this one
@@ -666,21 +682,6 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <input type="checkbox" id="elementsShowToggle"
                                         aria-label="Colour the selected side chains by element">
                                     <span>Elements</span>
-                                </label>
-                            </div>
-                            <!-- Hidden unless the selection contains nucleotides.
-                                 See hasBasesFor. It used to be called "Side
-                                 chain", because to a nucleotide a base is
-                                 exactly that - but the row above now draws the
-                                 base's REAL ATOMS for a nucleotide, so this one
-                                 is named for what it actually is: the plate,
-                                 the schematic those atoms have a shape in. -->
-                            <div class="selection-panel-row" id="basesRow" hidden>
-                                <span class="selection-panel-label">Base plate</span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw the schematic base plate for the selected nucleotides. The row above draws their real atoms.">
-                                    <input type="checkbox" id="basesShowToggle"
-                                        aria-label="Draw base plates for the selected nucleotides">
-                                    <span>Show</span>
                                 </label>
                             </div>
                             <div class="selection-panel-row">
@@ -698,22 +699,19 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="selColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <label class="btn-toggle btn-small selection-toggle" title="Show or hide the selected residues">
-                                    <input type="checkbox" id="mainchainShowToggle"
-                                        aria-label="Show or hide the selected residues">
-                                    <span>Show</span>
-                                </label>
-                                <!-- HIDING A RESIDUE takes its side chain with
-                                     it. This takes the ribbon or tube and
-                                     leaves the side chain - and the CA it is
-                                     drawn from - which is how you look at a
-                                     binding site without the fold in front of
-                                     it. Per selection, like everything else on
-                                     this panel. -->
+                                <!-- SHOW IS THE CHAIN, and nothing else. It used
+                                     to hide the whole residue, side chain and
+                                     all, with a second toggle beside it for the
+                                     backbone alone - two controls where one
+                                     said "draw this part", which is what every
+                                     other row on this panel means by Show. A
+                                     residue with no chain and no side chain
+                                     draws nothing, and drops out of the
+                                     visibility mask on its own. -->
                                 <label class="btn-toggle btn-small selection-toggle" title="Draw the backbone of the selected residues. Off leaves their side chains, bases and contacts.">
-                                    <input type="checkbox" id="backboneShowToggle" checked
+                                    <input type="checkbox" id="mainchainShowToggle" checked
                                         aria-label="Draw the backbone of the selected residues">
-                                    <span>Chain</span>
+                                    <span>Show</span>
                                 </label>
                                 <!-- SSE lives HERE because it is a BACKBONE
                                      property: a side chain has no secondary
