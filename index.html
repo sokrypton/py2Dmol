@@ -306,6 +306,13 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                              not hidden. Both are in Angstrom along the view's own
                              depth; the range comes from the structure (fillClipPanel
                              in app.js). -->
+                        <style>
+                            /* [hidden] is a UA rule and an inline display:flex outranks
+                               it - the same trap the style panel documents below. The
+                               clip controls only exist while Clip is on, so this has to
+                               actually win. */
+                            #clipPanel[hidden] { display: none !important; }
+                        </style>
                         <div id="clipPanel" hidden class="control-group"
                             style="display: flex; flex-direction: column; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
                             <div style="font-size: 11px; color: #6b7280;">

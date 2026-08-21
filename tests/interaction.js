@@ -32,11 +32,18 @@ const molSrc = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
 // new Function bodies see globals only, so the lifted methods find it there
 eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
     .trim().replace('function hexToRgb', 'hexToRgb = function'));
+// ...and the small predicates they call, for the same reason
+{
+    const m = molSrc.match(/\n    const isPerspective = [\s\S]*?;\n/);
+    if (!m) throw new Error('isPerspective not found in viewer-mol.js');
+    eval('global.' + m[0].trim().replace('const ', ''));
+}
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
-    'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
+    'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN', 'CLIP_NEAR_CSS',
+    'CLIP_FAR_CSS']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
     if (!line) throw new Error('constant not found in viewer-mol.js: ' + name);
     eval('global.' + line.trim().replace('const ', ''));
@@ -44,7 +51,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','_paintClipSlab','_viewToScreen','_clipFrameRadius','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1111,6 +1118,35 @@ t('the slab is a depth test, and off is off', () => {
     }
     v.setClipSlab(null, null);
     if (!v.clipAccepts(1e6)) throw new Error('switching the slab off left it clipping');
+});
+
+t('the slab is drawn where it cuts, and only while it is on', () => {
+    const v = clipViewer([[0, 0, -10], [8, 6, 10]]);
+    v.displayWidth = 100; v.displayHeight = 80;
+    v._viewScale = 2;
+    v.viewerState = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], ortho: 1 };
+    const ctx = haloCtx();
+    ctx.setLineDash = () => {};
+    ctx.closePath = () => { ctx.ops.push(['close']); };
+    v._paintClipSlab(ctx, 1);
+    if (ctx.ops.length) throw new Error('the frame was drawn with no slab set');
+
+    v.setClipSlab(10, -10);
+    v._paintClipSlab(ctx, 1);
+    const strokes = ctx.ops.filter((o) => o[0] === 'stroke');
+    if (strokes.length !== 3) {
+        throw new Error('drew ' + strokes.length + ' strokes, expected 3 - the near'
+            + ' rectangle, the far one, and the edges joining them');
+    }
+    // the near rectangle must sit at the near plane's own depth: under ortho
+    // that is x = W/2 +/- R*scale, and R is the structure's bounding radius
+    const R = v._clipFrameRadius();
+    const want = 50 + R * 2;
+    if (!ctx.ops.some((o) => (o[0] === 'move' || o[0] === 'line')
+        && Math.abs(o[1] - want) < 0.01)) {
+        throw new Error('the frame is not at the radius the structure occupies -'
+            + ' expected a corner at x ' + want.toFixed(2));
+    }
 });
 
 t('the clip cuts the drawing, it does not touch visibility', () => {

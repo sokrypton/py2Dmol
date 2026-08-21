@@ -475,6 +475,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const HOVER_TEXT_LIGHT_CSS = 'rgba(40, 40, 40, 0.9)';    // on white paper
     const HOVER_TEXT_DARK_CSS = 'rgba(235, 235, 235, 0.9)';  // on the 3d preset's black
     const HOVER_TEXT_MARGIN = 10;
+    // The slab's frame: the near plane stated, the far one behind it.
+    const CLIP_NEAR_CSS = 'rgba(37, 99, 235, 0.9)';
+    const CLIP_FAR_CSS = 'rgba(37, 99, 235, 0.4)';
     // Half-width in screen pixels at unit perspective, before the per-residue
     // radius is added. Wide enough to read as a band around the ribbon rather
     // than a line on it.
@@ -3407,6 +3410,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
+         * How wide to draw the slab's frame - the structure's bounding RADIUS
+         * about the view centre.
+         *
+         * A radius, not the view-space x/y extent, because a radius does not
+         * change when the structure turns. The extent does, so a frame drawn
+         * from it would breathe as you rotate and would have to be recomputed
+         * over every position every frame; this is measured once, when the slab
+         * is switched on, and always contains the structure whatever the view.
+         */
+        _clipFrameRadius() {
+            this._ensureRotated();
+            const n = this.coords ? this.coords.length : 0;
+            const rc = this.rotatedCoords;
+            if (!n || !rc || rc.length < n) return 0;
+            let r2 = 0;
+            for (let i = 0; i < n; i++) {
+                const c = rc[i];
+                const d = c.x * c.x + c.y * c.y;
+                if (d > r2) r2 = d;
+            }
+            const r = Math.sqrt(r2);
+            return r > 0 ? r * 1.02 : 0;
+        }
+
+        /**
          * Set the slab. near is the plane closer to the camera (larger z), far
          * the one further away; near <= far is refused rather than swapped,
          * because a slab of nothing is a drawing of nothing and reads as a bug.
@@ -3416,12 +3444,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (near === null || far === null) {
                 this.clipNear = null;
                 this.clipFar = null;
+                this._clipR = 0;
             } else {
                 const nz = Number(near); const fz = Number(far);
                 if (!isFinite(nz) || !isFinite(fz)) return;
                 const MIN = 0.5;
                 this.clipNear = Math.max(nz, fz + MIN);
                 this.clipFar = Math.min(fz, this.clipNear - MIN);
+                if (!this._clipR) this._clipR = this._clipFrameRadius();
             }
             this.render('clip slab');
         }
@@ -6944,6 +6974,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             this._paintSelectionHalo(ctx, pxScale, band);
             if (!this._exportPxScale) {
                 this._paintHoverReadout(ctx, pxScale);
+                // A tool, not part of the drawing: it goes with the hover
+                // readout rather than with the selection, and stays out of
+                // exports for the same reason.
+                this._paintClipSlab(ctx, pxScale);
             }
         }
 
@@ -6956,6 +6990,84 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return new Set([this.highlightedAtom]);
             }
             return null;
+        }
+
+        /** View space to display pixels, exactly as the draw projects. */
+        _viewToScreen(v) {
+            const W = this.displayWidth || (this.canvas ? this.canvas.width : 0);
+            const H = this.displayHeight || (this.canvas ? this.canvas.height : 0);
+            const scale = this._viewScale || 1;
+            let pe = 1;
+            if (isPerspective(this.viewerState)) {
+                const d = this.viewerState.focalLength - v.z;
+                if (d <= 0.1) return null;                 // behind the camera
+                pe = this.viewerState.focalLength / d;
+            }
+            return { x: W / 2 + v.x * scale * pe, y: H / 2 - v.y * scale * pe };
+        }
+
+        /**
+         * WHERE THE SLAB IS, drawn over the frame while clipping is on: the
+         * near plane as a solid rectangle, the far one dashed behind it, and
+         * four edges joining them.
+         *
+         * The rectangles are camera-aligned and sized from the structure's
+         * bounding radius, so the frame stays put while the structure turns
+         * inside it - which is the thing being shown. Under perspective the
+         * near rectangle projects LARGER than the far one, so this draws as a
+         * truncated pyramid; that is the shape the planes actually cut.
+         *
+         * NO setTransform. This paints in display pixels through the context
+         * the app has already scaled by the device ratio, exactly as the halo
+         * does - resetting it drew the old box at half size in the corner of a
+         * 2x screen, which is what "not aligned with the clip region" was.
+         */
+        _paintClipSlab(ctx, pxScale = 1) {
+            if (!this.clipSlabOn()) return;
+            const R = this._clipR || this._clipFrameRadius();
+            if (!(R > 0)) return;
+            const rect = (z) => {
+                const out = [];
+                for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+                    const q = this._viewToScreen({ x: sx * R, y: sy * R, z });
+                    if (!q) return null;
+                    out.push(q);
+                }
+                return out;
+            };
+            const nearQ = rect(this.clipNear);
+            const farQ = rect(this.clipFar);
+            if (!nearQ && !farQ) return;
+            const ring = (q) => {
+                ctx.beginPath();
+                ctx.moveTo(q[0].x, q[0].y);
+                for (let i = 1; i < 4; i++) ctx.lineTo(q[i].x, q[i].y);
+                ctx.closePath();
+                ctx.stroke();
+            };
+            ctx.save();
+            ctx.lineWidth = 1.5 * pxScale;
+            if (farQ) {
+                // the far plane reads as further away: dashed and fainter
+                ctx.strokeStyle = CLIP_FAR_CSS;
+                if (ctx.setLineDash) ctx.setLineDash([5 * pxScale, 4 * pxScale]);
+                ring(farQ);
+                if (ctx.setLineDash) ctx.setLineDash([]);
+            }
+            if (nearQ && farQ) {
+                ctx.strokeStyle = CLIP_FAR_CSS;
+                ctx.beginPath();
+                for (let i = 0; i < 4; i++) {
+                    ctx.moveTo(farQ[i].x, farQ[i].y);
+                    ctx.lineTo(nearQ[i].x, nearQ[i].y);
+                }
+                ctx.stroke();
+            }
+            if (nearQ) {
+                ctx.strokeStyle = CLIP_NEAR_CSS;
+                ring(nearQ);
+            }
+            ctx.restore();
         }
 
         /**
