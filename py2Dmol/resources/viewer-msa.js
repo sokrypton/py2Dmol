@@ -824,7 +824,18 @@
         if (!sequences || sequences.length === 0) return [];
         const queryLength = sequences[0]?.sequence?.length || 0;
         return sequences.filter(seq => {
-            const coverage = computeSequenceCoverage(seq.sequence, queryLength, selectionMask);
+            // A CARRIED COVERAGE WINS, as a carried identity already did.
+            //
+            // Coverage is non-gap over LENGTH, and a subset is shorter - so
+            // recomputing it on a copy or after a delete admits a different set
+            // of sequences and moves the conservation of residues nobody
+            // touched. The subset copies each sequence's coverage from the
+            // alignment it came out of, so however often this runs, it keeps
+            // the set the parent counted. A selection mask asks a different
+            // question and is measured fresh.
+            const coverage = (!selectionMask && typeof seq.coverage === 'number')
+                ? seq.coverage
+                : computeSequenceCoverage(seq.sequence, queryLength, selectionMask);
             return coverage >= minCoverage;
         });
     }
@@ -5133,6 +5144,7 @@
             // Extract selected MSA positions from ALL sequences (not filtered by coverage/identity)
             // Use sequencesOriginal to include all sequences, even those hidden by coverage/identity filters
             const allSequences = originalMSAData.sequencesOriginal || originalMSAData.sequences;
+            const seqStrFull = (q) => (Array.isArray(q.sequence) ? q.sequence.join('') : q.sequence);
             const extractedSequences = [];
             const extractedQuerySequence = [];
 
@@ -5154,9 +5166,20 @@
                 // Copy any other properties from the original sequence
                 if (seq.id !== undefined) extractedSeq.id = seq.id;
                 if (seq.description !== undefined) extractedSeq.description = seq.description;
+                // ...INCLUDING WHAT THE FILTERS MEASURED on the full alignment.
+                // Without them, anything that re-runs the filters on the subset
+                // measures coverage over its shorter length, admits a different
+                // set, and moves the entropy of residues nobody touched - which
+                // is what a sequence-strip rebuild after a delete was doing.
+                const cov = (typeof seq.coverage === 'number') ? seq.coverage
+                    : computeSequenceCoverage(seqStrFull(seq), originalQuerySequence.length);
+                const idt = (typeof seq.identity === 'number') ? seq.identity
+                    : computeSequenceIdentity(seqStrFull(seq), originalQuerySequence);
+                extractedSeq.coverage = cov;
+                extractedSeq.identity = idt;
 
                 // Handle both string and array sequence formats
-                const seqStr = Array.isArray(seq.sequence) ? seq.sequence.join('') : seq.sequence;
+                const seqStr = seqStrFull(seq);
 
                 // Extract only the selected MSA positions (columns) from this sequence
                 for (let i = 0; i < seqStr.length; i++) {

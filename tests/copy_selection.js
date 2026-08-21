@@ -241,6 +241,22 @@ test('a copied region keeps the parent\'s own conservation numbers', () => {
     if (!/sequencesOriginal: extractedSequences/.test(body)) {
         throw new Error('the copy no longer carries the sequences the filters hid');
     }
+    // ...CARRYING WHAT THE FILTERS MEASURED. Slicing the parent's numbers is
+    // only half of it: anything that re-runs the filters on the subset - a
+    // sequence-strip rebuild after a delete, for one - measures coverage over
+    // the subset's shorter length, admits a different set of sequences, and
+    // moves the conservation of residues nobody touched.
+    if (!/extractedSeq\.coverage = cov/.test(body) || !/extractedSeq\.identity = idt/.test(body)) {
+        throw new Error('the subset does not carry each sequence\'s coverage and '
+            + 'identity from the alignment it came out of');
+    }
+    const msaSrc = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-msa.js'), 'utf8');
+    const cov = msaSrc.slice(msaSrc.indexOf('function filterByCoverage'),
+        msaSrc.indexOf('function filterByIdentity'));
+    if (!/typeof seq\.coverage === 'number'/.test(cov)) {
+        throw new Error('filterByCoverage ignores a carried coverage, so carrying '
+            + 'it changes nothing');
+    }
 });
 
 process.exit(failures ? 1 : 0);
