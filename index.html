@@ -300,37 +300,28 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                             /* Open cue is the shared .btn-toggle[aria-expanded] rule
                                in style.css - the same green as a checked toggle. */
                         </style>
-                        <!-- CLIP PANEL. PyMOL's clip: a slab in CAMERA space. Near
-                             is the plane closer to you, Far the one behind - what lies
-                             between them is drawn, and the geometry is CUT at each,
-                             not hidden. Both are in Angstrom along the view's own
-                             depth; the range comes from the structure (fillClipPanel
-                             in app.js). -->
+                        <!-- CLIP PANEL. PyMOL's clip: Near and Far planes in camera
+                             space, cutting the drawing between them. Switching Clip off
+                             puts these away and LEAVES the cut; Reset is what uncuts. -->
                         <style>
                             /* [hidden] is a UA rule and an inline display:flex outranks
-                               it - the same trap the style panel documents below. The
-                               clip controls only exist while Clip is on, so this has to
-                               actually win. */
+                               it - the same trap the style panel documents below. */
                             #clipPanel[hidden] { display: none !important; }
                         </style>
                         <div id="clipPanel" hidden class="control-group"
-                            style="display: flex; flex-direction: column; gap: 6px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
-                            <div style="font-size: 11px; color: #6b7280;">
-                                The slab belongs to the camera: turn the structure and the
-                                cut stays where you are looking from.
-                            </div>
+                            style="display: flex; flex-direction: column; gap: 4px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; margin-bottom: 4px;">
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="clipNear" class="font-medium text-gray-700" style="width: 40px; font-size: 12px; flex-shrink: 0;">Near</label>
+                                <label for="clipNear" class="font-medium text-gray-700" style="width: 34px; font-size: 12px; flex-shrink: 0;">Near</label>
                                 <input type="range" id="clipNear" style="flex: 1; min-width: 0;">
-                                <span id="clipNearValue" style="width: 52px; font-size: 11px; color: #6b7280; text-align: right;"></span>
+                                <span id="clipNearValue" style="width: 48px; font-size: 11px; color: #6b7280; text-align: right;"></span>
                             </div>
                             <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
-                                <label for="clipFar" class="font-medium text-gray-700" style="width: 40px; font-size: 12px; flex-shrink: 0;">Far</label>
+                                <label for="clipFar" class="font-medium text-gray-700" style="width: 34px; font-size: 12px; flex-shrink: 0;">Far</label>
                                 <input type="range" id="clipFar" style="flex: 1; min-width: 0;">
-                                <span id="clipFarValue" style="width: 52px; font-size: 11px; color: #6b7280; text-align: right;"></span>
+                                <span id="clipFarValue" style="width: 48px; font-size: 11px; color: #6b7280; text-align: right;"></span>
                             </div>
-                            <div style="display: flex; gap: 8px;">
-                                <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset slab</button>
+                            <div style="display: flex; justify-content: flex-end;">
+                                <button id="clipResetButton" class="btn btn-grey btn-small" style="font-size: 11px;">Reset</button>
                             </div>
                         </div>
 

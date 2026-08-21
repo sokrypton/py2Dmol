@@ -1211,6 +1211,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // cuts the DRAWING, not the visibility - see the note on setClipSlab.
             this.clipNear = null;
             this.clipFar = null;
+            // Whether the CONTROLS are up - the panel and the frame drawn round
+            // the planes. Separate from the slab itself, which stays where it
+            // was set: switching Clip off puts the tools away, it does not
+            // undo the cut. Reset is what uncuts.
+            this.clipEditing = false;
             this.highlightedAtom = null; // To store position index for highlighting (property name kept for API compatibility)
             this.highlightedAtoms = null; // To store Set of position indices for highlighting multiple positions (property name kept for API compatibility)
 
@@ -7027,7 +7032,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * 2x screen, which is what "not aligned with the clip region" was.
          */
         _paintClipSlab(ctx, pxScale = 1) {
-            if (!this.clipSlabOn()) return;
+            // ...only while the controls are up. The cut outlives them; the
+            // frame is part of setting it, not part of the picture.
+            if (!this.clipEditing || !this.clipSlabOn()) return;
             const R = this._clipR || this._clipFrameRadius();
             if (!(R > 0)) return;
             const rect = (z) => {

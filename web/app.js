@@ -1733,24 +1733,32 @@ function setupClipPanel() {
             e.preventDefault();
             const r = viewerApi?.renderer;
             if (!r || !r.clipSlabOn()) return;
+            // Back to the rest state, which cuts nothing from any angle.
             const slab = r.clipSlabDefault();
             if (!slab) return;
             r.setClipSlab(slab.near, slab.far);
             fillClipPanel(slab);
         });
     }
+    // THE BUTTON PUTS THE TOOLS AWAY, IT DOES NOT UNDO THE CUT. Switching Clip
+    // off hides the panel and the frame and leaves the slab where it was set -
+    // which is the point of setting it. Reset is what uncuts.
     cb.addEventListener('change', () => {
         const r = viewerApi?.renderer;
         if (!r || !r.setClipSlab) { cb.checked = false; return; }
         if (!cb.checked) {
-            r.setClipSlab(null, null);
+            r.clipEditing = false;
             if (panel) panel.hidden = true;
+            r.render('clip controls away');
             return;
         }
         // A slab needs something to cut: with nothing loaded the renderer has
         // no depth range to offer, and the control must not claim otherwise.
-        const slab = r.clipSlabDefault();
+        const slab = r.clipSlabOn()
+            ? { near: r.clipNear, far: r.clipFar }     // reopening: as it was left
+            : r.clipSlabDefault();
         if (!slab) { cb.checked = false; return; }
+        r.clipEditing = true;
         r.setClipSlab(slab.near, slab.far);
         if (panel) panel.hidden = false;
         fillClipPanel(slab);

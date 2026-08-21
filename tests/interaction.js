@@ -1129,7 +1129,7 @@ t('the slab is a depth test, and off is off', () => {
     if (!v.clipAccepts(1e6)) throw new Error('switching the slab off left it clipping');
 });
 
-t('the slab is drawn where it cuts, and only while it is on', () => {
+t('the frame is drawn only while the controls are up', () => {
     const v = clipViewer([[0, 0, -10], [8, 6, 10]]);
     v.displayWidth = 100; v.displayHeight = 80;
     v._viewScale = 2;
@@ -1140,7 +1140,15 @@ t('the slab is drawn where it cuts, and only while it is on', () => {
     v._paintClipSlab(ctx, 1);
     if (ctx.ops.length) throw new Error('the frame was drawn with no slab set');
 
+    // A SET SLAB IS NOT A REASON TO DRAW THE FRAME. Switching Clip off puts the
+    // controls away and leaves the cut, so the frame has to go with the panel
+    // and not with the slab - otherwise a clipped view carries a blue box
+    // around forever.
     v.setClipSlab(10, -10);
+    v._paintClipSlab(ctx, 1);
+    if (ctx.ops.length) throw new Error('the frame was drawn with the controls away');
+
+    v.clipEditing = true;
     v._paintClipSlab(ctx, 1);
     const strokes = ctx.ops.filter((o) => o[0] === 'stroke');
     if (strokes.length !== 3) {
