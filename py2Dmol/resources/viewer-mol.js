@@ -474,10 +474,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const HOVER_TEXT_LIGHT_CSS = 'rgba(40, 40, 40, 0.9)';    // on white paper
     const HOVER_TEXT_DARK_CSS = 'rgba(235, 235, 235, 0.9)';  // on the 3d preset's black
     const HOVER_TEXT_MARGIN = 10;
-    // Half-width in screen pixels at unit perspective, before the per-residue
-    // radius is added. Wide enough to read as a band around the ribbon rather
-    // than a line on it.
-    const SELECTION_HALO_PX = 7;
+    // HOW FAR THE BAND REACHES PAST THE GEOMETRY, as a multiple of what is
+    // drawn rather than a number of pixels.
+    //
+    // It was a flat 7 px, which is a band around the ribbon at the zoom the
+    // number was chosen at and a stripe with a ribbon inside it anywhere else:
+    // zoomed out on 1TIM the drawn radius is 2 px and the band was 18 px wide -
+    // four and a half times the thing it was marking - and on a structure big
+    // enough to pin the radius at its floor (3J3Q) it was 18 px at every zoom.
+    //
+    // Proportional keeps the same look at every zoom: 1.3 reproduces the old
+    // width at the default view (5.4 px radius, 7.05 against 7). The floor
+    // keeps a hairline structure marked at all; the ceiling stops a band 45 px
+    // wide at zoom 4, where proportion alone stops reading as an annotation.
+    const SELECTION_HALO_GAIN = 1.3;
+    const SELECTION_HALO_MIN_PX = 2.5;
+    const SELECTION_HALO_MAX_PX = 14;
 
     const namedColorsMap = {
         "red": "#ff0000", "green": "#00ff00", "blue": "#0000ff", "yellow": "#ffff00", "cyan": "#00ffff", "magenta": "#ff00ff",
@@ -7486,7 +7498,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // circle, but inside the same path and the same single stroke.
             let w = 0;
             for (const i of idx) w = Math.max(w, sr[i] || 2);
-            ctx.lineWidth = 2 * ((SELECTION_HALO_PX * pxScale) + w);
+            const reach = Math.min(SELECTION_HALO_MAX_PX * pxScale,
+                Math.max(SELECTION_HALO_MIN_PX * pxScale, SELECTION_HALO_GAIN * w));
+            ctx.lineWidth = 2 * (w + reach);
             ctx.beginPath();
             for (let k = 0; k + 1 < edges.length; k += 2) {
                 ctx.moveTo(sx[edges[k]], sy[edges[k]]);

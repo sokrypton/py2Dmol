@@ -40,7 +40,8 @@ eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
 }
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
-for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH',
+for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
+    'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_MAX_PX', 'SIDECHAIN_WIDTH',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
     'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
@@ -1918,6 +1919,45 @@ t('the occlusion pass is shared, and stays off the low texture units', () => {
 // asked to have marked and belongs in a saved image; where the pointer happens
 // to be does not - and an export renders from a different context entirely, so
 // there is nobody to move the pointer off first.
+t('the selection band is a proportion of what it marks, not a fixed width', () => {
+    // A flat 7 px is a band at one zoom and a stripe with a ribbon inside it at
+    // every other: zoomed out on 1TIM the drawn radius is 2 px and the band was
+    // 18 px - four and a half times the thing it marks - and on a structure big
+    // enough to pin the radius at its floor it was 18 px at every zoom.
+    const widthAt = (radius) => {
+        const v = haloViewer([1, 2], 8);
+        v.displayWidth = 100; v.displayHeight = 80;
+        v._ensurePickProjection = () => {};
+        for (let i = 0; i < v.screenRadius.length; i++) v.screenRadius[i] = radius;
+        const ops = [];
+        const c = { ops, save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {},
+            stroke() { ops.push(this.lineWidth); },
+            lineJoin: '', lineCap: '', lineWidth: 0, strokeStyle: '', fillStyle: '' };
+        v._paintSelectionHalo(c, 1, new Set([1, 2]));
+        return ops[0];
+    };
+    const zoomedOut = widthAt(2);
+    const normal = widthAt(5.42);      // 1TIM at the default view
+    const zoomedIn = widthAt(34.6);    // 1UBQ at zoom 4
+    if (!(zoomedOut < normal && normal < zoomedIn)) {
+        throw new Error('the band does not follow the zoom: '
+            + [zoomedOut, normal, zoomedIn].join(' / '));
+    }
+    // the default view keeps the width it always had, to within a pixel
+    if (Math.abs(normal - 24.8) > 1) {
+        throw new Error('the default view changed width: ' + normal);
+    }
+    // ...and the band is never more than about twice the geometry it marks
+    if (zoomedOut / (2 * 2) > 2.4) {
+        throw new Error('zoomed out the band is still ' + (zoomedOut / 4).toFixed(1)
+            + ' times the ribbon');
+    }
+    // the ceiling keeps a zoomed-in band an annotation rather than a slab
+    if (zoomedIn > 2 * (34.6 + 14) + 0.01) {
+        throw new Error('the reach is uncapped: ' + zoomedIn);
+    }
+});
+
 t('hover is marked in the selection\'s own style, and left out of exports', () => {
     // ONE BAND FOR BOTH. Hovering must not introduce a second visual language,
     // and where the two overlap it must not stain: the colour is translucent,
