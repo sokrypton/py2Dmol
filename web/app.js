@@ -6680,8 +6680,12 @@ function saveViewerState() {
         const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
         const jsonFilename = `py2dmol_state_${timestamp}.json`;
 
-        // Create JSON string
-        const jsonString = JSON.stringify(stateData, null, 2);
+        // NOT PRETTY-PRINTED. Two-space indentation on a session file is
+        // between two and four times the payload, and nothing reads these by
+        // hand: the app parses them back, and at this size no editor opens one
+        // anyway. Measured on 7Y7A - 305,004 positions, 1,065,107 side-chain
+        // rows - the indentation alone was 153 MB of a 212 MB file.
+        const jsonString = JSON.stringify(stateData);
 
         // Download JSON file
         const blob = new Blob([jsonString], { type: 'application/json' });
