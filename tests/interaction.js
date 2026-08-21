@@ -1238,8 +1238,16 @@ t('the ghost is stippled, not blended, and the shader ramps as the renderer does
     const html = fs.readFileSync('index.html', 'utf8');
     if (html.indexOf('id="clipFadeSlider"') < 0) throw new Error('no Fade control');
     const app = fs.readFileSync('web/app.js', 'utf8');
-    if (!/setClipFade\(parseFloat\(fadeEl\.value\)\)/.test(app)) {
+    if (!/setClipFade\(parseFloat\(fadeEl\.value\) \/ 100\)/.test(app)) {
         throw new Error('the Fade control is not wired to the renderer');
+    }
+    // the control is a percentage, the renderer a fraction, and a tenth is
+    // where it starts
+    if (!/id="clipFadeSlider" min="0" max="100" value="10"/.test(html)) {
+        throw new Error('the Fade control is not a percentage starting at 10');
+    }
+    if (!/const CLIP_FADE_DEFAULT = 0\.1;/.test(mol)) {
+        throw new Error('the renderer default fade moved');
     }
     // A SOFT EDGE NEEDS AN EDGE. Clip opens with the planes parked at the rest
     // state, where nothing is outside the slab - drag Fade there and the
@@ -1279,6 +1287,36 @@ t('the clip is one range control, and nothing is drawn over the picture', () => 
     }
     if (!/#clipRange input\[type=range\][^}]*position: absolute/.test(html)) {
         throw new Error('the two handles are not on one track');
+    }
+});
+
+t('a clip cuts the ink with the fills, and double-click still takes the chain', () => {
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    // THE 2D INK IS COLLECTED SEPARATELY FROM THE FILLS. The prim cull never
+    // saw these curves, so a slab left the outline of everything it had cut
+    // away drawn over empty paper - measured on 1TIM, 53,296 drawn pixels
+    // against the GPU's 42,520, and the excess was all wire.
+    if (!/const inSlab = \(s\) =>/.test(cart)
+        || !/visible = okAt\(s\) && onCanvas\(s\) && inSlab\(s\)/.test(cart)) {
+        throw new Error('the 2D ink pass does not ask the clip');
+    }
+    if (!/clipAccepts\(\(pts\[s\]\[2\] \+ pts\[s \+ 1\]\[2\]\) \/ 2\)/.test(cart)) {
+        throw new Error('the ink is not cut on its own depth, so it cannot '
+            + 'follow a soft edge');
+    }
+    // A DOUBLE CLICK IS A BULK OPERATION ON A NAME. The pick that precedes it
+    // still has to land on something visible; the chain it widens to does not
+    // stop at the near plane.
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf('for (let k = 0; k < this.chains.length; k++) {');
+    if (at < 0) throw new Error('the dblclick chain union moved');
+    const body = mol.slice(at, mol.indexOf('}', mol.indexOf('next.add(k)', at)));
+    if (/_pickable/.test(body)) {
+        throw new Error('double-click drops the clipped part of the chain');
+    }
+    // ...while the single click still refuses what the slab cut
+    if (!/_pickable\(i\)|return !c \|\| this\.clipAccepts\(c\.z\)/.test(mol)) {
+        throw new Error('_pickable is gone, so a click can land on a cut residue');
     }
 });
 

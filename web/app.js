@@ -1750,8 +1750,13 @@ function fillClipPanel() {
         el.value = Math.max(lo, Math.min(hi, at[id])).toFixed(2);
     }
     // ...and the soft edge, which rides with the object like the planes do
+    // the control is a PERCENTAGE and the renderer a fraction; one conversion,
+    // here and at the listener, rather than a slider reading 0.15
     const fade = document.getElementById('clipFadeSlider');
-    if (fade) fade.value = String(typeof r.clipFade === 'number' ? r.clipFade : 0);
+    if (fade) {
+        fade.value = String(Math.round(
+            100 * (typeof r.clipFade === 'number' ? r.clipFade : 0)));
+    }
     syncFadeEnabled();
     showClipValues();
 }
@@ -1867,7 +1872,7 @@ function setupClipPanel() {
     if (fadeEl) {
         fadeEl.addEventListener('input', () => {
             const r = viewerApi?.renderer;
-            if (r && r.setClipFade) r.setClipFade(parseFloat(fadeEl.value));
+            if (r && r.setClipFade) r.setClipFade(parseFloat(fadeEl.value) / 100);
         });
     }
     const reset = document.getElementById('clipResetButton');

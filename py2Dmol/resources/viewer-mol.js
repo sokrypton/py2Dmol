@@ -782,6 +782,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     const TINT_OFFSET_MULTIPLIER = 2.5;     // Proportional offset multiplier
     const MAX_SHADOW_SUM = 12;              // Maximum accumulated shadow sum (saturating accumulation)
 
+    // The clip's soft edge, as a fraction of the slab's thickness. The panel
+    // shows it as a percentage - 10 - and the renderer works in fractions.
+    const CLIP_FADE_DEFAULT = 0.1;
+
     // Default nested config used by both Python and standalone HTML
     const DEFAULT_CONFIG = {
         viewer_id: null,
@@ -1207,8 +1211,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // thickness over which the drawing fades out instead of stopping.
             // 0 is the knife. A fraction rather than Angstrom because the
             // useful softness scales with what is being looked at - the same
-            // 0.2 reads the same on a peptide and on a ribosome.
-            this.clipFade = 0;
+            // 0.2 reads the same on a peptide and on a ribosome. The control
+            // shows it as a percentage, and a tenth is the default: enough to
+            // read as a soft edge, little enough to keep the cut a cut.
+            this.clipFade = CLIP_FADE_DEFAULT;
             // Whether the CONTROLS are up. Separate from the slab itself,
             // which stays where it was set: switching Clip off puts the panel
             // away, it does not undo the cut. Reset is what uncuts.
@@ -1835,10 +1841,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // the two shift-clicks that precede this already toggled residue
                 // i; the chain union covers it either way
                 const next = e.shiftKey ? new Set(this.residueSelection || []) : new Set();
+                // THE WHOLE CHAIN, CLIP OR NO CLIP: the pick above must land on
+                // something visible, but widening it is a bulk operation on a
+                // NAME, and a chain does not stop at the near plane.
                 for (let k = 0; k < this.chains.length; k++) {
-                    // ...and not the part of it the clip has cut away: what is
-                    // not on screen cannot be what a click in the viewer meant.
-                    if (this.chains[k] === chain && this._pickable(k)) next.add(k);
+                    if (this.chains[k] === chain) next.add(k);
                 }
                 this.setResidueSelection(next);
             });
@@ -2793,7 +2800,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 currentFrame: -1,
                 clipNear: null,
                 clipFar: null,
-                clipFade: 0
+                clipFade: CLIP_FADE_DEFAULT
             };
             this.viewerState = {
                 rotation: this._deepCopyMatrix(saved.rotation),
@@ -2812,7 +2819,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // screen before it.
             this.clipNear = (typeof saved.clipNear === 'number') ? saved.clipNear : null;
             this.clipFar = (typeof saved.clipFar === 'number') ? saved.clipFar : null;
-            this.clipFade = (typeof saved.clipFade === 'number') ? saved.clipFade : 0;
+            this.clipFade = (typeof saved.clipFade === 'number')
+                ? saved.clipFade : CLIP_FADE_DEFAULT;
 
             // Restore currentFrame from viewerState
             this.currentFrame = this.viewerState.currentFrame;

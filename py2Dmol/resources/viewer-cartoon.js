@@ -11318,6 +11318,7 @@
             // scale the fills use) picks one of 12 fade levels, so background
             // outlines pale with their fills instead of floating full-black
             // over ghost geometry. 12 levels keeps stroke batching coarse.
+            const clipInk = !!(renderer.clipSlabOn && renderer.clipSlabOn());
             const inkGroups = new Map();
             const selKey = '\u0000sel';   // cannot collide with a colour string
             const sketchKey = '\u0000sketch';
@@ -11404,6 +11405,15 @@
                         || (ay < -mIn && by < -mIn)
                         || (ay > displayHeight + mIn && by > displayHeight + mIn));
                 };
+                // THE SLAB CUTS INK TOO. The fills are culled where the prims
+                // are built; these curves are collected earlier and are not in
+                // that list, so with a clip on the outline of everything it had
+                // cut away went on being drawn - a wire drawing floating in the
+                // space the ribbon used to fill. Asked per SEGMENT, on its own
+                // depth, through the same clipAccepts the fills use: half
+                // coverage, so a soft edge cuts the ink where it cuts them.
+                const inSlab = (s) => !clipInk
+                    || renderer.clipAccepts((pts[s][2] + pts[s + 1][2]) / 2);
                 let open = false;
                 for (let s = 0; s < nSeg; s++) {
                     // VISIBLE is the geometric question - is this piece of edge
@@ -11411,7 +11421,7 @@
                     // MEDIUM has reached is a separate question asked of it
                     // below, so the pencil and the pen make exactly the same
                     // lines and differ only in how far along they have got.
-                    let visible = okAt(s) && onCanvas(s);
+                    let visible = okAt(s) && onCanvas(s) && inSlab(s);
                     if (visible && (s === 0 || !okAt(s - 1)
                         || s + 1 >= nSeg || !okAt(s + 1))) {
                         if (hidden(pts[s][0], pts[s][1], pts[s][2],
