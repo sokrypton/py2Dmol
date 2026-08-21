@@ -1747,6 +1747,8 @@ void main() {
 let gl, prog, buf, locPos, locZ, locCol;
 let prog3, buf3, resident = null;   // { count, zMin, zMax, scale }
 let progInk, bufInk, edgeCount = 0;
+// whether the resident edge buffer holds any contacts - see below
+let residentHasContacts = false;
 let progTube, bufTube, tubeCount = 0;
 let tubeRange = [-1, 1];        // the depth range the capsules are mapped through
 let tubeSig = null;             // what the instance buffer was built from
@@ -1846,7 +1848,26 @@ let occOk = false;              // false = no float render target; draw unshaded
 const HANDOFF_TOL = 0.0;
 const RICH_CREASE_DEG = 60;
 const RICH_CREASE_COS = Math.cos(RICH_CREASE_DEG * Math.PI / 180);
-const GPU_RIBBON_THICK = 0;
+// 0.05 A, AND THE OUTLINE IS WHY. At exactly 0 a ribbon piece has no outward
+// direction, so it is carried as one double-sided face - and the silhouette
+// rule needs TWO faces to compare, so the edge table came out with no boundary
+// edges and no creases at all: 3,422 edges against 6,988, and a drawing with
+// almost no lines on it. Measured on 1TIM at the ribbon preset, dark pixels
+// against the 2D pass's 14,789:
+//
+//   floor   dark    ink     mean abs difference from the 2D drawing
+//   0       1,049   0.92x   8.60      <- the outline is simply gone
+//   0.02    16,004  1.00x   2.98
+//   0.05    15,987  1.01x   3.32
+//   0.1     15,869  1.03x   4.43
+//   0.3     14,621  1.10x   9.79      <- now visibly thicker than flat
+//
+// 0.02 matches marginally better and 0.05 is the safer of the two: the
+// coincidence cull drops a piece to one face when its two surfaces land within
+// 0.02 PROJECTED units, and the capture runs at the live zoom, so the thinner
+// floor is the one that falls back through the cull first when zoomed out -
+// and falling through it is exactly the no-outline case above.
+const GPU_RIBBON_THICK = 0.05;
 // 0, AND THE EXPERIMENT IS WHY. Giving a richardson helix a hair of real
 // thickness was tried against the pale-patch bleed and does not help, because
 // the pale patches in that view are not a bleed at all - the 2D reference draws
@@ -1959,6 +1980,7 @@ function initGL(cv) {
     visTex = null; visW = 0; visH = 0; visData = null;
     palTex = null; palW = 0; palH = 0;
     edgeCount = 0;
+    residentHasContacts = false;
     progTube = gl.createProgram();
     // EARLY-Z, IF THE DRIVER WILL ALLOW IT. The extension has to be enabled on
     // the context before a shader may #extension it; where it is missing the
@@ -3284,6 +3306,13 @@ function makeResident(faces, scale, prm, lines) {
         // `continue` above leaves the tail of `ed` unwritten, so the instance count
         // is what was actually filled, not the map size
         edgeCount = eo / ED_FLOATS;
+        // A CONTACT IS NOT AN OUTLINE. It rides through the ink pass because it
+        // is a stroke with a depth test, but it is annotation - it has to be
+        // drawn whether or not the drawing has outlines. The build already knew
+        // that (wantEdges above); the DRAW was gated on the outline alone, so
+        // the 3d preset, whose outline width is 0, showed no contacts at all
+        // on this path while the 2D pass drew them.
+        residentHasContacts = contactEdges.length > 0;
         if (window.__gpuDiag) {
             // the outline instances, hashed for the same reason as the fills
             let h = 2166136261 >>> 0;
@@ -3461,7 +3490,7 @@ function drawResident(cv, prm) {
     // divisors live on the attribute, not the program: leaving them at 1 makes
     // the next non-instanced draw read one vertex and stretch it over the mesh
     for (const l of bound) gl.vertexAttribDivisor(l, 0);
-    if (sp.ink) drawInk(cv, sp);
+    if (sp.ink || residentHasContacts) drawInk(cv, sp);
     gl.useProgram(prog);
 }
 

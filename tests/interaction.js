@@ -50,7 +50,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1259,6 +1259,35 @@ t('a load yields on time, not on steps', () => {
     if (/await yieldToBrowser\(\)/.test(loop)) {
         throw new Error('the per-model loop yields unconditionally - that is 4 ms '
             + 'a model, and a simulation is thousands of models');
+    }
+});
+
+// A RIBBON AT THICKNESS 0 STILL HAS AN OUTLINE.
+//
+// With no thickness a piece has no outward direction, so the GPU carries it as
+// one double-sided face - and the silhouette rule needs two faces to compare,
+// so the edge table came out with no boundary edges and no creases: 3,422 edges
+// against 6,988, and a drawing with almost no lines on it. A twentieth of an
+// Angstrom makes each piece a closed solid and the rule works by construction.
+t('the ribbon keeps its outline at zero thickness', () => {
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const m = gpu.match(/const GPU_RIBBON_THICK = ([0-9.]+);/);
+    if (!m) throw new Error('GPU_RIBBON_THICK is gone');
+    const v = parseFloat(m[1]);
+    if (!(v > 0)) {
+        throw new Error('the ribbon thickness floor is ' + v + ' - at 0 the GPU '
+            + 'draws the ribbon preset with no outline at all (1,049 dark pixels '
+            + 'against the 2D pass\'s 14,789)');
+    }
+    if (v > 0.2) {
+        throw new Error('the floor is ' + v + ' - past about 0.2 the ribbon stops '
+            + 'reading as flat: 1.07x the 2D pass\'s ink and climbing');
+    }
+    // ...and it is applied at CAPTURE, where the mesh is built, not at draw
+    const capAt = gpu.indexOf('GIVE THE FLAT PIECES A REAL THICKNESS');
+    const cap = gpu.slice(capAt, capAt + 2200);
+    if (!/renderer\.cartoonThickness = Math\.max\(renderer\.cartoonThickness \|\| 0, ribThick\)/.test(cap)) {
+        throw new Error('the floor is no longer applied to the capture');
     }
 });
 

@@ -1401,6 +1401,35 @@ function setupEventListeners() {
     if (selectAllBtn) selectAllBtn.addEventListener('click', (e) => { e.preventDefault(); setWholeSelection(true); });
     if (clearAllBtn) clearAllBtn.addEventListener('click', (e) => { e.preventDefault(); setWholeSelection(false); });
 
+    // INVERT: everything that is not selected now.
+    //
+    // Over what is on screen, not over every position the object holds - a
+    // residue the clip has cut away or a chain that is hidden is not something
+    // the viewer is offering, and sweeping it into the selection by pressing a
+    // button is how a selection comes to contain things nobody can see. With
+    // nothing selected this is Select all, which is the sensible reading of
+    // "invert nothing".
+    const invertBtn = document.getElementById('invertSelection');
+    if (invertBtn) {
+        invertBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const renderer = viewerApi?.renderer;
+            if (!renderer || !renderer.coords) return;
+            const cur = renderer.residueSelection;
+            const visible = renderer.visiblePositions;
+            const next = new Set();
+            for (let i = 0; i < renderer.coords.length; i++) {
+                if (cur && cur.has(i)) continue;
+                if (visible && !visible.has(i)) continue;
+                if (renderer._pickable && !renderer._pickable(i)) continue;
+                next.add(i);
+            }
+            renderer.setResidueSelection(next);
+            if (window.SEQ?.updateColors) window.SEQ.updateColors();
+            renderer.render('invert selection');
+        });
+    }
+
     // Update copy selection button state when selection changes
     // Copy's enabled state is handled with the rest of the selection tools
     // (updateSelectionToolsState): it acts on the selection like they do. It

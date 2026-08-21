@@ -1835,7 +1835,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // i; the chain union covers it either way
                 const next = e.shiftKey ? new Set(this.residueSelection || []) : new Set();
                 for (let k = 0; k < this.chains.length; k++) {
-                    if (this.chains[k] === chain) next.add(k);
+                    // ...and not the part of it the clip has cut away: what is
+                    // not on screen cannot be what a click in the viewer meant.
+                    if (this.chains[k] === chain && this._pickable(k)) next.add(k);
                 }
                 this.setResidueSelection(next);
             });
@@ -3189,8 +3191,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // residues and the fact that it was a contact was thrown away.
             // Recording the winner lets pickGroupAt widen it to the pair.
             let bestSeg = null;
+            // WHAT IS CLIPPED AWAY CANNOT BE CLICKED. The slab cuts the drawing,
+            // and picking has to agree with the drawing or the click lands on
+            // something nobody can see - the residue behind the near plane,
+            // which is exactly the one the clip was set to get out of the way.
+            // Tested on the depth the cursor is at along a segment, which is
+            // the same number the shader discards on.
+            const clipped = (z) => !this.clipAccepts(z);
             // +z is toward the viewer (see Coordinate System)
             const offer = (idx, d2, z, seg) => {
+                if (clipped(z)) return;
                 if (z > bestZ + 1e-6 || (Math.abs(z - bestZ) <= 1e-6 && d2 < bestD2)) {
                     bestZ = z; bestD2 = d2; best = idx; bestSeg = seg || null;
                 }
@@ -3274,6 +3284,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * it. Ligand groups are already known (the bonding search uses them), so
          * a pick inside one widens to the whole group; anything else is itself.
          */
+        /**
+         * Is this position one a click in the viewer may land on? False for
+         * anything the clip slab has cut away - the drawing does not show it,
+         * so a selection made in the viewer must not contain it.
+         */
+        _pickable(i) {
+            if (!this.clipSlabOn()) return true;
+            this._ensureRotated();
+            const c = this.rotatedCoords && this.rotatedCoords[i];
+            return !c || this.clipAccepts(c.z);
+        }
+
         pickGroupAt(i) {
             if (i < 0) return [];
             // A CONTACT IS ONE THING TO CLICK, and what it names is the pair it
@@ -3283,7 +3305,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // endpoint is a click on the residue, and the segment test in
             // pickResidueAt has already decided which of the two was nearer.
             const pc = this._pickedContact;
-            if (pc && (pc[0] === i || pc[1] === i)) return [pc[0], pc[1]];
+            if (pc && (pc[0] === i || pc[1] === i)) {
+                // both ends, unless the clip has taken one of them
+                return [pc[0], pc[1]].filter((k) => this._pickable(k));
+            }
             // A SIDE CHAIN IS PART OF ITS RESIDUE, not a molecule of its own.
             // It is stored as ligand positions so the ligand machinery draws it
             // (see _materialiseSidechains), but that is an implementation
@@ -7085,6 +7110,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (const [a, b] of this.bonds) {
                     if (!drawn(a) || !drawn(b)) continue;
                     if (!sc.has(a) && !sc.has(b)) continue;
+                    addEdge(a, b);
+                }
+            }
+
+            // A SELECTED CONTACT IS MARKED ALONG ITS LINE. Selecting a contact
+            // selects the pair it joins, and marking two residues at opposite
+            // ends of a structure says nothing about which contact was meant -
+            // there may be several between the same chains. The band runs along
+            // the contact itself, from the same edge list, so it composites in
+            // one stroke with the rest and cannot double-darken where it meets
+            // a marked residue.
+            const segsC = this.segmentIndices;
+            if (segsC) {
+                for (let i = 0; i < segsC.length; i++) {
+                    const sg = segsC[i];
+                    if (!sg || sg.type !== 'C') continue;
+                    const a = sg.contactIdx1; const b = sg.contactIdx2;
+                    if (a === undefined || b === undefined) continue;
+                    if (!sel.has(a) || !sel.has(b)) continue;
+                    if (!drawn(a) || !drawn(b)) continue;
                     addEdge(a, b);
                 }
             }
