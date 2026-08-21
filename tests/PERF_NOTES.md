@@ -704,3 +704,43 @@ The two wins that followed both came from not allocating:
 every coordinate, chain, type, residue name and number, the whole side-chain
 table and the bond list. With ligands off the bond list is empty and the check
 is close to vacuous - that mistake has been made twice in this codebase.
+
+### Slicing the load, and how to tell whether a progress bar is real
+
+A bar is not a UI feature. The first attempt at one appeared and sat still,
+because the load was a single synchronous block: there was no moment between
+"started" and "finished" at which the browser could paint. Making the bar
+honest meant making the loader yield, which meant `parseCIF` and
+`convertParsedToFrameData` became generators - drained whole by the
+synchronous entry points (both node tests included), or a slice at a time by
+an async drainer.
+
+**Measure what reached the screen, not what you assigned.** Sampling
+`bar.style.width` from a `setInterval` is worthless twice over: the attribute
+changes whether or not anything is painted, AND a high-priority continuation
+starves timers, so the sampler goes quiet exactly when the interesting thing
+is happening. That made a working yield look broken. Sample inside
+`requestAnimationFrame` and count DISTINCT values - a rAF callback runs when
+the browser is about to produce a frame.
+
+With that instrument, 242 MB capsid, through the real fetch button:
+
+| yield | visible steps | total |
+| --- | --- | --- |
+| none (one block) | 1 | - |
+| MessageChannel, 8 MB slices | last 700 ms painted nothing; stalls at 81% | 3,125 ms |
+| scheduler.yield, 8 MB slices | 17 | 3,125 ms |
+| setTimeout, 12 MB slices | 34 | 3,225 ms |
+| setTimeout, 3 MB slices | 47 | 3,650 ms |
+
+`MessageChannel` is the usual trick for dodging the ~4 ms timer clamp and it
+is the wrong tool here - postMessage tasks are serviced ahead of both timers
+and rendering. `scheduler.yield` continues at high priority and throttles
+rendering to ~18 fps no matter how fine the slices are. The plain timer is the
+one that lets a frame through; the slice size then buys steps at a known price,
+because a frame on this page costs around 11 ms.
+
+Also: the bar must be seen to FINISH. The last stage - setCoords and the first
+render - runs with the main thread pinned, so the last value anyone can see is
+whatever was painted before it began, around 80%, and then the bar is hidden.
+Stall-then-vanish reads as death, not arrival.
