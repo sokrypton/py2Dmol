@@ -1184,6 +1184,31 @@ t('no clip code path touches visibility', () => {
     }
 });
 
+t('the clip is per object, and the capture ignores it', () => {
+    // A slab is Angstrom along the camera's depth and objects differ in size by
+    // orders of magnitude, so it rides with the per-object view state rather
+    // than staying on screen when you switch.
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf('_switchToObject(newObjectName) {');
+    const body = mol.slice(at, mol.indexOf('\n        _exitOverlayMode', at));
+    if (!/clipNear: this\.clipNear/.test(body) || !/this\.clipNear = \(typeof saved\.clipNear/.test(body)) {
+        throw new Error('the clip no longer travels with the object - switching '
+            + 'would leave one structure wearing another\'s slab');
+    }
+    // ...AND THE MESH IS CAPTURED WITHOUT IT. The 2D pass cannot cut a
+    // primitive, only drop it, so a mesh harvested under a slab is missing
+    // every piece that straddles a plane - measured 40,617 ink pixels against
+    // 41,520 for the same slab over a complete mesh.
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const cap = gpu.slice(gpu.indexOf('const keep = {'), gpu.indexOf('const keep = {') + 2500);
+    if (!/renderer\.clipNear = null/.test(cap)) {
+        throw new Error('captureFrom harvests the mesh through the clip');
+    }
+    if (!/renderer\.clipNear = keep\.clipNear/.test(gpu)) {
+        throw new Error('captureFrom does not put the clip back');
+    }
+});
+
 t('every draw path asks the same clip test', () => {
     // Four paths draw: 2D tube, 2D cartoon, and both GPU programs. The two
     // canvas paths cull whole primitives by depth (a canvas cannot cut one);

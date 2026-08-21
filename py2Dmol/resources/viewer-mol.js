@@ -2661,7 +2661,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     focalLength: this.viewerState.focalLength,
                     center: this.viewerState.center ? { ...this.viewerState.center } : null,
                     extent: this.viewerState.extent,
-                    currentFrame: this.currentFrame
+                    currentFrame: this.currentFrame,
+                    // THE CLIP TRAVELS WITH THE OBJECT. A slab is Angstrom along
+                    // the camera's depth, and objects differ in size by orders
+                    // of magnitude - a slab set on a peptide cuts a ribosome in
+                    // half, and one set on a ribosome does nothing to a peptide.
+                    // It rides with the rest of the per-object view state.
+                    clipNear: this.clipNear,
+                    clipFar: this.clipFar
                 };
 
                 // Persist scatter metadata (labels/limits) from renderer before switching away
@@ -2779,7 +2786,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 focalLength: 200.0,
                 center: null,
                 extent: null,
-                currentFrame: -1
+                currentFrame: -1,
+                clipNear: null,
+                clipFar: null
             };
             this.viewerState = {
                 rotation: this._deepCopyMatrix(saved.rotation),
@@ -2792,6 +2801,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 extent: saved.extent,
                 currentFrame: saved.currentFrame
             };
+
+            // ...and its clip. An object that has never been clipped comes back
+            // unclipped, rather than inheriting the slab of whatever was on
+            // screen before it.
+            this.clipNear = (typeof saved.clipNear === 'number') ? saved.clipNear : null;
+            this.clipFar = (typeof saved.clipFar === 'number') ? saved.clipFar : null;
 
             // Restore currentFrame from viewerState
             this.currentFrame = this.viewerState.currentFrame;
@@ -3448,6 +3463,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const MIN = 0.5;
                 this.clipNear = Math.max(nz, fz + MIN);
                 this.clipFar = Math.min(fz, this.clipNear - MIN);
+            }
+            // written through to the object as well, so switching away and back
+            // finds it where it was left
+            const obj = this.objectsData && this.objectsData[this.currentObjectName];
+            if (obj && obj.viewerState) {
+                obj.viewerState.clipNear = this.clipNear;
+                obj.viewerState.clipFar = this.clipFar;
             }
             this.render('clip slab');
         }

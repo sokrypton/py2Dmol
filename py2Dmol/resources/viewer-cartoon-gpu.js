@@ -3792,7 +3792,18 @@ function captureFrom(renderer, w, h, colors) {
         posProbe: renderer._posProbe,
         pencil: renderer.cartoonPencil, zoom: renderer.viewerState.zoom,
         thick: renderer.cartoonThickness, hxRel: renderer.cartoonHelixThRel,
+        clipNear: renderer.clipNear, clipFar: renderer.clipFar,
     };
+    // NOTHING IS CLIPPED WHILE CAPTURING, for the same reason nothing is
+    // view-culled: this is harvesting GEOMETRY, not painting a frame. The 2D
+    // pass drops whole primitives outside the slab - it cannot cut one - so a
+    // mesh built while a clip was on would be missing every piece that straddles
+    // a plane, and the shader would then cut what was left. Measured: a mesh
+    // rebuilt under a slab drew 40,617 ink pixels where the same slab over a
+    // complete mesh drew 41,520, and the missing 2% were exactly the boundary
+    // pieces. The shader does the cutting; the mesh holds everything.
+    renderer.clipNear = null;
+    renderer.clipFar = null;
     // GIVE THE FLAT PIECES A REAL THICKNESS, on this path only.
     //
     // Ribbon asks for thickness 0 and a richardson helix for exactly 0, and in
@@ -3866,6 +3877,8 @@ function captureFrom(renderer, w, h, colors) {
         renderer.viewerState.zoom = keep.zoom;
         renderer.cartoonThickness = keep.thick;
         renderer.cartoonHelixThRel = keep.hxRel;
+        renderer.clipNear = keep.clipNear;
+        renderer.clipFar = keep.clipFar;
     }
 }
 

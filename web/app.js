@@ -1594,6 +1594,8 @@ function handleObjectChange() {
     // a different object is a different set of frames, and frame 0 of the new
     // one may be the same INDEX as the old - so no frame-change event fires
     setTimeout(updateFrameNameLabel, 0);
+    // ...and a different object has its own clip, which the panel has to show
+    setTimeout(syncClipPanelToObject, 0);
     const objectSelect = document.getElementById('objectSelect');
 
     const selectedObject = objectSelect.value;
@@ -1660,20 +1662,29 @@ function handleObjectChange() {
 // The travel is the structure's reach plus half of it at either end, so a
 // handle can be pushed right through (drawing nothing, a legible mistake) or
 // pulled clear of it (cutting nothing).
-function fillClipPanel(slab) {
+// The RANGE is what this object can span - its rest state, which is the reach
+// of the structure - and the VALUES are where the planes currently are. Taking
+// the range from the current slab instead shrinks the track every time it is
+// refilled: after switching away from a clipped object and back, the handles
+// could not be pulled out past the cut they were already at.
+function fillClipPanel() {
     const r = viewerApi?.renderer;
-    if (!r || !slab) return;
-    const span = slab.near - slab.far;
+    if (!r) return;
+    const rest = r.clipSlabDefault();
+    if (!rest) return;
+    const span = rest.near - rest.far;
     const slack = Math.max(1, span * 0.5);
-    const lo = slab.far - slack;
-    const hi = slab.near + slack;
-    for (const [id, v] of [['clipNear', slab.near], ['clipFar', slab.far]]) {
+    const lo = rest.far - slack;
+    const hi = rest.near + slack;
+    const at = { clipNear: r.clipSlabOn() ? r.clipNear : rest.near,
+        clipFar: r.clipSlabOn() ? r.clipFar : rest.far };
+    for (const id of ['clipNear', 'clipFar']) {
         const el = document.getElementById(id);
         if (!el) continue;
         el.min = lo.toFixed(2);
         el.max = hi.toFixed(2);
         el.step = Math.max(0.05, span / 400).toFixed(3);
-        el.value = v.toFixed(2);
+        el.value = Math.max(lo, Math.min(hi, at[id])).toFixed(2);
     }
     showClipValues();
 }
@@ -1691,6 +1702,24 @@ function showClipValues() {
     const at = (v) => (100 * (v - lo) / Math.max(1e-6, hi - lo));
     bar.style.left = at(r.clipFar).toFixed(2) + '%';
     bar.style.width = Math.max(0, at(r.clipNear) - at(r.clipFar)).toFixed(2) + '%';
+}
+
+// THE PANEL FOLLOWS THE OBJECT. The slab rides with the object (see
+// _switchToObject in viewer-mol.js), so switching shows the new object's own
+// clip - and an object that has never been clipped gets the rest state, which
+// cuts nothing, rather than the previous object's Angstrom.
+function syncClipPanelToObject() {
+    const panel = document.getElementById('clipPanel');
+    const cb = document.getElementById('clipCheckbox');
+    const r = viewerApi?.renderer;
+    if (!r || !cb || !panel || panel.hidden) return;
+    const slab = r.clipSlabOn()
+        ? { near: r.clipNear, far: r.clipFar }
+        : r.clipSlabDefault();
+    if (!slab) { cb.checked = false; panel.hidden = true; r.clipEditing = false; return; }
+    r.clipEditing = true;
+    r.setClipSlab(slab.near, slab.far);
+    fillClipPanel();
 }
 
 function setupClipPanel() {
@@ -1724,7 +1753,7 @@ function setupClipPanel() {
             const slab = r.clipSlabDefault();
             if (!slab) return;
             r.setClipSlab(slab.near, slab.far);
-            fillClipPanel(slab);
+            fillClipPanel();
         });
     }
     // THE BUTTON PUTS THE PANEL AWAY, IT DOES NOT UNDO THE CUT. Switching Clip
@@ -1746,7 +1775,7 @@ function setupClipPanel() {
         r.clipEditing = true;
         r.setClipSlab(slab.near, slab.far);
         if (panel) panel.hidden = false;
-        fillClipPanel(slab);
+        fillClipPanel();
     });
 }
 
