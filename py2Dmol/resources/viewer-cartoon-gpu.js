@@ -2569,6 +2569,9 @@ function makeResident(faces, scale, prm, lines) {
         // the default in plain cartoon.
         for (const fr of frames) if (fr) { nm[0] += fr.n[0]; nm[1] += fr.n[1]; nm[2] += fr.n[2]; }
         pieceFrame.set(id, { frames, oB: e.oB, wMean: normv(wm), nMean: normv(nm) });
+        // the rails for this piece have now become its frames, and the two
+        // arrays of corner points behind them are nobody's business after that
+        e.L = null; e.R = null; e.frames = null;
     }
 
 
@@ -2621,7 +2624,11 @@ function makeResident(faces, scale, prm, lines) {
         const other = ha < hb ? hb : ha;
         let e = inner.get(other);
         if (!e) {
-            e = { p0: a2, p1: b2, n: [], count: 0, real: 0, stick: 0, two: 0,
+            // TWO SLOTS, NOT AN ARRAY. Only the first two normals are ever
+            // kept, and an array per edge is an allocation per edge - about
+            // seven million of them on a capsid - to hold at most two things.
+            e = { p0: a2, p1: b2, n0: null, n1: null, nCount: 0,
+                count: 0, real: 0, stick: 0, two: 0,
                 noInk: 0, pal: -1, full: 0, seam: 0, outer: 0 };
             inner.set(other, e);
         }
@@ -2650,10 +2657,12 @@ function makeResident(faces, scale, prm, lines) {
         // COUNT EVERY incident face, keep the first two normals. The count is
         // what decides whether the silhouette rule even applies - see below.
         e.count++;
-        if (e.n.length < 2) e.n.push(nrm);
+        if (e.nCount === 0) { e.n0 = nrm; e.nCount = 1; }
+        else if (e.nCount === 1) { e.n1 = nrm; e.nCount = 2; }
     };
 
 
+    pieceRails.clear();
     mark('pieceFrames');
     for (const f of faces) {
         // the rails pass above already did this for every surf-0 rib face
@@ -2954,6 +2963,7 @@ function makeResident(faces, scale, prm, lines) {
             faceSeen.set(k, (faceSeen.get(k) || 0) + 1);
             f._fkey = k;
         }
+        const ownKeys = [0, 0, 0, 0, 0, 0, 0, 0];
         let nInterior = 0;
         for (const f of (wantOutline ? faces : [])) {
             if (!f._m || flatPair(f) || faceSeen.get(f._fkey) < 2) continue;
@@ -3006,7 +3016,10 @@ function makeResident(faces, scale, prm, lines) {
             }
             if (Math.hypot(nv[0], nv[1], nv[2]) < 1e-6) continue;   // zero area
             // ...and belt and braces: one face may not count one edge twice.
-            const own = new Set();
+            // FOUR SLOTS, NOT A SET. A quad registers at most four edges, and
+            // one Set per face is one allocation per face - a couple of million
+            // on a capsid - to hold at most four numbers.
+            let ownN = 0;
             // A RIB FACE INKS ALONG THE STRIP ONLY. The reference does not run a
             // face-normal test over a slab at all - it inks the four CORNER CURVES
             // (the rails) and picks, per segment, the two that are extreme
@@ -3042,8 +3055,10 @@ function makeResident(faces, scale, prm, lines) {
                 const ka = ptH(m[i2]);
                 const kb = ptH(m[(i2 + 1) % m.length]);
                 const ek = ka < kb ? ka * 4294967296 + kb : kb * 4294967296 + ka;
-                if (own.has(ek)) continue;
-                own.add(ek);
+                let dup = false;
+                for (let k2 = 0; k2 < ownN; k2++) if (ownKeys[k2] === ek) { dup = true; break; }
+                if (dup) continue;
+                if (ownN < ownKeys.length) ownKeys[ownN++] = ek;
                 addEdge(m[i2], m[(i2 + 1) % m.length], f._inkN, !!f.stick, f.pal, ghost,
                     !!f.two, !!f.noInk, f.c ? [f.c.r, f.c.g, f.c.b] : null,
                     !!f.fullOutline, seamCross, !!f.outerOnly);
@@ -3069,8 +3084,8 @@ function makeResident(faces, scale, prm, lines) {
             // no face is allowed to ink here - a mid-strip cross edge, or the
             // ring around a side chain's base, which is vetoed outright
             if (!e.real || e.noInk || e.seam) { nGhostOnly++; continue; }
-            const a2 = e.n[0] || [0, 0, 1];
-            const b2 = e.n[1] || a2;
+            const a2 = e.n0 || [0, 0, 1];
+            const b2 = e.n1 || a2;
             // NON-MANIFOLD EDGES ARE JUNCTION INTERIOR, and the silhouette rule is
             // not merely wrong there, it is undefined: "exactly one of the TWO
             // faces meeting along it faces the eye" needs there to be two. Where
@@ -3116,7 +3131,7 @@ function makeResident(faces, scale, prm, lines) {
             // Left as an ordinary boundary it tested the normal the CAPTURE
             // baked, and every flat side chain kept its fill but lost its
             // outline the moment the model turned past that view.
-            if (e.n.length < 2) { always = e.two ? 5 : 2; nBoundary++; }   // open edge
+            if (e.nCount < 2) { always = e.two ? 5 : 2; nBoundary++; }   // open edge
             else {
                 // |dot| because the two winding normals of a closed pair point
                 // opposite ways by construction; the ANGLE between the surfaces is
@@ -3907,6 +3922,14 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
             RB.capture = +(performance.now() - RB.t0).toFixed(1);
             if (!prims.length) return false;
             const { faces, lines, paletteComplete } = facesOf(prims, prm);
+            // DROPPED AS SOON AS THE FACES EXIST. The capture's primitive list
+            // is the single largest thing this build allocates - 288,611 prims
+            // and 541 MB on a 135,780-position assembly - and nothing reads it
+            // again. It stayed reachable through the whole of makeResident
+            // simply because the binding was still in scope, so its cost was
+            // part of the peak rather than part of a stage. Emptying the array
+            // releases every prim the faces did not keep a reference to.
+            prims.length = 0;
             RB.facesOf = +(performance.now() - RB.t0).toFixed(1);
             makeResident(faces, scale, prm, lines);
             RB.total = +(performance.now() - RB.t0).toFixed(1);
