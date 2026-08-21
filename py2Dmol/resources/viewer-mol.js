@@ -5955,8 +5955,45 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // and require every atom to have at least one. Partial
                 // connectivity falls through and is supplemented by distance,
                 // which the dedupe above keeps from restating what we have.
-                const fileKnowsIt = (indices) => {
+                //
+                // ASKED OF THE BOND LIST ONCE, not once per ligand. Walking
+                // every bond to answer for one ligand is fine for a structure
+                // with a haem in it and quadratic for one with thousands:
+                // 7Y7A has ~8,800 ligand groups and 223,276 bonds, which is
+                // two billion comparisons inside setCoords. Instead every bond
+                // is looked at once and charged to the group both its ends sit
+                // in, which is the same question read from the other side.
+                const obj = this.objectsData[this.currentObjectName];
+                let touchedByGroup = null;
+                if (obj?.ligandGroups?.size > 0) {
+                    const groupOf = new Map();
+                    let shared = false;
+                    for (const [key, idxs] of obj.ligandGroups.entries()) {
+                        for (const i of idxs) {
+                            if (groupOf.has(i)) { shared = true; break; }
+                            groupOf.set(i, key);
+                        }
+                        if (shared) break;
+                    }
+                    // A position in two groups at once would be charged to only
+                    // one of them here, so that case keeps the old walk.
+                    if (!shared) {
+                        touchedByGroup = new Map();
+                        for (const [b1, b2] of (this.bonds || [])) {
+                            const g = groupOf.get(b1);
+                            if (g === undefined || g !== groupOf.get(b2)) continue;
+                            let s = touchedByGroup.get(g);
+                            if (!s) { s = new Set(); touchedByGroup.set(g, s); }
+                            s.add(b1); s.add(b2);
+                        }
+                    }
+                }
+                const fileKnowsIt = (indices, groupKey) => {
                     if (!indices || indices.length < 2) return false;
+                    if (touchedByGroup && groupKey !== undefined) {
+                        const s = touchedByGroup.get(groupKey);
+                        return !!s && s.size === new Set(indices).size;
+                    }
                     const inGroup = new Set(indices);
                     const touched = new Set();
                     for (const [b1, b2] of (this.bonds || [])) {
@@ -5967,11 +6004,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                     return touched.size === inGroup.size;
                 };
-                const obj = this.objectsData[this.currentObjectName];
                 if (obj?.ligandGroups?.size > 0) {
                     // Use ligand groups: only compute distances within each group
                     for (const [groupKey, ligandPositionIndices] of obj.ligandGroups.entries()) {
-                        if (fileKnowsIt(ligandPositionIndices)) continue;
+                        if (fileKnowsIt(ligandPositionIndices, groupKey)) continue;
                         // Compute pairwise distances only within this ligand group
                         for (let i = 0; i < ligandPositionIndices.length; i++) {
                             for (let j = i + 1; j < ligandPositionIndices.length; j++) {

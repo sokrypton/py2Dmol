@@ -1072,6 +1072,26 @@
         let maxWidth = 0;
 
         if (sequenceViewMode) {
+            // Get ligand groups from renderer (computed using shared utility)
+            const currentObject = renderer?.objectsData?.[renderer.currentObjectName];
+            const ligandGroups = currentObject?.ligandGroups || new Map();
+
+            // Reverse map: position index -> ligand group key.
+            //
+            // BUILT ONCE, not once per chain. It does not depend on the chain,
+            // and rebuilding it inside the loop below is quadratic in exactly
+            // the case that hurts: 7Y7A has 6,390 chains and about 207,000
+            // ligand positions, which is 1.3 billion Map writes and a minute
+            // and a half of a frozen tab, all to produce the same map 6,390
+            // times. processedLigandGroups stays inside the loop - that one is
+            // genuinely per-chain.
+            const positionToLigandGroup = new Map();
+            for (const [groupKey, positionIndicesInGroup] of ligandGroups) {
+                for (const positionIndex of positionIndicesInGroup) {
+                    positionToLigandGroup.set(positionIndex, groupKey);
+                }
+            }
+
             // SEQUENCE MODE: One row per chain
             for (const boundary of chainBoundaries) {
                 const chainId = boundary.chain;
@@ -1101,18 +1121,6 @@
                 let lastResSeq = null;
                 let lastPositionType = null;
                 const ligandTokenWidth = charWidth * 2; // Ligand tokens take 2 character widths
-
-                // Get ligand groups from renderer (computed using shared utility)
-                const currentObject = renderer?.objectsData?.[renderer.currentObjectName];
-                const ligandGroups = currentObject?.ligandGroups || new Map();
-
-                // Create reverse map: position index -> ligand group key (for quick lookup)
-                const positionToLigandGroup = new Map();
-                for (const [groupKey, positionIndicesInGroup] of ligandGroups) {
-                    for (const positionIndex of positionIndicesInGroup) {
-                        positionToLigandGroup.set(positionIndex, groupKey);
-                    }
-                }
 
                 // Track which ligand groups we've already processed
                 const processedLigandGroups = new Set();
