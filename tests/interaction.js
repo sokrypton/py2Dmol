@@ -1241,6 +1241,23 @@ t('the ghost is stippled, not blended, and the shader ramps as the renderer does
     if (!/setClipFade\(parseFloat\(fadeEl\.value\)\)/.test(app)) {
         throw new Error('the Fade control is not wired to the renderer');
     }
+    // A SOFT EDGE NEEDS AN EDGE. Clip opens with the planes parked at the rest
+    // state, where nothing is outside the slab - drag Fade there and the
+    // picture cannot change, which reads as a broken control. It is disabled
+    // until a plane is actually cutting, and re-checked on every knob move.
+    if (!/function clipCuts\(\)/.test(app) || !/function syncFadeEnabled\(\)/.test(app)) {
+        throw new Error('Fade is offered even where it can do nothing');
+    }
+    const cuts = app.slice(app.indexOf('function clipCuts()'),
+        app.indexOf('function syncFadeEnabled()'));
+    if (!/clipNear < view\.near/.test(cuts) || !/clipFar > view\.far/.test(cuts)) {
+        throw new Error('"is anything being cut" is not measured against the view');
+    }
+    const pushAt = app.indexOf('const push = () => {');
+    const pushBody = app.slice(pushAt, app.indexOf('\n    };', pushAt));
+    if (!/syncFadeEnabled\(\)/.test(pushBody)) {
+        throw new Error('moving a knob does not re-check whether Fade can act');
+    }
 });
 
 t('the clip is one range control, and nothing is drawn over the picture', () => {

@@ -1752,7 +1752,34 @@ function fillClipPanel() {
     // ...and the soft edge, which rides with the object like the planes do
     const fade = document.getElementById('clipFadeSlider');
     if (fade) fade.value = String(typeof r.clipFade === 'number' ? r.clipFade : 0);
+    syncFadeEnabled();
     showClipValues();
+}
+
+// A SOFT EDGE NEEDS AN EDGE. Clip opens with both planes parked at the rest
+// state - a radius, which holds the whole structure from any angle - so nothing
+// is outside the slab and a fade has nothing to fade: the knob moved and the
+// picture did not, which reads as a broken control rather than as an honest
+// nothing. It stays disabled until a plane is actually cutting.
+function clipCuts() {
+    const r = viewerApi?.renderer;
+    if (!r || !r.clipSlabOn()) return false;
+    const view = r.clipViewExtent();
+    if (!view) return false;
+    const EPS = 1e-6;
+    return r.clipNear < view.near - EPS || r.clipFar > view.far + EPS;
+}
+
+function syncFadeEnabled() {
+    const fade = document.getElementById('clipFadeSlider');
+    if (!fade) return;
+    const dead = !clipCuts();
+    fade.disabled = dead;
+    fade.style.opacity = dead ? '0.4' : '';
+    fade.title = dead
+        ? 'Nothing is being clipped yet - move a knob in, and Fade softens the cut'
+        : 'Soft edge: how far outside each plane the drawing fades out instead of '
+            + 'stopping. 0 is a hard cut.';
 }
 
 // The blue bar between the knobs. No figures beside it: where the knobs are is
@@ -1826,6 +1853,7 @@ function setupClipPanel() {
             Math.min(parseFloat(near.max), r.clipNear)).toFixed(2);
         far.value = Math.max(parseFloat(far.min),
             Math.min(parseFloat(far.max), r.clipFar)).toFixed(2);
+        syncFadeEnabled();
         showClipValues();
     };
     for (const id of ['clipNear', 'clipFar']) {
