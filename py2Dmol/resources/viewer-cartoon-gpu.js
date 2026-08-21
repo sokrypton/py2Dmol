@@ -576,6 +576,11 @@ in vec3 aFlatN;         // the FACE's own OUTWARD normal, constant over it
 in vec3 aFlatShade;     // ...and the normal a FLAT face shades from
 uniform mat3 uRot; uniform vec2 uSize; uniform vec2 uZRange; uniform vec2 uShadeRange;
 uniform float uScale; uniform vec3 uPaper;
+// WHERE THE VIEW IS CENTRED, as an offset from where it was centred when the
+// mesh was captured - model space, so it goes in before the rotation. Orient
+// moves the centre onto a selection; without this the mesh stays framed on
+// whatever it was built around. Zero on every frame that has not moved it.
+uniform vec3 uShift;
 uniform float uPersp, uFL;      // 0 = orthographic; uFL is the focal length
 uniform float uFlatCull;
 uniform float uShowRibbon, uShowSticks;
@@ -682,7 +687,7 @@ void main() {
   vec3 aModel = corner == 0 ? aC0 : (corner == 1 ? aC1 : (corner == 2 ? aC2 : aC3));
   vec3 aNormal = (corner == 0 || corner == 1) ? aNA : aNB;
   vec3 aTangent = (corner == 0 || corner == 1) ? aTA : aTB;
-  vec3 v = uRot * aModel;
+  vec3 v = uRot * (aModel + uShift);
   // THE RENDERER'S OWN PROJECTION. pe = fl / (fl - z), applied to x and y and
   // not to z - which is what leaves z invertible on the way back in.
   float pe = uPersp > 0.5 ? uFL / max(0.1, uFL - v.z) : 1.0;
@@ -703,7 +708,7 @@ void main() {
   // recomputed per frame from the face centroids, and evaluates at the face's
   // own centroid - which is what that near means.
   vec3 ctr = (aC0 + aC1 + aC2 + aC3) * 0.25;
-  float cz = (uRot * ctr).z;
+  float cz = (uRot * (ctr + uShift)).z;
   float tShade = (cz - uShadeRange.x) / max(1e-6, uShadeRange.y - uShadeRange.x);
 
   // SMOOTH OR FLAT, decided here rather than when the mesh was built. uCel is
@@ -919,6 +924,7 @@ in float aEdgeW;
 out vec3 vInk;
 uniform mat3 uRot; uniform vec2 uSize, uZRange, uShadeRange;
 uniform float uScale, uWidth, uBias, uPersp, uFL;
+uniform vec3 uShift;            // see VS3D - the view centre's move since capture
 uniform float uShowRibbon, uShowSticks;
 uniform sampler2D uPal;
 uniform float uPalW;
@@ -944,8 +950,8 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // hidden class: no outline either
     return;
   }
-  vec3 v0 = uRot * aP0;
-  vec3 v1 = uRot * aP1;
+  vec3 v0 = uRot * (aP0 + uShift);
+  vec3 v1 = uRot * (aP1 + uShift);
   // THE SILHOUETTE, AND NOTHING ELSE - the renderer's own words for the same
   // rule (viewer-cartoon.js, the stick ink block). An edge is drawn iff exactly
   // one of the two faces meeting along it points at the eye. Orthographic, so
@@ -2390,6 +2396,37 @@ function setVisible(o) {
     if (o.sticks !== undefined) showSticks = !!o.sticks;
 }
 
+// THE FRAMING, as it stands against the framing the mesh was captured under.
+//
+// The mesh is model-space Angstrom: the capture divided the renderer's view
+// scale out and its centre off. Both of those move WITHOUT the geometry
+// changing - Orient reframes on a selection by writing viewerState.center and
+// viewerState.extent, and the fly-to writes them again every frame - so
+// treating them as view parameters is not an optimisation, it is the only way
+// the animation can run at all. A rebuild per frame is seconds on the
+// structures this path exists for.
+//
+// frameScaleMul is capExtent/liveExtent (the base scale is padding*size over
+// 2*extent, so the extents divide out exactly), and viewShift is
+// capCentre - liveCentre in model space. Both are 1 and zero for the lab,
+// which has no renderer and never moves either.
+let frameScaleMul = 1;
+let viewShift = [0, 0, 0];
+function setFraming(mul, shift) {
+    frameScaleMul = (typeof mul === 'number' && isFinite(mul) && mul > 0) ? mul : 1;
+    viewShift = shift || [0, 0, 0];
+}
+// device pixels per Angstrom, the one number both draw passes scale by
+const drawScale = () => (resident
+    ? resident.scale * (viewZoom / (resident.capZoom || 1)) * frameScaleMul
+    : 1) * pixelRatio;
+// The depth range travels with the shift: it is measured around the capture's
+// centre, and a shift moves every z by the same amount.
+const shiftZ = () => {
+    const R = currentRot();
+    return R[2][0] * viewShift[0] + R[2][1] * viewShift[1] + R[2][2] * viewShift[2];
+};
+
 let viewZoom = 1;
 let capturing = false;
 const currentZoom = () => (capturing ? 1 : viewZoom);
@@ -3327,11 +3364,16 @@ function drawResident(cv, prm) {
         new Float32Array([R[0][0], R[1][0], R[2][0],
             R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
     gl.uniform2f(gl.getUniformLocation(prog3, 'uSize'), cv.width, cv.height);
-    gl.uniform2f(gl.getUniformLocation(prog3, 'uZRange'), resident.zMin, resident.zMax);
+    const dzprog3 = shiftZ();
+    gl.uniform2f(gl.getUniformLocation(prog3, 'uZRange'),
+        resident.zMin + dzprog3, resident.zMax + dzprog3);
+    gl.uniform3f(gl.getUniformLocation(prog3, 'uShift'),
+        viewShift[0], viewShift[1], viewShift[2]);
     const sr = shadeRange();
-    gl.uniform2f(gl.getUniformLocation(prog3, 'uShadeRange'), sr[0], sr[1]);
-    gl.uniform1f(gl.getUniformLocation(prog3, 'uScale'),
-        resident.scale * (viewZoom / (resident.capZoom || 1)) * pixelRatio);
+    // the shade range is measured off the unshifted centroids, and the
+    // shader now evaluates a shifted one - so it travels with them
+    gl.uniform2f(gl.getUniformLocation(prog3, 'uShadeRange'), sr[0] + dzprog3, sr[1] + dzprog3);
+    gl.uniform1f(gl.getUniformLocation(prog3, 'uScale'), drawScale());
     gl.uniform1f(gl.getUniformLocation(prog3, 'uPersp'), isPersp() ? 1 : 0);
     gl.uniform1f(gl.getUniformLocation(prog3, 'uFL'), focalLength());
     gl.uniform1f(gl.getUniformLocation(prog3, 'uShowRibbon'), showRibbon ? 1 : 0);
@@ -3404,11 +3446,16 @@ function drawInk(cv, prm) {
         new Float32Array([R[0][0], R[1][0], R[2][0],
             R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2]]));
     gl.uniform2f(gl.getUniformLocation(progInk, 'uSize'), cv.width, cv.height);
-    gl.uniform2f(gl.getUniformLocation(progInk, 'uZRange'), resident.zMin, resident.zMax);
+    const dzprogInk = shiftZ();
+    gl.uniform2f(gl.getUniformLocation(progInk, 'uZRange'),
+        resident.zMin + dzprogInk, resident.zMax + dzprogInk);
+    gl.uniform3f(gl.getUniformLocation(progInk, 'uShift'),
+        viewShift[0], viewShift[1], viewShift[2]);
     const srI = shadeRange();
-    gl.uniform2f(gl.getUniformLocation(progInk, 'uShadeRange'), srI[0], srI[1]);
-    gl.uniform1f(gl.getUniformLocation(progInk, 'uScale'),
-        resident.scale * (viewZoom / (resident.capZoom || 1)) * pixelRatio);
+    // the shade range is measured off the unshifted centroids, and the
+    // shader now evaluates a shifted one - so it travels with them
+    gl.uniform2f(gl.getUniformLocation(progInk, 'uShadeRange'), srI[0] + dzprogInk, srI[1] + dzprogInk);
+    gl.uniform1f(gl.getUniformLocation(progInk, 'uScale'), drawScale());
     gl.uniform1f(gl.getUniformLocation(progInk, 'uPersp'), isPersp() ? 1 : 0);
     gl.uniform1f(gl.getUniformLocation(progInk, 'uFL'), focalLength());
     gl.uniform1f(gl.getUniformLocation(progInk, 'uShowRibbon'), showRibbon ? 1 : 0);
@@ -3781,6 +3828,18 @@ function invalidate() {
     clearResident();
 }
 
+// THE TWO NUMBERS THAT FRAME THE VIEW, read the way the 2D renderer reads
+// them (viewer-mol.js: the scale block, and _computeViewCentre). Orient writes
+// both; a pan writes the centre. The fallbacks are the renderer's own.
+function framingOf(renderer) {
+    const o = renderer.objectsData && renderer.objectsData[renderer.currentObjectName];
+    const extent = renderer.viewerState.extent
+        || ((o && o.maxExtent > 0) ? o.maxExtent : 30.0);
+    let c = renderer.viewerState.center;
+    if (!c && renderer._computeViewCentre) c = renderer._computeViewCentre(o);
+    return { extent, centre: c ? [c.x, c.y, c.z] : [0, 0, 0] };
+}
+
 // THE SAME PROJECTION THE 2D TAIL DOES, from the captured model-space drawn
 // positions. Display pixels, because that is the space every consumer of
 // screenX/screenY works in.
@@ -3790,9 +3849,11 @@ function projectPositions(renderer, dw, dh) {
     const R = currentRot();
     const persp = isPersp();
     const fl = focalLength();
-    // the same ratio the fills use: the mesh's scale carries the zoom it was
-    // captured at, so this divides that out before applying the live one
-    const sc = (resident ? resident.scale / (resident.capZoom || 1) : 1) * viewZoom;
+    // EXACTLY WHAT THE FILLS ARE DRAWN AT, in display pixels: the mesh's scale
+    // carries the zoom and the framing it was captured under, and drawScale
+    // divides both out and applies the live ones. A halo that used a different
+    // scale from the picture it sits on is a halo in the wrong place.
+    const sc = drawScale() / pixelRatio;
     const cx = dw / 2;
     const cy = dh / 2;
     renderer.screenFrameId++;
@@ -3814,7 +3875,9 @@ function projectPositions(renderer, dw, dh) {
             continue;
         }
         if (!shown(i)) { renderer.screenValid[i] = 0; continue; }
-        const x = appPos[o]; const y = appPos[o + 1]; const z = appPos[o + 2];
+        const x = appPos[o] + viewShift[0];
+        const y = appPos[o + 1] + viewShift[1];
+        const z = appPos[o + 2] + viewShift[2];
         const vx = R[0][0] * x + R[0][1] * y + R[0][2] * z;
         const vy = R[1][0] * x + R[1][1] * y + R[1][2] * z;
         const vz = R[2][0] * x + R[2][1] * y + R[2][2] * z;
@@ -3955,7 +4018,15 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
             RB.total = +(performance.now() - RB.t0).toFixed(1);
             // the mesh's scale already carries the zoom it was captured at, so
             // the draw multiplies by the RATIO rather than by the zoom itself
-            if (resident) resident.capZoom = capZoom;
+            if (resident) {
+                resident.capZoom = capZoom;
+                // ...and the framing, for the same reason: the draw applies
+                // the RATIO between this and the live one, so both have to be
+                // remembered from the moment the mesh was made.
+                const capFr = framingOf(renderer);
+                resident.capExtent = capFr.extent;
+                resident.capCentre = capFr.centre;
+            }
             // THE DRAWN POSITIONS, in model space. Everything on top of the
             // canvas - the selection halo, the sequence hover, click-picking -
             // reads renderer.screenX/screenY, and the 2D pass fills them at the
@@ -4004,6 +4075,19 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
             }
         }
         if (!resident) return false;
+        // THE FRAMING THIS FRAME, against the framing the mesh carries. On the
+        // frame that just rebuilt these are equal, so the multiplier is 1 and
+        // the shift is zero; on every frame after an Orient they are not.
+        const fr = framingOf(renderer);
+        const capC = resident.capCentre || fr.centre;
+        setFraming((resident.capExtent || fr.extent) / (fr.extent || 1),
+            [capC[0] - fr.centre[0], capC[1] - fr.centre[1], capC[2] - fr.centre[2]]);
+        // ...and tell the renderer what the picture is actually drawn at. A pan
+        // converts its drag from pixels to Angstrom with this, and on a GPU
+        // frame the 2D block that normally sets it never runs - so without this
+        // a pan after an Orient moves by the wrong amount. The tube GPU path
+        // sets it for the same reason (viewer-mol.js).
+        renderer._viewScale = drawScale() / pixelRatio;
         drawResident(appCv, prm);
         projectPositions(renderer, displayWidth, displayHeight);
         // ...and onto the canvas the app owns, under whatever transform it is
