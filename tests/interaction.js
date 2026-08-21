@@ -1170,6 +1170,28 @@ t('the clip cuts the drawing, it does not touch visibility', () => {
     if (v.visiblePositions) throw new Error('the clip hid a position');
 });
 
+t('no clip code path touches visibility', () => {
+    // The clip used to commit itself into the visibility mask, and a mask
+    // outlives the control that wrote it: residues stayed hidden after the slab
+    // was reset, and only Show all brought them back. Clipping is a camera
+    // state - it may not write to the thing that hides residues.
+    const both = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8')
+        + fs.readFileSync('web/app.js', 'utf8');
+    // every line mentioning clip, and none of them may also mention the mask
+    for (const line of both.split('\n')) {
+        if (!/\bclip/i.test(line)) continue;
+        if (/setVisibility|visiblePositions|visibilityMode/.test(line)) {
+            throw new Error('a clip line writes visibility: ' + line.trim());
+        }
+    }
+    // ...and the two functions that own the slab must not reach it either
+    const m = src.match(/\n        setClipSlab\(near, far\) \{[\s\S]*?\n        \}/);
+    if (!m) throw new Error('setClipSlab is gone');
+    if (/setVisibility|visiblePositions/.test(m[0])) {
+        throw new Error('setClipSlab writes visibility');
+    }
+});
+
 t('every draw path asks the same clip test', () => {
     // Four paths draw: 2D tube, 2D cartoon, and both GPU programs. The two
     // canvas paths cull whole primitives by depth (a canvas cannot cut one);
