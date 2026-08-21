@@ -855,3 +855,62 @@ That leaves two levers, and only two: make fewer faces (the structure is 8.8
 faces per position, which for a capsid is 2.7 M faces for a 600 px image - 0.06
 px per residue), or never hold them all at once (build, upload and discard per
 chain).
+
+### The interaction paths, and the one that was actually broken
+
+Nothing here had ever been timed. Swept on 7Y7A (305,004 positions, 1,792
+chains) with the GPU confirmed to have drawn:
+
+| | |
+| --- | --- |
+| render, rotate, zoom | 0 ms |
+| colour mode change | 0-44 ms |
+| select a chain / 5,000 residues | 12-17 ms |
+| showAll | 67 ms |
+| side chains on / off | 365 / 280 ms |
+| setFrame (same frame) | 214 ms |
+| SEQ buildView | 154 ms |
+
+All healthy. The side-chain toggles and setFrame cost what a full setCoords
+costs, which is what they do.
+
+**But the first run of that sweep read 740 ms for render, 1,854 ms for rotate
+and 1,900 ms for showAll**, and it was the 2D fallback: the GPU had not been
+available in that run. `cartoonGPU` is a REQUEST, not a fact. Timing a frame
+without knowing which path drew it measures nothing, so
+`renderer.gpuDrewLastFrame` now records it - set by both branches, since the
+cartoon delegation and the tube path reach the GPU by different routes.
+
+Those 2D numbers are also worth keeping as the answer to "what does a user
+without WebGL2 get on a large structure": about 0.7-2 s per interaction.
+
+### Session files were three quarters whitespace
+
+`saveViewerState` wrote `JSON.stringify(state, null, 2)`.
+
+    1TIM     330,741 ->      81,145 bytes
+    4HHB     431,868 ->     106,309
+    1AOI     633,260 ->     158,286
+    7Y7A 211,932,481 ->  61,652,330
+
+Verified by round trip - save, load the file back the way a dropped file
+arrives, hash the restored state - identical to HEAD's restored state. Note a
+round trip is NOT lossless in either version: coordinates are rounded on save
+and MSE is normalised to MET, so the restored state differs from the loaded
+one by design. The test is that it differs by the same amount as before.
+
+Loading a session is healthy: ~1.2 s for a 73 MB file, of which JSON.parse is
+168 ms and reviving the side-chain table 6 ms.
+
+**What is left in a session, if anyone wants to go further.** On 7Y7A the 57 MB
+payload is 43.7 MB of side-chain table: coef 17.6, bonds 10.8, pos 6.7,
+frameOf 6.7, toBackbone 1.9. Two columns are nearly free to remove and both
+need a format version:
+
+- `frameOf` equals `pos` for 99.5% of rows (1,060,359 of 1,065,107; 4UG0 is
+  99.0%), so only the exceptions need storing.
+- `pos` runs 3.8 rows deep on average (282,055 runs for 1,065,107 rows), so it
+  run-length encodes about 4:1.
+
+Together roughly 20% of the file. `coef` and `bonds` are the larger half and
+would need real encoding, not just de-duplication.
