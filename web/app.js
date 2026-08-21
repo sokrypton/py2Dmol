@@ -1671,49 +1671,43 @@ function applyBestViewRotation(animate = true) {
         renderer._loadFrameData(currentFrame, true); // Load without render
     }
 
-    // WHAT TO ORIENT ON, in priority order:
-    //   1. the residue SELECTION, if the user has made one - orienting on what
-    //      you just picked is the whole point of picking it
-    //   2. otherwise whatever is VISIBLE, so hiding a chain and orienting still
-    //      frames what is left rather than empty space around it
-    //   3. otherwise the entire object
-    // Selection and visibility are separate things here (see technical_readme):
-    // a selection is what you are working on, visibility is what is drawn, and
-    // only the first is a statement about where you want to be looking.
+    // WHAT TO ORIENT ON:
+    //   selection INTERSECTED WITH what is visible, or just what is visible
+    //   when nothing is selected. A hidden residue is not something you are
+    //   looking at, so it cannot pull the view towards itself either way.
+    //
+    // ASK THE MASK, NOT THE MODEL. This used to read getVisibility().positions,
+    // which is the visibility MODEL - and that field is normalised to hold
+    // every position whenever the mode is 'default'. Hide a chain (which sets
+    // .chains and leaves the mode alone) or drag a PAE box (which sets
+    // .paeBoxes and never touches .positions at all) and the field still said
+    // "all of them", so the first branch matched and Orient framed the whole
+    // structure. renderer.visiblePositions is the composed mask the renderer
+    // actually draws from: null means everything is visible, an empty Set
+    // means nothing is.
+    //
     // residueSelection is a Set, or null when nothing is selected; some paths
     // hand back an array, so normalise before asking for .size
     const rawSel = renderer.residueSelection;
     const picked = rawSel
         ? (rawSel instanceof Set ? rawSel : new Set(rawSel))
         : null;
-    const selection = renderer.getVisibility();
-    let selectedPositionIndices = null;
+    const visible = renderer.visiblePositions;   // null = everything
+    let selectedPositionIndices = null;          // null = everything
 
-    // Determine which positions to use: selected positions if available, otherwise all positions
     if (picked && picked.size > 0) {
-        selectedPositionIndices = picked;
-    } else if (selection && selection.positions && selection.positions.size > 0) {
-        // Use only selected positions
-        selectedPositionIndices = selection.positions;
-    } else if (selection && selection.visibilityMode === 'default' &&
-        (!selection.chains || selection.chains.size === 0)) {
-        // Default mode with no explicit selection: use all positions
-        selectedPositionIndices = null; // Will use all positions
-    } else if (selection && selection.chains && selection.chains.size > 0) {
-        // Chain-based selection: get all positions in selected chains
-        selectedPositionIndices = new Set();
-        for (let i = 0; i < frame.coords.length; i++) {
-            if (frame.chains && frame.chains[i] && selection.chains.has(frame.chains[i])) {
-                selectedPositionIndices.add(i);
-            }
-        }
-        // If no positions found in chains, fall back to all positions
+        selectedPositionIndices = visible
+            ? new Set([...picked].filter((i) => visible.has(i)))
+            : new Set(picked);
+        // A SELECTION THAT IS ENTIRELY HIDDEN is not a request to orient on
+        // nothing - it is stale, left behind by whatever was hidden after it
+        // was made. Fall back to what is on screen rather than returning with
+        // no coordinates and letting the button do nothing.
         if (selectedPositionIndices.size === 0) {
-            selectedPositionIndices = null;
+            selectedPositionIndices = visible ? new Set(visible) : null;
         }
-    } else {
-        // No selection or empty selection: use all positions
-        selectedPositionIndices = null;
+    } else if (visible) {
+        selectedPositionIndices = new Set(visible);
     }
 
     // Filter coordinates to only selected positions (or use all if no selection)
