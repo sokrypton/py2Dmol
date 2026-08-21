@@ -2090,9 +2090,10 @@
         const renderer = callbacks.getRenderer ? callbacks.getRenderer() : null;
         if (!renderer || !renderer.setHover) return;
         const i = hoveredResidueInfo;
-        renderer.setHover(hoverAtoms, i ? {
-            lines: [`Chain: ${i.chain}`, `Residue: ${i.resName}`, `Index: ${i.resSeq}`],
-        } : null);
+        // "A GLY 39" - chain, residue, number. Three words in the order you
+        // would say them, rather than three labelled lines.
+        renderer.setHover(hoverAtoms,
+            i ? { text: `${i.chain} ${i.resName} ${i.resSeq}` } : null);
     }
 
     function setHoverAtoms(atoms) {

@@ -35,8 +35,8 @@ eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH',
-    'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_FILL_CSS', 'HOVER_STROKE_CSS',
-    'HOVER_TIP_BG_CSS', 'HOVER_TIP_TEXT_CSS']) {
+    'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
+    'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
     if (!line) throw new Error('constant not found in viewer-mol.js: ' + name);
     eval('global.' + line.trim().replace('const ', ''));
@@ -44,7 +44,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverMarks','_snapshotCleanFrame','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1043,8 +1043,8 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
     // canvas the sequence viewer painted on its own schedule, which is how they
     // went out of step with the picture underneath. They go down here or not at
     // all: no overlay canvas anywhere, and nothing calling out to one.
-    if (/_paintHoverMarks/.test(src) === false) {
-        throw new Error('the hover marks are not painted by the renderer');
+    if (!/_paintHoverReadout/.test(src) || !/hoverSet\(\)/.test(src)) {
+        throw new Error('the hover is not painted by the renderer');
     }
     for (const f of ['py2Dmol/resources/viewer-mol.js', 'py2Dmol/resources/viewer-seq.js',
         'web/app.js']) {
@@ -1068,31 +1068,55 @@ t('the halo is painted after the molecule, in both styles and in exports', () =>
 // asked to have marked and belongs in a saved image; where the pointer happens
 // to be does not - and an export renders from a different context entirely, so
 // there is nobody to move the pointer off first.
-t('hover marks are drawn on screen and left out of exports', () => {
-    const v = haloViewer([], 8);
-    v.residueSelection = null;
-    v.highlightedAtoms = new Set([2, 3]);
-    v.hoverInfo = { lines: ['Chain: A'] };
+t('hover is marked in the selection\'s own style, and left out of exports', () => {
+    // ONE BAND FOR BOTH. Hovering must not introduce a second visual language,
+    // and where the two overlap it must not stain: the colour is translucent,
+    // so a union is drawn rather than one band over the other.
+    const v = haloViewer([2, 3], 8);
+    v.highlightedAtoms = new Set([3, 4]);
+    v.hoverInfo = { text: 'A GLY 39' };
     v.displayWidth = 100; v.displayHeight = 80;
     v._ensurePickProjection = () => {};
-
     const stub = (c) => {
         c.measureText = () => ({ width: 40 });
         c.setTransform = () => {}; c.scale = () => {}; c.rect = () => {};
         c.fillText = (t) => { c.ops.push(['text', t]); };
         return c;
     };
+
     const on = stub(haloCtx());
     v._paintOverlays(on, 1);
-    const discs = on.ops.filter((o) => o[0] === 'arc');
-    if (discs.length !== 2) throw new Error('drew ' + discs.length + ' hover marks, expected 2');
-    if (!on.ops.some((o) => o[0] === 'fill')) throw new Error('the readout box was not drawn');
+    if (on.ops.some((o) => o[0] === 'arc')) {
+        throw new Error('hover drew a mark of its own - it must use the selection band');
+    }
+    if (on.ops.filter((o) => o[0] === 'stroke').length !== 1) {
+        throw new Error('the band was stroked more than once - overlapping'
+            + ' translucent strokes darken where selection and hover meet');
+    }
+    // 2,3 selected and 3,4 hovered: the band must span 2..4
+    const joined = haloEdges(on, v).flat();
+    for (const i of [2, 3, 4]) {
+        if (!joined.includes(i)) throw new Error('position ' + i + ' is not in the band');
+    }
+    // ...and the readout is one line, no plate behind it
+    const text = on.ops.filter((o) => o[0] === 'text');
+    if (text.length !== 1 || text[0][1] !== 'A GLY 39') {
+        throw new Error('the readout is not one line reading "A GLY 39": '
+            + JSON.stringify(text));
+    }
+    if (on.ops.some((o) => o[0] === 'fill')) {
+        throw new Error('the readout drew a background box');
+    }
 
     const off = stub(haloCtx());
     v._exportPxScale = 2;
     v._paintOverlays(off, 2);
-    if (off.ops.some((o) => o[0] === 'arc')) {
-        throw new Error('a hover mark reached an export');
+    if (off.ops.some((o) => o[0] === 'text')) {
+        throw new Error('the hover readout reached an export');
+    }
+    const exported = haloEdges(off, v).flat();
+    if (exported.includes(4)) {
+        throw new Error('a hovered position was marked in an export');
     }
 });
 

@@ -469,13 +469,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // changes width when you switch style is exactly what this exists to stop.
     const CONTACT_WIDTH_A = 1.175;
     const SELECTION_HALO_CSS = 'rgba(255, 255, 0, 0.45)';
-    // The HOVER mark, a brighter yellow than the selection band it sits over -
-    // the two are on screen at once and mean different things. Taken from the
-    // sequence viewer's overlay, which used to draw them.
-    const HOVER_FILL_CSS = 'rgba(255, 255, 0, 0.8)';
-    const HOVER_STROKE_CSS = 'rgba(255, 255, 0, 1.0)';
-    const HOVER_TIP_BG_CSS = 'rgba(0, 0, 0, 0.75)';
-    const HOVER_TIP_TEXT_CSS = 'rgba(255, 255, 255, 0.95)';
+    // The hover MARK has no colour of its own: it is the selection band, drawn
+    // over what the pointer is on. Only the readout needs one, and it follows
+    // the paper rather than sitting on a plate of its own.
+    const HOVER_TEXT_LIGHT_CSS = 'rgba(40, 40, 40, 0.9)';    // on white paper
+    const HOVER_TEXT_DARK_CSS = 'rgba(235, 235, 235, 0.9)';  // on the 3d preset's black
+    const HOVER_TEXT_MARGIN = 10;
     // Half-width in screen pixels at unit perspective, before the per-residue
     // radius is added. Wide enough to read as a band around the ribbon rather
     // than a line on it.
@@ -6801,7 +6800,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // the singular field is the older API for the same thing; a set
             // arriving here supersedes it, or the two disagree on screen
             this.highlightedAtom = null;
-            this.hoverInfo = (info && info.lines && info.lines.length) ? info : null;
+            this.hoverInfo = (info && info.text) ? info : null;
             if (!next && !this.hoverInfo && !had) return;      // nothing to undraw
             this._repaintOverlays();
         }
@@ -6845,78 +6844,69 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // beginSelectionPreview did on its own) catches the canvas WITH the
             // last frame's overlays already on it, and bakes them in.
             if (fromRender) this._snapshotCleanFrame(ctx);
-            this._paintSelectionHalo(ctx, pxScale);
-            // NOT IN AN EXPORT. The selection is something the user asked to
-            // see marked and belongs in a saved image; where the pointer
-            // happens to be does not.
-            if (!this._exportPxScale) this._paintHoverMarks(ctx, pxScale);
+            // ONE BAND, ONE COLOUR, for the selection and whatever is hovered.
+            // Two marks in two styles asked the reader to learn which yellow
+            // meant what; the same band for both says "this is the thing you
+            // mean" whichever way you pointed at it. Drawn as a UNION rather
+            // than one over the other: the colour is translucent, so anything
+            // stroked twice comes out darker, and hovering a residue that is
+            // already selected would stain it.
+            //
+            // NOT IN AN EXPORT, the hover half. The selection is something the
+            // user asked to have marked and belongs in a saved image; where the
+            // pointer happens to be does not - and an export renders from its
+            // own context, with nobody to move the pointer off first.
+            const sel = this._selectionPreview
+                || (this.selectionInk ? this.selectionInk() : this.residueSelection);
+            const hov = this._exportPxScale ? null : this.hoverSet();
+            let band = sel;
+            if (hov && hov.size) {
+                band = new Set(hov);
+                if (sel) for (const i of sel) band.add(i);
+            }
+            this._paintSelectionHalo(ctx, pxScale, band);
+            if (!this._exportPxScale) this._paintHoverReadout(ctx, pxScale);
+        }
+
+        /** The hovered positions, from either field, or null. */
+        hoverSet() {
+            if (this.highlightedAtoms && this.highlightedAtoms.size) {
+                return this.highlightedAtoms;
+            }
+            if (this.highlightedAtom !== null && this.highlightedAtom !== undefined) {
+                return new Set([this.highlightedAtom]);
+            }
+            return null;
         }
 
         /**
-         * The hover marks: a disc per highlighted position, and the tooltip for
-         * whatever the sequence strip says is under the pointer. State only -
-         * `highlightedAtoms` and `hoverInfo` - so the sequence viewer sets what
-         * is hovered and this decides how it looks.
+         * WHAT IS UNDER THE POINTER, named: "A GLY 39", bottom left, one line.
+         *
+         * No box behind it. A panel with a label per line was more furniture
+         * than the three words need, and it sat in the bottom RIGHT, which is
+         * where the structure usually is once it has been oriented on
+         * something. The colour follows the paper instead of a background
+         * plate: dark text on white, light on the 3d preset's black.
          */
-        _paintHoverMarks(ctx, pxScale = 1) {
-            const marks = this.highlightedAtoms || this.highlightedAtom !== null;
-            // SETTLE THE PROJECTION FIRST, exactly as the halo does. On a GPU
-            // frame the molecule is drawn from a mesh on the card and nothing
-            // is projected unless something asks - so a mark whose screen
-            // position was never written would silently not appear, and would
-            // appear on the 2D path. Same debt, same place it is paid.
-            if (marks) this._ensurePickProjection();
-            const coords = this.getHighlightCoordinates
-                ? this.getHighlightCoordinates() : [];
-            const info = this.hoverInfo;
-            if (!coords.length && !info) return;
+        _paintHoverReadout(ctx, pxScale = 1) {
+            const text = this.hoverInfo && this.hoverInfo.text;
+            if (!text) return;
+            const H = this.displayHeight || (this.canvas ? this.canvas.height : 0);
             ctx.save();
             ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.scale(pxScale, pxScale);
-            if (coords.length) {
-                ctx.fillStyle = HOVER_FILL_CSS;
-                ctx.strokeStyle = HOVER_STROKE_CSS;
-                ctx.lineWidth = 1;
-                for (const p of coords) {
-                    ctx.beginPath();
-                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.stroke();
-                }
-            }
-            // The same box the sequence viewer's overlay drew, to the pixel:
-            // 14px monospace, 10 from the bottom-right corner, 8 of padding
-            // inside, 18 a line, corners rounded by 4.
-            const lines = info ? info.lines : null;
-            if (lines && lines.length) {
-                const W = this.displayWidth || (this.canvas ? this.canvas.width : 0);
-                const H = this.displayHeight || (this.canvas ? this.canvas.height : 0);
-                const margin = 10; const inset = 8; const lineHeight = 18; const r = 4;
-                ctx.font = '14px monospace';
-                ctx.textAlign = 'right';
-                ctx.textBaseline = 'bottom';
-                let wide = 0;
-                for (const ln of lines) wide = Math.max(wide, ctx.measureText(ln).width);
-                const boxW = wide + inset * 2;
-                const boxH = lines.length * lineHeight + inset * 2;
-                const x = W - margin; const y = H - margin;
-                ctx.fillStyle = HOVER_TIP_BG_CSS;
-                ctx.beginPath();
-                if (ctx.roundRect) ctx.roundRect(x - boxW, y - boxH, boxW, boxH, r);
-                else ctx.rect(x - boxW, y - boxH, boxW, boxH);
-                ctx.fill();
-                ctx.fillStyle = HOVER_TIP_TEXT_CSS;
-                for (let i = 0; i < lines.length; i++) {
-                    ctx.fillText(lines[i], x - inset,
-                        y - inset - (lines.length - 1 - i) * lineHeight);
-                }
-            }
+            ctx.font = '14px monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            ctx.fillStyle = (this.backgroundColor === '#000000')
+                ? HOVER_TEXT_DARK_CSS : HOVER_TEXT_LIGHT_CSS;
+            ctx.fillText(text, HOVER_TEXT_MARGIN, H - HOVER_TEXT_MARGIN);
             ctx.restore();
         }
 
-        _paintSelectionHalo(ctx, pxScale = 1) {
+        _paintSelectionHalo(ctx, pxScale = 1, set = null) {
             // a live drag preview wins: it is what the user is pointing at
-            const sel = this._selectionPreview
+            const sel = set || this._selectionPreview
                 || (this.selectionInk ? this.selectionInk() : this.residueSelection);
             if (!sel || !sel.size) return;
             // Only now, and only because there IS a selection to place. On the
