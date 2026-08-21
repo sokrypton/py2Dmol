@@ -976,3 +976,49 @@ The only lever left is not holding all of it at once.
 **And there is now an instrument for attempting it**: `__fillHash` and
 `__edgeHash` pin both GPU buffers bit-for-bit, which face and edge counts do
 not, and which the pixels cannot.
+
+### Chunking the cartoon mesh build: it does not work, and here is why
+
+Built it, measured it, reverted it. The scaffolding was sound and bit-identical
+at every step - a runChunk boundary, a chunk-driven makeResident, grown output
+buffers - and the thing it exists to enable is wrong.
+
+**The interior weld is global, and not in a way chunks can respect.** It drops
+a quad that appears twice, which is how two butted solids lose the caps buried
+between them. Chunking makes each chunk weld only against itself. Measured on
+3IZG, a 60-copy assembly, 888,000 faces:
+
+| | interior faces dropped | edges emitted |
+| --- | --- | --- |
+| whole | 74,415 | 861,656 |
+| chunked by chain | 3,216 | 857,873 |
+| cut in stream order | 4,106 | 857,837 |
+
+Around 3,800 edges that should have welded away get drawn. Those are the extra
+lines across a helix and between bonds that the weld exists to remove. Raising
+the chunk size past the whole structure restores 74,415 and 861,656 exactly,
+so it is the chunking and not the grouping.
+
+**The assumption that failed** was that coincident quads never span chains. On
+single-copy structures they never do - 0 on 4HHB, 1AOI and 9FOG, which is what
+the design was built on. A biounit expansion is a different animal: the copies
+weld against each other, and no partition by chain can see both halves.
+
+**Chunks must also be whole chains, and chains are not contiguous in the prim
+stream.** Cutting where the chain key changes still splits a chain whose prims
+arrive in two runs. Gathering by chain fixes that and reorders the emission,
+which is a permutation of the fill buffer - harmless in itself, since it can
+only change which of two exactly coincident faces wins the depth test, and
+those are the faces the weld drops - but it does not save the weld either.
+
+**The exact version costs more than it saves.** A first pass computing only the
+global face-key counts would make the weld right, but it has to rebuild every
+face, so the prims must survive both passes - and the prims are 552 MB of the
+2,049 MB peak. That leaves about 23%, against roughly 55% for the version that
+breaks the weld, and 23% does not get a capsid in.
+
+So the remaining lever really is the other one: make fewer faces.
+
+Kept from the attempt: __fillHash and __edgeHash, which pin both instance
+buffers bit-for-bit. They caught the emission reordering and the broken weld,
+and neither was visible in face counts or in pixels.
