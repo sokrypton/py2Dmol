@@ -1675,28 +1675,32 @@ function handleObjectChange() {
 // BEST VIEW ROTATION ANIMATION
 // ============================================================================
 
-// PyMOL's clip, as a panel: Near and Far, in Angstrom along the view's own
-// depth. The renderer cuts the drawing between them - see setClipSlab.
+// PyMOL's clip, as ONE control: two handles on a single track, Far on the left
+// and Near on the right. They cannot cross - the renderer keeps them half an
+// Angstrom apart - so the range always names a slab that exists.
 //
-// The travel is the structure's depth range plus half of it at either end, so
-// a plane can be pushed right through (drawing nothing, a legible mistake) or
+// The travel is the structure's reach plus half of it at either end, so a
+// handle can be pushed right through (drawing nothing, a legible mistake) or
 // pulled clear of it (cutting nothing).
 function fillClipPanel(slab) {
     const r = viewerApi?.renderer;
     if (!r || !slab) return;
     const span = slab.near - slab.far;
     const slack = Math.max(1, span * 0.5);
+    const lo = slab.far - slack;
+    const hi = slab.near + slack;
     for (const [id, v] of [['clipNear', slab.near], ['clipFar', slab.far]]) {
         const el = document.getElementById(id);
         if (!el) continue;
-        el.min = (slab.far - slack).toFixed(2);
-        el.max = (slab.near + slack).toFixed(2);
+        el.min = lo.toFixed(2);
+        el.max = hi.toFixed(2);
         el.step = Math.max(0.05, span / 400).toFixed(3);
         el.value = v.toFixed(2);
     }
     showClipValues();
 }
 
+// The blue bar between the handles, and the two readouts.
 function showClipValues() {
     const r = viewerApi?.renderer;
     if (!r) return;
@@ -1704,6 +1708,13 @@ function showClipValues() {
     const f = document.getElementById('clipFarValue');
     if (n) n.textContent = r.clipNear === null ? '' : r.clipNear.toFixed(1) + ' A';
     if (f) f.textContent = r.clipFar === null ? '' : r.clipFar.toFixed(1) + ' A';
+    const bar = document.getElementById('clipSpan');
+    const near = document.getElementById('clipNear');
+    if (!bar || !near || r.clipNear === null) return;
+    const lo = parseFloat(near.min); const hi = parseFloat(near.max);
+    const at = (v) => (100 * (v - lo) / Math.max(1e-6, hi - lo));
+    bar.style.left = at(r.clipFar).toFixed(2) + '%';
+    bar.style.width = Math.max(0, at(r.clipNear) - at(r.clipFar)).toFixed(2) + '%';
 }
 
 function setupClipPanel() {
@@ -1716,9 +1727,9 @@ function setupClipPanel() {
         const far = document.getElementById('clipFar');
         if (!r || !near || !far) return;
         r.setClipSlab(parseFloat(near.value), parseFloat(far.value));
-        // the renderer keeps the two planes apart rather than letting them
-        // cross, so read back what it took instead of leaving a slider
-        // claiming a plane the slab does not have
+        // the renderer keeps the two apart rather than letting them cross, so
+        // read back what it took - otherwise a handle dragged past the other
+        // sits where the slab is not
         near.value = r.clipNear.toFixed(2);
         far.value = r.clipFar.toFixed(2);
         showClipValues();
@@ -1740,20 +1751,18 @@ function setupClipPanel() {
             fillClipPanel(slab);
         });
     }
-    // THE BUTTON PUTS THE TOOLS AWAY, IT DOES NOT UNDO THE CUT. Switching Clip
-    // off hides the panel and the frame and leaves the slab where it was set -
-    // which is the point of setting it. Reset is what uncuts.
+    // THE BUTTON PUTS THE PANEL AWAY, IT DOES NOT UNDO THE CUT. Switching Clip
+    // off leaves the slab where it was set - which is the point of setting it.
     cb.addEventListener('change', () => {
         const r = viewerApi?.renderer;
         if (!r || !r.setClipSlab) { cb.checked = false; return; }
         if (!cb.checked) {
             r.clipEditing = false;
             if (panel) panel.hidden = true;
-            r.render('clip controls away');
             return;
         }
         // A slab needs something to cut: with nothing loaded the renderer has
-        // no depth range to offer, and the control must not claim otherwise.
+        // no reach to offer, and the control must not claim otherwise.
         const slab = r.clipSlabOn()
             ? { near: r.clipNear, far: r.clipFar }     // reopening: as it was left
             : r.clipSlabDefault();
@@ -3214,7 +3223,7 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
 
         if (centeringCoords.length > 0) {
             // Compute center of centering chain (or all positions)
-            const center = [0, 0, 0];
+            let center = [0, 0, 0];
             for (const coord of centeringCoords) {
                 center[0] += coord[0];
                 center[1] += coord[1];

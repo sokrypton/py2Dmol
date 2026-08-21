@@ -42,8 +42,7 @@ eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
-    'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN', 'CLIP_NEAR_CSS',
-    'CLIP_FAR_CSS']) {
+    'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
     if (!line) throw new Error('constant not found in viewer-mol.js: ' + name);
     eval('global.' + line.trim().replace('const ', ''));
@@ -51,7 +50,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','_paintClipSlab','_viewToScreen','_clipFrameRadius','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','setClipSlab','clipSlabOn','clipAccepts','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','getHighlightCoordinates','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1129,40 +1128,25 @@ t('the slab is a depth test, and off is off', () => {
     if (!v.clipAccepts(1e6)) throw new Error('switching the slab off left it clipping');
 });
 
-t('the frame is drawn only while the controls are up', () => {
-    const v = clipViewer([[0, 0, -10], [8, 6, 10]]);
-    v.displayWidth = 100; v.displayHeight = 80;
-    v._viewScale = 2;
-    v.viewerState = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], ortho: 1 };
-    const ctx = haloCtx();
-    ctx.setLineDash = () => {};
-    ctx.closePath = () => { ctx.ops.push(['close']); };
-    v._paintClipSlab(ctx, 1);
-    if (ctx.ops.length) throw new Error('the frame was drawn with no slab set');
-
-    // A SET SLAB IS NOT A REASON TO DRAW THE FRAME. Switching Clip off puts the
-    // controls away and leaves the cut, so the frame has to go with the panel
-    // and not with the slab - otherwise a clipped view carries a blue box
-    // around forever.
-    v.setClipSlab(10, -10);
-    v._paintClipSlab(ctx, 1);
-    if (ctx.ops.length) throw new Error('the frame was drawn with the controls away');
-
-    v.clipEditing = true;
-    v._paintClipSlab(ctx, 1);
-    const strokes = ctx.ops.filter((o) => o[0] === 'stroke');
-    if (strokes.length !== 3) {
-        throw new Error('drew ' + strokes.length + ' strokes, expected 3 - the near'
-            + ' rectangle, the far one, and the edges joining them');
+t('the clip is one range control, and nothing is drawn over the picture', () => {
+    // The box round the planes is gone: it was one more thing to read in the
+    // viewport, and the two handles already say where the slab is.
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    if (/_paintClipSlab|CLIP_NEAR_CSS/.test(mol)) {
+        throw new Error('the clip still paints a box over the drawing');
     }
-    // the near rectangle must sit at the near plane's own depth: under ortho
-    // that is x = W/2 +/- R*scale, and R is the structure's bounding radius
-    const R = v._clipFrameRadius();
-    const want = 50 + R * 2;
-    if (!ctx.ops.some((o) => (o[0] === 'move' || o[0] === 'line')
-        && Math.abs(o[1] - want) < 0.01)) {
-        throw new Error('the frame is not at the radius the structure occupies -'
-            + ' expected a corner at x ' + want.toFixed(2));
+    const html = fs.readFileSync('index.html', 'utf8');
+    // ONE track, TWO handles, which the CSS has to put on top of each other -
+    // two separate sliders is what was confusing.
+    const panel = html.slice(html.indexOf('id="clipPanel"'),
+        html.indexOf('id="styleAppearanceContainer"'));
+    for (const id of ['clipFar', 'clipNear', 'clipResetButton']) {
+        if (!panel.includes('id="' + id + '"')) {
+            throw new Error('the clip panel has no ' + id);
+        }
+    }
+    if (!/#clipRange input\[type=range\][^}]*position: absolute/.test(html)) {
+        throw new Error('the two handles are not on one track');
     }
 });
 
