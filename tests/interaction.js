@@ -1395,6 +1395,33 @@ t('a hidden or clipped selection is still marked', () => {
     }
 });
 
+// DRAW IS A 2D EFFECT AND HAS TO GET A 2D FRAME.
+//
+// The build-up is three layers in an illustrator's order, revealed along the
+// chain by a pen whose pace follows the local curvature, and every bit of it is
+// canvas compositing in viewer-cartoon.js. The GPU knows nothing about it: with
+// the GPU on it drew the finished picture while the animation ran invisibly -
+// measured 33% of the way through, the canvas held 99.5% of the finished ink
+// against 31% on the 2D path. The GPU is the default on this page, so that was
+// most people's Draw.
+t('Draw takes the 2D path, whatever the GPU setting says', () => {
+    const src2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src2.indexOf('const gpuOk = this.cartoonGPU === true');
+    if (at < 0) throw new Error('the cartoon GPU gate moved');
+    const gate = src2.slice(at, at + 260);
+    if (!/!this\.drawMode/.test(gate)) {
+        throw new Error('the cartoon GPU gate ignores Draw, so the build-up runs '
+            + 'invisibly under a finished picture');
+    }
+    // ...and the decision the rest of the frame makes about which path will
+    // draw has to agree, or inertia and the segment floor are answered for the
+    // wrong renderer
+    const willDraw = src2.slice(src2.indexOf('_gpuWillDraw() {'), src2.indexOf('_gpuWillDraw() {') + 300);
+    if (!/this\.drawMode/.test(willDraw)) {
+        throw new Error('_gpuWillDraw does not know about Draw');
+    }
+});
+
 // A HOVER MARK IS NOT PART OF THE PICTURE. The selection is something the user
 // asked to have marked and belongs in a saved image; where the pointer happens
 // to be does not - and an export renders from a different context entirely, so

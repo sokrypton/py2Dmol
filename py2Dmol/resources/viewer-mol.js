@@ -8185,6 +8185,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         _gpuWillTake(ctx) {
             if (this.cartoonGPU !== true) return false;
+            // DRAW IS A 2D EFFECT, so the frame has to be a 2D one.
+            //
+            // The build-up is three layers in an illustrator's order - graphite
+            // under-drawing, colour wash, ink line - revealed along the chain by
+            // a pen whose pace follows the local curvature, and all of it is
+            // canvas compositing in viewer-cartoon.js. The GPU knows nothing
+            // about it, so with the GPU on it simply drew the finished picture
+            // and the animation ran invisibly: measured 33% of the way through a
+            // build-up, the canvas held 99.5% of the finished ink.
+            //
+            // The reveal itself would port (a pen position against each
+            // instance's residue is one uniform and one comparison); the
+            // watercolour is the work - off-register washes, bleed, grain. Until
+            // someone does that, Draw takes the 2D path and hands it back when
+            // it is switched off.
+            if (this.drawMode) return false;
             const G = window.py2dmolCartoonGPU;
             if (!G) return false;
             if (this.style === 'cartoon') {
@@ -8416,6 +8432,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
         _gpuWillDraw() {
             if (this.cartoonGPU !== true) return false;
+            if (this.drawMode) return false;      // see _gpuWillTake
             const G = window.py2dmolCartoonGPU;
             if (!G || typeof G.available !== 'function' || !G.available()) return false;
             return this.style === 'cartoon'
@@ -8637,6 +8654,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // that will not link on some driver - and the 2D renderer below
                 // then draws the frame as if the option had never been set.
                 const gpuOk = this.cartoonGPU === true
+                    && !this.drawMode                      // see _gpuWillTake
                     && window.py2dmolCartoonGPU
                     && window.py2dmolCartoonGPU.render(this, ctx,
                         displayWidth, displayHeight, colors);
