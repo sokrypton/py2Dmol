@@ -4271,6 +4271,11 @@ function renderApp(renderer, ctx, displayWidth, displayHeight, colors) {
         // where it was always done: inside the capture.
         setPixelRatio(displayWidth > 0 ? w / displayWidth : 1);
         setClearAlpha(renderer.isTransparent ? 0 : 1);
+        // THE BACKBONE SWITCH IS A UNIFORM HERE. Every face carries its class,
+        // so hiding the ribbon is a clip at the vertex stage against a mesh
+        // that does not move - see setVisible.
+        setVisible({ ribbon: !renderer.backboneShown || renderer.backboneShown(),
+            sticks: true });
         setFocalLength(renderer.viewerState && renderer.viewerState.focalLength);
         // the clip slab, in the same view space the geometry is drawn in
         setClipSlab(renderer.clipSlabOn && renderer.clipSlabOn() ? renderer.clipNear : 0,
@@ -4528,6 +4533,7 @@ function tubeKeyOf(renderer, S) {
         idOf(S.colors), idOf(renderer.visiblePositions),
         renderer.lineWidth,
         renderer.sidechainMap ? renderer.sidechainMap.size : 0,
+        renderer.backboneShown && renderer.backboneShown() ? 'bb' : 'nobb',
         contactKeyOf(o),
     ].join('|');
 }

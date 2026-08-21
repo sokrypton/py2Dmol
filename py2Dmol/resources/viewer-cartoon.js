@@ -3105,7 +3105,7 @@
     // interiors clean. Passing `squareLoop || !rich` here is what makes the two
     // renderers agree about that.
     const emitSlabInk = (Lp, Lm, Rp, Rm, oN, oB, oK, col, selFlag, gs0In,
-        outerOnly) => {
+        outerOnly, isBackbone) => {
                         const nsF = Lp.length;
                         const curves = [Lp, Lm, Rp, Rm];
                         const visC = [[], [], [], []];
@@ -3282,6 +3282,15 @@
                                     sel: selFlag,
                                     gs0: gs0In,
                                     gsStep: 1 / Math.max(1, nsF - 1),
+                                    // WHOSE OUTLINE THIS IS. The ink curves are
+                                    // collected here, nowhere near the prim list
+                                    // the backbone switch filters, so without
+                                    // this hiding the backbone left its outline
+                                    // drawn over empty paper - the same shape of
+                                    // bug the clip had. A nucleic RUNG comes
+                                    // through the same emitter and is not
+                                    // backbone: it is that residue's side chain.
+                                    bb: isBackbone ? 1 : 0,
                                     c: col,
                                 });
                             }
@@ -6130,7 +6139,7 @@
                 if (inkWanted) {
                     emitSlabInk(Lp, Lm, Rp, Rm, oN, oB, oK, col,
                         !!(selInk && (selInk.has(i) || selInk.has(iN))), i,
-                        squareLoop || !rich);
+                        squareLoop || !rich, true);
                 }
                 } else {
                     // Loop, or the junction between two different elements:
@@ -9232,7 +9241,7 @@
                         // the crease, which is what loops and strands already do
                         // (see the same flag at the ribbon's own call).
                         emitSlabInk(Lp, Lm, Rp, Rm, oN, oB, oK, col,
-                            !!(selInk && selInk.has(res)), res, true);
+                            !!(selInk && selInk.has(res)), res, true, false);
                     }
                 };
                 const fi = naFrames[i], fj = naFrames[j];
@@ -9382,6 +9391,19 @@
         // of one station (a residue over `detail`). The GPU path cuts per
         // fragment and is exact; this is the fallback, and it is the same slab
         // - renderer.clipAccepts is the single test both ask.
+        // THE BACKBONE SWITCH, at the same place the clip cuts: a prim knows
+        // its own class, and only the ribbon and the loop tube are backbone.
+        // Sticks, joints, base plates and contact lines are what a side chain
+        // is made of, and they stay - together with the CA the sticks are drawn
+        // from, which is a point on a face rather than a prim of its own.
+        if (renderer.backboneShown && !renderer.backboneShown()) {
+            let k = 0;
+            for (let i = 0; i < prims.length; i++) {
+                const kd = prims[i].kind;
+                if (kd !== 'rib' && kd !== 'ribStroke' && kd !== 'tube') prims[k++] = prims[i];
+            }
+            prims.length = k;
+        }
         if (renderer.clipSlabOn && renderer.clipSlabOn()) {
             let k = 0;
             for (let i = 0; i < prims.length; i++) {
@@ -11319,10 +11341,12 @@
             // outlines pale with their fills instead of floating full-black
             // over ghost geometry. 12 levels keeps stroke batching coarse.
             const clipInk = !!(renderer.clipSlabOn && renderer.clipSlabOn());
+            const noBackboneInk = !!(renderer.backboneShown && !renderer.backboneShown());
             const inkGroups = new Map();
             const selKey = '\u0000sel';   // cannot collide with a colour string
             const sketchKey = '\u0000sketch';
             for (const cv of inkCurves) {
+                if (noBackboneInk && cv.bb) continue;
                 // Selected curves batch under one key and skip the depth fade -
                 // an indicator that pales into the background is not doing its
                 // job. Unselected curves are dropped entirely when the style

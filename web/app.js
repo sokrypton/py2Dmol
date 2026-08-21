@@ -113,6 +113,20 @@ function initializeApp() {
         apply();
     })();
 
+    // THE BACKBONE SWITCH. A draw-time flag, so it costs a redraw and no
+    // rebuild on the GPU (the mesh carries every face and its class).
+    (() => {
+        const cb = document.getElementById('backboneCheckbox');
+        if (!cb) return;
+        const apply = () => {
+            const r = viewerApi && viewerApi.renderer;
+            if (!r) return;
+            r.showBackbone = cb.checked;
+            r.render('backboneCheckbox');
+        };
+        cb.addEventListener('change', apply);
+    })();
+
     // Setup MSA viewer callbacks (after viewerApi is initialized)
     if (window.MSA) {
         window.MSA.setCallbacks({
@@ -2030,13 +2044,34 @@ function applyBestViewRotation(animate = true) {
         selectedPositionIndices = new Set(visible);
     }
 
+    // EVERY ATOM OF WHAT WAS PICKED, not one point per residue. A residue is a
+    // single position in this model, so orienting on one framed a point; its
+    // side-chain atoms and a ligand's other atoms are positions too, and they
+    // are what the thing actually occupies. See framingPositions - the
+    // selection itself is not touched.
+    if (selectedPositionIndices && renderer.framingPositions) {
+        selectedPositionIndices = renderer.framingPositions(selectedPositionIndices);
+    }
+
+    // THE LIVE COORDINATES, not the stored frame's. A shown side chain is
+    // APPENDED to the renderer's array when the frame loads, so its atoms exist
+    // at indices past the end of frame.coords - and the guard below then
+    // dropped every one of them, which is the expansion above doing nothing at
+    // all. The two agree on every base position; only the tail differs.
+    const liveCoords = (renderer.coords && renderer.coords.length >= frame.coords.length)
+        ? renderer.coords : frame.coords;
+    const xyzAt = (i) => {
+        const c = liveCoords[i];
+        if (!c) return null;
+        return Array.isArray(c) ? c : [c.x, c.y, c.z];
+    };
+
     // Filter coordinates to only selected positions (or use all if no selection)
     let coordsForBestView = [];
     if (selectedPositionIndices && selectedPositionIndices.size > 0) {
         for (const positionIndex of selectedPositionIndices) {
-            if (positionIndex >= 0 && positionIndex < frame.coords.length) {
-                coordsForBestView.push(frame.coords[positionIndex]);
-            }
+            const c = positionIndex >= 0 ? xyzAt(positionIndex) : null;
+            if (c) coordsForBestView.push(c);
         }
     } else {
         // No selection or all positions selected: use all coordinates
@@ -6842,6 +6877,7 @@ function saveViewerState() {
             ss_palette: renderer.ssPalette || 'pymol',
             line_width: renderer.lineWidth || 3.0,
             shadow_enabled: renderer.shadowEnabled !== false,
+            show_backbone: renderer.showBackbone !== false,
             shade: renderer.cartoonShade !== undefined ? renderer.cartoonShade : 1,
             outline_mode: renderer.outlineMode || 'full',
             colorblind_mode: renderer.colorblindMode || false,
@@ -7424,6 +7460,11 @@ async function loadViewerState(stateData) {
             // Restore shadow
             if (typeof vs.shadow_enabled === 'boolean') {
                 renderer.shadowEnabled = vs.shadow_enabled;
+            }
+            if (typeof vs.show_backbone === 'boolean') {
+                renderer.showBackbone = vs.show_backbone;
+                const bb = document.getElementById('backboneCheckbox');
+                if (bb) bb.checked = vs.show_backbone;
             }
 
 

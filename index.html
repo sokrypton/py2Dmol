@@ -566,6 +566,15 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </label>
                                 </div>
                                 <div class="toggle-item" style="display: flex; align-items: center; gap: 8px;">
+                                    <!-- BACKBONE is not the same question as hiding a
+                                         residue: hiding takes the side chain with it,
+                                         this leaves the side chains (and the CA they
+                                         are drawn from) and takes the fold away. -->
+                                    <label class="btn-toggle btn-no-margin btn-small" style="flex: 1;"
+                                        title="Draw the backbone. Off leaves the side chains, bases and contacts on their own.">
+                                        <input type="checkbox" id="backboneCheckbox" checked>
+                                        <span>Backbone</span>
+                                    </label>
                                     <label class="btn-toggle btn-no-margin btn-small" title="Colorblind-safe colors" style="flex: 1;">
                                         <input type="checkbox" id="colorblindCheckbox">
                                         <span>Colorblind</span>

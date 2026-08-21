@@ -1215,6 +1215,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // shows it as a percentage, and a tenth is the default: enough to
             // read as a soft edge, little enough to keep the cut a cut.
             this.clipFade = CLIP_FADE_DEFAULT;
+            // BACKBONE ON ITS OWN SWITCH. Hiding a residue takes its side chain
+            // with it; this takes the ribbon (or the tube) and LEAVES the side
+            // chains, which is how you look at a binding site without the fold
+            // in front of it. The CA stays: a side chain is drawn from it, so
+            // the bond that anchors it is a side-chain bond by this test.
+            this.showBackbone = true;
             // Whether the CONTROLS are up. Separate from the slab itself,
             // which stays where it was set: switching Clip off puts the panel
             // away, it does not undo the cut. Reset is what uncuts.
@@ -6927,6 +6933,67 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @returns {Set<number>|null} owning position indices, or null if the
          *          structure carries no side-chain data at all
          */
+        /**
+         * Is this segment part of a side chain rather than the backbone?
+         *
+         * One endpoint in the side-chain map is enough, which is what keeps the
+         * CA-CB bond: CA is a base position and CB an appended one, so the bond
+         * that anchors a side chain counts as side chain and the atom it hangs
+         * from stays on screen. A contact is not backbone either - it is an
+         * annotation between two residues and has nothing to do with the fold.
+         */
+        _isSidechainSegment(segInfo) {
+            if (!segInfo) return false;
+            if (segInfo.type === 'C') return true;
+            const sc = this.sidechainMap;
+            if (!sc || !sc.size) return false;
+            return sc.has(segInfo.idx1) || sc.has(segInfo.idx2);
+        }
+
+        /**
+         * The positions to FRAME a set on: every atom of the things it names.
+         *
+         * A residue is ONE position here - the trace point - so orienting on a
+         * single residue framed a single point and fell back to the 8 Angstrom
+         * floor, pointing the camera at a CA with the side chain the user was
+         * looking at hanging off to one side. Its atoms exist as positions
+         * whenever the side chain is drawn (they are appended: see
+         * _materialiseSidechains), and they are what the residue actually
+         * occupies, so the framing takes them.
+         *
+         * A ligand is the same argument one level up: its atoms are separate
+         * positions and picking one means the ligand, so the rest of the group
+         * comes too.
+         *
+         * Framing only. The SELECTION is untouched - what is selected is what
+         * the user picked, and the panel, Copy and Delete all read that.
+         */
+        framingPositions(set) {
+            if (!set || !set.size) return set;
+            const out = new Set(set);
+            const sc = this.sidechainMap;
+            if (sc && sc.size) {
+                for (const [idx, e] of sc) {
+                    if (e && out.has(e.owner)) out.add(idx);
+                }
+            }
+            const obj = this.objectsData && this.objectsData[this.currentObjectName];
+            const groups = obj && obj.ligandGroups;
+            if (groups && groups.size && typeof expandLigandSelection === 'function') {
+                for (const i of expandLigandSelection(out, groups)) out.add(i);
+            }
+            // ...and nothing that is not on screen: a hidden atom is not part
+            // of what the view is being framed on
+            const vis = this.visiblePositions;
+            if (vis) for (const i of out) if (!vis.has(i)) out.delete(i);
+            return out.size ? out : set;
+        }
+
+        /** Does the drawing include the backbone? Off leaves the side chains. */
+        backboneShown() {
+            return this.showBackbone !== false;
+        }
+
         sidechainOwners() {
             const sc = this.sidechains;
             if (!sc || !sc.pos || !sc.pos.length) return null;
@@ -8383,10 +8450,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // one) and rebuilds segmentIndices into a new array. Neither is
             // edited in place, so an unchanged pointer is an unchanged answer.
             const vis = this.visiblePositions;
+            // ...and the backbone switch, which changes WHICH segments are in
+            // the list. Left out of the key the cached order outlived the
+            // toggle and the backbone stayed on screen until something else
+            // invalidated it.
+            const noBB = !this.backboneShown();
             let order = this._gpuTubeOrder;
             let cnt;
             if (order && this._gpuTubeVisSrc === vis && this._gpuTubeSegSrc === segments
-                    && this._gpuTubeSegN === n) {
+                    && this._gpuTubeSegN === n && this._gpuTubeNoBB === noBB) {
                 cnt = this._gpuTubeCount;
             } else {
                 if (!order || order.length < n) order = this._gpuTubeOrder = new Int32Array(n);
@@ -8394,7 +8466,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (let i = 0; i < n; i++) {
                     const s = segments[i];
                     let ok;
-                    if (!vis) {
+                    if (noBB && !this._isSidechainSegment(s)) {
+                        ok = false;
+                    } else if (!vis) {
                         ok = true;
                     } else if (s.type === 'C' && s.contactIdx1 !== undefined
                             && s.contactIdx2 !== undefined) {
@@ -8407,6 +8481,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (ok) order[cnt++] = i;
                 }
                 this._gpuTubeVisSrc = vis;
+                this._gpuTubeNoBB = noBB;
                 this._gpuTubeSegSrc = segments;
                 this._gpuTubeSegN = n;
                 this._gpuTubeCount = cnt;
@@ -8787,9 +8862,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // A segment is visible if both positions are visible (or no mask = all visible)
             // For contact segments, check visibility based on original contact endpoints, not intermediate positions
             const visibleSegmentIndices = [];
+            const noBackbone = !this.backboneShown();
             for (let i = 0; i < n; i++) {
                 const segInfo = segments[i];
                 let isVisible = false;
+                // the backbone switch, before the visibility mask: a hidden
+                // backbone is not a hidden RESIDUE, so its side chain stays
+                if (noBackbone && !this._isSidechainSegment(segInfo)) continue;
 
                 if (!visiblePositions) {
                     // No mask = all segments visible (including overlay mode with no selection)

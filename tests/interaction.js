@@ -50,7 +50,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_PX', 'SIDECHAIN_WIDTH'
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','_isSidechainSegment','backboneShown','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -1317,6 +1317,106 @@ t('a clip cuts the ink with the fills, and double-click still takes the chain', 
     // ...while the single click still refuses what the slab cut
     if (!/_pickable\(i\)|return !c \|\| this\.clipAccepts\(c\.z\)/.test(mol)) {
         throw new Error('_pickable is gone, so a click can land on a cut residue');
+    }
+});
+
+t('the backbone has its own switch, and the side chains keep their CA', () => {
+    // Hiding a RESIDUE takes its side chain with it. This is the other cut:
+    // the fold goes and the side chains stay, which is how you look at a
+    // binding site without the backbone in front of it.
+    const v = clipViewer([[0, 0, 0], [3, 0, 0], [6, 0, 0]]);
+    if (!v.backboneShown()) throw new Error('the backbone starts hidden');
+    v.showBackbone = false;
+    if (v.backboneShown()) throw new Error('the switch does not turn it off');
+
+    // WHAT COUNTS AS SIDE CHAIN. One endpoint in the map is enough - that is
+    // what keeps the CA-CB bond, whose CA is a base position - and a contact
+    // is an annotation, not backbone.
+    v.sidechainMap = new Map([[7, { owner: 1 }], [8, { owner: 1 }]]);
+    if (!v._isSidechainSegment({ idx1: 1, idx2: 7 })) {
+        throw new Error('the CA-CB bond reads as backbone, so a hidden backbone '
+            + 'cuts the side chain off the residue it belongs to');
+    }
+    if (!v._isSidechainSegment({ idx1: 7, idx2: 8 })) throw new Error('an atom-atom bond is not side chain');
+    if (v._isSidechainSegment({ idx1: 0, idx2: 1 })) throw new Error('a backbone segment counts as side chain');
+    if (!v._isSidechainSegment({ type: 'C', idx1: 0, idx2: 2 })) {
+        throw new Error('a contact is being treated as backbone');
+    }
+
+    // every draw path asks it, and the two caches that could outlive it name it
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const cart = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    if (!/noBackbone && !this\._isSidechainSegment\(segInfo\)/.test(mol)) {
+        throw new Error('the 2D tube path draws the backbone regardless');
+    }
+    if (!/noBB && !this\._isSidechainSegment\(s\)/.test(mol)
+        || !/this\._gpuTubeNoBB === noBB/.test(mol)) {
+        throw new Error('the GPU tube path ignores the switch, or caches past it');
+    }
+    if (!/renderer\.backboneShown && !renderer\.backboneShown\(\)/.test(cart)) {
+        throw new Error('the 2D cartoon draws the backbone regardless');
+    }
+    // ...INCLUDING THE INK, which is collected somewhere else entirely - the
+    // same trap the clip fell into: the prims went and the outline stayed,
+    // measured as 33,837 drawn pixels against the GPU's 7,241.
+    if (!/bb: isBackbone \? 1 : 0/.test(cart) || !/noBackboneInk && cv\.bb/.test(cart)) {
+        throw new Error('the 2D outline is not tagged by class, so hiding the '
+            + 'backbone leaves its outline drawn over empty paper');
+    }
+    if (!/setVisible\(\{ ribbon: !renderer\.backboneShown/.test(gpu)) {
+        throw new Error('the GPU cartoon never hears about the switch');
+    }
+    if (!/backboneShown\(\) \? 'bb' : 'nobb'/.test(gpu)) {
+        throw new Error('the tube mesh signature does not name the switch');
+    }
+    // and there is a control, which the session remembers
+    const html = fs.readFileSync('index.html', 'utf8');
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (html.indexOf('id="backboneCheckbox"') < 0) throw new Error('no Backbone control');
+    if (!/r\.showBackbone = cb\.checked/.test(app)) throw new Error('the control is not wired');
+    if (!/show_backbone: renderer\.showBackbone !== false/.test(app)
+        || !/vs\.show_backbone/.test(app)) {
+        throw new Error('the switch is not saved with the session');
+    }
+});
+
+t('framing a residue uses its atoms, not its trace point', () => {
+    // A residue is ONE position here, so orienting on one framed a single
+    // point: the camera pointed at a CA with the side chain hanging off it.
+    // Its atoms are positions whenever the side chain is drawn.
+    const v = clipViewer([[0, 0, 0], [3, 0, 0], [6, 0, 0], [3, 1.5, 0], [3, 3, 0]]);
+    v.objectsData = { obj: {} };
+    v.currentObjectName = 'obj';
+    v.sidechainMap = new Map([[3, { owner: 1 }], [4, { owner: 1 }]]);
+    const framed = v.framingPositions(new Set([1]));
+    if (framed.size !== 3 || !framed.has(3) || !framed.has(4)) {
+        throw new Error('the side-chain atoms are not framed with their residue: '
+            + [...framed].join(','));
+    }
+    // ...and the selection itself is untouched - Copy, Delete and the panel
+    // all read that, and they mean the residue
+    const sel = new Set([1]);
+    v.framingPositions(sel);
+    if (sel.size !== 1) throw new Error('framing edited the selection');
+    // nothing hidden is framed
+    v.visiblePositions = new Set([1, 3]);
+    const vis = v.framingPositions(new Set([1]));
+    if (vis.has(4)) throw new Error('a hidden atom was framed');
+    // an unrelated residue picks up nothing
+    v.visiblePositions = null;
+    if (v.framingPositions(new Set([2])).size !== 1) {
+        throw new Error('framing added atoms that belong to another residue');
+    }
+    // the orient path asks for it, and reads the LIVE coordinates - the
+    // appended atoms sit past the end of the stored frame's array
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/renderer\.framingPositions\(selectedPositionIndices\)/.test(app)) {
+        throw new Error('Orient still frames on one point per residue');
+    }
+    if (!/const liveCoords = \(renderer\.coords/.test(app)) {
+        throw new Error('Orient reads the stored frame, which has no side-chain '
+            + 'atoms in it, so the expansion does nothing');
     }
 });
 
