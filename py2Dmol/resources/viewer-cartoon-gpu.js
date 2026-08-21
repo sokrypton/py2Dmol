@@ -2872,6 +2872,20 @@ function makeResident(faces, scale, prm, lines) {
         }
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, buf3);
+    if (window.__gpuDiag) {
+        // THE MESH ITSELF, hashed. Face and edge COUNTS can match while the
+        // contents differ, and the pixels cannot be read back reliably from a
+        // WebGL canvas, so this is the only check that actually pins the
+        // geometry that reaches the card.
+        let h = 2166136261 >>> 0;
+        for (let i = 0; i < data.length; i++) {
+            const q = Math.round(data[i] * 1000);
+            h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
+            h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
+            h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
+        }
+        window.__fillHash = { hash: h >>> 0, floats: data.length };
+    }
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
 
     mark('facesAndEmit');
@@ -3191,6 +3205,17 @@ function makeResident(faces, scale, prm, lines) {
         // `continue` above leaves the tail of `ed` unwritten, so the instance count
         // is what was actually filled, not the map size
         edgeCount = eo / ED_FLOATS;
+        if (window.__gpuDiag) {
+            // the outline instances, hashed for the same reason as the fills
+            let h = 2166136261 >>> 0;
+            for (let i = 0; i < eo; i++) {
+                const q = Math.round(ed[i] * 1000);
+                h ^= q & 255; h = Math.imul(h, 16777619) >>> 0;
+                h ^= (q >>> 8) & 255; h = Math.imul(h, 16777619) >>> 0;
+                h ^= (q >>> 16) & 255; h = Math.imul(h, 16777619) >>> 0;
+            }
+            window.__edgeHash = { hash: h >>> 0, floats: eo, instances: edgeCount };
+        }
         gl.bindBuffer(gl.ARRAY_BUFFER, bufInk);
         gl.bufferData(gl.ARRAY_BUFFER, ed.subarray(0, eo), gl.STATIC_DRAW);
         window.__edgeStats = { edges: edgeCount, boundary: nBoundary, crease: nCrease,
