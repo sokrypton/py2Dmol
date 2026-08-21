@@ -225,18 +225,16 @@ test('every display key the panel writes is one the copy knows about', () => {
 // entropy is over the sequences that pass the coverage and identity cutoffs; a
 // copy that counted ALL of them read 0.2881 at residue 105 of AF-P0A8I3 where
 // the parent read 0.2569.
-test('the copied MSA counts the sequences the parent counted', () => {
+test('a copied region keeps the parent\'s own conservation numbers', () => {
     const msa = fs.readFileSync(path.join(ROOT, 'py2Dmol/resources/viewer-msa.js'), 'utf8');
     const at = msa.indexOf('function extractMSASubset');
     if (at < 0) throw new Error('extractMSASubset is gone');
     const body = msa.slice(at, msa.indexOf('\n    function ', at + 10));
-    if (!/filterByCoverage\(allSequences, minCoverageThreshold\)/.test(body)
-        || !/filterByIdentity\(/.test(body)) {
-        throw new Error('the subset no longer applies the parent\'s cutoffs - its '
-            + 'entropy will not match the structure it was copied from');
-    }
-    if (!/extractedMSAData\.entropy = forProperties\.entropy/.test(body)) {
-        throw new Error('the copy computes entropy over every sequence again');
+    if (!/extractedMSAData\.entropy = sliceByColumn\(originalMSAData\.entropy\)/.test(body)
+        || !/extractedMSAData\.frequencies = sliceByColumn\(originalMSAData\.frequencies\)/.test(body)) {
+        throw new Error('the copy no longer takes the columns the parent already '
+            + 'computed - recomputing gives different numbers for the same residue, '
+            + 'because coverage is measured over the copy\'s length');
     }
     // ...and ALL of them still come across, or the copy's own sliders have
     // nothing left to widen to

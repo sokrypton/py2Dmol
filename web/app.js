@@ -5359,14 +5359,19 @@ function applySelectionToMSA() {
         return;
     }
 
-    // Determine allowed chains
-    let allowedChains;
-    if (selection && selection.chains && selection.chains.size > 0) {
-        allowedChains = selection.chains;
-    } else {
-        // All chains allowed
-        allowedChains = new Set(renderer.chains);
+    // Determine allowed chains: the ones the SELECTION touches.
+    //
+    // This read `selection.chains`, and there is no `selection` here - the
+    // variable went when this stopped sourcing from visibility (see the note
+    // above) and the line was left behind. It threw a ReferenceError every time
+    // a selection existed, which is every time this function has anything to
+    // do, so the MSA never dimmed to the selection at all.
+    let allowedChains = new Set();
+    for (const i of selectedPositions) {
+        const c = renderer.chains && renderer.chains[i];
+        if (c) allowedChains.add(c);
     }
+    if (allowedChains.size === 0) allowedChains = new Set(renderer.chains);
 
     // Map structure positions to MSA positions for each chain
     const msaSelectedPositions = new Map(); // chainId -> Set of MSA position indices
