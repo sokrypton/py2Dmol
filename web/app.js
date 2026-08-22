@@ -3878,21 +3878,25 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
 // it. setStyle refuses that switch, but nothing refuses a structure loaded into
 // a viewer already in cartoon, which before the default changed could not
 // happen. Same test setStyle uses, same escape hatch (renderer.cartoonForce).
-// TUBE IS THE DEFAULT PAST A THOUSAND RESIDUES.
+// TUBE IS THE DEFAULT PAST TWO THOUSAND RESIDUES.
 //
 // Not the same rule as dropToTubeIfCartoonWontFit below, which is about a
 // cartoon that cannot be BUILT - tens of thousands of positions and a heap
 // that will not hold them. This one is about what is worth looking at: past
-// about a thousand residues the ribbon is a tangle at any zoom that fits it on
-// screen, it costs several times a tube to draw, and the first thing to do
-// with it is turn it down. Starting there and letting the user reach for the
-// cartoon is the better of the two wrong-by-default choices.
+// a couple of thousand residues the ribbon is a tangle at any zoom that fits
+// it on screen, it costs several times a tube to draw, and the first thing to
+// do with it is turn it down. Starting there and letting the user reach for
+// the cartoon is the better of the two wrong-by-default choices.
+//
+// It was a thousand, which took the cartoon away from structures that still
+// read perfectly well as one - a ribosomal subunit is a tangle, a couple of
+// ordinary chains is not.
 //
 // ONLY WHILE NOBODY HAS CHOSEN. Picking a style in the Style panel sets
 // renderer.styleChosen, and a restored session sets it too - a saved view says
 // what it wants. Without that, loading a second structure would undo a choice
 // made after the first.
-const BIG_STRUCTURE_RESIDUES = 1000;
+const BIG_STRUCTURE_RESIDUES = 2000;
 
 function tubeByDefaultIfBig(r, objectName) {
     if (!r || r.styleChosen || r.style !== 'cartoon' || r.cartoonForce) return;

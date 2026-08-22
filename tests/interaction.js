@@ -4773,9 +4773,19 @@ t('the style toggles are grouped together, three to a row', () => {
 // the GPU declines, and PNG/SVG export goes through 2D whatever it says.
 t('a large structure opens as tube, and a chosen style is left alone', () => {
     // NOT the memory rule below it: this is about what is worth looking at.
-    // Past about a thousand residues the ribbon is a tangle at any zoom that
-    // fits it on screen, and the first thing to do with it is turn it down.
+    // Past a couple of thousand residues the ribbon is a tangle at any zoom
+    // that fits it on screen, and the first thing to do with it is turn it
+    // down.
     const app = fs.readFileSync('web/app.js', 'utf8');
+    // ...AND WHERE THAT LINE IS DRAWN IS A DECISION, so it is written down
+    // here too. The rule below is exercised with its own number, which would
+    // go on passing whatever the shipped one drifted to.
+    const cut = /const BIG_STRUCTURE_RESIDUES = (\d+);/.exec(app);
+    if (!cut || +cut[1] !== 2000) {
+        throw new Error('the tube cutoff is ' + (cut && cut[1])
+            + ', not the 2000 it was set to - a thousand took the cartoon away'
+            + ' from structures that still read perfectly well as one');
+    }
     const at = app.indexOf('function tubeByDefaultIfBig(');
     if (at < 0) throw new Error('the size rule is gone from web/app.js');
     let d = 0; let k = app.indexOf('{', at);
