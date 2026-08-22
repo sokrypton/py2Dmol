@@ -5291,7 +5291,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (!this.overlayState.enabled) {
                 this._loadFrameData(currentFrame, true); // Load without render
             }
-            this.render();
+            // The sink renders when it is recording at its own size (see
+            // _makeVideoSink); rendering here as well would draw every frame
+            // twice, and on the GPU path at two different sizes, which rebuilds
+            // the mesh both times.
+            if (!this._recSink || !this._recSink.rendersItself) this.render();
             this.lastRenderedFrame = currentFrame;
             this.updateUIControls();
 
@@ -10503,6 +10507,33 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // _exportPxScale keeps the quantities that are PIXELS by definition
             // - outline width, selection ink - the size they are on screen,
             // while everything measured in Angstrom follows the resolution.
+            // ONE RENDER PER FRAME, NOT TWO.
+            //
+            // The recorders used to render to the screen and then, for a scaled
+            // recording, render AGAIN into the offscreen canvas - so every
+            // frame was drawn twice at two different sizes. On the 2D path that
+            // is simply double the work (4HHB: 33 ms + 40 ms a frame). On the
+            // GPU path it is worse than double: the mesh cache is keyed on the
+            // output size, so alternating 598 px and 1196 px REBUILT THE MESH
+            // TWICE A FRAME - 91 ms a frame against about 2 for the same
+            // recording at screen size.
+            //
+            // So the offscreen render is the only one, and the screen is shown
+            // a scaled-down copy of it. That is a blit, and it costs nothing
+            // next to a render.
+            const blit = () => {
+                if (!octx || !this.ctx || !this.canvas) return;
+                const c = this.ctx;
+                c.save();
+                c.setTransform(1, 0, 0, 1, 0, 0);
+                if (this.isTransparent) c.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                else {
+                    c.fillStyle = this.backgroundColor || '#ffffff';
+                    c.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                }
+                c.drawImage(target, 0, 0, this.canvas.width, this.canvas.height);
+                c.restore();
+            };
             const paint = () => {
                 if (!octx) return;
                 const wasClear = this.isTransparent;
@@ -10520,14 +10551,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             };
 
+            const rendersItself = !!offscreen;
             if (gif) {
                 const shots = [];
                 const gctx = octx || source.getContext('2d');
                 return {
-                    width: w, height: h, fps, note, ext: 'gif',
+                    width: w, height: h, fps, note, ext: 'gif', rendersItself,
                     frame: () => {
                         if (shots.length >= LIM.maxFrames) return;
-                        paint();
+                        if (octx) { paint(); blit(); } else this.render('capture');
                         shots.push(gctx.getImageData(0, 0, w, h).data);
                     },
                     cancel: () => { shots.length = 0; },
@@ -10570,9 +10602,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             rec.start(100);
             const track = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
             return {
-                width: w, height: h, fps, note, ext: fmt.ext,
+                width: w, height: h, fps, note, ext: fmt.ext, rendersItself,
                 frame: () => {
-                    paint();
+                    // The composite path (a scatter plot beside the structure)
+                    // has its own canvas and is drawn by the recorder, so there
+                    // is nothing to render here.
+                    if (octx) { paint(); blit(); } else if (!o.sourceCanvas) {
+                        this.render('capture');
+                    }
                     // captureStream samples the canvas on its own clock;
                     // nudging it where supported keeps one rendered frame to
                     // one video frame.
@@ -10719,6 +10756,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const h = Math.max(1, Math.round(height * k));
             const pad = String(frames).length;
             const zip = new JSZip();
+            let out = null; let octx = null;
             const name = this.currentObjectName || 'viewer';
             const at0 = this.currentFrame;
             const wasTransparent = this.isTransparent;
@@ -10747,9 +10785,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     return;
                 }
                 this.setFrame(i, true);
-                const out = document.createElement('canvas');
-                out.width = w; out.height = h;
-                const octx = out.getContext('2d');
+                // ONE CANVAS FOR THE WHOLE RUN. A fresh 2000x2000 canvas per
+                // frame is 16 MB of allocation each time round, and a hundred
+                // of them in flight while toBlob works through them.
+                if (!out) {
+                    out = document.createElement('canvas');
+                    out.width = w; out.height = h;
+                    octx = out.getContext('2d');
+                }
+                octx.save();
+                octx.setTransform(1, 0, 0, 1, 0, 0);
+                octx.clearRect(0, 0, w, h);
+                octx.restore();
                 this._exportPxScale = k;
                 try { this._renderToContext(octx, w, h); } finally { this._exportPxScale = 1; }
                 out.toBlob((blob) => {
@@ -11152,8 +11199,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.viewerState.rotation = multiplyMatrices(
                         rotationMatrixY((2 * Math.PI * i) / N), R0);
                 }
-                this.render('saveDrawingVideo');
-                sink.frame();
+                sink.frame();          // renders, at the size being recorded
                 if (i % fps === 0) {
                     this._captureStatus(
                         `Recording drawing... ${Math.round((100 * i) / (N + TAIL))}%`);
@@ -11231,8 +11277,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     return;
                 }
                 this.viewerState.rotation = multiplyMatrices(rotationMatrixY(i * step), R0);
-                this.render();
-                sink.frame();
+                sink.frame();          // renders, at the size being recorded
                 if (i % sink.fps === 0) {
                     this._captureStatus(`Recording turn... ${Math.round((100 * i) / N)}%`);
                 }

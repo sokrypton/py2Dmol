@@ -3649,6 +3649,55 @@ t('the capture panel follows the window size', () => {
     }
 });
 
+t('a recorded frame is rendered once, at the size it is recorded', () => {
+    // THE COST OF GETTING THIS WRONG, measured: the recorders rendered to the
+    // screen and then again into the offscreen canvas, so every frame was
+    // drawn twice at two different sizes. On the 2D path that is double the
+    // work (4HHB, 2x: 73 ms a frame against 36). On the GPU path it is far
+    // worse - the mesh cache is keyed on output size, so 598 px and 1196 px
+    // alternating REBUILT THE MESH TWICE A FRAME: 91 ms a frame against about
+    // nothing once the rebuild stops.
+    const sink = (() => {
+        const at = src.indexOf('        _makeVideoSink(opts) {');
+        if (at < 0) throw new Error('_makeVideoSink is gone');
+        let d = 0; let k = src.indexOf('{', at);
+        const start = k;
+        for (; k < src.length; k++) {
+            if (src[k] === '{') d++; else if (src[k] === '}' && !--d) break;
+        }
+        return src.slice(start, k + 1);
+    })();
+    if (!/const blit = \(\) =>/.test(sink)) {
+        throw new Error('the offscreen frame is not shown on screen - either the'
+            + ' picture freezes while recording, or somebody put the second'
+            + ' render back');
+    }
+    if (!/if \(octx\) \{ paint\(\); blit\(\); \}/.test(sink)) {
+        throw new Error('frame() no longer renders at the recording size');
+    }
+    if (!/rendersItself/.test(sink)) {
+        throw new Error('the sink does not say whether it renders, so the'
+            + ' trajectory recorder cannot know to stop rendering too');
+    }
+    // ...and no recorder renders beside it
+    for (const name of ['saveRotationVideo', 'saveDrawingVideo']) {
+        const at = src.indexOf('        ' + name + '(opts) {');
+        let d = 0; let k = src.indexOf('{', at);
+        const start = k;
+        for (; k < src.length; k++) {
+            if (src[k] === '{') d++; else if (src[k] === '}' && !--d) break;
+        }
+        const body = src.slice(start, k + 1);
+        const drives = body.match(/this\.render\([^)]*\);\s*\n\s*sink\.frame\(\)/);
+        if (drives) throw new Error(name + ' renders and then records - two'
+            + ' renders a frame, at two sizes');
+    }
+    const traj = src.slice(src.indexOf('        recordFrameSequence() {'));
+    if (!/!this\._recSink \|\| !this\._recSink\.rendersItself/.test(traj)) {
+        throw new Error('the trajectory recorder renders unconditionally');
+    }
+});
+
 t('the save panel can still record a trajectory', () => {
     const body = capturePanelBody();
     // The Record row lists one button per SOURCE, and Frames is the one that
