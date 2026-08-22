@@ -51,7 +51,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -71,8 +71,18 @@ const Cls=new Function('document','window','return class V {'+names.map(n=>body[
 function mkCtx(canvas){const ops=[];return {ops,canvas,fillStyle:'',
  setTransform(){ops.push(['setTransform']);},save(){},restore(){},
  clearRect(){ops.push(['clearRect']);},fillRect(){ops.push(['fillRect']);},
- drawImage(img,x,y,w,h){ops.push(['drawImage',x,y,w,h]);}};}
-function mkCanvas(w,h){const c={width:w,height:h};c.getContext=()=>c._c||(c._c=mkCtx(c));return c;}
+ drawImage(img,x,y,w,h){ops.push(['drawImage',x,y,w,h]);},
+ // ...the two a capture sink reads back through
+ getImageData(x,y,w,h){return {data:new Uint8ClampedArray(4*Math.max(1,w)*Math.max(1,h))};}};}
+function mkCanvas(w,h){const c={width:w,height:h,style:{}};
+ c.getContext=()=>c._c||(c._c=mkCtx(c));
+ // A CANVAS A RECORDING CAN BE MADE FROM. The sink captures a stream from it
+ // and, for the Images format, asks it for a PNG - neither of which a bare
+ // {width,height} does, which is why nothing in this file could build a sink.
+ c.toBlob=(cb)=>cb({size:10,type:'image/png'});
+ c.captureStream=()=>({getVideoTracks:()=>[{requestFrame(){}}],
+  getTracks:()=>[{stop(){}}]});
+ return c;}
 global.mkCanvas=mkCanvas;
 
 function mk(){
@@ -3492,6 +3502,86 @@ function capturePanelBody() {
     return src.slice(start, k + 1);
 }
 
+// EVERY FORMAT'S SINK IS BUILT AND DRIVEN, here, in Node.
+//
+// The panel tests read source text and the recorders are DOM-and-MediaRecorder
+// deep, so nothing in this file used to run _makeVideoSink at all - and a
+// one-word slip in it (a `const zip` that never landed) threw ReferenceError on
+// the FIRST frame of every recording, in every format. Worse, the throw
+// happened after the panel had marked itself busy, so every button in it went
+// dead and stayed dead: reported as "Capture, Rotate, Turn does not record" and
+// "the GIF path is broken", which are the same bug. This builds a sink for each
+// format against stubs and pushes frames through it.
+t('every capture format builds a sink and finishes a file', () => {
+    const realMR = global.MediaRecorder;
+    const realZip = global.JSZip; const realGif = global.window.py2dmolGif;
+    const realTimeout = global.setTimeout;
+    global.MediaRecorder = function (stream, opts) {
+        this.opts = opts; this.state = 'recording';
+        this.start = () => {};
+        this.stop = () => { if (this.ondataavailable) this.ondataavailable({ data: { size: 5 } });
+            if (this.onstop) this.onstop(); };
+    };
+    global.MediaRecorder.isTypeSupported = (m) => /webm|mp4/.test(m);
+    global.JSZip = function () {
+        this.file = () => {};
+        this.generateAsync = () => ({ then: (f) => { f({ size: 99, type: 'application/zip' }); return { catch() {} }; } });
+    };
+    global.window.py2dmolGif = () => ({ size: 77, type: 'image/gif' });
+    global.setTimeout = (fn) => { fn(); return 0; };   // drive the async tails
+    global.Blob = global.Blob || function (parts, o) { this.size = 1; this.type = o && o.type; };
+    try {
+        const v = new Cls();
+        v.canvas = mkCanvas(600, 400);
+        v.ctx = v.canvas.getContext('2d');
+        v.displayWidth = 600; v.displayHeight = 400;
+        v.backgroundColor = '#fff'; v.isTransparent = false;
+        v.currentObjectName = 'obj';
+        v._renderToContext = () => { v._rendered = (v._rendered || 0) + 1; };
+        v._captureStatus = () => {};
+        v.render = () => { v._screen = (v._screen || 0) + 1; };
+        const ids = v.videoFormats().map((f) => f.id);
+        if (ids.join() !== 'webm,mp4,gif,zip') {
+            throw new Error('formats under stubs: ' + ids.join());
+        }
+        for (const id of ids) {
+            for (const scale of [1, 2]) {
+                const sink = v._makeVideoSink({ container: id, fps: 10, seconds: 1,
+                    mbps: 5, scale, dpi: 96, colors: 64 });
+                if (!sink) throw new Error(id + ' built no sink at ' + scale + 'x');
+                sink.frame(); sink.frame();
+                let got = null;
+                sink.finish((blob, ext) => { got = { blob, ext }; });
+                if (!got) throw new Error(id + ' never finished at ' + scale + 'x');
+                if (!got.blob) throw new Error(id + ' finished with no file at ' + scale + 'x');
+                if (!(sink.width > 0 && sink.height > 0)) {
+                    throw new Error(id + ' has no size: ' + sink.width + 'x' + sink.height);
+                }
+                // ...and one render per frame, never two
+                if (sink.rendersItself && !v._rendered) {
+                    throw new Error(id + ' says it renders and then does not');
+                }
+            }
+        }
+        // the Images format takes its size from the dpi, not from the scale
+        const a = v._makeVideoSink({ container: 'zip', dpi: 96, scale: 3, fps: 10 });
+        const b = v._makeVideoSink({ container: 'zip', dpi: 192, scale: 1, fps: 10 });
+        if (a.width !== 600 || b.width !== 1200) {
+            throw new Error('Images ignored the dpi: ' + a.width + ' then ' + b.width);
+        }
+        // ...and a GIF is clamped, whatever it is asked for
+        const g = v._makeVideoSink({ container: 'gif', fps: 60, scale: 3, colors: 64 });
+        if (g.fps !== Cls.GIF_LIMITS.maxFps) throw new Error('GIF fps not clamped: ' + g.fps);
+        if (Math.max(g.width, g.height) > Cls.GIF_LIMITS.maxPx) {
+            throw new Error('GIF size not clamped: ' + g.width + 'x' + g.height);
+        }
+    } finally {
+        global.MediaRecorder = realMR;
+        global.JSZip = realZip; global.window.py2dmolGif = realGif;
+        global.setTimeout = realTimeout;
+    }
+});
+
 t('one capture model: defaults, formats and sizes', () => {
     const v = new Cls();
     const d = Cls.CAPTURE_DEFAULTS;
@@ -3759,11 +3849,30 @@ t('the save panel sizes its controls consistently', () => {
         throw new Error("the panel's controls are " + h + 'px high - under 26'
             + ' they are hard to read and hard to hit');
     }
-    // fields and buttons both built from it, or they drift apart again the
-    // next time one of them is touched
+    // fields built from it, and the buttons too where the page has no skin of
+    // its own to lend them
     for (const name of ['FIELD', 'BTN']) {
         const re = new RegExp('const ' + name + ' = `[^`]*height:\\$\\{H\\}px');
         if (!re.test(body)) throw new Error(name + ' is not derived from H');
+    }
+    // A BUTTON HERE LOOKS LIKE THE BUTTONS BESIDE IT. Save and Turn were the
+    // only controls in the viewer with a hand-rolled skin, which is exactly
+    // what a button should not have: the class is looked up from the page -
+    // .btn.btn-grey.btn-small on index.html, .controlButton in the notebook -
+    // and the inline style is the fallback for a page with neither.
+    if (!/const button = \(text, title\)/.test(body)) {
+        throw new Error('the panel builds its buttons by hand again');
+    }
+    if (!/'btn btn-grey btn-small', 'controlButton'/.test(body)) {
+        throw new Error('the panel no longer borrows the page\'s button skin');
+    }
+    if (!/if \(skin\) b\.className = skin;/.test(body)) {
+        throw new Error('the skin is looked up and then not put on the button');
+    }
+    for (const label of ["button\\('Save'", "const b = button\\(''"]) {
+        if (!new RegExp(label).test(body)) {
+            throw new Error('a button skipped the shared builder: ' + label);
+        }
     }
     if (!/const NUM = FIELD/.test(body)) {
         throw new Error('the number fields are not the same control as the menus');

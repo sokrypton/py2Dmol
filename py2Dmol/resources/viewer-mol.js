@@ -2890,6 +2890,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.orthoSlider.dispatchEvent(new Event('input'));
             }
 
+            // ...AND THE CAPTURE PANEL, if it is open. A different object has a
+            // different answer to "is there a trajectory to record": switching
+            // from one with frames to one without left a Frames button that
+            // recorded nothing, and switching the other way left the button
+            // missing until the panel was closed and opened again.
+            if (this._savePanel && !this._captureBusy) this._rebuildSavePanel();
+
             // Note: _composeAndApplyMask will be called by setFrame after the frame data is loaded
         }
 
@@ -10390,6 +10397,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (typeof window !== 'undefined' && typeof window.py2dmolGif === 'function') {
                 out.push({ id: 'gif', label: 'GIF', ext: 'gif', mime: null });
             }
+            // A ZIP OF PNGs IS A VIDEO FORMAT TOO - the same frames, written
+            // one file each instead of one file for all of them, which is what
+            // you want for a figure per timepoint or for handing the frames to
+            // an editor rather than a re-encode of them. It was a button of its
+            // own on the Image row that only ever wrote a trajectory; as a
+            // format it records a turn and a drawing as well, and takes its
+            // resolution from the dpi above rather than from a Size menu that
+            // would be a second way of saying the same thing.
+            if (typeof JSZip !== 'undefined') {
+                out.push({ id: 'zip', label: 'Images', ext: 'zip', mime: null });
+            }
             return out;
         }
 
@@ -10464,6 +10482,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const fmt = this.videoFormatOf(o.container);
             if (!fmt) return null;
             const gif = fmt.id === 'gif';
+            const zip = fmt.id === 'zip';
             const LIM = this.constructor.GIF_LIMITS;
             const fps = Math.max(5, Math.min(gif ? LIM.maxFps : 60, Number(o.fps) || 30));
             const live = this.canvas;
@@ -10478,7 +10497,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // size rather than blown up from the screen.
             let w = source.width; let h = source.height;
             let note = '';
-            if (!o.sourceCanvas) {
+            if (zip) {
+                // THE IMAGE ROW'S DPI, not the video Size: these frames ARE
+                // images, and two controls for one resolution is how they come
+                // to disagree.
+                const k = Math.max(36, Math.min(1200, Number(o.dpi) || 200)) / 96;
+                w = Math.max(1, Math.round(dispW * k));
+                h = Math.max(1, Math.round(dispH * k));
+                const maxPx = 16000;
+                if (w > maxPx || h > maxPx) {
+                    const f = Math.min(maxPx / w, maxPx / h);
+                    w = Math.round(w * f); h = Math.round(h * f);
+                }
+                note = `, ${Math.round(96 * w / dispW)} dpi`;
+            } else if (!o.sourceCanvas) {
                 // ...and DOWN as well as up: the clamp used to floor at 1,
                 // which silently turned every half-size recording back into a
                 // full-size one - the panel said 300x300 and the file came out
@@ -10499,7 +10531,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // live canvas has the paper painted into it and every pixel is
             // opaque. So transparency forces the offscreen path even at 1x.
             const clear = gif && !!o.transparent;
-            const offscreen = clear || (w !== source.width || h !== source.height);
+            // A zip is always rendered: its frames are PNGs at their own size,
+            // and a PNG of the live canvas would be the screen's.
+            const offscreen = zip || clear || (w !== source.width || h !== source.height);
             let target = source;
             let octx = null;
             if (offscreen) {
@@ -10556,6 +10590,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
 
             const rendersItself = !!offscreen;
+            if (zip) {
+                const store = new JSZip();
+                const name = this.currentObjectName || 'viewer';
+                let n = 0; let pending = 0; let closed = null;
+                const settle = () => {
+                    if (!closed || pending) return;
+                    const done = closed; closed = null;
+                    this._captureStatus(`Zipping ${n} frames...`);
+                    store.generateAsync({ type: 'blob' })
+                        .then((blob) => done(blob, 'zip'))
+                        .catch(() => done(null, 'zip'));
+                };
+                return {
+                    width: w, height: h, fps, note, ext: 'zip', rendersItself,
+                    frame: () => {
+                        paint(); blit();
+                        n++;
+                        const at = n;
+                        pending++;
+                        // toBlob is asynchronous, so the zip cannot be closed
+                        // until the last one has come back - hence the count.
+                        target.toBlob((blob) => {
+                            if (blob) store.file(`${name}_${String(at).padStart(4, '0')}.png`, blob);
+                            pending--;
+                            settle();
+                        }, 'image/png');
+                    },
+                    cancel: () => { closed = null; },
+                    finish: (done) => { closed = done; settle(); },
+                };
+            }
             if (gif) {
                 const shots = [];
                 const gctx = octx || source.getContext('2d');
@@ -10671,16 +10736,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sizes = this.videoSizes();
             const z = sizes.find((q) => q.scale === Number(o.scale)) || sizes[0];
             const gif = fmt.id === 'gif';
+            const zip = fmt.id === 'zip';
             const LIM = this.constructor.GIF_LIMITS;
             const fps = Math.min(o.fps, gif ? LIM.maxFps : 60);
+            // Images are sized by the dpi above, not by the Size menu - the
+            // line has to say the size the sink will actually use.
             let w = z ? z.w : 0; let h = z ? z.h : 0;
+            if (zip) {
+                const k = (o.dpi || 200) / 96;
+                w = Math.round(dispW * k); h = Math.round(dispH * k);
+            }
             if (gif && Math.max(w, h) > LIM.maxPx) {
                 const f = LIM.maxPx / Math.max(w, h);
                 w = 2 * Math.round(w * f / 2); h = 2 * Math.round(h * f / 2);
             }
             const bits = [`${fmt.label} ${w}x${h}`, `${o.seconds}s at ${fps} fps`];
             lines.push('');
-            if (gif) {
+            if (zip) {
+                bits.push(`${o.dpi} dpi`, 'one PNG per frame');
+            } else if (gif) {
                 bits.push(`${o.colors} colours`);
                 if (o.transparent) bits.push('transparent');
             } else {
@@ -10738,106 +10812,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const mb = (blob.size / 1048576).toFixed(1);
             this._captureStatus(`Saved ${what.toLowerCase()}: ${detail}, ${mb} MB`);
             if (this._savePanel) this._syncCaptureButtons();
-        }
-
-        /**
-         * EVERY FRAME AS A PNG, in one zip.
-         *
-         * The trajectory recorder answers "show me this moving"; this answers
-         * "give me the frames" - a figure per timepoint, a montage, something
-         * to hand to a video editor that is not a 5 Mbps re-encode of a
-         * cartoon. Same renderer, same dpi, same size as the still export, one
-         * file per frame at the resolution the Image row asks for.
-         *
-         * ZIP FROM THE PAGE, like the GIF encoder: JSZip is loaded by
-         * index.html and the notebook viewer loads nothing but py2Dmol's own
-         * resources, so the button is offered where the library is and is
-         * absent - not broken - where it is not.
-         *
-         * Frames are rendered ONE AT A TIME with a yield between them. A
-         * hundred frames at 200 dpi is a hundred full renders; done in a single
-         * loop the tab is frozen for all of it with no way to tell whether it
-         * is working, and toBlob is asynchronous anyway.
-         */
-        saveFrameImages(opts) {
-            const o = opts || {};
-            if (typeof JSZip === 'undefined') {
-                this._captureStatus('Saving frames as a zip needs the standalone page.', true);
-                return;
-            }
-            const object = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            const frames = object && object.frames ? object.frames.length : 0;
-            if (!frames) return;
-            const dpi = Math.max(36, Math.min(1200, Number(o.dpi)
-                || this.constructor.CAPTURE_DEFAULTS.dpi));
-            const width = this.displayWidth || this.canvas.width;
-            const height = this.displayHeight || this.canvas.height;
-            let k = dpi / 96;
-            const maxPx = 16000;
-            if (width * k > maxPx || height * k > maxPx) {
-                k = Math.min(maxPx / width, maxPx / height);
-            }
-            const w = Math.max(1, Math.round(width * k));
-            const h = Math.max(1, Math.round(height * k));
-            const pad = String(frames).length;
-            const zip = new JSZip();
-            let out = null; let octx = null;
-            const name = this.currentObjectName || 'viewer';
-            const at0 = this.currentFrame;
-            const wasTransparent = this.isTransparent;
-            this.isTransparent = true;
-
-            const done = () => {
-                this.isTransparent = wasTransparent;
-                this.setFrame(at0 >= 0 && at0 < frames ? at0 : 0);
-                this._captureBusy = false;
-                if (this._savePanel) this._syncCaptureButtons();
-            };
-            const one = (i) => {
-                if (i >= frames) {
-                    this._captureStatus(`Zipping ${frames} frames...`);
-                    zip.generateAsync({ type: 'blob' }).then((blob) => {
-                        done();
-                        const filename = this._generateFilename(name, 'zip');
-                        this._triggerDownload(blob, filename);
-                        this._captureStatus(`Saved ${frames} frames: ${w}x${h}, `
-                            + `${Math.round(k * 96)} dpi, `
-                            + `${(blob.size / 1048576).toFixed(1)} MB`);
-                    }).catch((e) => {
-                        done();
-                        this._captureStatus('Could not write the zip: ' + e.message, true);
-                    });
-                    return;
-                }
-                this.setFrame(i, true);
-                // ONE CANVAS FOR THE WHOLE RUN. A fresh 2000x2000 canvas per
-                // frame is 16 MB of allocation each time round, and a hundred
-                // of them in flight while toBlob works through them.
-                if (!out) {
-                    out = document.createElement('canvas');
-                    out.width = w; out.height = h;
-                    octx = out.getContext('2d');
-                }
-                octx.save();
-                octx.setTransform(1, 0, 0, 1, 0, 0);
-                octx.clearRect(0, 0, w, h);
-                octx.restore();
-                this._exportPxScale = k;
-                try { this._renderToContext(octx, w, h); } finally { this._exportPxScale = 1; }
-                out.toBlob((blob) => {
-                    if (blob) {
-                        zip.file(`${name}_${String(i + 1).padStart(pad, '0')}.png`, blob);
-                    }
-                    if (i % 5 === 0 || i === frames - 1) {
-                        this._captureStatus(`Rendering frame ${i + 1} of ${frames}...`);
-                    }
-                    // ...and give the page a turn, so the progress line is
-                    // something the user can actually see move
-                    setTimeout(() => one(i + 1), 0);
-                }, 'image/png');
-            };
-            one(0);
         }
 
         saveImage(opts) {
@@ -11359,13 +11333,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // the session file. Two buttons reading "Save" a few centimetres
             // apart is a coin toss over which one keeps your work.
             b.title = 'Capture an image or a video (shift-click saves a PNG straight away)';
-            // the open panel belongs to the other mode now
-            if (this._savePanel) {
-                this._savePanel.remove();
-                this._savePanel = null;
-                b.setAttribute('aria-expanded', 'false');
-                this._uiPaused = false;
-            }
+            // A MODE CHANGE CHANGES WHAT CAN BE RECORDED, so the open panel is
+            // rebuilt rather than thrown away. Switching Rotate on with Capture
+            // already open used to close the panel: the user had turned on the
+            // very thing they wanted to record and the panel vanished, so they
+            // had to open it again to find the button that had just appeared.
+            if (this._savePanel && !this._captureBusy) this._rebuildSavePanel();
         }
 
         /**
@@ -11475,9 +11448,31 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const BTN = `flex:0 0 auto; padding:0 8px; height:${H}px; line-height:1;`
                 + ' cursor:pointer; font-size:12px; border:1px solid #d1d5db;'
                 + ' border-radius:6px; background:#fff;';
-            // Styled inline rather than by borrowing the toolbar's button
-            // class: the two pages skin their buttons differently, so one
-            // class renders invisible on the other page.
+            // THE PAGE'S OWN BUTTON, WHERE THE PAGE HAS ONE.
+            //
+            // These were styled inline because the two pages skin their
+            // buttons differently and one class renders invisible on the
+            // other - but that left Save and Turn as the only controls in the
+            // viewer that do not look like the buttons beside them, which is
+            // exactly what a button should not do. So the skin is LOOKED UP:
+            // index.html has .btn.btn-grey.btn-small, the notebook viewer has
+            // .controlButton, and both are 28px high, which is this panel's
+            // height already. A page with neither keeps the inline style.
+            const skin = ['btn btn-grey btn-small', 'controlButton'].find((c) => {
+                try {
+                    return !!document.querySelector('.' + c.trim().split(/\s+/).join('.'));
+                } catch (e) { return false; }
+            }) || '';
+            const button = (text, title) => {
+                // Only the layout is ours when the page has a skin: its height,
+                // padding, border and hover are the page's business, and
+                // repeating them here is how two buttons come to disagree.
+                const b = el('button', skin ? 'flex:0 0 auto; min-width:0;' : BTN, text);
+                b.type = 'button';
+                if (skin) b.className = skin;
+                if (title) b.title = title;
+                return b;
+            };
 
             const p = document.createElement('div');
             p.id = 'savePanel';
@@ -11551,25 +11546,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // small, low-contrast and rendered differently on every platform -
             // and being the only pictures in a panel of words, they read as
             // decoration rather than as the buttons that do the thing.
-            const okBtn = el('button', BTN, 'Save');
-            okBtn.type = 'button';
-            okBtn.title = sources.length ? 'Save the frame on screen as an image'
-                : 'Save an image';
+            const okBtn = button('Save', sources.length
+                ? 'Save the frame on screen as an image' : 'Save an image');
             imgRow.appendChild(okBtn);
-            // EVERY FRAME, AS FILES. Beside the camera because it is the same
-            // export - same renderer, same dpi, same size - just done once per
-            // frame into a zip. Offered where there are frames to write and
-            // where the page has a zip library: index.html does, the notebook
-            // loads py2Dmol's own resources and nothing else.
-            let zipBtn = null;
-            const canZip = obj && obj.frames && obj.frames.length > 1
-                && typeof JSZip !== 'undefined';
-            if (canZip) {
-                zipBtn = el('button', BTN, 'Zip');
-                zipBtn.type = 'button';
-                zipBtn.title = `Save all ${obj.frames.length} frames as PNGs in a zip`;
-                imgRow.appendChild(zipBtn);
-            }
+            // EVERY FRAME AS FILES IS A VIDEO FORMAT, not a button here - see
+            // videoFormats. It writes the same frames the recorders drive, so
+            // it belongs where the other formats are, and it records a turn or
+            // a drawing as well as a trajectory now.
 
             const syncImg = () => {
                 dpiSel.style.display = fmtSel.value === 'png' ? '' : 'none';
@@ -11578,6 +11561,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             fmtSel.addEventListener('change', syncImg);
             dpiSel.addEventListener('change', syncImg);
             syncImg();
+            // ...and the dpi is the Images format's size, so the video line
+            // has to follow it as well
+            dpiSel.addEventListener('change', () => { if (vFmt) commit(); });
 
             // ---- VIDEO -------------------------------------------------
             // A LINE BETWEEN THE TWO. They are different outputs with different
@@ -11660,13 +11646,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 vRow.appendChild(vNote);
                 const syncVideo = () => {
                     const gif = vFmt.value === 'gif';
+                    const zip = vFmt.value === 'zip';
                     const LIM = this.constructor.GIF_LIMITS;
+                    // IMAGES TAKE THEIR SIZE FROM THE DPI ABOVE, so the Size
+                    // menu goes: two controls for one resolution is how they
+                    // come to disagree. There is no bitrate in a PNG either.
+                    if (sizeSel) {
+                        sizeSel.style.display = zip ? 'none' : '';
+                        const lab = sizeSel.previousSibling;
+                        if (lab && lab.tagName === 'LABEL') lab.style.display = zip ? 'none' : '';
+                    }
                     // ONE ROW, TWO FORMATS, and only the controls that mean
                     // something for the one that is picked. What is shared -
                     // how long, how fast, how big - stays put, so switching
                     // format does not move the rest of the row about.
-                    mbL.style.display = gif ? 'none' : '';
-                    mbpsIn.style.display = gif ? 'none' : '';
+                    mbL.style.display = (gif || zip) ? 'none' : '';
+                    mbpsIn.style.display = (gif || zip) ? 'none' : '';
                     if (colorsSel) colorsSel.style.display = gif ? '' : 'none';
                     if (bgSel) bgSel.style.display = gif ? '' : 'none';
                     // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
@@ -11715,6 +11710,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 scale: sizeSel ? Number(sizeSel.value) || 1 : 1,
                 colors: colorsSel ? Number(colorsSel.value) || 256 : 256,
                 transparent: !!(bgSel && bgSel.value === 'clear'),
+                // the Images format renders at the Image row's resolution
+                dpi: Number(dpiSel.value) || 200,
             });
             // WRITTEN BACK ON EVERY CHANGE, not read at the moment a button is
             // pressed. The panel is rebuilt whenever the canvas is resized (see
@@ -11747,18 +11744,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     'Turn on Rotate or Draw, or load frames'));
             } else {
                 for (const src of sources) {
-                    const b = el('button', BTN + ' color:#ef4444;', '');
-                    b.type = 'button';
-                    b.dataset.rec = src.id;
-                    b.appendChild(el('span', 'color:#ef4444;', '● '));
-                    b.appendChild(document.createTextNode(src.label));
-                    b.title = src.id === 'frames'
+                    const b = button('', src.id === 'frames'
                         ? 'Record the frames playing through'
                         : (src.id === 'draw' ? 'Record the drawing building up'
-                            : 'Record one full turn');
+                            : 'Record one full turn'));
+                    b.dataset.rec = src.id;
+                    // the dot carries the red, so the button keeps the page's
+                    // own colours and still reads as a record button
+                    b.appendChild(el('span', 'color:#ef4444; margin-right:4px;', '\u25CF'));
+                    b.appendChild(document.createTextNode(src.label));
                     b.addEventListener('click', (ev) => {
                         ev.preventDefault();
                         if (this._captureBusy) return;
+                        // EVERY FAILURE HAS TO COME BACK HERE. Marking the
+                        // panel busy and then throwing on the way to the
+                        // recorder leaves every button disabled with no
+                        // recording running and nothing said - which is how a
+                        // one-word mistake in the sink (a missing `const zip`)
+                        // read as "Capture, Rotate, Turn does not record" and
+                        // as "the GIF path is broken", both at once, for the
+                        // rest of the session.
+                        try {
                         const vo = readVideo();
                         this._captureOpts = Object.assign(this.captureOpts(), vo);
                         // THE PANEL STAYS UP while it records. It used to close
@@ -11777,21 +11783,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         if (src.id === 'draw') this.saveDrawingVideo(vo);
                         else if (src.id === 'turn') this.saveRotationVideo(vo);
                         else this.toggleRecording();
+                        } catch (err) {
+                            this._captureBusy = false;
+                            this._syncCaptureButtons();
+                            this._captureStatus('Could not record: ' + err.message, true);
+                            throw err;      // ...and still say so in the console
+                        }
                     });
                     recRow.appendChild(b);
                 }
-            }
-
-            if (zipBtn) {
-                zipBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    if (this._captureBusy) return;
-                    const io = { dpi: Number(dpiSel.value) || 200 };
-                    this._captureOpts = Object.assign(this.captureOpts(), io);
-                    this._captureBusy = true;
-                    this._syncCaptureButtons();
-                    this.saveFrameImages(io);
-                });
             }
 
             okBtn.addEventListener('click', (e) => {
