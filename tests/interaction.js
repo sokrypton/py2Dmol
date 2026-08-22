@@ -51,7 +51,7 @@ for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated'];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -507,7 +507,8 @@ const panelBody = (() => {
         + '\n' + lift('describeSelectionRanges')
         // ...and the two the toggles read: which of them is a ligand row, and
         // how much of it is drawn
-        + '\n' + lift('ligandRowPositions') + '\n' + lift('visibleState');
+        + '\n' + lift('ligandRowPositions') + '\n' + lift('visibleState')
+        + '\n' + lift('syncSseSelect');
 })();
 // The mode select, as much of one as the panel touches: a value, a disabled
 // flag, and one option it hides where the selection has no nucleotides.
@@ -522,7 +523,7 @@ function modeSelectNode() {
     };
 }
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
-    shown = null, ligEls = new Set(), visible = null) {
+    shown = null, ligEls = new Set(), visible = null, sse = null) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
@@ -554,7 +555,14 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
                 querySelector: (sel) => (sel.indexOf('label') >= 0 ? label
                     : (sel.indexOf('color-wrap') >= 0 ? swatch : null)) };
         })(),
-        selSsSelect: { hidden: null, disabled: null },
+        selSsSelect: (() => {
+            const opts = { dssp: { textContent: 'DSSP' } };
+            return { hidden: null, disabled: null, value: '', title: '', opts,
+                querySelector: (q) => {
+                    const m = /option\[value="([^"]+)"\]/.exec(q);
+                    return m ? opts[m[1]] || null : null;
+                } };
+        })(),
     };
     const doc = { getElementById: (id) => nodes[id] || null };
     // eslint-disable-next-line no-new-func
@@ -573,6 +581,10 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
             elementOwners: () => new Set([...sidechained, ...ligEls]),
             hasBasesFor: (p2) => !!types && p2.some((i) => types[i] === 'D' || types[i] === 'R'),
             hasSseFor: (p2) => (types ? p2.some((i) => types[i] === 'P') : true),
+            // 'none' = nothing forced, which is what a structure nobody has
+            // touched reads; '' = the selection disagrees
+            forcedSseFor: () => (sse ? sse.forced : 'none'),
+            assignedSseFor: () => (sse ? (sse.assigned || '') : ''),
             sidechainOwners: () => sidechained,
             positionTypes: types || [],
             // null = everything is drawn, which is what the Show switch on a
@@ -724,6 +736,103 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     }
     if (!(copy < del && del < scHide)) {
         throw new Error('Delete is not beside Copy in the head');
+    }
+});
+
+t('the SSE state is read off the structure, forced and assigned apart', () => {
+    // The panel shows one letter either way, so these two are what tell the
+    // states apart - and only one of them is a promise about what is drawn now.
+    const v = new Cls();
+    v.currentObjectName = 'obj';
+    v.objectsData = { obj: {} };
+    v.positionTypes = ['P', 'P', 'P', 'D'];
+    v.coords = [0, 0, 0, 0];
+    if (v.forcedSseFor([0, 1, 2]) !== 'none') {
+        throw new Error('a structure nobody has touched reads as forced');
+    }
+    v.objectsData.obj.sse = { 0: 'H', 1: 'H' };
+    if (v.forcedSseFor([0, 1]) !== 'H') throw new Error('two forced helices did not agree');
+    if (v.forcedSseFor([0, 2]) !== '') {
+        throw new Error('one forced and one not read as a single state - the menu'
+            + ' would then show a letter that half the selection has not got');
+    }
+    v.objectsData.obj.sse = { 0: 'H', 1: 'E' };
+    if (v.forcedSseFor([0, 1]) !== '') throw new Error('helix and sheet agreed');
+    // A NUCLEOTIDE IS NOT PART OF THE ANSWER: it can never be forced, so
+    // counting it would read every protein-plus-duplex selection as mixed.
+    v.objectsData.obj.sse = { 0: 'H', 1: 'H' };
+    if (v.forcedSseFor([0, 1, 3]) !== 'H') {
+        throw new Error('a nucleotide in the selection made it read as mixed');
+    }
+    // ...and the assignment, from the cache the drawing fills
+    if (v.assignedSseFor([0, 1]) !== '') {
+        throw new Error('an assignment was reported with no cache to read - the'
+            + ' only other way to get one is to run the whole SS pipeline here');
+    }
+    v._cartoonSec = ['H', 'H', 'E', 'C'];
+    if (v.assignedSseFor([0, 1]) !== 'H') throw new Error('the cached assignment was not read');
+    if (v.assignedSseFor([0, 2]) !== '') throw new Error('helix and sheet agreed');
+    v._cartoonSec = ['H', 'H'];            // stale: shorter than the coordinates
+    if (v.assignedSseFor([0, 1]) !== '') {
+        throw new Error('a cache from another structure was read as this one');
+    }
+});
+
+t('the SSE menu shows the state it is in, not the word SSE', () => {
+    // IT READ "SSE" WHATEVER WAS SELECTED. The menu reset itself after every
+    // pick, so a panel whose whole job is to say what the selection currently
+    // is had one control that never did. Four states and Mixed, the same way
+    // the side-chain menu reads back.
+    const PROT = ['P', 'P', 'P', 'P'];
+    const auto = panelRun([0, 1], new Set(), false, PROT, null, new Set(), null,
+        { forced: 'none', assigned: 'H' });
+    if (auto.selSsSelect.value !== 'dssp') {
+        throw new Error('an unforced selection reads "' + auto.selSsSelect.value
+            + '" - nothing is forced there, so DSSP is the state it is in');
+    }
+    // ...and the automatic answer is IN the option, or the menu says a state
+    // without saying what it produced
+    if (auto.selSsSelect.opts.dssp.textContent !== 'DSSP (Helix)') {
+        throw new Error('the DSSP option does not carry the assignment: '
+            + auto.selSsSelect.opts.dssp.textContent);
+    }
+    const forced = panelRun([0, 1], new Set(), false, PROT, null, new Set(), null,
+        { forced: 'E', assigned: 'H' });
+    if (forced.selSsSelect.value !== 'E') {
+        throw new Error('a selection forced to sheet reads "'
+            + forced.selSsSelect.value + '"');
+    }
+    if (forced.selSsSelect.opts.dssp.textContent !== 'DSSP') {
+        throw new Error('the DSSP option advertised an assignment that is being'
+            + ' overridden - what is drawn there is the forced letter');
+    }
+    if (!/Forced to Sheet/.test(forced.selSsSelect.title)) {
+        throw new Error('nothing tells forced from assigned: ' + forced.selSsSelect.title);
+    }
+    // ...and disagreement is a state of its own, shown and not picked
+    const mixed = panelRun([0, 1], new Set(), false, PROT, null, new Set(), null,
+        { forced: '', assigned: '' });
+    if (mixed.selSsSelect.value !== '') {
+        throw new Error('a selection with two structures in it picked one');
+    }
+    // the markup backs that: Mixed is a readout, and Auto is now DSSP
+    const html = fs.readFileSync('index.html', 'utf8');
+    const m = html.match(/<select id="selSsSelect"[\s\S]*?<\/select>/);
+    if (!m) throw new Error('the SSE select is gone from index.html');
+    if (/>SSE</.test(m[0])) {
+        throw new Error('the placeholder option is back - it is what made the'
+            + ' menu say the same thing whatever was selected');
+    }
+    if (/value="auto"/.test(m[0])) throw new Error('Auto was not renamed');
+    if (!/value="dssp"/.test(m[0])) throw new Error('there is no DSSP option');
+    if (!/<option value="" disabled hidden>Mixed<\/option>/.test(m[0])) {
+        throw new Error('Mixed is missing, or is pickable - there is nothing to'
+            + ' DO with mixed');
+    }
+    // ...and DSSP is the option that takes the override OFF
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/v === 'dssp' \? null : v/.test(app)) {
+        throw new Error('picking DSSP no longer clears the forced structure');
     }
 });
 

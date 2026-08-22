@@ -991,6 +991,34 @@ function setupEventListeners() {
         return on === positions.length ? true : null;
     }
 
+    // WHAT THE SSE MENU SAYS. Four states - forced to helix, to sheet, to loop,
+    // or left to the assignment - and Mixed where the selection disagrees,
+    // which is a state and not a letter, so it is shown and cannot be picked.
+    //
+    // The DSSP entry carries the automatic answer in its label where the
+    // drawing already knows it ("DSSP (Helix)"), which is the difference
+    // between a state that says nothing and one that says what you are looking
+    // at. Not computed for it: see assignedSseFor.
+    function syncSseSelect(sel, renderer, picked) {
+        const forced = renderer.forcedSseFor ? renderer.forcedSseFor(picked) : 'none';
+        const auto = renderer.assignedSseFor ? renderer.assignedSseFor(picked) : '';
+        const NAME = { H: 'Helix', E: 'Sheet', C: 'Loop' };
+        sel.value = forced === 'none' ? 'dssp' : forced;
+        const dssp = sel.querySelector('option[value="dssp"]');
+        if (dssp) {
+            dssp.textContent = (forced === 'none' && NAME[auto])
+                ? `DSSP (${NAME[auto]})` : 'DSSP';
+        }
+        // ...and the tooltip is where forced and assigned are told apart: the
+        // menu shows one letter either way, and which of the two it is decides
+        // whether the drawing will change under you when the model does.
+        sel.title = forced === '' ? 'The selected residues have different structures'
+            : (forced === 'none'
+                ? (NAME[auto] ? `${NAME[auto]}, from the DSSP assignment`
+                    : 'Structure from the DSSP assignment')
+                : `Forced to ${NAME[forced] || forced}`);
+    }
+
     function syncSelectionToggles(picked, none) {
         const renderer = viewerApi?.renderer;
         const obj = renderer?.objectsData?.[renderer.currentObjectName];
@@ -1402,6 +1430,7 @@ function setupEventListeners() {
             const renderer = viewerApi?.renderer;
             ssHide.hidden = none || !renderer || !renderer.hasSseFor
                 || !renderer.hasSseFor(picked);
+            if (!ssHide.hidden) syncSseSelect(ssHide, renderer, picked);
         }
         tools.classList.toggle('disabled', none);
         // Also set the real disabled property, not just the class: hiding the
@@ -1592,8 +1621,12 @@ function setupEventListeners() {
         if (ssSelect) {
             ssSelect.addEventListener('change', withSelection((positions) => {
                 const v = ssSelect.value;
-                if (v) setSelectionSse(positions, v === 'auto' ? null : v);
-                ssSelect.value = '';        // it is an action menu, not a state
+                // DSSP is the one that UNFORCES: null takes the override off
+                // and the assignment decides again.
+                if (v) setSelectionSse(positions, v === 'dssp' ? null : v);
+                // ...and then the menu is read back off the structure, like
+                // every other control here, rather than reset to a placeholder
+                updateSelectionToolsState();
             }));
         }
         const on = (id, fn) => {

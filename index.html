@@ -729,13 +729,26 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                      structure. It sits where Elements sits on
                                      the side-chain row - the second control on
                                      the row, styling what that row draws. -->
+                                <!-- A STATE, NOT AN ACTION. It read "SSE" whatever
+                                     the selection was, because it reset itself
+                                     after every pick - so the one thing a menu
+                                     on a selection panel is for, saying what the
+                                     selection currently is, was the one thing it
+                                     did not do. It now shows which of the four
+                                     states the selection is in, and Mixed where
+                                     they disagree.
+                                     DSSP rather than Auto: the automatic answer
+                                     is not a preference, it is what the
+                                     assignment says, and naming it says which
+                                     assignment. Its label carries that answer
+                                     where the drawing already knows it. -->
                                 <select id="selSsSelect" class="btn btn-grey btn-small"
-                                    title="Force the secondary structure of the selected residues">
-                                    <option value="" selected>SSE</option>
+                                    title="The secondary structure of the selected residues">
+                                    <option value="" disabled hidden>Mixed</option>
+                                    <option value="dssp">DSSP</option>
                                     <option value="H">Helix</option>
                                     <option value="E">Sheet</option>
                                     <option value="C">Loop</option>
-                                    <option value="auto">Auto</option>
                                 </select>
                             </div>
                             <!-- FIND INTERACTIONS: the residues whose SIDE CHAINS

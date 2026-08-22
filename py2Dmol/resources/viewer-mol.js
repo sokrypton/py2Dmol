@@ -7485,6 +7485,60 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * selection - it just sat there offering four states none of which
          * could apply.
          */
+        /**
+         * WHICH SECONDARY STRUCTURE THESE POSITIONS ARE FORCED TO.
+         *
+         * Three answers, because a selection is a set: one letter if every
+         * protein position in it is forced to that letter, 'none' if not one of
+         * them is forced - the state a structure nobody has touched is in - and
+         * '' if they disagree, which is a state of its own and not a letter.
+         *
+         * Only 'P' positions count. A nucleotide is never assigned a letter and
+         * cannot be forced to one, so a selection of a duplex plus one helix
+         * would otherwise read as mixed for a reason the user cannot act on.
+         */
+        forcedSseFor(positions) {
+            const obj = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const ov = (obj && obj.sse) || null;
+            const t = this.positionTypes || [];
+            let seen = null;
+            let n = 0;
+            for (const i of positions) {
+                if (t[i] !== 'P') continue;
+                n++;
+                const letter = (ov && ov[i]) || 'none';
+                if (seen === null) seen = letter;
+                else if (seen !== letter) return '';
+            }
+            return n ? seen : 'none';
+        }
+
+        /**
+         * What the ASSIGNMENT makes of these positions, where the drawing has
+         * already worked it out. Read off the cache the cartoon pass fills, and
+         * '' when there is none: running the assignment from here would put a
+         * whole SS pipeline behind a panel refresh, and on a capsid that is a
+         * second of it for a word in a menu.
+         */
+        assignedSseFor(positions) {
+            const n = this.coords ? this.coords.length : 0;
+            const sec = (this._cartoonSec && this._cartoonSec.length === n)
+                ? this._cartoonSec
+                : ((this._ssColorSec && this._ssColorSec.length === n)
+                    ? this._ssColorSec : null);
+            if (!sec) return '';
+            const t = this.positionTypes || [];
+            let seen = null;
+            for (const i of positions) {
+                if (t[i] !== 'P') continue;
+                const letter = sec[i] || 'C';
+                if (seen === null) seen = letter;
+                else if (seen !== letter) return '';
+            }
+            return seen || '';
+        }
+
         hasSseFor(positions) {
             const t = this.positionTypes;
             if (!t) return false;
