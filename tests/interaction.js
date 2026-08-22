@@ -1123,6 +1123,32 @@ t('side chains are joined along their BONDS, not by index order', () => {
     }
 });
 
+t('a selected residue is marked with its side chain', () => {
+    // Picking a residue selects ONE position; its atoms are appended positions
+    // of their own, so the band stopped at the backbone and the side chain the
+    // user was looking at was the one part of the residue left unmarked.
+    const v = haloViewer([3], 10);          // only the residue is SELECTED
+    v.sidechainMap = new Map([[4, { owner: 3 }], [5, { owner: 3 }],
+        [8, { owner: 9 }]]);                 // ...and 8 belongs to someone else
+    v.bonds = [[3, 4], [4, 5], [9, 8]];
+    const ctx = haloCtx();
+    // through the `set` argument, which is how _paintOverlays calls it: the
+    // union of the selection and the hover, built from residueSelection and
+    // NOT through selectionInk, so the expansion has to happen in the painter
+    v._paintSelectionHalo(ctx, 1, new Set([3]));
+    const got = haloEdges(ctx, v).filter(([a, b]) => a !== b)
+        .map(([a, b]) => (a < b ? a + '-' + b : b + '-' + a)).sort();
+    if (got.join(',') !== ['3-4', '4-5'].join(',')) {
+        throw new Error('marked ' + JSON.stringify(got) + ', expected the residue '
+            + 'and its own two atoms');
+    }
+    // ...and the SELECTION is untouched: Copy, Delete and the panel read that,
+    // and they mean the residue
+    if (v.residueSelection.size !== 1 || !v.residueSelection.has(3)) {
+        throw new Error('marking the side chain changed the selection');
+    }
+});
+
 t('a lone selected residue still gets a mark, and an unprojected one nothing', () => {
     let ctx = haloCtx();
     const v1 = haloViewer([4]);
@@ -1329,6 +1355,48 @@ t('side chain to side chain is the other question, and leaves the trace out', ()
     // index 0 of each list IS the trace point, so the exclusion is a slice
     if (!/return list\.length > 1 \? list\.slice\(1\) : null;/.test(body)) {
         throw new Error('the trace atom is not being left out');
+    }
+    // ...EXCEPT A LIGAND, which is all side chain: its heavy atoms are
+    // positions of their own, so slicing one off throws away a real atom and a
+    // single-atom ligand drops out of the search altogether
+    if (!/!scOnly \|\| ptypes\[i\] === 'L'/.test(body)) {
+        throw new Error('a ligand loses an atom to the backbone slice');
+    }
+
+    // A LIGAND IS SELECTED WHOLE. Each heavy atom is a position, so a side
+    // chain reaching one corner of a benzamidine would otherwise select that
+    // corner - one atom out of the middle of a molecule nobody asked to take
+    // apart. Measured on 3PTB: the seven residues that touch the ligand each
+    // bring back all 9 of its atoms, and the four that touch the calcium bring
+    // back the 1 that it is.
+    const lv = clipViewer([[0, 0, 0], [4.5, 0, 0], [20, 0, 0], [30, 0, 0]]);
+    lv.positionTypes = ['P', 'L', 'L', 'P'];
+    // residue 0 has one side-chain atom, an Angstrom along x. Anchor -1 means
+    // the coefficients are a plain offset from the owner, so this needs no
+    // local frame - see _materialiseSidechains.
+    lv.sidechains = { pos: Int32Array.from([0]), frameOf: Int32Array.from([-1]),
+        coef: Float32Array.from([1, 0, 0]) };
+    // ...and the two ligand atoms are ONE ligand, 15 A apart: only the near one
+    // is in reach, and the far one has to come with it
+    lv.objectsData = { obj: { ligandGroups: new Map([['LIG', [1, 2]]]) } };
+    lv.currentObjectName = 'obj';
+    const hadExpand = global.expandLigandSelection;
+    global.expandLigandSelection = (set, groups) => {
+        const out = new Set(set);
+        for (const [, members] of groups) {
+            if (members.some((i) => out.has(i))) for (const i of members) out.add(i);
+        }
+        return out;
+    };
+    try {
+        const near = lv.residuesWithin(new Set([0]), 5, { sidechainsOnly: true });
+        if (!near.has(1) || !near.has(2)) {
+            throw new Error('a ligand came back in pieces: ' + [...near].join(','));
+        }
+        if (near.has(3)) throw new Error('the search reached past its cutoff');
+    } finally {
+        if (hadExpand === undefined) delete global.expandLigandSelection;
+        else global.expandLigandSelection = hadExpand;
     }
     if (!/if \(!seedAtoms\.length\) return out;/.test(body)) {
         throw new Error('a seed with nothing to measure from is not handled');

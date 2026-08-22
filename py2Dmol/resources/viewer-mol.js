@@ -7012,6 +7012,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * CHAINS near each other. A residue with no side-chain atoms at all
          * (glycine, or anything in a backbone-only model) is not in the answer,
          * because it has nothing to measure.
+         *
+         * A LIGAND KEEPS EVERY ATOM in that mode. It has no backbone to leave
+         * out - each of its heavy atoms is a position of its own - so what an
+         * interaction with a ligand means is any of those against a side chain
+         * or against another ligand.
          */
         residuesWithin(seed, cutoff, opts) {
             const scOnly = !!(opts && opts.sidechainsOnly);
@@ -7082,11 +7087,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const atomsFor = this._atomsOfResidues(new Set([...out, ...near]));
             const cut2 = cut * cut;
             // index 0 of every list is the trace point itself, so leaving the
-            // backbone out is a slice rather than a second pass over the table
+            // backbone out is a slice rather than a second pass over the table.
+            //
+            // A LIGAND IS ALL SIDE CHAIN. Its atoms are positions in their own
+            // right - no trace point, no backbone - so slicing one off would
+            // throw away a real atom, and a single-atom ligand would drop out
+            // of the search altogether. An interaction with a ligand is any of
+            // its heavy atoms against a side chain or another ligand, which is
+            // what this leaves.
+            const ptypes = this.positionTypes || [];
             const atomsOf = (i) => {
                 const list = atomsFor.get(i);
                 if (!list) return null;
-                if (!scOnly) return list;
+                if (!scOnly || ptypes[i] === 'L') return list;
                 return list.length > 1 ? list.slice(1) : null;
             };
             const seedAtoms = [];
@@ -7107,6 +7120,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     if (hit) break;
                 }
                 if (hit) out.add(j);
+            }
+            // A LIGAND COMES BACK WHOLE. Each of its heavy atoms is a position
+            // of its own, so a side chain reaching one corner of a benzamidine
+            // would otherwise select that corner - a single atom floating in
+            // the middle of a molecule nobody asked to take apart. The same
+            // expansion a click on one of its atoms gets.
+            const obj = this.objectsData && this.objectsData[this.currentObjectName];
+            const groups = obj && obj.ligandGroups;
+            if (groups && groups.size && typeof expandLigandSelection === 'function') {
+                for (const i of expandLigandSelection(out, groups)) out.add(i);
             }
             return out;
         }
@@ -7624,8 +7647,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sx = this.screenX; const sy = this.screenY;
             const sr = this.screenRadius; const sv = this.screenValid;
             if (!sx || !sv) return;
-            const drawn = (i) => i >= 0 && i < sv.length && sv[i] === fid && sel.has(i);
-            const idx = Array.from(sel).filter(drawn);
+            // A SELECTED RESIDUE INCLUDES ITS SIDE CHAIN, wherever one is drawn.
+            // Picking a residue selects the residue - one position - and its
+            // atoms are appended positions of their own, so the band stopped at
+            // the backbone and the side chain the user was looking at was the
+            // one part of it left unmarked. Marked here rather than added to
+            // the SELECTION, which stays what was picked: Copy, Delete and the
+            // panel all read that, and they mean the residue.
+            const scOwned = this.sidechainMap;
+            let marks = sel;
+            if (scOwned && scOwned.size) {
+                let extra = null;
+                for (const [idx0, e] of scOwned) {
+                    if (!e || !sel.has(e.owner) || sel.has(idx0)) continue;
+                    if (!extra) extra = new Set(sel);
+                    extra.add(idx0);
+                }
+                if (extra) marks = extra;
+            }
+            const drawn = (i) => i >= 0 && i < sv.length && sv[i] === fid && marks.has(i);
+            const idx = Array.from(marks).filter(drawn);
             if (!idx.length) return;
             idx.sort((a, b) => a - b);
             const chains = this.chains;
