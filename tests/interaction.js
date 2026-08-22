@@ -5208,6 +5208,36 @@ t('the style toggles are grouped together, three to a row', () => {
 // Safe in both because it is only ever a REQUEST: the control removes itself
 // when WebGL2 is absent, the renderer falls back to the 2D path for anything
 // the GPU declines, and PNG/SVG export goes through 2D whatever it says.
+t('the CA-CB bond is as thick as the rest of the side chain', () => {
+    // The bond joining a side chain to its backbone runs [owner, CB]. The
+    // owner is a protein position, the segment builder takes the most
+    // restrictive of the two types, so that link is type 'P' - and the width
+    // rule asked for type 'L' before calling something a side chain. One bond
+    // at the BACKBONE's full width with the rest of the side chain at half it,
+    // worst in tube mode where the backbone is thickest.
+    const v = new Cls();
+    v.sidechainMap = new Map([[42, { owner: 7, el: 'C' }], [43, { owner: 7, el: 'C' }]]);
+    v.typeWidthMultipliers = { P: 1.0, L: 0.4, C: 0.5 };
+    v.lineWidth = 3;
+    // CB to CG: both appended atoms, so type 'L' - this always worked
+    const inner = v._calculateSegmentWidthMultiplier(null, { type: 'L', idx1: 42, idx2: 43 });
+    // CA to CB: the owner is protein, so the segment is type 'P'
+    const link = v._calculateSegmentWidthMultiplier(null, { type: 'P', idx1: 7, idx2: 42 });
+    if (link !== inner) {
+        throw new Error(`the CA-CB bond is ${link} wide against the side chain's`
+            + ` ${inner} - one bond at a different weight from the rest of the`
+            + ' thing it belongs to');
+    }
+    if (link !== SIDECHAIN_WIDTH) {
+        throw new Error('the side chain is not at SIDECHAIN_WIDTH');
+    }
+    // ...and a real backbone segment is untouched: both ends are the chain
+    const bb = v._calculateSegmentWidthMultiplier(null, { type: 'P', idx1: 7, idx2: 8 });
+    if (bb !== 1.0) {
+        throw new Error('the backbone was thinned to a side chain, ' + bb);
+    }
+});
+
 t('the drawn objects are asked for in one place', () => {
     // GROUNDWORK for an Object list, not a feature. Several structures on
     // screen at once will be ONE MERGED coordinate array - the overlay already

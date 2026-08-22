@@ -8881,9 +8881,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // off a full-width backbone. This is what "side chains do not work
             // in tube mode" looked like: they were drawn all along, just far
             // too faint to read as part of the structure. See SIDECHAIN_WIDTH.
-            if (type === 'L' && this.sidechainMap && this.sidechainMap.size
-                && (this.sidechainMap.has(segInfo.idx1)
-                    || this.sidechainMap.has(segInfo.idx2))) {
+            // ...AND THE BOND THAT JOINS IT TO THE BACKBONE IS PART OF IT.
+            //
+            // This asked for type 'L' as well, and the CA-CB bond is not: it
+            // runs [owner, CB], the owner is a protein position, and the
+            // segment builder takes the most restrictive of the two types - so
+            // that one link came out 'P' and took the BACKBONE's full width
+            // while every other bond in the same side chain took 0.5. Half the
+            // side chain drawn at twice the weight of the rest of it, and
+            // most visible in tube mode where the backbone is thickest.
+            //
+            // Asked through _isSidechainSegment, which is the same question
+            // the drawing and the visibility mask already ask, so the three
+            // cannot drift apart again. Contacts never reach here - type 'C'
+            // returns above.
+            if (this._isSidechainSegment && this._isSidechainSegment(segInfo)) {
                 return SIDECHAIN_WIDTH;
             }
 
