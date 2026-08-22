@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainKeyAt','chainKeyFor','_buildChainIndexMap','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -6687,7 +6687,7 @@ t('a merged view gives each object a colour of its own', () => {
             () => ({ r: 0, g: 0, b: 0 }));
     const v = new C3();
     v.coords = new Array(4).fill(0);
-    v.chainColorKeyAt = (i) => 'A';
+    v.chainKeyAt = (i) => 'A';
     v.objectsData = { A: {}, B: {} };
     v.currentObjectName = 'A';
     v.overlayState = { enabled: false, frameIdMap: null };
@@ -6884,21 +6884,21 @@ t('the same chain id in two objects is not the same colour', () => {
     v.multiState = { enabled: true, sourceIdMap: [0, 0, 1, 1],
         sourceNames: ['one', 'two'], sourceOffsets: [0, 2] };
     v._chainColorKeys = ['one|A', 'one|A', 'two|A', 'two|A'];
-    if (v.chainColorKeyAt(0) === v.chainColorKeyAt(3)) {
+    if (v.chainKeyAt(0) === v.chainKeyAt(3)) {
         throw new Error('both objects\' chain A share a colour key');
     }
     // BY NAME, not by position in the merge: an object is source 0 alone and
     // source 1 beside another, and keying on that moved its colours every time
     // something else was switched on or off.
-    eq(v.chainColorKeyFor('A', 'two'), 'two|A', 'keyed by the object it belongs to');
-    eq(v.chainColorKeyFor('A', 'two'), v.chainColorKeyAt(2),
+    eq(v.chainKeyFor('A', 'two'), 'two|A', 'keyed by the object it belongs to');
+    eq(v.chainKeyFor('A', 'two'), v.chainKeyAt(2),
         'and the same key a position gives');
     // with only one object loaded the key IS the chain id, so every
     // single-structure session keeps the colours it has always had
     v.objectsData = { one: {} };
     v._chainColorKeys = null;
-    eq(v.chainColorKeyAt(0), 'A', 'a lone object keys by chain alone');
-    eq(v.chainColorKeyFor('A', 'one'), 'A', 'and so does the lookup');
+    eq(v.chainKeyAt(0), 'A', 'a lone object keys by chain alone');
+    eq(v.chainKeyFor('A', 'one'), 'A', 'and so does the lookup');
 });
 
 // ...AND THE SLOTS COVER EVERY LOADED OBJECT, drawn or not: an object's
@@ -7303,6 +7303,66 @@ t('asking for nothing and asking with a stale name are different', () => {
     v.setShownObjects(['gone', 'also-gone']);
     eq(v.drawnObjects().join(','), 'A', 'a stale list means the default');
     eq(v.shownObjects, null, 'and is not kept');
+});
+
+// CHAIN IDENTITY IS (OBJECT, CHAIN) EVERYWHERE, not just in the palette.
+//
+// Reported: "when I select chain A in one object, chain A of the other object
+// enabled to selected". A bare chain id means chain A of EVERY object once two
+// files are on screen - so the mask admitted both, the strip lit both labels,
+// and the PAE map counted both.
+t('chain identity carries the object through every path that compares it', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const seq = fs.readFileSync('py2Dmol/resources/viewer-seq.js', 'utf8');
+    const pae = fs.readFileSync('py2Dmol/resources/viewer-pae.js', 'utf8');
+    const app = fs.readFileSync('web/app.js', 'utf8');
+
+    // the mask, both branches of it
+    const at = mol.indexOf('_composeAndApplyMask(skip3DRender');
+    const mask = mol.slice(at, mol.indexOf('\n        }\n', at + 4000));
+    if (!/allowedChains\.has\(/.test(mask)) {
+        throw new Error('the mask no longer filters by chain');
+    }
+    // ...and nothing inside it reads a chain id straight out of the array,
+    // which is the shape the bug had: `const ch = this.chains[i]` and then
+    // `allowedChains.has(ch)`, one line apart
+    const strayChain = mask.split('\n')
+        .filter((l) => /this\.chains\[/.test(l) && !/chainKeyAt/.test(l));
+    if (strayChain.length) {
+        throw new Error('the mask reads a bare chain id: ' + strayChain[0].trim());
+    }
+    if ((mask.match(/chainKeyAt\(/g) || []).length < 3) {
+        throw new Error('the mask asks for the chain key in fewer places than'
+            + ' it compares chains');
+    }
+    // ...the chain set it is compared against
+    if (!/allChains\.add\(this\.chainKeyAt\(i\)\)/.test(mol)) {
+        throw new Error('Show all writes bare chain ids into the chain set');
+    }
+    // ...what the panel writes when it hides something
+    if (!/renderer\.chainKeyAt \? renderer\.chainKeyAt\(i\)/.test(app)) {
+        throw new Error('app.js derives the chain set from bare ids');
+    }
+    // ...the strip's chain buttons
+    if (!/chainSelection\?\.has\(chainKey\)/.test(seq)) {
+        throw new Error('the strip lights a chain button from a bare id');
+    }
+    // ...and the PAE map
+    if (!/renderer\.chainKeyAt\(r \+ off\)/.test(pae)) {
+        throw new Error('the PAE map reads a bare chain id');
+    }
+});
+
+t('two objects with the same chain id are two different chains', () => {
+    const v = new Cls();
+    v.objectsData = { one: {}, two: {} };
+    v.currentObjectName = 'one';
+    v.chains = ['A', 'A', 'A', 'A'];
+    v._chainColorKeys = ['one|A', 'one|A', 'two|A', 'two|A'];
+    // the mask's question, asked the way the mask asks it
+    const allowed = new Set([v.chainKeyFor('A', 'one')]);
+    eq(allowed.has(v.chainKeyAt(0)), true, "one's chain A is in the set");
+    eq(allowed.has(v.chainKeyAt(2)), false, "two's chain A is not");
 });
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');

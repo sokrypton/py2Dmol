@@ -1437,11 +1437,12 @@ function setupEventListeners() {
         // "no chains" under explicit - so switching to explicit while leaving
         // chains empty made every chain label render as unselected even though
         // most of the structure was still visible.
+        // BY (OBJECT, CHAIN) - see chainKeyAt. A bare id is chain A of every
+        // object on screen, so hiding one object's chain A hid the other's.
         const chains = new Set();
-        const chainOf = renderer.chains;
-        if (chainOf) {
+        if (renderer.chains) {
             for (const i of next) {
-                const c = chainOf[i];
+                const c = renderer.chainKeyAt ? renderer.chainKeyAt(i) : renderer.chains[i];
                 if (c) chains.add(c);
             }
         }
@@ -2184,9 +2185,15 @@ function renderObjectList() {
         // LITERAL: everything on, or everything off. Off is the empty list,
         // which is an empty canvas - not a fallback to one object, because a
         // control called All that leaves something behind is a lie.
-        renderer.setShownObjects(allOn ? [] : names);
-        syncObjectColorOption();
-        renderObjectList();
+        //
+        // ASKED AT CLICK TIME, not when the row was drawn: what is on screen
+        // can change without this list being redrawn - a restored session, a
+        // Copy, the Python API - and a row deciding from a stale reading does
+        // the opposite of what it shows.
+        const on = Object.keys(renderer.objectsData || {})
+            .every((n) => shownObjectSet(renderer).has(n));
+        renderer.setShownObjects(on ? [] : Object.keys(renderer.objectsData || {}));
+        afterShownObjectsChange();
     });
     list.appendChild(allRow);
 
@@ -2223,6 +2230,24 @@ function renderObjectList() {
  * picture would come back with everything in it and the eye would read as
  * broken.
  */
+/**
+ * WHAT FOLLOWS A CHANGE TO WHAT IS ON SCREEN.
+ *
+ * The strip is one section per drawn object, so it is rebuilt - it is not a
+ * repaint: the sections, their rows and their cells all change. The colour
+ * mode and the button label follow too.
+ */
+function afterShownObjectsChange() {
+    syncObjectColorOption();
+    syncObjectListButton();
+    renderObjectList();
+    const seq = window.SEQ;
+    if (seq && (seq.buildViewDeferred || seq.buildView)) {
+        (seq.buildViewDeferred || seq.buildView)();
+    }
+    updateFrameNameLabel();
+}
+
 function toggleObjectShown(name) {
     const renderer = viewerApi?.renderer;
     if (!renderer || !renderer.setShownObjects) return;
@@ -2232,8 +2257,7 @@ function toggleObjectShown(name) {
     // ...including down to nothing: an empty list is an empty canvas, and the
     // objects are all still there to be switched back on.
     renderer.setShownObjects(Array.from(shown));
-    syncObjectColorOption();
-    renderObjectList();
+    afterShownObjectsChange();
 }
 
 function toggleObjectListOpen() {
@@ -2255,6 +2279,8 @@ function attachObjectList() {
     document.addEventListener('py2dmol-color-change', () => {
         syncObjectColorOption();
         syncObjectListButton();
+        // ...and the rows themselves, which show which objects are on screen
+        renderObjectList();
         updateFrameNameLabel();
     });
     // OBJECTS ARE ADDED, RENAMED AND REMOVED FROM A DOZEN PLACES - a load, a

@@ -881,15 +881,16 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                         <option value="sequence" selected>Sequence</option>
                         <option value="chain">Chain</option>
                     </select>
-                    <!-- WHICH OBJECT THIS STRIP IS FOR - and with it, which
-                         object Copy, Delete, the side-chain toggles and the
-                         rest of the selection panel act on. It lives here
-                         rather than beside the visibility list because it is a
-                         question about EDITING, not about what is drawn.
-                         Hidden while there is only one object to pick. -->
-                    <select id="objectSelect" class="btn btn-grey btn-small"
-                        title="Which object the sequence and the selection tools act on"
-                        style="min-width: 100px; height: 28px; font-size: 12px; padding: 0 8px; display: none;">
+                    <!-- NO OBJECT PICKER. The strip shows a section per
+                         object on screen, so which one you are working on is
+                         answered by where you click in it - see
+                         adoptObjectOfSelection. The select stays in the DOM,
+                         hidden, because it is what every other path drives the
+                         current object through: the renderer's own change
+                         listener, the prev/next object buttons, a restored
+                         session. -->
+                    <select id="objectSelect" hidden
+                        style="display: none;">
                         <!-- Initially empty -->
                     </select>
                 </div>

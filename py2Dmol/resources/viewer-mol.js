@@ -1489,8 +1489,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 allPositions.add(i);
             }
 
-            // Select all chains
-            const allChains = new Set(this.chains);
+            // Select all chains - by (object, chain), like everything else
+            const allChains = new Set();
+            for (let i = 0; i < (this.chains ? this.chains.length : 0); i++) {
+                allChains.add(this.chainKeyAt(i));
+            }
 
             // Clear PAE boxes when resetting to default (select all)
             this.setVisibility({
@@ -1523,12 +1526,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // (1) Position/Chain contribution
             // Always compute position selection - it works together with PAE via UNION
+            // CHAIN IDENTITY IS (OBJECT, CHAIN) - see chainKeyAt. Compared as
+            // bare ids, hiding chain A of one object hid chain A of the other.
             let allowedChains;
             if (this.visibilityModel.chains && this.visibilityModel.chains.size > 0) {
                 allowedChains = this.visibilityModel.chains;
             } else {
-                // All chains
-                allowedChains = new Set(this.chains);
+                allowedChains = new Set();
+                for (let i = 0; i < (this.chains ? this.chains.length : 0); i++) {
+                    allowedChains.add(this.chainKeyAt(i));
+                }
             }
 
             let seqPositions = null;
@@ -1573,7 +1580,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                             // Only add if this position exists in this frame
                             if (selectedPos < frameSize) {
                                 const mergedIdx = offset + selectedPos;
-                                const ch = this.chains[mergedIdx];
+                                const ch = this.chainKeyAt(mergedIdx);
                                 if (allowedChains.has(ch)) {
                                     seqPositions.add(mergedIdx);
                                 }
@@ -1583,7 +1590,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 } else {
                     // Normal mode or overlay with no position selection
                     for (let i = 0; i < n; i++) {
-                        const ch = this.chains[i];
+                        const ch = this.chainKeyAt(i);
                         if (!allowedChains.has(ch)) continue;
                         // If positions are explicitly selected, check if this position is in the set
                         // If no positions selected but chains are, include all positions in allowed chains
@@ -2881,7 +2888,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // ... and drop the residue selection with it: the selection is a set
             // of position indices, meaningful only against the object it was
             // made on (see clearResidueSelection).
-            if (this.currentObjectName !== newObjectName) this.clearResidueSelection();
+            //
+            // NOT WHILE SEVERAL ARE MERGED. There the indices are the merged
+            // array's and mean the same thing whichever object is being
+            // edited - and the strip SETS the edited object from where you
+            // clicked, so clearing here would throw away the selection that
+            // asked for the switch.
+            if (this.currentObjectName !== newObjectName && !mergedMask) {
+                this.clearResidueSelection();
+            }
             this.currentObjectName = newObjectName;
 
             // Get new object reference
@@ -5201,8 +5216,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // before it: with one object loaded there is nothing to show or
             // hide and nothing to pick between.
             if (this.objectSelect) {
-                // the picker, which now lives in the sequence header
-                this.objectSelect.style.display = (objectCount <= 1) ? 'none' : '';
+                // The picker is not shown at all any more - the strip's
+                // sections say which object you are working on, and clicking
+                // in one is how you change it. The element stays because
+                // everything drives the current object through it.
                 const doc = this.objectSelect.ownerDocument || document;
                 const row = doc.getElementById('objectRow');
                 if (row) row.style.display = (objectCount <= 1) ? 'none' : 'flex';
@@ -6847,7 +6864,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 for (let i = 0; i < n; i++) {
                     const type = this.positionTypes[i];
                     if (type === 'P' || type === 'D' || type === 'R') {
-                        polymerChains.add(this.chainColorKeyAt(i));
+                        polymerChains.add(this.chainKeyAt(i));
                     }
                 }
                 for (const chainId of sortedUniqueChains) {
@@ -6869,7 +6886,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             for (let i = 0; i < n; i++) {
                 const type = this.positionTypes[i];
-                const chainId = this.chainColorKeyAt(i);
+                const chainId = this.chainKeyAt(i);
                 const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
                 // Chain A of the second source is not a continuation of
@@ -6905,7 +6922,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.sourceRainbowScales = {};
                 for (let i = 0; i < this.positionTypes.length; i++) {
                     const type = this.positionTypes[i];
-                    const chainId = this.chainColorKeyAt(i);
+                    const chainId = this.chainKeyAt(i);
                     const src = rainbowGroups[i];
                     const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
@@ -6929,7 +6946,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.chainRainbowScales = {};
                 for (let i = 0; i < this.positionTypes.length; i++) {
                     const type = this.positionTypes[i];
-                    const chainId = this.chainColorKeyAt(i);
+                    const chainId = this.chainKeyAt(i);
                     const isLigandOnlyChain = this.ligandOnlyChains.has(chainId);
 
                     if (type === 'P' || type === 'D' || type === 'R' || (type === 'L' && isLigandOnlyChain)) {
@@ -8980,7 +8997,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 color = hexToRgb(colorArray[at % colorArray.length]);
             } else if (effectiveColorMode === 'chain') {
                 // by SOURCE and chain: both objects have a chain A
-                const chainId = this.chainColorKeyAt(atomIndex);
+                const chainId = this.chainKeyAt(atomIndex);
                 if (isLigand && !this.ligandOnlyChains.has(chainId)) {
                     // Ligands in chains with P/D/R positions are grey
                     color = DEFAULT_GREY;
@@ -9016,7 +9033,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     color = DEFAULT_GREY;
                 } else {
                     // Regular positions get rainbow color
-                    const chainId = this.chainColorKeyAt(atomIndex);
+                    const chainId = this.chainKeyAt(atomIndex);
 
                     // In overlay mode, use per-frame scales; otherwise use global scales
                     let scale = null;
@@ -9053,7 +9070,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // otherwise - so a bare chain id is that object's chain id, and in
             // a merged view it has to be keyed with the object to find the
             // colour that chain is actually drawn in.
-            const key = this.chainColorKeyFor(chainId, objectName);
+            const key = this.chainKeyFor(chainId, objectName);
             const chainIndex = (this.chainIndexMap.has(key)
                 ? this.chainIndexMap.get(key)
                 : this.chainIndexMap.get(chainId)) || 0;
@@ -10644,7 +10661,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         }
 
         /**
-         * WHAT COUNTS AS ONE CHAIN, FOR COLOUR.
+         * WHAT COUNTS AS ONE CHAIN, ANYWHERE: colour, visibility, selection.
          *
          * Chain ids are only unique inside a file: put two structures on screen
          * and both have a chain A, which under the chain scheme comes out the
@@ -10662,16 +10679,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * single-structure session and leaves those colours exactly as they
          * have always been.
          *
-         * The SELECTION still keys on the plain id everywhere: `this.chains` is
-         * what the panel, the sequence strip and the visibility mask speak.
+         * EVERYTHING that asks "is this position in that chain" asks through
+         * here - the visibility mask, the chain buttons in the strip, the PAE
+         * map. Keyed by the bare id, selecting chain A of one object selected
+         * chain A of the other, which is what a bare id MEANS once two files
+         * are on screen. `this.chains` stays the bare id: it is what the file
+         * said, and what the panel prints.
          */
-        chainColorKeyAt(i) {
+        chainKeyAt(i) {
             if (!this._chainColorKeys) return this.chains[i] || 'A';
             return this._chainColorKeys[i];
         }
 
         /** The same key, for a chain of a named object rather than a position. */
-        chainColorKeyFor(chainId, objectName) {
+        chainKeyFor(chainId, objectName) {
             const names = Object.keys(this.objectsData || {});
             if (names.length < 2) return chainId;
             const name = objectName || this.currentObjectName;
@@ -10711,7 +10732,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // chain of its own. Appended rather than renumbered, so nothing
             // above moves.
             const n = this.chains ? this.chains.length : 0;
-            for (let i = 0; i < n; i++) add(this.chainColorKeyAt(i));
+            for (let i = 0; i < n; i++) add(this.chainKeyAt(i));
             this.chainIndexMap = map;
         }
 

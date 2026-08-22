@@ -152,6 +152,10 @@ function mkRenderer() {
         currentObjectName: 'obj',
         currentFrame: 0,
         objectsData: { obj: { frames: [frame], ligandGroups: new Map() } },
+        // WHICH OBJECTS THE STRIP SHOWS. It builds a section per drawn object
+        // now, and with none drawn it goes quiet - so a fixture that does not
+        // answer this builds an empty strip and every hit test below misses.
+        drawnObjects: () => ['obj'],
         coords: new Array(n),
         residueSelection: null,
         visiblePositions: null,

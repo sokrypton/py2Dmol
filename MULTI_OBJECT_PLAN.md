@@ -241,6 +241,43 @@ swinging to one object's saved pose throws the other off the screen. The mask
 is not filed under one object either - it covers everything drawn, and each
 object's share is recovered from the live mask when the merge is rebuilt.
 
+## The strip is hierarchical: object -> chain -> residue
+
+The sequence viewer builds **one section per object on screen**, each with its
+own chain rows, and no heading at all when there is only one - so a single
+structure looks exactly as it always has. `buildObjectSection` makes one
+section; `sequenceSections` asks `drawnObjects()` which ones to make.
+
+That removed the picker. Which object you are EDITING is answered by where you
+click: selecting in a section adopts its object (`adoptObjectOfSelection`), and
+the heading of the edited one is marked. The `<select>` stays in the DOM,
+hidden, because every other path drives the current object through it - the
+renderer's change listener, the prev/next buttons, a restored session.
+
+**With nothing on screen the strip goes quiet** - a note instead of rows, and
+its tools disabled. A strip listing residues of a picture that is not there
+would select things nobody can see.
+
+## Chain identity is (object, chain), everywhere
+
+Chain ids are unique inside a file and nowhere else. Under a bare id, selecting
+chain A of one object selected chain A of the other - *"when I select chain A
+in one object, chain A of the other object enabled to selected"*. Every path
+that asks "is this position in that chain" now asks `chainKeyAt(i)` /
+`chainKeyFor(chain, object)`:
+
+| path | where |
+|---|---|
+| the visibility mask, both branches | `_composeAndApplyMask` |
+| Show all's chain set | `showAll` |
+| what the panel writes when it hides | `web/app.js` |
+| the strip's chain buttons | `viewer-seq.js` |
+| the PAE map's rows | `viewer-pae.js` |
+| the palette | `chainIndexMap` |
+
+`this.chains` stays the bare id - it is what the file said and what the panel
+prints. The key is only for questions of identity.
+
 ## What the selection still does not do
 
 Reported: *"the selection mechanism doesn't seem wired up to handle multiple
@@ -257,10 +294,6 @@ objects"*. Where it stands:
 
 What is missing:
 
-- **The sequence strip shows one object**, so a selection that reaches another
-  is invisible there, and a drag in the strip can only ever select within the
-  picked object. The obvious answer is a strip per drawn object, stacked, with
-  the picker choosing which one the tools act on.
 - **Copy, Cut and Delete take the current object's share only** - see
   `_editOneObject`, which is honest but silent: cutting a selection that spans
   two objects quietly cuts half of it. It should say so, or copy the lot into

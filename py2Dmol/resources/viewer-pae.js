@@ -404,7 +404,15 @@
                 if (!hasPositionSelection) return selectedPositions;
             }
             if (!hasPositionSelection && !hasChainSelection) return selectedPositions;
-            let allowedChains = hasChainSelection ? visibilityModel.chains : new Set(renderer.chains);
+            // ...and the chain set speaks (object, chain) keys - see chainKeyAt
+            let allowedChains = visibilityModel.chains;
+            if (!hasChainSelection) {
+                allowedChains = new Set();
+                for (let i = 0; i < renderer.chains.length; i++) {
+                    allowedChains.add(renderer.chainKeyAt ? renderer.chainKeyAt(i)
+                        : renderer.chains[i]);
+                }
+            }
             const n = this.n;
             // A PAE row is a residue of the object this matrix belongs to; the
             // mask and the chain array are the viewer's, and with several
@@ -413,7 +421,8 @@
                 ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
             for (let r = 0; r < n; r++) {
                 if (r + off >= renderer.chains.length) continue;
-                const chain = renderer.chains[r + off];
+                const chain = renderer.chainKeyAt
+                    ? renderer.chainKeyAt(r + off) : renderer.chains[r + off];
                 if (allowedChains.has(chain)
                     && (!hasPositionSelection || visibilityModel.positions.has(r + off))) {
                     selectedPositions.add(r);

@@ -35,6 +35,10 @@ window.addEventListener('load', () => {
     await window.processFiles([{name: f, readAsync: () => Promise.resolve(txt)}], false);
   };
   // ink: how many pixels are not the background, so "did the picture change"
+  const renderObjectListIfAny = () => {
+    const b = document.getElementById('objectListButton');
+    if (b && document.getElementById('objectList').hidden) b.click();
+  };
   const ink = (r) => {
     const c = r.canvas, x = c.getContext('2d');
     if (!x) return -1;
@@ -328,21 +332,87 @@ window.addEventListener('load', () => {
       r.render('both again');
       await new Promise((s) => setTimeout(s, 250));
 
-      // THE PICKER, which is what says whose sequence the strip is showing.
-      // It lives in the sequence header, outside the viewer container - the
-      // renderer has to find it there or there is no way to switch objects.
+      // THE STRIP IS ONE SECTION PER OBJECT ON SCREEN. It used to show the
+      // object being edited and nothing else, so with two structures up it was
+      // describing half the picture - and a selection in the other one was
+      // invisible there.
+      // ...driven the way a user drives it, so the strip has to follow the
+      // LIST and not only an explicit rebuild
+      const listRows = Array.from(document.querySelectorAll('.object-list-row'));
+      const allRow = listRows[0];
+      r.setShownObjects([names[0]]);
+      if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
+      await new Promise((s) => setTimeout(s, 200));
+      renderObjectListIfAny();
+      const rowsS = Array.from(document.querySelectorAll('.object-list-row'));
+      rowsS[0].click();                  // All, through the UI
+      await new Promise((s) => setTimeout(s, 500));
+      R.stripSections = (window.SEQ.layout() && window.SEQ.layout().objectLabelPositions
+        ? window.SEQ.layout().objectLabelPositions.map((x) => x.object) : null);
+      R.stripChains = (window.SEQ.layout() && window.SEQ.layout().chainLabelPositions
+        ? window.SEQ.layout().chainLabelPositions.map((x) => x.object + '/' + x.chainId) : null);
+
+      r.setShownObjects([names[0]]);
+      if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
+      await new Promise((s) => setTimeout(s, 400));
+      R.stripSectionsOne = (window.SEQ.layout() && window.SEQ.layout().objectLabelPositions
+        ? window.SEQ.layout().objectLabelPositions.map((x) => x.object) : null);
+      R.stripChainsOne = (window.SEQ.layout() && window.SEQ.layout().chainLabelPositions
+        ? window.SEQ.layout().chainLabelPositions.map((x) => x.object + '/' + x.chainId) : null);
+      r.setShownObjects(names);
+      if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
+      await new Promise((s) => setTimeout(s, 400));
+
+      // NOTHING ON SCREEN, NOTHING TO READ: the strip goes quiet rather than
+      // listing residues of a picture that is not there, and its tools go dead
+      // with it - a click in it would select something nobody can see.
+      r.setShownObjects([]);
+      if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
+      await new Promise((s) => setTimeout(s, 300));
+      R.emptyStripLayout = window.SEQ.layout();
+      R.emptyStripNote = !!document.querySelector('.sequence-empty-note');
+      R.emptyStripDisabled = ['selectAllResidues', 'clearAllResidues',
+        'invertSelection'].every((id) => (document.getElementById(id) || {}).disabled);
+      r.setShownObjects(names);
+      if (window.SEQ && window.SEQ.buildView) window.SEQ.buildView();
+      await new Promise((s) => setTimeout(s, 300));
+      R.backStripSections = (window.SEQ.layout() || {}).objectLabelPositions
+        ? window.SEQ.layout().objectLabelPositions.map((x) => x.object) : null;
+      R.backStripEnabled = !document.getElementById('selectAllResidues').disabled;
+
+      // NO PICKER: the strip's sections say which object you are working on,
+      // and clicking in one is how you change it.
       const picker = document.getElementById('objectSelect');
       R.pickerVisible = !!(picker && picker.offsetParent !== null);
       R.pickerOptions = picker
         ? Array.from(picker.options).map((o) => o.value) : null;
-      R.pickerValue = picker ? picker.value : null;
-      if (picker) {
-        picker.value = names[0];
-        picker.dispatchEvent(new Event('change'));
-        await new Promise((s) => setTimeout(s, 350));
-      }
+
+      // SELECTING IN A SECTION ADOPTS ITS OBJECT. Click a residue of the
+      // object that is NOT being edited, and the edit target follows - without
+      // the picture moving.
+      const other = names.find((n) => n !== r.currentObjectName);
+      const lay = window.SEQ.layout();
+      const cell = lay.residuePositions.find(
+        (rp) => rp.residueData && rp.residueData.object === other
+          && rp.residueData.positionIndex >= 0);
+      const canvas = document.getElementById('sequenceCanvas');
+      const box = canvas.getBoundingClientRect();
+      const inkBefore = ink(r);
+      const drawnBefore = r.drawnObjects();
+      canvas.dispatchEvent(new MouseEvent('mousedown', { bubbles: true,
+        clientX: box.left + cell.x + 2, clientY: box.top + cell.y + 2 }));
+      canvas.dispatchEvent(new MouseEvent('mouseup', { bubbles: true,
+        clientX: box.left + cell.x + 2, clientY: box.top + cell.y + 2 }));
+      await new Promise((s) => setTimeout(s, 400));
       R.afterPickCurrent = r.currentObjectName;
       R.afterPickDrawn = r.drawnObjects();
+      R.afterPickSelection = r.residueSelection ? Array.from(r.residueSelection) : [];
+      R.afterPickOwner = (R.afterPickSelection.length && r.ownerOf)
+        ? (r.ownerOf(R.afterPickSelection[0]) || {}).name : null;
+      R.afterPickInk = ink(r);
+      R.wantedObject = other;
+      R.inkBefore = inkBefore;
+      R.drawnBefore = drawnBefore;
 
       // ...and the GPU path, in the SAME page load, against the CPU picture as
       // it stands NOW. Comparing with the ink from the top of the run was
@@ -469,9 +539,16 @@ def main():
     print(f"  strip of {R['objects'][0]}: {R.get('stripAlone')}")
     print(f"  strip of {R['objects'][1]}: {R.get('stripBothSecond')} shown,"
           f" {R.get('stripSecondHidden')} hidden")
-    print(f"  picker: {R.get('pickerOptions')} showing {R.get('pickerValue')!r};"
-          f" picking the other -> editing {R.get('afterPickCurrent')},"
-          f" drawn {R.get('afterPickDrawn')}")
+    print(f"  strip: sections {R.get('stripSections')}, chains {R.get('stripChains')};"
+          f" one object -> headings {R.get('stripSectionsOne')},"
+          f" chains {R.get('stripChainsOne')}")
+    print(f"  empty strip: layout {R.get('emptyStripLayout')}, note"
+          f" {R.get('emptyStripNote')}, tools dead {R.get('emptyStripDisabled')};"
+          f" back -> {R.get('backStripSections')}, live {R.get('backStripEnabled')}")
+    print(f"  no picker on screen: {not R.get('pickerVisible')};"
+          f" clicking in {R.get('wantedObject')}'s section -> editing"
+          f" {R.get('afterPickCurrent')}, selected a residue of"
+          f" {R.get('afterPickOwner')}, drawn {R.get('afterPickDrawn')}")
     print(f"  orient: {R.get('orientInk')} ink,"
           f" {R.get('outsideAfterOrient')} positions off canvas;"
           f" pick at the second object -> {R.get('pickOwner')};"
@@ -567,15 +644,38 @@ def main():
     if R.get("stripBoth") == R.get("stripBothSecond"):
         bad.append("both objects' strips are the same colours - chain A of one"
                    " is chain A of the other again")
-    if not R.get("pickerVisible"):
-        bad.append("the object picker is not visible beside the sequence")
+    if R.get("stripSections") != R["objects"]:
+        bad.append(f"the strip has sections {R.get('stripSections')} with both"
+                   " objects on screen")
+    if R.get("stripSectionsOne"):
+        bad.append("a single object's strip has a heading it does not need")
+    chains = R.get("stripChains") or []
+    if len({c.split('/')[0] for c in chains}) != 2:
+        bad.append(f"the strip's chain rows come from {chains}")
+    if R.get("emptyStripLayout") is not None:
+        bad.append("the strip still laid out rows with nothing on screen")
+    if not R.get("emptyStripNote"):
+        bad.append("the strip does not say why it is empty")
+    if not R.get("emptyStripDisabled"):
+        bad.append("the strip's tools are still live with nothing on screen")
+    if R.get("backStripSections") != R["objects"]:
+        bad.append(f"switching objects back on left the strip {R.get('backStripSections')}")
+    if not R.get("backStripEnabled"):
+        bad.append("the strip's tools stayed dead after objects came back")
+    if R.get("pickerVisible"):
+        bad.append("the object picker is still on screen - the strip's sections"
+                   " answer that question now")
     if R.get("pickerOptions") != R["objects"]:
-        bad.append(f"the picker offers {R.get('pickerOptions')}")
-    if R.get("afterPickCurrent") != R["objects"][0]:
-        bad.append("picking an object did not change which one is being edited")
-    if R.get("afterPickDrawn") != R["objects"]:
-        bad.append(f"picking an object changed what is DRAWN:"
-                   f" {R.get('afterPickDrawn')} - that is the bug this design fixes")
+        bad.append(f"the hidden select no longer tracks the objects:"
+                   f" {R.get('pickerOptions')}")
+    if R.get("afterPickCurrent") != R.get("wantedObject"):
+        bad.append(f"clicking in {R.get('wantedObject')}'s section left"
+                   f" {R.get('afterPickCurrent')} as the edited object")
+    if R.get("afterPickOwner") != R.get("wantedObject"):
+        bad.append(f"the click selected a residue of {R.get('afterPickOwner')}")
+    if R.get("afterPickDrawn") != R.get("drawnBefore"):
+        bad.append(f"clicking in a section changed what is DRAWN:"
+                   f" {R.get('afterPickDrawn')}")
     if not R.get("objectOptionShown"):
         bad.append("the Object colour mode is not offered with two objects up")
     if R.get("flatPerObject") not in ([1, 1], None):

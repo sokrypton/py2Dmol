@@ -495,6 +495,35 @@
         const dimFactor = 0.3; // Same as PAE plot
 
         // Draw chain labels (with virtual scrolling)
+        // THE OBJECT HEADINGS, one before each section - only present when
+        // more than one object is on screen (see buildSequenceView).
+        if (layout.objectLabelPositions && layout.objectLabelPositions.length) {
+            ctx.save();
+            ctx.font = `600 ${Math.round(layout.charHeight * 0.8)}px monospace`;
+            ctx.textBaseline = 'middle';
+            for (const lab of layout.objectLabelPositions) {
+                const yOffset = lab.y - scrollTop;
+                if (yOffset + lab.height < 0 || yOffset > scrollableAreaHeight) continue;
+                // THE ONE BEING EDITED IS MARKED. Copy, Delete, the side-chain
+                // toggles and the PAE map all act on one object, and with two
+                // sections on screen there is otherwise nothing to say which -
+                // clicking in a section is what changes it.
+                const edited = lab.object === renderer.currentObjectName;
+                ctx.fillStyle = edited ? '#3b82f6' : '#9ca3af';
+                ctx.fillText(lab.object, lab.x, yOffset + lab.height / 2);
+                // a hairline across the rest of the row, so the sections read
+                // as sections rather than as a stray word
+                const textW = ctx.measureText(lab.object).width;
+                ctx.strokeStyle = edited ? '#bfdbfe' : '#e5e7eb';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(lab.x + textW + 6, Math.round(yOffset + lab.height / 2) + 0.5);
+                ctx.lineTo(lab.x + lab.width, Math.round(yOffset + lab.height / 2) + 0.5);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
         if (layout.chainLabelPositions) {
             // Chain labels show VISIBILITY, and only visibility. A drag preview
             // describes the pending SELECTION now, so it must not touch these -
@@ -517,14 +546,18 @@
                 }
 
                 const chainId = chainPos.chainId;
-                const isSelected = chainSelection?.has(chainId) ||
+                // ...by (object, chain): chain A of one object is not chain A
+                // of the other, and a bare id lit both labels
+                const chainKey = renderer.chainKeyFor
+                    ? renderer.chainKeyFor(chainId, chainPos.object) : chainId;
+                const isSelected = chainSelection?.has(chainKey) ||
                     (visibilityMode === 'default' && (!chainSelection || chainSelection.size === 0));
                 // If the WHOLE chain carries the same explicit colour, the label
                 // shows that instead of the chain palette entry - otherwise
                 // recolouring a chain left its label advertising a colour the
                 // structure no longer uses.
                 let chainColor = renderer?.getChainColorForChainId?.(chainId,
-                    renderer.currentObjectName)
+                    chainPos.object || renderer.currentObjectName)
                     || { r: 128, g: 128, b: 128 };
                 if (renderer?.getColorOverride && frameChains) {
                     let uniform = null;
@@ -716,23 +749,31 @@
             // without this a chain click selected the chain and nothing on
             // screen said so.
             if (target && target.size && layout.chainLabelPositions) {
-                const obj = renderer.objectsData[renderer.currentObjectName];
-                const chains = obj?.frames?.[0]?.chains;
-                if (chains) {
-                    // the selection is in the renderer's indices, the frame in
-                    // the object's - see seqOffset where the cells are built
-                    const off = renderer.sourceOffsetOf
-                        ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
-                    const total = new Map();
-                    const picked = new Map();
-                    for (let i = 0; i < chains.length; i++) {
-                        const c = chains[i];
-                        total.set(c, (total.get(c) || 0) + 1);
-                        if (target.has(i + off)) picked.set(c, (picked.get(c) || 0) + 1);
-                    }
+                // PER (OBJECT, CHAIN): two objects both have a chain A, and
+                // counting them together lit the wrong label. Every cell the
+                // layout drew already knows its object and carries the
+                // renderer's index, so the tally is taken from the layout
+                // rather than from any one object's frame.
+                const total = new Map();
+                const picked = new Map();
+                const keyOf = (o, c) => (o || '') + '\u0000' + c;
+                for (const rp of (layout.residuePositions || [])) {
+                    const rd = rp.residueData;
+                    if (!rd) continue;
+                    const ids = rd.positionIndices
+                        || (rd.positionIndex >= 0 ? [rd.positionIndex] : []);
+                    if (!ids.length) continue;
+                    const k = keyOf(rd.object, rd.chain);
+                    total.set(k, (total.get(k) || 0) + ids.length);
+                    let hit = 0;
+                    for (const i of ids) if (target.has(i)) hit++;
+                    if (hit) picked.set(k, (picked.get(k) || 0) + hit);
+                }
+                {
                     const boxes = layout.chainLabelPositions.filter((cp) => {
-                        const t = total.get(cp.chainId) || 0;
-                        return t > 0 && picked.get(cp.chainId) === t;
+                        const k = keyOf(cp.object, cp.chainId);
+                        const t = total.get(k) || 0;
+                        return t > 0 && picked.get(k) === t;
                     });
                     if (boxes.length) {
                         ctx.save();
@@ -780,6 +821,294 @@
     // buildView in between is harmless - it caches on the frame it built from
     // and the deferred call returns early.
     let deferredBuild = 0;
+    // Protein amino acid mapping (3-letter to 1-letter)
+    const threeToOne = {
+        'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C', 'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+        'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P', 'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
+        'SEC': 'U', 'PYL': 'O',
+        // modified and D-amino acids resolve to their parent's letter, the
+        // same way gemmi's one_letter_code does; without these a D-peptide
+        // reads as a row of X in the sequence panel
+        'MSE': 'M', 'HSD': 'H', 'HSE': 'H', 'HID': 'H', 'HIE': 'H', 'HIP': 'H',
+        'DAL': 'A', 'DAR': 'R', 'DSG': 'N', 'DAS': 'D', 'DCY': 'C',
+        'DGN': 'Q', 'DGL': 'E', 'DHI': 'H', 'DIL': 'I', 'DLE': 'L',
+        'DLY': 'K', 'MED': 'M', 'DPN': 'F', 'DPR': 'P', 'DSN': 'S',
+        'DTH': 'T', 'DTR': 'W', 'DTY': 'Y', 'DVA': 'V'
+    };
+
+    // DNA nucleotide mapping
+    const dnaMapping = {
+        'DA': 'A', 'DT': 'T', 'DC': 'C', 'DG': 'G',
+        'A': 'A', 'T': 'T', 'C': 'C', 'G': 'G',  // Alternative naming
+        'ADE': 'A', 'THY': 'T', 'CYT': 'C', 'GUA': 'G'  // Alternative naming
+    };
+
+    // RNA nucleotide mapping
+    const rnaMapping = {
+        'A': 'A', 'U': 'U', 'C': 'C', 'G': 'G',
+        'RA': 'A', 'RU': 'U', 'RC': 'C', 'RG': 'G',  // Alternative naming
+        'ADE': 'A', 'URA': 'U', 'CYT': 'C', 'GUA': 'G',  // Alternative naming
+        'URI': 'U', 'UMP': 'U', 'URD': 'U',  // Uridine variations
+        'RURA': 'U', 'RURI': 'U'  // More RNA uracil variations
+    };
+
+    // Detect sequence type based on position names
+    const detectSequenceType = (positionNames) => {
+        if (positionNames.length === 0) return 'protein';
+
+        let dnaCount = 0;
+        let rnaCount = 0;
+        let proteinCount = 0;
+
+        // First pass: check for unambiguous indicators (U = RNA, T/DT = DNA)
+        let hasU = false;
+        let hasT = false;
+
+        for (const resName of positionNames) {
+            const upperResName = (resName || '').toString().trim().toUpperCase();
+
+            // RNA-specific: U is RNA-only
+            if (upperResName === 'U' || upperResName.startsWith('RU') || upperResName.includes('URI') || upperResName.includes('URA')) {
+                hasU = true;
+                rnaCount++;
+            }
+            // DNA-specific: T or DT is DNA-only
+            else if (upperResName === 'T' || upperResName === 'DT' || upperResName.startsWith('DT')) {
+                hasT = true;
+                dnaCount++;
+            }
+            // Check mappings (A, C, G are in both)
+            else if (dnaMapping[upperResName]) {
+                dnaCount++;
+            }
+            else if (rnaMapping[upperResName]) {
+                rnaCount++;
+            }
+            // Check protein
+            else if (threeToOne[upperResName]) {
+                proteinCount++;
+            }
+        }
+
+        // If we found U (RNA-specific) and no T, it's definitely RNA
+        if (hasU && !hasT) {
+            return 'rna';
+        }
+        // If we found T/DT (DNA-specific) and no U, it's DNA
+        if (hasT && !hasU) {
+            return 'dna';
+        }
+
+        // Otherwise, determine type based on majority
+        if (dnaCount > rnaCount && dnaCount > proteinCount) {
+            return 'dna';
+        } else if (rnaCount > dnaCount && rnaCount > proteinCount) {
+            return 'rna';
+        } else {
+            return 'protein';
+        }
+    };
+
+/**
+ * ONE RESIDUE'S LETTER, given what kind of chain it is in.
+ *
+ * Module scope, along with the three mappings: they are constants, they were
+ * being rebuilt on every strip build, and the strip is about to build one
+ * section per object on screen rather than one in total.
+ */
+function positionLetter(position, chainType) {
+    let upper = (position.resName || '').toString().trim().toUpperCase();
+
+    // Map modified residues to standard equivalents (e.g., MSE -> MET)
+    // Use getStandardResidueName if available (from utils.js), otherwise use local mapping
+    if (typeof getStandardResidueName === 'function') {
+        upper = getStandardResidueName(upper).toUpperCase();
+    } else {
+        // Fallback: local mapping for common modifications
+        const modifiedToStandard = {
+            'MSE': 'MET', 'PTR': 'TYR', 'SEP': 'SER', 'TPO': 'THR',
+            'FME': 'MET', 'HYP': 'PRO', 'PCA': 'GLU', 'ALY': 'LYS',
+            '5MDA': 'DA', '5MDC': 'DC', '5MDG': 'DG',
+            'M6A': 'A', 'M5C': 'C', 'M7G': 'G', 'PSU': 'U'
+        };
+        if (modifiedToStandard[upper]) {
+            upper = modifiedToStandard[upper];
+        }
+    }
+
+    if (chainType === 'dna') {
+        return dnaMapping[upper] || 'N';
+    } else if (chainType === 'rna') {
+        if (rnaMapping[upper]) return rnaMapping[upper];
+        if (upper === 'U') return 'U';
+        if (upper.includes('U') || upper.includes('URI') || upper.includes('URA')) return 'U';
+        if (upper.includes('A') && !upper.includes('D')) return 'A';
+        if (upper.includes('C') && !upper.includes('D')) return 'C';
+        if (upper.includes('G') && !upper.includes('D')) return 'G';
+        return 'N';
+    } else {
+        return threeToOne[upper] || 'X';
+    }
+}
+
+    /**
+     * ONE OBJECT'S SEQUENCE, as rows waiting to be laid out.
+     *
+     * The strip used to be built for a single object - the one being edited -
+     * while the canvas could be showing several, so anything selected in
+     * another object was invisible here, and two objects' chain A were the same
+     * row name. The strip is a list of SECTIONS now, one per drawn object, and
+     * this builds one of them.
+     *
+     * Indices leave here as the RENDERER'S: several objects share one
+     * coordinate array and every object after the first sits at an offset in
+     * it, so a cell built with the object's own index would colour itself from
+     * another object's residue and clicking it would select one. The frame
+     * arrays are read with the object's own `i`.
+     *
+     * @returns {Object|null} null when the object has nothing to show
+     */
+    function buildObjectSection(renderer, name) {
+        const object = renderer.objectsData && renderer.objectsData[name];
+        if (!object || !object.frames || !object.frames.length) return null;
+
+        const frameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
+        // ...the frame THIS object is on, which for anything but the object
+        // being edited is the one it was parked on
+        const own = (name === renderer.currentObjectName)
+            ? frameIndex
+            : ((object.viewerState && object.viewerState.currentFrame) || 0);
+        const frame = object.frames[Math.max(0, Math.min(own, object.frames.length - 1))];
+        if (!frame || !frame.coords || !frame.coords.length) return null;
+
+        const positionNames = frame.position_names || [];
+        const residueNumbers = frame.residue_numbers || [];
+        const chains = frame.chains || [];
+        const positionTypes = frame.position_types || [];
+
+        let n = 0;
+        if (positionNames.length > 0) n = positionNames.length;
+        else if (chains.length > 0) n = chains.length;
+        else if (frame.coords) n = Math.floor(frame.coords.length / 3);
+        if (n === 0) return null;
+
+        const seqOffset = renderer.sourceOffsetOf ? renderer.sourceOffsetOf(name) : 0;
+
+        const entries = [];
+        for (let i = 0; i < n; i++) {
+            entries.push({
+                object: name,
+                chain: (chains && chains.length > i && chains[i]) ? chains[i] : 'A',
+                resName: (positionNames && positionNames.length > i && positionNames[i]) ? positionNames[i] : 'UNK',
+                resSeq: (residueNumbers && residueNumbers.length > i && residueNumbers[i] != null) ? residueNumbers[i] : (i + 1),
+                positionIndex: i + seqOffset, // renderer index, not the object's own
+                positionType: (positionTypes && positionTypes.length > i && positionTypes[i]) ? positionTypes[i] : 'P'
+            });
+        }
+
+        // Sort by chain, then by position index (maintains order within chain)
+        entries.sort((a, b) => {
+            if (a.chain < b.chain) return -1;
+            if (a.chain > b.chain) return 1;
+            return a.positionIndex - b.positionIndex;
+        });
+
+        const boundaries = [];
+        let currentChain = null;
+        let chainStart = 0;
+        for (let i = 0; i < entries.length; i++) {
+            if (entries[i].chain !== currentChain) {
+                if (currentChain !== null) {
+                    boundaries.push({ chain: currentChain, startIndex: chainStart, endIndex: i - 1 });
+                }
+                currentChain = entries[i].chain;
+                chainStart = i;
+            }
+        }
+        if (currentChain !== null) {
+            boundaries.push({ chain: currentChain, startIndex: chainStart, endIndex: entries.length - 1 });
+        }
+
+        const chainSequenceTypes = {};
+        for (const b of boundaries) {
+            chainSequenceTypes[b.chain] = detectSequenceType(
+                entries.slice(b.startIndex, b.endIndex + 1).map((r) => r.resName));
+        }
+
+        // ...and this object's ligand groups, in the same index space the
+        // entries speak. Offset once, here, rather than at each comparison.
+        const ownGroups = object.ligandGroups || new Map();
+        const ligandGroups = seqOffset
+            ? new Map(Array.from(ownGroups, ([k, v]) => [k, v.map((i) => i + seqOffset)]))
+            : ownGroups;
+
+        return {
+            name,
+            frame,
+            frameIndex: own,
+            entries,
+            boundaries,
+            chainSequenceTypes,
+            ligandGroups,
+            hasPositionNames: positionNames && positionNames.length === n,
+        };
+    }
+
+    /**
+     * WHICH OBJECTS THE STRIP SHOWS: the ones on screen, in the order they are
+     * drawn - so the strip and the picture agree - and the object being edited
+     * when nothing is on screen at all, so the panels always have something to
+     * describe.
+     */
+    function sequenceSections(renderer) {
+        // WHAT IS ON SCREEN, and nothing else. With every object switched off
+        // there is no sequence to show: the strip goes quiet rather than
+        // describing a structure nobody can see.
+        const drawn = (renderer.drawnObjects ? renderer.drawnObjects() : []).slice();
+        const out = [];
+        for (const name of drawn) {
+            const sec = buildObjectSection(renderer, name);
+            if (sec) out.push(sec);
+        }
+        return out;
+    }
+
+    // WHICH OBJECTS AND FRAMES THE LAST BUILD WAS OF. The same frame of the
+    // same object is a different strip once another object is beside it.
+    let lastSequenceShownKey = '';
+
+    /**
+     * THE STRIP WITH NOTHING ON SCREEN.
+     *
+     * Every object switched off is a state the user can ask for, and a strip
+     * still listing residues then is describing a picture that is not there -
+     * worse, its clicks would select things nobody can see. It says so and its
+     * tools go dead until something is switched back on.
+     */
+    function showEmptyStrip(sequenceViewEl) {
+        sequenceCanvasData = null;
+        lastSequenceShownKey = '';
+        if (sequenceViewEl) {
+            sequenceViewEl.innerHTML = '';
+            const note = document.createElement('div');
+            note.className = 'sequence-empty-note';
+            note.textContent = 'No objects on screen';
+            sequenceViewEl.appendChild(note);
+        }
+        setStripEnabled(false);
+    }
+
+    /** The strip's own controls, dead while there is nothing to act on. */
+    function setStripEnabled(on) {
+        const box = document.getElementById('sequence-viewer-container');
+        if (box) box.classList.toggle('is-empty', !on);
+        for (const id of ['selectAllResidues', 'clearAllResidues', 'invertSelection',
+            'sequenceModeSelect']) {
+            const el = document.getElementById(id);
+            if (el) el.disabled = !on;
+        }
+    }
+
     function buildSequenceViewDeferred() {
         if (typeof requestAnimationFrame !== 'function') { buildSequenceView(); return; }
         if (deferredBuild) return;
@@ -807,21 +1136,29 @@
         const objectName = objectSelect?.value || renderer?.currentObjectName;
         if (!objectName || !renderer) return;
 
+        // ONE SECTION PER OBJECT ON SCREEN. With one object this is the strip
+        // as it has always been; with several it is one after another, each
+        // under its own name, because the canvas is showing all of them and a
+        // strip that showed one was describing a third of the picture.
+        const sections = sequenceSections(renderer);
+        if (!sections.length) {
+            showEmptyStrip(sequenceViewEl);
+            return;
+        }
+        setStripEnabled(true);
         const object = renderer.objectsData[objectName];
-        if (!object || !object.frames || object.frames.length === 0) return;
-
-        // Use current frame instead of always first frame (for animation support)
         const currentFrameIndex = renderer.currentFrame >= 0 ? renderer.currentFrame : 0;
-        const currentFrame = object.frames[currentFrameIndex];
-        if (!currentFrame || !currentFrame.coords || currentFrame.coords.length === 0) return;
+        const currentFrame = sections[0].frame;
 
-        // Check if sequence actually changed - only rebuild if it did
-        const lastFrame = lastSequenceFrameIndex >= 0 && lastSequenceFrameIndex < object.frames.length
-            ? object.frames[lastSequenceFrameIndex]
-            : null;
-
-        // Only rebuild if sequence changed or this is first build
-        if (lastFrame && !sequencesDiffer(currentFrame, lastFrame) && sequenceCanvasData) {
+        // Check if sequence actually changed - only rebuild if it did. The
+        // SHOWN SET counts too: the same frame of the same object is a
+        // different strip once another object is beside it.
+        const shownKey = sections.map((x) => x.name + ':' + x.frameIndex).join(',');
+        const lastFrame = (object && lastSequenceFrameIndex >= 0
+            && lastSequenceFrameIndex < object.frames.length)
+            ? object.frames[lastSequenceFrameIndex] : null;
+        if (lastFrame && !sequencesDiffer(currentFrame, lastFrame) && sequenceCanvasData
+            && lastSequenceShownKey === shownKey) {
             // Sequence hasn't changed, just update colors and selection
             updateSequenceViewColors();
             updateSequenceViewSelectionState();
@@ -830,220 +1167,20 @@
         }
 
         lastSequenceFrameIndex = currentFrameIndex;
+        lastSequenceShownKey = shownKey;
 
-        // Get data with fallbacks for missing information
-        // coords is a flat array [x, y, z, x, y, z, ...], so we need to divide by 3
-        // Or better yet, use the length of position_names or chains if available
-        const positionNames = currentFrame.position_names || [];
-        const residueNumbers = currentFrame.residue_numbers || [];
-        const chains = currentFrame.chains || [];
-        const position_types = currentFrame.position_types || [];
+        // ...and the FIRST section's rows are what the code below lays out;
+        // the loop over the rest comes with the sections that follow it.
+        const hasPositionNames = sections[0].hasPositionNames;
 
-        // Determine number of positions: prefer position_names or chains length, fallback to coords.length / 3
-        let n = 0;
-        if (positionNames.length > 0) {
-            n = positionNames.length;
-        } else if (chains.length > 0) {
-            n = chains.length;
-        } else if (currentFrame.coords) {
-            // coords is flat array [x, y, z, ...], so divide by 3
-            n = Math.floor(currentFrame.coords.length / 3);
-        }
+        const sortedPositionEntries = sections[0].entries;
+        const chainBoundaries = sections[0].boundaries;
 
-        if (n === 0) return;
-
-
-        // Check if position names are available - if not, we can't group ligands with names
-        const hasPositionNames = positionNames && positionNames.length === n;
-
-        // THE STRIP BELONGS TO ONE OBJECT, but its indices have to be the
-        // RENDERER'S. Several objects can be merged into one coordinate array,
-        // and every object after the first sits at an offset there - so a cell
-        // built with the object's own index would colour itself from another
-        // object's residue, and clicking it would select one. The frame arrays
-        // below are read with the object's own `i`; what leaves this loop is
-        // the merged index.
-        const seqOffset = renderer.sourceOffsetOf
-            ? renderer.sourceOffsetOf(objectName) : 0;
-
-        // Create one entry per position (one position = one position, no collapsing)
-        // Default to chain 'A', position name 'UNK', sequential position index, and type 'P' (protein)
-        const positionEntries = [];
-        for (let i = 0; i < n; i++) {
-            positionEntries.push({
-                chain: (chains && chains.length > i && chains[i]) ? chains[i] : 'A',
-                resName: (positionNames && positionNames.length > i && positionNames[i]) ? positionNames[i] : 'UNK',
-                resSeq: (residueNumbers && residueNumbers.length > i && residueNumbers[i] != null) ? residueNumbers[i] : (i + 1),
-                positionIndex: i + seqOffset, // renderer index, not the object's own
-                positionType: (position_types && position_types.length > i && position_types[i]) ? position_types[i] : 'P' // Default to protein
-            });
-        }
-
-        // Sort by chain, then by position index (maintains order within chain) - UNIFIED ORDER
-        const sortedPositionEntries = positionEntries.sort((a, b) => {
-            if (a.chain < b.chain) return -1;
-            if (a.chain > b.chain) return 1;
-            return a.positionIndex - b.positionIndex;
-        });
-
-        // Track chain boundaries for unified sequence
-        const chainBoundaries = [];
-        let currentChain = null;
-        let chainStart = 0;
-        for (let i = 0; i < sortedPositionEntries.length; i++) {
-            if (sortedPositionEntries[i].chain !== currentChain) {
-                if (currentChain !== null) {
-                    chainBoundaries.push({
-                        chain: currentChain,
-                        startIndex: chainStart,
-                        endIndex: i - 1
-                    });
-                }
-                currentChain = sortedPositionEntries[i].chain;
-                chainStart = i;
-            }
-        }
-        // Add last chain
-        if (currentChain !== null) {
-            chainBoundaries.push({
-                chain: currentChain,
-                startIndex: chainStart,
-                endIndex: sortedPositionEntries.length - 1
-            });
-        }
-
-        // Protein amino acid mapping (3-letter to 1-letter)
-        const threeToOne = {
-            'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C', 'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
-            'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P', 'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
-            'SEC': 'U', 'PYL': 'O',
-            // modified and D-amino acids resolve to their parent's letter, the
-            // same way gemmi's one_letter_code does; without these a D-peptide
-            // reads as a row of X in the sequence panel
-            'MSE': 'M', 'HSD': 'H', 'HSE': 'H', 'HID': 'H', 'HIE': 'H', 'HIP': 'H',
-            'DAL': 'A', 'DAR': 'R', 'DSG': 'N', 'DAS': 'D', 'DCY': 'C',
-            'DGN': 'Q', 'DGL': 'E', 'DHI': 'H', 'DIL': 'I', 'DLE': 'L',
-            'DLY': 'K', 'MED': 'M', 'DPN': 'F', 'DPR': 'P', 'DSN': 'S',
-            'DTH': 'T', 'DTR': 'W', 'DTY': 'Y', 'DVA': 'V'
-        };
-
-        // DNA nucleotide mapping
-        const dnaMapping = {
-            'DA': 'A', 'DT': 'T', 'DC': 'C', 'DG': 'G',
-            'A': 'A', 'T': 'T', 'C': 'C', 'G': 'G',  // Alternative naming
-            'ADE': 'A', 'THY': 'T', 'CYT': 'C', 'GUA': 'G'  // Alternative naming
-        };
-
-        // RNA nucleotide mapping
-        const rnaMapping = {
-            'A': 'A', 'U': 'U', 'C': 'C', 'G': 'G',
-            'RA': 'A', 'RU': 'U', 'RC': 'C', 'RG': 'G',  // Alternative naming
-            'ADE': 'A', 'URA': 'U', 'CYT': 'C', 'GUA': 'G',  // Alternative naming
-            'URI': 'U', 'UMP': 'U', 'URD': 'U',  // Uridine variations
-            'RURA': 'U', 'RURI': 'U'  // More RNA uracil variations
-        };
-
-        // Detect sequence type based on position names
-        const detectSequenceType = (positionNames) => {
-            if (positionNames.length === 0) return 'protein';
-
-            let dnaCount = 0;
-            let rnaCount = 0;
-            let proteinCount = 0;
-
-            // First pass: check for unambiguous indicators (U = RNA, T/DT = DNA)
-            let hasU = false;
-            let hasT = false;
-
-            for (const resName of positionNames) {
-                const upperResName = (resName || '').toString().trim().toUpperCase();
-
-                // RNA-specific: U is RNA-only
-                if (upperResName === 'U' || upperResName.startsWith('RU') || upperResName.includes('URI') || upperResName.includes('URA')) {
-                    hasU = true;
-                    rnaCount++;
-                }
-                // DNA-specific: T or DT is DNA-only
-                else if (upperResName === 'T' || upperResName === 'DT' || upperResName.startsWith('DT')) {
-                    hasT = true;
-                    dnaCount++;
-                }
-                // Check mappings (A, C, G are in both)
-                else if (dnaMapping[upperResName]) {
-                    dnaCount++;
-                }
-                else if (rnaMapping[upperResName]) {
-                    rnaCount++;
-                }
-                // Check protein
-                else if (threeToOne[upperResName]) {
-                    proteinCount++;
-                }
-            }
-
-            // If we found U (RNA-specific) and no T, it's definitely RNA
-            if (hasU && !hasT) {
-                return 'rna';
-            }
-            // If we found T/DT (DNA-specific) and no U, it's DNA
-            if (hasT && !hasU) {
-                return 'dna';
-            }
-
-            // Otherwise, determine type based on majority
-            if (dnaCount > rnaCount && dnaCount > proteinCount) {
-                return 'dna';
-            } else if (rnaCount > dnaCount && rnaCount > proteinCount) {
-                return 'rna';
-            } else {
-                return 'protein';
-            }
-        };
-
-        // Build chain-to-sequence-type mapping for unified sequence
-        const chainSequenceTypes = {};
-        for (const boundary of chainBoundaries) {
-            const chainResidues = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
-            const chainResidueNames = chainResidues.map(r => r.resName);
-            chainSequenceTypes[boundary.chain] = detectSequenceType(chainResidueNames);
-        }
+        const chainSequenceTypes = sections[0].chainSequenceTypes;
 
         // Helper function to get position letter based on chain's sequence type
-        const getPositionLetter = (position) => {
-            const chainType = chainSequenceTypes[position.chain] || 'protein';
-            let upper = (position.resName || '').toString().trim().toUpperCase();
-
-            // Map modified residues to standard equivalents (e.g., MSE -> MET)
-            // Use getStandardResidueName if available (from utils.js), otherwise use local mapping
-            if (typeof getStandardResidueName === 'function') {
-                upper = getStandardResidueName(upper).toUpperCase();
-            } else {
-                // Fallback: local mapping for common modifications
-                const modifiedToStandard = {
-                    'MSE': 'MET', 'PTR': 'TYR', 'SEP': 'SER', 'TPO': 'THR',
-                    'FME': 'MET', 'HYP': 'PRO', 'PCA': 'GLU', 'ALY': 'LYS',
-                    '5MDA': 'DA', '5MDC': 'DC', '5MDG': 'DG',
-                    'M6A': 'A', 'M5C': 'C', 'M7G': 'G', 'PSU': 'U'
-                };
-                if (modifiedToStandard[upper]) {
-                    upper = modifiedToStandard[upper];
-                }
-            }
-
-            if (chainType === 'dna') {
-                return dnaMapping[upper] || 'N';
-            } else if (chainType === 'rna') {
-                if (rnaMapping[upper]) return rnaMapping[upper];
-                if (upper === 'U') return 'U';
-                if (upper.includes('U') || upper.includes('URI') || upper.includes('URA')) return 'U';
-                if (upper.includes('A') && !upper.includes('D')) return 'A';
-                if (upper.includes('C') && !upper.includes('D')) return 'C';
-                if (upper.includes('G') && !upper.includes('D')) return 'G';
-                return 'N';
-            } else {
-                return threeToOne[upper] || 'X';
-            }
-        };
+        const getPositionLetter = (position) => positionLetter(position,
+            chainSequenceTypes[position.chain] || 'protein');
 
         // Canvas rendering settings
         const charWidth = 10; // Monospace character width
@@ -1052,7 +1189,8 @@
 
         // Chain button uses same dimensions as sequence characters
         // Find the maximum chain ID length to make all buttons the same size
-        const maxChainIdLength = Math.max(...chainBoundaries.map(b => b.chain.length), 3);
+        const maxChainIdLength = Math.max(3, ...sections.flatMap(
+            (x) => x.boundaries.map((b) => b.chain.length)));
         const chainButtonWidth = (charWidth * maxChainIdLength + 20) * 2 / 3; // Fixed width for all buttons (2/3 of original size)
 
         // Calculate dynamic line breaks based on container width
@@ -1084,6 +1222,7 @@
             chainButtonWidth,
             charsPerLine,
             chainLabelPositions: [],
+            objectLabelPositions: [],   // one heading per object, when several
             residuePositions: [],
             selectableItems: [] // Unified selectable items array
         };
@@ -1091,20 +1230,36 @@
         let currentY = spacing;
         let maxWidth = 0;
 
+        // ONE SECTION PER OBJECT ON SCREEN, one after another down the strip.
+        // Everything inside is the code that used to run once; the per-section
+        // names shadow the outer ones so the body did not have to change.
+        for (const section of sections) {
+        const sortedPositionEntries = section.entries;
+        const chainBoundaries = section.boundaries;
+        const chainSequenceTypes = section.chainSequenceTypes;
+        const hasPositionNames = section.hasPositionNames;
+        const getPositionLetter = (position) => positionLetter(position,
+            chainSequenceTypes[position.chain] || 'protein');
+
+        // ...UNDER ITS NAME, and only when there is more than one: a single
+        // object needs no heading, and the strip then looks exactly as it
+        // always has.
+        if (sections.length > 1) {
+            layout.objectLabelPositions.push({
+                object: section.name,
+                x: spacing,
+                y: currentY,
+                width: containerWidth - spacing * 2,
+                height: charHeight
+            });
+            currentY += charHeight + spacing;
+        }
+
         if (sequenceViewMode) {
             // Get ligand groups from renderer (computed using shared utility)
-            const currentObject = renderer?.objectsData?.[renderer.currentObjectName];
-            // IN THE SAME INDEX SPACE THE ENTRIES SPEAK. The object stores its
-            // ligand groups in its own numbering; the cells above carry merged
-            // indices, and these lists are compared against them AND handed on
-            // as the selection a ligand token makes. Offset once, here, rather
-            // than at each of the four comparisons below.
-            const ligOffset = renderer?.sourceOffsetOf
-                ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
-            const ownGroups = currentObject?.ligandGroups || new Map();
-            const ligandGroups = ligOffset
-                ? new Map(Array.from(ownGroups, ([k, v]) => [k, v.map((i) => i + ligOffset)]))
-                : ownGroups;
+            // THIS SECTION'S ligand groups, already in the index space its
+            // entries speak - see buildObjectSection.
+            const ligandGroups = sections[0].ligandGroups;
 
             // Reverse map: position index -> ligand group key.
             //
@@ -1135,6 +1290,7 @@
 
                 layout.chainLabelPositions.push({
                     chainId,
+                    object: section.name,
                     positionIndex: chainPositions[0].positionIndex,
                     x: chainLabelX,
                     y: chainLabelY,
@@ -1267,6 +1423,7 @@
                                         letter: '-',
                                         color: { r: 240, g: 240, b: 240 },
                                         resSeq: prevResSeq + g + 1,
+                                        object: section.name,
                                         chain: item.chain
                                     },
                                     x: currentX,
@@ -1293,6 +1450,9 @@
                             positionIndices: item.positionIndices,
                             ligandName: item.resName,
                             resSeq: item.resSeq,
+                            // WHICH OBJECT'S chain A this is: the strip has one
+                            // section per object on screen and the ids collide
+                            object: section.name,
                             chain: item.chain,
                             resName: item.resName
                         };
@@ -1316,6 +1476,7 @@
                             positionIndex: atom.positionIndex,
                             letter,
                             resSeq: atom.resSeq,
+                            object: section.name,
                             chain: atom.chain,
                             resName: atom.resName // Store position name for tooltip
                         };
@@ -1363,6 +1524,7 @@
 
                 layout.chainLabelPositions.push({
                     chainId,
+                    object: section.name,
                     positionIndex: sortedPositionEntries[boundary.startIndex].positionIndex,
                     x: currentX,
                     y: lineY,
@@ -1376,16 +1538,21 @@
 
             currentY = lineY + charHeight + spacing;
         }
+        }   // ...end of the per-section loop
 
         // Build unified selectableItems array
         let itemIndex = 0;
 
-        // Add chain items (one per chain)
+        // Add chain items (one per chain), each against ITS OWN object's rows:
+        // two objects both have a chain A, and matching on the id alone gave
+        // one of them the other's residues.
+        const sectionByName = new Map(sections.map((x) => [x.name, x]));
         for (const chainPos of layout.chainLabelPositions) {
             const chainId = chainPos.chainId;
-            const boundary = chainBoundaries.find(b => b.chain === chainId);
+            const owner = sectionByName.get(chainPos.object) || sections[0];
+            const boundary = owner.boundaries.find(b => b.chain === chainId);
             if (boundary) {
-                const chainPositions = sortedPositionEntries.slice(boundary.startIndex, boundary.endIndex + 1);
+                const chainPositions = owner.entries.slice(boundary.startIndex, boundary.endIndex + 1);
                 const positionIndices = chainPositions.map(a => a.positionIndex);
 
                 // For chain items, expand hit box to full row height to eliminate gaps
@@ -1410,8 +1577,9 @@
 
                 layout.selectableItems.push({
                     type: 'chain',
-                    id: `chain-${chainId}`,
+                    id: `chain-${chainPos.object || ''}-${chainId}`,
                     chainId: chainId,
+                    object: chainPos.object,
                     positionIndices: positionIndices,
                     bounds: {
                         x: chainPos.x,
@@ -1572,6 +1740,12 @@
             const frame = obj?.frames?.[0];
             if (!frame) return;
 
+            // WHERE YOU SELECT IS WHAT YOU ARE WORKING ON. The strip shows a
+            // section per object on screen, so a click already says which one -
+            // there is no separate picker to keep in step, and the panels, the
+            // PAE map and Copy/Delete all follow the section you are in.
+            adoptObjectOfSelection(positions);
+
             // Record the selection and stop. Deliberately does NOT call
             // setVisibility - that is what recomputes visiblePositions, and a
             // selection must not change what is on screen.
@@ -1585,15 +1759,63 @@
 
         };
 
+        /**
+         * Make the object a selection lands in the one being edited.
+         *
+         * Only when the whole selection is inside ONE object: a span that
+         * reaches two of them says nothing about which to work on, and
+         * changing it out from under the user would be worse than leaving it.
+         * Nothing about the picture moves - see _switchToObject, which freezes
+         * the camera, the clip, the style and the mask while several objects
+         * are on screen.
+         */
+        const adoptObjectOfSelection = (positions) => {
+            if (!positions || !positions.size || !renderer.ownerOf) return;
+            let owner = null;
+            for (const i of positions) {
+                const o = renderer.ownerOf(i);
+                const name = o ? o.name : renderer.currentObjectName;
+                if (owner === null) owner = name;
+                else if (owner !== name) return;      // spans two objects
+            }
+            if (!owner || owner === renderer.currentObjectName) return;
+            const select = callbacks.getObjectSelect ? callbacks.getObjectSelect() : null;
+            if (select && select.value !== owner) {
+                select.value = owner;
+                select.dispatchEvent(new Event('change'));
+            } else if (renderer._switchToObject) {
+                renderer._switchToObject(owner);
+            }
+        };
+
         // Every position belonging to a chain, for click-a-chain-label.
         // In the renderer's indices, like every other position this file hands
         // out: the frame is the object's, the selection is the viewer's.
-        const positionsOfChain = (chainId) => {
-            const obj = renderer.objectsData[renderer.currentObjectName];
+        const positionsOfChain = (chainId, objectName) => {
+            // FROM THE LAYOUT, which already knows which object each cell
+            // belongs to and carries the renderer's indices. Read from one
+            // object's frame instead, a click on chain A selected chain A of
+            // whichever object happened to be current - and with two of them
+            // on screen that is a coin toss.
+            const layout = sequenceCanvasData && sequenceCanvasData.layout;
+            const out = new Set();
+            if (layout && layout.residuePositions) {
+                for (const rp of layout.residuePositions) {
+                    const rd = rp.residueData;
+                    if (!rd || rd.chain !== chainId) continue;
+                    if (objectName && rd.object && rd.object !== objectName) continue;
+                    const ids = rd.positionIndices
+                        || (rd.positionIndex >= 0 ? [rd.positionIndex] : []);
+                    for (const i of ids) out.add(i);
+                }
+            }
+            if (out.size) return out;
+            // ...and the old route as a fallback, for a layout that has not
+            // been built yet
+            const obj = renderer.objectsData[objectName || renderer.currentObjectName];
             const frame = obj?.frames?.[0];
             const off = renderer.sourceOffsetOf
-                ? renderer.sourceOffsetOf(renderer.currentObjectName) : 0;
-            const out = new Set();
+                ? renderer.sourceOffsetOf(objectName || renderer.currentObjectName) : 0;
             if (frame?.chains) {
                 for (let i = 0; i < frame.chains.length; i++) {
                     if (frame.chains[i] === chainId) out.add(i + off);
@@ -1812,7 +2034,9 @@
         const selectWholeChain = (item, additive) => {
             const chainId = chainIdOfItem(item);
             if (!chainId) return;
-            const all = positionsOfChain(chainId);
+            const owner = (item && (item.object
+                || (item.residueData && item.residueData.object))) || null;
+            const all = positionsOfChain(chainId, owner);
             if (additive) for (const i of baselinePositions()) all.add(i);
             applyResidueSelection(all);
             setAnchor(item);
@@ -2142,6 +2366,11 @@
         setCallbacks: function (cb) {
             callbacks = Object.assign({}, callbacks, cb);
         },
+
+        // WHAT THE STRIP LAID OUT, for tests: the sections, the chain rows and
+        // the cells, each carrying the object it belongs to. Read-only, and the
+        // only way from outside to ask what the strip is actually showing.
+        layout: () => (sequenceCanvasData ? sequenceCanvasData.layout : null),
 
         // Main functions
         buildView: buildSequenceView,
