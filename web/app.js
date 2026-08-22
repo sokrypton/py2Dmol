@@ -7997,11 +7997,10 @@ async function loadViewerState(stateData) {
 
             // Restore line width. NO SYNTHETIC EVENT - the same shape as
             // restoreCartoon() above, and for a reason that bit: the slider's
-            // handler treats an 'input' as the user taking the control over
-            // (_lineWidthUserSet), after which a preset switch stops setting
-            // width. Dispatching one here closed that latch on every load, so
-            // richardson and 3d - 2.0 and 3.0 - both kept whatever width was
-            // already there. Setting the property and the element directly is
+            // handler records a real drag as this style's chosen width
+            // (_widthByStyle), after which the style's own profile width no
+            // longer applies. Dispatching one here would make every load look
+            // like a choice. Setting the property and the element directly is
             // what every other restored control does.
             if (typeof vs.line_width === 'number') {
                 renderer.lineWidth = vs.line_width;

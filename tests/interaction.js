@@ -5386,7 +5386,6 @@ t('a style belongs to its object, and a width to its style', () => {
     global.window.py2dmolCartoon = { STYLE_DEFAULTS: DEF };
     try {
         v._widthByStyle = { tube: 4.5 };
-        v._lineWidthUserSet = true;      // the old latch, which must not decide
         v.style = 'cartoon';
         v._applyStyleDefaults('cartoon');
         if (v.lineWidth !== 3) {
@@ -5397,6 +5396,14 @@ t('a style belongs to its object, and a width to its style', () => {
         v._applyStyleDefaults('tube');
         if (v.lineWidth !== 4.5) {
             throw new Error('tube did not get its own width back');
+        }
+        // ...AND NOT THROUGH ONE FLAG FOR BOTH STYLES, which is what this
+        // replaced: a single "the user has taken the width over" latch stopped
+        // the width following ANY switch once it was set, which is how a tube
+        // radius arrived in cartoon as a ribbon width.
+        if (/_lineWidthUserSet/.test(fs.readFileSync(
+            'py2Dmol/resources/viewer-mol.js', 'utf8'))) {
+            throw new Error('the single-latch width is back');
         }
     } finally {
         if (had === undefined) delete global.window.py2dmolCartoon;

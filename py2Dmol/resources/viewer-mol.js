@@ -1118,7 +1118,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // and every py2Dmol.view() send a width whether or not anyone chose
             // it, so richardson kept ribbon's 3.0 while taking every other
             // preset value.
-            this._lineWidthUserSet = false;
             // WIDTH IS REMEMBERED PER STYLE. The slider is one control but it
             // is not one quantity: in tube it is the radius of the tube, in
             // cartoon it scales the ribbon. A width dragged in tube used to
@@ -2304,25 +2303,21 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (this.lineWidthSlider) {
                 this.lineWidthSlider.addEventListener('input', (e) => {
                     this.lineWidth = parseFloat(e.target.value);
-                    // THE USER, NOT THE APP. This latch stops a style switch
-                    // imposing its preset width (see _applyStyleDefaults), and
-                    // it must only be tripped by an actual gesture.
+                    // THE USER, NOT THE APP. A width the user dragged is
+                    // remembered against the style it was dragged in, and a
+                    // style switch restores that style's own (see
+                    // _applyStyleDefaults) - so this must only record an actual
+                    // gesture.
                     //
                     // Restoring saved state sets the slider and dispatches a
-                    // synthetic 'input' to push the value through - and this
-                    // handler could not tell the two apart, so the latch closed
-                    // on load and width never followed the preset again. That is
-                    // richardson and 3d rendering at the same width while the
-                    // panel truthfully reports the one number they share, even
-                    // though their defaults are 2.0 and 3.0.
+                    // synthetic 'input' to push the value through. Recording
+                    // that as a drag would make every load look like a choice,
+                    // and the style's profile width would never apply again.
                     //
                     // isTrusted is false for any event dispatched from script
                     // and true only for one the browser raised from real input,
                     // which is exactly the distinction wanted here.
                     if (e.isTrusted) {
-                        this._lineWidthUserSet = true;
-                        // ...and against the style it was made in, so the other
-                        // style keeps its own
                         if (!this._widthByStyle) this._widthByStyle = {};
                         this._widthByStyle[this.style] = this.lineWidth;
                     }
@@ -2739,11 +2734,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // _widthByStyle. Keyed on the current style, which setStyle has
             // already assigned by the time this runs, and not on the argument:
             // that is a PRESET name (richardson, 3d) on half the call sites.
-            // THE LATCH NO LONGER DECIDES, the memory does. _lineWidthUserSet
-            // is one flag for both styles, so once it closed the width stopped
-            // following ANY switch - which is how a tube radius arrived in
-            // cartoon as a ribbon width. A style that has never had its width
-            // dragged takes the profile's; one that has takes its own back.
+            // PER STYLE, because the slider is one control and not one
+            // quantity: in tube it is the radius of the tube, in cartoon it
+            // scales the ribbon. This was a single "the user has taken it
+            // over" flag, and once set the width stopped following ANY switch -
+            // which is how a tube radius arrived in cartoon as a ribbon width.
+            // A style that has never had its width dragged takes the profile's;
+            // one that has takes its own back.
             const mine = this._widthByStyle && this._widthByStyle[this.style];
             this.lineWidth = (typeof mine === 'number') ? mine : d.width;
             this.cartoonThickness = d.thickness;
@@ -13323,9 +13320,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // The VALUE comes down with the ceiling when the style changes. A slider
     // pinned at its maximum while the renderer holds a larger number is a
     // control that lies about the drawing, which is the same failure the
-    // STYLE_DEFAULTS table exists to prevent - and _lineWidthUserSet means a
-    // width the user actually dragged survives a style switch, so without this
-    // a tube at 5 would carry 5 into a cartoon whose slider stops at 4.7.
+    // STYLE_DEFAULTS table exists to prevent. Width is remembered per style
+    // now (_widthByStyle), so a tube at 5 no longer walks into a cartoon whose
+    // slider stops at 4.7 - this stays as the guard for a width arriving from
+    // anywhere else, a restored session among them.
     const WIDTH_MAX = { tube: 5.0, cartoon: 4.7 };
 
     function syncStylePanel() {
