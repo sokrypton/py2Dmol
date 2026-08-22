@@ -196,3 +196,17 @@ Found by walking the paths a user actually clicks, not by reading the merge:
   button is styled from the state rather than from the toggle, so it cannot sit
   lit over a view that is not overlaid.
 - **setCoords does not persist a merged bond list** onto the current object.
+
+## Measured
+
+- **Rebuilding the merge** (4UG0 + 6MRR, 17,618 positions, Chrome, tab visible):
+  `_mergeObjects` 5.5 ms, the whole `_applyShownObjects` 22 ms - which is what
+  a frame step, a side-chain toggle or a contact edit costs in a merged view,
+  against 0.2 ms for a plain single-object frame load of the peptide alone.
+  Fine for every interactive case; playing an animation of a ribosome with a
+  second object up would be strained, and if that ever matters the fix is to
+  patch the changed object's slice in place rather than rebuild.
+- **The spread-push ceiling**: `out.push(...src)` throws between 100,000 and
+  125,000 elements. Both merges concatenate whole per-position arrays and both
+  are reachable at that size - a capsid overlaid on itself was already able to
+  hit it - so both append element by element now.

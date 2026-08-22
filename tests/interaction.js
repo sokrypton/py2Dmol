@@ -7023,5 +7023,66 @@ t('an object loaded while several are shown joins them', () => {
     eq(w.shownObjects.size, 0, 'nothing was written down for a lone object');
 });
 
+// PLAYBACK MUST NOT DROP THE OTHER OBJECTS.
+//
+// Five paths move to a frame outside setFrame - the animation timer, the loop
+// back to frame 0, the recorder, the render loop's catch-up and the capture
+// sweep - and every one of them tested the OVERLAY alone before loading. With
+// several objects merged, loading "the frame" rebuilds the current object by
+// itself, so pressing play dropped the other structures on the first tick.
+t('every playback path loads through the one rule', () => {
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = mol.indexOf('        _loadFrameForPlayback(');
+    if (at < 0) throw new Error('_loadFrameForPlayback is gone');
+    const body = mol.slice(at, mol.indexOf('\n        }', at));
+    if (!/overlayState[\s\S]*multiState[\s\S]*_applyShownObjects/.test(body)) {
+        throw new Error('the playback rule no longer covers both merges');
+    }
+    // ...and nothing near an animation still tests the overlay on its own
+    const suspects = mol.split('\n').map((l, k) => [k + 1, l])
+        .filter(([, l]) => /_loadFrameData\(/.test(l));
+    for (const [line, text] of suspects) {
+        const around = mol.split('\n').slice(Math.max(0, line - 6), line).join(' ');
+        // ...the rule's own body excepted, which is where that test belongs
+        if (/overlayState\.enabled/.test(around)
+            && !/_loadFrameForPlayback\(/.test(around)
+            && !/multiState[\s\S]*_applyShownObjects/.test(around)) {
+            throw new Error('line ' + line + ' guards a frame load on the overlay'
+                + ' alone - a multi-object view would lose everything but the'
+                + ' current object');
+        }
+    }
+});
+
+// A MERGE OF BIG STRUCTURES MUST NOT BLOW THE STACK.
+//
+// `out.push(...src)` passes every element as an argument: measured here, a
+// hundred thousand is fine and a hundred and twenty-five thousand throws. Both
+// merges concatenate whole per-position arrays, and both are reachable with
+// structures that size - a capsid overlaid on itself, or two of them shown at
+// once - where the failure is a RangeError in the middle of a load.
+t('the merges do not spread whole arrays into push', () => {
+    const cap = 125000;
+    const big = new Array(cap).fill(1);
+    let spreadThrows = false;
+    try { const o = []; o.push(...big); } catch (e) { spreadThrows = true; }
+    if (!spreadThrows) throw new Error('this engine spreads ' + cap
+        + ' arguments - pick a bigger array for this test');
+
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    for (const fn of ['_mergeFrameRange', '_mergeObjects']) {
+        const at = mol.indexOf('        ' + fn + '(');
+        if (at < 0) throw new Error(fn + ' is gone');
+        // ...code only: the comment above each fix names the pattern it
+        // replaced, and a grep that cannot tell the two apart would fail on
+        // the explanation for why it passes.
+        const body = mol.slice(at, mol.indexOf('\n        }\n', at))
+            .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+        const bad = body.match(/push\(\.\.\.[a-zA-Z]/g);
+        if (bad) throw new Error(fn + ' spreads an array into push (' + bad.length
+            + ' place(s)) - a structure over about 100k positions throws');
+    }
+});
+
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');
 process.exit(fail?1:0);

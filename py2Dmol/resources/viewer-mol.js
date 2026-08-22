@@ -4773,6 +4773,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
 
 
+        /**
+         * MOVE TO A FRAME DURING PLAYBACK, loading whatever that means.
+         *
+         * Three cases, and every animation and recording path needs all three:
+         * in overlay mode every frame is already in the array and loading one
+         * would destroy the merge; with several objects merged, the merge is
+         * rebuilt so the OTHER objects stay on screen; otherwise the frame is
+         * loaded as it always was. Each of these call sites used to test the
+         * overlay alone, so playing an animation with two objects up dropped
+         * one of them on the first tick.
+         */
+        _loadFrameForPlayback(frameIndex) {
+            if (this.overlayState && this.overlayState.enabled) return;
+            if (this.multiState && this.multiState.enabled) {
+                this._applyShownObjects(true);
+                return;
+            }
+            this._loadFrameData(frameIndex, true);
+        }
+
         // Set the current frame and render it
         setFrame(frameIndex, skipRender = false) {
             frameIndex = parseInt(frameIndex);
@@ -5409,16 +5429,24 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const residueNumbers = frame.residue_numbers && frame.residue_numbers.length === frameAtomCount ?
                     frame.residue_numbers : Array.from({ length: frameAtomCount }, (_, i) => i + 1);
 
-                mergedPlddts.push(...plddts);
-                mergedPositionTypes.push(...positionTypes);
-                mergedPositionNames.push(...positionNames);
-                mergedPositionAtoms.push(...(frame.position_atoms
+                // ONE AT A TIME, not spread: `out.push(...src)` passes every
+                // element as an argument and blows the stack between 100k and
+                // 125k of them. A capsid overlaid on itself reaches that on its
+                // own, and the failure is a thrown RangeError in the middle of
+                // a load, not a slow frame.
+                const append = (out, src) => {
+                    for (let k = 0; k < src.length; k++) out.push(src[k]);
+                };
+                append(mergedPlddts, plddts);
+                append(mergedPositionTypes, positionTypes);
+                append(mergedPositionNames, positionNames);
+                append(mergedPositionAtoms, (frame.position_atoms
                     && frame.position_atoms.length === frameAtomCount
                     ? frame.position_atoms : Array(frameAtomCount).fill('')));
-                mergedPositionElements.push(...(frame.position_elements
+                append(mergedPositionElements, (frame.position_elements
                     && frame.position_elements.length === frameAtomCount
                     ? frame.position_elements : Array(frameAtomCount).fill('')));
-                mergedResidueNumbers.push(...residueNumbers);
+                append(mergedResidueNumbers, residueNumbers);
 
                 // Preserve original chain IDs from this frame
                 for (let i = 0; i < frameAtomCount; i++) {
@@ -5553,6 +5581,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 sourceFrames.push(frameIdx);
 
                 const fill = (arr, fallback) => (arr && arr.length === n) ? arr : fallback();
+                // APPENDED ONE AT A TIME, not spread. `out.push(...src)` passes
+                // every element as an argument and blows the stack somewhere
+                // between 100k and 125k of them - which a capsid or a ribosome
+                // reaches on its own, and this is the path that puts two of
+                // them in one array. Measured: 100,000 fine, 125,000 throws.
+                const append = (out, src) => {
+                    for (let k = 0; k < src.length; k++) out.push(src[k]);
+                };
                 const fChains = fill(frame.chains, () => Array(n).fill('A'));
 
                 for (let i = 0; i < n; i++) {
@@ -5560,12 +5596,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     sourceIdMap.push(src);
                     chains.push(fChains[i] || 'A');
                 }
-                plddts.push(...fill(frame.plddts, () => Array(n).fill(50.0)));
-                positionTypes.push(...fill(frame.position_types, () => Array(n).fill('P')));
-                positionNames.push(...fill(frame.position_names, () => Array(n).fill('UNK')));
-                positionAtoms.push(...fill(frame.position_atoms, () => Array(n).fill('')));
-                positionElements.push(...fill(frame.position_elements, () => Array(n).fill('')));
-                residueNumbers.push(...fill(frame.residue_numbers,
+                append(plddts, fill(frame.plddts, () => Array(n).fill(50.0)));
+                append(positionTypes, fill(frame.position_types, () => Array(n).fill('P')));
+                append(positionNames, fill(frame.position_names, () => Array(n).fill('UNK')));
+                append(positionAtoms, fill(frame.position_atoms, () => Array(n).fill('')));
+                append(positionElements, fill(frame.position_elements, () => Array(n).fill('')));
+                append(residueNumbers, fill(frame.residue_numbers,
                     () => Array.from({ length: n }, (_, i) => i + 1)));
 
                 for (const b of (frame.bonds || [])) {
@@ -5819,10 +5855,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // If we're at the last frame and not recording, reset to first frame for looping
             if (!this.isRecording && this.currentFrame >= object.frames.length - 1) {
                 this.currentFrame = 0;
-                // In overlay mode, don't reload frame data (would destroy merged data)
-                if (!this.overlayState.enabled) {
-                    this._loadFrameData(0, true); // Load without render
-                }
+                this._loadFrameForPlayback(0);
             }
 
             this.isPlaying = true;
@@ -5850,10 +5883,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                         // Update the frame index - render loop will pick it up
                         this.currentFrame = nextFrame;
-                        // In overlay mode, don't reload frame data (would destroy merged data)
-                        if (!this.overlayState.enabled) {
-                            this._loadFrameData(nextFrame, true); // Load without render
-                        }
+                        this._loadFrameForPlayback(nextFrame);
                         this.updateUIControls(); // Update slider
                     } else {
                         this.stopAnimation();
@@ -5901,11 +5931,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 return;
             }
 
-            // Load and render current frame
-            // In overlay mode, don't reload frame data (would destroy merged data)
-            if (!this.overlayState.enabled) {
-                this._loadFrameData(currentFrame, true); // Load without render
-            }
+            // Load and render current frame - see _loadFrameForPlayback
+            this._loadFrameForPlayback(currentFrame);
             // The sink renders when it is recording at its own size (see
             // _makeVideoSink); rendering here as well would draw every frame
             // twice, and on the GPU path at two different sizes, which rebuilds
@@ -11943,8 +11970,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // But ensure it's loaded if somehow it wasn't
                     // CRITICAL FIX: In overlay mode, DON'T call _loadFrameData - it would destroy merged data!
                     // In overlay mode, merged data is already loaded, so just render it
-                    if (!this.overlayState.enabled && (this.coords.length === 0 || this.lastRenderedFrame === -1)) {
-                        this._loadFrameData(currentFrame, true); // Load without render
+                    if (this.coords.length === 0 || this.lastRenderedFrame === -1) {
+                        this._loadFrameForPlayback(currentFrame);
                     }
                     needsRender = true;
                 }
@@ -13010,9 +13037,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     const at = Math.min(nFrames - 1, Math.floor((i * nFrames) / N));
                     if (at !== this.currentFrame) {
                         this.currentFrame = at;
-                        if (!this.overlayState || !this.overlayState.enabled) {
-                            this._loadFrameData(at, true);
-                        }
+                        this._loadFrameForPlayback(at);
                         this.lastRenderedFrame = at;
                     }
                 }
