@@ -4150,8 +4150,15 @@ function signatureOf(r, w, h, colors) {
     const contactKey = contactKeyOf(o);
     return [
         r.currentObjectName, r.currentFrame,
+        // WHICH objects are in the array, not just how many positions: a
+        // different shown set can come to the same count, and the mesh would
+        // be reused for a different structure.
+        (r.multiState && r.multiState.enabled && r.multiState.sourceNames
+            ? r.multiState.sourceNames.join(',') : ''),
         r.coords && r.coords.length, r.segmentIndices && r.segmentIndices.length,
-        o && o.maxExtent, visKey, w, h,
+        // the extent of what is DRAWN - the merge has its own, and the camera
+        // scale is built from it
+        ((r.drawnStats && r.drawnStats()) || o || {}).maxExtent, visKey, w, h,
         r.lineWidth, r.cartoonThickness, r.cartoonSheetFlat, r.cartoonDetail,
         // the thickness floors are geometry, so tuning either rebuilds
         r.cartoonGpuRibbonThick, r.cartoonGpuHelixTh,
@@ -4198,14 +4205,16 @@ function signatureOf(r, w, h, colors) {
         // not from a position - so hiding a base rebuilt nothing and the GPU
         // went on drawing the plate from the cached mesh. By identity, like the
         // visibility mask: setBasesFor assigns a new Set every time.
-        o && o.bases ? 'b' + idOf(o.bases) + ':' + o.bases.size : 'ball',
+        (() => { const b = r.mergedObjectSet ? r.mergedObjectSet('bases', 'all')
+            : (o && o.bases); return b ? 'b' + idOf(b) + ':' + b.size : 'ball'; })(),
         // ELEMENT COLOURS ARE GEOMETRY, for the reason the halves term above
         // gives: a bond whose ends differ is CUT at its midpoint when the mesh
         // is captured. Switching elements off uncuts it, and the halves term
         // cannot see that - it is a length, and the array keeps its length
         // whatever is in it. By identity, like the plates: setElementsFor
         // assigns a new Set every time.
-        o && o.elements ? 'e' + idOf(o.elements) + ':' + o.elements.size : 'eall',
+        (() => { const e = r.mergedObjectSet ? r.mergedObjectSet('elements', 'all')
+            : (o && o.elements); return e ? 'e' + idOf(e) + ':' + e.size : 'eall'; })(),
         // THE NUCLEIC TRACE SMOOTHING IS GEOMETRY: it moves the rails, the
         // plates and the rungs together (see smoothNucleicTrace), so switching
         // it rebuilds rather than repaints.

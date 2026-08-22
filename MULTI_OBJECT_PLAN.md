@@ -111,19 +111,38 @@ space, so picking works unchanged - what it needs is the source map to report
 WHICH object was hit. The sets keyed by position index each need the same
 offset treatment side chains and visibility have had:
 
+*(done, apart from the selection)* The translators are `ownerOf(i)` (merged
+index to object, local index, and that object's own frame), `writeGroups(ps)`
+(a selection split into the objects it touches, each in its own numbering),
+`mergedObjectSet(field, nullMeans)` (a per-object set read in merged indices,
+cached by the identity of the sets behind it) and `localRangeOf(name)`.
+
 | set | where | state |
 |---|---|---|
-| `obj.sidechains` | which residues show side chains | done - `shownSidechainSet()` |
-| `visibilityState.positions` | the mask | done - `_applyMergedVisibility` |
-| `obj.bases` | nucleic base plates | TO DO |
-| `obj.elements` | element colouring per residue | TO DO |
-| forced/assigned SSE | `forcedSseFor`, `assignedSseFor` | TO DO |
-| contacts | `_resolveContactToIndices` | TO DO |
-| colour overrides | `getColorOverride` | TO DO |
-| `residueSelection` | dropped on a merge change today | TO DO |
+| `obj.sidechains` | which residues show side chains | `shownSidechainSet()` |
+| `visibilityState.positions` | the mask | `_applyMergedVisibility` |
+| `obj.bases` | nucleic base plates | `mergedObjectSet('bases', 'all')` |
+| `obj.elements` | element colouring | `mergedObjectSet('elements', 'all')` |
+| `obj.hiddenBackbone` | hidden backbone | `mergedObjectSet(..., 'none')` |
+| `obj.sse` | forced secondary structure | `forcedSseFor` via `ownerOf` |
+| `obj.contacts` | contacts | resolved inside each object's window |
+| `obj.ligandGroups` | which atoms are one ligand | `mergedLigandGroups()` |
+| colours (object/frame/chain/position) | `resolveColorHierarchy` | via `ownerOf` |
+| `obj.sidechainColor` | per-residue side-chain colour | via `ownerOf` |
+| entropy | `entropyForDrawn()` | per object, concatenated |
+| `residueSelection` | dropped when the merge changes | TO DO |
 
-One pair of translators - merged index to (object, local index) and back -
-routed through those accessors, rather than an offset written out eight times.
+**The two polarities both had to survive.** `null` means NONE for side chains
+and a hidden backbone, and ALL for base plates and element colours - so an
+untouched object contributes nothing in the first case and its whole range in
+the second, and the merged answer is null only when EVERY shown object is
+untouched. Get that wrong and switching one plate off in one object hides
+every plate in the other.
+
+**And one that is not an index at all:** setCoords persists the bond list onto
+the current object so the next frame can reuse it. A merged list is offsets
+into an array of several objects; written there it outlives the merge, and the
+next plain load bonds that object's residues to positions that are gone.
 
 **6. The GPU paths.** *(verified for the cartoon)* One resident mesh, keyed by
 one signature: a merged array is a single structure as far as they are

@@ -106,6 +106,24 @@ window.addEventListener('load', () => {
       }
       R.painted = tally;
 
+      // A PER-OBJECT SET, EDITED THROUGH THE MERGE. Hiding the second
+      // object's backbone must land on the second object, in its own
+      // numbering, and leave the first one alone and fully drawn.
+      const off1 = R.offsets[1];
+      const hide = [];
+      for (let i = off1; i < r.coords.length && i < off1 + 40; i++) hide.push(i);
+      r.setBackboneHiddenFor(hide, true);
+      r.render('hidden');
+      await new Promise((s) => setTimeout(s, 200));
+      R.hiddenInk = ink(r);
+      R.hiddenOnFirst = !!(r.objectsData[R.sources[0]].hiddenBackbone);
+      const hb = r.objectsData[R.sources[1]].hiddenBackbone;
+      R.hiddenLocal = hb ? Math.min(...hb) : -1;
+      r.setBackboneHiddenFor(hide, false);
+      r.render('unhidden');
+      await new Promise((s) => setTimeout(s, 200));
+      R.restoredInk = ink(r);
+
       // ...and the GPU path, in the SAME page load
       r.useGPU = true;
       r.render('gpu');
@@ -205,6 +223,9 @@ def main():
     print(f"  auto colour resolved to {R['autoColor']}: {R['colors']}")
     print(f"  modes: {R.get('modes')}")
     print(f"  painted: {R.get('painted')}")
+    print(f"  hiding 40 of the second object: {R['hiddenInk']} ink,"
+          f" back to {R['restoredInk']}; first object touched:"
+          f" {R['hiddenOnFirst']}, second object's lowest index {R['hiddenLocal']}")
     print(f"  gpu:   {R['gpuInk']:8d} ink (path taken: {R['gpuTook']})"
           + (f"  DECLINED: {R['gpuError']}" if R.get("gpuError") else ""))
 
@@ -221,6 +242,14 @@ def main():
         bad.append("two objects came out the same colour")
     if len(R.get("painted", {})) < len(R["sources"]):
         bad.append("the drawing used fewer colours than there are objects")
+    if R["hiddenOnFirst"]:
+        bad.append("hiding the second object's backbone wrote onto the first")
+    if R["hiddenLocal"] != 0:
+        bad.append("the second object's set is not in its own numbering")
+    if R["hiddenInk"] >= R["bothInk"]:
+        bad.append("hiding 40 residues did not remove any ink")
+    if abs(R["restoredInk"] - R["bothInk"]) > 0.02 * R["bothInk"]:
+        bad.append("unhiding did not restore the picture")
     if R["gpuInk"] <= 0:
         bad.append("the GPU path drew nothing")
     if abs(R["gpuInk"] - R["bothInk"]) > 0.15 * R["bothInk"]:

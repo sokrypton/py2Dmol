@@ -527,7 +527,8 @@ const elStatic=vm2.match(/\n        static get ELEMENT_COLORS\(\)[\s\S]*?\n     
 if(!elStatic) throw new Error('ELEMENT_COLORS is gone from viewer-mol.js');
 const Cls=new Function('window','return class V {'+vm2.slice(k,b+1)
   +elStatic[0]+lift('_segmentElementColor')+lift('_segmentElementHalves')
-  +lift('elementAt')+lift('_elementOwnerOf')+lift('shownSidechainSet')+'}')(sb.window);
+  +lift('elementAt')+lift('_elementOwnerOf')+lift('shownSidechainSet')
+  +lift('mergedObjectSet')+'}')(sb.window);
 const v=new Cls(); v.currentObjectName='o';
 // nothing merged: one object, its own indices - see shownSidechainSet
 v.multiState={enabled:false};

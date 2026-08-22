@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -2723,7 +2723,10 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
     const at = gpu.indexOf('function signatureOf(');
     const sig = gpu.slice(at, gpu.indexOf('\n}', at));
-    if (!/o && o\.bases \? 'b' \+ idOf\(o\.bases\)/.test(sig)) {
+    // ...named through mergedObjectSet, because several objects can be on
+    // screen and each carries its own set in its own numbering
+    if (!/mergedObjectSet\('bases', 'all'\)/.test(sig)
+        || !/idOf\(b\)/.test(sig)) {
         throw new Error('the mesh signature does not name the base set');
     }
     if (!/cartoonBasePlates === false \? 'noplates'/.test(sig)) {
@@ -2738,7 +2741,7 @@ t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     // in the same signature gives: a bond whose ends differ is CUT at its
     // midpoint when the mesh is captured. The halves term is a LENGTH, and the
     // array keeps its length whatever is in it, so it cannot see the uncut.
-    if (!/o && o\.elements \? 'e' \+ idOf\(o\.elements\)/.test(sig)) {
+    if (!/mergedObjectSet\('elements', 'all'\)/.test(sig) || !/idOf\(e\)/.test(sig)) {
         throw new Error('the mesh signature does not name the element set, so'
             + ' switching element colours off leaves the cut mesh on screen');
     }
@@ -5677,7 +5680,8 @@ t('half-colours cannot be served beside the wrong segments', () => {
     const C = new Function('DEFAULT_CONTACT_COLOR', 'return class {'
         + grab('_calculateSegmentColors') + grab('_segmentElementHalves')
         + grab('_segmentElementColor') + grab('_colorSegmentPosition')
-        + grab('elementAt') + grab('_elementOwnerOf') + grab('sourceGroups') + st[0]
+        + grab('elementAt') + grab('_elementOwnerOf') + grab('sourceGroups')
+        + grab('mergedObjectSet') + st[0]
         + ' _getEffectiveColorMode(){return "chain";}'
         + ' getAtomColor(){ return {r:9,g:9,b:9}; }'
         + '}')({ r: 255, g: 255, b: 0 });
@@ -6629,6 +6633,135 @@ t('a merged view gives each object a colour of its own', () => {
     v.positionTypes = ['L', 'P', 'P', 'L'];
     if (JSON.stringify(v.getAtomColor(0, 'object')) === JSON.stringify(v.getAtomColor(3, 'object'))) {
         throw new Error('ligands were greyed and stopped saying which object');
+    }
+});
+
+// READING AND WRITING A PER-OBJECT SET WHEN SEVERAL OBJECTS ARE MERGED.
+//
+// Everything an object remembers about its residues is keyed by position
+// index, written against its own array: which show base plates, which show
+// element colours, which are hidden, which were given a colour. Merged, only
+// the first object still numbers from zero - so every one of those sets, read
+// raw, lands on the first object's residues.
+function xlateViewer() {
+    const v = new Cls();
+    v.coords = new Array(5).fill(0);
+    v.positionTypes = ['D', 'D', 'D', 'P', 'P'];
+    v.objectsData = { A: {}, B: {} };
+    v.currentObjectName = 'A';
+    v.overlayState = { enabled: false, frameIdMap: null };
+    v.multiState = { enabled: true, sourceNames: ['A', 'B'],
+        sourceOffsets: [0, 3], sourceFrames: [0, 2], sourceIdMap: [0, 0, 0, 1, 1] };
+    return v;
+}
+
+t('a merged position knows which object it came from', () => {
+    const v = xlateViewer();
+    eq(v.ownerOf(0).name, 'A', 'first object');
+    eq(v.ownerOf(4).name, 'B', 'second object');
+    eq(v.ownerOf(4).local, 1, 'in its own numbering');
+    eq(v.ownerOf(4).frame, 2, "and its own frame, not the viewer's");
+    // a side-chain atom answers for the residue it grows out of: its own index
+    // is past every source's range and means nothing to any object
+    v.coords = new Array(6).fill(0);
+    v.sidechainMap = new Map([[5, { owner: 4 }]]);
+    v.multiState.sourceIdMap = [0, 0, 0, 1, 1];
+    eq(v.ownerOf(5).name, 'B', 'the atom belongs to its residue');
+    eq(v.ownerOf(5).local, 1, 'at the residue');
+    // and with nothing merged there is nothing to translate
+    v.multiState.enabled = false;
+    eq(v.ownerOf(0), null, 'a lone object numbers from zero already');
+});
+
+t('a per-object set is read at that object\'s offset', () => {
+    const v = xlateViewer();
+    // B hides its second residue: local 1, merged 4
+    v.objectsData.B.hiddenBackbone = new Set([1]);
+    const hid = v.mergedObjectSet('hiddenBackbone', 'none');
+    eq(Array.from(hid).join(','), '4', "B's own numbering, translated");
+    // null means NONE for this one, so A contributes nothing
+    if (hid.has(0) || hid.has(1)) throw new Error('A was hidden too');
+});
+
+t('null means all, and only when every object is untouched', () => {
+    const v = xlateViewer();
+    eq(v.mergedObjectSet('bases', 'all'), null, 'nobody has asked');
+    // B hides one of its plates; A has never been touched, so A keeps ALL of
+    // its own - if it contributed nothing, switching a plate off in one object
+    // would hide every plate in the other.
+    v.objectsData.B.bases = new Set([0]);
+    const on = v.mergedObjectSet('bases', 'all');
+    eq(Array.from(on).sort((a, b) => a - b).join(','), '0,1,2,3',
+        'A entire, and the one B kept');
+});
+
+t('the merged set is cached until one of the sets behind it changes', () => {
+    const v = xlateViewer();
+    v.objectsData.A.bases = new Set([0]);
+    const first = v.mergedObjectSet('bases', 'all');
+    eq(v.mergedObjectSet('bases', 'all'), first, 'same answer, same object');
+    // the GPU mesh signature compares this BY IDENTITY, so a new set every
+    // read would rebuild the mesh every frame, and a stale one would never
+    v.objectsData.A.bases = new Set([0, 1]);
+    if (v.mergedObjectSet('bases', 'all') === first) {
+        throw new Error('the cache outlived the set it was built from');
+    }
+});
+
+t('a write lands on the object that owns the residue', () => {
+    const v = xlateViewer();
+    // merged 0 is A's residue 0; merged 4 is B's residue 1
+    const groups = v.writeGroups([0, 4]);
+    eq(groups.length, 2, 'two objects touched');
+    const byName = {};
+    for (const g of groups) byName[g.name] = g.positions.join(',');
+    eq(byName.A, '0', "A's own index");
+    eq(byName.B, '1', "B's own index");
+});
+
+t('hiding a base in the second object does not touch the first', () => {
+    const v = xlateViewer();
+    // merged 3 and 4 are B's residues, but only D/R positions take part
+    v.positionTypes = ['D', 'D', 'D', 'D', 'D'];
+    eq(v.setBasesFor([4], false), true, 'something changed');
+    eq(v.objectsData.A.bases, undefined, 'A was not touched at all');
+    const b = v.objectsData.B.bases;
+    if (!(b instanceof Set)) throw new Error('B has no set');
+    // B's set is materialised from B'S OWN nucleotides - two of them, 0 and 1 -
+    // not from every nucleotide on screen
+    eq(Array.from(b).sort().join(','), '0', 'B kept its first and lost its second');
+});
+
+t('a contact is resolved among its own object\'s positions', () => {
+    const v = xlateViewer();
+    v.chains = ['A', 'A', 'A', 'A', 'A'];
+    v.residueNumbers = [1, 2, 3, 1, 2];
+    // BOTH objects have a chain A with residues 1 and 2. Unwindowed, this
+    // contact would resolve to the first object's residues whichever object
+    // stored it.
+    const c = ['A', 1, 'A', 2, 1.0];
+    const inA = v._resolveContactToIndices(c, 5, v.localRangeOf('A'));
+    const inB = v._resolveContactToIndices(c, 5, v.localRangeOf('B'));
+    eq(inA.idx1 + ',' + inA.idx2, '0,1', 'A\'s own residues');
+    eq(inB.idx1 + ',' + inB.idx2, '3,4', 'B\'s own residues');
+    // ...and an index-pair contact is in its object's numbering too
+    const d = v._resolveContactToIndices([0, 1, 1.0], 5, v.localRangeOf('B'));
+    eq(d.idx1 + ',' + d.idx2, '3,4', 'offset onto B');
+});
+
+t('a merged bond list is never written back onto an object', () => {
+    // setCoords persists bonds onto the current object so the next frame can
+    // reuse them. A MERGED list is offsets into an array of several objects,
+    // and stored there it outlives the merge: the next plain load reads it
+    // back and bonds that object's residues to positions that are gone.
+    const src4 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const at = src4.indexOf('        setCoords(');
+    const body = src4.slice(at, at + 2000);
+    const m = body.match(/objectsData\[this\.currentObjectName\]\.bonds = bonds/);
+    if (!m) throw new Error('setCoords no longer persists bonds at all');
+    const before = body.slice(0, body.indexOf(m[0]));
+    if (!/multiState && this\.multiState\.enabled/.test(before)) {
+        throw new Error('a merged bond list can still be written onto an object');
     }
 });
 

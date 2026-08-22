@@ -699,9 +699,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
      * @returns {Object} - {resolvedMode: "chain"|"plddt"|etc, resolvedColor: "#hex"|{r,g,b}|null}
      */
     function resolveColorHierarchy(context, colorSpec) {
-        const { frameIndex, posIndex, chainId, renderer } = context;
-        const objectName = renderer.currentObjectName;
+        let { frameIndex, posIndex } = context;
+        const { chainId, renderer } = context;
+        // EVERY LEVEL OF THIS IS PER OBJECT - a colour set on the object, on
+        // one of its frames, on one of its chains, on one of its positions -
+        // and in a merged view the position index arriving here belongs to
+        // whichever object it came from, not to the current one. Resolved back
+        // to that object and its own numbering, or the second structure takes
+        // the first one's per-position colours.
+        const owner = renderer.ownerOf ? renderer.ownerOf(posIndex) : null;
+        const objectName = owner ? owner.name : renderer.currentObjectName;
         const object = renderer.objectsData[objectName];
+        if (owner) { posIndex = owner.local; frameIndex = owner.frame; }
 
         let resolvedMode = renderer.colorMode || 'auto';  // Global default
         let resolvedLiteralColor = null;
@@ -1247,6 +1256,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 sourceIdMap: null,           // position -> index into sourceNames
                 sourceNames: null,           // the objects merged, in drawing order
                 sourceOffsets: null,         // where each of them starts
+                sourceFrames: null,          // the frame each was taken from
                 stats: null,                 // centre and extent of the lot - see drawnStats
                 autoColor: null
             };
@@ -5479,6 +5489,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sourceIdMap = [];
             const sourceOffsets = [];
             const sourceNames = [];
+            // ...and which frame each was taken from, so the colour hierarchy
+            // can ask a source's OWN frame for a frame-level colour
+            const sourceFrames = [];
             const sideRows = [];
             let firstPae;
 
@@ -5503,6 +5516,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const src = sourceNames.length;
                 sourceNames.push(name);
                 sourceOffsets.push(offset);
+                sourceFrames.push(frameIdx);
 
                 const fill = (arr, fallback) => (arr && arr.length === n) ? arr : fallback();
                 const fChains = fill(frame.chains, () => Array(n).fill('A'));
@@ -5555,6 +5569,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 sourceIdMap,
                 sourceNames,
                 sourceOffsets,
+                sourceFrames,
                 autoColor
             };
         }
@@ -6554,8 +6569,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             if (bonds !== null && bonds !== undefined) {
                 // Frame has explicit bonds - use them
                 this.bonds = bonds;
-                // Store in object for reuse
-                if (this.currentObjectName && this.objectsData[this.currentObjectName]) {
+                // Store in object for reuse - but NEVER a merged list. Its
+                // indices are offsets into an array of several objects, and
+                // written onto the current object they outlive the merge:
+                // the next plain load reads them back and bonds that object's
+                // residues to positions that no longer exist.
+                const merged = this.multiState && this.multiState.enabled;
+                if (!merged && this.currentObjectName && this.objectsData[this.currentObjectName]) {
                     this.objectsData[this.currentObjectName].bonds = bonds;
                 }
             } else if (this.currentObjectName && this.objectsData[this.currentObjectName] && this.objectsData[this.currentObjectName].bonds) {
@@ -6576,7 +6596,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Map entropy to structure if entropy mode is active
             if (this.colorMode === 'entropy' && this.currentObjectName && this.objectsData[this.currentObjectName] && window.MSA) {
-                this.entropy = window.MSA.mapEntropyToStructure(this.objectsData[this.currentObjectName], this.currentFrame >= 0 ? this.currentFrame : 0);
+                this.entropy = this.entropyForDrawn();
                 this._updateEntropyOptionVisibility();
             } else {
                 // Clear entropy when not in entropy mode
@@ -6996,12 +7016,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // two billion comparisons inside setCoords. Instead every bond
                 // is looked at once and charged to the group both its ends sit
                 // in, which is the same question read from the other side.
-                const obj = this.objectsData[this.currentObjectName];
+                const objLigGroups = this.mergedLigandGroups();
                 let touchedByGroup = null;
-                if (obj?.ligandGroups?.size > 0) {
+                if (objLigGroups?.size > 0) {
                     const groupOf = new Map();
                     let shared = false;
-                    for (const [key, idxs] of obj.ligandGroups.entries()) {
+                    for (const [key, idxs] of objLigGroups.entries()) {
                         for (const i of idxs) {
                             if (groupOf.has(i)) { shared = true; break; }
                             groupOf.set(i, key);
@@ -7037,9 +7057,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                     return touched.size === inGroup.size;
                 };
-                if (obj?.ligandGroups?.size > 0) {
+                if (objLigGroups?.size > 0) {
                     // Use ligand groups: only compute distances within each group
-                    for (const [groupKey, ligandPositionIndices] of obj.ligandGroups.entries()) {
+                    for (const [groupKey, ligandPositionIndices] of objLigGroups.entries()) {
                         if (fileKnowsIt(ligandPositionIndices, groupKey)) continue;
                         // Compute pairwise distances only within this ligand group
                         for (let i = 0; i < ligandPositionIndices.length; i++) {
@@ -7135,12 +7155,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     }
                 }
 
-                // Add contact segments from object-level contacts
-                if (this.currentObjectName) {
-                    const object = this.objectsData[this.currentObjectName];
+                // Add contact segments from object-level contacts.
+                // PER OBJECT, EACH IN ITS OWN NUMBERING. A contact is either a
+                // pair of position indices, which belong to the object that
+                // stored them, or a pair of chain+residue references, which
+                // must be looked up among THAT object's positions - both
+                // structures have a chain A, and an unwindowed search finds
+                // whichever comes first in the merged array.
+                for (const cName of this.drawnObjects()) {
+                    const object = this.objectsData[cName];
+                    const win = this.localRangeOf(cName);
                     if (object && object.contacts && Array.isArray(object.contacts) && object.contacts.length > 0) {
                         for (const contact of object.contacts) {
-                            const resolved = this._resolveContactToIndices(contact, n);
+                            const resolved = this._resolveContactToIndices(contact, n, win);
 
                             if (resolved && resolved.idx1 >= 0 && resolved.idx1 < n &&
                                 resolved.idx2 >= 0 && resolved.idx2 < n && resolved.idx1 !== resolved.idx2) {
@@ -7337,7 +7364,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // Map entropy to structure if entropy mode is active
             if (this.colorMode === 'entropy' && this.currentObjectName && this.objectsData[this.currentObjectName] && window.MSA) {
-                this.entropy = window.MSA.mapEntropyToStructure(this.objectsData[this.currentObjectName], this.currentFrame >= 0 ? this.currentFrame : 0);
+                this.entropy = this.entropyForDrawn();
                 this._updateEntropyOptionVisibility();
             }
         }
@@ -7593,9 +7620,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Asked per END rather than for the bond: a ligand atom answers for
             // itself, so the two ends of a bond can be switched separately, and
             // half of one is still worth drawing.
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            const only = obj && obj.elements instanceof Set ? obj.elements : null;
+            // per object, in merged indices - see mergedObjectSet
+            const only = this.mergedObjectSet('elements', 'all');
             const on = (i) => !only || only.has(this._elementOwnerOf(i));
             const T = this.constructor.ELEMENT_COLORS;
             const ca = (ea && on(segInfo.idx1)) ? (T[ea] || null) : null;
@@ -7659,9 +7685,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         _sidechainColorOf(atomIndex) {
             const e = this.sidechainMap && this.sidechainMap.get(atomIndex);
             if (!e) return null;
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            const hex = obj && obj.sidechainColor && obj.sidechainColor[e.owner];
+            // per object, keyed by ITS position numbers
+            const own = this.ownerOf(e.owner);
+            const obj = this.objectsData[own ? own.name : this.currentObjectName];
+            const at = own ? own.local : e.owner;
+            const hex = obj && obj.sidechainColor && obj.sidechainColor[at];
             return hex ? hexToRgb(hex) : null;
         }
 
@@ -7840,8 +7868,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // would otherwise select that corner - a single atom floating in
             // the middle of a molecule nobody asked to take apart. The same
             // expansion a click on one of its atoms gets.
-            const obj = this.objectsData && this.objectsData[this.currentObjectName];
-            const groups = obj && obj.ligandGroups;
+            const groups = this.mergedLigandGroups();
             if (groups && groups.size && typeof expandLigandSelection === 'function') {
                 for (const i of expandLigandSelection(out, groups)) out.add(i);
             }
@@ -7956,9 +7983,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * on. Empty or missing means the whole backbone is drawn.
          */
         backboneHiddenSet() {
-            const obj = this.objectsData && this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            const set = obj && obj.hiddenBackbone;
+            const set = this.mergedObjectSet('hiddenBackbone', 'none');
             return (set instanceof Set && set.size) ? set : null;
         }
 
@@ -7973,22 +7998,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * nothing changed, so the caller can skip the redraw.
          */
         setBackboneHiddenFor(positions, hidden) {
-            const obj = this.objectsData && this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            if (!obj) return false;
-            const cur = obj.hiddenBackbone instanceof Set
-                ? new Set(obj.hiddenBackbone) : new Set();
             let changed = false;
-            for (const i of positions) {
-                if (hidden ? !cur.has(i) : cur.has(i)) changed = true;
-                if (hidden) cur.add(i); else cur.delete(i);
+            // A selection can reach two objects at once in a merged view, and
+            // each keeps its own set in its own numbering - see writeGroups.
+            for (const g of this.writeGroups(positions)) {
+                const cur = g.object.hiddenBackbone instanceof Set
+                    ? new Set(g.object.hiddenBackbone) : new Set();
+                let mine = false;
+                for (const i of g.positions) {
+                    if (hidden ? !cur.has(i) : cur.has(i)) mine = true;
+                    if (hidden) cur.add(i); else cur.delete(i);
+                }
+                if (!mine) continue;
+                changed = true;
+                // A NEW SET EVERY TIME, like the visibility mask: both mesh
+                // signatures compare it by identity, so editing one in place
+                // would leave the GPU redrawing the cached backbone.
+                g.object.hiddenBackbone = cur.size ? cur : null;
             }
-            if (!changed) return false;
-            // A NEW SET EVERY TIME, like the visibility mask: both mesh
-            // signatures compare it by identity, so editing one in place would
-            // leave the GPU redrawing the cached backbone.
-            obj.hiddenBackbone = cur.size ? cur : null;
-            return true;
+            return changed;
         }
 
         sidechainOwners() {
@@ -8035,22 +8063,32 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @returns {boolean} whether anything changed and a redraw is due
          */
         setElementsFor(positions, on) {
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            if (!obj) return false;
             const owners = this.elementOwners();
             if (!owners) return false;
-            let cur;
-            if (obj.elements instanceof Set) cur = new Set(obj.elements);
-            else cur = new Set(owners);
             let changed = false;
-            for (const i of positions) {
-                if (!owners.has(i)) continue;
-                if (on ? !cur.has(i) : cur.has(i)) changed = true;
-                if (on) cur.add(i); else cur.delete(i);
+            for (const g of this.writeGroups(positions)) {
+                const { off, end } = this.localRangeOf(g.name);
+                let cur;
+                if (g.object.elements instanceof Set) {
+                    cur = new Set(g.object.elements);
+                } else {
+                    // this object's own element owners, in its own numbering
+                    cur = new Set();
+                    for (const o of owners) {
+                        if (o >= off && o < end) cur.add(o - off);
+                    }
+                }
+                let mine = false;
+                for (const i of g.positions) {
+                    if (!owners.has(i + off)) continue;
+                    if (on ? !cur.has(i) : cur.has(i)) mine = true;
+                    if (on) cur.add(i); else cur.delete(i);
+                }
+                if (!mine) continue;
+                changed = true;
+                g.object.elements = cur;
             }
             if (!changed) return false;
-            obj.elements = cur;
             // colours are cached; this changes them
             this.colorsNeedUpdate = true;
             this.plddtColorsNeedUpdate = true;
@@ -8085,16 +8123,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * would otherwise read as mixed for a reason the user cannot act on.
          */
         forcedSseFor(positions) {
-            const obj = this.currentObjectName
+            const single = this.currentObjectName
                 ? this.objectsData[this.currentObjectName] : null;
-            const ov = (obj && obj.sse) || null;
             const t = this.positionTypes || [];
             let seen = null;
             let n = 0;
             for (const i of positions) {
                 if (t[i] !== 'P') continue;
                 n++;
-                const letter = (ov && ov[i]) || 'none';
+                // sse is a map keyed by position, per object, so a merged
+                // index has to be resolved back to the object that wrote it
+                const o = this.ownerOf(i);
+                const ov = (o ? this.objectsData[o.name]?.sse : single && single.sse) || null;
+                const at = o ? o.local : i;
+                const letter = (ov && ov[at]) || 'none';
                 if (seen === null) seen = letter;
                 else if (seen !== letter) return '';
             }
@@ -8157,27 +8199,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @returns {boolean} whether anything changed and a redraw is due
          */
         setBasesFor(positions, on) {
-            const obj = this.currentObjectName
-                ? this.objectsData[this.currentObjectName] : null;
-            if (!obj) return false;
             const t = this.positionTypes || [];
-            const isBase = (i) => t[i] === 'D' || t[i] === 'R';
-            let cur;
-            if (obj.bases instanceof Set) {
-                cur = new Set(obj.bases);
-            } else {
-                cur = new Set();
-                for (let i = 0; i < t.length; i++) if (isBase(i)) cur.add(i);
-            }
             let changed = false;
-            for (const i of positions) {
-                if (!isBase(i)) continue;
-                if (on ? !cur.has(i) : cur.has(i)) changed = true;
-                if (on) cur.add(i); else cur.delete(i);
+            for (const g of this.writeGroups(positions)) {
+                // MATERIALISED PER OBJECT. The set has to start full or hiding
+                // three bases would hide all but three - and "full" is that
+                // object's own nucleotides, not every nucleotide on screen.
+                const { off, end } = this.localRangeOf(g.name);
+                const isBase = (local) => {
+                    const at = local + off;
+                    return t[at] === 'D' || t[at] === 'R';
+                };
+                let cur;
+                if (g.object.bases instanceof Set) {
+                    cur = new Set(g.object.bases);
+                } else {
+                    cur = new Set();
+                    // end is Infinity for a lone object - see localRangeOf
+                    const stop = Math.min(end, t.length);
+                    for (let i = off; i < stop; i++) {
+                        if (t[i] === 'D' || t[i] === 'R') cur.add(i - off);
+                    }
+                }
+                let mine = false;
+                for (const i of g.positions) {
+                    if (!isBase(i)) continue;
+                    if (on ? !cur.has(i) : cur.has(i)) mine = true;
+                    if (on) cur.add(i); else cur.delete(i);
+                }
+                if (!mine) continue;
+                changed = true;
+                g.object.bases = cur;
             }
-            if (!changed) return false;
-            obj.bases = cur;
-            return true;
+            return changed;
         }
 
         /**
@@ -8961,8 +9015,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * @param {Array} contact - Contact specification: [idx1, idx2, weight, color?] or [chain1, res1, chain2, res2, weight, color?]
          * @returns {{idx1: number, idx2: number, weight: number, color: {r: number, g: number, b: number}|null}|null} Resolved indices, weight, and color or null if invalid
          */
-        _resolveContactToIndices(contact, maxIndex = null) {
+        _resolveContactToIndices(contact, maxIndex = null, window = null) {
             if (!contact || !Array.isArray(contact)) return null;
+            // The slice of the array belonging to the object that stored this
+            // contact - the whole array when nothing is merged.
+            const off = window ? window.off : 0;
+            const stop = window ? window.end : Infinity;
 
             // Extract weight and color
             let weight = 1.0;
@@ -8974,7 +9032,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (contact.length >= 4 && typeof contact[3] === 'object' && contact[3] !== null) {
                     color = contact[3]; // Color object {r, g, b}
                 }
-                return { idx1: contact[0], idx2: contact[1], weight: weight, color: color };
+                const i1 = contact[0] + off;
+                const i2 = contact[1] + off;
+                if (i1 >= stop || i2 >= stop) return null;
+                return { idx1: i1, idx2: i2, weight: weight, color: color };
             } else if (contact.length >= 5 && typeof contact[0] === 'string') {
                 // Chain + residue format: [chain1, res1, chain2, res2, weight, color?]
                 const [chain1, res1, chain2, res2] = contact;
@@ -8985,13 +9046,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
                 // Find position indices matching chain+residue
                 // Only search in original structure positions (before intermediate positions were added)
-                const searchLimit = maxIndex !== null ? maxIndex : this.chains.length;
+                const searchLimit = Math.min(
+                    maxIndex !== null ? maxIndex : this.chains.length, stop);
                 let idx1 = -1, idx2 = -1;
 
                 // Debug: log available chains and residue ranges for first failed contact
                 let debugLogged = false;
 
-                for (let i = 0; i < searchLimit; i++) {
+                for (let i = off; i < searchLimit; i++) {
                     // Skip intermediate positions (they have residueNumber = -1)
                     if (this.residueNumbers[i] === -1) continue;
 
@@ -9995,9 +10057,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ms.sourceIdMap = null;
                 ms.sourceNames = null;
                 ms.sourceOffsets = null;
+                ms.sourceFrames = null;
                 ms.autoColor = null;
                 ms.stats = null;
                 this._sourceGroupsCache = null;
+                this._mergedSetCache = null;
                 this._invalidateSegmentCache();
                 this._invalidateShadowCache();
                 // ...and frame on what is left, the same re-framing that
@@ -10029,6 +10093,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             ms.sourceIdMap = merged.sourceIdMap;
             ms.sourceNames = merged.sourceNames;
             ms.sourceOffsets = merged.sourceOffsets;
+            ms.sourceFrames = merged.sourceFrames;
             ms.autoColor = merged.autoColor;
             ms.stats = this._mergedStats(merged.coords);
             if (ms.stats) {
@@ -10037,6 +10102,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.viewerState.extent = ms.stats.maxExtent;
             }
             this._sourceGroupsCache = null;
+            this._mergedSetCache = null;
             this.lastOperationMode = 'multi-object';
             this._invalidateSegmentCache();
             this._invalidateShadowCache();
@@ -10149,6 +10215,235 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 paeBoxes: [],
                 visibilityMode: (vis.size === n) ? 'default' : 'explicit'
             }, skipRender);
+        }
+
+
+        /**
+         * How many positions the loaded array holds. Both arrays describe it,
+         * and the panel paths run with only the second one present.
+         */
+        _positionCount() {
+            if (this.coords && this.coords.length) return this.coords.length;
+            return this.positionTypes ? this.positionTypes.length : 0;
+        }
+
+        /**
+         * WHICH OBJECT A MERGED POSITION BELONGS TO, and where it sits in that
+         * object's own numbering.
+         *
+         * Everything an object remembers about its residues - which show side
+         * chains, which show base plates, which are hidden, what colour they
+         * were given, what secondary structure was forced on them - is a set or
+         * a map keyed by POSITION INDEX, written against that object's own
+         * array. Merged, only the first object still numbers from zero. This is
+         * the one place that knows the difference, and every reader of those
+         * sets goes through it or through mergedObjectSet below.
+         *
+         * A side-chain atom answers for the residue it grows out of: it was
+         * appended after the merge, so its own index is past every source's
+         * range and means nothing to the object it belongs to.
+         *
+         * @returns {{name, local, source, frame}|null} null when nothing is
+         *   merged, which is the caller's signal that indices are already the
+         *   object's own.
+         */
+        ownerOf(i) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) return null;
+            if (this.sidechainMap && this.sidechainMap.has(i)) {
+                i = this.sidechainMap.get(i).owner;
+            }
+            const g = this.sourceGroups();
+            const s = g ? g[i] : -1;
+            if (!(s >= 0) || s >= ms.sourceNames.length) return null;
+            return {
+                name: ms.sourceNames[s],
+                local: i - ms.sourceOffsets[s],
+                source: s,
+                frame: ms.sourceFrames ? ms.sourceFrames[s] : 0
+            };
+        }
+
+        /**
+         * A PER-OBJECT SET OF POSITIONS, READ IN MERGED INDICES.
+         *
+         * The sets come in two polarities and both have to survive the merge:
+         *
+         *   'none' - null means the object has none of this (side chains, a
+         *            hidden backbone). An untouched object contributes nothing.
+         *   'all'  - null means the object has all of it (base plates, element
+         *            colours: on until somebody switches one off). An untouched
+         *            object contributes its whole range, because the merged
+         *            answer has to be a set the moment ANY object has one.
+         *
+         * Returns null only when every shown object is untouched - which is
+         * what keeps "nobody has asked" distinguishable from "everything was
+         * switched off", a distinction both polarities depend on.
+         *
+         * Cached by the identity of the sets it was built from, because the
+         * drawing asks per segment and the GPU signature asks per frame.
+         *
+         * @param {string} field  the property on the object
+         * @param {'all'|'none'} nullMeans  what an absent set means
+         */
+        mergedObjectSet(field, nullMeans) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const o = this.objectsData?.[this.currentObjectName];
+                const set = o && o[field];
+                return (set instanceof Set) ? set : null;
+            }
+            const parts = ms.sourceNames.map(
+                (n) => (this.objectsData[n] || {})[field]);
+            const cache = this._mergedSetCache || (this._mergedSetCache = {});
+            const hit = cache[field];
+            if (hit && hit.names === ms.sourceNames && hit.parts.length === parts.length
+                && hit.parts.every((p, k) => p === parts[k])) {
+                return hit.out;
+            }
+
+            const total = this._positionCount();
+            let touched = false;
+            const out = new Set();
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                const off = ms.sourceOffsets[s];
+                const end = (s + 1 < ms.sourceOffsets.length)
+                    ? ms.sourceOffsets[s + 1] : total;
+                const set = parts[s];
+                if (set instanceof Set) {
+                    touched = true;
+                    for (const p of set) {
+                        const at = p + off;
+                        if (at >= off && at < end) out.add(at);
+                    }
+                } else if (nullMeans === 'all') {
+                    for (let i = off; i < end; i++) out.add(i);
+                }
+            }
+            const res = touched ? out : null;
+            cache[field] = { names: ms.sourceNames, parts, out: res };
+            return res;
+        }
+
+        /**
+         * The entropy vector for what is on screen: one value per position,
+         * each object's own alignment mapped onto its own residues and the
+         * lot concatenated. One object's vector laid over a merged array
+         * would colour the second object by the first one's conservation.
+         */
+        entropyForDrawn() {
+            if (!window.MSA || !window.MSA.mapEntropyToStructure) return undefined;
+            const frame = this.currentFrame >= 0 ? this.currentFrame : 0;
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const o = this.objectsData?.[this.currentObjectName];
+                return o ? window.MSA.mapEntropyToStructure(o, frame) : undefined;
+            }
+            const out = [];
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                const o = this.objectsData[ms.sourceNames[s]];
+                const off = ms.sourceOffsets[s];
+                const end = (s + 1 < ms.sourceOffsets.length)
+                    ? ms.sourceOffsets[s + 1] : this._positionCount();
+                const v = o ? window.MSA.mapEntropyToStructure(
+                    o, ms.sourceFrames ? ms.sourceFrames[s] : 0) : null;
+                for (let i = off; i < end; i++) {
+                    // -1 is what the colour path reads as "no entropy here"
+                    out.push((v && v[i - off] !== undefined) ? v[i - off] : -1);
+                }
+            }
+            return out;
+        }
+
+        /**
+         * THE LIGAND GROUPS OF EVERY SHOWN OBJECT, in merged indices.
+         *
+         * A group is a Map from a key - chain, residue number, name - to the
+         * position indices of one ligand's atoms. Keys collide across objects
+         * for the same reason chain ids do, so each is prefixed with the object
+         * it came from; the indices are offset like everything else.
+         */
+        mergedLigandGroups() {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const o = this.objectsData?.[this.currentObjectName];
+                return (o && o.ligandGroups) || null;
+            }
+            const parts = ms.sourceNames.map(
+                (n) => (this.objectsData[n] || {}).ligandGroups);
+            const c = this._mergedLigCache;
+            if (c && c.names === ms.sourceNames && c.parts.length === parts.length
+                && c.parts.every((p, k) => p === parts[k])) {
+                return c.out;
+            }
+            const out = new Map();
+            for (let s = 0; s < ms.sourceNames.length; s++) {
+                const g = parts[s];
+                if (!g || !g.size) continue;
+                const off = ms.sourceOffsets[s];
+                for (const [key, idxs] of g.entries()) {
+                    out.set(ms.sourceNames[s] + '|' + key, idxs.map((i) => i + off));
+                }
+            }
+            const res = out.size ? out : null;
+            this._mergedLigCache = { names: ms.sourceNames, parts, out: res };
+            return res;
+        }
+
+        /**
+         * The object a write to these positions should land on, and the
+         * positions in ITS numbering.
+         *
+         * A panel edits whatever is selected, and in a merged view a selection
+         * can reach two objects at once. Grouped here so a setter writes each
+         * object's own set rather than pushing merged indices into one of them.
+         *
+         * @param {Iterable<number>} positions merged indices
+         * @returns {Array<{object, name, positions:number[]}>}
+         */
+        writeGroups(positions) {
+            const ms = this.multiState;
+            if (!ms || !ms.enabled || !ms.sourceNames) {
+                const name = this.currentObjectName;
+                const object = name ? this.objectsData[name] : null;
+                return object ? [{ object, name, positions: Array.from(positions) }] : [];
+            }
+            const by = new Map();
+            for (const i of positions) {
+                const o = this.ownerOf(i);
+                if (!o) continue;
+                if (!by.has(o.name)) by.set(o.name, []);
+                by.get(o.name).push(o.local);
+            }
+            const out = [];
+            for (const [name, local] of by) {
+                const object = this.objectsData[name];
+                if (object) out.push({ object, name, positions: local });
+            }
+            return out;
+        }
+
+        /**
+         * That object's positions, in ITS numbering: [0, n) for a lone object,
+         * and the slice of the merged array it occupies otherwise. Setters that
+         * materialise a full set - "every nucleotide", "every element owner" -
+         * need to do it per object, not over the whole merged array.
+         */
+        localRangeOf(name) {
+            const ms = this.multiState;
+            const total = this._positionCount();
+            // A LONE OBJECT OWNS EVERYTHING, however long the array turns out
+            // to be. Answering with a counted length instead means every path
+            // that runs before the coordinates are in - the panel's, in
+            // particular - materialises an empty set and reads as "nothing
+            // here" rather than "all of it".
+            if (!ms || !ms.enabled || !ms.sourceNames) return { off: 0, end: Infinity };
+            const s = ms.sourceNames.indexOf(name);
+            if (s < 0) return { off: 0, end: total };
+            return {
+                off: ms.sourceOffsets[s],
+                end: (s + 1 < ms.sourceOffsets.length) ? ms.sourceOffsets[s + 1] : total
+            };
         }
 
         /**

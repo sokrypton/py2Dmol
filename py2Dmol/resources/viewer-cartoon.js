@@ -9124,9 +9124,14 @@
         // object nobody has touched has to keep them. An EMPTY set means none -
         // that is what selecting everything and hiding it gives you, and it has
         // to be distinguishable from "never asked".
-        const baseObj = renderer.currentObjectName
-            ? (renderer.objectsData || {})[renderer.currentObjectName] : null;
-        const baseSet = baseObj && baseObj.bases instanceof Set ? baseObj.bases : null;
+        // ...and per OBJECT: several can be on screen at once, each with its
+        // own set in its own numbering (see mergedObjectSet in viewer-mol.js).
+        const baseSet = renderer.mergedObjectSet
+            ? renderer.mergedObjectSet('bases', 'all')
+            : (renderer.currentObjectName
+                && (renderer.objectsData || {})[renderer.currentObjectName]
+                && (renderer.objectsData[renderer.currentObjectName].bases instanceof Set)
+                ? renderer.objectsData[renderer.currentObjectName].bases : null);
         const baseShown = (res) => !baseSet || baseSet.has(res);
         if (renderer.cartoonBasePlates !== false) {
             const mid = (i) => {
