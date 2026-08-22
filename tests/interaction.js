@@ -2129,12 +2129,24 @@ t('one segment owns the ball at a joint, and takes it by depth', () => {
     // fragment reads "unowned" off the cap code, so if the claim itself were
     // gated on the caps flag, neither side would own the joint and both would
     // give the ball up - which is the tie this exists to break.
-    const bld = gpu.slice(gpu.indexOf('WHO CARRIES THE CAP AT A JOINT'));
-    const claimLine = /else if \(claim\[i1\] === 0\) \{ claim\[i1\] = 1; cA = (\w+); \}/.exec(bld);
-    if (!claimLine) throw new Error('the joint claim has moved or is gated again');
-    if (/jointCaps && claim\[i1\] === 0/.test(bld)) {
+    if (!/claim\[i1\] === k \+ 1/.test(gpu) || !/claim\[i2\] === k \+ 1/.test(gpu)) {
+        throw new Error('the emit no longer reads the joint claim');
+    }
+    if (/jointCaps && claim\[/.test(gpu)) {
         throw new Error('the claim is gated on jointCaps, so with caps off no'
             + ' segment owns a joint and both give up the ball');
+    }
+    // ...AND IT IS THE OUTGOING SEGMENT THAT OWNS IT. The 2D pass paints along
+    // the chain and the later segment's cap covers the earlier one, so the
+    // ball that shows at a joint is the one belonging to the segment STARTING
+    // there. Claimed on idx1 first for that reason; claiming on first-come
+    // gives it to the incoming segment and draws the same picture with the two
+    // colours swapped, which is what did not match the 2D.
+    const first = gpu.indexOf('if (touch[sg2.idx1] > 1 && claim[sg2.idx1] === 0)');
+    const second = gpu.indexOf('if (touch[sg2.idx2] > 1 && claim[sg2.idx2] === 0)');
+    if (first < 0 || second < 0 || !(first < second)) {
+        throw new Error('the outgoing segment no longer claims a joint first,'
+            + ' so the ball shows the wrong side of it');
     }
 });
 

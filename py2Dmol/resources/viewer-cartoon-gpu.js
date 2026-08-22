@@ -4762,6 +4762,28 @@ function buildTube(renderer, S) {
         touch[sg2.idx1]++;
         touch[sg2.idx2]++;
     }
+    // WHICH SEGMENT OWNS EACH JOINT'S BALL: the one that STARTS there.
+    //
+    // The 2D pass paints along the chain and the LATER segment's cap covers
+    // the earlier one, so what shows at a joint is the OUTGOING segment's ball.
+    // Claiming on first come gave it to the incoming one instead - the same
+    // picture with the two colours the other way round, which is what did not
+    // match. Claimed here rather than in the emit below because the incoming
+    // segment reaches the position first there and would take it.
+    //
+    // claim holds the owner's slot as k + 1, so 0 still means unclaimed.
+    for (let k = 0; k < cnt; k++) {
+        const sg2 = S.segments[order[k]];
+        if (!sg2 || sg2.idx1 === undefined || sg2.type === 'C') continue;
+        if (touch[sg2.idx1] > 1 && claim[sg2.idx1] === 0) claim[sg2.idx1] = k + 1;
+    }
+    // ...and a joint where NOTHING starts - two chains meeting head to head -
+    // still needs an owner, or both sides give up the ball and the tie is back.
+    for (let k = 0; k < cnt; k++) {
+        const sg2 = S.segments[order[k]];
+        if (!sg2 || sg2.idx1 === undefined || sg2.type === 'C') continue;
+        if (touch[sg2.idx2] > 1 && claim[sg2.idx2] === 0) claim[sg2.idx2] = k + 1;
+    }
     // REUSED. At 30,000 segments this is a 1.5 MB allocation, and it was being
     // made every frame to hold bytes that had not changed.
     const need = cnt * TUBE_FLOATS;
@@ -4831,9 +4853,9 @@ function buildTube(renderer, S) {
         const jointOwn = jointCaps ? 2 : 3;
         let cA = 0, cB = 0;
         if (isC || touch[i1] <= 1) cA = 1;
-        else if (claim[i1] === 0) { claim[i1] = 1; cA = jointOwn; }
+        else if (claim[i1] === k + 1) cA = jointOwn;
         if (isC || touch[i2] <= 1) cB = 1;
-        else if (claim[i2] === 0) { claim[i2] = 1; cB = jointOwn; }
+        else if (claim[i2] === k + 1) cB = jointOwn;
         data[o++] = cA;
         data[o++] = cB;
         data[o++] = isC ? 1 : 0;                        // annotation: no shading
