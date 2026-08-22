@@ -3958,6 +3958,19 @@ t('the save panel can still record a trajectory', () => {
     if (!/const recBtn = button\('\\u25CF'/.test(body)) {
         throw new Error('the record button is not a single dot');
     }
+    // NOTHING THAT MATTERS MOVES. Format, source and the dot are the three
+    // controls that are always there, so they lead the row and the settings
+    // they govern - which appear and disappear with both - follow. Appended in
+    // build order, the source menu sat after the controls it governs and the
+    // dot last of all, so picking a source moved the menu you had just used
+    // and slid the button you were aiming at. Measured, all three now hold the
+    // same x across F/FR/RF/R and WebM/GIF/Images.
+    if (!/recRow\.insertBefore\(srcSel, vFmt \? vFmt\.nextSibling : null\)/.test(body)) {
+        throw new Error('the source menu is not beside the format');
+    }
+    if (!/recRow\.insertBefore\(recBtn, srcSel \? srcSel\.nextSibling/.test(body)) {
+        throw new Error('the record dot is not pinned behind the two choosers');
+    }
     if (!/saveVideoSource/.test(body)) {
         throw new Error('there is no menu for what to record');
     }

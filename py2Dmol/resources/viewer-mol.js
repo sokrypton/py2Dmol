@@ -11967,7 +11967,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         ? opts.source : preferred.id;
                     srcSel = menu('saveVideoSource', sources.map((x) => (
                         { value: x.id, label: x.label })), want, 'What to record');
-                    recRow.appendChild(srcSel);
+                    // NEXT TO THE FORMAT, at the head of the row, because these
+                    // two are the controls that decide which of the others are
+                    // there at all. Appended at the end - where it was built -
+                    // it sat AFTER the controls it governs, so picking a source
+                    // moved the very menu you had just used: hiding Sec pulls
+                    // everything to its right two fields leftwards. The two
+                    // choosers stay put now and only the tail rearranges.
+                    recRow.insertBefore(srcSel, vFmt ? vFmt.nextSibling : null);
                 }
                 const recBtn = button('\u25CF', '');
                 recBtn.dataset.rec = '1';
@@ -12031,7 +12038,15 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         throw err;      // ...and still say so in the console
                     }
                 });
-                recRow.appendChild(recBtn);
+                // ...AND THE DOT SITS WITH THEM, not at the end of the row.
+                // At the end it was the one control that moved every time: the
+                // fields to its left appear and disappear with the source and
+                // the format, so it slid about and, in a narrow panel, hopped
+                // between lines - and it is the one control you aim at. Format,
+                // source, go: the three that are always there, always in the
+                // same place, with the settings they govern behind them.
+                recRow.insertBefore(recBtn, srcSel ? srcSel.nextSibling
+                    : (vFmt ? vFmt.nextSibling : null));
             }
 
             okBtn.addEventListener('click', (e) => {
