@@ -3312,8 +3312,19 @@
         const selInk = null;
         const SELECTION_INK_CSS = 'rgb(255, 190, 0)';
         // absolute stroke width here, unlike viewer-mol.js's
-        // SELECTION_INK_EXTRA, which is ADDED to the line width
-        const SELECTION_INK_WIDTH = 2.5 * pxScale;
+        // SELECTION_INK_EXTRA, which is ADDED to the line width.
+        //
+        // ...AND IT FOLLOWS THE ZOOM, like every other ink width in this pass
+        // (zoomW, above). Flat, it is the one part of a selection mark that
+        // does not shrink with the thing it marks, and on a LONE ATOM that is
+        // the whole mark: a zinc is 1.7 px at zoom 0.25 and this rim was 2.5,
+        // so the ball plus its rim came to 4.2 px - which is exactly where the
+        // selection band's outer edge falls. Measured, the visible band around
+        // a selected metal was 6.5 px at the default view, 2.0 at half zoom
+        // and 0.0 at a quarter: the highlight stopped tracking the atom on the
+        // way out, because a constant cannot track anything. Scaled, the ring
+        // holds at 0.87-1.03 x the ball's radius from zoom 0.25 to 4.
+        const SELECTION_INK_WIDTH = 2.5 * pxScale * zoomW;
         // ... which also means the ink pass has to RUN when the outline is off
         // but something is selected.
         // The pencil is traced from the ink pass's own visibility (see the

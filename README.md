@@ -75,7 +75,7 @@ normal controls, which stay live for tweaking:
 - **`3d`** — solid shaded geometry, on a black background. Pass `bg=` to override.
 
 ```python
-py2Dmol.view(style='cartoon').from_pdb('4HHB', use_biounit=True)   # Richardson
+py2Dmol.view(style='cartoon').from_pdb('1A3N', use_biounit=True)   # Richardson
 py2Dmol.view(style='cartoon', color='ss').from_pdb('1TIM')
 py2Dmol.view(preset='ribbon').from_pdb('1TIM')                     # plain cartoon
 py2Dmol.view(preset='3d').from_pdb('1TIM')                         # solid, on black
