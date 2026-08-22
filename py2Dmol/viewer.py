@@ -383,6 +383,13 @@ For complete documentation, see: technical_readme.md → "Persistence Modes"
 # Read the note beside the JS copy for what is deliberately NOT here: PO4, BCT,
 # SPM, C8E and every transition metal stay visible, because hiding a real
 # cofactor is a worse failure than showing a sulfate.
+# ...AND A METAL IS FILTERED BY HOW MANY OF IT THERE ARE, not by what it is.
+# One magnesium is an active site; 4UG0's 239 are the mortar a ribosome is
+# built with. Counted per residue and only for single-atom ones, so a
+# photosystem's 60 chlorophylls are untouched. Same number as CROWD_ION_COUNT
+# in web/utils.js.
+CROWD_ION_COUNT = 20
+
 CRYSTAL_ADDITIVES = {
     # precipitants and cryoprotectants
     'SO4', 'GOL', 'EDO', 'PEG', 'PG4', 'PGE', 'P6G', '1PE', '2PE', 'PE4',
@@ -2522,6 +2529,22 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     color=color if i == 0 else None) # Only add color to first frame/model call
 
 
+    @staticmethod
+    def _crowded_ions(model):
+        """Single-atom het residues this model has more than CROWD_ION_COUNT of.
+
+        A ribosome's magnesiums, and nothing that is the subject of a picture:
+        see CROWD_ION_COUNT.
+        """
+        counts = {}
+        for chain in model:
+            for residue in chain:
+                if len(residue) != 1:
+                    counts[residue.name] = -1        # not monoatomic, never crowd
+                elif counts.get(residue.name, 0) >= 0:
+                    counts[residue.name] = counts.get(residue.name, 0) + 1
+        return {k for k, v in counts.items() if v > CROWD_ION_COUNT}
+
     def _parse_model(self, model, chains_filter, load_ligands=True, filter_additives=True):
         """
         Helper function to parse a gemmi.Model object.
@@ -2537,6 +2560,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         """
         coords = []
         plddts = []
+        # THE IONS THIS MODEL HAS HUNDREDS OF, worked out once before the walk
+        # below rather than per residue - see _crowded_ions.
+        crowded = self._crowded_ions(model) if filter_additives else set()
         position_chains = []
         position_types = []
         position_names = []
@@ -2614,7 +2640,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                         # Ligand: use all heavy atoms - unless it is something the
                         # crystal was grown in rather than part of the molecule.
                         # See CRYSTAL_ADDITIVES.
-                        if filter_additives and residue.name in CRYSTAL_ADDITIVES:
+                        if filter_additives and (residue.name in CRYSTAL_ADDITIVES
+                                                 or residue.name in crowded):
                             continue
                         if load_ligands:
                             for atom in residue:

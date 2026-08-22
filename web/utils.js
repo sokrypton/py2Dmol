@@ -3843,10 +3843,26 @@ const CRYSTAL_ADDITIVES = new Set([
     'NA', 'K', 'CS', 'RB', 'LI', 'CL', 'BR', 'IOD', 'F',
 ]);
 
+// ...AND A METAL IS FILTERED BY HOW MANY OF IT THERE ARE, not by what it is.
+//
+// The list above keeps every transition metal, because one zinc in a zinc
+// finger or one magnesium in an active site is the thing you came to see. A
+// RIBOSOME IS NOT THAT: 4UG0 carries 239 magnesiums against 6 zincs, and they
+// are structural in the sense that mortar is structural - real, load-bearing,
+// and not what anyone is looking at. Two hundred of them are scenery.
+//
+// So the same code is kept or dropped depending on the structure, which is the
+// honest answer: 9FOG's 4 magnesiums and 1AOI's 6 manganeses are sites and
+// stay, 4UG0's 239 go. Counted per RESIDUE and only for single-atom ones - a
+// photosystem's 60 chlorophylls are many and are the subject, and they have 65
+// atoms each.
+const CROWD_ION_COUNT = 20;
+
 // Expose globally
 if (typeof window !== 'undefined') {
     window.RESIDUE_TO_AA = RESIDUE_TO_AA;
     window.CRYSTAL_ADDITIVES = CRYSTAL_ADDITIVES;
+    window.CROWD_ION_COUNT = CROWD_ION_COUNT;
 }
 
 // ============================================================================

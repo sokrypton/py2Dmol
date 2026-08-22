@@ -3331,9 +3331,35 @@ async function buildPendingObject(text, name, paeData, targetObjectName, tempBat
         if (window.viewerConfig?.ui?.filterAdditives === false) return atoms;
         const drop = window.CRYSTAL_ADDITIVES;
         if (!drop || !drop.size) return atoms;
+        // ...AND THE IONS THERE ARE HUNDREDS OF. A single magnesium is an
+        // active site; 4UG0's 239 are the mortar a ribosome is built with.
+        // Counted per RESIDUE, and only for single-atom ones - see
+        // CROWD_ION_COUNT in web/utils.js.
+        const crowd = window.CROWD_ION_COUNT || 20;
+        const per = new Map();          // code -> { res, mono }
+        let runKey = null; let runCode = null; let runLen = 0;
+        const flush = () => {
+            if (runCode === null) return;
+            let e = per.get(runCode);
+            if (!e) { e = { res: 0, mono: true }; per.set(runCode, e); }
+            e.res++;
+            if (runLen > 1) e.mono = false;
+        };
+        for (const a of atoms) {
+            if (!a || a.record !== 'HETATM') continue;
+            const key = a.chain + ':' + a.resSeq + ':' + a.resName;
+            if (key !== runKey) { flush(); runKey = key; runCode = a.resName; runLen = 0; }
+            runLen++;
+        }
+        flush();
+        const crowded = new Set();
+        for (const [code, e] of per) {
+            if (e.mono && e.res > crowd) crowded.add(code);
+        }
         let n = 0;
         const kept = atoms.filter((a) => {
-            if (!a || a.record !== 'HETATM' || !drop.has(a.resName)) return true;
+            if (!a || a.record !== 'HETATM') return true;
+            if (!drop.has(a.resName) && !crowded.has(a.resName)) return true;
             n++;
             return false;
         });

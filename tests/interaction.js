@@ -2094,6 +2094,55 @@ t('what the crystal was grown in is filtered, and the two lists agree', () => {
         throw new Error('there is no way to switch the filter off, and a list of'
             + ' codes is a judgement that has to be escapable');
     }
+
+    // A METAL IS JUDGED BY HOW MANY OF IT THERE ARE. One magnesium is an
+    // active site and 4UG0's 239 are the mortar a ribosome is built with, so
+    // the same code is kept in one structure and dropped in another. Run the
+    // shipped function over both cases rather than reading it.
+    const at2 = app.indexOf('function maybeFilterAdditives(');
+    let d2 = 0; let k2 = app.indexOf('{', at2);
+    for (; k2 < app.length; k2++) {
+        if (app[k2] === '{') d2++; else if (app[k2] === '}' && !--d2) break;
+    }
+    // eslint-disable-next-line no-new-func
+    const f2 = new Function('window',
+        app.slice(at2, k2 + 1) + '; return maybeFilterAdditives;')(
+        { viewerConfig: { ui: {} }, CRYSTAL_ADDITIVES: js,
+            CROWD_ION_COUNT: sandbox.window.CROWD_ION_COUNT });
+    const ion = (code, seq) => ({ record: 'HETATM', resName: code, chain: 'A',
+        resSeq: seq, x: 0, y: 0, z: 0 });
+    const ribosome = [];
+    for (let i = 0; i < 239; i++) ribosome.push(ion('MG', i));
+    for (let i = 0; i < 6; i++) ribosome.push(ion('ZN', 1000 + i));
+    const left = f2(ribosome);
+    if (left.some((a) => a.resName === 'MG')) {
+        throw new Error('239 magnesiums came through - a ribosome opens as a'
+            + ' cloud of ions with the structure somewhere behind them');
+    }
+    if (left.filter((a) => a.resName === 'ZN').length !== 6) {
+        throw new Error('the six zincs went with them');
+    }
+    // ...while a handful of the SAME code stays: 9FOG's 4 magnesiums are sites
+    const site = [ion('MG', 1), ion('MG', 2), ion('MG', 3), ion('MG', 4)];
+    if (f2(site).length !== 4) {
+        throw new Error('four magnesiums are an active site, not scenery');
+    }
+    // ...and a crowd of something with real atoms in it is the subject, not
+    // scenery: a photosystem has 60 chlorophylls of 65 atoms each
+    const chlorophylls = [];
+    for (let i = 0; i < 60; i++) {
+        for (let j = 0; j < 65; j++) {
+            chlorophylls.push(Object.assign(ion('CLA', i), { atomName: 'C' + j }));
+        }
+    }
+    if (f2(chlorophylls).length !== chlorophylls.length) {
+        throw new Error('the chlorophylls were filtered as a crowd of ions');
+    }
+    // ...and the threshold is the same number on both sides
+    const pyCrowd = /CROWD_ION_COUNT = (\d+)/.exec(py);
+    if (!pyCrowd || +pyCrowd[1] !== sandbox.window.CROWD_ION_COUNT) {
+        throw new Error('the crowd threshold differs between the two parsers');
+    }
 });
 
 t('a metal has a colour and a size of its own', () => {
