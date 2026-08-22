@@ -11591,22 +11591,35 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // anything that forces a break - a spacer with flex-grow pushed the
             // camera button to the right edge, which in the narrow panel meant
             // a line of its own with nothing on it.
-            const ROW = 'display:flex; align-items:center; gap:6px;'
-                + ' flex-wrap:wrap; row-gap:6px; min-width:0;';
+            // THE SETTINGS AREA IS A GRID TOO, of equal cells. As a wrapping
+            // flex line the pairs packed edge to edge at whatever width each
+            // happened to be, so nothing lined up with anything above it and a
+            // row of six controls read as a paragraph. Equal cells put every
+            // field in a column.
+            const ROW = 'display:grid; align-items:center; gap:6px;'
+                + ' grid-template-columns:repeat(auto-fill, minmax(84px, 1fr));'
+                + ' min-width:0;';
             // ONE SIZE FOR EVERY CONTROL, and big enough to read: two rows of
             // controls at different weights make the eye work out which number
             // belongs to which output.
             const H = 28;
+            // BOX-SIZING, or a field told to fill its cell overflows it by its
+            // own padding and border: 100% plus 12px of padding and 2px of
+            // frame stuck 14px out of a 160px panel.
             const FIELD = `height:${H}px; font-size:12px; padding:0 4px;`
                 + ' border:1px solid #d1d5db; border-radius:6px; background:#fff;'
-                + ' flex:0 1 auto; min-width:0; max-width:100%;';
+                + ' box-sizing:border-box; flex:0 1 auto; min-width:0; max-width:100%;';
             const NUM = FIELD + ' width:52px; padding:0 6px;';
             const CAP = 'font-size:12px; color:#6b7280; flex:0 0 auto;';
+            // SHORT NAMES, because the column costs the same on every row and
+            // the settings beside them are what needs the width: "Image" and
+            // "Video" spent 18px of a 160px panel saying what "Img" and "Vid"
+            // say.
             const NAME = 'font-size:12px; font-weight:600; color:#374151;'
-                + ' flex:0 0 auto; min-width:46px;';
+                + ' flex:0 0 auto; min-width:28px;';
             const BTN = `flex:0 0 auto; padding:0 8px; height:${H}px; line-height:1;`
                 + ' cursor:pointer; font-size:12px; border:1px solid #d1d5db;'
-                + ' border-radius:6px; background:#fff;';
+                + ' border-radius:6px; background:#fff; box-sizing:border-box;';
             // THE PAGE'S OWN BUTTON, WHERE THE PAGE HAS ONE.
             //
             // These were styled inline because the two pages skin their
@@ -11626,7 +11639,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // Only the layout is ours when the page has a skin: its height,
                 // padding, border and hover are the page's business, and
                 // repeating them here is how two buttons come to disagree.
-                const b = el('button', skin ? 'flex:0 0 auto; min-width:0;' : BTN, text);
+                const b = el('button',
+                    (skin ? 'min-width:0;' : BTN) + ' width:100%; box-sizing:border-box;', text);
                 b.type = 'button';
                 if (skin) b.className = skin;
                 if (title) b.title = title;
@@ -11635,7 +11649,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             const p = document.createElement('div');
             p.id = 'savePanel';
-            p.style.cssText = 'display:flex; flex-direction:column; gap:6px;'
+            // A GRID, THREE COLUMNS: what the row is, what it is set to, and
+            // the button that does it. Everything used to be one wrapping line
+            // per row, so the button sat wherever the settings left it - at the
+            // end of the line, halfway along, or on a line of its own - and
+            // the two rows lined up with each other only by accident. The
+            // action column is fixed at the right, so Save and the record dot
+            // are always in the same place, on top of each other, whatever is
+            // showing between.
+            p.style.cssText = 'display:grid;'
+                + ' grid-template-columns:auto minmax(0,1fr) auto;'
+                + ' gap:6px 8px; align-items:center;'
                 + ' box-sizing:border-box; max-width:100%;'
                 + ' border:1px solid #e5e7eb; border-radius:8px; background:#fff;'
                 + ' padding:8px; margin-top:6px;';
@@ -11646,11 +11670,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (text !== undefined) n.textContent = text;
                 return n;
             };
+            // HOW WIDE THE PANEL WILL BE, before it is in the page. Three
+            // columns fit the standalone page's 300px column and do not fit
+            // the embedded viewer's 160px one - name and button take 94 of it
+            // between them and leave the settings 40px, which is narrower than
+            // one field. So a narrow panel puts the name and the button on one
+            // line and the settings across the whole width underneath.
+            // ...AND WHICH OF THE TWO SHAPES IT TAKES IS MEASURED, not guessed.
+            // Three columns fit the standalone page's 300px column and do not
+            // fit the embedded viewer's 160px one: name and button take 94 of
+            // it between them and leave the settings 40px, narrower than one
+            // field. So the rows are BUILT first and PLACED after the panel is
+            // in the page and its width is a fact - three across where there is
+            // room, and name-and-button over settings where there is not.
+            const blocks = [];
+
             const row = (name) => {
-                const r = el('div', ROW);
-                r.appendChild(el('span', NAME, name));
-                p.appendChild(r);
-                return r;
+                const nameEl = el('span', NAME, name);
+                const controls = el('div', ROW);
+                // ONE WIDTH FOR BOTH BUTTONS. Save is a word and the record
+                // button is a dot, so left to themselves they were 45px and
+                // 28px in a column of their own - two different buttons in the
+                // same place, one above the other, not lining up with each
+                // other. The column stretches them to its width, which is the
+                // wider of the two.
+                const action = el('div', 'display:grid; gap:6px; align-items:center;'
+                    + ' justify-items:stretch;');
+                blocks.push({ kind: 'row', nameEl, controls, action });
+                // `appendChild` on the row still means "another control", which
+                // is what every caller wants; the button column is asked for
+                // by name.
+                controls.action = action;
+                controls.nameEl = nameEl;
+                return controls;
             };
             const menu = (id, items, value, tip) => {
                 const sel = el('select', FIELD);
@@ -11670,15 +11722,29 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // two wrappable items, so a line break landed between them and left
             // "FPS" hanging at the end of one line with its box at the start of
             // the next. Each pair goes in a nowrap group, which wraps whole.
+            // SHOWING A PAIR PUTS ITS GRID BACK. `style.display = ''` removes
+            // the inline declaration - and the inline declaration is where
+            // `display:grid` lives, so hiding a pair and showing it again left
+            // it a plain block: the label and the field became inline
+            // siblings, the field kept its width:100%, and it hung its own
+            // label's width out of the panel. That is the 10-19px of overflow
+            // in a 160px panel, and it appeared only after a format change.
+            const show = (node, on) => {
+                if (node) node.style.display = on ? 'grid' : 'none';
+            };
             const pair = (labelText, forId, control, tip) => {
-                const g = el('span', 'display:inline-flex; align-items:center;'
-                    + ' gap:5px; flex:0 0 auto; white-space:nowrap;');
+                const g = el('span', 'display:grid; align-items:center; gap:5px;'
+                    + ' grid-template-columns:34px minmax(0,1fr);'
+                    + ' min-width:0; white-space:nowrap;');
                 if (labelText) {
                     const lab = el('label', CAP, labelText);
                     lab.setAttribute('for', forId);
                     if (tip) lab.title = tip;
                     g.appendChild(lab);
+                } else {
+                    g.style.gridTemplateColumns = 'minmax(0,1fr)';
                 }
+                control.style.width = '100%';
                 g.appendChild(control);
                 return g;
             };
@@ -11691,7 +11757,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             };
 
             // ---- IMAGE -------------------------------------------------
-            const imgRow = row('Image');
+            // Declared with the row it belongs to: this is used while the row
+            // is built, and a `let` further down the function is a temporal
+            // dead zone - the panel threw before it appeared at all.
+            let dpiBox = null;
+            const imgRow = row('Img');
             // PNG AND SVG. The gzipped SVG went from the menu: it is the same
             // file through a compressor, every tool that opens an .svgz opens
             // an .svg, and it was a third of the width of the widest control on
@@ -11701,34 +11771,37 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ? [{ value: 'png', label: 'PNG' }, { value: 'svg', label: 'SVG' }]
                 : [{ value: 'png', label: 'PNG' }],
             (svgOk && opts.format !== 'svgz') ? opts.format : 'png', 'Image file format');
-            imgRow.appendChild(fmtSel);
+            // EVERY CONTROL SAYS WHAT IT IS. A bare menu reading "PNG" is
+            // only obvious while you already know what the row does, and a
+            // captioned pair is also the same SHAPE as every other pair, which
+            // is what makes the columns line up.
+            imgRow.appendChild(pair('Type', 'saveFormatSelect', fmtSel));
             // DPI AS A LIST, not a spinner. The useful values are a short list
             // - screen, a figure, a plate - and typing 250 into a spinner is a
             // decision nobody has a reason to make. 200 is the default: a
             // 1000px canvas comes out about 2000px, which is a figure at column
             // width in print.
             const dpiSel = menu('saveDpiInput', [
-                { value: 96, label: '96 dpi' },
-                { value: 150, label: '150 dpi' },
-                { value: 200, label: '200 dpi' },
-                { value: 300, label: '300 dpi' },
-                { value: 600, label: '600 dpi' },
+                { value: 96, label: '96' }, { value: 150, label: '150' },
+                { value: 200, label: '200' }, { value: 300, label: '300' },
+                { value: 600, label: '600' },
             ], opts.dpi, 'Resolution of the saved image. 96 dpi is screen size.');
-            imgRow.appendChild(dpiSel);
+            dpiBox = pair('DPI', 'saveDpiInput', dpiSel);
+            imgRow.appendChild(dpiBox);
             // A WORD, NOT A GLYPH. The camera and the card-index emoji were
             // small, low-contrast and rendered differently on every platform -
             // and being the only pictures in a panel of words, they read as
             // decoration rather than as the buttons that do the thing.
             const okBtn = button('Save', sources.length
                 ? 'Save the frame on screen as an image' : 'Save an image');
-            imgRow.appendChild(okBtn);
+            imgRow.action.appendChild(okBtn);
             // EVERY FRAME AS FILES IS A VIDEO FORMAT, not a button here - see
             // videoFormats. It writes the same frames the recorders drive, so
             // it belongs where the other formats are, and it records a turn or
             // a drawing as well as a trajectory now.
 
             const syncImg = () => {
-                dpiSel.style.display = fmtSel.value === 'png' ? '' : 'none';
+                show(dpiBox, fmtSel.value === 'png');
                 this._describeCapture();
             };
             fmtSel.addEventListener('change', syncImg);
@@ -11745,25 +11818,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // to the recording underneath it.
             const rule = () => {
                 const hr = el('div', 'height:1px; background:#e5e7eb; margin:1px 0;');
-                p.appendChild(hr);
+                blocks.push({ kind: 'span', el: hr });
             };
             let vFmt = null; let secIn = null; let fpsIn = null;
             let mbpsIn = null; let sizeSel = null; let colorsSel = null;
             let framesIn = null; let colorsBox = null; let sizeBox = null;
             let srcSel = null; let rotIn = null;
+            let vFmtBox = null; let srcBox = null;
             // ...assigned with the video row, called from the record row too:
             // what the count control means depends on WHICH source is picked.
             let syncVideo = () => {};
             let videoRow = null;
             if (sources.length && formats.length) {
                 rule();
-                const vRow = row('Video');
+                const vRow = row('Vid');
                 videoRow = vRow;
                 vFmt = menu('saveVideoFormat', formats.map((f) => (
                     { value: f.id, label: f.label })), opts.container,
                 'Video file format' + (formats.some((f) => f.id === 'gif')
                     ? '' : ' (GIF needs the standalone page)'));
-                vRow.appendChild(vFmt);
+                vFmtBox = pair('Type', 'saveVideoFormat', vFmt);
+                vRow.appendChild(vFmtBox);
                 const [secL, sec] = num('saveSecondsInput', 'Sec', opts.seconds, 1, 60,
                     'How long the recording runs, in seconds');
                 vRow.appendChild(secL); secIn = sec;
@@ -11834,16 +11909,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // IMAGES TAKE THEIR SIZE FROM THE DPI ABOVE, so the Size
                     // menu goes: two controls for one resolution is how they
                     // come to disagree. There is no bitrate in a PNG either.
-                    if (sizeBox) sizeBox.style.display = zip ? 'none' : '';
+                    show(sizeBox, !zip);
                     // ONE ROW, TWO FORMATS, and only the controls that mean
                     // something for the one that is picked. What is shared -
                     // how long, how fast, how big - stays put, so switching
                     // format does not move the rest of the row about.
-                    mbL.style.display = (gif || zip) ? 'none' : '';
+                    show(mbL, !(gif || zip));
                     // ...and the frame rate is the one control every source
                     // needs: it is how fast the file plays, whoever decided how
                     // many frames there are. Images have no rate at all.
-                    fpsL.style.display = zip ? 'none' : '';
+                    show(fpsL, !zip);
                     // THE COUNT IS FOR A TURN OR A DRAWING, which have no
                     // frames of their own to follow - it says how many PNGs to
                     // write over one revolution. A trajectory HAS frames, and
@@ -11859,17 +11934,17 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // rate you chose, and a seconds box there would be a number
                     // that either does nothing or silently drops frames.
                     const timed = !!src.timed;
-                    secL.style.display = (timed && !zip) ? '' : 'none';
+                    show(secL, timed && !zip);
                     // ...and a rotation count only where something rotates
                     const turns = !!src.spin;
-                    rotL.style.display = turns ? '' : 'none';
+                    show(rotL, turns);
                     // THE IMAGE COUNT is for a recording with no frames of its
                     // own to follow - a turn or a drawing. A trajectory has
                     // them, and then the answer is one image per frame.
                     const counted = zip && (pickedId === 'R' || pickedId === 'D'
                         || pickedId === 'DR');
-                    frL.style.display = counted ? '' : 'none';
-                    if (colorsBox) colorsBox.style.display = gif ? '' : 'none';
+                    show(frL, counted);
+                    show(colorsBox, gif);
                     // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
                     // the recording. The sink clamps either way, but a panel
                     // reading 30 fps and 1194x1194 over a file that came out
@@ -11945,7 +12020,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // wrapping rows, a line break nobody asked for. The row wraps on
             // its own when it has to, and the button follows the settings
             // instead of sitting under them.
-            const recRow = videoRow || (() => { rule(); return row('Video'); })();
+            const recRow = videoRow || (() => { rule(); return row('Vid'); })();
             if (!formats.length) {
                 recRow.appendChild(el('span', CAP, 'No video format available'));
             } else if (!sources.length) {
@@ -11975,7 +12050,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     // moved the very menu you had just used: hiding Sec pulls
                     // everything to its right two fields leftwards. The two
                     // choosers stay put now and only the tail rearranges.
-                    recRow.insertBefore(srcSel, vFmt ? vFmt.nextSibling : null);
+                    srcBox = pair('Rec', 'saveVideoSource', srcSel);
+                    recRow.insertBefore(srcBox, vFmtBox ? vFmtBox.nextSibling : null);
                 }
                 const recBtn = button('\u25CF', '');
                 recBtn.dataset.rec = '1';
@@ -12046,8 +12122,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // between lines - and it is the one control you aim at. Format,
                 // source, go: the three that are always there, always in the
                 // same place, with the settings they govern behind them.
-                recRow.insertBefore(recBtn, srcSel ? srcSel.nextSibling
-                    : (vFmt ? vFmt.nextSibling : null));
+                recRow.action.appendChild(recBtn);
             }
 
             okBtn.addEventListener('click', (e) => {
@@ -12071,12 +12146,39 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const info = el('div', 'font-size:11px; color:#6b7280; line-height:1.35;'
                 + ' overflow-wrap:anywhere; min-width:0; white-space:pre-line;');
             info.dataset.info = '1';
-            p.appendChild(info);
+            blocks.push({ kind: 'span', el: info });
+
+            // ONE PASS OVER THE BLOCKS, in the shape the width allows.
+            const place = (narrow) => {
+                while (p.firstChild) p.removeChild(p.firstChild);
+                for (const b of blocks) {
+                    if (b.kind === 'span') {
+                        b.el.style.gridColumn = '1 / -1';
+                        p.appendChild(b.el);
+                        continue;
+                    }
+                    if (narrow) {
+                        b.controls.style.gridColumn = '1 / -1';
+                        p.appendChild(b.nameEl);
+                        p.appendChild(el('span', ''));   // the empty middle cell
+                        p.appendChild(b.action);
+                        p.appendChild(b.controls);
+                    } else {
+                        b.controls.style.gridColumn = '';
+                        p.appendChild(b.nameEl);
+                        p.appendChild(b.controls);
+                        p.appendChild(b.action);
+                    }
+                }
+            };
+            place(false);
 
             const anchorRow = (anchorEl && (anchorEl.closest('.toolbar-row')
                 || anchorEl.parentElement))
                 || (this.controlsContainer || document.body);
             anchorRow.insertAdjacentElement('afterend', p);
+            // ...and now its width is a fact rather than a guess
+            if (p.clientWidth && p.clientWidth < 260) place(true);
             this._savePanel = p;
             if (anchorEl) {
                 anchorEl.setAttribute('aria-controls', 'savePanel');

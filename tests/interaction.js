@@ -3563,8 +3563,18 @@ t('a GIF is always cut out, and says so once', () => {
     // between them and left "FPS" at the end of one line with its box at the
     // start of the next. Each pair is a nowrap group, which also means one
     // thing to hide rather than two that can disagree.
-    if (!/if \(colorsBox\) colorsBox\.style\.display = gif/.test(body)) {
+    if (!/show\(colorsBox, gif\)/.test(body)) {
         throw new Error('the colour pair does not hide as one');
+    }
+    // ...AND SHOWING ONE PUTS ITS GRID BACK. `style.display = ''` removes the
+    // inline declaration, which is where display:grid lives - so a pair hidden
+    // and shown again became a plain block, its field kept width:100%, and it
+    // hung its own label's width out of the panel.
+    if (!/node\.style\.display = on \? 'grid' : 'none'/.test(body)) {
+        throw new Error('showing a pair no longer restores its grid');
+    }
+    if (/\w+(Box|L)\.style\.display = [^;]*\?\s*''/.test(body)) {
+        throw new Error("a pair is shown with display = '' again");
     }
 });
 
@@ -3934,7 +3944,7 @@ t('the save panel can still record a trajectory', () => {
     if (!/const timed = !!src\.timed;/.test(body)) {
         throw new Error('Sec is not gated on who sets the length');
     }
-    if (!/rotL\.style\.display = turns/.test(body)) {
+    if (!/show\(rotL, turns\)/.test(body)) {
         throw new Error('the rotation count is not gated on something rotating');
     }
     // ...and every pair is built by the one helper, or one of them splits again
@@ -3969,18 +3979,32 @@ t('the save panel can still record a trajectory', () => {
     if (!/const recBtn = button\('\\u25CF'/.test(body)) {
         throw new Error('the record button is not a single dot');
     }
-    // NOTHING THAT MATTERS MOVES. Format, source and the dot are the three
-    // controls that are always there, so they lead the row and the settings
-    // they govern - which appear and disappear with both - follow. Appended in
-    // build order, the source menu sat after the controls it governs and the
-    // dot last of all, so picking a source moved the menu you had just used
-    // and slid the button you were aiming at. Measured, all three now hold the
-    // same x across F/FR/RF/R and WebM/GIF/Images.
-    if (!/recRow\.insertBefore\(srcSel, vFmt \? vFmt\.nextSibling : null\)/.test(body)) {
+    // NOTHING THAT MATTERS MOVES. The panel is a grid - name, settings,
+    // action - so both buttons live in a column of their own at the right and
+    // hold their place whatever is showing between; and the source menu sits
+    // beside the format, the two controls that decide which of the others are
+    // there at all. Built in the order they were written, the source menu sat
+    // AFTER the controls it governs and each button wherever its row's
+    // settings left it: picking a source moved the menu you had just used, and
+    // the button you were aiming at slid or wrapped.
+    if (!/recRow\.insertBefore\(srcBox, vFmtBox \? vFmtBox\.nextSibling : null\)/.test(body)) {
         throw new Error('the source menu is not beside the format');
     }
-    if (!/recRow\.insertBefore\(recBtn, srcSel \? srcSel\.nextSibling/.test(body)) {
-        throw new Error('the record dot is not pinned behind the two choosers');
+    // EVERY CONTROL SAYS WHAT IT IS, and every one is the same shape - a
+    // caption and a field - which is what makes the columns line up. A bare
+    // menu reading "PNG" is only obvious while you already know what the row
+    // does.
+    for (const cap of ["pair\\('Type', 'saveFormatSelect'", "pair\\('DPI', 'saveDpiInput'",
+        "pair\\('Type', 'saveVideoFormat'", "pair\\('Rec', 'saveVideoSource'"]) {
+        if (!new RegExp(cap).test(body)) throw new Error('uncaptioned control: ' + cap);
+    }
+    if (!/recRow\.action\.appendChild\(recBtn\)/.test(body)
+        || !/imgRow\.action\.appendChild\(okBtn\)/.test(body)) {
+        throw new Error('the buttons are not in the action column');
+    }
+    if (!/grid-template-columns:auto minmax\(0,1fr\) auto/.test(body)) {
+        throw new Error('the panel is not a grid, so the two rows line up only'
+            + ' by accident');
     }
     if (!/saveVideoSource/.test(body)) {
         throw new Error('there is no menu for what to record');
