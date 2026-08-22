@@ -533,7 +533,11 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         })(),
         mainchainShowToggle: { checked: false, indeterminate: false },
         sidechainModeSelect: modeSelectNode(),
-        sidechainShowToggle: { checked: false, indeterminate: false, hidden: null },
+        sidechainShowToggle: (() => {
+            const label = { hidden: null };
+            return { checked: false, indeterminate: false, hidden: null,
+                closest: () => label, label };
+        })(),
         contactShowToggle: { checked: false, indeterminate: false },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
@@ -774,12 +778,20 @@ t('a protein gets a switch, a nucleotide gets the three-way', () => {
     const NUC = ['D', 'D'];
     const PROT = ['P', 'P'];
     const prot = panelRun([0, 1], new Set([0, 1]), false, PROT);
-    if (prot.sidechainShowToggle.hidden !== false || prot.sidechainModeSelect.hidden !== true) {
+    if (prot.sidechainShowToggle.label.hidden !== false
+        || prot.sidechainModeSelect.hidden !== true) {
         throw new Error('a protein selection is not offered the plain switch');
     }
     const nuc = panelRun([0, 1], new Set(), false, NUC);
-    if (nuc.sidechainShowToggle.hidden !== true || nuc.sidechainModeSelect.hidden !== false) {
-        throw new Error('a nucleic selection is not offered the three-way');
+    // THE LABEL, not the checkbox: the input is invisible on its own, so
+    // hiding it leaves the word "Show" on the row beside the menu.
+    if (nuc.sidechainShowToggle.label.hidden !== true
+        || nuc.sidechainModeSelect.hidden !== false) {
+        throw new Error('a nucleic selection still shows the Show button');
+    }
+    const app0 = fs.readFileSync('web/app.js', 'utf8');
+    if (!/const wrapTog = scTog\.closest \? scTog\.closest\('label'\) : null;/.test(app0)) {
+        throw new Error('the switch hides by its checkbox, which is invisible anyway');
     }
     if (nuc.sidechainModeSelect._opts.plate.hidden !== false
         || prot.sidechainModeSelect._opts.plate.hidden !== true) {
@@ -3658,7 +3670,11 @@ t('the selection toggles show all, none and mixed', () => {
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
         sidechainModeSelect: modeSelectNode(),
-        sidechainShowToggle: { checked: false, indeterminate: false, hidden: null },
+        sidechainShowToggle: (() => {
+            const label = { hidden: null };
+            return { checked: false, indeterminate: false, hidden: null,
+                closest: () => label, label };
+        })(),
         elementsShowToggle: (() => {
             const label = { hidden: null };
             return { checked: false, indeterminate: false, hidden: null,

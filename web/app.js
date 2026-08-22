@@ -1014,7 +1014,14 @@ function setupEventListeners() {
         // is not; only a nucleotide has the plate as well, and only there is a
         // menu worth reading. Never both - two controls for one question is
         // what this row stopped being.
-        if (scTog) scTog.hidden = hasNuc;
+        // BY ITS LABEL, NOT ITS CHECKBOX. The input is invisible on its own -
+        // absolutely positioned at zero opacity, with the label carrying the
+        // word - so hiding it left "Show" on the row beside the menu that had
+        // replaced it. The select IS its own visible element and hides itself.
+        if (scTog) {
+            const wrapTog = scTog.closest ? scTog.closest('label') : null;
+            (wrapTog || scTog).hidden = hasNuc;
+        }
         if (scSel) scSel.hidden = !hasNuc;
         if (scTog) set('sidechainShowToggle', tally(scAble, scSet, false));
         if (scSel) {
