@@ -10426,8 +10426,12 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const h = 2 * Math.round(c.height * k / 2);
                 if (w < 64 || h < 64) continue;            // below this it is a thumbnail
                 if (k > 1 && (w > 4096 || h > 4096)) break; // the encoder level limit
-                const tag = k === 1 ? '' : ` (${k}x)`;
-                out.push({ scale: k, w, h, label: `${w}x${h}${tag}` });
+                // THE MULTIPLIER IS THE LABEL, not the pixels. The info line
+                // under the row already says what the file will be - "WebM
+                // 598x598 - 6s at 30 fps" - so spelling the same number into
+                // the menu said it twice and made the widest control in a
+                // 160px panel out of the half that was already there.
+                out.push({ scale: k, w, h, label: `${k}x` });
             }
             return out;
         }

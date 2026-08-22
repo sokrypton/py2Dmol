@@ -3546,6 +3546,13 @@ t('one capture model: defaults, formats and sizes', () => {
     // the canvas happened to be.
     if (!sizes.some((z) => z.scale < 1)) throw new Error('no smaller-than-screen option');
     if (sizes.some((z) => z.w < 64 || z.h < 64)) throw new Error('a thumbnail-sized option');
+    // ...and the MENU says the multiplier, because the line under the row
+    // already says what the file will be. Two places for one number, and the
+    // menu was the widest control in a 160px panel because of it.
+    if (sizes.some((z) => z.label !== `${z.scale}x`)) {
+        throw new Error('the size menu spells out pixels again: '
+            + JSON.stringify(sizes.map((z) => z.label)));
+    }
     v.canvas = { width: 3000, height: 3000 };
     if (v.videoSizes().some((z) => z.w > 4096)) {
         throw new Error('a size past the 4096 encoder limit was offered');
