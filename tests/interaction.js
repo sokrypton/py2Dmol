@@ -3531,11 +3531,19 @@ t('one capture model: defaults, formats and sizes', () => {
     v.canvas = { width: 1001, height: 777 };
     const sizes = v.videoSizes();
     if (!sizes.length) throw new Error('no sizes at all');
-    if (sizes[0].w % 2 || sizes[0].h % 2) throw new Error('an odd dimension');
-    if (sizes[0].w !== 1002 && sizes[0].w !== 1000) {
-        throw new Error('1x is not the canvas size: ' + sizes[0].w);
+    for (const z of sizes) {
+        if (z.w % 2 || z.h % 2) throw new Error('an odd dimension: ' + z.label);
+    }
+    const one = sizes.find((z) => z.scale === 1);
+    if (!one || (one.w !== 1002 && one.w !== 1000)) {
+        throw new Error('1x is not the canvas size: ' + (one && one.w));
     }
     if (!sizes.some((z) => z.scale === 2)) throw new Error('no 2x option');
+    // SMALLER TOO. A half-size recording is a quarter of the pixels, which is
+    // what a GIF or a slide wants; the only size on offer used to be whatever
+    // the canvas happened to be.
+    if (!sizes.some((z) => z.scale < 1)) throw new Error('no smaller-than-screen option');
+    if (sizes.some((z) => z.w < 64 || z.h < 64)) throw new Error('a thumbnail-sized option');
     v.canvas = { width: 3000, height: 3000 };
     if (v.videoSizes().some((z) => z.w > 4096)) {
         throw new Error('a size past the 4096 encoder limit was offered');

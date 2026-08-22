@@ -3835,16 +3835,24 @@ if (typeof window !== 'undefined') {
  * @param {number} max - palette size, at most 256
  * @returns {Array<Array<number>>} [r,g,b] entries
  */
-function gifPalette(frames, max) {
+function gifPalette(frames, max, alphaFloor) {
     // One sample every few pixels, over every frame: an animation that changes
     // colour part way through (a drawing filling in, a trajectory) must not be
     // quantised to the first frame's palette.
     const pts = [];
     const stride = Math.max(1, Math.floor(
         (frames.length * frames[0].length / 4) / 24000)) * 4;
+    const floor = alphaFloor || 0;
     for (const f of frames) {
-        for (let i = 0; i < f.length; i += stride) pts.push([f[i], f[i + 1], f[i + 2]]);
+        for (let i = 0; i < f.length; i += stride) {
+            // Pixels that are about to become the transparent index are not
+            // colours: sampling them spends most of a 256-entry table on the
+            // one shade nobody will see.
+            if (f[i + 3] < floor) continue;
+            pts.push([f[i], f[i + 1], f[i + 2]]);
+        }
     }
+    if (!pts.length) return [[0, 0, 0]];
     let boxes = [pts];
     while (boxes.length < max) {
         // split the box with the widest channel - the one costing the most error
@@ -3917,10 +3925,24 @@ function gifLzw(indices, minCodeSize) {
 function py2dmolGif(frames, opts) {
     const { width, height } = opts;
     const delay = Math.max(2, Math.round(opts.delayCs || 4));
-    const pal = gifPalette(frames, 256);
-    // A GIF colour table is a power of two, padded with black.
+    // TRANSPARENCY IN A GIF IS ONE PALETTE ENTRY, not an alpha channel: a pixel
+    // is either that entry or it is opaque. So the cut is binary - anything
+    // under half alpha becomes the transparent index - and the antialiased rim
+    // of a stroke lands on one side or the other rather than fading. That is
+    // the format, not a shortcut; it is also why the frames must not stack, so
+    // each one is written with disposal 2 (restore to background) instead of
+    // being painted over the one before.
+    const clear = !!opts.transparent;
+    // FEWER COLOURS IS A SMALLER FILE, and a cartoon has few to begin with:
+    // 64 is usually indistinguishable here and about half the bytes.
+    const want = Math.max(2, Math.min(clear ? 255 : 256, opts.colors || 256));
+    const pal = gifPalette(frames, want, clear ? 128 : 0);
+    // A GIF colour table is a power of two, padded with black. With
+    // transparency on, the LAST entry is the transparent one and nothing else
+    // may quantise to it.
+    const TR = clear ? pal.length : -1;
     let bits = 1;
-    while ((1 << bits) < pal.length) bits++;
+    while ((1 << bits) < pal.length + (clear ? 1 : 0)) bits++;
     const size = 1 << bits;
 
     // NEAREST COLOUR, CACHED. The cache is what makes this usable: a frame is
@@ -3958,12 +3980,15 @@ function py2dmolGif(frames, opts) {
 
     const minCode = Math.max(2, bits);
     for (const f of frames) {
-        push(0x21, 0xF9, 4, 0);               // graphic control, no transparency
-        short(delay); push(0, 0);
+        // graphic control: disposal 2 and the transparent flag when the frames
+        // are cut out, plain "leave it there" when they are not
+        push(0x21, 0xF9, 4, clear ? 0x09 : 0);
+        short(delay); push(clear ? TR : 0, 0);
         push(0x2C); short(0); short(0); short(width); short(height); push(0);
         const idx = new Uint8Array(width * height);
         for (let i = 0, p = 0; i < f.length; i += 4, p++) {
-            idx[p] = nearest(f[i], f[i + 1], f[i + 2]);
+            idx[p] = (clear && f[i + 3] < 128) ? TR
+                : nearest(f[i], f[i + 1], f[i + 2]);
         }
         push(minCode);
         const data = gifLzw(idx, minCode);

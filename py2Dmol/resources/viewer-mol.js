@@ -1738,7 +1738,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 this.lastDragX = e.clientX;
                 this.lastDragY = e.clientY;
                 this.lastDragTime = performance.now();
-                if (this.autoRotate) this._setAutoRotate(false);
+                // A DRAG STOPS THE SPIN - unless the spin is already held.
+                // While the Capture panel is open the turn is paused so the
+                // view can be aimed before recording; a drag there is the
+                // aiming, and switching Rotate off would take the Turn button
+                // off the panel (and the panel with it) at the moment it was
+                // about to be pressed. Reported as: adjusting the view with
+                // Capture up disabled Rotate.
+                if (this.autoRotate && !this._uiPaused) this._setAutoRotate(false);
 
                 // Add temporary window listeners for drag outside canvas
                 const handleMove = (e) => {
@@ -1980,7 +1987,14 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     this.lastDragX = e.touches[0].clientX;
                     this.lastDragY = e.touches[0].clientY;
                     this.lastDragTime = performance.now();
-                    if (this.autoRotate) this._setAutoRotate(false);
+                    // A DRAG STOPS THE SPIN - unless the spin is already held.
+                // While the Capture panel is open the turn is paused so the
+                // view can be aimed before recording; a drag there is the
+                // aiming, and switching Rotate off would take the Turn button
+                // off the panel (and the panel with it) at the moment it was
+                // about to be pressed. Reported as: adjusting the view with
+                // Capture up disabled Rotate.
+                if (this.autoRotate && !this._uiPaused) this._setAutoRotate(false);
                 } else if (e.touches.length === 2) {
                     // Start of a pinch-zoom
                     this.isDragging = false; // Stop dragging
@@ -4187,20 +4201,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // Check if we have a current object and frame
             if (!this.currentObjectName) {
                 console.warn("No object loaded. Cannot extract selection.");
-                return;
+                return null;
             }
 
             const object = this.objectsData[this.currentObjectName];
             if (!object || !object.frames || object.frames.length === 0) {
                 console.warn("No frames available. Cannot extract selection.");
-                return;
+                return null;
             }
 
             // Use first frame to determine selection (selection is frame-independent)
             const firstFrame = object.frames[0];
             if (!firstFrame || !firstFrame.coords) {
                 console.warn("First frame has no coordinates. Cannot extract selection.");
-                return;
+                return null;
             }
 
             // THE SELECTION, and only the selection. Copy used to fall back to
@@ -4216,7 +4230,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             if (selectedPositions.size === 0) {
                 console.warn("Nothing selected - select a region in the sequence view first.");
-                return;
+                return null;
             }
 
             // Convert to sorted array for consistent ordering
@@ -4317,61 +4331,81 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
-            // Switch to the extracted object (synchronously)
-            // This properly sets currentObjectName, exits overlay mode if needed, and invalidates caches
-            this._switchToObject(extractName);
+            this._showObject(extractName);
+            return extractName;
+        }
 
-            // Load the first frame to populate coords and render the molecule
+        /**
+         * PUT AN OBJECT ON SCREEN, whole: switch to it, load its first frame,
+         * and bring everything that has its own copy of the data along - the
+         * PAE panel, the scatter plot, the object dropdown, the sequence strip.
+         *
+         * Lifted out of extractSelection so Cut can end the same way. Cut makes
+         * the copy, goes BACK to the source to take the residues out of it, and
+         * has to land on the new object afterwards; without this it would be a
+         * second copy of a dozen lines that were already easy to get wrong.
+         */
+        _showObject(name) {
+            // synchronous: sets currentObjectName, leaves overlay mode if it is
+            // on, and invalidates the caches
+            this._switchToObject(name);
             this.setFrame(0);
-
-            // CRITICAL: Update PAE renderer with the new object's PAE data
-            // The PAE renderer stores its own copy of paeData, so we must call setData()
-            // with the extracted object's PAE before calling render()
-            const extractedObj = this.objectsData[extractName];
-            if (window.PAE && extractedObj) {
-                window.PAE.updateFrame(this, extractedObj, 0);
-            }
-            if (this.paeRenderer && this.paeRenderer.render) {
-                this.paeRenderer.render();
-            }
-
-            // Update scatter visibility and data for extracted object
+            // The PAE renderer keeps its own copy of the matrix, so it is told
+            // rather than left to notice.
+            const obj = this.objectsData[name];
+            if (window.PAE && obj) window.PAE.updateFrame(this, obj, 0);
+            if (this.paeRenderer && this.paeRenderer.render) this.paeRenderer.render();
             this.updateScatterContainerVisibility();
-
-            // Update object dropdown to reflect the change
-            if (this.objectSelect) {
-                this.objectSelect.value = extractName;
-            }
-
-            // Reset selection to show all positions in extracted object
+            if (this.objectSelect) this.objectSelect.value = name;
+            // everything visible, since nothing here has been hidden yet
             this.setVisibility({
-                positions: new Set(),
-                chains: new Set(),
-                paeBoxes: [],
-                visibilityMode: 'default'
+                positions: new Set(), chains: new Set(), paeBoxes: [],
+                visibilityMode: 'default',
             });
-
             // DROP THE SELECTION. It holds position indices into the object
-            // that was current when the drag happened, and the extracted copy
-            // is now current - the same indices name different residues there,
+            // that was current when the drag happened, and a different object
+            // is current now - the same indices name different residues there,
             // or none at all. Carrying it over made a second Copy extract a
             // slice of the first copy rather than the region the user could
             // see highlighted.
             this.clearResidueSelection();
-
-            // Update UI controls to reflect new object
             this.updateUIControls();
-
-            // Force sequence viewer to rebuild for the new object
             if (typeof window !== 'undefined' && window.SEQ && window.SEQ.buildView) {
-                // Clear sequence viewer cache to force rebuild
-                if (window.SEQ.clear) {
-                    window.SEQ.clear();
-                }
-                // Rebuild sequence view for the new extracted object
+                if (window.SEQ.clear) window.SEQ.clear();
                 window.SEQ.buildView();
             }
+        }
 
+        /**
+         * CUT: the copy Copy makes, minus the residues from where they came.
+         *
+         * Not a button that presses the other two, because the order is the
+         * whole difficulty. Copy switches to the new object, and Delete works
+         * on whatever is current - so pressing them in sequence deletes the
+         * copy out of itself and leaves the original untouched, which is the
+         * opposite of a cut. This goes back to the source with the selection it
+         * had, takes them out there, and then lands on the piece that was cut.
+         *
+         * @returns {object|null} {name, removed} or null if there was nothing
+         *          to cut
+         */
+        cutSelection() {
+            const src = this.currentObjectName;
+            const sel = (this.residueSelection && this.residueSelection.size)
+                ? new Set(this.residueSelection) : null;
+            if (!src || !sel) {
+                console.warn('Nothing selected - nothing to cut.');
+                return null;
+            }
+            const made = this.extractSelection();
+            if (!made) return null;
+            // ...back to where they came from, with the selection that named
+            // them, and out
+            this._switchToObject(src);
+            this.setResidueSelection(sel);
+            const removed = this.deleteSelection() ? sel.size : 0;
+            this._showObject(made);
+            return { name: made, removed };
         }
 
 
@@ -10368,11 +10402,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const c = this.canvas;
             if (!c || !c.width) return [];
             const out = [];
-            for (const k of [1, 2, 3]) {
+            // SMALLER AS WELL AS LARGER. A half-size recording is a quarter of
+            // the pixels and about a quarter of the file - which is what you
+            // want for a GIF, for a slide, or for anything going into a
+            // message - and there was no way to ask for one: the recording was
+            // whatever the canvas happened to be.
+            for (const k of [0.25, 0.5, 1, 2, 3]) {
                 const w = 2 * Math.round(c.width * k / 2);
                 const h = 2 * Math.round(c.height * k / 2);
-                if (k > 1 && (w > 4096 || h > 4096)) break;
-                out.push({ scale: k, w, h, label: `${w}x${h}${k === 1 ? '' : ` (${k}x)`}` });
+                if (w < 64 || h < 64) continue;            // below this it is a thumbnail
+                if (k > 1 && (w > 4096 || h > 4096)) break; // the encoder level limit
+                const tag = k === 1 ? '' : ` (${k}x)`;
+                out.push({ scale: k, w, h, label: `${w}x${h}${tag}` });
             }
             return out;
         }
@@ -10382,7 +10423,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
         // centiseconds so anything past ~20 fps is a lie, and 256 colours over
         // a megapixel is a slow quantisation and a huge file. These are the
         // limits the panel shows and the sink enforces.
-        static get GIF_LIMITS() { return { maxPx: 640, maxFps: 20, maxFrames: 240 }; }
+        static get GIF_LIMITS() { return { maxPx: 1024, maxFps: 20, maxFrames: 300 }; }
 
         /**
          * WHERE A RECORDING'S FRAMES GO. One object, three recorders, two very
@@ -10420,7 +10461,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             let w = source.width; let h = source.height;
             let note = '';
             if (!o.sourceCanvas) {
-                const k = Math.max(1, Math.min(3, Number(o.scale) || 1));
+                // ...and DOWN as well as up: the clamp used to floor at 1,
+                // which silently turned every half-size recording back into a
+                // full-size one - the panel said 300x300 and the file came out
+                // 598x598.
+                const k = Math.max(0.1, Math.min(3, Number(o.scale) || 1));
                 w = 2 * Math.round(live.width * k / 2);
                 h = 2 * Math.round(live.height * k / 2);
             }
@@ -10432,7 +10477,11 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     note = ` (GIF capped at ${LIM.maxPx}px)`;
                 }
             }
-            const offscreen = (w !== source.width || h !== source.height);
+            // A CUT-OUT GIF HAS TO BE RENDERED, not read off the screen: the
+            // live canvas has the paper painted into it and every pixel is
+            // opaque. So transparency forces the offscreen path even at 1x.
+            const clear = gif && !!o.transparent;
+            const offscreen = clear || (w !== source.width || h !== source.height);
             let target = source;
             let octx = null;
             if (offscreen) {
@@ -10446,6 +10495,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // while everything measured in Angstrom follows the resolution.
             const paint = () => {
                 if (!octx) return;
+                const wasClear = this.isTransparent;
+                if (clear) this.isTransparent = true;
                 octx.save();
                 octx.setTransform(1, 0, 0, 1, 0, 0);
                 if (this.isTransparent) octx.clearRect(0, 0, w, h);
@@ -10453,7 +10504,10 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 octx.restore();
                 const prev = this._exportPxScale;
                 this._exportPxScale = w / dispW;
-                try { this._renderToContext(octx, w, h); } finally { this._exportPxScale = prev || 1; }
+                try { this._renderToContext(octx, w, h); } finally {
+                    this._exportPxScale = prev || 1;
+                    this.isTransparent = wasClear;
+                }
             };
 
             if (gif) {
@@ -10477,6 +10531,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                         }
                         setTimeout(() => {
                             const blob = window.py2dmolGif(shots, { width: w, height: h,
+                                colors: Math.max(8, Math.min(256, Number(o.colors) || 256)),
+                                transparent: clear,
                                 delayCs: Math.max(2, Math.round(100 / fps)) });
                             shots.length = 0;
                             done(blob, 'gif');
@@ -10540,6 +10596,102 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const mb = (blob.size / 1048576).toFixed(1);
                 setStatus(`${what} exported to ${filename} (${detail}, ${mb} MB)`);
             }
+        }
+
+        /**
+         * EVERY FRAME AS A PNG, in one zip.
+         *
+         * The trajectory recorder answers "show me this moving"; this answers
+         * "give me the frames" - a figure per timepoint, a montage, something
+         * to hand to a video editor that is not a 5 Mbps re-encode of a
+         * cartoon. Same renderer, same dpi, same size as the still export, one
+         * file per frame at the resolution the Image row asks for.
+         *
+         * ZIP FROM THE PAGE, like the GIF encoder: JSZip is loaded by
+         * index.html and the notebook viewer loads nothing but py2Dmol's own
+         * resources, so the button is offered where the library is and is
+         * absent - not broken - where it is not.
+         *
+         * Frames are rendered ONE AT A TIME with a yield between them. A
+         * hundred frames at 200 dpi is a hundred full renders; done in a single
+         * loop the tab is frozen for all of it with no way to tell whether it
+         * is working, and toBlob is asynchronous anyway.
+         */
+        saveFrameImages(opts) {
+            const o = opts || {};
+            if (typeof JSZip === 'undefined') {
+                if (typeof setStatus === 'function') {
+                    setStatus('Saving frames as a zip needs the standalone page.', true);
+                }
+                return;
+            }
+            const object = this.currentObjectName
+                ? this.objectsData[this.currentObjectName] : null;
+            const frames = object && object.frames ? object.frames.length : 0;
+            if (!frames) return;
+            const dpi = Math.max(36, Math.min(1200, Number(o.dpi)
+                || this.constructor.CAPTURE_DEFAULTS.dpi));
+            const width = this.displayWidth || this.canvas.width;
+            const height = this.displayHeight || this.canvas.height;
+            let k = dpi / 96;
+            const maxPx = 16000;
+            if (width * k > maxPx || height * k > maxPx) {
+                k = Math.min(maxPx / width, maxPx / height);
+            }
+            const w = Math.max(1, Math.round(width * k));
+            const h = Math.max(1, Math.round(height * k));
+            const pad = String(frames).length;
+            const zip = new JSZip();
+            const name = this.currentObjectName || 'viewer';
+            const at0 = this.currentFrame;
+            const wasTransparent = this.isTransparent;
+            this.isTransparent = true;
+
+            const done = () => {
+                this.isTransparent = wasTransparent;
+                this.setFrame(at0 >= 0 && at0 < frames ? at0 : 0);
+            };
+            const one = (i) => {
+                if (i >= frames) {
+                    if (typeof setStatus === 'function') {
+                        setStatus(`Zipping ${frames} frames...`);
+                    }
+                    zip.generateAsync({ type: 'blob' }).then((blob) => {
+                        done();
+                        const filename = this._generateFilename(name, 'zip');
+                        this._triggerDownload(blob, filename);
+                        if (typeof setStatus === 'function') {
+                            setStatus(`${frames} frames exported to ${filename} `
+                                + `(${w}x${h}, ${Math.round(k * 96)} dpi, `
+                                + `${(blob.size / 1048576).toFixed(1)} MB)`);
+                        }
+                    }).catch((e) => {
+                        done();
+                        if (typeof setStatus === 'function') {
+                            setStatus('Could not write the zip: ' + e.message, true);
+                        }
+                    });
+                    return;
+                }
+                this.setFrame(i, true);
+                const out = document.createElement('canvas');
+                out.width = w; out.height = h;
+                const octx = out.getContext('2d');
+                this._exportPxScale = k;
+                try { this._renderToContext(octx, w, h); } finally { this._exportPxScale = 1; }
+                out.toBlob((blob) => {
+                    if (blob) {
+                        zip.file(`${name}_${String(i + 1).padStart(pad, '0')}.png`, blob);
+                    }
+                    if (typeof setStatus === 'function' && (i % 5 === 0 || i === frames - 1)) {
+                        setStatus(`Rendering frame ${i + 1} of ${frames}...`);
+                    }
+                    // ...and give the page a turn, so the progress line is
+                    // something the user can actually see move
+                    setTimeout(() => one(i + 1), 0);
+                }, 'image/png');
+            };
+            one(0);
         }
 
         saveImage(opts) {
@@ -11137,19 +11289,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // WRAPS. The embedded viewer's panel is 180px wide and the
             // standalone page's column is wider; a row that wraps fits both,
             // where a fixed layout has to pick one and hang out of the other.
+            // ONE ROW PER SUBJECT, WRAPPING FREELY. The embedded viewer's
+            // panel is 180px wide and the standalone page's column is three
+            // times that: a row that wraps fits both, and the controls simply
+            // take a second line where they have to. What must NOT be here is
+            // anything that forces a break - a spacer with flex-grow pushed the
+            // camera button to the right edge, which in the narrow panel meant
+            // a line of its own with nothing on it.
             const ROW = 'display:flex; align-items:center; gap:6px;'
-                + ' flex-wrap:wrap; row-gap:6px;';
+                + ' flex-wrap:wrap; row-gap:6px; min-width:0;';
             // ONE SIZE FOR EVERY CONTROL, and big enough to read: two rows of
             // controls at different weights make the eye work out which number
             // belongs to which output.
             const H = 28;
             const FIELD = `height:${H}px; font-size:12px; padding:0 4px;`
                 + ' border:1px solid #d1d5db; border-radius:6px; background:#fff;'
-                + ' flex:0 0 auto; min-width:0;';
+                + ' flex:0 1 auto; min-width:0; max-width:100%;';
             const NUM = FIELD + ' width:52px; padding:0 6px;';
             const CAP = 'font-size:12px; color:#6b7280; flex:0 0 auto;';
             const NAME = 'font-size:12px; font-weight:600; color:#374151;'
-                + ' flex:0 0 auto; width:46px;';
+                + ' flex:0 0 auto; min-width:46px;';
             const BTN = `flex:0 0 auto; padding:0 8px; height:${H}px; line-height:1;`
                 + ' cursor:pointer; font-size:12px; border:1px solid #d1d5db;'
                 + ' border-radius:6px; background:#fff;';
@@ -11199,7 +11358,6 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (tip) inp.title = tip;
                 return [lab, inp];
             };
-            const spacer = () => el('span', 'flex:1 1 auto;');
 
             // ---- IMAGE -------------------------------------------------
             const imgRow = row('Image');
@@ -11215,21 +11373,34 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // 1000px canvas comes out about 2000px, which is a figure at column
             // width in print.
             const dpiSel = menu('saveDpiInput', [
-                { value: 96, label: '96 dpi (screen)' },
+                { value: 96, label: '96 dpi' },
                 { value: 150, label: '150 dpi' },
                 { value: 200, label: '200 dpi' },
                 { value: 300, label: '300 dpi' },
                 { value: 600, label: '600 dpi' },
-            ], opts.dpi, 'Resolution of the saved image');
+            ], opts.dpi, 'Resolution of the saved image. 96 dpi is screen size.');
             imgRow.appendChild(dpiSel);
             const imgSize = el('span', CAP, '');
             imgRow.appendChild(imgSize);
-            imgRow.appendChild(spacer());
             const okBtn = el('button', BTN, '\u{1F4F7}');
             okBtn.type = 'button';
             okBtn.title = sources.length ? 'Save the frame on screen as an image'
                 : 'Save an image';
             imgRow.appendChild(okBtn);
+            // EVERY FRAME, AS FILES. Beside the camera because it is the same
+            // export - same renderer, same dpi, same size - just done once per
+            // frame into a zip. Offered where there are frames to write and
+            // where the page has a zip library: index.html does, the notebook
+            // loads py2Dmol's own resources and nothing else.
+            let zipBtn = null;
+            const canZip = obj && obj.frames && obj.frames.length > 1
+                && typeof JSZip !== 'undefined';
+            if (canZip) {
+                zipBtn = el('button', BTN, '\u{1F5C2}');
+                zipBtn.type = 'button';
+                zipBtn.title = `Save all ${obj.frames.length} frames as PNGs in a zip`;
+                imgRow.appendChild(zipBtn);
+            }
 
             // WHAT THE FILE WILL BE, before it is written. The panel used to
             // say nothing at all about size and the question "what resolution
@@ -11251,7 +11422,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
 
             // ---- VIDEO -------------------------------------------------
             let vFmt = null; let secIn = null; let fpsIn = null;
-            let mbpsIn = null; let sizeSel = null;
+            let mbpsIn = null; let sizeSel = null; let colorsSel = null; let bgSel = null;
             if (sources.length && formats.length) {
                 const vRow = row('Video');
                 vFmt = menu('saveVideoFormat', formats.map((f) => (
@@ -11270,6 +11441,33 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     + 'Flat colour and clean edges compress well, so 5 is '
                     + 'visually clean here.');
                 vRow.appendChild(mbL); vRow.appendChild(mb); mbpsIn = mb;
+                // GIF'S OWN CONTROL, on the same row and shown only for GIF.
+                // A GIF is a palette, not a bitrate: the size of the file is
+                // decided by how many colours it is allowed and how many
+                // pixels, so those are the two things to offer - and Mbps,
+                // which means nothing here, goes away rather than sitting
+                // greyed out pretending to be part of the format.
+                colorsSel = menu('saveGifColors', [
+                    { value: 256, label: '256 col' },
+                    { value: 128, label: '128 col' },
+                    { value: 64, label: '64 col' },
+                    { value: 32, label: '32 col' },
+                ], opts.colors || 256,
+                'How many colours the GIF palette holds. A cartoon has few, so '
+                + '64 is usually indistinguishable and about half the size.');
+                vRow.appendChild(colorsSel);
+                // A GIF CAN BE CUT OUT. Its transparency is one palette entry
+                // rather than an alpha channel, so the edge is a hard cut - but
+                // for a turn dropped onto a slide or a dark page that beats a
+                // white square around the structure. PNG already exports this
+                // way; WebM and MP4 cannot, so the control is GIF's.
+                bgSel = menu('saveGifBackground', [
+                    { value: 'paper', label: 'Paper' },
+                    { value: 'clear', label: 'Clear' },
+                ], opts.transparent ? 'clear' : 'paper',
+                'Paper draws the background; Clear leaves it transparent, which '
+                + 'a GIF does with one palette entry - so the edge is a hard cut.');
+                vRow.appendChild(bgSel);
                 if (sizes.length) {
                     sizeSel = menu('saveVideoSize', sizes.map((z) => (
                         { value: z.scale, label: z.label })), opts.scale,
@@ -11281,15 +11479,42 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 vRow.appendChild(vNote);
                 const syncVideo = () => {
                     const gif = vFmt.value === 'gif';
-                    // A GIF's own limits, said out loud rather than silently
-                    // applied: whole-centisecond delays cap the frame rate, and
-                    // every frame is held in memory until the palette is known.
                     const LIM = this.constructor.GIF_LIMITS;
-                    mbpsIn.disabled = gif;
-                    mbpsIn.style.opacity = gif ? '0.4' : '';
+                    // ONE ROW, TWO FORMATS, and only the controls that mean
+                    // something for the one that is picked. What is shared -
+                    // how long, how fast, how big - stays put, so switching
+                    // format does not move the rest of the row about.
+                    mbL.style.display = gif ? 'none' : '';
+                    mbpsIn.style.display = gif ? 'none' : '';
+                    colorsSel.style.display = gif ? '' : 'none';
+                    bgSel.style.display = gif ? '' : 'none';
+                    // A GIF'S LIMITS ARE APPLIED TO THE CONTROLS, not just to
+                    // the recording. The sink clamps either way, but a panel
+                    // reading 30 fps and 1194x1194 over a file that came out
+                    // 20 fps and 1024 wide is the panel lying about what it is
+                    // about to make. Whole-centisecond delays are what cap the
+                    // rate; memory is what caps the size, since every frame is
+                    // held until the palette is known.
+                    fpsIn.max = gif ? LIM.maxFps : 60;
+                    if (gif && Number(fpsIn.value) > LIM.maxFps) fpsIn.value = LIM.maxFps;
+                    if (sizeSel) {
+                        let fallback = null;
+                        for (const opt of sizeSel.options) {
+                            const z = sizes.find((q) => String(q.scale) === opt.value);
+                            const tooBig = gif && z && Math.max(z.w, z.h) > LIM.maxPx;
+                            opt.disabled = !!tooBig;
+                            if (!tooBig) fallback = opt.value;
+                        }
+                        const cur = sizeSel.selectedOptions[0];
+                        if (cur && cur.disabled && fallback !== null) sizeSel.value = fallback;
+                    }
+                    const z = sizes.find((q) => String(q.scale) === (sizeSel ? sizeSel.value : '1'));
                     vNote.textContent = gif
-                        ? `max ${LIM.maxFps} fps, ${LIM.maxPx}px` : '';
+                        ? `${LIM.maxFps} fps max, ${LIM.maxPx}px max`
+                        : (z ? '' : '');
                 };
+                if (sizeSel) sizeSel.addEventListener('change', syncVideo);
+                fpsIn.addEventListener('change', syncVideo);
                 vFmt.addEventListener('change', syncVideo);
                 syncVideo();
             }
@@ -11301,6 +11526,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 mbps: mbpsIn ? Number(mbpsIn.value) || 5 : 5,
                 container: vFmt ? vFmt.value : 'webm',
                 scale: sizeSel ? Number(sizeSel.value) || 1 : 1,
+                colors: colorsSel ? Number(colorsSel.value) || 256 : 256,
+                transparent: !!(bgSel && bgSel.value === 'clear'),
             });
             const closePanel = () => {
                 p.style.display = 'none';
@@ -11340,6 +11567,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     });
                     recRow.appendChild(b);
                 }
+            }
+
+            if (zipBtn) {
+                zipBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const io = { dpi: Number(dpiSel.value) || 200 };
+                    this._captureOpts = Object.assign(this.captureOpts(), io);
+                    closePanel();
+                    this.saveFrameImages(io);
+                });
             }
 
             okBtn.addEventListener('click', (e) => {

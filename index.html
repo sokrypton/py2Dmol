@@ -619,6 +619,16 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     aria-label="Copy the selection into a new object">
                                     <i class="fa-regular fa-copy"></i>
                                 </button>
+                                <!-- CUT is Copy and Delete in one press, and it
+                                     has to be one: Copy switches to the object it
+                                     makes and Delete works on whatever is current,
+                                     so pressing them in turn deletes the copy out
+                                     of itself and leaves the original whole. -->
+                                <button id="cutSelectionButton" class="selection-icon-btn"
+                                    title="Cut the selected residues into a new object, removing them from this one"
+                                    aria-label="Cut the selection into a new object">
+                                    <i class="fa-solid fa-scissors"></i>
+                                </button>
                                 <button id="deleteSelectionButton" class="selection-icon-btn selection-icon-danger"
                                     title="Delete the selected residues from this object"
                                     aria-label="Delete the selected residues">

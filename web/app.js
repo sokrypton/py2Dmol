@@ -540,6 +540,29 @@ function setupEventListeners() {
         });
     }
 
+    // CUT: the copy Copy makes, minus the residues from where they came. The
+    // renderer owns the order (see cutSelection - the two halves cannot simply
+    // be pressed in sequence); this reports what happened, because a cut that
+    // silently did nothing looks exactly like a copy that did.
+    const cutSelectionButton = document.getElementById('cutSelectionButton');
+    if (cutSelectionButton) {
+        cutSelectionButton.addEventListener('click', () => {
+            const r = viewerApi?.renderer;
+            if (!r || !r.cutSelection) return;
+            const made = r.cutSelection();
+            if (!made) {
+                setStatus('Select something first, then Cut moves it into a new object.');
+                return;
+            }
+            setStatus(`Cut ${made.removed} residue${made.removed === 1 ? '' : 's'}`
+                + ` into ${made.name}. Reload the file to get them back.`);
+            if (window.SEQ?.buildViewDeferred || window.SEQ?.buildView) {
+                (window.SEQ.buildViewDeferred || window.SEQ.buildView)();
+            }
+            applySelectionToMSA();
+        });
+    }
+
     // DELETE, beside Copy in the panel's corner. The renderer does the work;
     // this only reports what happened, since a delete that silently did nothing
     // (an empty selection, or one covering everything) is worse than a refusal.
