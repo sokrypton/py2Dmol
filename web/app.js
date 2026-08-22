@@ -2100,8 +2100,9 @@ function updateObjectNavigationButtons() {
 // ONE OBJECT AT A TIME IS THE RESTING STATE, chosen with the dropdown in the
 // sequence header - which is how the viewer has always worked, and loading a
 // second file must not change it. Showing several is something the user asks
-// for: press All, or light an eye in the list. The first row IS All, and
-// switching it off comes back to the object being edited.
+// for: press All, or light an eye in the list. All is literal - every object
+// on, or every object off, and an empty canvas is a picture you are allowed to
+// ask for.
 //
 // The list used to answer a second question too - which object is CURRENT, the
 // one Copy, Delete, the side-chain toggles and the sequence strip act on - and
@@ -2173,14 +2174,16 @@ function renderObjectList() {
     const allRow = document.createElement('div');
     allRow.className = 'object-list-row object-list-all' + (allOn ? '' : ' is-hidden');
     allRow.title = allOn
-        ? 'Back to one object at a time'
+        ? 'Take every object off the screen'
         : 'Put every object on screen at once';
     allRow.innerHTML = (allOn
         ? '<span class="object-list-eye"><i class="fa-regular fa-eye"></i></span>'
         : '<span class="object-list-eye"><i class="fa-regular fa-eye-slash"></i></span>')
         + '<span class="object-list-name">All</span>';
     allRow.addEventListener('click', () => {
-        // ...and off means the empty set, which is "just the one being edited"
+        // LITERAL: everything on, or everything off. Off is the empty list,
+        // which is an empty canvas - not a fallback to one object, because a
+        // control called All that leaves something behind is a lie.
         renderer.setShownObjects(allOn ? [] : names);
         syncObjectColorOption();
         renderObjectList();
@@ -2224,15 +2227,10 @@ function toggleObjectShown(name) {
     const renderer = viewerApi?.renderer;
     if (!renderer || !renderer.setShownObjects) return;
     const shown = shownObjectSet(renderer);
-    if (shown.has(name)) {
-        // THE LAST ONE CANNOT BE SWITCHED OFF: an empty set means "the object
-        // being edited", so the picture would come back with that one in it
-        // and the eye would read as broken.
-        if (shown.size <= 1) return;
-        shown.delete(name);
-    } else {
-        shown.add(name);
-    }
+    if (shown.has(name)) shown.delete(name);
+    else shown.add(name);
+    // ...including down to nothing: an empty list is an empty canvas, and the
+    // objects are all still there to be switched back on.
     renderer.setShownObjects(Array.from(shown));
     syncObjectColorOption();
     renderObjectList();
@@ -7633,11 +7631,11 @@ function saveViewerState() {
 
         const viewerState = {
             current_object_name: renderer.currentObjectName,
-            // WHICH OBJECTS WERE ON SCREEN. Empty means "just the current
-            // one" - see drawnObjects() - so a session saved with one object
-            // showing restores exactly as it does today, and one saved with
-            // three comes back with three.
-            shown_objects: (renderer.shownObjects && renderer.shownObjects.size)
+            // WHICH OBJECTS WERE ON SCREEN. Null is the default - the object
+            // being edited, alone - and is not restored as anything, so a
+            // session saved that way opens exactly as it always has. An array
+            // is what the user chose, including an empty one.
+            shown_objects: (renderer.shownObjects instanceof Set)
                 ? Array.from(renderer.shownObjects) : null,
             current_frame: renderer.viewerState.currentFrame,  // From viewerState, not global
             rotation_matrix: renderer.viewerState.rotation,
@@ -8418,10 +8416,12 @@ async function loadViewerState(stateData) {
                         // frame each object is parked on and the current one's
                         // is only settled here. Names whose objects did not
                         // come back are dropped by setShownObjects.
+                        // ...INCLUDING AN EMPTY ONE, which is every object
+                        // switched off. Null - the default - is not written at
+                        // all, so an older session restores as it always did.
                         const shownSaved = stateData.viewer_state
                             && stateData.viewer_state.shown_objects;
-                        if (Array.isArray(shownSaved) && shownSaved.length > 1
-                            && renderer.setShownObjects) {
+                        if (Array.isArray(shownSaved) && renderer.setShownObjects) {
                             renderer.setShownObjects(shownSaved);
                         }
 

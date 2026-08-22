@@ -203,8 +203,15 @@ Two questions, asked in two places, and the whole design is keeping them apart:
 
 | question | control | state |
 |---|---|---|
-| which objects are ON SCREEN | the list: an **All** row, then a row per object | `shownObjects`, empty meaning "the one being edited" |
+| which objects are ON SCREEN | the list: an **All** row, then a row per object | `shownObjects`: null, a set, or an EMPTY set |
 | which object is being EDITED | the **picker beside the sequence strip** | `currentObjectName` |
+
+`shownObjects` has three states, and the third is the one that is easy to
+forget: **null** is the default (the object being edited, on its own), a
+**non-empty set** is those objects, and an **empty set** is every object
+switched off - an empty canvas, which is a picture the user is allowed to ask
+for. A list naming only objects that no longer exist is stale, not a request
+for nothing, and falls back to the default.
 
 **One object at a time is the resting state** - chosen with the dropdown, which
 is how the viewer has always worked. Loading a second file does not change what
@@ -212,7 +219,13 @@ you are looking at and does not merge anything: *"by default unless user clicks
 all, the original behavior should remain, one object displayed at a time
 selected via dropdown menu."* Showing several is asked for - press **All**, or
 light one object's eye, which JOINS it to what is on screen rather than
-replacing it. Switching All off comes back to the object being edited.
+replacing it. **All is literal**: every object on, or every object off. A
+control called All that leaves something behind is a lie.
+
+A single object that is NOT the one being edited is drawn through the merge
+machinery with one source - the plain path loads the CURRENT object and would
+draw the wrong one - and it is coloured as itself rather than as "object 0 of
+one".
 
 The first version tied the two questions together: the shown set meant "the
 current object", so picking one in the list took the other off the screen -

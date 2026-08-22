@@ -72,7 +72,7 @@ for (const name of ['selectionBandFor']) {
 // orient's rotation solver, scored as shipped
 eval(fs.readFileSync('web/utils.js','utf8').match(
   /function bestViewTargetRotation_relaxed_AUTO[\s\S]*?\n\}\n/)[0]);
-const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_saveVisibilityToObjects','_editOneObject','addObject',];
+const names=['_inertiaAllowed','_frameOverBudget','smoothAnimationOk','_scheduleSettle','_materialiseSidechains','pickGroupAt','selectionInk','_remapSidechains','_colorPositionFor','_sidechainColorOf','_colorSegmentPosition','_syncSaveButtonMode','hasBasesFor','setBasesFor','captureOpts','videoFormats','videoFormatOf','videoSizes','_makeVideoSink','hasElementsFor','setElementsFor','forcedSseFor','assignedSseFor','sidechainOwners','elementOwners','elementAt','_elementOwnerOf','_segmentElementHalves','_paintSelectionHalo','_paintOverlays','_paintHoverReadout','hoverSet','_snapshotCleanFrame','clipSlabDefault','clipViewExtent','setClipSlab','clipSlabOn','clipAccepts','clipCoverage','clipFadeWidth','setClipFade','_clipReach','clipSlabForSelection','_applyStyleDefaults','autoClip','_autoClipDepth','_refreshAutoClip','residuesWithin','_atomsOfResidues','_isSidechainSegment','backboneHiddenSet','backboneHiddenAt','setBackboneHiddenFor','framingPositions','showAll','resetVisibility','_repaintOverlays','setHover','_calculateSegmentWidthMultiplier','sidechainOwners','hasSidechainsFor','_shadowPairExcluded','_resolveContactToIndices','pickResidueAt','_pickable','beginSelectionPreview','updateSelectionPreview','endSelectionPreview','_invalidateSelectionPreview','_ensurePickProjection','_projectForPicking','_rotateCoords','_computeViewCentre','_gpuWillDraw','_tubeGPUWillTake','_gpuWillTake','_ensureRotated','drawnObjects','_resolvePlddtData','_resolvedFrame','_mergeObjects','_mergeSidechainTables','_hasPlddtData','sourceGroups','shownSidechainSet','sourceOffsetOf','setShownObjects','_applyShownObjects','drawnStats','_mergedStats','_applyMergedVisibility','ownerOf','mergedObjectSet','writeGroups','localRangeOf','_positionCount','mergedLigandGroups','_autoColorFor','chainColorKeyAt','chainColorKeyFor','selectionForObject','_maskForObject','_saveVisibilityToObjects','_dropMergeState','_editOneObject','addObject',];
 const body={};
 for(const nm of names){
  const i=src.indexOf('\n        '+nm+'(');
@@ -5268,8 +5268,11 @@ t('the drawn objects are asked for in one place, and default to the edited one',
     const v = new Cls();
     v.objectsData = { A: {}, B: {}, C: {} };
     v.currentObjectName = 'B';
-    v.shownObjects = new Set();
+    v.shownObjects = null;
     eq(v.drawnObjects().join(','), 'B', 'just the object being edited');
+    // ...and an EMPTY set is every object switched off, which is a picture too
+    v.shownObjects = new Set();
+    eq(v.drawnObjects().length, 0, 'nothing on screen');
     v.shownObjects = new Set(['C', 'A']);
     eq(v.drawnObjects().join(','), 'A,C', 'in load order, whatever order it was set in');
     v.shownObjects = new Set(['gone']);
@@ -6506,7 +6509,7 @@ function shownViewer() {
     const v = mergeViewer();
     v.multiState = { enabled: false, sourceIdMap: null, sourceNames: null,
         sourceOffsets: null, autoColor: null };
-    v.shownObjects = new Set();
+    v.shownObjects = null;
     v.loaded = [];
     // ...and the coordinate array with it, because everything that translates
     // an index checks its length against the source map
@@ -6527,6 +6530,7 @@ function shownViewer() {
     v.clearResidueSelection = function () {
         this.selectionCleared = true; this.residueSelection = null;
     };
+    v.render = function () { this.rendered = (this.rendered || 0) + 1; };
     // the real setVisibility applies the patch and then files it under the
     // object(s) it describes - the second half is what the rebuild reads back
     v.setVisibility = function (patch) {
@@ -6628,12 +6632,14 @@ t('a merge of objects and a merge of frames are never both on', () => {
 
 t('a name that is not loaded is ignored, never drawn as nothing', () => {
     const v = shownViewer();
+    // ...a set naming nothing that exists is stale, not "show nothing"
     eq(v.setShownObjects(['nope']), false, 'no change');
     eq(v.drawnObjects().join(','), 'A', 'still the object being edited');
     // ...and it is not REMEMBERED either. Kept, it would lie in wait: load an
     // object under that name later and it appears on screen unasked, because
     // a list the user never edited already had it ticked.
-    eq(v.shownObjects.has('nope'), false, 'the stale name was not kept');
+    eq(!v.shownObjects || !v.shownObjects.has('nope'), true,
+        'the stale name was not kept');
 });
 
 t("each object's side chains are read at its own offset", () => {
@@ -7062,11 +7068,11 @@ t('an object loaded while several are shown joins them', () => {
     if (!v.shownObjects.has('C')) {
         throw new Error('a newly loaded object is invisible while others are shown');
     }
-    // ...but a single-object session keeps its empty set, which is what makes
-    // "just the current one" the default
+    // ...but a session that never touched the list keeps its default, which is
+    // what makes "just the one being edited" the resting state
     const w = shownViewer();
     try { w.addObject = Cls.prototype.addObject; w.addObject('C'); } catch (e) { /* as above */ }
-    eq(w.shownObjects.size, 0, 'nothing was written down for a lone object');
+    eq(w.shownObjects, null, 'nothing was written down for an untouched list');
 });
 
 // PLAYBACK MUST NOT DROP THE OTHER OBJECTS.
@@ -7215,6 +7221,49 @@ t('an object nobody has touched is drawn whole, an emptied one is not', () => {
     v._applyShownObjects();
     eq(Array.from(v.mask.positions).sort((a, b) => a - b).join(','), '0,1,2',
         'A entire and nothing of B');
+});
+
+// EVERY OBJECT CAN BE SWITCHED OFF, and an empty canvas is a picture you are
+// allowed to ask for. The shown set therefore has three states, not two: null
+// is the default (the object being edited, alone), a non-empty set is those
+// objects, and an EMPTY set is nothing at all.
+t('everything can be switched off, and the objects survive it', () => {
+    const v = shownViewer();
+    eq(v.drawnObjects().join(','), 'A', 'the resting state');
+    eq(v.setShownObjects([]), true, 'switching everything off is a change');
+    eq(v.drawnObjects().length, 0, 'nothing is drawn');
+    eq(v.coords.length, 0, 'and nothing is loaded to draw');
+    eq(Object.keys(v.objectsData).length, 2, 'both objects are still there');
+    eq(v.multiState.enabled, false, 'and no merge is left behind');
+    // ...and back
+    eq(v.setShownObjects(['B']), true, 'switching one back on is a change');
+    eq(v.drawnObjects().join(','), 'B', 'that object alone');
+    if (!v.coords.length) throw new Error('nothing was loaded for it');
+});
+
+t('a single object that is not the edited one is still drawn', () => {
+    const v = shownViewer();
+    // A is being edited; show B and only B
+    v.setShownObjects(['B']);
+    eq(v.drawnObjects().join(','), 'B', 'B is what is on screen');
+    eq(v.currentObjectName, 'A', 'A is still what the panels act on');
+    // it goes through the merge machinery, because the plain path loads the
+    // CURRENT object and would draw A instead
+    eq(v.multiState.enabled, true, 'drawn through the merge');
+    eq(v.multiState.sourceNames.join(','), 'B', 'with one source');
+    eq(v.coords.length, 2, "B's positions, not A's");
+});
+
+t('asking for nothing and asking with a stale name are different', () => {
+    const v = shownViewer();
+    v.setShownObjects([]);
+    eq(v.drawnObjects().length, 0, 'an empty list means nothing');
+    // a list that names only objects which are gone is stale - a restored
+    // session, a deleted object - and falls back to the default rather than
+    // blanking the screen
+    v.setShownObjects(['gone', 'also-gone']);
+    eq(v.drawnObjects().join(','), 'A', 'a stale list means the default');
+    eq(v.shownObjects, null, 'and is not kept');
 });
 
 console.log(fail ? ('FAILURES '+fail):'all '+pass+' checks passed');

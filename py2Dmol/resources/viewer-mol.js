@@ -1381,7 +1381,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // into it. Read through drawnObjects(), never directly, so the
             // day it holds several the callers need no changing.
             // See MULTI_OBJECT_PLAN.md.
-            this.shownObjects = new Set();
+            this.shownObjects = null;
 
             // Width multipliers are now always based on TYPE_BASELINES (no scaling factors needed)
 
@@ -3119,7 +3119,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // two structures are up would appear to have done nothing. Only
             // when a set exists at all: empty still means "just the current
             // one", which is every single-object session.
-            if (this.shownObjects && this.shownObjects.size) {
+            if (this.shownObjects instanceof Set && this.shownObjects.size) {
                 this.shownObjects.add(name);
             }
             const objectExists = this.objectsData[name] !== undefined;
@@ -6769,7 +6769,13 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 // _autoColorFor. What is left here is the fallback for
                 // anything that asks without a position, and for it the merge
                 // as a whole answers by object.
-                this.resolvedAutoColor = 'object';
+                // ...and when only ONE object is drawn through the merge -
+                // which happens whenever the object on screen is not the one
+                // being edited - it is coloured as itself, not as "object 0 of
+                // one", which would be a single flat colour.
+                const own = this.multiState.sourceAutoColors;
+                this.resolvedAutoColor = (own && own.length === 1)
+                    ? own[0] : 'object';
             } else if (this.overlayState.enabled && this.overlayState.autoColor) {
                 this.resolvedAutoColor = this.overlayState.autoColor;
             } else {
@@ -10195,12 +10201,16 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const all = this.objectsData || {};
             const names = Object.keys(all);
             const want = this.shownObjects;
-            if (want && want.size) {
+            if (want) {
+                // AN EMPTY SET IS AN ANSWER: everything switched off, nothing on
+                // screen. Only a set that names objects which have all been
+                // deleted is stale, and falls through to the default.
+                if (!want.size) return [];
                 // the load order, so the list and the painting agree
                 const out = names.filter((n) => want.has(n));
                 if (out.length) return out;
             }
-            // EMPTY MEANS THE ONE BEING EDITED, and that is the resting state:
+            // NULL MEANS THE ONE BEING EDITED, and that is the resting state:
             // one object on screen, chosen with the dropdown, exactly as it has
             // always been. Showing several is something the user asks for, by
             // pressing All or lighting an eye in the list - never something
@@ -10220,9 +10230,20 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          */
         setShownObjects(names, skipRender = false) {
             const all = this.objectsData || {};
-            const want = new Set((names || []).filter(n => all[n]));
             const before = this.drawnObjects().join(' ');
-            this.shownObjects = want;
+            // NULL RESETS TO THE DEFAULT - the object being edited, on its own.
+            // An array is authoritative, including an empty one, which is every
+            // object switched off and an empty canvas.
+            if (names === null || names === undefined) {
+                this.shownObjects = null;
+            } else {
+                const live = names.filter((n) => all[n]);
+                // A LIST THAT NAMES ONLY OBJECTS WHICH ARE GONE is stale - a
+                // restored session, a deleted object - and means the default,
+                // not "show nothing". Asking for nothing is passing nothing.
+                this.shownObjects = (names.length && !live.length)
+                    ? null : new Set(live);
+            }
             const after = this.drawnObjects().join(' ');
             if (before === after) return false;
             this._applyShownObjects(skipRender);
@@ -10240,18 +10261,26 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const names = this.drawnObjects();
             const ms = this.multiState;
 
-            if (names.length <= 1) {
+            // NOTHING ON SCREEN, because every object was switched off. The
+            // coordinate array is emptied rather than the objects unloaded:
+            // the panels, the sequence strip and the picker all go on working
+            // on the object being edited, and lighting an eye brings it back.
+            if (!names.length) {
+                this._dropMergeState();
+                this.coords = [];
+                this.segmentIndices = [];
+                this._invalidateSegmentCache();
+                this._invalidateShadowCache();
+                if (!skipRender) this.render('nothing shown');
+                return;
+            }
+
+            // ONE OBJECT, AND IT IS THE ONE BEING EDITED: the ordinary path,
+            // untouched. Any other single object goes through the merge, which
+            // is what knows how to draw an object that is not the current one.
+            if (names.length === 1 && names[0] === this.currentObjectName) {
                 if (!ms.enabled) return;
-                ms.enabled = false;
-                ms.sourceIdMap = null;
-                ms.sourceNames = null;
-                ms.sourceOffsets = null;
-                ms.sourceFrames = null;
-                ms.sourceAutoColors = null;
-                ms.autoColor = null;
-                ms.stats = null;
-                this._sourceGroupsCache = null;
-                this._mergedSetCache = null;
+                this._dropMergeState();
                 this._invalidateSegmentCache();
                 this._invalidateShadowCache();
                 // ...and frame on what is left, the same re-framing that
@@ -10455,7 +10484,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * whether a merge happens to be up already.
          */
         _mergeWanted() {
-            return this.drawnObjects().length > 1;
+            const drawn = this.drawnObjects();
+            return drawn.length !== 1 || drawn[0] !== this.currentObjectName;
         }
 
         /**
@@ -10861,6 +10891,23 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 off: ms.sourceOffsets[s],
                 end: (s + 1 < ms.sourceOffsets.length) ? ms.sourceOffsets[s + 1] : total
             };
+        }
+
+        /** Forget the merge, without touching what is loaded. */
+        _dropMergeState() {
+            const ms = this.multiState;
+            if (!ms) return;
+            ms.enabled = false;
+            ms.sourceIdMap = null;
+            ms.sourceNames = null;
+            ms.sourceOffsets = null;
+            ms.sourceFrames = null;
+            ms.sourceAutoColors = null;
+            ms.autoColor = null;
+            ms.stats = null;
+            this._sourceGroupsCache = null;
+            this._mergedSetCache = null;
+            this._mergedLigCache = null;
         }
 
         /**
