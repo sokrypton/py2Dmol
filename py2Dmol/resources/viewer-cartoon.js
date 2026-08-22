@@ -944,6 +944,55 @@
      * @param isPur (i) -> is this a purine (sets the centroid distance)
      * @param isDna (i) -> DNA rather than RNA (selects the table plane)
      */
+    /**
+     * CONTINUE THE SCREW one step past c: take the turn from a->b to b->c and
+     * apply it once more, keeping the step length. This is how both nucleic
+     * passes invent a neighbour they do not have - the base-frame window at a
+     * chain end, and the smoothing pass at a run end.
+     */
+    /**
+     * ROTATE w BY THE TURN THAT TAKES v1 ONTO v2 (directions only; w keeps its
+     * length). On a helix, consecutive chords are related by exactly this
+     * rotation - about the helix axis, by the twist per residue - so it
+     * transports anything defined in the local frame one step along: the next
+     * chord (screwNext), or the displacement a filter would have applied
+     * (the run-end case in smoothNucleicTrace).
+     * Identity when either vector vanishes or the two are collinear.
+     */
+    function turnLike(v1, v2, w) {
+        const l1 = Math.hypot(v1[0], v1[1], v1[2]), l2 = Math.hypot(v2[0], v2[1], v2[2]);
+        if (l1 < 1e-6 || l2 < 1e-6) return w;
+        let kx = v1[1] * v2[2] - v1[2] * v2[1];
+        let ky = v1[2] * v2[0] - v1[0] * v2[2];
+        let kz = v1[0] * v2[1] - v1[1] * v2[0];
+        const kl = Math.hypot(kx, ky, kz);
+        if (kl < 1e-9) return w;
+        kx /= kl; ky /= kl; kz /= kl;
+        const cs = Math.max(-1, Math.min(1, (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (l1 * l2)));
+        const sn = Math.sin(Math.acos(cs));
+        const dt = kx * w[0] + ky * w[1] + kz * w[2];
+        return [
+            w[0] * cs + (ky * w[2] - kz * w[1]) * sn + kx * dt * (1 - cs),
+            w[1] * cs + (kz * w[0] - kx * w[2]) * sn + ky * dt * (1 - cs),
+            w[2] * cs + (kx * w[1] - ky * w[0]) * sn + kz * dt * (1 - cs),
+        ];
+    }
+
+    /**
+     * CONTINUE THE SCREW one step past c: take the turn from a->b to b->c and
+     * apply it once more, keeping the step length. Adding the difference of
+     * the two steps instead (c + 2*v2 - v1) overshoots by up to 40% on a helix,
+     * and the padded point then failed the bond-length test in the caller - so
+     * the residue it was invented for got no frame at all, which is worse than
+     * no padding: a zero frame puts the base centroid on the C4' itself.
+     */
+    function screwNext(a, b, c) {
+        const v1 = [b.x - a.x, b.y - a.y, b.z - a.z];
+        const v2 = [c.x - b.x, c.y - b.y, c.z - b.z];
+        const r = turnLike(v1, v2, v2);
+        return { x: c.x + r[0], y: c.y + r[1], z: c.z + r[2] };
+    }
+
     // ---- NUCLEIC TRACE SMOOTHING ------------------------------------------
     //
     // A C4' trace is not a smooth curve. The atom sits one bond out from the
@@ -1003,18 +1052,111 @@
         for (const lam of NA_SMOOTH_STEPS) {
             const src = out.slice();
             for (const [lo, hi] of runs) {
-                // ENDS PINNED, like the strand pass: the ribbon still meets
-                // whatever it joins exactly where it did, and a terminal base
-                // does not walk away from its own phosphate.
                 for (let i = lo + 1; i < hi; i++) {
                     if (!nuc(i) || !nuc(i - 1) || !nuc(i + 1)) continue;
-                    const a = src[i - 1]; const b = src[i]; const c = src[i + 1];
+                    const a = src[i - 1]; const c = src[i + 1];
+                    const b = src[i];
                     out[i] = {
                         x: b.x + lam * ((a.x + c.x) / 2 - b.x),
                         y: b.y + lam * ((a.y + c.y) / 2 - b.y),
                         z: b.z + lam * ((a.z + c.z) / 2 - b.z),
                     };
                 }
+                // ...AND THE TWO ENDS TAKE THE MOVE THEY WOULD HAVE HAD.
+                //
+                // Pinning them is the obvious thing and it is the same mistake
+                // the centered tangent stencil makes at a run end (HT1_A, which
+                // exists to solve exactly this for helices). It does not show
+                // where you expect. Take an IDEAL B-DNA (r 9.0, rise 3.38,
+                // twist 36 deg) and cut it: the filter moves every interior
+                // point 0.071 A straight at the axis and nothing along it, so
+                // the pinned terminal residue is only 0.071 A behind - but its
+                // NEIGHBOUR, with one fixed point to average against, moves
+                // 0.441 A, six times too far, and lands 0.382 A off the helix.
+                // The end does not lag; it DRAGS, and the last turn of the
+                // duplex is pulled off its own axis.
+                //
+                // The move the end should have had is exact and needs no
+                // extrapolated position: a helix is homogeneous, so every point
+                // gets the same displacement in its own local frame, and one
+                // step along that frame is one turn about the helix axis - the
+                // rotation that carries the next chord onto this one. Measured
+                // on the ideal helix, transporting the neighbour's displacement
+                // that way reproduces the true end displacement to 0.0000 A at
+                // every residue, so a cut duplex smooths exactly as the uncut
+                // one did. Over 153 real chains the path turn at the seam goes
+                // 25.5 -> 30.0 deg median against an interior of 32.1: the
+                // point is not that the corner gets gentler - pinning already
+                // did that, by flattening it - but that the end now bends like
+                // the rest of the helix. Terminal base direction against real
+                // ring geometry is unchanged (19.6 -> 19.9 deg median).
+                //
+                // Reading a POSITION out of the raw trace instead - continue
+                // the screw past the end and average against that - is also
+                // exact on an ideal helix, but on a real one it is built from
+                // the three raw terminal points, which is where the pucker
+                // wobble is: it extrapolates the wobble, measured 31.8 deg at
+                // the seam, and folded the terminal interval visibly.
+                const endMove = (i, d) => {
+                    const j = i + d, k = i + 2 * d;
+                    if (!nuc(i) || !nuc(j) || !nuc(k)) return;
+                    const mv = [out[j].x - src[j].x, out[j].y - src[j].y,
+                        out[j].z - src[j].z];
+                    if (Math.hypot(mv[0], mv[1], mv[2]) < 1e-9) return;
+                    // ONE STEP BACK ALONG THE SCREW. This must be the turn
+                    // about the HELIX AXIS, not the shortest turn carrying one
+                    // chord onto the next: both map chord to chord, but they
+                    // send everything else somewhere different, and the thing
+                    // being carried here is a radial displacement, not a chord.
+                    // Using the shortest turn leaves 0.137 A of the ideal-helix
+                    // error behind where the axial one leaves nothing.
+                    // Three chords give the axis for free - a rotation about it
+                    // cannot change a chord's axial component, so every chord
+                    // DIFFERENCE is perpendicular to it.
+                    const l = i + 3 * d;
+                    const ch = (u2, v2) => [src[v2].x - src[u2].x,
+                        src[v2].y - src[u2].y, src[v2].z - src[u2].z];
+                    const A = ch(j, i), B = ch(k, j);
+                    let r = null;
+                    if (nuc(l)) {
+                        const C = ch(l, k);
+                        const d1 = [B[0] - A[0], B[1] - A[1], B[2] - A[2]];
+                        const d2 = [C[0] - B[0], C[1] - B[1], C[2] - B[2]];
+                        let ux = d1[1] * d2[2] - d1[2] * d2[1];
+                        let uy = d1[2] * d2[0] - d1[0] * d2[2];
+                        let uz = d1[0] * d2[1] - d1[1] * d2[0];
+                        const ul = Math.hypot(ux, uy, uz);
+                        if (ul > 1e-9) {
+                            ux /= ul; uy /= ul; uz /= ul;
+                            // the turn from B to A, measured in the plane
+                            // normal to the axis
+                            const perp = (v2) => {
+                                const t = v2[0] * ux + v2[1] * uy + v2[2] * uz;
+                                return [v2[0] - t * ux, v2[1] - t * uy, v2[2] - t * uz];
+                            };
+                            const bp = perp(B), ap = perp(A);
+                            const cx2 = bp[1] * ap[2] - bp[2] * ap[1];
+                            const cy2 = bp[2] * ap[0] - bp[0] * ap[2];
+                            const cz2 = bp[0] * ap[1] - bp[1] * ap[0];
+                            const th = Math.atan2(cx2 * ux + cy2 * uy + cz2 * uz,
+                                bp[0] * ap[0] + bp[1] * ap[1] + bp[2] * ap[2]);
+                            const cs = Math.cos(th), sn = Math.sin(th);
+                            const dt = ux * mv[0] + uy * mv[1] + uz * mv[2];
+                            r = [
+                                mv[0] * cs + (uy * mv[2] - uz * mv[1]) * sn + ux * dt * (1 - cs),
+                                mv[1] * cs + (uz * mv[0] - ux * mv[2]) * sn + uy * dt * (1 - cs),
+                                mv[2] * cs + (ux * mv[1] - uy * mv[0]) * sn + uz * dt * (1 - cs),
+                            ];
+                        }
+                    }
+                    // A run of three has no axis to find; the shortest turn is
+                    // the best available and is right to first order.
+                    if (!r) r = turnLike(B, A, mv);
+                    const b = src[i];
+                    out[i] = { x: b.x + r[0], y: b.y + r[1], z: b.z + r[2] };
+                };
+                endMove(lo, 1);
+                endMove(hi, -1);
             }
         }
         // ...AND THE ATOMS RIDE ALONG. A base drawn as real atoms is appended
@@ -1042,32 +1184,7 @@
         // structure, with bare ribbon where its terminal base pairs should be.
         // PULCHRA pads its trace for the same reason; this continues the local
         // screw motion, applying the turn between the last two steps once more.
-        const ext = (a, b, c) => {
-            // Continue the SCREW: take the turn from a->b to b->c and apply it
-            // once more, keeping the step length. Adding the difference of the
-            // two steps instead (c + 2*v2 - v1) overshoots by up to 40% on a
-            // helix, and the padded point then failed the bond-length test
-            // below - so the residue it was invented for got no frame at all,
-            // which is worse than no padding: a zero frame puts the base
-            // centroid on the C4' itself.
-            const v1x = b.x - a.x, v1y = b.y - a.y, v1z = b.z - a.z;
-            const v2x = c.x - b.x, v2y = c.y - b.y, v2z = c.z - b.z;
-            const l1 = Math.hypot(v1x, v1y, v1z), l2 = Math.hypot(v2x, v2y, v2z);
-            if (l1 < 1e-6 || l2 < 1e-6) return { x: c.x + v2x, y: c.y + v2y, z: c.z + v2z };
-            let kx = v1y * v2z - v1z * v2y;
-            let ky = v1z * v2x - v1x * v2z;
-            let kz = v1x * v2y - v1y * v2x;
-            const kl = Math.hypot(kx, ky, kz);
-            if (kl < 1e-9) return { x: c.x + v2x, y: c.y + v2y, z: c.z + v2z };
-            kx /= kl; ky /= kl; kz /= kl;
-            const cs = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y + v1z * v2z) / (l1 * l2)));
-            const sn = Math.sin(Math.acos(cs));
-            const dt = kx * v2x + ky * v2y + kz * v2z;
-            const rx = v2x * cs + (ky * v2z - kz * v2y) * sn + kx * dt * (1 - cs);
-            const ry = v2y * cs + (kz * v2x - kx * v2z) * sn + ky * dt * (1 - cs);
-            const rz = v2z * cs + (kx * v2y - ky * v2x) * sn + kz * dt * (1 - cs);
-            return { x: c.x + rx, y: c.y + ry, z: c.z + rz };
-        };
+        const ext = screwNext;
         // A CHAIN BREAK is an end too. The window runs i-1 .. i+2, so the last
         // residue of every chain has its forward neighbours in the NEXT chain,
         // 15 A away - and reading them gives nonsense while dropping the residue
@@ -12200,6 +12317,7 @@
     // benchmarks report against them.
     window.py2dmolCartoon = { render, makeSec, smoothSec, extendSec, SS_PARAMS: SS,
         predictBackbone, predictBaseFrames, assignSecondary, assignSecondaryOpen,
+        smoothNucleicTrace,
         ringsOf, buildSheetFrames, localFrame,
         NUCLEIC_STEP_MIN, NUCLEIC_STEP_MAX,
         // THE PAPER, and the three numbers that place it. The WebGL2 port

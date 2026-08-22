@@ -1896,6 +1896,58 @@ t('the nucleic trace is smoothed, and everything nucleic reads the same trace', 
     }
 });
 
+t('a cut duplex is smoothed exactly as the uncut one was', () => {
+    // THE ENDS. Build an ideal B-DNA C4' helix, smooth it, then CUT it in the
+    // middle and smooth the piece: every surviving residue must move where it
+    // moved before. It is the one case with a known answer, and it catches the
+    // failure that pinning the ends looks innocent enough to hide.
+    //
+    // Pinning does not strand the terminal residue - on this helix the whole
+    // displacement is 0.071 A - it DRAGS THE NEIGHBOUR, which has one fixed
+    // point to average against and travels 0.441 A, six times too far, landing
+    // 0.382 A off the helix. So the last turn of every duplex was pulled off
+    // its own axis, which is what "the ends are not smoothed like the middle"
+    // looks like from the outside.
+    const src = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
+    const sandbox = {
+        window: { addEventListener() {}, dispatchEvent() {} },
+        document: { createElement: () => ({ getContext: () => null }) },
+        console, performance: { now: () => Date.now() }, Event: function () {},
+    };
+    sandbox.window.window = sandbox.window;
+    require('vm').createContext(sandbox);
+    require('vm').runInContext(src, sandbox, { filename: 'cartoon' });
+    const api = sandbox.window.py2dmolCartoon;
+    if (!api || !api.smoothNucleicTrace) {
+        throw new Error('smoothNucleicTrace is not exported, so nothing can test it');
+    }
+    const R = 9.0; const RISE = 3.38; const TW = 36 * Math.PI / 180;   // B-DNA
+    const N = 24; const CUT = 12;
+    const ideal = [];
+    for (let i = 0; i < N; i++) {
+        ideal.push({ x: R * Math.cos(i * TW), y: R * Math.sin(i * TW), z: i * RISE });
+    }
+    const run = (pts) => api.smoothNucleicTrace(pts, pts.length,
+        new Array(pts.length).fill('D'), [[0, pts.length - 1]], null);
+    const whole = run(ideal);
+    const piece = run(ideal.slice(0, CUT));
+    // the filter must actually be doing something, or this passes vacuously
+    const moved = Math.hypot(whole[6].x - ideal[6].x, whole[6].y - ideal[6].y,
+        whole[6].z - ideal[6].z);
+    if (!(moved > 1e-3)) throw new Error('the smoothing moved nothing at all');
+    for (let i = 0; i < CUT; i++) {
+        const d = Math.hypot(piece[i].x - whole[i].x, piece[i].y - whole[i].y,
+            piece[i].z - whole[i].z);
+        // 0.01 A is a twentieth of what pinning costs the neighbour and well
+        // above the arithmetic
+        if (d > 0.01) {
+            throw new Error(`cutting the helix moved residue ${i} by ${d.toFixed(3)} A`
+                + ' - the run ends are not getting the displacement they would'
+                + ' have had (pinning them costs the NEIGHBOUR 0.382 A)');
+        }
+    }
+});
+
 t('hiding a base rebuilds the GPU mesh, because a plate is geometry', () => {
     // A base plate is built from the ribbon frame, not from a position, so
     // hiding one moves NOTHING else the signature was watching - not the
