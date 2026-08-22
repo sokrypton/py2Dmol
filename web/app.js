@@ -968,7 +968,7 @@ function setupEventListeners() {
         };
         if (none || !renderer || !obj) {
             for (const id of ['elementsShowToggle', 'mainchainShowToggle',
-                'sidechainShowToggle', 'contactShowToggle']) {
+                'contactShowToggle']) {
                 set(id, false);
             }
             const scSel0 = document.getElementById('sidechainModeSelect');
@@ -995,17 +995,6 @@ function setupEventListeners() {
         // nucleotides - a protein has no such thing, and an option that does
         // nothing is worse than one that is not there.
         const scSel = document.getElementById('sidechainModeSelect');
-        const scTog = document.getElementById('sidechainShowToggle');
-        // WHICH OF THE TWO. A protein selection has two states and takes the
-        // toggle; a selection with nucleotides in it has three and takes the
-        // select. Never both - two controls for one question is what this row
-        // just stopped being.
-        if (scTog) scTog.hidden = hasNuc;
-        if (scSel) scSel.hidden = !hasNuc;
-        if (scTog) {
-            const scSet0 = obj.sidechains instanceof Set ? obj.sidechains : null;
-            set('sidechainShowToggle', tally(scAble, scSet0, false));
-        }
         if (scSel) {
             const scSet = obj.sidechains instanceof Set ? obj.sidechains : null;
             const bSet = obj.bases instanceof Set ? obj.bases : null;
@@ -1526,8 +1515,6 @@ function setupEventListeners() {
                 selectNearby(INTERACTION_CUTOFF_A, true);
             });
         }
-        // ...and the protein form of the same control: two states, one toggle
-        onToggle('sidechainShowToggle', (p2, v) => setSelectionSidechainMode(p2, v ? 'full' : 'none'));
         // the side-chain MODE is a select, not a toggle, but it reads the
         // selection the same way every control on this panel does
         const scMode = document.getElementById('sidechainModeSelect');

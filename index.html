@@ -653,22 +653,14 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     </button>
                                     <div id="scColorMenu" class="selection-color-menu" hidden></div>
                                 </span>
-                                <!-- A PROTEIN HAS TWO STATES, so it gets a toggle.
-                                     Only a nucleotide has a third - the plate - and
-                                     only then is the select worth the reading: one
-                                     of the two is shown, never both. -->
-                                <label class="btn-toggle btn-small selection-toggle" title="Draw side chains for the selected residues">
-                                    <input type="checkbox" id="sidechainShowToggle"
-                                        aria-label="Draw side chains for the selected residues">
-                                    <span>Show</span>
-                                </label>
-                                <!-- ONE CONTROL, THREE STATES. Show/hide was two
-                                     toggles once the bases could be drawn as real
-                                     atoms - Show for the plate and Show for the
-                                     atoms, on two rows both called "Side chain" -
-                                     and a pair of toggles cannot say "one or the
-                                     other". Plate is offered only where the
-                                     selection has nucleotides; a protein has
+                                <!-- ONE CONTROL FOR THE WHOLE QUESTION. It was two
+                                     toggles on two rows once a base could be drawn
+                                     as real atoms - Show for the plate, Show for
+                                     the atoms - and a pair of toggles cannot say
+                                     "one or the other". A Show toggle beside this
+                                     select was the same mistake again: None IS
+                                     "not shown". Plate is offered only where the
+                                     selection has nucleotides; a protein sees
                                      None and Full. -->
                                 <select id="sidechainModeSelect" class="btn btn-grey btn-small"
                                     aria-label="How to draw the side chains of the selected residues"

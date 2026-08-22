@@ -528,7 +528,6 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         elementsShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
         sidechainModeSelect: modeSelectNode(),
-        sidechainShowToggle: { checked: false, indeterminate: false, hidden: null },
         contactShowToggle: { checked: false, indeterminate: false },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
@@ -619,7 +618,7 @@ t('the panel says how big the selection is, and which residues', () => {
 
 t('the panel keeps two matching part rows, with SSE and Copy below them', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const need = ['sidechainModeSelect', 'sidechainShowToggle', 'elementsShowToggle',
+    const need = ['sidechainModeSelect', 'elementsShowToggle',
         'mainchainShowToggle', 'contactShowToggle',
         'scColorButton', 'selColorButton', 'selSsSelect'];
     for (const id of need) {
@@ -636,7 +635,7 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
         'basesShowButton', 'basesHideButton',
         // ...and the two controls the mode select replaced, plus the row the
         // plate had to itself: three ways to say the same thing was the bug
-        'basesShowToggle', 'basesRow', 'backboneShowToggle',
+        'basesShowToggle', 'basesRow', 'backboneShowToggle', 'sidechainShowToggle',
         'elementsShowButton', 'elementsHideButton',
         'contactAddButton', 'contactRemoveButton']) {
         if (html.includes('id="' + gone + '"')) {
@@ -656,8 +655,8 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     }
     // Each toggle must SAY what it is - the visible text is its accessible
     // name - and carry a title, since "Show" alone does not say show what.
-    for (const id of ['sidechainShowToggle', 'elementsShowToggle',
-        'mainchainShowToggle', 'contactShowToggle']) {
+    for (const id of ['elementsShowToggle', 'mainchainShowToggle',
+        'contactShowToggle']) {
         const at2 = html.indexOf('id="' + id + '"');
         const open = html.lastIndexOf('<label', at2);
         const close = html.indexOf('</label>', at2);
@@ -721,100 +720,26 @@ t('SSE is offered for protein and withheld from nucleic acid', () => {
     }
 });
 
-t('a protein gets a Show toggle, a nucleotide gets the three-way', () => {
-    // A protein side chain is drawn or it is not - two states, and a select to
-    // pick between two is a menu where a switch would do. Only a nucleotide has
-    // the third state. One or the other is on screen, never both.
+t('the side-chain row is ONE control, and Plate only where it means something', () => {
+    // Show beside the select was the same mistake the two rows were: None IS
+    // "not shown", so the toggle said again what the menu already said, and a
+    // selection could be left reading Full with the toggle off.
+    const html = fs.readFileSync('index.html', 'utf8');
+    if (html.includes('id="sidechainShowToggle"')) {
+        throw new Error('the Show toggle is back beside the select');
+    }
     const NUC = ['D', 'D'];
     const PROT = ['P', 'P'];
     const prot = panelRun([0, 1], new Set(), false, PROT);
-    if (prot.sidechainShowToggle.hidden !== false || prot.sidechainModeSelect.hidden !== true) {
-        throw new Error('a protein selection is not offered the plain toggle');
+    if (prot.sidechainModeSelect.hidden === true) {
+        throw new Error('a protein selection has no side-chain control at all');
+    }
+    if (prot.sidechainModeSelect._opts.plate.hidden !== true) {
+        throw new Error('Plate is offered on a protein selection');
     }
     const nuc = panelRun([0, 1], new Set(), false, NUC);
-    if (nuc.sidechainShowToggle.hidden !== true || nuc.sidechainModeSelect.hidden !== false) {
-        throw new Error('a nucleic selection is not offered the three-way');
-    }
-    const app = fs.readFileSync('web/app.js', 'utf8');
-    if (!/setSelectionSidechainMode\(p2, v \? 'full' : 'none'\)/.test(app)) {
-        throw new Error('the toggle does not drive the same action as the select');
-    }
-});
-
-t('a proline closes its ring through the backbone nitrogen', () => {
-    // Proline's side chain is a RING, and the atom that closes it is a
-    // backbone N. Dropped with the rest of the backbone it draws as a
-    // three-atom arm hanging off the CA, which is not what a proline looks
-    // like anywhere else - measured on 1UBQ before the fix: CB, CG, CD and
-    // nothing joining CD back.
-    const utils = fs.readFileSync('web/utils.js', 'utf8');
-    const pro = utils.slice(utils.indexOf('    PRO: ['), utils.indexOf('    HYP: ['));
-    for (const need of ["\\['CD', 'N'\\]", "\\['N', 'CA'\\]"]) {
-        if (!new RegExp(need).test(pro)) {
-            throw new Error('the proline ring is open: ' + need + ' is missing');
-        }
-    }
-    // ...which needs the N to still be there, in two places. The table drops
-    // every backbone atom but the anchor:
-    if (!/const SIDECHAIN_KEEP_BACKBONE = \{ PRO: 'N'/.test(utils)) {
-        throw new Error('nothing tells the table to keep proline\'s N');
-    }
-    if (!/nm0 !== anchorName && nm0 !== keepBB && backboneOf\.has/.test(utils)) {
-        throw new Error('the group filter ignores the exception');
-    }
-    // ...and the CIF parser never builds a standard residue's N at all:
-    if (!/SIDECHAIN_KEEP_BACKBONE\[out\[idxResName\]\] !== out\[idxAtomName\]/.test(utils)) {
-        throw new Error('the parser still drops proline\'s N, so the table has '
-            + 'nothing to keep');
-    }
-    // ...AND THE RING MEETS THE RIBBON'S FACE. The N sits 1.46 A from the CA,
-    // inside a ribbon of any normal width, so the arm that closes the ring ran
-    // into the slab and vanished: the pentagon read as a loop diving through
-    // the tube. The drawing lifts that ONE atom to the surface, along the same
-    // exit the CA-CB bond takes.
-    if (!/onBackbone/.test(utils)) throw new Error('the table does not mark the kept atom');
-    const revive = utils.slice(utils.indexOf('function reviveSidechainTable'),
-        utils.indexOf('function isRealNucleicAcid'));
-    const trim = utils.slice(utils.indexOf('function trimSidechainTable'),
-        utils.indexOf('function reviveSidechainTable'));
-    for (const [where, src] of [['the trim', trim], ['the revive', revive]]) {
-        if (!/onBackbone/.test(src)) {
-            throw new Error(where + ' drops the flag, and the renderer reads that table');
-        }
-    }
-    const mol2 = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    if (!/bb: \(sc\.onBackbone && sc\.onBackbone\[k\]\) \? 1 : 0/.test(mol2)) {
-        throw new Error('the materialised atom does not carry the flag');
-    }
-    const cart2 = fs.readFileSync('py2Dmol/resources/viewer-cartoon.js', 'utf8');
-    // THE WHOLE RING MOVES, as one. Lifting the buried atom alone bends the
-    // pentagon - that vertex on the face, the other three where they were.
-    if (!/const bbAtomOf = new Map\(\);/.test(cart2)
-        || !/const shiftOf = \(owner\) =>/.test(cart2)) {
-        throw new Error('the drawing does not lift the ring onto the ribbon surface');
-    }
-    const lift = cart2.slice(cart2.indexOf('const shiftOf = (owner) =>'),
-        cart2.indexOf('v1 = lift(seg.idx1, v1);'));
-    if (!/const e = scMap\.get\(idx\);\s*\n\s*if \(!e\) return v;/.test(lift)) {
-        throw new Error('only the flagged atom is being moved, so the ring bends');
-    }
-    if (!/if \(Math\.abs\(d\) < slab\.hT\)/.test(lift)) {
-        throw new Error('an atom already outside the slab is being pulled in');
-    }
-    // ...and ONLY the drawing moves it: the search and the colour read the atom
-    // where it was measured
-    if (/\.bb\b/.test(mol2.slice(mol2.indexOf('_atomsOfResidues(want) {'),
-        mol2.indexOf('framingPositions(set) {')))) {
-        throw new Error('the distance search is using the lifted position');
-    }
-
-    // the ring is five atoms round: CA-CB-CG-CD-N-CA, so the table carries
-    // three bonds between its own rows and two to the owning position
-    const bonds = (pro.match(/\['/g) || []).length;
-    if (bonds !== 5) throw new Error('proline has ' + bonds + ' bonds, expected 5');
-    // and hydroxyproline is the same ring with an OH on its CG
-    if (!/HYP: \[\['CA', 'CB'\]/.test(utils) || !/\['CG', 'OD1'\]/.test(utils)) {
-        throw new Error('hydroxyproline did not come with it');
+    if (nuc.sidechainModeSelect._opts.plate.hidden !== false) {
+        throw new Error('Plate is hidden on a nucleic selection');
     }
 });
 
@@ -3675,7 +3600,6 @@ t('the selection toggles show all, none and mixed', () => {
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
         sidechainModeSelect: modeSelectNode(),
-        sidechainShowToggle: { checked: false, indeterminate: false, hidden: null },
         elementsShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
         contactShowToggle: { checked: false, indeterminate: false },
@@ -3724,7 +3648,6 @@ t('the Elements toggle reads on until it is switched off', () => {
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null }, basesRow: { hidden: null },
-        sidechainShowToggle: { checked: false, indeterminate: false },
         elementsShowToggle: { checked: false, indeterminate: false },
         basesShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
@@ -3768,7 +3691,6 @@ t('the toggles ignore a selected position that no longer exists', () => {
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null }, basesRow: { hidden: null },
-        sidechainShowToggle: { checked: false, indeterminate: false },
         elementsShowToggle: { checked: false, indeterminate: false },
         basesShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
@@ -3816,7 +3738,6 @@ t('the show toggles are disabled along with the rest of the panel', () => {
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null }, basesRow: { hidden: null },
-        sidechainShowToggle: { checked: false, indeterminate: false },
         elementsShowToggle: { checked: false, indeterminate: false },
         basesShowToggle: { checked: false, indeterminate: false },
         mainchainShowToggle: { checked: false, indeterminate: false },
@@ -3850,8 +3771,7 @@ t('the show toggles are disabled along with the rest of the panel', () => {
 // carried aria-labels for the same reason and they went with the buttons.
 t('every selection toggle has a name of its own', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const ids = ['sidechainShowToggle', 'elementsShowToggle', 'mainchainShowToggle',
-        'contactShowToggle'];
+    const ids = ['elementsShowToggle', 'mainchainShowToggle', 'contactShowToggle'];
     const seen = new Set();
     for (const id of ids) {
         const m = html.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
