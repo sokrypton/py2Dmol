@@ -41,7 +41,7 @@ eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
-    'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_MAX_PX', 'SELECTION_HALO_RADIUS_FRAC', 'SIDECHAIN_WIDTH', 'SIDECHAIN_REACH_A',
+    'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_RADIUS_FRAC', 'SIDECHAIN_WIDTH', 'SIDECHAIN_REACH_A',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
     'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
@@ -1964,14 +1964,39 @@ t('the selection band holds its proportion at every size', () => {
                 + ' radius, not the 2.3x the gain asks for');
         }
     }
-    // big marks may fall off it - a band cannot grow without limit - but they
-    // must not collapse onto the thing the way a flat ceiling made them
-    for (const rad of [20, 27, 50]) {
+    // ...at EVERY size, including the big ones. There is no ceiling: a band
+    // around a big thing is big, and a bound on it is the point where the
+    // highlight stops following what it marks.
+    for (const rad of [20, 27, 50, 200]) {
         const ratio = bandFor(rad, 1) / 2 / rad;
-        if (ratio < 1.7) {
-            throw new Error(`a mark of ${rad} px gets only ${ratio.toFixed(2)}x its`
-                + ' radius - the ceiling is flat again and the band stops tracking');
+        if (Math.abs(ratio - 2.3) > 0.02) {
+            throw new Error(`a mark of ${rad} px gets ${ratio.toFixed(2)}x its radius`
+                + ' - something is bounding the band again, and that is where it'
+                + ' stops tracking');
         }
+    }
+    // ...AND WHERE THE THING HAS A SIZE OF ITS OWN, the margin comes from the
+    // VIEW rather than from the thing. A zinc's ball is 6.89 px where an
+    // ordinary residue measures 1.86, so a margin taken from the ball's own
+    // radius put a ring around the metal three and a half times the ring
+    // around the chain beside it - reported as the highlight starting out too
+    // large and then not keeping pace. The ring is a pen: same width on
+    // everything, and it follows the zoom because the residue radius does.
+    for (const rad of [5, 10, 27]) {
+        const margin = bandFor(rad, 1, 1.86) / 2 - rad;
+        if (Math.abs(margin - 1.3 * 1.86) > 0.01) {
+            throw new Error(`a mark of ${rad} px sticks out by ${margin.toFixed(2)} px,`
+                + ' not the 2.42 the view asks for - the margin is being taken'
+                + ' from the mark again');
+        }
+    }
+    // ...and a SMALL one is not given a band out of proportion either: the
+    // floor is on the whole band, not added to the margin, so it binds only
+    // where the mark is genuinely sub-pixel. A 1.7 px zinc used to get 4.2 px
+    // (2.5x) and now gets 3.9 (2.3x).
+    const small = bandFor(1.7, 1) / 2 / 1.7;
+    if (Math.abs(small - 2.3) > 0.02) {
+        throw new Error(`a 1.7 px mark gets ${small.toFixed(2)}x its radius`);
     }
     // ...and the floor still marks a hairline
     if (bandFor(0.4, 1) / 2 < 2.5) throw new Error('a hairline gets no band at all');

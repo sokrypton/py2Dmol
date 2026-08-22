@@ -491,24 +491,27 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // four and a half times the thing it was marking - and on a structure big
     // enough to pin the radius at its floor (3J3Q) it was 18 px at every zoom.
     //
-    // Proportional keeps the same look at every zoom: 1.3 reproduces the old
-    // width at the default view (5.4 px radius, 7.05 against 7). The floor
-    // keeps a hairline structure marked at all; the ceiling stops proportion
-    // alone from turning the band into the picture.
+    // PROPORTION, AND NOTHING ELSE. The band is 1.3 x the radius of whatever
+    // it marks, so a highlight looks the same at every zoom and on every kind
+    // of thing - and the two clamps that used to bound it were exactly where it
+    // stopped doing that:
     //
-    // THE CEILING GROWS WITH THE MARK, and it has to. Flat, it is the point
-    // where the band stops tracking anything: a ribbon at the default view is
-    // 2-7 px and never reaches it, so it looked right, while anything that gets
-    // BIG on screen - zoom in, or a metal, whose ball is 27 px at zoom 4
-    // against a helix's 7 - asks for 35 px of margin, is given 14, and the
-    // band tightens onto the thing as you zoom instead of holding its
-    // proportion. Reported as the highlight not tracking the zoom, and it was
-    // not the zoom: it was the size on screen, which is what a flat pixel
-    // clamp cannot follow. Growing at half the radius keeps the annotation
-    // bounded - a band 100 px across is still not 130 - while leaving the
-    // proportional rule in charge everywhere it used to be.
-    // What fraction of the PICKING radius the band is measured off - see
-    // radiusAt. Half, which is about what the geometry is actually drawn at.
+    //   the FLOOR was added to the margin, so a small mark got a band far wider
+    //   than its proportion - 2.5 px around a 1.7 px zinc, which is why a
+    //   selected metal started out looking too heavy;
+    //   the CEILING held the margin at 14 px, so a big mark stopped growing -
+    //   2.30x the radius at 7 px and 1.52x at 27, which is why it then refused
+    //   to keep up on the way in.
+    //
+    // Between the two it was proportional only in the middle, which is where a
+    // ribbon happens to live (2-7 px) - so the rule looked right for years and
+    // was wrong for the first thing drawn at a size of its own.
+    //
+    // What survives is a floor on the WHOLE BAND rather than on the margin: a
+    // hairline still has to be markable, and 2.5 px of band around a half-pixel
+    // strand does that without touching anything bigger. Nothing else needs a
+    // bound - a band around a big thing is big, and that is what proportion
+    // means. The default view is unchanged either way (12.5 px, as before).
     const SELECTION_HALO_RADIUS_FRAC = 0.5;
     /**
      * How wide the band over something of drawn radius `rad` is - a DIAMETER,
@@ -517,15 +520,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
      * Module scope so it can be tested: the proportion it holds is the whole
      * point of it, and it is not visible in a screenshot of one zoom.
      */
-    function selectionBandFor(rad, pxScale) {
+    function selectionBandFor(rad, pxScale, ref) {
         const r = rad || 2;
-        const ceiling = SELECTION_HALO_MAX_PX * pxScale + 0.5 * r;
-        return 2 * (r + Math.min(ceiling,
-            Math.max(SELECTION_HALO_MIN_PX * pxScale, SELECTION_HALO_GAIN * r)));
+        // THE RING IS A PEN, THE INNER EDGE IS THE THING. Its thickness comes
+        // from `ref` - the ordinary residue radius at this view - and not from
+        // r, so a mark sticks out by the same amount whatever it is drawn
+        // around. Defaults to r, which is the same number for everything that
+        // is drawn at the residue radius, so this changes nothing there.
+        const m = SELECTION_HALO_GAIN * (ref === undefined ? r : ref);
+        return 2 * Math.max(r + m, SELECTION_HALO_MIN_PX * pxScale);
     }
     const SELECTION_HALO_GAIN = 1.3;
     const SELECTION_HALO_MIN_PX = 2.5;
-    const SELECTION_HALO_MAX_PX = 14;
 
     const namedColorsMap = {
         "red": "#ff0000", "green": "#00ff00", "blue": "#0000ff", "yellow": "#ffff00", "cyan": "#00ffff", "magenta": "#ff00ff",
@@ -8056,10 +8062,19 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const sdr = this.screenDrawRadius;
             const radiusAt = (i) => (sdr && sdr[i])
                 || ((sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC);
-            const bandFor = (r) => selectionBandFor(r, pxScale);
+            // ...AND WHAT AN ORDINARY RESIDUE MEASURES AT THIS VIEW, which is
+            // what sets how far the mark sticks out. The two are the same
+            // number for a residue and differ for anything drawn at a size of
+            // its own: a zinc's ball is 6.89 px where the residue radius is
+            // 1.86, so a margin taken from the ball's own radius made the ring
+            // around a metal three and a half times the ring around the chain
+            // next to it - the same 1.3, meaning something different because
+            // the radius under it meant something different.
+            const refAt = (i) => (sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC;
+            const bandFor = (r, ref) => selectionBandFor(r, pxScale, ref);
             // ...QUANTISED, so a hundred residues do not become a hundred
             // strokes: half a pixel is finer than the eye reads on a band.
-            const bucketOf = (r) => Math.round(bandFor(r) * 2) / 2;
+            const bucketOf = (r, ref) => Math.round(bandFor(r, ref) * 2) / 2;
             const groups = new Map();
             const addTo = (key, fn) => {
                 let g = groups.get(key);
@@ -8071,7 +8086,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             for (let k = 0; k + 1 < edges.length; k += 2) {
                 const a = edges[k]; const b = edges[k + 1];
                 const r = Math.min(radiusAt(a), radiusAt(b));
-                addTo(bucketOf(r), (c) => {
+                addTo(bucketOf(r, Math.min(refAt(a), refAt(b))), (c) => {
                     c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]);
                 });
             }
@@ -8079,7 +8094,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 if (touched.has(i)) continue;
                 const r = radiusAt(i);
                 // a hair of length, so a round cap has something to cap
-                addTo(bucketOf(r), (c) => {
+                addTo(bucketOf(r, refAt(i)), (c) => {
                     c.moveTo(sx[i], sy[i]); c.lineTo(sx[i] + 0.01, sy[i]);
                 });
             }
