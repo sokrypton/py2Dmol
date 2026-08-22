@@ -1120,7 +1120,7 @@ function setupEventListeners() {
     // WITHIN N ANGSTROM OF WHAT IS SELECTED, atom to atom. The renderer does
     // the search (see residuesWithin); this is the button, and the reporting -
     // a shell that found nothing has to say so, or it reads as a dead control.
-    function selectNearby(cutoff) {
+    function selectNearby(cutoff, sidechainsOnly) {
         const renderer = viewerApi?.renderer;
         if (!renderer || !renderer.residuesWithin) return;
         const sel = renderer.residueSelection;
@@ -1129,15 +1129,24 @@ function setupEventListeners() {
             setStatus('Select something first, then Within finds what is near it.');
             return;
         }
-        const found = renderer.residuesWithin(seed, cutoff);
+        const what = sidechainsOnly ? 'side chain to side chain' : 'atom to atom';
+        const found = renderer.residuesWithin(seed, cutoff, { sidechainsOnly });
         const added = found.size - seed.size;
         if (!added) {
-            setStatus(`Nothing else within ${cutoff} \u00c5 of the selection.`);
+            // A SIDE-CHAIN SEARCH CAN FIND NOTHING FOR TWO REASONS, and they are
+            // not the same news: nothing near enough, or nothing to measure -
+            // a glycine, or a structure whose side chains were never captured.
+            if (sidechainsOnly && renderer.hasSidechainsFor
+                && !renderer.hasSidechainsFor([...seed])) {
+                setStatus('Nothing selected has a side chain to measure from.');
+                return;
+            }
+            setStatus(`Nothing else within ${cutoff} \u00c5 (${what}).`);
             return;
         }
         renderer.setResidueSelection(found);
         setStatus(`${added} more residue${added === 1 ? '' : 's'} within ${cutoff} \u00c5`
-            + ` - ${found.size} selected.`);
+            + ` ${what} - ${found.size} selected.`);
     }
 
     // THE BACKBONE OF THE SELECTED RESIDUES. Not the same question as hiding
@@ -1513,13 +1522,17 @@ function setupEventListeners() {
             setSelectionBackbone(p2, v);
             syncSelectionVisibility(p2);
         });
-        const nearBtn = document.getElementById('selectNearby');
         const nearA = document.getElementById('selectNearbyA');
-        if (nearBtn) {
-            nearBtn.addEventListener('click', (e) => {
+        const nearDist = () => {
+            const d = nearA ? parseFloat(nearA.value) : 5;
+            return (isFinite(d) && d > 0) ? d : 5;
+        };
+        for (const [id, scOnly] of [['selectNearby', false], ['selectNearbySc', true]]) {
+            const b = document.getElementById(id);
+            if (!b) continue;
+            b.addEventListener('click', (e) => {
                 e.preventDefault();
-                const d = nearA ? parseFloat(nearA.value) : 5;
-                selectNearby(isFinite(d) && d > 0 ? d : 5);
+                selectNearby(nearDist(), scOnly);
             });
         }
         // ...and the protein form of the same control: two states, one toggle

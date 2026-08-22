@@ -7000,8 +7000,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
          * only those and measures exactly.
          *
          * The seed comes back with the answer, as PyMOL's byres does.
+         *
+         * `opts.sidechainsOnly` measures SIDE CHAIN TO SIDE CHAIN, with the
+         * trace atom left out of both ends - the CA of a protein, the C4' of a
+         * nucleotide. A backbone runs past everything it folds against, so an
+         * any-atom shell around a binding-site residue is half main chain; this
+         * asks the other question, which is which residues have their SIDE
+         * CHAINS near each other. A residue with no side-chain atoms at all
+         * (glycine, or anything in a backbone-only model) is not in the answer,
+         * because it has nothing to measure.
          */
-        residuesWithin(seed, cutoff) {
+        residuesWithin(seed, cutoff, opts) {
+            const scOnly = !!(opts && opts.sidechainsOnly);
             const out = new Set(seed || []);
             const co = this.coords;
             const n = co ? co.length : 0;
@@ -7068,13 +7078,22 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // ---- pass 2: every atom of the seed against every atom of those --
             const atomsFor = this._atomsOfResidues(new Set([...out, ...near]));
             const cut2 = cut * cut;
+            // index 0 of every list is the trace point itself, so leaving the
+            // backbone out is a slice rather than a second pass over the table
+            const atomsOf = (i) => {
+                const list = atomsFor.get(i);
+                if (!list) return null;
+                if (!scOnly) return list;
+                return list.length > 1 ? list.slice(1) : null;
+            };
             const seedAtoms = [];
             for (const i of out) {
-                const list = atomsFor.get(i);
+                const list = atomsOf(i);
                 if (list) for (const p of list) seedAtoms.push(p);
             }
+            if (!seedAtoms.length) return out;
             for (const j of near) {
-                const list = atomsFor.get(j);
+                const list = atomsOf(j);
                 if (!list) continue;
                 let hit = false;
                 for (const q of list) {

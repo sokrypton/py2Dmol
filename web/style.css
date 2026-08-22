@@ -1393,6 +1393,16 @@ table.layout-table td {
 
 .selection-panel-row[hidden] { display: none; }
 
+/* A RULE BETWEEN TWO CONTROLS ON ONE ROW. The Within row carries two measures
+   of the same distance - any atom, and side chain to side chain - and with
+   nothing between them they read as one control that grew a spare button. */
+.selection-row-rule {
+    width: 1px;
+    align-self: stretch;
+    margin: 2px 2px;
+    background: #d1d5db;
+}
+
 /* Fixed width so the two rows' controls line up under each other; without it
    "Side chains" and "Main chain" push their buttons to different columns and
    the pairing stops being legible at a glance. */

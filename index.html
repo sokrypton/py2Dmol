@@ -755,7 +755,14 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     style="width: 56px; text-align: right;">
                                 <span style="font-size: 11px; color: #6b7280;">&#8491;</span>
                                 <button id="selectNearby" class="btn btn-grey btn-small"
-                                    title="Add every residue with an atom this close to the selection">Select</button>
+                                    title="Add every residue with ANY atom this close to the selection - backbone included">Any</button>
+                                <!-- A RULE BETWEEN THE TWO MEASURES. They take the
+                                     same distance and answer different questions,
+                                     and side by side with no divider they read as
+                                     one control with a spare button. -->
+                                <span class="selection-row-rule" aria-hidden="true"></span>
+                                <button id="selectNearbySc" class="btn btn-grey btn-small"
+                                    title="Side chain to side chain: the trace atom is left out of both ends, so a backbone running past does not count">Side chain</button>
                             </div>
                             <!-- CONTACTS need exactly two residues, so this row
                                  appears only then - a contact is a line between

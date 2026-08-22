@@ -1270,7 +1270,7 @@ t('Within finds neighbours atom to atom, and keeps the seed', () => {
     // it on. Two passes, or a 300,000-residue assembly rebuilds every side
     // chain to answer a question about twelve of them.
     const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
-    const body = mol.slice(mol.indexOf('residuesWithin(seed, cutoff) {'),
+    const body = mol.slice(mol.indexOf('residuesWithin(seed, cutoff, opts) {'),
         mol.indexOf('_atomsOfResidues(want) {'));
     if (!/const coarse = cut \+ 2 \* REACH/.test(body)) {
         throw new Error('the first pass does not widen by the side-chain reach, '
@@ -1301,11 +1301,57 @@ t('Within finds neighbours atom to atom, and keeps the seed', () => {
         throw new Error('Within is still beside Select all');
     }
     const app = fs.readFileSync('web/app.js', 'utf8');
-    if (!/renderer\.residuesWithin\(seed, cutoff\)/.test(app)) {
+    if (!/renderer\.residuesWithin\(seed, cutoff, \{ sidechainsOnly \}\)/.test(app)) {
         throw new Error('the button does not ask the renderer');
     }
     if (!/Nothing else within/.test(app)) {
         throw new Error('a search that finds nothing says nothing, so the button reads as dead');
+    }
+});
+
+t('side chain to side chain is the other question, and leaves the trace out', () => {
+    // A backbone runs past everything it folds against, so an any-atom shell
+    // around a binding-site residue is half main chain. This asks which
+    // residues have their SIDE CHAINS near each other, with the trace atom -
+    // the CA, or a nucleotide's C4' - left out of both ends.
+    const v = clipViewer([[0, 0, 0], [4, 0, 0], [9, 0, 0]]);
+    // no side-chain table: nothing to measure, so nothing is added
+    const only = v.residuesWithin(new Set([0]), 5, { sidechainsOnly: true });
+    if (only.size !== 1 || !only.has(0)) {
+        throw new Error('a structure with no side chains still found neighbours: '
+            + [...only].join(','));
+    }
+    // ...while the any-atom search still finds the trace point beside it
+    if (!v.residuesWithin(new Set([0]), 5).has(1)) {
+        throw new Error('the any-atom search stopped finding trace neighbours');
+    }
+    const mol = fs.readFileSync('py2Dmol/resources/viewer-mol.js', 'utf8');
+    const body = mol.slice(mol.indexOf('residuesWithin(seed, cutoff, opts) {'),
+        mol.indexOf('_atomsOfResidues(want) {'));
+    // index 0 of each list IS the trace point, so the exclusion is a slice
+    if (!/return list\.length > 1 \? list\.slice\(1\) : null;/.test(body)) {
+        throw new Error('the trace atom is not being left out');
+    }
+    if (!/if \(!seedAtoms\.length\) return out;/.test(body)) {
+        throw new Error('a seed with nothing to measure from is not handled');
+    }
+    // two buttons, one distance, and a rule between them
+    const html = fs.readFileSync('index.html', 'utf8');
+    const rowAt = html.indexOf('id="nearbyRow"');
+    const row = html.slice(rowAt, html.indexOf('</div>', html.indexOf('id="selectNearbySc"')));
+    for (const need of ['id="selectNearby"', 'id="selectNearbySc"', 'selection-row-rule']) {
+        if (!row.includes(need)) throw new Error('the Within row has no ' + need);
+    }
+    if ((row.match(/id="selectNearbyA"/g) || []).length !== 1) {
+        throw new Error('the two measures do not share one distance');
+    }
+    const css = fs.readFileSync('web/style.css', 'utf8');
+    if (!/\.selection-row-rule\s*\{[^}]*width: 1px/.test(css)) {
+        throw new Error('the rule between the two buttons has no width, so it is not drawn');
+    }
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/\['selectNearbySc', true\]/.test(app)) {
+        throw new Error('the side-chain button is not wired to the side-chain search');
     }
 });
 
