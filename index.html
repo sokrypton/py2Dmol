@@ -736,33 +736,21 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                                     <option value="auto">Auto</option>
                                 </select>
                             </div>
-                            <!-- NEIGHBOURS, ATOM TO ATOM, and it belongs HERE rather
-                                 than beside Select all: those three make or clear a
-                                 selection with nothing to set, while this one acts ON
-                                 the selection like every row of this panel - and what
-                                 you do with the answer is turn on the side chains two
-                                 rows up. The distance is measured between ATOMS, side
-                                 chains included whether or not they are drawn; a shell
-                                 between trace points is a list of residues whose CAs
-                                 are close, which is not what "within 5 A" means. The
-                                 seed stays selected, as PyMOL's byres does. -->
+                            <!-- FIND INTERACTIONS: the residues whose SIDE CHAINS
+                                 come within 5 A of the selection, atom to atom, side
+                                 chains rebuilt whether or not they are drawn.
+                                 One button and no settings, because the settings were
+                                 a distance nobody wanted to change and a choice
+                                 between "any atom" and "side chain" whose any-atom
+                                 half is mostly backbone running past. It belongs on
+                                 this panel rather than beside Select all: those make
+                                 or clear a selection, this acts on one - and what you
+                                 do with the answer is turn on the side chains two rows
+                                 up. The seed stays selected, as PyMOL's byres does. -->
                             <div class="selection-panel-row" id="nearbyRow">
-                                <span class="selection-panel-label">Within</span>
-                                <input type="number" id="selectNearbyA" value="5" min="1" max="20" step="0.5"
-                                    class="btn btn-grey btn-small"
-                                    aria-label="Distance in Angstrom"
-                                    title="Distance in Angstrom"
-                                    style="width: 56px; text-align: right;">
-                                <span style="font-size: 11px; color: #6b7280;">&#8491;</span>
+                                <span class="selection-panel-label">Find</span>
                                 <button id="selectNearby" class="btn btn-grey btn-small"
-                                    title="Add every residue with ANY atom this close to the selection - backbone included">Any</button>
-                                <!-- A RULE BETWEEN THE TWO MEASURES. They take the
-                                     same distance and answer different questions,
-                                     and side by side with no divider they read as
-                                     one control with a spare button. -->
-                                <span class="selection-row-rule" aria-hidden="true"></span>
-                                <button id="selectNearbySc" class="btn btn-grey btn-small"
-                                    title="Side chain to side chain: the trace atom is left out of both ends, so a backbone running past does not count">Side chain</button>
+                                    title="Select every residue whose side chain comes within 5 &#8491; of the selection">interactions</button>
                             </div>
                             <!-- CONTACTS need exactly two residues, so this row
                                  appears only then - a contact is a line between

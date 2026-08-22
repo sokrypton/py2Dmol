@@ -495,6 +495,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
     // width at the default view (5.4 px radius, 7.05 against 7). The floor
     // keeps a hairline structure marked at all; the ceiling stops a band 45 px
     // wide at zoom 4, where proportion alone stops reading as an annotation.
+    // What fraction of the PICKING radius the band is measured off - see
+    // radiusAt. Half, which is about what the geometry is actually drawn at.
+    const SELECTION_HALO_RADIUS_FRAC = 0.5;
     const SELECTION_HALO_GAIN = 1.3;
     const SELECTION_HALO_MIN_PX = 2.5;
     const SELECTION_HALO_MAX_PX = 14;
@@ -7698,16 +7701,18 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             // band and disappeared inside it. The width is a function of the
             // radius, so the edges are bucketed by the width they want and each
             // bucket is stroked once.
-            // ...AND A SIDE-CHAIN ATOM IS DRAWN THINNER THAN ITS RADIUS SAYS.
-            // screenRadius is the PICKING radius - a residue-sized target,
-            // the same for a CA and for the CD1 hanging off it - while the
-            // stick is drawn at SIDECHAIN_WIDTH of the backbone. Measured on
-            // 1TIM at the default view: 5.29 px against 5.33, for geometry that
-            // is half as wide. Banding those at face value put the backbone's
-            // band around a stick a third its width, which is what "especially
-            // for side chains" was.
-            const radiusAt = (i) => (sr[i] || 2)
-                * ((sc && sc.has(i)) ? SIDECHAIN_WIDTH : 1);
+            // THE PICKING RADIUS IS NOT THE DRAWN ONE, anywhere. screenRadius is
+            // a residue-sized CLICK TARGET - the same 5.29 px for a CA as the
+            // 5.33 for the CD1 hanging off it - and banding at face value made
+            // the mark heavier than the thing it marks. The side chains were
+            // the loud case, because their sticks really are half the width;
+            // the backbone was over-banded by the same rule and looked normal
+            // only because it had always looked like that.
+            //
+            // So one fraction, everywhere: the band is measured off half the
+            // picking radius, which puts it around the ribbon rather than over
+            // it and takes the default view from 24.9 px to 12.5.
+            const radiusAt = (i) => (sr[i] || 2) * SELECTION_HALO_RADIUS_FRAC;
             const bandFor = (r) => {
                 const rad = r || 2;
                 return 2 * (rad + Math.min(SELECTION_HALO_MAX_PX * pxScale,

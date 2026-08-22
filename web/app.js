@@ -1120,6 +1120,11 @@ function setupEventListeners() {
     // WITHIN N ANGSTROM OF WHAT IS SELECTED, atom to atom. The renderer does
     // the search (see residuesWithin); this is the button, and the reporting -
     // a shell that found nothing has to say so, or it reads as a dead control.
+    // How near counts as an interaction, side chain to side chain. 5 A is a
+    // contact shell: a hydrogen bond is under 3.5 and a salt bridge under 4,
+    // and past about 6 the answer is everything in the neighbourhood.
+    const INTERACTION_CUTOFF_A = 5;
+
     function selectNearby(cutoff, sidechainsOnly) {
         const renderer = viewerApi?.renderer;
         if (!renderer || !renderer.residuesWithin) return;
@@ -1522,17 +1527,15 @@ function setupEventListeners() {
             setSelectionBackbone(p2, v);
             syncSelectionVisibility(p2);
         });
-        const nearA = document.getElementById('selectNearbyA');
-        const nearDist = () => {
-            const d = nearA ? parseFloat(nearA.value) : 5;
-            return (isFinite(d) && d > 0) ? d : 5;
-        };
-        for (const [id, scOnly] of [['selectNearby', false], ['selectNearbySc', true]]) {
-            const b = document.getElementById(id);
-            if (!b) continue;
-            b.addEventListener('click', (e) => {
+        // FIND INTERACTIONS: one button, no settings. 5 A side chain to side
+        // chain is the question people actually ask of a binding site, and the
+        // any-atom half of the pair it replaces was mostly backbone running
+        // past whatever it folds against.
+        const nearBtn = document.getElementById('selectNearby');
+        if (nearBtn) {
+            nearBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                selectNearby(nearDist(), scOnly);
+                selectNearby(INTERACTION_CUTOFF_A, true);
             });
         }
         // ...and the protein form of the same control: two states, one toggle

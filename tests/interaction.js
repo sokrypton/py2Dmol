@@ -41,7 +41,7 @@ eval('global.' + molSrc.split('\n').find((l) => l.includes('function hexToRgb'))
 // module-level constants the lifted methods close over, taken from the source
 // so the test scores the shipped values rather than a copy of them
 for (const name of ['SELECTION_HALO_CSS', 'SELECTION_HALO_GAIN',
-    'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_MAX_PX', 'SIDECHAIN_WIDTH', 'SIDECHAIN_REACH_A',
+    'SELECTION_HALO_MIN_PX', 'SELECTION_HALO_MAX_PX', 'SELECTION_HALO_RADIUS_FRAC', 'SIDECHAIN_WIDTH', 'SIDECHAIN_REACH_A',
     'PICK_WIDTH_SCALE', 'CONTACT_WIDTH_A', 'HOVER_TEXT_LIGHT_CSS',
     'HOVER_TEXT_DARK_CSS', 'HOVER_TEXT_MARGIN']) {
     const line = molSrc.split('\n').find((l) => l.trim().startsWith('const ' + name + ' ='));
@@ -1283,14 +1283,12 @@ t('Within finds neighbours atom to atom, and keeps the seed', () => {
         throw new Error('the grid is rebuilt on every call - 40 ms of a 48 ms '
             + 'search on 3J3Q');
     }
-    // and there is a button, with a distance beside it, ON THE SELECTION PANEL:
-    // Select all / Unselect / Invert make or clear a selection and take no
-    // setting, while this one acts on the selection like every row of the
-    // panel - and what you do with the answer is two rows up.
+    // and there is a button for it, ON THE SELECTION PANEL: Select all /
+    // Unselect / Invert make or clear a selection and take no setting, while
+    // this one acts on the selection like every row of the panel - and what you
+    // do with the answer is two rows up.
     const html = fs.readFileSync('index.html', 'utf8');
-    if (html.indexOf('id="selectNearby"') < 0 || html.indexOf('id="selectNearbyA"') < 0) {
-        throw new Error('no Within control');
-    }
+    if (html.indexOf('id="selectNearby"') < 0) throw new Error('no Find control');
     const panelAt = html.indexOf('id="selectionPanel"');
     const toolsAt = html.indexOf('id="selectionGlobalTools"');
     const nearAt = html.indexOf('id="nearbyRow"');
@@ -1298,7 +1296,7 @@ t('Within finds neighbours atom to atom, and keeps the seed', () => {
         throw new Error('the Within row is not in the selection panel');
     }
     if (html.slice(toolsAt, toolsAt + 900).includes('id="selectNearby"')) {
-        throw new Error('Within is still beside Select all');
+        throw new Error('Find is still beside Select all');
     }
     const app = fs.readFileSync('web/app.js', 'utf8');
     if (!/renderer\.residuesWithin\(seed, cutoff, \{ sidechainsOnly \}\)/.test(app)) {
@@ -1335,23 +1333,26 @@ t('side chain to side chain is the other question, and leaves the trace out', ()
     if (!/if \(!seedAtoms\.length\) return out;/.test(body)) {
         throw new Error('a seed with nothing to measure from is not handled');
     }
-    // two buttons, one distance, and a rule between them
+    // ONE BUTTON, NO SETTINGS. The distance nobody wanted to change and the
+    // choice between "any atom" and "side chain" - whose any-atom half is
+    // mostly backbone running past - are both gone: Find interactions is 5 A,
+    // side chain to side chain.
     const html = fs.readFileSync('index.html', 'utf8');
     const rowAt = html.indexOf('id="nearbyRow"');
-    const row = html.slice(rowAt, html.indexOf('</div>', html.indexOf('id="selectNearbySc"')));
-    for (const need of ['id="selectNearby"', 'id="selectNearbySc"', 'selection-row-rule']) {
-        if (!row.includes(need)) throw new Error('the Within row has no ' + need);
+    const row = html.slice(rowAt, html.indexOf('</div>', rowAt));
+    if (!row.includes('id="selectNearby"')) throw new Error('the row has no button');
+    for (const gone of ['id="selectNearbyA"', 'id="selectNearbySc"', 'selection-row-rule']) {
+        if (row.includes(gone)) throw new Error(gone + ' is back - the row has settings again');
     }
-    if ((row.match(/id="selectNearbyA"/g) || []).length !== 1) {
-        throw new Error('the two measures do not share one distance');
-    }
-    const css = fs.readFileSync('web/style.css', 'utf8');
-    if (!/\.selection-row-rule\s*\{[^}]*width: 1px/.test(css)) {
-        throw new Error('the rule between the two buttons has no width, so it is not drawn');
+    if (!/>interactions</.test(row) || !/selection-panel-label">Find</.test(row)) {
+        throw new Error('the row does not read "Find: interactions"');
     }
     const app = fs.readFileSync('web/app.js', 'utf8');
-    if (!/\['selectNearbySc', true\]/.test(app)) {
-        throw new Error('the side-chain button is not wired to the side-chain search');
+    if (!/const INTERACTION_CUTOFF_A = 5;/.test(app)) {
+        throw new Error('the cutoff is not a named 5 Angstrom');
+    }
+    if (!/selectNearby\(INTERACTION_CUTOFF_A, true\)/.test(app)) {
+        throw new Error('the button does not ask for the side-chain measure at that cutoff');
     }
 });
 
@@ -2078,17 +2079,26 @@ t('the selection band is a proportion of what it marks, not a fixed width', () =
         throw new Error('the band does not follow the zoom: '
             + [zoomedOut, normal, zoomedIn].join(' / '));
     }
-    // the default view keeps the width it always had, to within a pixel
-    if (Math.abs(normal - 24.8) > 1) {
-        throw new Error('the default view changed width: ' + normal);
+    // ...AND IT IS MEASURED OFF THE DRAWN WIDTH, NOT THE CLICK TARGET.
+    // screenRadius is a residue-sized picking radius - the same for a CA and
+    // for the atom hanging off it - so a band taken from it at face value is
+    // heavier than the thing it marks. At the default view that is 12.5 px
+    // around a ribbon whose radius reads as 5.42, where it used to be 24.9.
+    if (Math.abs(normal - 12.5) > 1) {
+        throw new Error('the default view band is ' + normal + ', expected ~12.5');
     }
-    // ...and the band is never more than about twice the geometry it marks
-    if (zoomedOut / (2 * 2) > 2.4) {
-        throw new Error('zoomed out the band is still ' + (zoomedOut / 4).toFixed(1)
-            + ' times the ribbon');
+    // never much more than the geometry itself, once the floor stops binding.
+    // At radius 2 the 2.5 px floor is what sets the width - a hairline still
+    // has to be markable - and it is 7 px there, against 18 before any of this.
+    for (const [band, r] of [[normal, 5.42], [zoomedIn, 34.6]]) {
+        if (band / (2 * r) > 1.2) {
+            throw new Error('the band is ' + (band / (2 * r)).toFixed(1)
+                + ' times the geometry at radius ' + r);
+        }
     }
+    if (zoomedOut > 8) throw new Error('the floor is too heavy: ' + zoomedOut);
     // the ceiling keeps a zoomed-in band an annotation rather than a slab
-    if (zoomedIn > 2 * (34.6 + 14) + 0.01) {
+    if (zoomedIn > 2 * (34.6 * 0.5 + 14) + 0.01) {
         throw new Error('the reach is uncapped: ' + zoomedIn);
     }
 });
