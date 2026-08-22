@@ -538,7 +538,8 @@ function plateToggleNode() {
         closest: () => label, label };
 }
 function panelRun(selection, sidechained = new Set(), hasContact = false, types = null,
-    shown = null, ligEls = new Set(), visible = null, sse = null, basesOff = null) {
+    shown = null, ligEls = new Set(), visible = null, sse = null, basesOff = null,
+    scMap = null) {
     const nodes = {
         selectionTools: { classList: { toggle(c, on) { this._on = on; } } },
         selectionPanel: { hidden: null },
@@ -601,6 +602,9 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
             forcedSseFor: () => (sse ? sse.forced : 'none'),
             assignedSseFor: () => (sse ? (sse.assigned || '') : ''),
             sidechainOwners: () => sidechained,
+            // the appended atoms, keyed to the residue each hangs off - the
+            // renderer builds this when side chains are materialised
+            sidechainMap: scMap,
             positionTypes: types || [],
             // null = everything is drawn, which is what the Show switch on a
             // ligand row reads
@@ -628,6 +632,41 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
     f();
     return nodes;
 }
+
+t('a selection full of side-chain atoms still reads as its residues', () => {
+    // SHOWING SIDE CHAINS CHANGES WHAT SELECTING A CHAIN SELECTS. The atoms are
+    // appended to the coordinate array as positions of their own and carry
+    // their residue's chain, so the next click on that chain picks up both: on
+    // 1YNE, 31 residues and 347 atoms. Every question this panel asks is about
+    // a RESIDUE, and an atom answers for itself - it has no side chain of its
+    // own - so the row came back Mixed immediately after the control that
+    // created the atoms was used. Reported exactly that way: select chain,
+    // turn on atoms, deselect, select again, Show is banded.
+    const residues = [1, 2, 3];
+    const atoms = [10, 11, 12, 13];
+    const scMap = new Map(atoms.map((a, k) => [a, { owner: residues[k % 3] }]));
+    const sel = residues.concat(atoms);
+    const n = panelRun(sel, new Set(residues), false, null, new Set(residues),
+        new Set(), null, null, null, scMap);
+    if (n.sidechainShowToggle.indeterminate) {
+        throw new Error('the side-chain switch is Mixed over a selection whose'
+            + ' residues all have their atoms shown - the atoms are answering'
+            + ' for themselves');
+    }
+    if (n.sidechainShowToggle.checked !== true) {
+        throw new Error('the side chains are shown and the switch says otherwise');
+    }
+    // and the same for the backbone row, which reads a set atoms are never in
+    if (n.mainchainShowToggle.indeterminate) {
+        throw new Error('the backbone switch is Mixed because of the atoms');
+    }
+    // ...while a genuine mixture is still Mixed: one residue on, two off
+    const half = panelRun(sel, new Set(residues), false, null, new Set([1]),
+        new Set(), null, null, null, scMap);
+    if (!half.sidechainShowToggle.indeterminate) {
+        throw new Error('a real mixture no longer reads as one');
+    }
+});
 
 t('the selection panel appears with a selection and hides without one', () => {
     const empty = panelRun(null);

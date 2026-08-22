@@ -1075,6 +1075,25 @@ function setupEventListeners() {
         // The renderer prunes them; this is the second lock on the same door.
         const nPos = renderer.coords ? renderer.coords.length : Infinity;
         const live = list.filter((i) => i < nPos);
+        // ...AND AS RESIDUES, because that is what every question on this panel
+        // is about.
+        //
+        // Showing a side chain APPENDS its atoms to the coordinate array as
+        // positions of their own, carrying their residue's chain - so selecting
+        // the chain again picks up the atoms as well as the residues. On 1YNE
+        // that is 31 residues and 347 atoms, and an atom answers each of these
+        // questions for ITSELF: it has no side chain of its own, so the row
+        // read 31 full against 347 none and came back Mixed. The controls were
+        // right about the selection and wrong about the structure - and it
+        // only happened once the atoms existed, which is to say immediately
+        // after using the control that made them.
+        const scMapT = renderer.sidechainMap;
+        const res = scMapT && scMapT.size
+            ? [...new Set(live.map((i) => {
+                const e = scMapT.get(i);
+                return e ? e.owner : i;
+            }))]
+            : live;
         const owners = renderer.sidechainOwners ? renderer.sidechainOwners() : null;
         const scAble = owners ? live.filter((i) => owners.has(i)) : [];
         const t = renderer.positionTypes || [];
@@ -1106,7 +1125,7 @@ function setupEventListeners() {
             if (isNuc && (!bSet || bSet.has(i))) return 'plate';
             return 'none';
         };
-        const modes = new Set(live.map(modeOf));
+        const modes = new Set(res.map(modeOf));
         const mode = modes.size === 1 ? [...modes][0] : '';
         const scSel = document.getElementById('plateShowToggle');
         const scTog = document.getElementById('sidechainShowToggle');
@@ -1206,9 +1225,12 @@ function setupEventListeners() {
         // The set names what is HIDDEN, so a position in it is a toggle that
         // is off.
         const hidBB = renderer.backboneHiddenSet ? renderer.backboneHiddenSet() : null;
+        // ...over residues too: an appended atom is not a backbone position, so
+        // it is never in the hidden set, and a chain whose backbone is hidden
+        // read as Mixed as soon as its side chains were drawn.
         set('mainchainShowToggle', !hidBB ? true
-            : (live.every((i) => !hidBB.has(i)) ? true
-                : (live.every((i) => hidBB.has(i)) ? false : null)));
+            : (res.every((i) => !hidBB.has(i)) ? true
+                : (res.every((i) => hidBB.has(i)) ? false : null)));
         set('contactShowToggle', list.length === 2 && !!findContact(list));
     }
 
