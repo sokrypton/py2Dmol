@@ -72,13 +72,18 @@ AI Context: STANDALONE WEB APP ENTRY POINT
                 <span>Clear All</span>
             </button>
         </div>
-        <h1 class="text-4xl font-extrabold text-gray-900 mb-2">2Dmol</h1>
-        <!-- The chain suffixes are the only part a user cannot guess, so they
-             are what the line keeps. Which database a PDB or UniProt ID goes to
-             follows from the ID, and "to visualize protein structures" is what
-             the page evidently does. -->
-        <p class="text-gray-500 mb-4">Upload a PDB/CIF file, or fetch by PDB ID
-            (<code>1tim</code>, <code>1timA</code>, <code>1tim_AB</code>) or UniProt ID.</p>
+        <!-- TITLE AND STRAPLINE ON ONE LINE. Two stacked blocks with their own
+             margins spent three lines of the page on a word and a sentence,
+             above a panel that is now three lines itself.
+             The chain suffixes used to live here, as the only part of the
+             syntax a user cannot guess - they are in the ID box's own
+             placeholder now (1a3n_AB), which is where someone about to type an
+             ID is already looking, so the line keeps what is left: what this
+             page takes. -->
+        <div class="page-head">
+            <h1>2Dmol</h1>
+            <p>Upload a PDB/CIF file, or fetch by PDB or UniProt ID.</p>
+        </div>
 
         <div id="upload-options-container" class="container-box" style="width: 948px; margin-bottom: 10px;">
 

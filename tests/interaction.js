@@ -2214,6 +2214,42 @@ t('every projection sizes a position through the same rule', () => {
     }
 });
 
+t('the page header is one line, and clear of the buttons', () => {
+    // The title and the line under it were two stacked blocks with their own
+    // margins - 73 px of page for a word and a sentence, above a panel that is
+    // now three lines itself. Measured after: 31 px, and the fetch panel
+    // starts 48 px higher.
+    const html = fs.readFileSync('index.html', 'utf8');
+    const head = html.indexOf('class="page-head"');
+    if (head < 0) throw new Error('the header block is gone');
+    const block = html.slice(head, html.indexOf('id="upload-options-container"'));
+    if (!/<h1>/.test(block) || !/<p>/.test(block)) {
+        throw new Error('the header no longer holds both the title and the line');
+    }
+    const css = fs.readFileSync('web/style.css', 'utf8');
+    const rule = css.slice(css.indexOf('.page-head {'), css.indexOf('.page-head h1'));
+    if (!/align-items:\s*baseline/.test(rule)) {
+        throw new Error('the two are not on one baseline, so the strapline'
+            + ' floats beside the title like a caption');
+    }
+    // SAVE, CLEAR ALL AND GPU ARE POSITIONED ABSOLUTELY against the same
+    // container, so nothing pushes the strapline out of their way: it runs
+    // underneath them instead of wrapping. The padding is what reserves the
+    // space, and it is the kind of thing a later tidy-up removes as unused.
+    if (!/padding-right:\s*\d+px/.test(rule)) {
+        throw new Error('the header reserves no room for the button cluster'
+            + ' pinned to its top right - a longer line will run under it');
+    }
+    // ...and the strapline does not repeat what the ID box already says: the
+    // chain-suffix examples moved into its placeholder, which is where someone
+    // about to type an ID is looking.
+    const strap = block.slice(block.indexOf('<p>'), block.indexOf('</p>'));
+    if (/1tim_AB|1timA/.test(strap)) {
+        throw new Error('the strapline still carries the syntax examples that'
+            + ' the ID box placeholder now shows');
+    }
+});
+
 t('the fetch panel folds its options away, in groups', () => {
     // It was a two-column table: an ID box on the left, seven switches
     // standing open on the right, and the examples squeezed into half a column

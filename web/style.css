@@ -1160,6 +1160,35 @@ h1 {
     letter-spacing: -0.025em;
 }
 
+/* THE HEADER, ON ONE LINE. The title and the line under it were two stacked
+   blocks with their own margins, which spent three lines of the page on a word
+   and a sentence. Baseline-aligned rather than centred: they are one sentence
+   with a big first word, and centring made the strapline look like a caption
+   floating beside the title. */
+.page-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+    /* clear of the Save / Clear All / GPU cluster, which is positioned
+       absolutely against this same container - without it a longer strapline
+       runs under the buttons instead of wrapping */
+    padding-right: 300px;
+}
+
+.page-head h1 {
+    font-size: 1.75rem;
+    font-weight: 800;
+    line-height: 1.1;
+    margin: 0;
+}
+
+.page-head p {
+    margin: 0;
+    font-size: 13px;
+    color: #6b7280;
+}
+
 .text-gray-500 {
     color: #6b7280;
 }
