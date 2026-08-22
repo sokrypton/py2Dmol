@@ -2097,6 +2097,47 @@ t('a metal has a colour and a size of its own', () => {
     }
 });
 
+t('one segment owns the ball at a joint, and takes it by depth', () => {
+    // TWO TUBES MEETING AT AN ATOM each fill their own hemisphere over it. Both
+    // surfaces are there, so the depth buffer chose between them per pixel -
+    // right geometrically, wrong on the page: two hemispheres of one radius
+    // intersect along a curve, and between differently-coloured segments that
+    // curve is a hard diagonal. On a three-atom chain it reads as the two bonds
+    // crossing in the middle. The 2D pass paints in order, so one cap covers
+    // the other outright and the boundary is an arc.
+    const gpu = fs.readFileSync('py2Dmol/resources/viewer-cartoon-gpu.js', 'utf8');
+    const at = gpu.indexOf('const FSTUBE');
+    const fsrc = gpu.slice(at, gpu.indexOf('`;', at));
+    // the ball is given up by DEPTH. Discarding it was tried and is worse: the
+    // joint cap's rim sits at the joint's own axis so that BOTH fills bulge in
+    // front of it and hide it, so taking one away exposes the rim - a dotted
+    // arc at every bend in the chain.
+    const ball = /vCapA < 0\.5 && distance\(vPx, vA\) < vRfill/;
+    if (!ball.test(fsrc)) throw new Error('nothing decides the ball at a joint');
+    const give = /zSurf -= ([0-9.]+) \* vRfill/.exec(fsrc);
+    if (!give) {
+        throw new Error('the unowned ball is not given up by depth - if it is'
+            + ' discarded instead, the joint cap rim it was hiding is exposed');
+    }
+    // ...by more than the two surfaces can differ by inside the ball, which is
+    // one radius; less and the boundary is a curve again rather than the arc
+    if (!(parseFloat(give[1]) >= 1)) {
+        throw new Error(`the ball is given up by only ${give[1]} radii - the two`
+            + ' surfaces differ by up to one, so the owner does not win all of it');
+    }
+    // ...AND EVERY JOINT HAS AN OWNER, whatever the outline is doing. The
+    // fragment reads "unowned" off the cap code, so if the claim itself were
+    // gated on the caps flag, neither side would own the joint and both would
+    // give the ball up - which is the tie this exists to break.
+    const bld = gpu.slice(gpu.indexOf('WHO CARRIES THE CAP AT A JOINT'));
+    const claimLine = /else if \(claim\[i1\] === 0\) \{ claim\[i1\] = 1; cA = (\w+); \}/.exec(bld);
+    if (!claimLine) throw new Error('the joint claim has moved or is gated again');
+    if (/jointCaps && claim\[i1\] === 0/.test(bld)) {
+        throw new Error('the claim is gated on jointCaps, so with caps off no'
+            + ' segment owns a joint and both give up the ball');
+    }
+});
+
 t('a lone atom reaches the GPU, as a disc', () => {
     // METALS WENT MISSING IN GPU MODE. A lone atom - an ion, most often - is a
     // zero-length segment, drawn by the 2D pass as a shaded circle. The GPU

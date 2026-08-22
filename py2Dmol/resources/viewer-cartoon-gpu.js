@@ -1644,6 +1644,10 @@ void main() {
     // terminus that the 2D pass does not draw.
     if (tRaw < 0.0 || tRaw > 1.0) {
         if (capKind < 0.5) discard;             // butt cut
+        // 3 = round fill, no outline cap. See the builder: that is the state
+        // cartoonJointCaps = false asks for, and it has to keep the round FILL
+        // or the elbow opens up.
+        if (capKind > 2.5) discard;
         // 'partial' drops EVERY round outline cap, joint and free end alike -
         // the 2D pass gates both on outlineMode === 'full', in one branch.
         if (uEndCaps < 0.5) discard;
@@ -1726,6 +1730,33 @@ void main() {
     // across the joint, which is the artefact this whole thing has to avoid.
     float sz = (capKind > 1.5) ? uCapZ : uSkirtZ;
     zSurf = zAxis + sz * vRfill / max(1e-6, uScale * pe);
+  } else {
+    // THE BALL AT A JOINT BELONGS TO ONE SEGMENT, and the other gives it up by
+    // DEPTH rather than by discarding it.
+    //
+    // Both segments meeting at an atom fill their own hemisphere over it, so
+    // both surfaces are there and the depth buffer chose between them per
+    // pixel. That is geometrically right and draws the wrong picture: two
+    // hemispheres of one radius intersect along a curve, and where the two
+    // segments are different colours that curve is a hard diagonal across the
+    // joint - on a three-atom chain, two bonds that appear to cross in the
+    // middle. The 2D pass has no such seam because it paints in order: the
+    // nearer segment's cap covers the other outright, so the boundary is that
+    // cap's own arc.
+    //
+    // DISCARDING the unowned hemisphere was tried and is worse. The joint cap's
+    // rim sits at the joint's own axis precisely so that BOTH fills bulge in
+    // front of it and hide it (see uCapZ above) - take one of them away and the
+    // rim is exposed, which drew a dotted arc at every bend in the chain.
+    //
+    // So the geometry stays and only the contest changes: one radius further
+    // back is more than the two surfaces can ever differ by inside the ball, so
+    // the owner wins all of it and the boundary is its arc. The rim is 2 radii
+    // behind that, so it stays hidden.
+    if ((vCapA < 0.5 && distance(vPx, vA) < vRfill)
+        || (vCapB < 0.5 && distance(vPx, vB) < vRfill)) {
+      zSurf -= 1.1 * vRfill / max(1e-6, uScale * pe);
+    }
   }
   float t01 = (zSurf - uZRange.x) / max(1e-6, uZRange.y - uZRange.x);
   // NDC z is 1 - 2*t01, the same mapping the other programs put in gl_Position,
@@ -4790,12 +4821,19 @@ function buildTube(renderer, S) {
         // of the view, and therefore no reason to rebuild when the model turns.
         //
         // 2 marks a joint cap, 1 a free end. They differ in depth - see uCapZ.
+        // ...AND THE CLAIM IS MADE WHETHER OR NOT THE OUTLINE WANTS IT. The
+        // owner's round FILL is what closes the elbow now that the other side
+        // is cut square there, so a joint always needs an owner; 3 is that
+        // owner with no outline arc, which is what cartoonJointCaps = false
+        // asks for. Gating the claim itself on the flag left both sides butt-
+        // cut and opened a notch at every bend.
         const isC = sg.type === 'C';
+        const jointOwn = jointCaps ? 2 : 3;
         let cA = 0, cB = 0;
         if (isC || touch[i1] <= 1) cA = 1;
-        else if (jointCaps && claim[i1] === 0) { claim[i1] = 1; cA = 2; }
+        else if (claim[i1] === 0) { claim[i1] = 1; cA = jointOwn; }
         if (isC || touch[i2] <= 1) cB = 1;
-        else if (jointCaps && claim[i2] === 0) { claim[i2] = 1; cB = 2; }
+        else if (claim[i2] === 0) { claim[i2] = 1; cB = jointOwn; }
         data[o++] = cA;
         data[o++] = cB;
         data[o++] = isC ? 1 : 0;                        // annotation: no shading
