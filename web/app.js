@@ -968,7 +968,7 @@ function setupEventListeners() {
         };
         if (none || !renderer || !obj) {
             for (const id of ['elementsShowToggle', 'mainchainShowToggle',
-                'contactShowToggle']) {
+                'sidechainShowToggle', 'contactShowToggle']) {
                 set(id, false);
             }
             const scSel0 = document.getElementById('sidechainModeSelect');
@@ -994,21 +994,34 @@ function setupEventListeners() {
         // whole selection agrees. Plate is offered only where the selection has
         // nucleotides - a protein has no such thing, and an option that does
         // nothing is worse than one that is not there.
+        // HOW THE SELECTION'S SIDE CHAINS ARE DRAWN, read back per residue and
+        // shown only where the whole selection agrees. One answer, two controls
+        // that can show it: a switch where there are two states and a menu
+        // where there are three.
+        const scSet = obj.sidechains instanceof Set ? obj.sidechains : null;
+        const bSet = obj.bases instanceof Set ? obj.bases : null;
+        const modeOf = (i) => {
+            if (scSet && scSet.has(i)) return 'full';
+            const isNuc = t[i] === 'D' || t[i] === 'R';
+            if (isNuc && (!bSet || bSet.has(i))) return 'plate';
+            return 'none';
+        };
+        const modes = new Set(live.map(modeOf));
+        const mode = modes.size === 1 ? [...modes][0] : '';
         const scSel = document.getElementById('sidechainModeSelect');
+        const scTog = document.getElementById('sidechainShowToggle');
+        // WHICH OF THE TWO IS ON THE ROW. A protein side chain is drawn or it
+        // is not; only a nucleotide has the plate as well, and only there is a
+        // menu worth reading. Never both - two controls for one question is
+        // what this row stopped being.
+        if (scTog) scTog.hidden = hasNuc;
+        if (scSel) scSel.hidden = !hasNuc;
+        if (scTog) set('sidechainShowToggle', tally(scAble, scSet, false));
         if (scSel) {
-            const scSet = obj.sidechains instanceof Set ? obj.sidechains : null;
-            const bSet = obj.bases instanceof Set ? obj.bases : null;
-            const modeOf = (i) => {
-                if (scSet && scSet.has(i)) return 'full';
-                const isNuc = t[i] === 'D' || t[i] === 'R';
-                if (isNuc && (!bSet || bSet.has(i))) return 'plate';
-                return 'none';
-            };
-            const modes = new Set(live.map(modeOf));
-            scSel.value = modes.size === 1 ? [...modes][0] : '';
+            scSel.value = mode;
             const plateOpt = scSel.querySelector('option[value="plate"]');
             if (plateOpt) plateOpt.hidden = !hasNuc;
-            // ...and the row itself is offered only where there is something to
+            // ...and the control is offered only where there is something to
             // draw: a structure with no side-chain atoms and no bases has none
             scSel.disabled = !scAble.length && !hasNuc;
         }
@@ -1021,7 +1034,7 @@ function setupEventListeners() {
         const elTog = document.getElementById('elementsShowToggle');
         if (elTog) {
             const wrap = elTog.closest ? elTog.closest('label') : null;
-            (wrap || elTog).hidden = !(scSel && scSel.value === 'full');
+            (wrap || elTog).hidden = mode !== 'full';
         }
 
         // MAIN CHAIN IS THE BACKBONE. The set names what is HIDDEN, so a
@@ -1527,6 +1540,8 @@ function setupEventListeners() {
                 selectNearby(INTERACTION_CUTOFF_A, true);
             });
         }
+        // the protein form of the same control: two states, one switch
+        onToggle('sidechainShowToggle', (p2, v) => setSelectionSidechainMode(p2, v ? 'full' : 'none'));
         // the side-chain MODE is a select, not a toggle, but it reads the
         // selection the same way every control on this panel does
         const scMode = document.getElementById('sidechainModeSelect');

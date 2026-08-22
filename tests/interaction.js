@@ -533,6 +533,7 @@ function panelRun(selection, sidechained = new Set(), hasContact = false, types 
         })(),
         mainchainShowToggle: { checked: false, indeterminate: false },
         sidechainModeSelect: modeSelectNode(),
+        sidechainShowToggle: { checked: false, indeterminate: false, hidden: null },
         contactShowToggle: { checked: false, indeterminate: false },
         contactColorButton: { hidden: null, parentElement: { hidden: null } },
         contactWidthSlider: { hidden: null, value: null },
@@ -626,7 +627,7 @@ t('the panel says how big the selection is, and which residues', () => {
 
 t('the panel keeps two matching part rows, with SSE and Copy below them', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const need = ['sidechainModeSelect', 'elementsShowToggle',
+    const need = ['sidechainModeSelect', 'sidechainShowToggle', 'elementsShowToggle',
         'mainchainShowToggle', 'contactShowToggle',
         'scColorButton', 'selColorButton', 'selSsSelect'];
     for (const id of need) {
@@ -643,7 +644,7 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
         'basesShowButton', 'basesHideButton',
         // ...and the two controls the mode select replaced, plus the row the
         // plate had to itself: three ways to say the same thing was the bug
-        'basesShowToggle', 'basesRow', 'backboneShowToggle', 'sidechainShowToggle',
+        'basesShowToggle', 'basesRow', 'backboneShowToggle',
         'elementsShowButton', 'elementsHideButton',
         'contactAddButton', 'contactRemoveButton']) {
         if (html.includes('id="' + gone + '"')) {
@@ -663,8 +664,8 @@ t('the panel keeps two matching part rows, with SSE and Copy below them', () => 
     }
     // Each toggle must SAY what it is - the visible text is its accessible
     // name - and carry a title, since "Show" alone does not say show what.
-    for (const id of ['elementsShowToggle', 'mainchainShowToggle',
-        'contactShowToggle']) {
+    for (const id of ['sidechainShowToggle', 'elementsShowToggle',
+        'mainchainShowToggle', 'contactShowToggle']) {
         const at2 = html.indexOf('id="' + id + '"');
         const open = html.lastIndexOf('<label', at2);
         const close = html.indexOf('</label>', at2);
@@ -766,26 +767,37 @@ t('Elements is offered only where there are atoms to colour', () => {
     }
 });
 
-t('the side-chain row is ONE control, and Plate only where it means something', () => {
-    // Show beside the select was the same mistake the two rows were: None IS
-    // "not shown", so the toggle said again what the menu already said, and a
-    // selection could be left reading Full with the toggle off.
-    const html = fs.readFileSync('index.html', 'utf8');
-    if (html.includes('id="sidechainShowToggle"')) {
-        throw new Error('the Show toggle is back beside the select');
-    }
+t('a protein gets a switch, a nucleotide gets the three-way', () => {
+    // A protein side chain is drawn or it is not - two states, and a menu to
+    // choose between two is a menu where a switch would do. Only a nucleotide
+    // has the third, the plate. One of the two is on the row, never both.
     const NUC = ['D', 'D'];
     const PROT = ['P', 'P'];
-    const prot = panelRun([0, 1], new Set(), false, PROT);
-    if (prot.sidechainModeSelect.hidden === true) {
-        throw new Error('a protein selection has no side-chain control at all');
-    }
-    if (prot.sidechainModeSelect._opts.plate.hidden !== true) {
-        throw new Error('Plate is offered on a protein selection');
+    const prot = panelRun([0, 1], new Set([0, 1]), false, PROT);
+    if (prot.sidechainShowToggle.hidden !== false || prot.sidechainModeSelect.hidden !== true) {
+        throw new Error('a protein selection is not offered the plain switch');
     }
     const nuc = panelRun([0, 1], new Set(), false, NUC);
-    if (nuc.sidechainModeSelect._opts.plate.hidden !== false) {
-        throw new Error('Plate is hidden on a nucleic selection');
+    if (nuc.sidechainShowToggle.hidden !== true || nuc.sidechainModeSelect.hidden !== false) {
+        throw new Error('a nucleic selection is not offered the three-way');
+    }
+    if (nuc.sidechainModeSelect._opts.plate.hidden !== false
+        || prot.sidechainModeSelect._opts.plate.hidden !== true) {
+        throw new Error('Plate is offered where there is no base to draw');
+    }
+    // BOTH READ THE SAME ANSWER. The mode is worked out once, from the object,
+    // and whichever control is on the row shows it - so the switch cannot say
+    // one thing while the menu behind it says another.
+    const app = fs.readFileSync('web/app.js', 'utf8');
+    if (!/const mode = modes\.size === 1 \? \[\.\.\.modes\]\[0\] : '';/.test(app)) {
+        throw new Error('the two controls no longer share one answer');
+    }
+    if (!/setSelectionSidechainMode\(p2, v \? 'full' : 'none'\)/.test(app)) {
+        throw new Error('the switch does not drive the same action as the menu');
+    }
+    const shown = panelRun([0, 1], new Set([0, 1]), false, PROT, new Set([0, 1]));
+    if (shown.sidechainShowToggle.checked !== true) {
+        throw new Error('the switch does not read back what is drawn');
     }
 });
 
@@ -3646,6 +3658,7 @@ t('the selection toggles show all, none and mixed', () => {
         contactWidthSlider: { hidden: null, value: null },
         sidechainRow: { hidden: null },
         sidechainModeSelect: modeSelectNode(),
+        sidechainShowToggle: { checked: false, indeterminate: false, hidden: null },
         elementsShowToggle: (() => {
             const label = { hidden: null };
             return { checked: false, indeterminate: false, hidden: null,
@@ -3833,7 +3846,8 @@ t('the show toggles are disabled along with the rest of the panel', () => {
 // carried aria-labels for the same reason and they went with the buttons.
 t('every selection toggle has a name of its own', () => {
     const html = fs.readFileSync('index.html', 'utf8');
-    const ids = ['elementsShowToggle', 'mainchainShowToggle', 'contactShowToggle'];
+    const ids = ['sidechainShowToggle', 'elementsShowToggle', 'mainchainShowToggle',
+        'contactShowToggle'];
     const seen = new Set();
     for (const id of ids) {
         const m = html.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
